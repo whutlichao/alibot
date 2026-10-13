@@ -71,12 +71,16 @@ def test_mark_read_is_clamped_to_current_max_seq(client: TestClient) -> None:
 
 
 def test_unread_counts_only_human_and_agent_top_level_messages(client: TestClient, data_dir) -> None:
-    """未读口径：已读位置之后的 human/agent 顶层消息；不计 system 事件消息。"""
+    """未读口径：已读位置之后的 human/agent 顶层消息；不计 system 事件消息。
+
+    取证方式说明：本票不写入任何 system 消息（造 system 消息是「为测试造种子」），
+    因此这里直接向库内注入一行 kind='system' 来检验计数口径。
+    **真实 system 消息（如 Agent 加入频道）对未读的影响由 #② / #③ 用真实消息覆盖。**
+    """
     channel = create_channel(client).json()["channel"]
     send(client, channel["id"], "人一")
     mark_read(client, channel["id"], 1)
 
-    # system 事件消息（#② / #③ 才会产生）不计入未读。
     with raw_connection(data_dir) as conn:
         conn.execute(
             "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at) "

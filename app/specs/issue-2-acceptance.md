@@ -249,7 +249,26 @@ AFTER_BACKEND_RESTART_IN_BROWSER 消息 seq [1,2]、正文原样、刷新后仍�
 
 方形头像 `border-radius: 7px`（不是圆形）；`--av-0…--av-4` 确定性色位。
 
-## 5. 设计系统消费方式（只读，未改动该目录）
+## 5. code-review 双轴与处置
+
+按 `implement` 前置的要求，收尾跑了 `code-review` 的双轴（Standards + Spec），两个子代理并行、互不污染上下文。
+复核发现后逐条处置（详见提交 `d5e7005`）：
+
+| 轴 | finding | 处置 |
+| --- | --- | --- |
+| Spec | **P1** 失败消息跨频道串流：`renderedMessages()` 无条件并入 `state.pending`，而切频道时保留所有 failed 项（不限 `target_id`）→ 在甲被拒的消息会渲染进乙的流 | 改为只渲染 `target_id === 当前频道`；实测 甲1条failed → 乙0条failed 且空态正常，回甲仍可重试 |
+| Spec | **P2** 共用标读定时器被覆盖：离开有未读的频道时 `scheduleRead(previous,…)` 被紧随的 `markCurrentRead()` clearTimeout 掉，已读推进被静默丢弃 | 改为每频道各一个定时器（`readTimers: Map`）；实测 甲(未读2) → 60ms 内切乙，甲仍正确推进到 read=2 |
+| Standards | **P2** `.toast.err` 用 `--error`（deep 档）当填充 + `--bg` 墨色 —— 档位倒置 | 改回 `--error-fill` + `--on-accent`（`-fill` 只与 `--on-accent` 配对） |
+| Standards | **P2** nav-row 激活条用 `--accent`、`#` 用 `--accent-deep`，而契约要求 `--selected-graphic` + `--selected-deep` | 改为 selected 族；否则 `product-tokens.css` 声明的 selected 档位无消费点 |
+| Standards | **P2** `.overlay` 缺 `backdrop-filter: blur(2px)` | 补上（DESIGN.md §6 / SKILL.md §4 明列） |
+| Standards | **P2** `.brand-name` 硬编码 `13.5px` | 改为 `var(--fs-body-lg)` |
+| 两轴 | **P2** 投机泛化：`UNREAD_KINDS` / `UNREAD_BADGE_MIN` / `count_messages` / `GET /api/channels/{id}` 零消费；`list_channels` 与 `get_channel` 各抄一份未读口径 SQL（漂移风险） | 删除零消费项；两处 SQL 合并为模块级单条 `CHANNEL_SELECT_SQL`（无拼接） |
+| Spec | **P2** `system` 不计入未读这条口径，issue 明言留待 #②/#③ 用**真实消息**覆盖，原测试注释声称已闭 | 保留断言（不含造种子 system 消息），注释如实改为「以库内注入的 system 行验证口径，真实 system 消息由 #②/#③ 覆盖」 |
+| Spec | **P2** composer placeholder 的第二分句（`—— 输入 @ 提及 Agent`）缺失 | 本票没有可被点名的 Agent（提及属 #②），已在代码注释里标为 #② 的待改点 |
+
+两条 P2 属"报告项/可解释偏离"，其余已修。修复后复跑全部门禁（§2）全绿，并在真实浏览器复验 P1 与标读定时器（命令与结果见本节表格）。
+
+## 6. 设计系统消费方式（只读，未改动该目录）
 
 `worksplice-design-system/` 全程只读：本票未编辑其中任何文件。
 
@@ -271,7 +290,7 @@ ui_kits/app/app.css 头部:「whose definitions live in the product extension la
 `:root` 的值**（不改名、不新造色位、不改档位语义），加载顺序 =
 foundation → 产品扩展层 → 组件层。
 
-## 6. 未纳入本票（规格 Out of Scope，本票未实现）
+## 7. 未纳入本票（规格 Out of Scope，本票未实现）
 
 Agent 与唤醒、事件流 / SSE、@提及解析与补全、任务 / 线程、DM、搜索、通知 / 提醒、
 reactions / pin / 附件、多用户与鉴权、云端 / 多租户 / 同步、加密、Agent 本地能力（文件 / shell）、
