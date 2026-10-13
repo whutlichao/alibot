@@ -53,7 +53,7 @@ GET /api/channels/{id}/events?after_seq=N   ← SSE：先读库补拉，再实�
 ```text
 == 门禁（全量）
 $ .venv/bin/python -m pytest -q
-113 passed, 1 skipped in 79.41s        # 那 1 个 skip = 默认跳过的真模型冒烟测试
+114 passed, 1 skipped in 79.41s        # 那 1 个 skip = 默认跳过的真模型冒烟测试
 $ .venv/bin/ruff check app && .venv/bin/ruff format --check app
 All checks passed! / 25 files already formatted
 $ .venv/bin/python -m mypy
@@ -84,14 +84,18 @@ kill -9 后端 → { online:false, streamState:'reconnecting', sendDisabled:true
 修后：EXITED cleanly in 0.2s rc=-15
 ```
 
-**红 → 绿**（红证据在 `git archive` 隔离副本上取得，工作树未动）：15 组注入**全部判红、零组漏网**，
+**红 → 绿**（红证据在 `git archive` 隔离副本上取得，工作树未动）：16 组注入**全部判红、零组漏网**，
 判红用例全部是 HTTP/SSE 黑盒用例。其中一组（消费游标在 failed 时也推进）最初**零判红** —— 那是本轮
 测试唯一被红证据补出来的空洞，已补两条对照用例。逐条见 `app/specs/issue-3-acceptance.md` §5。
 
 **双轴 review**（`code-review` skill，固定点 `5015383`，两轴各自的 sub-agent）：
 
-- Spec：7 条 findings，6 条已处置（删掉越界的轮次结果 UI、状态点的「出错」改为读库里的最近一轮、
-  SSE 轮换不再被误报成掉线、删掉过期的「下一票交付」提示、拆开两条误导性用例标题），1 条记为报告项。
+- Spec：**8 条** findings，**7 条已处置** —— 含一条 **P0 合规项**：一条人类裁定（提及左边界按
+  **2B**：只排除「`@` 前是 ASCII 字母/数字」的邮箱式文本，中文紧贴的 `你好@小明` 仍算提及）
+  在我发 worker_done 之前 2.5 小时就进了邮箱，但 `check` 从未送达，我先按 2A 实现了。已改为 2B
+  （ASCII 专属左边界 + 候选串恰好等于成员名）。其余：删掉越界的轮次结果 UI、状态点的「出错」改为
+  读库里的最近一轮、SSE 轮换不再被误报成掉线、删掉过期的「下一票交付」提示、拆开两条误导性用例
+  标题。1 条记为报告项。
 - Standards：7 条，5 条已处置（术语回归 CONTEXT.md「轮次结果」、抽 `AGENT_COLUMNS`、删 6 处零消费
   代码与 1 条永不命中的死 CSS 规则、保活常量改为真正在用的 `SSE_POLL_SECONDS`），2 条记为有意接缝。
   处置与理由见 `app/specs/issue-3-acceptance.md` §6。

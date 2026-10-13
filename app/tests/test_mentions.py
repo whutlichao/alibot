@@ -105,6 +105,7 @@ def test_at_sign_without_a_member_is_not_a_mention(client: TestClient) -> None:
 
 
 def test_email_like_text_is_not_a_mention(client: TestClient) -> None:
+    """邮箱式文本不误判：`@` 前面是 ASCII 字母或数字的都不算提及。"""
     agent = create_agent(client, name="小明").json()["agent"]
     create_agent(client, name="example")
     channel = channel_with_agent(client, agent["id"])
@@ -112,8 +113,8 @@ def test_email_like_text_is_not_a_mention(client: TestClient) -> None:
     for body in (
         "联系 user@example.com 获取权限",
         "抄送 user@小明",
-        "路径 /var/lib@小明",
-        "版本 v1.2@小明",
+        "路径 /var/lib@小明",  # lib 是 ASCII 字母
+        "版本 v1.2@小明",  # 2 是 ASCII 数字
         "user_name@小明",
         "user-name@小明",
         "user+tag@小明",
@@ -122,13 +123,18 @@ def test_email_like_text_is_not_a_mention(client: TestClient) -> None:
         assert spans == [], body
 
 
-def test_mention_right_after_chinese_text_is_not_a_mention(client: TestClient) -> None:
-    """紧贴中文的 `你好@小明` 不算提及：`isalnum()` 对中日韩文字亦为真。"""
+def test_mention_after_chinese_text_is_a_mention(client: TestClient) -> None:
+    """紧贴中文的 `你好@小明` **算**提及（人类裁定 2B：只排除邮箱式）。
+
+    这条曾经断言相反的结果（当时用的是 ``str.isalnum()``，它对中日韩文字也为真，因此一并排除了
+    中文紧贴的情形）。后来的裁定是：只排除「``@`` 前面是 ASCII 字母或数字」的邮箱式文本。
+    """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
 
-    assert snapshot_of(client, channel["id"], "你好@小明") == []
-    assert snapshot_of(client, channel["id"], "我问一下@小明") == []
+    for body in ("你好@小明", "我问一下@小明", "全角９＠小明".replace("＠", "@")):
+        spans = snapshot_of(client, channel["id"], body)
+        assert [span["member_id"] for span in spans] == [agent["id"]], body
 
 
 def test_mention_after_punctuation_or_whitespace_is_a_mention(client: TestClient) -> None:
@@ -193,3 +199,16 @@ def test_mention_without_a_channel_agent_still_records_a_snapshot(client: TestCl
     spans = snapshot_of(client, channel_id, "@小明 看一下")
 
     assert [span["member_id"] for span in spans] == [agent_id]
+
+
+def test_mention_right_after_chinese_text_wakes_the_agent(client: TestClient, harness: dict) -> None:
+    """紧贴中文的提及不只是高亮：它同样是唤醒该成员的确定信号（被点名必须回应）。"""
+    agent = create_agent(client, name="小明").json()["agent"]
+    channel = channel_with_agent(client, agent["id"])
+
+    send(client, channel["id"], "你好@小明 帮我看一下")
+    harness["scheduler"].drain()
+
+    calls = harness["seam"].calls_for(agent["id"])
+    assert len(calls) == 1
+    assert calls[0]["mentioned"] is True

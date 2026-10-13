@@ -12,7 +12,7 @@ issue 上的 Answer 摘要指向本文件。
 - 基线：以 #2 已合并的 main（merge commit `5015383`）为基线
 - 采集时间：2026-10-13
 - 环境：macOS，Python 3.11（`uv venv`），真实 Chromium（ego-browser）驱动
-- 有效用例数：**113 passed, 1 skipped**（`app/tests/`；跳过的就是那条默认跳过的真模型冒烟测试）
+- 有效用例数：**114 passed, 1 skipped**（`app/tests/`；跳过的就是那条默认跳过的真模型冒烟测试）
 - 票标题（开工时用 `gh issue view 3` 核对）：
 
 > 实施票 ②：新建 Agent 与模型配置、远端数据流告知、@提及唤醒 AgentScope 后端 agent 并自判回应/忽略/失败、SSE 实时呈现与断线补拉
@@ -86,7 +86,7 @@ agent_seam.py:  from agentscope.message import UserMsg
 
 ```text
 $ .venv/bin/python -m pytest -q
-113 passed, 1 skipped in 79.41s          # skipped = 默认跳过的真模型冒烟测试
+114 passed, 1 skipped in 79.41s          # skipped = 默认跳过的真模型冒烟测试
 
 $ .venv/bin/ruff check app && .venv/bin/ruff format --check app
 All checks passed! / 25 files already formatted
@@ -108,11 +108,11 @@ errors 0 files 22
 | `test_channel_read.py` | 10 | 每频道已读位置、未读计数、跨重启一致（#2 沿用） |
 | `test_create_agent.py` | 8 | Agent 入口、校验原子性、配置落库、勾选加入频道、无 HTTP 冒充路径 |
 | `test_remote_data_flow.py` | 10 | 数据面告知清单、未确认不生效、缺凭证可读、幂等、零密钥、跨重启 |
-| `test_mentions.py` | 13 | 最左最长、引号形式、不存在名字、邮箱式与紧贴中文不误判、快照落库与跨重启 |
+| `test_mentions.py` | 14 | 最左最长、引号形式、不存在名字、邮箱式不误判、紧贴中文算提及、快照落库与跨重启 |
 | `test_agent_round.py` | 32 | 正向闭环、唤醒面、回应判断、状态点、失败隔离、合并、恢复、不可变性、未读 |
 | `test_event_stream.py` | 14 | 补拉、四类事件、按 seq 追加、轮换帧、状态点快照、跨频道不泄漏 |
 | `test_agent_smoke.py` | 1 | 真模型连通性（**默认跳过**，本地手动运行） |
-| 合计 | **114**（113 跑 + 1 skip） | |
+| 合计 | **115**（114 跑 + 1 skip） | |
 
 ## 3. 逐条验收（#3 全部验收项）
 
@@ -168,7 +168,8 @@ errors 0 files 22
 | 最左最长匹配 | `test_leftmost_longest_wins`（`小明` vs `小明王`） |
 | 支持 `@"带空格名字"` 引号形式 | `test_quoted_form_supports_names_with_spaces`（`@"前端 小明"` 命中带空格的成员；无引号形式另命中真实存在的 `小明`） |
 | 不存在同名成员不误判 | `test_unknown_name_is_not_a_mention`、`test_at_sign_without_a_member_is_not_a_mention`（`@小明丰` 命中前缀不算）、`test_quoted_form_with_unknown_name_is_not_a_mention` |
-| 邮箱式文本不误判 | `test_email_like_text_is_not_a_mention`（`user@example.com`、`user@小明`、`/var/lib@小明`、`v1.2@小明`、`user_name@小明`、`user-name@小明`、`user+tag@小明`）+ `test_mention_right_after_chinese_text_is_not_a_mention`（`你好@小明` 不算） |
+| 邮箱式文本不误判 | `test_email_like_text_is_not_a_mention`（`user@example.com`、`user@小明`、`/var/lib@小明`、`v1.2@小明`、`user_name@小明`、`user-name@小明`、`user+tag@小明`）——判据是「`@` 前面是 **ASCII** 字母或数字」 |
+| 紧贴中文的提及**算**提及 | `test_mention_after_chinese_text_is_a_mention`（`你好@小明` 命中）+ `test_mention_right_after_chinese_text_wakes_the_agent`（它同样是唤醒的确定信号）。**人类裁定 2B：只排除邮箱式** |
 | 解析结果作为**快照随消息落库**；不事后重新解析 | `test_snapshot_is_persisted_and_not_re_resolved_later`（再建同名成员后重读仍是原快照）、`test_snapshot_survives_backend_restart`、`test_mention_snapshot_is_not_forgeable_by_the_client` |
 | 前端复用同一解析结果 | `app.js` 的 `messageText()` 只读 `message.mention_snapshot`（`start`/`end`），不自己实现解析；浏览器证据见 §4 |
 | 触发点唯一：落库之后才唤醒；落库失败不唤醒 | `test_rejected_message_never_wakes_anyone`（超长正文 400 + 频道 404 两条路径都是零唤醒） |
@@ -247,7 +248,7 @@ errors 0 files 22
 | 测试不联网、零成本 | 全量跑完无任何出网调用；真实适配器只在被实例化时才 import agentscope |
 | 正向闭环（含事件流推送） | `test_positive_loop_human_message_to_agent_reply` + `test_event_stream_replays_messages_after_the_cursor` |
 | 唤醒面（含排除作者） | §3.5 三条用例 |
-| 提及（引号 / 最左最长 / 不存在名字 / 邮箱式不误判） | §3.5 五条用例 |
+| 提及（引号 / 最左最长 / 不存在名字 / 邮箱式不误判 / 紧贴中文算提及） | §3.5 六条用例 |
 | 回应判断（点名不应 → failed；无关 → ignored） | §3.5 两条用例 |
 | agent 回复计入未读 / 到达即已读 / 重启后不变 | §3.7 四条用例 |
 | 失败隔离 | §3.9 两条用例 |
@@ -405,8 +406,8 @@ EXITED cleanly in 0.2s rc=-15
 | B | 唤醒面不排除作者（自己唤醒自己） | 2 | `test_second_wake_while_a_round_is_in_flight_is_merged`、`test_typing_indicator_is_emitted_while_a_round_is_in_flight` |
 | C | 被点名却不回应不按 `failed` 处理（静默） | 1 | `test_mention_is_a_certain_signal_so_ignoring_it_is_failed` |
 | D | 失败轮次也落库回复（不看轮次结论） | 9 | `test_a_failed_round_writes_no_half_message`、`test_failure_isolated_from_other_agents_and_from_human_sending` |
-| E | 提及不区分词边界（`@小明丰` 命中 `小明`） | 1 | `test_at_sign_without_a_member_is_not_a_mention` |
-| F | 提及忽略左边界（`user@example.com` 误判） | 3 | `test_email_like_text_is_not_a_mention`、`test_mention_right_after_chinese_text_is_not_a_mention` |
+| E | 提及做前缀匹配（`@小明丰` 命中 `小明`） | 2 | `test_at_sign_without_a_member_is_not_a_mention`、`test_channels_are_listed_in_creation_order_with_unread` |
+| F | 提及忽略左边界（`user@example.com` 误判） | 2 | `test_email_like_text_is_not_a_mention`、`test_mention_after_chinese_text_is_a_mention`（反向：把只排除邮箱式改成排除中文紧贴，这条也判红） |
 | G | 提及快照不落库 | 9 | `test_snapshot_is_persisted_and_not_re_resolved_later`、`test_leftmost_longest_wins` |
 | H | 事件流不按 `after_seq` 补拉（总是全量重发） | 1 | `test_event_stream_replays_messages_after_the_cursor` |
 | I | 轮次结果不落盘（HTTP/事件流都读不到） | 22 | `test_round_outcome_is_append_only`、`test_round_outcome_distinguishes_replied_ignored_and_failed` |
@@ -416,8 +417,9 @@ EXITED cleanly in 0.2s rc=-15
 | M | 未确认远端告知也照常启用 | 2 | `test_agent_in_channel_is_woken_only_after_consent`、`test_unconfirmed_remote_agent_reason_is_readable` |
 | N | Agent 创建不做校验（名称/模型可留空） | 2 | `test_empty_name_leaves_no_half_written_agent`、`test_model_needs_a_known_provider_prefix` |
 | O | 状态点收口后仍停在 `working`（in-flight 不清） | 10 | `test_typing_indicator_is_emitted_while_a_round_is_in_flight`、`test_ignored_round_returns_to_online` |
+| P | 左边界把中文也算进去（违反人类裁定 2B：`你好@小明` 不算提及） | 2 | `test_mention_after_chinese_text_is_a_mention`、`test_mention_right_after_chinese_text_wakes_the_agent` |
 
-**15 组注入全部判红、零组漏网**，且判红用例全部是 HTTP/SSE 黑盒用例（没有任何一条依赖直连库）。
+**16 组注入全部判红、零组漏网**，且判红用例全部是 HTTP/SSE 黑盒用例（没有任何一条依赖直连库）。
 
 两个特例值得记录，因为它们各自暴露过一次真实的判别力缺口（本轮已补）：
 
@@ -450,6 +452,7 @@ $ grep -c "没有任何用例判红" /tmp/red3_full.txt
 | S5 | P2 | 「缺模型被 @ 有可读原因」不可达（创建入口要求模型非空），原用例以「未确认远端」替代但标题误导 | **已修**：拆成两条名副其实的用例（缺凭证 / 未确认告知），并把「缺模型不可达」如实写进 docstring |
 | S6 | P2 | 「后端不可达时发送被禁止」只有浏览器手跑证据 | **接受为报告项**：本票测试范式是 HTTP/SSE 黑盒，浏览器行为无法进 pytest 断言；证据在 §4.4（两条提交路径 + toast + 零 pending）。已记入本文件与 Answer 的遗留 |
 | S7 | Correct | 预算策略与穿透确未实现 | 确认，符合规格 |
+| S8 | **P0（合规）** | **迟到的人类裁定**：`msg_a0bb9c90894a`（11:42:29Z，在我发 worker_done 之前 2.5 小时就进了邮箱）载明人类选定 **2B —— 只排除「`@` 前是 ASCII 字母/数字」的邮箱式文本；中文紧贴的 `你好@小明` 仍算提及**。我按 2A 实现了（左边界含中文），并在 `check` 里从未收到这条 follow-up（只有 `ask` 通道送达过 msg_d1cf12cdb5122 与人类裁定 msg_d0913e92e867） | **已修**：`_left_boundary_ok` 改为只排除 ASCII 字母/数字（用显式 ASCII 集合，不用对中日韩为真的 `str.isalnum()`）；无引号形式改为**候选串恰好等于成员名**（不再做前缀匹配），`@小明丰` 仍不误判、`@小明王` 仍最左最长。用例改名并翻转：`test_mention_after_chinese_text_is_a_mention` + 新增 `test_mention_right_after_chinese_text_wakes_the_agent`（紧贴中文同样是唤醒的确定信号） |
 
 ### 6.2 Standards 轴
 
