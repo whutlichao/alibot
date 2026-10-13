@@ -92,9 +92,9 @@ gate 指出两处验收偏差：issue #2 明定「每条测试只断言**外部�
 
 ```python
 @contextmanager
-def backend(data_dir): ...        # 进 with = 启动，出 with = 正常收尾；同目录重复进入 = 重启
+def backend(data_dir): ...  # 进 with = 启动，出 with = 正常收尾；同目录重复进入 = 重启
 @contextmanager
-def peer_backends(data_dir, count): ...   # 同一数据目录上同时开 N 个后端 = N 个并发客户端
+def peer_backends(data_dir, count): ...  # 同一数据目录上同时开 N 个后端 = N 个并发客户端
 ```
 
 现状自检（零命中，退出码 1）：
