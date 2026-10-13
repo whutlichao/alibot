@@ -8,6 +8,8 @@ issue 上的 Answer 摘要指向本文件。
 
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-4-bounded-relay`（Orca 独立顶层 worktree）
+- 分支与 PR：`issue-4-bounded-relay` → **[PR #7](https://github.com/whutlichao/alibot/pull/7)**（OPEN，head = `c7c7dbd`）
+- PR body 正本：`app/specs/issue-4-pr-body.md`（`gh pr create --body-file`）
 - 基线：以 #3 已合并的 main（merge commit `4126dd4`）为基线
 - 采集时间：2026-10-13
 - 环境：macOS，Python 3.11（`uv venv`），真实 Chromium（ego-browser）驱动
