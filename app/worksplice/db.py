@@ -5,7 +5,8 @@
 - 消息 **append-only**：不存在更新或删除消息的代码路径（库级触发器兜底）。
 - 频道内单调 ``seq``：``UNIQUE(target_id, seq)``，由本模块在同一事务内分配。
 - 已读位置 ``channel_read.last_read_seq`` 只在同一频道内取 max 单调推进。
-- 未读计数 = ``last_read_seq`` 之后 ``kind in ('human','agent')`` 的顶层消息条数。
+- 未读计数 = ``last_read_seq`` 之后 ``kind in ('human','agent')``、**作者不是本人**的顶层
+  消息条数（#4 的人类裁定排除本人作者：#2 原本把 owner 自己的消息也计入）。
 
 空库只含一条固定成员行 ``owner``（规格固定的唯一成员行），没有任何业务种子数据。
 """
@@ -180,8 +181,9 @@ END;
 
 # 频道读取的唯一一条 SQL（无拼接，值全部经命名占位符绑定）：
 # - ``:channel_id IS NULL`` 时返回全部频道（列表）；给值时返回单条。
-# - 未读计数口径**只在这里写一次**（规格 §2）：已读位置之后、kind ∈ {human, agent}
-#   的顶层消息；不计 system。之前 list/get 各抄一份，口径漂移风险真实存在。
+# - 未读计数口径**只在这里写一次**（规格 §2 与 #4 的人类裁定）：已读位置之后、
+#   kind ∈ {human, agent}、**且作者不是本人**的顶层消息；不计 system。
+#   unread_count（列表/单条）与 unread_total（workspace 快照由前者相加）因此只有这一个落点。
 # Agent 行的列清单（member 行 + agent_config 配置列）。三处查询共用：
 # 加一个配置列时只改这里，不会只改到其中一两处。
 AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at"
@@ -193,7 +195,8 @@ CHANNEL_SELECT_SQL = """
            COALESCE((SELECT COUNT(*) FROM message m2
                       WHERE m2.target_id = c.id
                         AND m2.seq > COALESCE(r.last_read_seq, 0)
-                        AND m2.kind IN ('human', 'agent')), 0) AS unread_count
+                        AND m2.kind IN ('human', 'agent')
+                        AND m2.author_member_id != :member_id), 0) AS unread_count
       FROM channel c
       LEFT JOIN channel_read r ON r.channel_id = c.id AND r.member_id = :member_id
      WHERE (:channel_id IS NULL OR c.id = :channel_id)

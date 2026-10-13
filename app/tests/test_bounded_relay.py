@@ -645,7 +645,10 @@ def test_in_flight_round_is_not_replayed_after_restart(launched: dict) -> None:
 def test_agent_replies_count_toward_unread_and_the_system_event_does_not(
     client: TestClient, harness: dict
 ) -> None:
-    """**用真实穿透加入事件取证**：Agent 回复计入未读，穿透加入的 `system` 事件消息不计入。"""
+    """**用真实穿透加入事件取证**：Agent 回复计入未读，穿透加入的 `system` 事件消息不计入。
+
+    #4 的人类裁定：owner 自己发的人类消息也不算自己的未读，所以期望值是 1（只有 Agent 回复）。
+    """
     insider = create_agent(client, name="甲").json()["agent"]
     outsider = create_agent(client, name="局外人").json()["agent"]
     harness["seam"].behaviors = {insider["id"]: IGNORE}
@@ -659,11 +662,11 @@ def test_agent_replies_count_toward_unread_and_the_system_event_does_not(
     kinds = [message["kind"] for message in listed]
     assert kinds == ["human", "system", "agent"], "需要真实的穿透加入事件消息"
 
-    # owner 从未标读：人类消息 + Agent 回复 = 2；system 不计入（否则会虚增成 3）。
+    # owner 从未标读：人类那条是 owner 自己（不计），Agent 回复计 1 条，system 不计入。
     state = {item["id"]: item for item in client.get("/api/channels").json()["channels"]}
     assert state[channel["id"]]["last_seq"] == 3
-    assert state[channel["id"]]["unread_count"] == 2
-    assert client.get("/api/workspace").json()["unread_total"] == 2
+    assert state[channel["id"]]["unread_count"] == 1
+    assert client.get("/api/workspace").json()["unread_total"] == 1
 
     # 正在查看该频道时到达的回复立即已读（用同一 HTTP 面模拟前端的动作）。
     client.post(f"/api/channels/{channel['id']}/read", json={"seq": 3})
@@ -673,7 +676,7 @@ def test_agent_replies_count_toward_unread_and_the_system_event_does_not(
 
 
 def test_system_event_unread_semantics_survive_restart(launched: dict) -> None:
-    """重启后 system 口径不变：未读仍是「人类 + Agent」两条。"""
+    """重启后 system 口径不变：未读只算非本人的对话消息。"""
     client = launched["client"]
     insider = create_agent(client, name="甲").json()["agent"]
     outsider = create_agent(client, name="局外人").json()["agent"]
@@ -685,7 +688,8 @@ def test_system_event_unread_semantics_survive_restart(launched: dict) -> None:
 
     after = launched["restart"]()
     state = {item["id"]: item for item in after.get("/api/channels").json()["channels"]}
-    assert state[channel["id"]]["unread_count"] == 2
+    # 人类那条是 owner 自己（不计）+ Agent 回复（计）+ 穿透 system（不计）⇒ 1。
+    assert state[channel["id"]]["unread_count"] == 1
 
 
 # ─── 不可变性（append-only 不被打开） ─────────────────────────────────────

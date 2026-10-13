@@ -521,7 +521,7 @@ def test_non_agent_author_never_causes_a_budget_consuming_jump(client: TestClien
 
 
 def test_agent_messages_count_toward_unread(client: TestClient, harness: dict) -> None:
-    """Agent 回复计入「其它频道」的未读（kind ∈ {human, agent}）。"""
+    """Agent 回复计入未读（kind ∈ {human, agent} 且**作者不是本人**；owner 自己那条不算）。"""
     agent = create_agent(client, name="小明").json()["agent"]
     watched = channel_with_agent(client, agent["id"], name="正在看的")
     other = create_channel(client, name="别的").json()["channel"]
@@ -533,8 +533,8 @@ def test_agent_messages_count_toward_unread(client: TestClient, harness: dict) -
 
     listing = {channel["id"]: channel for channel in client.get("/api/channels").json()["channels"]}
     assert listing[watched["id"]]["last_seq"] == 2
-    # watched 频道里人类与 Agent 各一条；owner 从未标读它，所以两条都算未读。
-    assert listing[watched["id"]]["unread_count"] == 2
+    # watched 里只有 Agent 那条算未读（#4 裁定：owner 自己发的不算自己的未读）。
+    assert listing[watched["id"]]["unread_count"] == 1
     assert listing[other["id"]]["unread_count"] == 0
 
 
@@ -565,14 +565,15 @@ def test_unread_including_agent_replies_survives_restart(launched: dict) -> None
     after = launched["restart"]()
 
     listing = {item["id"]: item for item in after.get("/api/channels").json()["channels"]}
-    assert listing[channel["id"]]["unread_count"] == before[channel["id"]]["unread_count"] == 2
+    # 人类 1 条（owner 自己，不计）+ Agent 回复 1 条（计入）⇒ 重启前后都是 1。
+    assert listing[channel["id"]]["unread_count"] == before[channel["id"]]["unread_count"] == 1
 
 
 def test_system_messages_do_not_count_toward_unread(client: TestClient, harness: dict) -> None:
-    """system 事件消息不计数：本票不产生 system 消息，因此这里断言的是「Agent 回复只算一条」。
+    """system 事件消息不计数：本票不产生 system 消息，因此这里断言的是「只算 Agent 那一条」。
 
-    若实现把 Agent 回复多写成一条 system 通知，这个数字就会变成 3 而不是 2 —— 这条用例就是
-    那个缺陷的判别力来源。
+    若实现只让 Agent 回复计入、而**同时**又写了一条 system 通知，这个数字就会变成 2 —— 这条
+    用例就是那个缺陷的判别力来源（真实的穿透加入事件取证在 #4 的 test_bounded_relay.py）。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
@@ -583,7 +584,7 @@ def test_system_messages_do_not_count_toward_unread(client: TestClient, harness:
     listing = {item["id"]: item for item in client.get("/api/channels").json()["channels"]}
     kinds = [message["kind"] for message in messages(client, channel["id"])]
     assert kinds == ["human", "agent"]
-    assert listing[channel["id"]]["unread_count"] == 2
+    assert listing[channel["id"]]["unread_count"] == 1
 
 
 def test_round_outcome_is_append_only(client: TestClient, harness: dict) -> None:
