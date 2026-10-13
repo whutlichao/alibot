@@ -108,8 +108,11 @@ function readError(payload, response) {
   }
   if (payload && payload.error) {
     const fields = payload.error.fields || {};
-    const detail = Object.keys(fields).map((key) => fields[key]).join('；');
-    return detail ? payload.error.message + '：' + detail : payload.error.message;
+    const details = Object.keys(fields)
+      .map((key) => String(fields[key]))
+      // 字段级文案常与总文案重合，别把同一句说两遍。
+      .filter((detail) => detail && !String(payload.error.message).includes(detail));
+    return details.length ? payload.error.message + '：' + details.join('；') : payload.error.message;
   }
   return '后端返回 ' + response.status;
 }
@@ -145,6 +148,8 @@ async function loadWorkspace(options) {
     if (!settings.silent) toast('读取后端失败：' + err.message, 'err');
   }
   render();
+  // 正在查看的频道：读完快照后立即标读（刷新/重开浏览器走的就是这条路）。
+  markCurrentRead();
 }
 
 async function refreshMessages() {
@@ -243,6 +248,8 @@ async function deliver(pending) {
     renderMessages();
     scrollToBottom();
     await loadWorkspace({ silent: true, keepActive: true });
+    // 正在查看该频道时到达的新消息也立即已读。
+    markCurrentRead();
   } catch (err) {
     failPending(pending.clientId, err.message);
     if (!err.status) {
@@ -380,8 +387,9 @@ function messageNode(message) {
     return article;
   }
 
-  const pending = !message.seq;
   const failed = message.status === 'failed';
+  // 失败的消息还没有 seq，但它不是「待确认」——两个状态不能同时挂在一个节点上。
+  const pending = !message.seq && !failed;
   const author = message.author || state.member;
   const article = el('article', 'msg' + (pending ? ' pending' : '') + (failed ? ' failed' : ''));
   if (pending) article.dataset.pending = message.clientId;

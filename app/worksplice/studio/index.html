@@ -8,9 +8,13 @@
   视觉与布局契约只读参照 worksplice-design-system/（本票不改动该目录）：
   token 名、三栏尺寸（rail 252 / stream 880 / dock 380）、方形头像块、未读徽标色族、
   四态状态点与空态文案都按名字消费。业务状态的唯一正本是后端 HTTP 面。
+
+  依次加载：两个 foundation（颜色/字号 + 间距/半径/布局）→ 产品扩展层（--selected*/--unread*/
+  --warn* 三个产品角色族，设计系统文档指明它们归 app 层）→ 本工作台的组件样式。
 -->
 <link rel="stylesheet" href="/design/colors_and_type.css" />
 <link rel="stylesheet" href="/design/tokens.css" />
+<link rel="stylesheet" href="./product-tokens.css" />
 <link rel="stylesheet" href="./app.css" />
 </head>
 <body>
