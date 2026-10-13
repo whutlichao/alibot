@@ -48,7 +48,7 @@ $ pyright (app/worksplice app/tests)                →  errors 0
  app/tests/
 -├─ conftest.py            # raw_connection 直连库 + 实现模块 import
 +├─ conftest.py            # backend() / peer_backends()：换进程 = 重启，同目录多后端 = 并发客户端
- ├─ test_empty_workspace.py   # 5 → 新增 backup_is_a_directory_copy（复制目录即备份）
+ ├─ test_empty_workspace.py   # 4 → 5：+backup_is_a_directory_copy（复制目录即备份）
  ├─ test_create_channel.py    # 8 → 9：拒建后的残留改由「列表 + 快照 + 后续后端视角」取证
  ├─ test_send_message.py      # 10 → 12：+并发不重号/缺口、+拒发不占号
  └─ test_channel_read.py      # 10 → 10：已读持久化改由「换后端读同一数据目录」取证，-注入 system 行用例
@@ -119,6 +119,8 @@ Spec:      P1 失败消息跨频道串流 → 已修并浏览器复验
 ```
 
 打回后的修正只动测试与证据（见上节），不改生产行为，故未重跑完整双轴；聚焦自审记录在验收文档 §2.1。
+
+**明确未覆盖**：本票没有任何 system / agent 消息输入，「未读不计 system」与「agent 消息计入未读」两条口径在本票**未被测试覆盖**，留 #② / #③ 用真实消息验证。
 
 ```text
 # P1 复验：在甲发一条被拒消息（>8000 字），切到乙
