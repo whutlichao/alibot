@@ -17,7 +17,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +31,7 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Worksplice"
@@ -40,9 +40,16 @@ DATABASE_FILE_NAME = "worksplice.db"
 
 MESSAGE_KINDS = ("human", "agent", "system")
 
+# 轮次结果的五种结论（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
+ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
+
 MAX_CHANNEL_NAME_LENGTH = 80
 MAX_CHANNEL_DESCRIPTION_LENGTH = 500
 MAX_MESSAGE_BODY_LENGTH = 8000
+MAX_MEMBER_NAME_LENGTH = 40
+MAX_AGENT_ROLE_LENGTH = 80
+MAX_SYSTEM_PROMPT_LENGTH = 8000
+MAX_MODEL_ID_LENGTH = 120
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -91,6 +98,44 @@ CREATE TABLE IF NOT EXISTS channel_read (
   PRIMARY KEY (member_id, channel_id)
 );
 
+-- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
+-- role 是 Agent 的配置数据（用户输入原样落库），不是代码常量、也不折进系统提示。
+CREATE TABLE IF NOT EXISTS agent_config (
+  member_id     TEXT PRIMARY KEY REFERENCES member(id),
+  role          TEXT NOT NULL DEFAULT '',
+  model_id      TEXT NOT NULL DEFAULT '',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+
+-- 远端数据流告知的一次性确认（spec #1 §8）：按模型提供商记一次，与成员无关。
+-- 这里**只**存「何时确认过」，不存任何凭证。
+CREATE TABLE IF NOT EXISTS remote_consent (
+  provider        TEXT PRIMARY KEY,
+  acknowledged_at TEXT NOT NULL
+);
+
+-- 轮次结果（spec #1 §5）：一轮的处理结论。append-only，与消息同级的取证面。
+CREATE TABLE IF NOT EXISTS round_outcome (
+  id              TEXT PRIMARY KEY,
+  member_id       TEXT NOT NULL REFERENCES member(id),
+  target_id       TEXT NOT NULL,
+  base_seq        INTEGER NOT NULL,
+  status          TEXT NOT NULL CHECK (status IN
+                    ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted')),
+  reason          TEXT NOT NULL DEFAULT '',
+  started_at      TEXT NOT NULL,
+  finished_at     TEXT NOT NULL,
+  consumed_budget INTEGER NOT NULL DEFAULT 0 CHECK (consumed_budget IN (0, 1)),
+  merged          INTEGER NOT NULL DEFAULT 0 CHECK (merged IN (0, 1)),
+  reply_seq       INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_round_outcome_target ON round_outcome(target_id, finished_at);
+CREATE INDEX IF NOT EXISTS idx_round_outcome_member ON round_outcome(member_id, finished_at);
+
 CREATE INDEX IF NOT EXISTS idx_channel_member_member ON channel_member(member_id);
 
 -- append-only 兜底：任何更新/删除消息的路径（含未来的代码路径与人工 SQL）都被拒绝。
@@ -105,12 +150,29 @@ BEFORE DELETE ON message
 BEGIN
   SELECT RAISE(ABORT, 'message is append-only');
 END;
+
+-- 轮次结果同样 append-only：它是「当时为什么没说话」的事实记录，不接受事后改写。
+CREATE TRIGGER IF NOT EXISTS round_outcome_no_update
+BEFORE UPDATE ON round_outcome
+BEGIN
+  SELECT RAISE(ABORT, 'round_outcome is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS round_outcome_no_delete
+BEFORE DELETE ON round_outcome
+BEGIN
+  SELECT RAISE(ABORT, 'round_outcome is append-only');
+END;
 """
 
 # 频道读取的唯一一条 SQL（无拼接，值全部经命名占位符绑定）：
 # - ``:channel_id IS NULL`` 时返回全部频道（列表）；给值时返回单条。
 # - 未读计数口径**只在这里写一次**（规格 §2）：已读位置之后、kind ∈ {human, agent}
 #   的顶层消息；不计 system。之前 list/get 各抄一份，口径漂移风险真实存在。
+# Agent 行的列清单（member 行 + agent_config 配置列）。三处查询共用：
+# 加一个配置列时只改这里，不会只改到其中一两处。
+AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at"
+
 CHANNEL_SELECT_SQL = """
     SELECT c.*,
            COALESCE((SELECT MAX(seq) FROM message m WHERE m.target_id = c.id), 0) AS last_seq,
@@ -190,7 +252,7 @@ class Database:
             self._conn.executescript(SCHEMA)
             self._conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) "
-                "ON CONFLICT(key) DO NOTHING",
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (str(SCHEMA_VERSION),),
             )
             self._conn.execute(
@@ -242,6 +304,216 @@ class Database:
             "deleted_at": row["deleted_at"],
         }
 
+    # ─── Agent 配置（模型与系统提示是可配置数据，不是代码常量） ─────────
+    def agent_members(self, include_disabled: bool = True) -> list[dict[str, Any]]:
+        """全部 Agent 成员（含其配置），按创建顺序。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT " + AGENT_COLUMNS + " "
+                "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
+                "WHERE m.kind = 'agent' AND m.deleted_at IS NULL "
+                "ORDER BY m.created_at, m.id",
+            ).fetchall()
+        return [self._agent_payload(row) for row in rows]
+
+    def get_agent(self, member_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT " + AGENT_COLUMNS + " "
+                "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
+                "WHERE m.id = ? AND m.kind = 'agent'",
+                (member_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFound(f"Agent 不存在：{member_id}")
+        return self._agent_payload(row)
+
+    @staticmethod
+    def _agent_payload(row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "display_name": row["display_name"],
+            "avatar_slot": row["avatar_slot"],
+            "created_at": row["created_at"],
+            "deleted_at": row["deleted_at"],
+            "role": row["role"] or "",
+            "model_id": row["model_id"] or "",
+            "system_prompt": row["system_prompt"] or "",
+            "enabled": bool(row["enabled"]) if row["enabled"] is not None else False,
+            "config_updated_at": row["config_updated_at"] if "config_updated_at" in keys else None,
+        }
+
+    def create_agent(
+        self,
+        name: str,
+        role: str,
+        model_id: str,
+        system_prompt: str,
+        avatar_slot: int | None = None,
+    ) -> dict[str, Any]:
+        """校验整体通过后才写库：任一字段不合法则**不留任何半成品行**。
+
+        名称与模型标识必填；模型标识的格式（provider 白名单）由服务层校验，
+        本层只负责长度与空值这一类与持久化同构的判据。
+        """
+        clean_name = (name or "").strip()
+        clean_role = (role or "").strip()
+        clean_model = (model_id or "").strip()
+        clean_prompt = (system_prompt or "").strip()
+
+        fields: dict[str, str] = {}
+        if not clean_name:
+            fields["name"] = "Agent 名称不能为空"
+        elif len(clean_name) > MAX_MEMBER_NAME_LENGTH:
+            fields["name"] = f"Agent 名称最多 {MAX_MEMBER_NAME_LENGTH} 个字符"
+        if not clean_model:
+            fields["model_id"] = "模型标识不能为空"
+        elif len(clean_model) > MAX_MODEL_ID_LENGTH:
+            fields["model_id"] = f"模型标识最多 {MAX_MODEL_ID_LENGTH} 个字符"
+        if len(clean_role) > MAX_AGENT_ROLE_LENGTH:
+            fields["role"] = f"角色最多 {MAX_AGENT_ROLE_LENGTH} 个字符"
+        if len(clean_prompt) > MAX_SYSTEM_PROMPT_LENGTH:
+            fields["system_prompt"] = f"系统提示最多 {MAX_SYSTEM_PROMPT_LENGTH} 个字符"
+        if fields:
+            raise DomainError("validation_failed", "Agent 校验未通过，未创建任何数据", fields=fields)
+
+        with self._lock:
+            if avatar_slot is None:
+                row = self._conn.execute("SELECT COUNT(*) AS n FROM member WHERE kind = 'agent'").fetchone()
+                avatar_slot = int(row["n"]) % AVATAR_SLOT_COUNT
+            member_id = new_id("mem")
+            now = utc_now()
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO member(id, kind, display_name, avatar_slot, created_at) "
+                    "VALUES (?, 'agent', ?, ?, ?)",
+                    (member_id, clean_name, avatar_slot, now),
+                )
+                self._conn.execute(
+                    "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, created_at, "
+                    "updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
+                    (member_id, clean_role, clean_model, clean_prompt, now, now),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_agent(member_id)
+
+    # ─── 远端数据流告知（按模型提供商一次性确认） ────────────────────────
+    def list_remote_consents(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT provider, acknowledged_at FROM remote_consent ORDER BY acknowledged_at, provider"
+            ).fetchall()
+        return [{"provider": row["provider"], "acknowledged_at": row["acknowledged_at"]} for row in rows]
+
+    def has_remote_consent(self, provider: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM remote_consent WHERE provider = ?", (provider,)
+            ).fetchone()
+        return row is not None
+
+    def record_remote_consent(self, provider: str) -> dict[str, Any]:
+        """记下一次告知确认。幂等：重复确认不覆盖首次时间。本表不存任何凭证。"""
+        clean = (provider or "").strip()
+        if not clean:
+            raise DomainError(
+                "validation_failed", "模型提供商不能为空", fields={"provider": "模型提供商不能为空"}
+            )
+        now = utc_now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO remote_consent(provider, acknowledged_at) VALUES (?, ?) "
+                "ON CONFLICT(provider) DO NOTHING",
+                (clean, now),
+            )
+            row = self._conn.execute(
+                "SELECT provider, acknowledged_at FROM remote_consent WHERE provider = ?", (clean,)
+            ).fetchone()
+        return {"provider": row["provider"], "acknowledged_at": row["acknowledged_at"]}
+
+    # ─── 轮次结果（append-only） ────────────────────────────────────────
+    def append_round_outcome(
+        self,
+        member_id: str,
+        target_id: str,
+        base_seq: int,
+        status: str,
+        reason: str = "",
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        consumed_budget: bool = False,
+        merged: bool = False,
+        reply_seq: int | None = None,
+    ) -> dict[str, Any]:
+        if status not in ROUND_STATUSES:
+            raise DomainError(
+                "validation_failed", f"未知的轮次结果状态：{status}", fields={"status": "轮次结果状态非法"}
+            )
+        now = utc_now()
+        outcome_id = new_id("round")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO round_outcome(id, member_id, target_id, base_seq, status, reason, started_at, "
+                "finished_at, consumed_budget, merged, reply_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    outcome_id,
+                    member_id,
+                    target_id,
+                    int(base_seq),
+                    status,
+                    reason,
+                    started_at or now,
+                    finished_at or now,
+                    1 if consumed_budget else 0,
+                    1 if merged else 0,
+                    reply_seq,
+                ),
+            )
+        return {
+            "id": outcome_id,
+            "member_id": member_id,
+            "target_id": target_id,
+            "base_seq": int(base_seq),
+            "status": status,
+            "reason": reason,
+            "started_at": started_at or now,
+            "finished_at": finished_at or now,
+            "consumed_budget": bool(consumed_budget),
+            "merged": bool(merged),
+            "reply_seq": reply_seq,
+        }
+
+    def list_round_outcomes(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        """按 ``finished_at`` 升序取该频道的轮次结果（``after_seq`` 按 ``base_seq`` 过滤）。"""
+        self.get_channel(target_id)  # 404 早退
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM round_outcome WHERE target_id = ? AND base_seq >= ? ORDER BY finished_at, id",
+                (target_id, after_seq),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "member_id": row["member_id"],
+                "target_id": row["target_id"],
+                "base_seq": row["base_seq"],
+                "status": row["status"],
+                "reason": row["reason"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "consumed_budget": bool(row["consumed_budget"]),
+                "merged": bool(row["merged"]),
+                "reply_seq": row["reply_seq"],
+            }
+            for row in rows
+        ]
+
     # ─── 频道 ─────────────────────────────────────────────────────────────
     def list_channels(self, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
         with self._lock:
@@ -280,6 +552,20 @@ class Database:
                 (channel_id,),
             ).fetchall()
         return [self._member_payload(row) for row in rows]
+
+    def list_channel_agent_members(self, channel_id: str) -> list[dict[str, Any]]:
+        """该频道的全部 Agent 成员（唤醒面的正本；调用方自行排除作者）。"""
+        self.get_channel(channel_id)  # 404 早退
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT " + AGENT_COLUMNS + " "
+                "FROM channel_member cm JOIN member m ON m.id = cm.member_id "
+                "LEFT JOIN agent_config c ON c.member_id = m.id "
+                "WHERE cm.channel_id = ? AND m.kind = 'agent' AND m.deleted_at IS NULL "
+                "ORDER BY m.created_at, m.id",
+                (channel_id,),
+            ).fetchall()
+        return [self._agent_payload(row) for row in rows]
 
     def create_channel(
         self,
@@ -370,7 +656,7 @@ class Database:
         body: str,
         author_member_id: str = OWNER_ID,
         kind: str = "human",
-        mention_snapshot: Iterable[str] | None = None,
+        mention_snapshot: Iterable[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """在同一事务内分配频道内单调 seq 并落库。失败则不落任何行。"""
         if kind not in MESSAGE_KINDS:
@@ -455,6 +741,34 @@ class Database:
         }
 
     # ─── 已读位置（未读的正本） ───────────────────────────────────────────
+    def latest_round_status(self, member_id: str) -> str | None:
+        """该成员最近一轮的结论（库里的正本；没有轮次时为 None）。
+
+        状态点的「出错」必须由**落库的事实**推导，而不是内存里的一张失败表：
+        否则后端重启后状态点会回到「在线」，而库里最近一轮仍是 failed —— 同一条事实两个说法。
+        按 ``finished_at`` 与 ``id`` 同序列定序，与列表端点的顺序一致。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM round_outcome WHERE member_id = ? ORDER BY finished_at DESC, id DESC LIMIT 1",
+                (member_id,),
+            ).fetchone()
+        return row["status"] if row is not None else None
+
+    def agent_cursor(self, channel_id: str, member_id: str) -> int:
+        """该成员在该频道已经读到哪一条（消费游标）。
+
+        复用 ``channel_read``——该表语义就是「每成员每频道的已读位置」，owner 的行是未读徽标的
+        正本，Agent 的行只是它自己的消费位置，两者互不干扰。没有行时为 0（从头读）。
+        """
+        self.get_channel(channel_id)  # 404 早退
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_read_seq FROM channel_read WHERE member_id = ? AND channel_id = ?",
+                (member_id, channel_id),
+            ).fetchone()
+        return int(row["last_read_seq"]) if row is not None else 0
+
     def mark_read(self, channel_id: str, seq: int, member_id: str = OWNER_ID) -> dict[str, Any]:
         """把已读位置单调推进到 ``min(seq, 该频道当前最大 seq)``。
 

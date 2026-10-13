@@ -98,7 +98,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .presence.offline { background: var(--offline); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .presence.working { animation: none; } }
-
 /* 方形头像块（7px 圆角，不是圆形）+ --av-0…--av-4 确定性色位。 */
 .avatar {
   width: var(--avatar-md); height: var(--avatar-md); flex: 0 0 var(--avatar-md);
@@ -266,3 +265,48 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   .dock { width: 100%; flex-basis: auto; border-left: 0; border-top: 1px solid var(--border); }
   .stream, .chan-head, .composer { padding-left: var(--sp-6); padding-right: var(--sp-6); }
 }
+/* ─── 「正在回复」指示（进程内事实：该成员有一轮 in-flight） ─────────────── */
+.typing-line {
+  display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-4) var(--sp-4) 0;
+  margin: 0 -8px; font-size: var(--fs-sm); color: var(--working-text);
+}
+.typing-line::before {
+  content: ""; width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--working);
+  animation: pulse 1.5s ease-in-out infinite; flex: 0 0 7px;
+}
+@media (prefers-reduced-motion: reduce) { .typing-line::before { animation: none; } }
+
+/* ─── Agent 消息的作者呈现（--accent-deep 作者名 + Agent capsule） ──────── */
+.msg-author.is-agent { color: var(--accent-deep); }
+.msg-tag {
+  font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--accent-deep);
+  border: 1px solid var(--accent-graphic); border-radius: 4px; padding: 0 4px;
+}
+
+/* 提及高亮：只用 --accent-soft 底 + --accent-deep 字（与原型同一档位语义）。 */
+.msg-text .mention {
+  color: var(--accent-deep); background: var(--accent-soft);
+  padding: 0 4px; border-radius: 4px; font-weight: var(--fw-semi);
+}
+
+/* ─── dock 里的成员卡片 ───────────────────────────────────────────────── */
+.dock-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-5) var(--sp-6) var(--sp-7); }
+.dock-member { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); margin-bottom: var(--sp-4); }
+.dock-member-head { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); }
+.dock-member-head .presence { margin-left: auto; }
+.dock-member-meta { font-size: var(--fs-mono-xs); color: var(--faint); margin-top: var(--sp-3); }
+.dock-member-status { font-size: var(--fs-caption); color: var(--muted); }
+.dock-member-status[data-status="working"] { color: var(--working-text); }
+.dock-member-status[data-status="error"] { color: var(--error); }
+.dock-member-reason { font-size: var(--fs-caption); color: var(--warn-deep); margin-top: var(--sp-2); line-height: var(--lh-snug); }
+
+/* ─── 远端数据流告知（必须在首次远端调用之前） ──────────────────────────── */
+.remote-notice {
+  border: 1px solid var(--warn-graphic); background: var(--warn-soft); border-radius: var(--r-md);
+  padding: var(--sp-5); margin-bottom: var(--sp-5);
+}
+.remote-notice-head { display: flex; align-items: center; gap: var(--sp-3); color: var(--warn-deep); font-size: var(--fs-sm); }
+.remote-notice-head .dot { width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--warn-graphic); flex: 0 0 7px; }
+.remote-notice-body { margin: var(--sp-3) 0; font-size: var(--fs-sm); color: var(--warn-deep); line-height: var(--lh-snug); }
+.remote-notice-foot { display: flex; align-items: center; gap: var(--sp-4); }
+.remote-notice-foot .hint { flex: 1; margin: 0; }
