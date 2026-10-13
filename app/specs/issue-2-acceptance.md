@@ -6,7 +6,9 @@ issue 上的 Answer 摘要指向本文件。
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-2-channel-http`（Orca 独立顶层 worktree）
 - 采集时间：2026-10-13
+- 修订时间：2026-10-13（第一次 G-impl 打回后，见 §2.1；测试数字与红→绿表已按最终有效用例重算）
 - 环境：macOS，Python 3.13（`uv venv`），真实 Chromium（ego-browser）驱动
+- 有效用例数：**36**（`app/tests/`，全部只经 HTTP 面）
 
 ## 0. 前置 skill 与流程
 
@@ -48,10 +50,10 @@ $ grep -c "agentscope" app/pyproject.toml
 
 ```text
 $ .venv/bin/python -m pytest app/tests -q
-32 passed
+36 passed
 
 $ .venv/bin/ruff check app && .venv/bin/ruff format --check app
-All checks passed! / 12 files already formatted
+All checks passed! / 14 files already formatted
 
 $ .venv/bin/python -m mypy
 Success: no issues found in 11 source files
@@ -60,22 +62,98 @@ $ node ~/.pi-lens/tools/node_modules/pyright/index.js --outputjson app/worksplic
 errors 0 files 11
 ```
 
+| 文件 | 用例数 | 覆盖 |
+| --- | --- | --- |
+| `app/tests/test_empty_workspace.py` | 5 | 空工作台、数据目录可复制即备份 |
+| `app/tests/test_create_channel.py` | 9 | 新建频道、校验失败整体不创建 |
+| `app/tests/test_send_message.py` | 12 | 发送、seq 单调与并发唯一、append-only、重启一致 |
+| `app/tests/test_channel_read.py` | 10 | 每频道已读位置、未读计数、跨重启 / 跨实例持久化 |
+| 合计 | **36** | |
+
+## 2.1 测试范围修正（第一次 G-impl 打回）
+
+gate 指出两处验收偏差：issue #2 明定「每条测试只断言**外部可观察行为**，不断言内部函数、私有结构」
+与「本票以**真实 human 消息**取证，不为测试增造 system 消息」。原测试违反这两条（直连 SQLite、
+注入 `kind='system'` 行），而 Answer 却称 32 条均黑盒、未造 system —— 证据不自洽。
+本次只改测试与证据文档，**未改任何生产行为**（`git diff --stat` 只触及 `app/tests/*`）。
+
+| 原用例 | 原取证方式 | 处置 | 替代的 HTTP 行为证据 |
+| --- | --- | --- | --- |
+| `test_target_seq_is_unique_at_the_storage_layer` | 直连库插入重号，断言 `sqlite3.IntegrityError` | 删除 | `test_concurrent_sends_never_share_or_skip_a_seq`（8 个后端同目录并发发 8 条，断言 8 个 201 且 seq 互不相同、合起来恰为 1…8） |
+| `test_messages_are_append_only`（含库级断言） | 库内 `UPDATE`/`DELETE` 断言触发器报错 | 保留 HTTP 部分 | HTTP 面 `GET/PUT/PATCH/DELETE` 全 404；走完这一圈后频道内正文逐字未变；另加 `test_rejected_message_does_not_consume_a_seq`（超长正文被 400 拒后，后续 seq 无缺口） |
+| `test_unread_counts_only_human_and_agent_top_level_messages` | 向库注入 `kind='system'` 行 | **删除** | 本票不产生 system / agent 消息，该口径**明确未覆盖**（测试文件头如实写明，留 #②/#③ 用真实消息验证）；human 侧口径由 `test_history_read_before_the_read_position_is_never_unread_again` 覆盖 |
+| `test_channel_read_row_exists_per_channel` | 直读 `channel_read` 表行 | 删除 | `test_read_position_is_persisted_outside_the_process`（换后端进程读同一数据目录，已读位置与未读计数一致，并在新进程上继续推进） |
+| `test_empty_name_is_rejected_and_leaves_no_half_written_row`（含三表 `COUNT(*)`） | 直查 `channel`/`channel_member`/`channel_read` | 保留 HTTP 部分 | 列表 + 工作台快照在 HTTP 面零残留；`test_rejected_create_leaves_nothing_for_a_later_backend` 再用第二个后端进程视角复验（并验证后续创建仍从 seq 0 起） |
+| `test_data_dir_is_created_in_the_given_location` | 断言 `data_dir/worksplice.db` 存在（依赖内部文件名常量） | 改写 | 只经 `/api/health` 的 `data_dir` 断言目录位置；新增 `test_backup_is_a_directory_copy`（复制目录 → 在新地址重开后端，内容逐字一致） |
+| `test_history_survives_backend_restart` | 混用 `channels()` 与重启 | 保留 | 新增 `test_history_survives_a_second_backend_on_the_same_data_dir`（独立后端进程视角） |
+
+`conftest.py` 的 `raw_connection` 夹具与 `sqlite3` / `DATABASE_FILE_NAME` / `OWNER_ID` 的实现模块 import 一并移除，
+改为两个 HTTP 启动器：
+
+```python
+@contextmanager
+def backend(data_dir): ...        # 进 with = 启动，出 with = 正常收尾；同目录重复进入 = 重启
+@contextmanager
+def peer_backends(data_dir, count): ...   # 同一数据目录上同时开 N 个后端 = N 个并发客户端
+```
+
+现状自检（零命中，退出码 1）：
+
+```text
+$ grep -rnE "sqlite3|raw_connection|INSERT INTO|SELECT |worksplice\.db|from worksplice import|import worksplice" app/tests/*.py
+exit=1        # 无命中
+
+$ grep -rniE "kind\s*=\s*['\"](system|agent)|'system'|\"system\"" app/tests/*.py
+exit=1        # 无命中：测试文件里没有任何 system/agent 消息字符串，
+              # 只有说明「本票不写入任何 system 消息」的中文注释
+```
+
+**本次 diff 的聚焦自审**（本票影响面仅为测试与证据，按票面免完整双轴）：
+
+- **会不会把实现缺陷写成“不可测”？** 不会：并发 seq 唯一、append-only、原子性、已读持久化四项各有一组
+  独立注入能判红（§3 A / F / H / D、K），测试仍有真实判别力，只是判别只经 HTTP 面。
+- **有没有引入不稳定断言？** 并发用例是唯一涉及时序的：注入侧 10/10 判红、绿侧 15/15 全绿；
+  `peer_backends` 的并发点不多不少就是 8 个并发写，不靠 sleep 或重试。
+- **有没有把内部结构写成断言？** 特意留下两处“实现事实”文字说明（`UNIQUE(target_id, seq)`、模块 doc），
+  但它们只出现在 docstring / 文档里，不作为断言依据；断言只读 HTTP 响应。
+- **数字是否一致？** `app/tests` 实际收集 36 条（本文件 §2 表、PR body 与 #2 更正评论三处一致）。
+
 ## 3. 红 → 绿证据（红证据在隔离副本取得）
 
 做法：`git archive HEAD | tar -x -C /tmp/<隔离目录>`，在副本里注入基线缺陷，跑同一条测试观察变红；
 仓库工作树未被改动（`git status --short` 在取证前后一致）。
 
-| 轮 | 注入的基线缺陷 | 变红的用例 |
-| --- | --- | --- |
-| 1 | 去掉 `message_no_update` / `message_no_delete` 触发器 | `test_messages_are_append_only` |
-| 1 | `mark_read` 不裁剪到当前最大 seq | `test_mark_read_is_clamped_to_current_max_seq` |
-| 1 | `mark_read` 不取 max（已读位置可回退） | `test_read_position_is_monotonic_and_never_rewinds` |
-| 2 | 校验成员前先写 `channel` 行（留半成品） | `test_unknown_initial_member_is_rejected_without_creating`、`test_owner_cannot_be_listed_as_initial_member` |
-| 3 | 未读计数把 `system` 也算进去 | `test_unread_counts_only_human_and_agent_top_level_messages` |
+每条注入由 `/tmp/red_evidence.py` 批量执行：`git archive HEAD` → 独立副本 → 打补丁 → 跑 `pytest tests`。
+11 组注入**全部判红、零组漏网**，且判红用例全部是 HTTP 黑盒用例（没有任何一条依赖直连库）：
 
-第 3 轮**先暴露了测试自身的空转**：`raw_connection` 不提交，注入的 system 行从未落库，于是基线改动没能让它变红。
-修好 `raw_connection`（正常结束才 commit）后同一基线改动**正确判红**（`assert 1 == 0`），随后恢复为绿。
-这条修正单独提交（`5411868`）。
+| # | 注入的基线缺陷 | 判红用例数 | 判红的用例 |
+| --- | --- | --- | --- |
+| A | 频道内 seq 在事务外计算（锁外先读 `MAX(seq)`） | 1 | `test_concurrent_sends_never_share_or_skip_a_seq` |
+| B | `mark_read` 不裁剪到当前最大 seq | 1 | `test_mark_read_is_clamped_to_current_max_seq` |
+| C | `mark_read` 覆盖写而不取 max（可回退） | 1 | `test_read_position_is_monotonic_and_never_rewinds` |
+| D | `mark_read` 不把已读位置写进正本 | 6 | `test_read_position_is_persisted_outside_the_process`、`test_unread_survives_browser_and_backend_restart`、`test_mark_read_clears_only_that_channel`、`test_read_position_is_monotonic_and_never_rewinds`、`test_mark_read_is_clamped_to_current_max_seq`、`test_history_read_before_the_read_position_is_never_unread_again` |
+| E | 校验失败仍提交频道行（留半成品） | 3 | `test_empty_name_is_rejected_and_leaves_no_half_written_channel`、`test_rejected_create_leaves_nothing_for_a_later_backend`、`test_too_long_name_is_rejected_without_creating` |
+| F | 人类面多出删除消息的端点 + 去掉 append-only 触发器 | 1 | `test_messages_are_append_only` |
+| G | 消息正文长度校验缺失 | 1 | `test_rejected_message_does_not_consume_a_seq` |
+| H | seq 由内存计数器在校验前分配（被拒的发送也占号） | 4 | `test_rejected_message_does_not_consume_a_seq`、`test_concurrent_sends_never_share_or_skip_a_seq`、`test_history_survives_backend_restart`、`test_read_position_is_persisted_outside_the_process` |
+| I | 未读计数忽略已读位置 | 6 | 同 D 行的 6 条 |
+| J | `after_seq` 游标用 `>=` 而不是 `>` | 1 | `test_after_seq_cursor_returns_only_newer_messages` |
+| K | 库改为内存库（数据目录不再是正本） | 5 | `test_history_survives_a_second_backend_on_the_same_data_dir`、`test_read_position_is_persisted_outside_the_process`、`test_backup_is_a_directory_copy`、`test_unread_survives_browser_and_backend_restart`、`test_history_survives_backend_restart` |
+
+注入 A 是全套里唯一依赖时序的一组（并发丢 seq），单独连跑 10 次全部判红（`10/10 FAILED`），
+绿侧同一条用例连跑全量 15 次**全绿**（无抖动）：
+
+```text
+$ for i in $(seq 1 10); do pytest tests/test_send_message.py::test_concurrent_sends_never_share_or_skip_a_seq; done   # 注入 A 副本
+FAILED ×10
+$ for i in $(seq 1 15); do pytest app/tests -q; done   # 工作树
+36 passed ×15
+```
+
+> 前版 §3 的 5 组红证据里有两组依赖直连库断言（重号插入、`UPDATE`/`DELETE` 触发器）与一组
+> 依赖库内注入的 `system` 行。这三组连同对应用例已在 §2.1 一并移除，本表是重算后的结果。
+> 另：`5411868` 那条「`raw_connection` 不提交导致用例空转」的修正，随 `raw_connection` 本身被删除而失效
+> —— 现在没有任何用例需要写库，也就没有这类空转风险。
 
 配置侧也留了红→绿：
 
@@ -227,8 +305,9 @@ SERVER_AFTER_RESTART  甲 {last:2, read:2, unread:0} 乙 {last:0, read:0, unread
 AFTER_BACKEND_RESTART_IN_BROWSER 消息 seq [1,2]、正文原样、刷新后仍一致
 ```
 
-未读口径：只算 `human`/`agent` 顶层消息，不计 `system`（见 §3 第 3 轮红证据；
-本票不写入任何 system 消息，`test_unread_counts_only_human_and_agent_top_level_messages` 以库内注入的 system 行取证）。
+未读口径：只算 `human`/`agent` 顶层消息，不计 `system`。**本票只能产生 human 消息**，因此浏览器与 HTTP 面
+实测到的只是 human 侧口径（见 §3 注入 I 的红证据，以及 §2.1 删掉的那条注入 system 行用例）。
+`system` 与 `agent` 消息的真实口径**本票未覆盖**，由 #② / #③ 用真实消息验证。
 
 ### 4.6 布局与视觉契约
 
@@ -263,10 +342,13 @@ AFTER_BACKEND_RESTART_IN_BROWSER 消息 seq [1,2]、正文原样、刷新后仍�
 | Standards | **P2** `.overlay` 缺 `backdrop-filter: blur(2px)` | 补上（DESIGN.md §6 / SKILL.md §4 明列） |
 | Standards | **P2** `.brand-name` 硬编码 `13.5px` | 改为 `var(--fs-body-lg)` |
 | 两轴 | **P2** 投机泛化：`UNREAD_KINDS` / `UNREAD_BADGE_MIN` / `count_messages` / `GET /api/channels/{id}` 零消费；`list_channels` 与 `get_channel` 各抄一份未读口径 SQL（漂移风险） | 删除零消费项；两处 SQL 合并为模块级单条 `CHANNEL_SELECT_SQL`（无拼接） |
-| Spec | **P2** `system` 不计入未读这条口径，issue 明言留待 #②/#③ 用**真实消息**覆盖，原测试注释声称已闭 | 保留断言（不含造种子 system 消息），注释如实改为「以库内注入的 system 行验证口径，真实 system 消息由 #②/#③ 覆盖」 |
+| Spec | **P2** `system` 不计入未读这条口径，issue 明言留待 #②/#③ 用**真实消息**覆盖，原测试注释声称已闭 | **已由 §2.1 进一步处置**：该用例本身（库内注入 system 行）违反 issue 的黑盒契约，已删除；测试文件头如实写明「本票不产生 system/agent 消息，该口径未覆盖，留 #②/#③」 |
 | Spec | **P2** composer placeholder 的第二分句（`—— 输入 @ 提及 Agent`）缺失 | 本票没有可被点名的 Agent（提及属 #②），已在代码注释里标为 #② 的待改点 |
 
 两条 P2 属"报告项/可解释偏离"，其余已修。修复后复跑全部门禁（§2）全绿，并在真实浏览器复验 P1 与标读定时器（命令与结果见本节表格）。
+
+> 本节是第一次 G-impl 打回**之前**的双轴结果。打回只涉及测试与证据契约（§2.1），不改生产行为，
+> 故未重跑完整双轴；本次 diff 的聚焦自审见 §2.1。
 
 ## 6. 设计系统消费方式（只读，未改动该目录）
 
@@ -296,4 +378,5 @@ Agent 与唤醒、事件流 / SSE、@提及解析与补全、任务 / 线程、D
 reactions / pin / 附件、多用户与鉴权、云端 / 多租户 / 同步、加密、Agent 本地能力（文件 / shell）、
 token 级打字机流式、AgentScope 高级形态（Agent Service / A2A / Agent Team）、成本与可观测页面。
 
-本票也**不写入任何 `system` 消息**，不创建 Agent，不提供消息编辑 / 删除端点。
+本票也**不写入任何 `system` 消息**，不创建 Agent，不提供消息编辑 / 删除端点；
+因此 `system` 与 `agent` 消息的未读口径在本票**未被测试覆盖**（无真实输入可依据），留 #② / #③。
