@@ -246,7 +246,12 @@ def test_failure_isolated_from_other_agents_and_from_human_sending(client: TestC
 
 
 def test_second_wake_while_a_round_is_in_flight_is_merged(client: TestClient, harness: dict) -> None:
-    """同一成员最多一轮 in-flight：重复唤醒落一条 merged，不重复调用模型、不排队重放。"""
+    """同一成员最多一轮 in-flight：重复唤醒合并为一次，不重复调用模型、不排队重放。
+
+    #④ 的完整合并语义（以最大 seq 为准）：重复唤醒在窗口内只累积到内存，**轮次收口时**合成
+    恰好一条 merged 行，base_seq = 窗口内最大 seq。因此在放行那一轮之前，库里看不到 merged ——
+    这是「不重放」的必然形态，不是丢失。
+    """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
     harness["seam"].behaviors[agent["id"]] = DELAY
@@ -267,20 +272,24 @@ def test_second_wake_while_a_round_is_in_flight_is_merged(client: TestClient, ha
     assert harness["seam"].calls_for(agent["id"]), "第一轮没有进入 in-flight"
 
     send(client, channel["id"], "第二条：这一轮还在跑")
+    # 第二次唤醒不排队、不重放：它被投递进编排、立即判定为合并（返回 None，不落独立结论）。
     drain_after = harness["scheduler"].drain()
-
-    merged = [record for record in outcomes(client, channel["id"]) if record["status"] == "merged"]
-    assert len(merged) == 1
-    assert merged[0]["merged"] is True
-    assert merged[0]["reason"]
-    # merged 那一轮**不调用适配层**：drain 返回的就是那条 merged 记录本身。
-    assert drain_after == [merged[0]]
+    assert drain_after == [None]
     assert len(harness["seam"].calls_for(agent["id"])) == 1
 
     harness["seam"].release()
     runner.join(timeout=10)
     assert not runner.is_alive()
     assert len(messages(client, channel["id"])) == 3  # 两条人类消息 + 一个 Agent 回复
+
+    merged = [record for record in outcomes(client, channel["id"]) if record["status"] == "merged"]
+    assert len(merged) == 1
+    assert merged[0]["merged"] is True
+    assert merged[0]["reason"]
+    # 「以最大 seq 为准」：被合并那次唤醒的 seq（2）进 base_seq，而不是最小/首个。
+    assert merged[0]["base_seq"] == 2
+    # 合并不产生投递，因此不消耗预算。
+    assert merged[0]["consumed_budget"] is False
 
 
 def test_failed_round_does_not_advance_the_cursor_so_the_next_wake_rereads(
@@ -512,7 +521,7 @@ def test_non_agent_author_never_causes_a_budget_consuming_jump(client: TestClien
 
 
 def test_agent_messages_count_toward_unread(client: TestClient, harness: dict) -> None:
-    """Agent 回复计入「其它频道」的未读（kind ∈ {human, agent}）。"""
+    """Agent 回复计入未读（kind ∈ {human, agent} 且**作者不是本人**；owner 自己那条不算）。"""
     agent = create_agent(client, name="小明").json()["agent"]
     watched = channel_with_agent(client, agent["id"], name="正在看的")
     other = create_channel(client, name="别的").json()["channel"]
@@ -524,8 +533,8 @@ def test_agent_messages_count_toward_unread(client: TestClient, harness: dict) -
 
     listing = {channel["id"]: channel for channel in client.get("/api/channels").json()["channels"]}
     assert listing[watched["id"]]["last_seq"] == 2
-    # watched 频道里人类与 Agent 各一条；owner 从未标读它，所以两条都算未读。
-    assert listing[watched["id"]]["unread_count"] == 2
+    # watched 里只有 Agent 那条算未读（#4 裁定：owner 自己发的不算自己的未读）。
+    assert listing[watched["id"]]["unread_count"] == 1
     assert listing[other["id"]]["unread_count"] == 0
 
 
@@ -556,14 +565,15 @@ def test_unread_including_agent_replies_survives_restart(launched: dict) -> None
     after = launched["restart"]()
 
     listing = {item["id"]: item for item in after.get("/api/channels").json()["channels"]}
-    assert listing[channel["id"]]["unread_count"] == before[channel["id"]]["unread_count"] == 2
+    # 人类 1 条（owner 自己，不计）+ Agent 回复 1 条（计入）⇒ 重启前后都是 1。
+    assert listing[channel["id"]]["unread_count"] == before[channel["id"]]["unread_count"] == 1
 
 
 def test_system_messages_do_not_count_toward_unread(client: TestClient, harness: dict) -> None:
-    """system 事件消息不计数：本票不产生 system 消息，因此这里断言的是「Agent 回复只算一条」。
+    """system 事件消息不计数：本票不产生 system 消息，因此这里断言的是「只算 Agent 那一条」。
 
-    若实现把 Agent 回复多写成一条 system 通知，这个数字就会变成 3 而不是 2 —— 这条用例就是
-    那个缺陷的判别力来源。
+    若实现只让 Agent 回复计入、而**同时**又写了一条 system 通知，这个数字就会变成 2 —— 这条
+    用例就是那个缺陷的判别力来源（真实的穿透加入事件取证在 #4 的 test_bounded_relay.py）。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
@@ -574,7 +584,7 @@ def test_system_messages_do_not_count_toward_unread(client: TestClient, harness:
     listing = {item["id"]: item for item in client.get("/api/channels").json()["channels"]}
     kinds = [message["kind"] for message in messages(client, channel["id"])]
     assert kinds == ["human", "agent"]
-    assert listing[channel["id"]]["unread_count"] == 2
+    assert listing[channel["id"]]["unread_count"] == 1
 
 
 def test_round_outcome_is_append_only(client: TestClient, harness: dict) -> None:

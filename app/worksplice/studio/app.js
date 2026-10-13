@@ -749,12 +749,17 @@ function renderMessages() {
 
 function messageNode(message) {
   if (message.kind === 'system') {
+    // 系统事件消息（穿透加入）：沿用既有消息行形态——方形头像色位 + 作者名 + 时间。
+    // 不新造色位：作者名 + 头像用**该成员自己的** --av-* 色位（与他说话时同一个），
+    // 正文降一档到 --muted 以便与人类/Agent 正文区分。
+    const author = message.author || {};
     const article = el('article', 'msg sys');
     article.dataset.seq = message.seq;
-    article.appendChild(el('div', 'avatar sys-avatar', '·'));
+    article.appendChild(avatarNode(author.display_name, author.avatar_slot, 'sm'));
     const body = el('div', 'msg-body');
     const head = el('div', 'msg-head');
-    head.appendChild(el('span', 'msg-author', '系统'));
+    head.appendChild(el('span', 'msg-author', author.display_name || '系统'));
+    head.appendChild(el('span', 'msg-tag', '事件'));
     head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
     body.appendChild(head);
     body.appendChild(el('div', 'msg-text', message.body));
