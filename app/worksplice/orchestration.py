@@ -6,14 +6,14 @@
    根本不会走到这里，所以也就不会唤醒。
 2. **唤醒信号只带标识**：``(member_id, target_id, from_seq, reason)``，不带正文。Agent 被唤醒后
    经**同一个读接口**（``Database.list_messages``）自行读取待读消息——「读消息」只有一条路径。
-3. **唤醒集合 = 该频道的全部 agent 成员，排除作者自己**。穿透（未加入却被点名）在 #③。
-4. **一轮 ↔ 至多一条频道消息**：结论里的回复条数由适配接口的 ``RoundOutcome`` 约束，落库路径
+3. **唤醒集合 = 该频道的全部 agent 成员，排除作者自己** + **穿透**（被点名却未加入的 Agent）。
+4. **一轮 ↔ 至多一条频道消息**：轮次结果里的回复条数由适配接口的 ``RoundOutcome`` 约束，落库路径
    只有 :meth:`WakeOrchestrator._commit_reply` 一条。
 5. **消费游标只在有结论时推进**（``replied`` / ``ignored`` 推进；``failed`` 不推进），于是下一次
    唤醒会重新读到这条消息——但**不是自动重放**：in-flight 状态只在内存里，后端重启后没有
    任何可重放的记录，只等下一次唤醒。
 
-预算策略（策略 B，#④）在本模块实现，且落库（``channel_budget``）：
+预算策略（策略 B，实施票 ③）在本模块实现，且落库（``channel_budget``）：
 
 - **人类世代** = 该频道最近一条人类消息的 `seq`；人类消息落库即开启新世代并把预算重置为 3。
 - **一次 agent→agent 跳** = 一条 Agent 消息**投递了至少一个**唤醒给其它 Agent。一条消息即使唤醒
@@ -83,6 +83,19 @@ class Availability:
 
     ok: bool
     reason: str = ""
+
+
+@dataclass
+class _WakeTarget:
+    """一个唤醒目标：成员行 + 它是否**只能靠穿透**送达（被点名但未加入该频道）。
+
+    ``pierced`` 是判断「回复时要不要顺带加入频道」的依据。它是**显式字段**而不是塞进成员 dict 的
+    隐式标记：那份 dict 会被原样交给适配接口（``AgentSeam.run_round``），往里藏协作域的内部标记
+    会同时污染 seam 的输入契约与「成员行就是成员行」这个约定。
+    """
+
+    member: dict[str, Any]
+    pierced: bool = False
 
 
 @dataclass
@@ -157,11 +170,14 @@ class WakeOrchestrator:
             return 0
 
         consumed_budget = author_kind == "agent"
-        if consumed_budget and not self._spend_jump(channel_id, from_seq, targets):
+        if consumed_budget and not self._spend_jump(
+            channel_id, from_seq, [target.member for target in targets]
+        ):
             return 0
 
         mentions = set(mentioned_member_ids(message["mention_snapshot"]))
-        for member in targets:
+        for target in targets:
+            member = target.member
             member_reason = WAKE_REASON_MENTION if member["id"] in mentions else reason
             self._scheduler.submit(
                 self.run_round,
@@ -170,15 +186,18 @@ class WakeOrchestrator:
                 from_seq,
                 member_reason,
                 consumed_budget,
+                target.pierced,
             )
         return len(targets)
 
-    def _wake_targets(self, channel_id: str, author_id: str, message: dict[str, Any]) -> list[dict[str, Any]]:
+    def _wake_targets(self, channel_id: str, author_id: str, message: dict[str, Any]) -> list[_WakeTarget]:
         """唤醒面 = 频道 agent 成员（除作者）+ 被点名但**未加入**该频道的 Agent（穿透）。"""
         targets = [
-            member for member in self._db.list_channel_agent_members(channel_id) if member["id"] != author_id
+            _WakeTarget(member=member)
+            for member in self._db.list_channel_agent_members(channel_id)
+            if member["id"] != author_id
         ]
-        seen = {member["id"] for member in targets}
+        seen = {target.member["id"] for target in targets}
         for member_id in mentioned_member_ids(message["mention_snapshot"]):
             if member_id == author_id or member_id in seen:
                 continue
@@ -186,8 +205,7 @@ class WakeOrchestrator:
             if agent is None:
                 continue
             # 标记这次唤醒是穿透（未加入却被点名）：回复时它要顺带加入频道。
-            agent["__pierced"] = True
-            targets.append(agent)
+            targets.append(_WakeTarget(member=agent, pierced=True))
             seen.add(member_id)
         return targets
 
@@ -221,7 +239,7 @@ class WakeOrchestrator:
             return True
 
     def _record_budget_exhausted(self, channel_id: str, from_seq: int, targets: list[dict[str, Any]]) -> None:
-        """耗尽的世代里不投递任何唤醒，但每个**本应被唤醒**的成员都要留下可追溯的结论。
+        """耗尽的世代里不投递任何唤醒，但每个**本应被唤醒**的成员都要留下可追溯的轮次结果。
 
         状态点**不**因此变 ``--error``（``status_of`` 不把 ``budget-exhausted`` 当失败）：预算耗尽
         既不是「它坏了」也不是「它不想说」，它是「这个人类世代已经用过 3 次往返了」这条后端事实。
@@ -240,10 +258,11 @@ class WakeOrchestrator:
                 consumed_budget=False,
                 merged=False,
             )
-            self._events.publish(
-                channel_id,
-                {"type": "round_outcome", "seq": from_seq, "outcome": record},
-            )
+            self._publish_outcome(channel_id, from_seq, record)
+
+    def _publish_outcome(self, channel_id: str, seq: int, record: dict[str, Any]) -> None:
+        """把一条轮次结果推给订阅者（轮次结果事件的唯一发布点）。"""
+        self._events.publish(channel_id, {"type": "round_outcome", "seq": seq, "outcome": record})
 
     # ─── 一轮 ─────────────────────────────────────────────────────────────
     def run_round(
@@ -253,6 +272,7 @@ class WakeOrchestrator:
         from_seq: int,
         reason: str,
         consumed_budget: bool = False,
+        pierced: bool = False,
     ) -> dict[str, Any] | None:
         """跑一轮。返回落下的轮次结果；瞬态轮次（无新消息、只被合并）返回 None。"""
         member_id = agent["id"]
@@ -322,7 +342,7 @@ class WakeOrchestrator:
                 merged_bases = list(turn.repeat_bases) if turn is not None else []
             reply_seq: int | None = None
             if outcome.status == "replied" and outcome.messages:
-                committed = self._commit_reply(agent, channel_id, outcome.messages[0].body, base_seq)
+                committed = self._commit_reply(agent, channel_id, outcome.messages[0].body, pierced=pierced)
                 reply_seq = committed.reply_seq
                 finished_at = committed.finished_at
                 if committed.joined:
@@ -337,7 +357,7 @@ class WakeOrchestrator:
             elif outcome.status == "ignored":
                 self._db.mark_read(channel_id, base_seq, member_id=member_id)
 
-            self._record_merged(channel_id, member_id, merged_bases, consumed_budget, started_at)
+            self._record_merged(channel_id, member_id, merged_bases, started_at)
             record = self._db.append_round_outcome(
                 member_id=member_id,
                 target_id=channel_id,
@@ -350,14 +370,7 @@ class WakeOrchestrator:
                 merged=False,
                 reply_seq=reply_seq,
             )
-            self._events.publish(
-                channel_id,
-                {
-                    "type": "round_outcome",
-                    "seq": base_seq,
-                    "outcome": record,
-                },
-            )
+            self._publish_outcome(channel_id, base_seq, record)
             self._events.publish(
                 channel_id,
                 {
@@ -395,17 +408,16 @@ class WakeOrchestrator:
         channel_id: str,
         member_id: str,
         merged_bases: list[int],
-        consumed_budget: bool,
         started_at: str,
-    ) -> dict[str, Any] | None:
+    ) -> None:
         """把「这一轮期间到达的重复唤醒」合成**恰好一条** merged 记录（以最大 seq 为准）。
 
         它们不重放、不额外消耗预算（跳数以**投递的唤醒**为准），但必须留痕：这是
-        「它当时为什么没有被单独问一次」的会计事实。consumed_budget 写在这一轮自己的结论行上，
+        「它当时为什么没有被单独问一次」的会计事实。consumed_budget 写在这一轮自己的轮次结果行上，
         这里写 False —— 合并本身没有产生投递。
         """
         if not merged_bases:
-            return None
+            return
         largest = max(merged_bases)
         reasons = "、".join(f"#{seq}" for seq in sorted(set(merged_bases)))
         record = self._db.append_round_outcome(
@@ -421,11 +433,7 @@ class WakeOrchestrator:
             consumed_budget=False,
             merged=True,
         )
-        self._events.publish(
-            channel_id,
-            {"type": "round_outcome", "seq": largest, "outcome": record},
-        )
-        return record
+        self._publish_outcome(channel_id, largest, record)
 
     # ─── 适配接口调用 ─────────────────────────────────────────────────────
     def _run_seam(
@@ -441,7 +449,13 @@ class WakeOrchestrator:
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
             return RoundOutcome(status="failed", reason=f"Agent 适配层异常：{type(error).__name__}: {error}")
 
-    def _commit_reply(self, agent: dict[str, Any], channel_id: str, body: str, base_seq: int) -> _Committed:
+    def _commit_reply(
+        self,
+        agent: dict[str, Any],
+        channel_id: str,
+        body: str,
+        pierced: bool = False,
+    ) -> _Committed:
         """把回复落库——本条票唯一的一条「Agent 消息进频道」的路径。
 
         穿透（被点名却未加入该频道）时先写一条 ``system`` 事件消息说明「它加入了」，再写回复。
@@ -450,7 +464,7 @@ class WakeOrchestrator:
         """
         members = self._db.list_members()
         system_seq: int | None = None
-        if agent.get("__pierced") and not self._db.is_channel_member(channel_id, agent["id"]):
+        if pierced and not self._db.is_channel_member(channel_id, agent["id"]):
             self._db.add_channel_member(channel_id, agent["id"])
             system_message = self._db.append_message(
                 channel_id=channel_id,
@@ -477,7 +491,6 @@ class WakeOrchestrator:
         self._events.publish(channel_id, {"type": "message", "seq": message["seq"], "message": message})
         # 回复落库后照常唤醒（作者自己会被排除）。单 Agent 场景下唤醒集为空，即一次「零唤醒」。
         self.notify(channel_id, message["seq"], reason=WAKE_REASON_CHANNEL_MESSAGE)
-        _ = base_seq  # 保留参数以标明落库与那一轮 base_seq 的对应关系（取证用）
         return _Committed(
             reply_seq=int(message["seq"]),
             finished_at=str(message["created_at"]),
@@ -517,7 +530,7 @@ class WakeOrchestrator:
     def status_of(self, agent: dict[str, Any]) -> str:
         """四态优先级：未启用 → 正在轮次中 → 出错 → 在线。
 
-        「出错」读的是**库里最近一轮的结论**，不是内存里的一次失败：
+        「出错」读的是**库里最近一条轮次结果**，不是内存里的一次失败：
         「最近一轮失败」是一个持久事实，后端重启后仍然是它。
         「正在轮次中」确实只是内存事实（in-flight 是进程内的运行态），但重启后就没有在跑的
         轮次了，所以这个取值不会撒谎。

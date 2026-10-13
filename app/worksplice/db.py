@@ -41,7 +41,7 @@ DATABASE_FILE_NAME = "worksplice.db"
 
 MESSAGE_KINDS = ("human", "agent", "system")
 
-# 轮次结果的五种结论（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
+# 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
 ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
 
 # 有界响应预算（策略 B，spec #1 §5）：一个人类世代内同一频道允许的 agent→agent 跳数上界。
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS remote_consent (
   acknowledged_at TEXT NOT NULL
 );
 
--- 轮次结果（spec #1 §5）：一轮的处理结论。append-only，与消息同级的取证面。
+-- 轮次结果（spec #1 §5）：一轮的处理结果。append-only，与消息同级的取证面。
 CREATE TABLE IF NOT EXISTS round_outcome (
   id              TEXT PRIMARY KEY,
   member_id       TEXT NOT NULL REFERENCES member(id),
@@ -186,6 +186,7 @@ END;
 #   unread_count（列表/单条）与 unread_total（workspace 快照由前者相加）因此只有这一个落点。
 # Agent 行的列清单（member 行 + agent_config 配置列）。三处查询共用：
 # 加一个配置列时只改这里，不会只改到其中一两处。
+# 三处 FROM/WHERE 各自保留（起点与过滤条件本就不同）—— #3 的双轴 review 已为这个形态裁决过。
 AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at"
 
 CHANNEL_SELECT_SQL = """
@@ -798,14 +799,15 @@ class Database:
             ).fetchone()
         return int(row["epoch_seq"])
 
-    def consume_budget(
-        self, channel_id: str, epoch_seq: int, amount: int = 1, limit: int = BUDGET_LIMIT
-    ) -> int:
+    def consume_budget(self, channel_id: str, epoch_seq: int, amount: int = 1) -> int:
         """把预算推进到世代 ``epoch_seq`` 并消耗 ``amount``；返回消耗后的 ``used``。
 
-        人类消息落库即开启新世代并把 ``used`` 重置为 0（本方法是那条规则的唯一落点）。
-        旧世代的行在人类消息落库时就被重置，因此不必比较 seq 大小；这里仍按 seq 兜底，
-        避免任何调用顺序意外让旧世代把新世代的用量盖掉。
+        开新世代并重置用量发生在**人类消息落库那一刻**（``append_message``），本方法只负责
+        累加已经发生的投递。这里仍按 seq 兜底：若调用顺序意外让旧世代的行盖住新世代，
+        用量就从 0 起算，而不是把旧世代的额度算到新世代头上。
+
+        上界（≤ ``BUDGET_LIMIT``）由调用方（``WakeOrchestrator._spend_jump``）在同一把锁内
+        裁决后才调用本方法 —— 这里只记事实，不重复做上界判定。
         """
         self.get_channel(channel_id)  # 404 早退
         with self._lock:
@@ -820,7 +822,6 @@ class Database:
                 "ON CONFLICT(channel_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = excluded.used",
                 (channel_id, int(epoch_seq), used),
             )
-        _ = limit  # 上界由调用方按同一 BUDGET_LIMIT 裁决；这里只记事实
         return used
 
     # ─── 频道成员（穿透加入的唯一写点） ───────────────────────────────────
@@ -854,15 +855,15 @@ class Database:
 
     # ─── 已读位置（未读的正本） ───────────────────────────────────────────
     def latest_round_status(self, member_id: str) -> str | None:
-        """该成员最近一项**关于它能否说话**的结论（库里的正本；没有轮次时为 None）。
+        """该成员最近一条**关于它能否说话**的轮次结果（库里的正本；没有轮次时为 None）。
 
         状态点的「出错」必须由**落库的事实**推导，而不是内存里的一张失败表：
         否则后端重启后状态点会回到「在线」，而库里最近一轮仍是 failed —— 同一条事实两个说法。
         按 ``finished_at`` 与 ``id`` 同序列定序，与列表端点的顺序一致。
 
-        ``merged`` 行被跳过：被合并是**它正在跑的那一轮**的调度事实（结论写在那一轮自己的行上、
-        在它收口时落库），不是「它刚刚跑完一轮」—— 把它当最近结论会让状态点在 in-flight 期间
-        被读成在线。
+        ``merged`` 行被跳过：被合并是**它正在跑的那一轮**的调度事实（那条事实写在同一成员自己的
+        行为轮次收口时落库的行上），不是「它刚刚跑完一轮」—— 把它当最近一条轮次结果会让
+        状态点在 in-flight 期间被读成在线。
         """
         with self._lock:
             row = self._conn.execute(

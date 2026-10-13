@@ -53,7 +53,7 @@ def test_plain_message_wakes_every_channel_agent_member_and_excludes_the_author(
     woken = {call["member_id"] for call in harness["seam"].calls}
     assert woken == {first["id"], second["id"]}
     assert third["id"] not in woken
-    # 每个被唤醒者各留一条结论（可追溯「它为什么没说话」）。
+    # 每个被唤醒者各留一条轮次结果（可追溯「它为什么没说话」）。
     assert {record["member_id"] for record in outcomes(client, channel["id"])} == {
         first["id"],
         second["id"],
@@ -83,7 +83,7 @@ def test_agent_author_is_excluded_from_the_wake_set_not_only_humans(
         message["seq"] for message in messages(client, channel["id"]) if message["kind"] == "agent"
     )
     assert any(first_reply_seq in call["seqs"] for call in harness["seam"].calls_for(second["id"]))
-    # 结论里也没有「甲被自己唤醒」这种轮次。
+    # 轮次结果里也没有「甲被自己唤醒」这种轮次。
     assert all(
         not (record["member_id"] == first["id"] and record["base_seq"] == first_reply_seq)
         for record in outcomes(client, channel["id"])
@@ -138,7 +138,7 @@ def test_pierced_agent_that_replies_joins_and_leaves_a_system_event(
         member["id"] for member in client.get(f"/api/channels/{channel['id']}/members").json()["members"]
     }
     assert outsider["id"] in member_ids
-    # 轮次结论里能看到这是穿透加入。
+    # 轮次结果里能看到这是穿透加入。
     record = next(item for item in outcomes(client, channel["id"]) if item["member_id"] == outsider["id"])
     assert record["status"] == "replied"
     assert "穿透" in record["reason"] and str(system_message["seq"]) in record["reason"]
@@ -166,7 +166,7 @@ def test_piercing_wake_consumes_a_jump_like_any_other(client: TestClient, harnes
 
 
 def test_piercing_is_suppressed_once_the_budget_is_exhausted(client: TestClient, harness: dict) -> None:
-    """预算耗尽时穿透也被压制：未加入者拿到的结论同样是 `budget-exhausted`。
+    """预算耗尽时穿透也被压制：未加入者拿到的轮次结果同样是 `budget-exhausted`。
 
     构造：甲乙互相接力（每条回复都额外提及未加入的局外人）把预算推到耗尽。
     耗尽是「零投递」的极端形态，它直接证明「跳数以投递的唤醒为准」——`used` 恰好停在 3，
@@ -192,13 +192,13 @@ def test_piercing_is_suppressed_once_the_budget_is_exhausted(client: TestClient,
 
     # 上界恰好用满：耗尽的那些消息零投递，因此 used 不会超过 3。
     assert budget(client, channel["id"])["used"] == 3
-    # 穿透目标在耗尽时同样被压制，且留下了可追溯的结论。
+    # 穿透目标在耗尽时同样被压制，且留下了可追溯的轮次结果。
     exhausted = [
         record for record in outcomes(client, channel["id"]) if record["status"] == "budget-exhausted"
     ]
     assert exhausted
     assert any(record["member_id"] == outsider["id"] for record in exhausted), (
-        "被压制的穿透成员也必须留下可追溯的结论（穿透不豁免预算）"
+        "被压制的穿透成员也必须留下可追溯的轮次结果（穿透不豁免预算）"
     )
     assert all("预算已用尽" in record["reason"] for record in exhausted)
     # 未加入者始终没有变成成员：穿透不因被唤醒就加入。
@@ -514,13 +514,7 @@ def test_merged_wakes_are_not_replayed_but_not_swallowed(client: TestClient, har
 def test_a_zero_delivery_agent_message_does_not_consume_budget(client: TestClient, harness: dict) -> None:
     """**零投递的 Agent 消息不消耗预算**（「跳数以投递的唤醒为准」的可观察形态）。
 
-    可确定构造的两个零投递形态：
-
-    1. **唯一目标正在 in-flight**（`任何目标不在 in-flight` 不成立）：这里用人类消息连发两次
-       把同一个成员反复唤醒，窗口内的 Agent 消息都不是「一次跳」。
-    2. **作者是唯一成员**（唤醒集为空）：回复不构成 agent→agent 跳。
-
-    单成员频道里两种形态同时具备，因此 `used` 在整个过程中必须恒为 0（人类消息不消耗预算）。
+    作者是唯一成员 ⇒ 回复时唤醒集为空 ⇒ 不构成 agent→agent 跳。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
@@ -536,6 +530,61 @@ def test_a_zero_delivery_agent_message_does_not_consume_budget(client: TestClien
     assert budget(client, channel["id"])["used"] == 0
     # 两个世代的预算都未被消耗，但消息确实在增长（不是「什么都不干」）。
     assert len([message for message in messages(client, channel["id"]) if message["kind"] == "agent"]) >= 2
+
+
+def test_all_targets_in_flight_is_not_a_jump(client: TestClient, harness: dict) -> None:
+    """票面原句：「目标全部处于 in-flight ⇒ 零投递 ⇒ 不算一次跳、不消耗预算」。
+
+    这是 `_spend_jump` 里 `any(... not in self._in_flight)` 那道判据的**判别面**——
+    只有「作者之外的成员恰好在 in-flight」时才能触达。若实现把「有目标就算一跳」（漏掉那道判据），
+    `used` 会变成 1，本用例失败。
+
+    构造（经 HTTP 面 + 替身闸门，不用 sleep 猜时序）：
+      1. 乙是**先**入频道的那位，因此被人类消息先唤醒；它停在闸门上，那一轮一直 in-flight；
+      2. 甲随后跑完一轮并回复——它那条 Agent 消息的**唯一目标（乙）正处于 in-flight**；
+      3. 于是零投递 ⇒ 不算一次跳 ⇒ `used` 仍为 0。
+    """
+    second = create_agent(client, name="乙").json()["agent"]
+    first = create_agent(client, name="甲").json()["agent"]
+    harness["seam"].behaviors = {second["id"]: DELAY}
+    harness["seam"].block()
+    channel = client.post(
+        "/api/channels",
+        json={"name": "全部在跑", "description": "", "member_ids": [second["id"], first["id"]]},
+    ).json()["channel"]
+
+    send(client, channel["id"], "人类消息：同时唤醒乙与甲（它自己不消耗预算）")
+    # 第一条 drain 线程去跑乙；它会停在闸门上，因此乙持续 in-flight。
+    blocked_runner = threading.Thread(target=harness["scheduler"].drain)
+    blocked_runner.start()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not harness["seam"].calls_for(second["id"]):
+        time.sleep(0.01)
+    assert harness["seam"].calls_for(second["id"]), "乙没有进入 in-flight"
+
+    # 第二条 drain 线程去跑甲；甲会回复，而它唯一的唤醒目标乙正被上面那条线程占着。
+    free_runner = threading.Thread(target=harness["scheduler"].drain)
+    free_runner.start()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if any(message["kind"] == "agent" for message in messages(client, channel["id"])):
+            break
+        time.sleep(0.01)
+    assert harness["seam"].calls_for(first["id"]), "甲没有被唤醒"
+    assert any(message["kind"] == "agent" for message in messages(client, channel["id"])), "甲没有回复"
+
+    # 零投递 ⇒ 不算一次跳；世代仍是满额（不是被压制，是压根没有投递）。
+    state = budget(client, channel["id"])
+    assert state["used"] == 0
+    assert state["remaining"] == 3
+
+    harness["seam"].release()
+    blocked_runner.join(timeout=10)
+    free_runner.join(timeout=10)
+    assert not blocked_runner.is_alive() and not free_runner.is_alive()
+    # 放行之后乙的回复目标（甲）不再 in-flight ⇒ 这一次才是真实的一次跳。
+    harness["scheduler"].drain()
+    assert budget(client, channel["id"])["used"] >= 1
 
 
 # ─── 失败隔离 ─────────────────────────────────────────────────────────────

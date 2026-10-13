@@ -106,7 +106,7 @@ class WorkspaceService:
     def channel_budget(self, channel_id: str) -> dict[str, Any]:
         """该频道当前人类世代的有界响应预算（只读、落库的后端事实）。
 
-        ``used``/``remaining`` 读的是 ``channel_budget`` 正则，因此后端重启后与压制行为一致。
+        ``used``/``remaining`` 读的是 ``channel_budget`` 正本，因此后端重启后与压制行为一致。
         """
         return self._db.budget_state(channel_id)
 
