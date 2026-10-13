@@ -103,6 +103,13 @@ class WorkspaceService:
         """该频道的轮次结果（只读；首版没有可观测页面）。"""
         return self._db.list_round_outcomes(channel_id, after_seq=after_seq)
 
+    def channel_budget(self, channel_id: str) -> dict[str, Any]:
+        """该频道当前人类世代的有界响应预算（只读、落库的后端事实）。
+
+        ``used``/``remaining`` 读的是 ``channel_budget`` 正则，因此后端重启后与压制行为一致。
+        """
+        return self._db.budget_state(channel_id)
+
     # ─── 成员面：Agent 创建与配置 ─────────────────────────────────────────
     def agents(self) -> list[dict[str, Any]]:
         """全部 Agent 成员 + 配置 + 由后端事实推导的状态点。"""

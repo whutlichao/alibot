@@ -308,3 +308,58 @@ def test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage(data_dir: P
     # 轮换前先把该发的事件（消息 + 状态点快照）发完，不丢事件。
     assert "message" in names
     assert "member_status" in names
+
+
+def test_system_join_event_is_pushed_as_a_message_and_replayable(live: dict) -> None:
+    """穿透加入的 `system` 事件消息走**同一类 message 事件**，且重连带 last_seq 能补齐。
+
+    它是「成员变化是可见的事实」在事件流上的形态：前端不需要为它另开一套处理。
+    """
+    http = live["http"]
+    insider = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+    outsider = http.post("/api/agents", json=dict(AGENT_PAYLOAD, name="局外人")).json()["agent"]
+    live["seam"].behaviors[insider["id"]] = IGNORE
+    live["seam"].replies[outsider["id"]] = "穿透回复"
+    channel = _channel_with(http, insider["id"])
+    # 把局外人从频道里移出不可能（首版没有该端点），所以用「它从未加入」的频道：
+    # 这里直接建一个不含它的频道。
+    http.post(f"/api/channels/{channel['id']}/messages", json={"body": f"@{outsider['display_name']} 来一句"})
+    live["scheduler"].drain()
+
+    events = sse_frames(http, channel["id"], after_seq=0)
+    message_events = [event for event in events if event["type"] == "message"]
+    kinds = [event["message"]["kind"] for event in message_events]
+    assert kinds == ["human", "system", "agent"]
+    system_event = message_events[1]
+    assert system_event["message"]["author"]["id"] == outsider["id"]
+    # 重连带 last_seq=1 只补 system 与回复两条（不重复、不错序）。
+    replayed = sse_frames(http, channel["id"], after_seq=1)
+    assert [event["seq"] for event in replayed if event["type"] == "message"] == [2, 3]
+
+
+def test_budget_exhaustion_is_visible_in_the_round_outcome_event(live: dict) -> None:
+    """`budget-exhausted` 作为轮次结果事件推给订阅者（循环上界的取证面在事件流上也可见）。"""
+    http = live["http"]
+    first = http.post("/api/agents", json=dict(AGENT_PAYLOAD, name="甲")).json()["agent"]
+    second = http.post("/api/agents", json=dict(AGENT_PAYLOAD, name="乙")).json()["agent"]
+    live["seam"].replies = {
+        first["id"]: f"@{second['display_name']} 继续",
+        second["id"]: f"@{first['display_name']} 继续",
+    }
+    channel = http.post(
+        "/api/channels",
+        json={"name": "互相点名", "description": "", "member_ids": [first["id"], second["id"]]},
+    ).json()["channel"]
+    http.post(f"/api/channels/{channel['id']}/messages", json={"body": "开始"})
+    for _ in range(12):
+        live["scheduler"].drain()
+        if live["scheduler"].pending_count() == 0:
+            break
+
+    events = sse_frames(http, channel["id"], after_seq=0)
+    statuses = [event["outcome"]["status"] for event in events if event["type"] == "round_outcome"]
+    assert "budget-exhausted" in statuses
+    assert statuses.count("budget-exhausted") >= 1
+    # 预算端点与事件流说的是同一条事实。
+    state = http.get(f"/api/channels/{channel['id']}/budget").json()["budget"]
+    assert state["used"] == state["limit"] == 3 and state["remaining"] == 0

@@ -239,6 +239,11 @@ def outcomes(client: TestClient, channel_id: str, **params) -> list[dict]:
     return client.get(f"/api/channels/{channel_id}/round-outcomes", params=params).json()["round_outcomes"]
 
 
+def budget(client: TestClient, channel_id: str) -> dict:
+    """该频道当前人类世代的有界响应预算（后端持久事实，只读端点）。"""
+    return client.get(f"/api/channels/{channel_id}/budget").json()["budget"]
+
+
 def drain(harness: dict, limit: int = 100) -> list:
     """把待跑的轮次跑完（含它们自己唤醒出来的下一轮）。"""
     return harness["scheduler"].drain(limit=limit)

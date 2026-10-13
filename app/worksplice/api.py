@@ -9,6 +9,7 @@
 - ``POST /api/channels/{id}/messages``        发送人类消息（同事务分配频道内单调 seq）
 - ``GET  /api/channels/{id}/members``         频道成员
 - ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
+- ``GET  /api/channels/{id}/budget``          有界响应预算（只读，无 UI）
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
@@ -240,6 +241,16 @@ def create_app(
     def list_round_outcomes(channel_id: str, base_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
         return {"round_outcomes": service.round_outcomes(channel_id, after_seq=base_seq)}
 
+    # ─── 有界响应预算（只读；首版没有可观测页面） ────────────────────────
+    @app.get("/api/channels/{channel_id}/budget")
+    def get_channel_budget(channel_id: str) -> dict[str, Any]:
+        """该频道当前人类世代的有界响应预算（后端持久事实）。
+
+        它让「任一人类世代内 agent→agent 跳数 ≤ 3」与「重启后预算状态不变」可以经 HTTP 面
+        直接断言，而不用从消息与轮次结果反推。
+        """
+        return {"budget": service.channel_budget(channel_id)}
+
     # ─── Agent（人类面的创建入口；Agent 本身不经 HTTP） ───────────────────
     @app.get("/api/agents")
     def list_agents() -> dict[str, Any]:
@@ -352,6 +363,15 @@ def create_app(
     def no_round_outcome_mutation(channel_id: str) -> JSONResponse:
         """轮次结果 append-only：它是「当时为什么没说话」的事实记录，不接受事后改写。"""
         return _not_found("轮次结果不可编辑、不可删除：人类面不存在该端点")
+
+    @app.api_route(
+        "/api/channels/{channel_id}/budget",
+        methods=["PUT", "PATCH", "DELETE", "POST"],
+        include_in_schema=False,
+    )
+    def no_budget_mutation(channel_id: str) -> JSONResponse:
+        """预算只由后端在「人类消息重置 / 一次跳投递」时推进：人类面不能直接改它。"""
+        return _not_found("回应预算只读：人类面不存在写入它的端点")
 
     @app.api_route(
         "/api/channels/{channel_id}/messages/{seq}",

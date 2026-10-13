@@ -276,6 +276,18 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 @media (prefers-reduced-motion: reduce) { .typing-line::before { animation: none; } }
 
+/* ─── 系统事件消息（穿透加入） ───────────────────────────────────────────
+   沿用既有消息行形态（方形头像色位 + 作者名 + 时间）；**不新造色位**。
+   与人类/Agent 正文的区分只靠两件事：正文降一档到 --muted，以及头上的「事件」capsule。 */
+.msg.sys .msg-text {
+  color: var(--muted); font-size: 13px; line-height: 1.65;
+  max-width: 68ch; overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.msg.sys .msg-tag {
+  font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px;
+}
+
 /* ─── Agent 消息的作者呈现（--accent-deep 作者名 + Agent capsule） ──────── */
 .msg-author.is-agent { color: var(--accent-deep); }
 .msg-tag {

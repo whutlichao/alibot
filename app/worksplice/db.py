@@ -31,7 +31,7 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Worksplice"
@@ -42,6 +42,9 @@ MESSAGE_KINDS = ("human", "agent", "system")
 
 # 轮次结果的五种结论（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
 ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
+
+# 有界响应预算（策略 B，spec #1 §5）：一个人类世代内同一频道允许的 agent→agent 跳数上界。
+BUDGET_LIMIT = 3
 
 MAX_CHANNEL_NAME_LENGTH = 80
 MAX_CHANNEL_DESCRIPTION_LENGTH = 500
@@ -96,6 +99,16 @@ CREATE TABLE IF NOT EXISTS channel_read (
   channel_id    TEXT NOT NULL REFERENCES channel(id),
   last_read_seq INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (member_id, channel_id)
+);
+
+-- 有界响应预算（策略 B，spec #1 §5）的正本：每频道一行。
+-- ``epoch_seq`` = 人类世代（该频道最近一条人类消息的 seq；0 = 还没有人类消息）；
+-- ``used`` = 该世代内**已投递**的 agent→agent 跳数。
+-- 落库而不是放进程内存：「已用/剩余」必须在后端重启后仍是同一条事实（验收项明写）。
+CREATE TABLE IF NOT EXISTS channel_budget (
+  channel_id TEXT PRIMARY KEY REFERENCES channel(id),
+  epoch_seq  INTEGER NOT NULL DEFAULT 0,
+  used       INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0)
 );
 
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
@@ -697,6 +710,15 @@ class Database:
                         json.dumps(list(mention_snapshot or []), ensure_ascii=False),
                     ),
                 )
+                if kind == "human":
+                    # 人类消息落库**即**开启新世代并把回应预算重置为满额（spec #1 §5）。
+                    # 写在这里而不是等到下一次扣款时惰性重置：「人类消息随后落库即重置」
+                    # 是落库那一刻的事实，预算状态端点与压制行为必须同时看到它。
+                    self._conn.execute(
+                        "INSERT INTO channel_budget(channel_id, epoch_seq, used) VALUES (?, ?, 0) "
+                        "ON CONFLICT(channel_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
+                        (channel_id, seq),
+                    )
                 self._commit()
             except Exception:
                 self._rollback()
@@ -740,17 +762,109 @@ class Database:
             },
         }
 
+    # ─── 有界响应预算（策略 B 的正本，落库） ──────────────────────────────
+    def budget_state(self, channel_id: str, limit: int = BUDGET_LIMIT) -> dict[str, Any]:
+        """该频道当前人类世代的预算状态（只读）。没有行时 used=0、epoch_seq=0。
+
+        ``epoch_seq=0`` 表示还没有人类消息 —— 此时预算按满额生效：预算约束的是
+        「一次人类发言能引发多少 agent 往返」，无人类发言时没有可越界的世代。
+        """
+        self.get_channel(channel_id)  # 404 早退
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT epoch_seq, used FROM channel_budget WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+        epoch_seq = int(row["epoch_seq"]) if row is not None else 0
+        used = int(row["used"]) if row is not None else 0
+        return {
+            "channel_id": channel_id,
+            "epoch_seq": epoch_seq,
+            "limit": limit,
+            "used": used,
+            "remaining": max(limit - used, 0),
+        }
+
+    def human_epoch_seq(self, channel_id: str) -> int:
+        """该频道最近一条**人类**消息的 seq（人类世代的定义，spec #1 §5）。没有则为 0。"""
+        self.get_channel(channel_id)  # 404 早退
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS epoch_seq FROM message "
+                "WHERE target_id = ? AND kind = 'human'",
+                (channel_id,),
+            ).fetchone()
+        return int(row["epoch_seq"])
+
+    def consume_budget(
+        self, channel_id: str, epoch_seq: int, amount: int = 1, limit: int = BUDGET_LIMIT
+    ) -> int:
+        """把预算推进到世代 ``epoch_seq`` 并消耗 ``amount``；返回消耗后的 ``used``。
+
+        人类消息落库即开启新世代并把 ``used`` 重置为 0（本方法是那条规则的唯一落点）。
+        旧世代的行在人类消息落库时就被重置，因此不必比较 seq 大小；这里仍按 seq 兜底，
+        避免任何调用顺序意外让旧世代把新世代的用量盖掉。
+        """
+        self.get_channel(channel_id)  # 404 早退
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT epoch_seq, used FROM channel_budget WHERE channel_id = ?", (channel_id,)
+            ).fetchone()
+            previous = None if row is None else (int(row["epoch_seq"]), int(row["used"]))
+            used = previous[1] if previous is not None and previous[0] >= int(epoch_seq) else 0
+            used += max(int(amount), 0)
+            self._conn.execute(
+                "INSERT INTO channel_budget(channel_id, epoch_seq, used) VALUES (?, ?, ?) "
+                "ON CONFLICT(channel_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = excluded.used",
+                (channel_id, int(epoch_seq), used),
+            )
+        _ = limit  # 上界由调用方按同一 BUDGET_LIMIT 裁决；这里只记事实
+        return used
+
+    # ─── 频道成员（穿透加入的唯一写点） ───────────────────────────────────
+    def is_channel_member(self, channel_id: str, member_id: str) -> bool:
+        self.get_channel(channel_id)  # 404 早退
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM channel_member WHERE channel_id = ? AND member_id = ?",
+                (channel_id, member_id),
+            ).fetchone()
+        return row is not None
+
+    def add_channel_member(self, channel_id: str, member_id: str) -> bool:
+        """把成员加入频道；返回是否**新增**（已在频道里则返回 False，幂等）。"""
+        self.get_channel(channel_id)  # 404 早退
+        self.get_member(member_id)
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT INTO channel_member(channel_id, member_id) VALUES (?, ?) "
+                "ON CONFLICT(channel_id, member_id) DO NOTHING",
+                (channel_id, member_id),
+            )
+            inserted = cursor.rowcount > 0
+            if inserted:
+                self._conn.execute(
+                    "INSERT INTO channel_read(member_id, channel_id, last_read_seq) VALUES (?, ?, 0) "
+                    "ON CONFLICT(member_id, channel_id) DO NOTHING",
+                    (member_id, channel_id),
+                )
+        return inserted
+
     # ─── 已读位置（未读的正本） ───────────────────────────────────────────
     def latest_round_status(self, member_id: str) -> str | None:
-        """该成员最近一轮的结论（库里的正本；没有轮次时为 None）。
+        """该成员最近一项**关于它能否说话**的结论（库里的正本；没有轮次时为 None）。
 
         状态点的「出错」必须由**落库的事实**推导，而不是内存里的一张失败表：
         否则后端重启后状态点会回到「在线」，而库里最近一轮仍是 failed —— 同一条事实两个说法。
         按 ``finished_at`` 与 ``id`` 同序列定序，与列表端点的顺序一致。
+
+        ``merged`` 行被跳过：被合并是**它正在跑的那一轮**的调度事实（结论写在那一轮自己的行上、
+        在它收口时落库），不是「它刚刚跑完一轮」—— 把它当最近结论会让状态点在 in-flight 期间
+        被读成在线。
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT status FROM round_outcome WHERE member_id = ? ORDER BY finished_at DESC, id DESC LIMIT 1",
+                "SELECT status FROM round_outcome WHERE member_id = ? AND status != 'merged' "
+                "ORDER BY finished_at DESC, id DESC LIMIT 1",
                 (member_id,),
             ).fetchone()
         return row["status"] if row is not None else None

@@ -246,7 +246,12 @@ def test_failure_isolated_from_other_agents_and_from_human_sending(client: TestC
 
 
 def test_second_wake_while_a_round_is_in_flight_is_merged(client: TestClient, harness: dict) -> None:
-    """同一成员最多一轮 in-flight：重复唤醒落一条 merged，不重复调用模型、不排队重放。"""
+    """同一成员最多一轮 in-flight：重复唤醒合并为一次，不重复调用模型、不排队重放。
+
+    #④ 的完整合并语义（以最大 seq 为准）：重复唤醒在窗口内只累积到内存，**轮次收口时**合成
+    恰好一条 merged 行，base_seq = 窗口内最大 seq。因此在放行那一轮之前，库里看不到 merged ——
+    这是「不重放」的必然形态，不是丢失。
+    """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
     harness["seam"].behaviors[agent["id"]] = DELAY
@@ -267,20 +272,24 @@ def test_second_wake_while_a_round_is_in_flight_is_merged(client: TestClient, ha
     assert harness["seam"].calls_for(agent["id"]), "第一轮没有进入 in-flight"
 
     send(client, channel["id"], "第二条：这一轮还在跑")
+    # 第二次唤醒不排队、不重放：它被投递进编排、立即判定为合并（返回 None，不落独立结论）。
     drain_after = harness["scheduler"].drain()
-
-    merged = [record for record in outcomes(client, channel["id"]) if record["status"] == "merged"]
-    assert len(merged) == 1
-    assert merged[0]["merged"] is True
-    assert merged[0]["reason"]
-    # merged 那一轮**不调用适配层**：drain 返回的就是那条 merged 记录本身。
-    assert drain_after == [merged[0]]
+    assert drain_after == [None]
     assert len(harness["seam"].calls_for(agent["id"])) == 1
 
     harness["seam"].release()
     runner.join(timeout=10)
     assert not runner.is_alive()
     assert len(messages(client, channel["id"])) == 3  # 两条人类消息 + 一个 Agent 回复
+
+    merged = [record for record in outcomes(client, channel["id"]) if record["status"] == "merged"]
+    assert len(merged) == 1
+    assert merged[0]["merged"] is True
+    assert merged[0]["reason"]
+    # 「以最大 seq 为准」：被合并那次唤醒的 seq（2）进 base_seq，而不是最小/首个。
+    assert merged[0]["base_seq"] == 2
+    # 合并不产生投递，因此不消耗预算。
+    assert merged[0]["consumed_budget"] is False
 
 
 def test_failed_round_does_not_advance_the_cursor_so_the_next_wake_rereads(
