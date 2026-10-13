@@ -169,6 +169,10 @@ END;
 # - ``:channel_id IS NULL`` 时返回全部频道（列表）；给值时返回单条。
 # - 未读计数口径**只在这里写一次**（规格 §2）：已读位置之后、kind ∈ {human, agent}
 #   的顶层消息；不计 system。之前 list/get 各抄一份，口径漂移风险真实存在。
+# Agent 行的列清单（member 行 + agent_config 配置列）。三处查询共用：
+# 加一个配置列时只改这里，不会只改到其中一两处。
+AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at"
+
 CHANNEL_SELECT_SQL = """
     SELECT c.*,
            COALESCE((SELECT MAX(seq) FROM message m WHERE m.target_id = c.id), 0) AS last_seq,
@@ -305,7 +309,7 @@ class Database:
         """全部 Agent 成员（含其配置），按创建顺序。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at "
+                "SELECT " + AGENT_COLUMNS + " "
                 "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE m.kind = 'agent' AND m.deleted_at IS NULL "
                 "ORDER BY m.created_at, m.id",
@@ -315,7 +319,7 @@ class Database:
     def get_agent(self, member_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at "
+                "SELECT " + AGENT_COLUMNS + " "
                 "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE m.id = ? AND m.kind = 'agent'",
                 (member_id,),
@@ -554,7 +558,7 @@ class Database:
         self.get_channel(channel_id)  # 404 早退
         with self._lock:
             rows = self._conn.execute(
-                "SELECT m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at "
+                "SELECT " + AGENT_COLUMNS + " "
                 "FROM channel_member cm JOIN member m ON m.id = cm.member_id "
                 "LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE cm.channel_id = ? AND m.kind = 'agent' AND m.deleted_at IS NULL "
