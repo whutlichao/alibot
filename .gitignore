@@ -1,2 +1,16 @@
 # AI agent
 .codegraph
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# macOS 元数据（仓库根那份是历史遗留的已跟踪文件，不动它）
+.DS_Store
+
+# 本机数据目录候选（绝不入库）
+/.worksplice-data/

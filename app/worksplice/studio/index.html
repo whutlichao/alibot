@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>worksplice · 协作工作区</title>
+<!--
+  视觉与布局契约只读参照 worksplice-design-system/（本票不改动该目录）：
+  token 名、三栏尺寸（rail 252 / stream 880 / dock 380）、方形头像块、未读徽标色族、
+  四态状态点与空态文案都按名字消费。业务状态的唯一正本是后端 HTTP 面。
+
+  依次加载：两个 foundation（颜色/字号 + 间距/半径/布局）→ 产品扩展层（--selected*/--unread*/
+  --warn* 三个产品角色族，设计系统文档指明它们归 app 层）→ 本工作台的组件样式。
+-->
+<link rel="stylesheet" href="/design/colors_and_type.css" />
+<link rel="stylesheet" href="/design/tokens.css" />
+<link rel="stylesheet" href="./product-tokens.css" />
+<link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+
+<div class="app" id="shell" data-od-id="app-shell">
+
+  <!-- ─── 侧栏 ───────────────────────────────────────────────────────── -->
+  <aside class="rail" id="rail" data-od-id="workspace-sidebar" aria-label="工作区导航">
+    <div class="rail-head">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 7h12M6 12h8M6 17h12"/><circle cx="18" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>
+        </div>
+        <div style="min-width:0">
+          <div class="brand-name">worksplice</div>
+          <div class="brand-sub" id="brandSub">LOCAL · 本机工作台</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rail-actions">
+      <button class="btn btn-primary" style="flex:1" id="btnNewChannel" data-od-id="btn-new-channel">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+        新建频道
+      </button>
+    </div>
+
+    <nav class="rail-scroll" data-od-id="nav-lists">
+      <div class="group">
+        <div class="group-label">频道</div>
+        <div id="channelList"></div>
+        <div class="rail-empty" id="channelListEmpty" hidden>还没有频道。新建一个频道就能开始记录。</div>
+      </div>
+      <div class="group">
+        <div class="group-label">Agent 成员</div>
+        <div id="memberList"></div>
+        <div class="rail-empty" id="memberListEmpty" hidden>还没有 Agent。</div>
+      </div>
+    </nav>
+
+    <div class="rail-foot">
+      <div class="avatar av-4" id="meAvatar" aria-hidden="true">我</div>
+      <div style="flex:1; min-width:0">
+        <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="meName">owner</div>
+        <div class="brand-sub" style="letter-spacing:0" id="meSub">人类 · 本机</div>
+      </div>
+      <span class="presence online" title="在线"></span>
+    </div>
+  </aside>
+
+  <!-- ─── 主列 ───────────────────────────────────────────────────────── -->
+  <main class="main" id="mainColumn" data-od-id="main-column">
+    <div class="conn-banner" id="connBanner" hidden role="alert">
+      <span>后端不可达：当前显示的是最后一次成功读到的内容，发送已被禁止。</span>
+      <button class="btn btn-sm" id="btnReconnect">重试连接</button>
+    </div>
+
+    <header class="chan-head" id="chanHead" hidden data-od-id="channel-header">
+      <div class="chan-top">
+        <h1 class="chan-title"><span class="hash">#</span><span id="chanTitle"></span></h1>
+        <div class="chan-tools">
+          <button class="icon-btn" id="btnDockToggle" title="切换详情面板" aria-label="切换详情面板">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="chan-desc" id="chanDesc"></div>
+    </header>
+
+    <section class="stream" id="viewMessages" data-od-id="messages-view">
+      <div class="stream-inner" id="streamInner">
+        <div class="empty" id="emptyNoChannel">
+          <b>还没有频道</b>
+          <p>新建一个频道，就能发出第一条永久记录。</p>
+        </div>
+        <div class="empty" id="emptyNoMessage" hidden>
+          <b>该频道还没有消息</b>
+          <p>这里的消息不可编辑、不可删除，是永久记录。</p>
+        </div>
+        <div id="messageList"></div>
+      </div>
+    </section>
+
+    <footer class="composer" id="composer" hidden data-od-id="composer">
+      <div class="composer-inner">
+        <div class="composer-box">
+          <textarea class="composer-input" id="composerInput" rows="1" placeholder="发消息到 #频道名" data-od-id="composer-input" aria-label="消息正文"></textarea>
+          <div class="composer-bar">
+            <span class="composer-hint" id="composerHint">Enter 发送 · Shift+Enter 换行</span>
+            <span class="sep"></span>
+            <button class="composer-send" id="btnSend" disabled aria-label="发送" data-od-id="btn-send">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="composer-note">消息不可编辑、不可删除，是永久记录 · 本机单用户，后端只监听 loopback</div>
+      </div>
+    </footer>
+  </main>
+
+  <!-- ─── 右侧详情面板（契约存在；本票无内容，#②/#③ 使用） ─────────────── -->
+  <aside class="dock" id="dock" hidden data-od-id="detail-dock" aria-label="详情面板">
+    <div class="dock-head">
+      <div class="dock-name">详情面板</div>
+      <div class="dock-role">本票未启用内容，留给后续票。</div>
+    </div>
+  </aside>
+</div>
+
+<!-- ─── 新建频道 ─────────────────────────────────────────────────────── -->
+<div class="overlay" id="channelOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="channelModalTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="channelModalTitle">新建频道</h2>
+        <div class="sub">频道创建后即可向它发送消息，无需刷新或重启。</div>
+      </div>
+      <button class="icon-btn" id="channelModalClose" aria-label="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="channelNameInput">频道名称</label>
+        <input class="input" id="channelNameInput" placeholder="例如：移动端体验" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="channelDescInput">描述</label>
+        <textarea class="textarea" id="channelDescInput" placeholder="这个频道讨论什么？"></textarea>
+      </div>
+      <div class="field">
+        <label>初始成员</label>
+        <div class="member-pick" id="memberPicker" data-od-id="member-picker"></div>
+        <div class="hint" id="memberPickerHint">还没有可勾选的 Agent：Agent 的创建入口在下一票交付，交付后这里自动可用。</div>
+      </div>
+      <div class="form-error" id="channelFormError" hidden role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn" id="channelCancel">取消</button>
+      <button class="btn btn-primary" id="channelCreateSubmit" data-od-id="btn-create-channel">创建频道</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>
