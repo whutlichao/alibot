@@ -27,10 +27,14 @@ from worksplice.db import DATABASE_FILE_NAME  # noqa: E402
 
 @contextmanager
 def raw_connection(data_dir: Path) -> Iterator[sqlite3.Connection]:
-    """直连用例自己的临时库（只用于验证库级约束，不做业务断言）。"""
+    """直连用例自己的临时库（只用于验证库级约束，不做业务断言）。
+
+    正文正常结束才 commit；抛异常时 close 回滚，不会留下半开数据。
+    """
     connection = sqlite3.connect(data_dir / DATABASE_FILE_NAME)
     try:
         yield connection
+        connection.commit()
     finally:
         connection.close()
 
