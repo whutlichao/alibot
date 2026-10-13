@@ -1,23 +1,66 @@
 /* ============================================================================
    worksplice 工作台前端
-   业务状态的唯一正本是后端 HTTP 面：频道、消息、已读位置都只从后端读写。
+   业务状态的唯一正本是后端 HTTP 面 + 事件流：频道、消息、已读位置、Agent 与状态点都只从后端读。
    本文件不使用 localStorage 保存任何业务状态（唯一允许的本地记忆是「上次打开的频道 id」）。
+
+   本票新增：
+   - SSE 订阅：按 seq 追加渲染，Agent 的完整回复不刷新即出现；断线显示连接状态，重连带
+     `last_seq` 补拉（补拉由后端读库完成，前端只负责带上游标与去重）。
+   - 提及高亮：消费**消息落库时的提及快照**（不自己再实现一遍解析）。
+   - 四态状态点：`status_of` 由后端事实推导，前端只渲染 `online/working/error/offline`。
+   - 新建 Agent 与远端数据流告知的显式确认。
+
    DOM 一律用 createElement/textContent 构建，不用 innerHTML（模板与数据分离）。
    ========================================================================== */
 'use strict';
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 
+const STATUS_LABEL = {
+  online: '空闲',
+  working: '正在回复',
+  error: '出错',
+  offline: '未启用',
+};
+
+const PROVIDER_LABEL = {
+  dashscope: 'DashScope（远端）',
+  openai: 'OpenAI（远端）',
+  'openai-response': 'OpenAI Responses（远端）',
+  anthropic: 'Anthropic（远端）',
+  gemini: 'Gemini（远端）',
+  deepseek: 'DeepSeek（远端）',
+  moonshot: 'Moonshot（远端）',
+  minimax: 'MiniMax（远端）',
+  volcengine: '火山引擎（远端）',
+  xai: 'xAI（远端）',
+  ollama: 'Ollama（本机）',
+};
+
 const state = {
   ready: false,
   online: true,
+  streamState: 'connecting',
   member: OWNER_FALLBACK,
   channels: [],
+  agents: [],
+  providers: [],
+  localProviders: [],
+  consents: [],
+  dataFaces: [],
+  destinations: [],
   activeChannelId: null,
   messages: [],
   pending: [],
   members: [],
+  statuses: {},
+  outcomes: [],
+  streams: new Map(),
+  seenSeqs: new Map(),
+  typing: {},
 };
+
+let remoteFlow = { statement: '', data_faces: [], local_providers: [] };
 
 /* ─── 工具 ──────────────────────────────────────────────────────────── */
 const $ = (selector) => document.querySelector(selector);
@@ -121,6 +164,34 @@ function channelPath(channelId, suffix) {
   return '/api/channels/' + encodeURIComponent(channelId) + (suffix || '');
 }
 
+/* ─── 提及：消费后端落库的提及快照（前端不自己解析一遍） ─────────────────── */
+function mentionSpans(message) {
+  // 只认「有 start/end 的成员快照」：这是后端在同一事务里随消息落库的解析结果。
+  const snapshot = Array.isArray(message.mention_snapshot) ? message.mention_snapshot : [];
+  return snapshot
+    .filter((span) => span && Number.isInteger(span.start) && Number.isInteger(span.end))
+    .slice()
+    .sort((a, b) => a.start - b.start);
+}
+
+function messageText(message) {
+  const body = String(message.body == null ? '' : message.body);
+  const spans = mentionSpans(message);
+  const container = el('div', 'msg-text');
+  let cursor = 0;
+  spans.forEach((span) => {
+    // 快照与正文不一致时（理论上不可能，后端同时写入）宁可退化为纯文本，也不切错字符。
+    if (span.start < cursor || span.end > body.length) return;
+    if (span.start > cursor) container.appendChild(document.createTextNode(body.slice(cursor, span.start)));
+    const mention = el('span', 'mention', body.slice(span.start, span.end));
+    mention.dataset.member = span.member_id;
+    container.appendChild(mention);
+    cursor = span.end;
+  });
+  if (cursor < body.length) container.appendChild(document.createTextNode(body.slice(cursor)));
+  return container;
+}
+
 /* ─── 后端状态 → 前端 ───────────────────────────────────────────────── */
 async function loadWorkspace(options) {
   const settings = options || {};
@@ -129,8 +200,13 @@ async function loadWorkspace(options) {
     state.member = snapshot.member;
     state.members = snapshot.members;
     state.channels = snapshot.channels;
+    state.agents = snapshot.agents || [];
+    state.providers = snapshot.model_providers || [];
+    state.localProviders = snapshot.local_providers || [];
+    state.consents = snapshot.remote_consents || [];
     state.online = true;
     state.ready = true;
+    loadRemoteFlow();
     const known = state.channels.some((channel) => channel.id === state.activeChannelId);
     if (!known) {
       if (settings.keepActive === false) {
@@ -142,31 +218,86 @@ async function loadWorkspace(options) {
       }
     }
     await refreshMessages();
+    await refreshStatuses();
+    syncStreams();
   } catch (err) {
     state.online = false;
     state.ready = true;
     if (!settings.silent) toast('读取后端失败：' + err.message, 'err');
+    // 后端不可达不是终点：自动重试，于是「重连后恢复」不需要人点按钮。
+    // 这是唯一的本地重试定时器，且它只重读后端状态，不排队任何业务消息。
+    scheduleReconnect();
   }
   render();
   // 正在查看的频道：读完快照后立即标读（刷新/重开浏览器走的就是这条路）。
   markCurrentRead();
 }
 
+let reconnectTimer = null;
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    loadWorkspace({ silent: true, keepActive: true });
+  }, 1500);
+}
+
 async function refreshMessages() {
   const channel = activeChannel();
   if (!channel) {
     state.messages = [];
+    state.outcomes = [];
     return;
   }
   const payload = await api(channelPath(channel.id, '/messages'));
   state.messages = payload.messages;
   replaceChannel(payload.channel);
+  seenSeqsFor(channel.id).clear();
+  payload.messages.forEach((message) => seenSeqsFor(channel.id).add(message.seq));
+  await refreshOutcomes();
+}
+
+async function refreshOutcomes() {
+  const channel = activeChannel();
+  if (!channel) {
+    state.outcomes = [];
+    return;
+  }
+  const payload = await api(channelPath(channel.id, '/round-outcomes'));
+  state.outcomes = payload.round_outcomes || [];
+}
+
+async function refreshStatuses() {
+  try {
+    const payload = await api('/api/member-statuses');
+    state.statuses = payload.statuses || {};
+    state.agents = state.agents.map((agent) => ({
+      ...agent,
+      status: state.statuses[agent.id] || agent.status,
+    }));
+  } catch {
+    // 状态点读不到不影响消息流：保持上一次已知值，不伪造。
+  }
 }
 
 function replaceChannel(channel) {
   const index = state.channels.findIndex((item) => item.id === channel.id);
   if (index >= 0) state.channels[index] = channel;
   else state.channels.push(channel);
+}
+
+function seenSeqsFor(channelId) {
+  if (!state.seenSeqs.has(channelId)) state.seenSeqs.set(channelId, new Set());
+  return state.seenSeqs.get(channelId);
+}
+
+function lastSeqOf(channelId) {
+  const channel = state.channels.find((item) => item.id === channelId);
+  const known = seenSeqsFor(channelId);
+  let max = channel ? Number(channel.last_seq) || 0 : 0;
+  known.forEach((seq) => { if (seq > max) max = seq; });
+  return max;
 }
 
 /* ─── 标读：切入频道、以及正在查看时到达的新消息都立即已读 ─────────────── */
@@ -247,14 +378,8 @@ async function deliver(pending) {
       body: { body: pending.body },
     });
     removePending(pending.clientId);
-    if (state.activeChannelId === pending.target_id) {
-      if (!state.messages.some((message) => message.seq === payload.message.seq)) {
-        state.messages.push(payload.message);
-        state.messages.sort((a, b) => a.seq - b.seq);
-      }
-      const channel = activeChannel();
-      if (channel) channel.last_seq = Math.max(channel.last_seq, payload.message.seq);
-    }
+    // 消息本身由事件流按 seq 追加（同一帧可能已经到达），这里只保证它一定在。
+    absorbMessage(pending.target_id, payload.message);
     state.online = true;
     renderMessages();
     scrollToBottom();
@@ -271,6 +396,176 @@ async function deliver(pending) {
     }
     render();
   }
+}
+
+/* ─── 事件流（SSE）：按 seq 追加渲染；断线重连带 last_seq 补拉 ──────────────
+   重连策略：断线时**主动关掉连接、稍后用最新游标重开**，而不是依赖浏览器带
+   `Last-Event-ID` 自动重连 —— 后者会用最初那个 `after_seq` 重新请求整段历史，
+   然后靠前端去重才能不掉包。用最新游标重开让「重连带 last_seq 补拉」这件事只有一条路径，
+   也就不会因为「去重写漏了一处」而出现重复或错序。
+*/
+const STREAM_RETRY_MS = 1500;
+
+// 是否因为后端不可达而断开（决定重连成功后要不要做一次全量重取）。
+let wasOffline = false;
+
+function syncStreams() {
+  const wanted = new Set(state.channels.map((channel) => channel.id));
+  state.streams.forEach((_entry, channelId) => {
+    if (!wanted.has(channelId)) {
+      closeStream(channelId);
+    }
+  });
+  state.channels.forEach((channel) => {
+    if (!state.streams.has(channel.id)) openStream(channel.id);
+  });
+}
+
+function closeStream(channelId) {
+  const entry = state.streams.get(channelId);
+  if (!entry) return;
+  state.streams.delete(channelId);
+  if (entry.timer) clearTimeout(entry.timer);
+  if (entry.source) entry.source.close();
+}
+
+function openStream(channelId) {
+  const entry = { source: null, timer: null };
+  state.streams.set(channelId, entry);
+  connectStream(channelId, entry);
+}
+
+function connectStream(channelId, entry) {
+  // 每一轮重连都重新取一次游标：它就是「我已经看到哪一条」的最新事实。
+  const cursor = lastSeqOf(channelId);
+  const source = new EventSource(channelPath(channelId, '/events') + '?after_seq=' + cursor);
+  entry.source = source;
+  source.onopen = () => {
+    const recovered = state.streamState !== 'open';
+    state.streamState = 'open';
+    // 重连成功 = 后端回来了：先把「不可达」这个状态清掉，再从前端重取一次快照，
+    // 保证断线期间的变化都被补齐（不依赖「只补消息」这一件事）。
+    if (state.online === false) state.online = true;
+    renderConnection();
+    if (recovered && wasOffline) {
+      wasOffline = false;
+      loadWorkspace({ silent: true, keepActive: true });
+    }
+  };
+  source.onerror = () => {
+    // 事件流断开是「后端不可达」最直接的证据：它就是后端的连接。因此这里把线上态置为不可达，
+    // 发送被禁、横幅显示，并启动自动重试 —— 不需要人去点重试按钮。
+    state.streamState = 'reconnecting';
+    state.online = false;
+    wasOffline = true;
+    renderConnection();
+    render();
+    // 断开期间不可能有 in-flight 事实需要显示：清掉「正在回复」，等重连后的状态快照说实话。
+    showTypingFor(channelId, null);
+    source.close();
+    if (state.streams.get(channelId) !== entry) return; // 已被换掉（频道删除等）
+    entry.timer = setTimeout(() => connectStream(channelId, entry), STREAM_RETRY_MS);
+  };
+  ['message', 'member_status', 'typing', 'round_outcome'].forEach((type) => {
+    source.addEventListener(type, (event) => handleStreamEvent(channelId, event, type));
+  });
+}
+
+function handleStreamEvent(channelId, event, type) {
+  let payload = null;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    return; // 解不开的帧直接丢弃：它不可能是后端发出的
+  }
+  const seq = Number(payload.seq) || 0;
+  if (seq && type === 'message') {
+    // 消息的去重正本在 absorbMessage 里（按 seq 认一条消息），这里不另做一套。
+    onStreamMessage(channelId, payload);
+    return;
+  }
+  if (seq) seenSeqsFor(channelId).add(seq);
+  if (type === 'member_status') onStreamStatus(channelId, payload);
+  else if (type === 'typing') onStreamTyping(channelId, payload);
+  else if (type === 'round_outcome') onStreamOutcome(channelId, payload);
+}
+
+function absorbMessage(channelId, message) {
+  const known = seenSeqsFor(channelId);
+  if (known.has(message.seq)) return false;
+  known.add(message.seq);
+  const channel = state.channels.find((item) => item.id === channelId);
+  if (channel) channel.last_seq = Math.max(Number(channel.last_seq) || 0, message.seq);
+  if (state.activeChannelId === channelId) {
+    state.messages.push(message);
+    state.messages.sort((a, b) => a.seq - b.seq);
+  }
+  return true;
+}
+
+function onStreamMessage(channelId, payload) {
+  const added = absorbMessage(channelId, payload.message);
+  if (!added) return;
+  if (state.activeChannelId === channelId) {
+    renderMessages();
+    scrollToBottom();
+    // 正在查看这个频道：到达即已读。
+    markCurrentRead();
+  }
+  // 其它频道的未读徽标也要跟着动：从后端重新取一次计数（未读的正本在库）。
+  refreshChannelList();
+}
+
+async function refreshChannelList() {
+  try {
+    const payload = await api('/api/channels');
+    state.channels = payload.channels;
+    const active = activeChannel();
+    if (active) replaceChannel(active);
+    renderChannels();
+  } catch {
+    // 保留上一次已知的计数：宁可略陈旧，也不伪造。
+  }
+}
+
+function onStreamStatus(channelId, payload) {
+  state.statuses[payload.member_id] = payload.status;
+  state.agents = state.agents.map((agent) =>
+    agent.id === payload.member_id ? { ...agent, status: payload.status } : agent,
+  );
+  if (payload.status !== 'working') showTypingFor(channelId, null);
+  renderMembers();
+  renderDock();
+}
+
+function onStreamTyping(channelId, payload) {
+  showTypingFor(channelId, payload.active ? payload.member_id : null);
+  if (payload.active) {
+    state.statuses[payload.member_id] = 'working';
+  } else if (state.statuses[payload.member_id] === 'working') {
+    state.statuses[payload.member_id] = 'online';
+  }
+  renderMembers();
+  renderDock();
+}
+
+function showTypingFor(channelId, memberId) {
+  if (memberId) state.typing[channelId] = memberId;
+  else delete state.typing[channelId];
+  if (state.activeChannelId === channelId) renderTyping();
+}
+
+function onStreamOutcome(channelId, payload) {
+  const outcome = payload.outcome;
+  if (!outcome) return;
+  if (outcome.status === 'failed') state.statuses[outcome.member_id] = 'error';
+  else if (state.statuses[outcome.member_id] === 'working') state.statuses[outcome.member_id] = 'online';
+  if (state.activeChannelId === channelId) {
+    state.outcomes = state.outcomes.filter((item) => item.id !== outcome.id).concat([outcome]);
+    renderOutcomes();
+  }
+  renderMembers();
+  renderDock();
 }
 
 function removePending(clientId) {
@@ -297,6 +592,9 @@ function render() {
   renderHeader();
   renderMessages();
   renderConnection();
+  renderDock();
+  renderTyping();
+  renderOutcomes();
   syncSendButton();
 }
 
@@ -335,15 +633,108 @@ function renderChannels() {
 }
 
 function renderMembers() {
+  const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
   const agents = state.members.filter((member) => member.kind === 'agent');
   const rows = agents.map((member) => {
     const row = el('div', 'nav-row');
+    row.dataset.member = member.id;
     row.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
     row.appendChild(el('span', 'grow', member.display_name));
+    // 状态点：四态只表达后端事实（空闲 / 正在回复 / 出错 / 未启用），不从会话存活推导。
+    row.appendChild(presenceNode(statusOf(byId.get(member.id))));
     return row;
   });
   replaceChildren($('#memberList'), rows);
   $('#memberListEmpty').hidden = agents.length > 0;
+}
+
+function statusOf(agent) {
+  if (agent && typeof agent.status === 'string') return agent.status;
+  return state.statuses[agent && agent.id] || 'offline';
+}
+
+function presenceNode(status) {
+  const node = el('span', 'presence ' + status);
+  node.setAttribute('title', STATUS_LABEL[status] || status);
+  node.setAttribute('aria-label', STATUS_LABEL[status] || status);
+  node.dataset.status = status;
+  return node;
+}
+
+function renderDock() {
+  const channel = activeChannel();
+  const container = $('#dockMembers');
+  if (!container) return;
+  if (!channel) {
+    replaceChildren(container, [el('div', 'rail-empty', '先打开一个频道。')]);
+    return;
+  }
+  const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
+  const agents = state.members.filter((member) => member.kind === 'agent');
+  if (!agents.length) {
+    replaceChildren(container, [
+      el('div', 'rail-empty', '还没有 Agent 成员：用左上角「Agent」按钮创建一个，再在新建频道时勾选它。'),
+    ]);
+    return;
+  }
+  const rows = agents.map((member) => {
+    const agent = byId.get(member.id) || {};
+    const card = el('div', 'dock-member');
+    card.dataset.member = member.id;
+    const head = el('div', 'dock-member-head');
+    head.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
+    head.appendChild(el('strong', null, member.display_name));
+    if (agent.role) head.appendChild(el('span', 'msg-tag', agent.role));
+    head.appendChild(presenceNode(statusOf(agent)));
+    card.appendChild(head);
+    const meta = el('div', 'dock-member-meta mono', agent.model_id || '未配置模型');
+    card.appendChild(meta);
+    const status = statusOf(agent);
+    const line = el('div', 'dock-member-status', STATUS_LABEL[status] || status);
+    line.dataset.status = status;
+    card.appendChild(line);
+    if (agent.enabled_reason) {
+      const reason = el('div', 'dock-member-reason', agent.enabled_reason);
+      reason.dataset.odId = 'agent-reason-' + member.id;
+      card.appendChild(reason);
+    }
+    return card;
+  });
+  replaceChildren(container, rows);
+}
+
+function renderTyping() {
+  const channel = activeChannel();
+  const container = $('#typingLine');
+  const memberId = channel ? state.typing[channel.id] : null;
+  const agent = state.agents.find((item) => item.id === memberId);
+  container.hidden = !agent;
+  container.textContent = agent ? agent.display_name + ' 正在回复…' : '';
+}
+
+function renderOutcomes() {
+  const container = $('#outcomeList');
+  if (!container) return;
+  const channel = activeChannel();
+  if (!channel || !state.outcomes.length) {
+    container.hidden = true;
+    replaceChildren(container, []);
+    return;
+  }
+  const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
+  const rows = state.outcomes.slice(-5).map((outcome) => {
+    const agent = byId.get(outcome.member_id);
+    const row = el('div', 'outcome-row');
+    row.dataset.outcome = outcome.status;
+    row.appendChild(el('span', 'outcome-status', outcome.status));
+    row.appendChild(
+      el('span', 'grow', (agent ? agent.display_name : outcome.member_id) + ' · ' + outcome.reason),
+    );
+    if (outcome.merged) row.appendChild(el('span', 'msg-tag', '已合并'));
+    return row;
+  });
+  container.hidden = false;
+  replaceChildren(container, rows);
 }
 
 function renderHeader() {
@@ -354,15 +745,19 @@ function renderHeader() {
   if (!hasChannel) return;
   $('#chanTitle').textContent = channel.name;
   $('#chanDesc').textContent = channel.description || '';
-  // 契约里的 placeholder 结构是「发消息到 #<频道名> —— 输入 @ 提及 Agent」。
-  // 本票没有可被点名的 Agent（提及与补全属 #②），所以省掉后半句；
-  // 待 #② 交付 Agent 创建后补回，这一行就是待改点。
-  $('#composerInput').placeholder = '发消息到 #' + channel.name;
+  // placeholder 结构按契约：发消息到 #频道名 —— 输入 @ 提及 Agent。
+  $('#composerInput').placeholder = '发消息到 #' + channel.name + ' —— 输入 @ 提及 Agent';
 }
 
 function renderConnection() {
   $('#connBanner').hidden = state.online;
   $('#composer').classList.toggle('is-disabled', !state.online);
+  const stream = $('#streamState');
+  if (stream) {
+    const reconnecting = state.online && state.streamState !== 'open';
+    stream.hidden = !reconnecting;
+    stream.textContent = reconnecting ? '事件流正在重连：恢复后会自动补拉错过的消息。' : '';
+  }
 }
 
 function renderMessages() {
@@ -412,10 +807,11 @@ function messageNode(message) {
   article.appendChild(avatarNode(author.display_name, author.avatar_slot));
   const body = el('div', 'msg-body');
   const head = el('div', 'msg-head');
-  head.appendChild(el('span', 'msg-author', author.display_name));
+  head.appendChild(el('span', 'msg-author' + (author.kind === 'agent' ? ' is-agent' : ''), author.display_name));
+  if (author.kind === 'agent') head.appendChild(el('span', 'msg-tag', 'Agent'));
   head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
   body.appendChild(head);
-  body.appendChild(el('div', 'msg-text', message.body));
+  body.appendChild(messageText(message));
 
   if (failed) {
     const retry = el('div', 'msg-retry');
@@ -483,7 +879,7 @@ function renderMemberPicker() {
   const picker = $('#memberPicker');
   if (!agents.length) {
     // 无 Agent 时成员清单是空态，但控件（勾选容器）按规格存在。
-    const empty = el('div', 'member-pick-empty', '还没有可勾选的 Agent：Agent 的创建入口在下一票交付，交付后这里自动可用。');
+    const empty = el('div', 'member-pick-empty', '还没有可勾选的 Agent：用左上角「Agent」按钮创建一个，回到这里勾选即可加入频道。');
     empty.setAttribute('data-od-id', 'member-picker-empty');
     replaceChildren(picker, [empty]);
     return;
@@ -528,6 +924,131 @@ async function submitChannel() {
   }
 }
 
+/* ─── 新建 Agent 与远端数据流告知 ───────────────────────────────────── */
+function openAgentModal() {
+  $('#agentFormError').hidden = true;
+  $('#agentNameInput').value = '';
+  $('#agentRoleInput').value = '';
+  $('#agentModelInput').value = '';
+  $('#agentPromptInput').value = '';
+  renderProviderSelect();
+  renderRemoteNotice();
+  $('#agentOverlay').hidden = false;
+  $('#agentNameInput').focus();
+}
+
+function closeAgentModal() {
+  $('#agentOverlay').hidden = true;
+}
+
+function renderProviderSelect() {
+  const select = $('#agentProviderSelect');
+  const providers = state.providers.length ? state.providers : ['ollama', 'dashscope', 'openai'];
+  const options = providers.map((provider) => {
+    const option = el('option', null, PROVIDER_LABEL[provider] || provider);
+    option.value = provider;
+    return option;
+  });
+  replaceChildren(select, options);
+  select.value = providers[0];
+  updateProviderHint();
+}
+
+function currentProvider() {
+  return $('#agentProviderSelect').value;
+}
+
+function isLocalProvider(provider) {
+  return state.localProviders.indexOf(provider) >= 0;
+}
+
+function updateProviderHint() {
+  const provider = currentProvider();
+  const hint = $('#agentProviderHint');
+  hint.textContent = isLocalProvider(provider)
+    ? '本机模型：不离开本机，不需要数据流确认。'
+    : '远端模型：启用前需要先确认数据会离开本机（见下方告知）。';
+}
+
+function acknowledged(provider) {
+  return state.consents.some((record) => record.provider === provider);
+}
+
+function renderRemoteNotice() {
+  const provider = currentProvider();
+  const box = $('#agentRemoteNotice');
+  if (isLocalProvider(provider) || acknowledged(provider)) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const faces = (state.dataFaces.length ? state.dataFaces : remoteFlow.data_faces).join('、');
+  $('#agentRemoteTitle').textContent = '启用 ' + (PROVIDER_LABEL[provider] || provider) + ' 前需要你确认一次';
+  $('#agentRemoteBody').textContent =
+    '启用后，以下数据会离开本机并发送给该模型提供商：' +
+    faces +
+    '。接收方是远端服务，不在你的机器上。';
+  $('#agentRemoteHint').textContent =
+    '本机存储不做应用层端到端加密，也不会声称端到端加密；后端默认只监听 loopback。';
+}
+
+async function confirmRemoteFlow() {
+  const provider = currentProvider();
+  const button = $('#agentRemoteConfirm');
+  button.disabled = true;
+  try {
+    const payload = await api('/api/remote-data-flow/ack', { method: 'POST', body: { provider } });
+    state.consents = payload.consents || [];
+    state.agents = payload.agents || state.agents;
+    renderRemoteNotice();
+    // 确认会改变成员的启用态：状态点必须从后端重取，不靠本地推断。
+    await loadWorkspace({ silent: true, keepActive: true });
+    toast('已记录数据流告知确认：' + (PROVIDER_LABEL[provider] || provider) + '。');
+  } catch (err) {
+    toast('确认失败：' + err.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function submitAgent() {
+  const provider = currentProvider();
+  const model = $('#agentModelInput').value.trim();
+  const payload = {
+    name: $('#agentNameInput').value.trim(),
+    role: $('#agentRoleInput').value.trim(),
+    model_id: provider + ':' + model,
+    system_prompt: $('#agentPromptInput').value.trim(),
+  };
+  const box = $('#agentFormError');
+  const submit = $('#agentCreateSubmit');
+  submit.disabled = true;
+  try {
+    // 校验交给后端：名称或模型留空时整体不创建，前端只呈现错误、不建半成品。
+    const result = await api('/api/agents', { method: 'POST', body: payload });
+    state.agents = result.agents || state.agents;
+    state.members = result.members || state.members;
+    closeAgentModal();
+    await loadWorkspace({ silent: true, keepActive: true });
+    toast('已创建 Agent ' + result.agent.display_name + '，可在新建频道时勾选它。');
+  } catch (err) {
+    box.textContent = err.message;
+    box.hidden = false;
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function loadRemoteFlow() {
+  try {
+    remoteFlow = await api('/api/remote-data-flow');
+    state.dataFaces = remoteFlow.data_faces || [];
+    state.destinations = remoteFlow.destinations || [];
+  } catch {
+    // 告知文案读不到不影响主流程；下一次打开面板会重试。
+  }
+}
+
 /* ─── 事件绑定 ──────────────────────────────────────────────────────── */
 async function selectChannel(channelId) {
   const channel = state.channels.find((item) => item.id === channelId);
@@ -555,6 +1076,18 @@ async function selectChannel(channelId) {
 
 function bindEvents() {
   $('#btnNewChannel').addEventListener('click', openChannelModal);
+  $('#btnNewAgent').addEventListener('click', openAgentModal);
+  $('#agentCancel').addEventListener('click', closeAgentModal);
+  $('#agentModalClose').addEventListener('click', closeAgentModal);
+  $('#agentCreateSubmit').addEventListener('click', submitAgent);
+  $('#agentRemoteConfirm').addEventListener('click', confirmRemoteFlow);
+  $('#agentProviderSelect').addEventListener('change', () => {
+    updateProviderHint();
+    renderRemoteNotice();
+  });
+  $('#agentOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'agentOverlay') closeAgentModal();
+  });
   $('#channelCancel').addEventListener('click', closeChannelModal);
   $('#channelModalClose').addEventListener('click', closeChannelModal);
   $('#channelCreateSubmit').addEventListener('click', submitChannel);
@@ -611,7 +1144,9 @@ function bindEvents() {
   $('#btnReconnect').addEventListener('click', () => loadWorkspace());
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !$('#channelOverlay').hidden) closeChannelModal();
+    if (event.key !== 'Escape') return;
+    if (!$('#channelOverlay').hidden) closeChannelModal();
+    if (!$('#agentOverlay').hidden) closeAgentModal();
   });
 
   window.addEventListener('online', () => loadWorkspace({ silent: true }));

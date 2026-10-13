@@ -1,4 +1,4 @@
-"""HTTP 人类面：本机单用户的频道消息契约。
+"""HTTP 人类面：本机单用户的频道消息契约 + 事件流订阅。
 
 端点（浏览器只经这里读写，业务正本在后端单文件库）：
 
@@ -8,13 +8,27 @@
 - ``GET  /api/channels/{id}/messages``        按 seq 升序取消息（``after_seq`` 增量）
 - ``POST /api/channels/{id}/messages``        发送人类消息（同事务分配频道内单调 seq）
 - ``GET  /api/channels/{id}/members``         频道成员
+- ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
+- ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
+- ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
+- ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
+- ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
+- ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
+- ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）
 
-消息是 append-only：**没有**编辑或删除消息的端点。
+**HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
+因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
+
+消息是 append-only：**没有**编辑或删除消息的端点。轮次结果同样 append-only。
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
+import queue
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,19 +36,48 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from .agent_seam import AgentScopeAgentSeam
 from .db import (
     OWNER_ID,
     Database,
     DomainError,
     open_database,
 )
+from .events import EventBus, sse_frame
+from .orchestration import ThreadScheduler, WakeOrchestrator
 from .service import WorkspaceService
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+
+# 事件流的单连接最长寿命。到点后服务端主动收尾，浏览器（EventSource）会带最新 `last_seq`
+# 重连——这正是「重连带 last_seq 补拉」那条路径，因此轮换不丢事件。
+#
+# 为什么需要它：事件流是永不自然结束的响应，如果不主动轮换，进程在优雅关停时会**等这些连接
+# 等到超时**（表现为「进程还在、监听套接字已没、新请求全拒」）；不少反代也会默默切掉长连接。
+#
+# 环境变量可调（反代空闲超时短的部署需要它；本地验收也用它来实跑重连路径）。
+
+
+def _env_seconds(name: str, default: float) -> float:
+    """读一个秒数环境变量；值不合法时退回默认值（配置错误不该让后端起不来）。"""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+SSE_STREAM_MAX_SECONDS = _env_seconds("WORKSPLICE_SSE_ROTATE_SECONDS", 55.0)
+
+# 保活间隔：没有事件时也让代理与浏览器知道连接还活着。
+SSE_KEEPALIVE_SECONDS = 15.0
 
 
 def repo_root() -> Path:
@@ -66,6 +109,21 @@ class MessageCreate(BaseModel):
     body: str = ""
 
 
+class AgentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+    role: str = ""
+    model_id: str = ""
+    system_prompt: str = ""
+
+
+class RemoteConsent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = ""
+
+
 class MarkRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -73,20 +131,50 @@ class MarkRead(BaseModel):
     seq: Annotated[int, Field(strict=True)]
 
 
-def create_app(data_dir: Path | str | None = None, db: Database | None = None) -> FastAPI:
+def create_app(
+    data_dir: Path | str | None = None,
+    db: Database | None = None,
+    *,
+    scheduler: Any | None = None,
+    seam: Any | None = None,
+) -> FastAPI:
+    """组装后端。
+
+    ``scheduler`` / ``seam`` 是测试注入点：传入手动调度器与脚本化替身，就能在不联网、零成本
+    的前提下把「回应 / 忽略 / 失败 / 延迟」四种行为固定下来，并让测试自己决定什么时候跑完一轮。
+    生产默认是线程池 + 真实 AgentScope 适配器。
+    """
     database = db if db is not None else open_database(data_dir)
-    service = WorkspaceService(database)
+    events = EventBus()
+    # 优雅关停的信号：事件流是**永不自然结束**的响应，如果不主动收，进程会在 graceful shutdown
+    # 里等那两个连接直到超时（表现为「进程还在、监听套接字已没、新请求全部被拒」）。
+    shutting_down = threading.Event()
+    orchestrator = WakeOrchestrator(
+        database,
+        seam if seam is not None else AgentScopeAgentSeam(),
+        events,
+        scheduler if scheduler is not None else ThreadScheduler(),
+    )
+    service = WorkspaceService(database, orchestrator=orchestrator, events=events)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            # 顺序很重要：先让事件流退出（它们会在半个 keep-alive 周期内看到这个信号），
+            # 再停调度器，最后关库。
+            shutting_down.set()
+            close_scheduler = getattr(orchestrator._scheduler, "shutdown", None)
+            if callable(close_scheduler):
+                close_scheduler()
             database.close()
 
     app = FastAPI(title="Worksplice", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.db = database
     app.state.service = service
+    app.state.events = events
+    app.state.orchestrator = orchestrator
     app.state.data_dir = database.data_dir
 
     def _not_found(message: str = "接口不存在") -> JSONResponse:
@@ -146,13 +234,123 @@ def create_app(data_dir: Path | str | None = None, db: Database | None = None) -
     def list_channel_members(channel_id: str) -> dict[str, Any]:
         return {"members": service.channel_members(channel_id)}
 
+    # ─── 轮次结果（只读；首版没有可观测页面） ─────────────────────────────
+    @app.get("/api/channels/{channel_id}/round-outcomes")
+    def list_round_outcomes(channel_id: str, base_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
+        return {"round_outcomes": service.round_outcomes(channel_id, after_seq=base_seq)}
+
+    # ─── Agent（人类面的创建入口；Agent 本身不经 HTTP） ───────────────────
+    @app.get("/api/agents")
+    def list_agents() -> dict[str, Any]:
+        return {"agents": service.agents()}
+
+    @app.post("/api/agents", status_code=201)
+    def create_agent(payload: AgentCreate) -> dict[str, Any]:
+        agent = service.create_agent(
+            name=payload.name,
+            role=payload.role,
+            model_id=payload.model_id,
+            system_prompt=payload.system_prompt,
+        )
+        return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
+
+    @app.get("/api/agents/{member_id}")
+    def get_agent(member_id: str) -> dict[str, Any]:
+        return {"agent": service.agent(member_id)}
+
+    @app.get("/api/agents/{member_id}/status")
+    def get_agent_status(member_id: str) -> dict[str, Any]:
+        return service.member_status(member_id)
+
+    @app.get("/api/member-statuses")
+    def get_member_statuses() -> dict[str, Any]:
+        return service.member_statuses()
+
+    # ─── 远端数据流告知（首次启用远端模型之前） ───────────────────────────
+    @app.get("/api/remote-data-flow")
+    def get_remote_data_flow() -> dict[str, Any]:
+        return service.remote_data_flow()
+
+    @app.post("/api/remote-data-flow/ack")
+    def acknowledge_remote_data_flow(payload: RemoteConsent) -> dict[str, Any]:
+        return service.acknowledge_remote_flow(payload.provider)
+
     # ─── 已读位置 ─────────────────────────────────────────────────────────
     @app.post("/api/channels/{channel_id}/read")
     def mark_channel_read(channel_id: str, payload: MarkRead) -> dict[str, Any]:
         channel = service.mark_read(channel_id, payload.seq)
         return {"channel": channel, "channels": service.list_channels()}
 
+    # ─── 事件流（SSE） ────────────────────────────────────────────────────
+    @app.get("/api/channels/{channel_id}/events")
+    async def channel_events(
+        channel_id: str,
+        request: Request,
+        after_seq: int = Query(default=0, ge=0),
+    ) -> StreamingResponse:
+        """订阅该频道的事件流。
+
+        连接建立时先用**库里的正本**补齐 ``after_seq`` 之后的内容：消息（含 Agent 的完整回复）
+        与轮次结果，再补一份当前的状态点快照。此后推送实时事件。于是「重连带 ``last_seq``
+        补拉」既不会漏、也不会重复——补的是 ``seq > after_seq`` 的事件，实时事件的下界也是它。
+        """
+        database.get_channel(channel_id)  # 404 早退
+
+        async def stream() -> AsyncIterator[str]:
+            # 1) 补拉：消息是正本，直接读库（Agent 回复与人类消息走同一条路径）。
+            snapshot = service.channel_messages(channel_id, after_seq=after_seq)
+            for message in snapshot:
+                yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
+            # 2) 补拉：轮次结果（也只读库）。
+            for outcome in service.round_outcomes(channel_id, after_seq=after_seq):
+                yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
+            # 3) 当前状态点快照：四态只表达后端事实，重连后立刻回到真相。
+            for member_id, status in orchestrator.member_statuses(
+                [member["id"] for member in database.list_channel_agent_members(channel_id)]
+            ).items():
+                yield sse_frame(
+                    {"type": "member_status", "seq": after_seq, "member_id": member_id, "status": status}
+                )
+
+            with events.subscribe(channel_id) as channel:
+                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                while not shutting_down.is_set():
+                    if await request.is_disconnected():
+                        return
+                    if asyncio.get_running_loop().time() >= deadline:
+                        # 主动轮换：浏览器会用最新的 last_seq 重连，事件不会丢。
+                        yield ": rotating\n\n"
+                        return
+                    try:
+                        event = await asyncio.to_thread(channel.get, True, 0.5)
+                    except queue.Empty:
+                        yield ": keep-alive\n\n"
+                        continue
+                    # 补拉与实时推送的边界：只发比连接游标更新的事件，不重复。
+                    if int(event.get("seq", 0)) < after_seq:
+                        continue
+                    yield sse_frame(event)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     # ─── 人类面不存在的写路径：明确回 404 而不是 500 ───────────────────────
+    @app.api_route(
+        "/api/channels/{channel_id}/round-outcomes",
+        methods=["PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    def no_round_outcome_mutation(channel_id: str) -> JSONResponse:
+        """轮次结果 append-only：它是「当时为什么没说话」的事实记录，不接受事后改写。"""
+        return _not_found("轮次结果不可编辑、不可删除：人类面不存在该端点")
+
     @app.api_route(
         "/api/channels/{channel_id}/messages/{seq}",
         methods=["GET", "PUT", "PATCH", "DELETE"],
@@ -161,6 +359,15 @@ def create_app(data_dir: Path | str | None = None, db: Database | None = None) -
     def no_message_mutation(channel_id: str, seq: int) -> JSONResponse:
         """消息 append-only：人类 HTTP 面没有编辑或删除消息的端点。"""
         return _not_found("消息不可编辑、不可删除：人类面不存在该端点")
+
+    @app.api_route(
+        "/api/agents/{member_id}",
+        methods=["PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    def no_agent_mutation(member_id: str) -> JSONResponse:
+        """本票没有改配置 / 删 Agent 的端点：模型与系统提示是配置数据，改配置的方式是新建。"""
+        return _not_found("Agent 配置不可编辑、不可删除：人类面不存在该端点")
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
     app.mount("/studio", StaticFiles(directory=str(studio_dir()), html=True), name="studio")
