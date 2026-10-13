@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "preview/colors-avatars.html",
+  "entry": "preview/colors-avatars.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-10-05T13:14:19.740Z",
+  "updatedAt": "2026-10-05T13:14:19.740Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

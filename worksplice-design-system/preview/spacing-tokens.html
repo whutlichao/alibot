@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>worksplice · 间距与布局</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+<style>
+  .bar{height:14px;background:var(--accent);border-radius:3px;opacity:.85}
+  .sp-row{display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px dashed var(--border)}
+  .sp-row:last-child{border-bottom:0}
+  .sp-row .name{font-family:var(--mono);font-size:11px;color:var(--accent);width:70px;flex:0 0 70px}
+  .sp-row .val{font-family:var(--mono);font-size:11px;color:var(--muted);width:48px;flex:0 0 48px}
+  .sp-row .bar-wrap{flex:1}
+</style>
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">worksplice design system · spacing &amp; layout</div>
+  <h1 class="pv-title">间距刻度与布局常量</h1>
+  <p class="pv-desc">基准单位 4px，带 2px 半步。密度偏高但留白充足：行内纵向节奏 6–8px，区块间距 12–20px。下列取值与源文件逐条对应。</p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html">索引</a>
+    <a href="colors-primary.html">基础色</a>
+    <a href="colors-semantic.html">语义色</a>
+    <a href="colors-avatars.html">头像色</a>
+    <a href="typography-specimens.html">字体</a>
+    <a href="spacing-tokens.html" class="is-on">间距</a>
+    <a href="radius-shadows.html">圆角阴影</a>
+    <a href="components-buttons.html">按钮</a>
+    <a href="components-status.html">状态</a>
+    <a href="components-cards.html">卡片</a>
+    <a href="components-messages.html">消息</a>
+    <a href="brand-assets.html">品牌资产</a>
+    <a href="applied-app-shell.html">应用界面</a>
+  </nav>
+</header>
+
+<main class="pv-grid cols-2">
+  <section class="pv-card" data-od-id="card-spacing">
+    <div class="pv-card-head"><h3>间距刻度</h3><span class="pv-note">--sp-1 … --sp-12</span></div>
+    <div class="pv-card-body">
+      <div class="sp-row"><span class="name">--sp-1</span><span class="val">2px</span><span class="bar-wrap"><span class="bar" style="width:2px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-2</span><span class="val">4px</span><span class="bar-wrap"><span class="bar" style="width:4px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-3</span><span class="val">6px</span><span class="bar-wrap"><span class="bar" style="width:6px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-4</span><span class="val">8px</span><span class="bar-wrap"><span class="bar" style="width:8px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-5</span><span class="val">12px</span><span class="bar-wrap"><span class="bar" style="width:12px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-6</span><span class="val">14px</span><span class="bar-wrap"><span class="bar" style="width:14px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-7</span><span class="val">16px</span><span class="bar-wrap"><span class="bar" style="width:16px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-8</span><span class="val">18px</span><span class="bar-wrap"><span class="bar" style="width:18px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-9</span><span class="val">20px</span><span class="bar-wrap"><span class="bar" style="width:20px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-10</span><span class="val">24px</span><span class="bar-wrap"><span class="bar" style="width:24px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-11</span><span class="val">30px</span><span class="bar-wrap"><span class="bar" style="width:30px;display:inline-block"></span></span></div>
+      <div class="sp-row"><span class="name">--sp-12</span><span class="val">56px</span><span class="bar-wrap"><span class="bar" style="width:56px;display:inline-block"></span></span></div>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-controls">
+    <div class="pv-card-head"><h3>控件高度与触达</h3><span class="pv-note">32 · 27 · 44</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="align-items:flex-end;gap:var(--sp-6)">
+        <div style="text-align:center"><div style="height:var(--control-h);width:96px;border:1px solid var(--border-strong);border-radius:var(--r-md);background:var(--surface);display:grid;place-items:center;font-size:12.5px">--control-h 32</div><div class="pv-note-inline" style="margin-top:6px">默认按钮 / 输入</div></div>
+        <div style="text-align:center"><div style="height:var(--control-h-sm);width:96px;border:1px solid var(--border-strong);border-radius:var(--r-md);background:var(--surface);display:grid;place-items:center;font-size:12px">--control-h-sm 27</div><div class="pv-note-inline" style="margin-top:6px">紧凑按钮</div></div>
+        <div style="text-align:center"><div style="height:var(--icon-btn);width:var(--icon-btn);border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);display:grid;place-items:center;font-size:11px">30</div><div class="pv-note-inline" style="margin-top:6px">图标按钮</div></div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">触控目标下限 <code>--tap-min: 44px</code>：移动端抽屉开关、发送按钮等高频操作需撑满。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-layout">
+    <div class="pv-card-head"><h3>布局常量</h3><span class="pv-note">三栏骨架</span></div>
+    <div class="pv-card-body">
+      <div class="pv-token-row"><span class="k">--rail-w</span><span class="v">252px</span><span class="d">工作区侧栏</span></div>
+      <div class="pv-token-row"><span class="k">--dock-w</span><span class="v">380px</span><span class="d">详情面板（≤1080px → 340px）</span></div>
+      <div class="pv-token-row"><span class="k">--stream-max</span><span class="v">880px</span><span class="d">消息 / 搜索内容列宽</span></div>
+      <div class="pv-token-row"><span class="k">--board-col-w</span><span class="v">236px</span><span class="d">看板列宽（固定）</span></div>
+      <div class="pv-token-row"><span class="k">--modal-max</span><span class="v">440px</span><span class="d">标准弹窗（宽版 560px）</span></div>
+      <div class="pv-token-row"><span class="k">--cmd-max</span><span class="v">520px</span><span class="d">命令面板</span></div>
+      <div class="pv-token-row"><span class="k">--z-overlay</span><span class="v">60</span><span class="d">弹层（toast 80）</span></div>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-divider">
+    <div class="pv-card-head"><h3>分隔与节奏示意</h3><span class="pv-note">hairline rhythm</span></div>
+    <div class="pv-card-body">
+      <div style="border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden">
+        <div style="padding:13px 20px 0;border-bottom:1px solid var(--border);background:var(--surface)">
+          <div style="font-size:16px;font-weight:680;letter-spacing:-0.02em">#设计系统重构</div>
+          <div style="color:var(--muted);font-size:12.5px;margin-top:3px">重构产品设计令牌与组件。</div>
+          <div style="display:flex;gap:2px;padding:0 16px;margin-top:11px">
+            <div style="padding:9px 12px;font-size:12.5px;font-weight:560;border-bottom:2px solid var(--fg);margin-bottom:-1px">消息 <span class="mono" style="font-size:10.5px;color:var(--accent)">7</span></div>
+            <div style="padding:9px 12px;font-size:12.5px;font-weight:560;color:var(--muted)">任务 <span class="mono" style="font-size:10.5px;color:var(--faint)">8</span></div>
+          </div>
+        </div>
+        <div style="padding:14px 20px;font-size:12px;color:var(--faint)">区块内纵向 13px / 20px 内边距，标签页下沿贴发丝线，负 1px 叠合避免双线。</div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

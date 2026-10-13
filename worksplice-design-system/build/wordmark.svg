@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="40" viewBox="0 0 260 40" role="img" aria-label="worksplice wordmark">
+  <rect x="0" y="7" width="26" height="26" rx="7" fill="#3B5BE8"/>
+  <g transform="translate(3 10)" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round">
+    <path d="M6 7h12M6 12h8M6 17h12"/>
+    <circle cx="18" cy="12" r="2.4" fill="#FFFFFF" stroke="none"/>
+  </g>
+  <text x="36" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        font-size="15" font-weight="700" letter-spacing="-0.02em" fill="#16181D">worksplice</text>
+  <text x="36" y="33" font-family="ui-monospace, 'SF Mono', Menlo, monospace"
+        font-size="8.5" letter-spacing="0.16em" fill="#74777F">LOCAL · E2EE</text>
+</svg>

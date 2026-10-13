@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>worksplice · 颜色 · 头像色板</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+<style>
+  .avatar { width:44px;height:44px;border-radius:7px;display:grid;place-items:center;font-size:15px;font-weight:700;color:var(--fg);flex:0 0 auto; }
+  .avatar.sm { width:26px;height:26px;font-size:11px; }
+  .avatar.xs { width:22px;height:22px;font-size:10px; }
+  .avatar.lg { width:56px;height:56px;font-size:19px;border-radius:var(--r-md); }
+  .av-0{background:var(--av-0)} .av-1{background:var(--av-1)} .av-2{background:var(--av-2)}
+  .av-3{background:var(--av-3)} .av-4{background:var(--av-4)}
+  .stack{display:flex;align-items:center;gap:10px}
+  .row{display:flex;align-items:center;gap:9px;padding:6px 9px;border-radius:var(--r-sm);font-size:12.5px}
+  .row:hover{background:var(--surface)}
+</style>
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">worksplice design system · color 03</div>
+  <h1 class="pv-title">头像色板 · 方形初始瓦片</h1>
+  <p class="pv-desc">成员头像不是圆形，而是 7px 圆角的方形瓦片，按成员索引取五个柔和色之一。第五色（中性灰）专属于「我」。这是与聊天类产品的关键区分。</p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html">索引</a>
+    <a href="colors-primary.html">基础色</a>
+    <a href="colors-semantic.html">语义色</a>
+    <a href="colors-avatars.html" class="is-on">头像色</a>
+    <a href="typography-specimens.html">字体</a>
+    <a href="spacing-tokens.html">间距</a>
+    <a href="radius-shadows.html">圆角阴影</a>
+    <a href="components-buttons.html">按钮</a>
+    <a href="components-status.html">状态</a>
+    <a href="components-cards.html">卡片</a>
+    <a href="components-messages.html">消息</a>
+    <a href="brand-assets.html">品牌资产</a>
+    <a href="applied-app-shell.html">应用界面</a>
+  </nav>
+</header>
+
+<main class="pv-grid">
+  <section class="pv-card" data-od-id="card-avatar-palette">
+    <div class="pv-card-head"><h3>五色 · av-0 … av-4</h3><span class="pv-note">deterministic by index</span></div>
+    <div class="pv-card-body">
+      <div class="pv-row" style="gap:var(--sp-6)">
+        <div style="text-align:center"><div class="avatar av-0">S</div><div class="pv-note-inline" style="margin-top:6px">--av-0</div></div>
+        <div style="text-align:center"><div class="avatar av-1">A</div><div class="pv-note-inline" style="margin-top:6px">--av-1</div></div>
+        <div style="text-align:center"><div class="avatar av-2">P</div><div class="pv-note-inline" style="margin-top:6px">--av-2</div></div>
+        <div style="text-align:center"><div class="avatar av-3">Q</div><div class="pv-note-inline" style="margin-top:6px">--av-3</div></div>
+        <div style="text-align:center"><div class="avatar av-4">我</div><div class="pv-note-inline" style="margin-top:6px">--av-4</div></div>
+      </div>
+      <div style="margin-top:var(--sp-6)">
+        <div class="pv-token-row"><span class="k">--av-0</span><span class="v">oklch(84.9% 0.081 299.9)</span><span class="d">薰衣草</span></div>
+        <div class="pv-token-row"><span class="k">--av-1</span><span class="v">oklch(80.8% 0.108 159.6)</span><span class="d">薄荷</span></div>
+        <div class="pv-token-row"><span class="k">--av-2</span><span class="v">oklch(86.3% 0.084 52.2)</span><span class="d">蜜桃</span></div>
+        <div class="pv-token-row"><span class="k">--av-3</span><span class="v">oklch(91% 0.100 94.8)</span><span class="d">柠檬</span></div>
+        <div class="pv-token-row"><span class="k">--av-4</span><span class="v">oklch(82.5% 0.026 303.4)</span><span class="d">藕灰 · 中性（我）</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-avatar-sizes">
+    <div class="pv-card-head"><h3>尺寸变体</h3><span class="pv-note">xs 22 · sm 26 · md 26 · lg 44</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="align-items:flex-end">
+        <div style="text-align:center"><div class="avatar xs av-0">S</div><div class="pv-note-inline" style="margin-top:6px">.sm 22px</div></div>
+        <div style="text-align:center"><div class="avatar sm av-1">A</div><div class="pv-note-inline" style="margin-top:6px">.avatar 26px</div></div>
+        <div style="text-align:center"><div class="avatar av-2">P</div><div class="pv-note-inline" style="margin-top:6px">默认 44px</div></div>
+        <div style="text-align:center"><div class="avatar lg av-3">Q</div><div class="pv-note-inline" style="margin-top:6px">.lg 56px</div></div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">看板卡片内联头像缩到 18px、字号 9px；指派 chip 内为 16px、字号 8px。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-avatar-in-context">
+    <div class="pv-card-head"><h3>在导航行中的样子</h3><span class="pv-note">rail nav-row</span></div>
+    <div class="pv-card-body">
+      <div class="stage" style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r-md);padding:var(--sp-4)">
+        <div class="row" style="background:var(--surface);box-shadow:inset 0 0 0 1px var(--border);color:var(--fg);font-weight:600">
+          <span class="avatar sm av-1">S</span><span style="flex:1">Susan</span>
+          <span style="width:7px;height:7px;border-radius:99px;background:var(--working)"></span>
+        </div>
+        <div class="row"><span class="avatar sm av-0">A</span><span style="flex:1">Atlas</span><span style="width:7px;height:7px;border-radius:99px;background:var(--online)"></span></div>
+        <div class="row"><span class="avatar sm av-3">P</span><span style="flex:1">Pixel</span><span style="width:7px;height:7px;border-radius:99px;background:var(--error)"></span></div>
+        <div class="row" style="opacity:.7"><span class="avatar sm av-2">Q</span><span style="flex:1">Quill</span><span style="width:7px;height:7px;border-radius:99px;background:var(--offline)"></span></div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

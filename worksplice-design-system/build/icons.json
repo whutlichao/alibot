@@ -1,0 +1,22 @@
+{
+  "name": "worksplice-icons",
+  "source": "worksplice-app.html inline stroke paths",
+  "viewBox": "0 0 24 24",
+  "stroke": "currentColor",
+  "icons": {
+    "i-menu":     { "strokeWidth": 2,   "file": "i-menu.svg",     "use": "mobile topbar menu" },
+    "i-search":   { "strokeWidth": 2,   "file": "i-search.svg",   "use": "rail search, search field" },
+    "i-bell":     { "strokeWidth": 1.9, "file": "i-bell.svg",     "use": "reminders" },
+    "i-settings": { "strokeWidth": 1.9, "file": "i-settings.svg", "use": "settings" },
+    "i-plus":     { "strokeWidth": 2.4, "file": "i-plus.svg",     "use": "new channel / task / agent, col-add" },
+    "i-pin":      { "strokeWidth": 1.9, "file": "i-pin.svg",      "use": "pinned strip, pin message" },
+    "i-members":  { "strokeWidth": 1.9, "file": "i-members.svg",  "use": "channel members" },
+    "i-panel":    { "strokeWidth": 1.9, "file": "i-panel.svg",    "use": "toggle detail dock" },
+    "i-attach":   { "strokeWidth": 1.9, "file": "i-attach.svg",   "use": "composer attach" },
+    "i-mention":  { "strokeWidth": 1.9, "file": "i-mention.svg",  "use": "composer mention" },
+    "i-task":     { "strokeWidth": 2,   "file": "i-task.svg",     "use": "as-task, task chip" },
+    "i-send":     { "strokeWidth": 2,   "file": "i-send.svg",     "use": "composer send" },
+    "i-user":     { "strokeWidth": 2,   "file": "i-user.svg",     "use": "message reply tool, member row" },
+    "i-clock":    { "strokeWidth": 2,   "file": "i-clock.svg",    "use": "system message avatar" }
+  }
+}

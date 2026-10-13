@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>worksplice · 字体样张</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">worksplice design system · typography</div>
+  <h1 class="pv-title">字体样张 · 一套无衬线 + 一套等宽</h1>
+  <p class="pv-desc">只有一个无衬线族用于所有文本，一个等宽族用于所有数字与结构性文本。系统字体栈是刻意选择 —— 它能原生渲染中文（PingFang SC），不需要额外加载几 MB 的字体文件。</p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html">索引</a>
+    <a href="colors-primary.html">基础色</a>
+    <a href="colors-semantic.html">语义色</a>
+    <a href="colors-avatars.html">头像色</a>
+    <a href="typography-specimens.html" class="is-on">字体</a>
+    <a href="spacing-tokens.html">间距</a>
+    <a href="radius-shadows.html">圆角阴影</a>
+    <a href="components-buttons.html">按钮</a>
+    <a href="components-status.html">状态</a>
+    <a href="components-cards.html">卡片</a>
+    <a href="components-messages.html">消息</a>
+    <a href="brand-assets.html">品牌资产</a>
+    <a href="applied-app-shell.html">应用界面</a>
+  </nav>
+</header>
+
+<main class="pv-grid">
+  <section class="pv-card" data-od-id="card-fontfamilies">
+    <div class="pv-card-head"><h3>字体族</h3><span class="pv-note">--font · --mono</span></div>
+    <div class="pv-card-body">
+      <p class="pv-label">--font · 无衬线</p>
+      <div style="font-family:var(--font);font-size:20px;font-weight:650;letter-spacing:var(--ls-tight);line-height:1.3">设计系统重构：把 37 处裸色值换成语义令牌</div>
+      <div style="font-family:var(--font);font-size:13px;color:var(--muted);margin-top:6px">worksplice · AppShell · ChannelView · DetailPanel · 林舟 · @Pixel · 秘书</div>
+      <p class="pv-token-row" style="margin-top:var(--sp-4)"><span class="k">--font</span><span class="v">-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif</span></p>
+
+      <p class="pv-label" style="margin-top:var(--sp-6)">--mono · 等宽</p>
+      <div style="font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums">#3 · 09:21 · 1.2M · 96% · session-0412.json · oklch(85.7% 0.086 356.8)</div>
+      <p class="pv-token-row" style="margin-top:var(--sp-4)"><span class="k">--mono</span><span class="v">ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace</span></p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-scale">
+    <div class="pv-card-head"><h3>字号与字重阶梯</h3><span class="pv-note">通用 UI 13px 基准；消息例外如下</span></div>
+    <div class="pv-card-body">
+      <div class="pv-spec"><span class="tag">16px / 680 / -0.02em</span><span class="sample" style="font-size:16px;font-weight:680;letter-spacing:-0.02em">#设计系统重构 —— 频道标题 h1</span></div>
+      <div class="pv-spec"><span class="tag">14.5px / 680 / -0.01em</span><span class="sample" style="font-size:14.5px;font-weight:680;letter-spacing:-0.01em">为任务看板加入状态机拖拽校验</span></div>
+      <div class="pv-spec"><span class="tag">14px / 680</span><span class="sample" style="font-size:14px;font-weight:680">Susan · 秘书</span></div>
+      <div class="pv-spec"><span class="tag">13.5px / 700 / -0.02em</span><span class="sample" style="font-size:13.5px;font-weight:700;letter-spacing:-0.02em">worksplice</span></div>
+      <div class="pv-spec"><span class="tag">14px / 650 · 消息作者</span><span class="sample" style="font-size:14px;font-weight:650">Pixel <span style="font-weight:470;color:var(--fg)">状态机抽成 TRANSITIONS 表了。</span></span></div>
+      <div class="pv-spec"><span class="tag">13px / 400 · 通用 UI 正文</span><span class="sample" style="font-size:13px">同意。令牌就叫 bg / surface / fg / muted / border / accent，全部用 oklch()。</span></div>
+      <div class="pv-spec"><span class="tag">14px / 400 · 频道消息正文 · 1.65</span><span class="sample" style="font-size:14px;line-height:1.65">消息正文按频道场景使用局部可读尺度；全局 13px 正文标尺保持不变。</span></div>
+      <div class="pv-spec"><span class="tag">14px / 400 · 线程回复正文 · 1.7</span><span class="sample" style="font-size:14px;line-height:1.7">线程正文使用额外行间节奏，适配窄栏中的持续阅读。</span></div>
+      <div class="pv-spec"><span class="tag">12px / 1.62 · fenced CodeBlock</span><span class="sample mono" style="font-size:12px;line-height:1.62">const readable = true;</span></div>
+      <div class="pv-spec"><span class="tag">12.5px / 560 · 按钮</span><span class="sample" style="font-size:12.5px;font-weight:560">新建频道　新建任务　暂停　编辑配置</span></div>
+      <div class="pv-spec"><span class="tag">12px · 辅助正文</span><span class="sample" style="font-size:12px">拖拽落点用 dragover 判定，非法列给红色边框。</span></div>
+      <div class="pv-spec"><span class="tag">11.5px · 说明 / 卡片元信息</span><span class="sample" style="font-size:11.5px;color:var(--muted)">选中的 Agent 会自动订阅该频道。</span></div>
+      <div class="pv-spec"><span class="tag">10.5px mono · 时间计数</span><span class="sample mono" style="font-size:10.5px;color:var(--faint)">09:21　148　96%　⌘K</span></div>
+      <div class="pv-spec"><span class="tag">9.5px mono / 600 / +0.1em</span><span class="sample mono" style="font-size:9.5px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--faint)">频道 · 私信 · AGENT 成员 · 状态</span></div>
+      <div class="pv-spec"><span class="tag">17px mono / 700 · 指标</span><span class="sample mono" style="font-size:17px;font-weight:700;letter-spacing:-0.02em;font-variant-numeric:tabular-nums">1.2M</span></div>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-rules">
+    <div class="pv-card-head"><h3>排印规则</h3><span class="pv-note">mono = structure</span></div>
+    <div class="pv-card-body">
+      <ul style="margin:0;padding-left:1.15em;font-size:12.5px;line-height:1.7;color:var(--muted)">
+        <li>标题用负字距 <code>-0.01 / -0.02em</code>；全大写等宽小标签用正字距 <code>+0.08 / +0.1em</code>。</li>
+        <li>所有数字加 <code>font-variant-numeric: tabular-nums</code>，保证计数、指标、时间戳对齐。</li>
+        <li>标识符、时间戳、计数、指标、键值行、小节标签一律等宽 —— 等宽即结构。</li>
+        <li>通用正文行高 1.5；频道/线程消息正文 14px，行高分别为 1.65 / 1.7；fenced React CodeBlock 为 12px / 1.62。</li>
+        <li>不使用展示型衬线体，不引入无法渲染中文的 webfont。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-inline">
+    <div class="pv-card-head"><h3>行内元素</h3><span class="pv-note">code · mention · kbd</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="flex-direction:column;align-items:flex-start;gap:var(--sp-5)">
+        <div style="font-size:14px;line-height:1.65">频道消息正文（14px / 1.65）中的行内代码 <code style="font-family:var(--mono);font-size:12px;background:var(--panel-2);padding:1px 5px;border-radius:4px;border:1px solid var(--border)">globals.css</code>（12px，无独立 line-height）与提及 <span style="color:var(--accent);font-weight:600;background:var(--accent-soft);padding:0 4px;border-radius:4px">@Pixel</span> 的呈现。</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--faint);border:1px solid var(--border);border-radius:4px;padding:1px 5px">⌘K</div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>worksplice · 圆角与阴影</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+<style>
+  .rad{width:110px;height:78px;background:var(--surface);border:1px solid var(--border-strong);display:grid;place-items:center;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .sh{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:14px 16px;font-size:12px}
+</style>
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">worksplice design system · radius &amp; elevation</div>
+  <h1 class="pv-title">圆角与阴影 · 小半径、发丝投影</h1>
+  <p class="pv-desc">圆角只有四档：6 / 8 / 12 / 16，外加全圆药丸形（仅用于计数、标签、状态、反应 chip）。阴影克制且带方向感，只出现在浮层、弹窗与抽屉 —— 静止内容不加投影，纵深靠表面层级和发丝描边。</p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html">索引</a>
+    <a href="colors-primary.html">基础色</a>
+    <a href="colors-semantic.html">语义色</a>
+    <a href="colors-avatars.html">头像色</a>
+    <a href="typography-specimens.html">字体</a>
+    <a href="spacing-tokens.html">间距</a>
+    <a href="radius-shadows.html" class="is-on">圆角阴影</a>
+    <a href="components-buttons.html">按钮</a>
+    <a href="components-status.html">状态</a>
+    <a href="components-cards.html">卡片</a>
+    <a href="components-messages.html">消息</a>
+    <a href="brand-assets.html">品牌资产</a>
+    <a href="applied-app-shell.html">应用界面</a>
+  </nav>
+</header>
+
+<main class="pv-grid">
+  <section class="pv-card" data-od-id="card-radius">
+    <div class="pv-card-head"><h3>圆角阶梯</h3><span class="pv-note">6 · 8 · 12 · 16 · 99</span></div>
+    <div class="pv-card-body">
+      <div class="pv-row" style="gap:var(--sp-6)">
+        <div style="text-align:center"><div class="rad" style="border-radius:var(--r-sm)">--r-sm 6</div><div class="pv-note-inline" style="margin-top:6px">导航行 · chip · 图标按钮</div></div>
+        <div style="text-align:center"><div class="rad" style="border-radius:var(--r-md)">--r-md 8</div><div class="pv-note-inline" style="margin-top:6px">按钮 · 输入 · 卡片 · stat</div></div>
+        <div style="text-align:center"><div class="rad" style="border-radius:var(--r-lg)">--r-lg 12</div><div class="pv-note-inline" style="margin-top:6px">输入区 · 看板列 · 命令面板</div></div>
+        <div style="text-align:center"><div class="rad" style="border-radius:var(--r-xl)">--r-xl 16</div><div class="pv-note-inline" style="margin-top:6px">弹窗</div></div>
+        <div style="text-align:center"><div class="rad" style="border-radius:var(--r-pill);width:110px">--r-pill 99</div><div class="pv-note-inline" style="margin-top:6px">计数 · 标签 · 状态 · 反应</div></div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">头像瓦片使用 7px 圆角（介于 sm 与 md 之间），是刻意的方形观感；不要改成圆形。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-shadows">
+    <div class="pv-card-head"><h3>阴影层级</h3><span class="pv-note">only layered surfaces</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="flex-direction:column;align-items:stretch;gap:var(--sp-7);background:var(--panel)">
+        <div class="sh" style="box-shadow:var(--shadow-composer)"><b>--shadow-composer</b><div class="pv-note-inline">0 1px 2px · 静止输入区极轻的贴地感</div></div>
+        <div class="sh" style="box-shadow:var(--shadow-card)"><b>--shadow-card</b><div class="pv-note-inline">0 2px 8px -4px · 卡片 hover 抬升</div></div>
+        <div class="sh" style="box-shadow:var(--shadow-pop)"><b>--shadow-pop</b><div class="pv-note-inline">0 10px 30px -12px + 0 2px 6px -2px · 浮层 / 弹窗 / 抽屉</div></div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">阴影的用途是「这块浮起来了」，不是装饰。静止的卡片、面板、行不使用阴影。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-layering">
+    <div class="pv-card-head"><h3>表面分层与描边协同</h3><span class="pv-note">depth without shadow</span></div>
+    <div class="pv-card-body">
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-lg);padding:var(--sp-7)">
+        <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r-md);padding:var(--sp-5)">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:var(--sp-5)">
+            <div style="background:var(--panel-2);border-radius:var(--r-sm);padding:var(--sp-4);font-size:12px;color:var(--muted)">嵌套信息井 · --panel-2</div>
+          </div>
+        </div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">四层表面：<code>--bg → --panel → --surface → --panel-2</code>。层级本身已足够表达纵深，无需阴影。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-focus">
+    <div class="pv-card-head"><h3>描边强度与焦点环</h3><span class="pv-note">focus-visible</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="flex-direction:column;align-items:flex-start;gap:var(--sp-5)">
+        <div style="border:1px solid var(--border);border-radius:var(--r-md);padding:9px 12px;font-size:12px;background:var(--surface)">静止：1px --border</div>
+        <div style="border:1px solid var(--border-strong);border-radius:var(--r-md);padding:9px 12px;font-size:12px;background:var(--surface)">可交互 / hover：1px --border-strong</div>
+        <div style="border:1px solid var(--accent);box-shadow:0 0 0 3px var(--accent-soft);border-radius:var(--r-md);padding:9px 12px;font-size:12px;background:var(--surface)">聚焦：--accent + 3px --accent-soft 光环</div>
+        <div style="outline:2px solid var(--accent);outline-offset:2px;border-radius:2px;padding:9px 12px;font-size:12px;background:var(--surface)">:focus-visible 通用焦点环</div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

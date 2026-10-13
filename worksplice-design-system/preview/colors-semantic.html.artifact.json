@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "preview/colors-semantic.html",
+  "entry": "preview/colors-semantic.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-10-05T13:14:05.634Z",
+  "updatedAt": "2026-10-05T13:14:05.634Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}

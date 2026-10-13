@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>worksplice · 颜色 · 语义色与状态机</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+<style>
+  .presence { width:8px; height:8px; border-radius:99px; display:inline-block; flex:0 0 8px; }
+  .presence.online{background:var(--online)} .presence.working{background:var(--working)}
+  .presence.error{background:var(--error)} .presence.offline{background:var(--offline)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .presence.working{animation:pulse 1.5s ease-in-out infinite}
+  @media (prefers-reduced-motion: reduce){ .presence.working{animation:none} }
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+  .flow .node{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:var(--r-pill);padding:5px 12px 5px 8px;font-size:12px;background:var(--surface);font-family:var(--mono)}
+  .flow .node i{width:8px;height:8px;border-radius:99px;display:block}
+  .flow .arw{color:var(--faint)}
+  .flow .bad{color:var(--error);font-size:11.5px;font-family:var(--mono)}
+  .lv{font-family:var(--mono);font-size:10px;font-weight:700;padding:0 5px;border-radius:4px;height:16px;display:inline-flex;align-items:center}
+  .lv.info{background:var(--accent-soft);color:var(--accent-deep)}
+  .lv.ok{background:var(--online-soft);color:var(--online-text)}
+  .lv.warn{background:var(--warn-soft);color:var(--warn-deep)}
+  .lv.err{background:var(--error-soft);color:var(--error)}
+</style>
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">worksplice design system · color 02</div>
+  <h1 class="pv-title">语义色 · Agent 存在状态与任务状态机</h1>
+  <p class="pv-desc">四个语义色承载「谁在线 / 任务走到哪一步」。它们不是装饰色 —— 同一套色贯穿侧栏、消息流、看板卡片、任务线程与日志行。</p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html">索引</a>
+    <a href="colors-primary.html">基础色</a>
+    <a href="colors-semantic.html" class="is-on">语义色</a>
+    <a href="colors-avatars.html">头像色</a>
+    <a href="typography-specimens.html">字体</a>
+    <a href="spacing-tokens.html">间距</a>
+    <a href="radius-shadows.html">圆角阴影</a>
+    <a href="components-buttons.html">按钮</a>
+    <a href="components-status.html">状态</a>
+    <a href="components-cards.html">卡片</a>
+    <a href="components-messages.html">消息</a>
+    <a href="brand-assets.html">品牌资产</a>
+    <a href="applied-app-shell.html">应用界面</a>
+  </nav>
+</header>
+
+<main class="pv-grid">
+  <section class="pv-card" data-od-id="card-presence">
+    <div class="pv-card-head"><h3>Agent 存在状态</h3><span class="pv-note">presence</span></div>
+    <div class="pv-card-body">
+      <div class="pv-row">
+        <div class="pv-swatch"><div class="chip" style="background:var(--online)"></div><div class="meta"><b>--online</b><span>在线 · 空闲</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--working)"></div><div class="meta"><b>--working</b><span>正在干活 · 脉冲</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--error)"></div><div class="meta"><b>--error</b><span>出错</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--offline)"></div><div class="meta"><b>--offline</b><span>离线</span></div></div>
+      </div>
+      <div class="pv-stage" style="margin-top:var(--sp-5)">
+        <span style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px"><span class="presence online"></span>在线</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px"><span class="presence working"></span>正在干活</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px"><span class="presence error"></span>出错</span>
+        <span style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px"><span class="presence offline"></span>离线</span>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)"><code>.presence.working</code> 以 1.5s 脉冲呼吸；<code>prefers-reduced-motion</code> 下停止动画。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-taskflow">
+    <div class="pv-card-head"><h3>任务状态机</h3><span class="pv-note">STATUS_COLOR + TRANSITIONS</span></div>
+    <div class="pv-card-body">
+      <div class="pv-row" style="margin-bottom:var(--sp-5)">
+        <div class="pv-swatch"><div class="chip" style="background:var(--faint)"></div><div class="meta"><b>待认领 · todo</b><span>--faint</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--accent-graphic)"></div><div class="meta"><b>进行中 · in_progress</b><span>--accent-graphic</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--working)"></div><div class="meta"><b>待审 · in_review</b><span>--working</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--online)"></div><div class="meta"><b>完成 · done</b><span>--online</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--offline)"></div><div class="meta"><b>已关闭 · closed</b><span>--offline</span></div></div>
+      </div>
+      <p class="pv-label">合法推进路径</p>
+      <div class="flow">
+        <span class="node"><i style="background:var(--faint)"></i>待认领</span>
+        <span class="arw">→</span>
+        <span class="node"><i style="background:var(--accent-graphic)"></i>进行中</span>
+        <span class="arw">→</span>
+        <span class="node"><i style="background:var(--working)"></i>待审</span>
+        <span class="arw">→</span>
+        <span class="node"><i style="background:var(--online)"></i>完成</span>
+        <span class="arw">→</span>
+        <span class="node"><i style="background:var(--offline)"></i>已关闭</span>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">非法转移（如 <span class="bad">待认领 → 完成</span>）会被拦截并 toast 报错；拖拽时非法列显示 <code>--error</code> 边框，合法列显示 <code>--accent-graphic</code>。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-loglevels">
+    <div class="pv-card-head"><h3>日志级别</h3><span class="pv-note">.lv.info|ok|warn|err</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="flex-direction:column;align-items:flex-start;gap:var(--sp-4)">
+        <span class="lv info">INFO</span>
+        <span class="lv ok">OK</span>
+        <span class="lv warn">WARN</span>
+        <span class="lv err">ERR</span>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">级别色 = 语义色的低透明底 + 深色文字，保证 4.5:1 以上对比。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-semantic-tokens">
+    <div class="pv-card-head"><h3>语义令牌取值</h3><span class="pv-note">oklch</span></div>
+    <div class="pv-card-body">
+      <div class="pv-token-row"><span class="k">--online</span><span class="v">oklch(60.1% 0.108 159.4)</span><span class="d">成功 / 空闲（graphic 档）</span></div>
+      <div class="pv-token-row"><span class="k">--working</span><span class="v">oklch(61.9% 0.110 74.2)</span><span class="d">忙碌 / 待审（graphic 档）</span></div>
+      <div class="pv-token-row"><span class="k">--error</span><span class="v">oklch(53.2% 0.128 25.9)</span><span class="d">失败 / 危险（deep 档，点与描边同值）</span></div>
+      <div class="pv-token-row"><span class="k">--offline</span><span class="v">oklch(61.8% 0.026 304.2)</span><span class="d">离线 / 已关闭（graphic 档）</span></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

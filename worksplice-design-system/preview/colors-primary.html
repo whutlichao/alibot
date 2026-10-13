@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>worksplice · 颜色 · 基础色板</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">worksplice design system · color 01</div>
+  <h1 class="pv-title">基础色板 · 表面、文字与强调色</h1>
+  <p class="pv-desc">产品的六个承重令牌 —— <code>--bg / --surface / --fg / --muted / --border / --accent</code> —— 以及它们的层级色。所有取值直接来自源文件 <code>worksplice-app.html</code> 的 <code>:root</code>，全部使用 <code>oklch()</code>，不得引入 hex。方向是<b>马卡龙暖奶霜 + pastel 角色族</b>（ADR-0015）：每个色相族提供填充档 / 淡底档 / 文字档 / 图形档。</p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html">索引</a>
+    <a href="colors-primary.html" class="is-on">基础色</a>
+    <a href="colors-semantic.html">语义色</a>
+    <a href="colors-avatars.html">头像色</a>
+    <a href="typography-specimens.html">字体</a>
+    <a href="spacing-tokens.html">间距</a>
+    <a href="radius-shadows.html">圆角阴影</a>
+    <a href="components-buttons.html">按钮</a>
+    <a href="components-status.html">状态</a>
+    <a href="components-cards.html">卡片</a>
+    <a href="components-messages.html">消息</a>
+    <a href="brand-assets.html">品牌资产</a>
+    <a href="applied-app-shell.html">应用界面</a>
+  </nav>
+</header>
+
+<main class="pv-grid">
+  <section class="pv-card" data-od-id="card-surfaces">
+    <div class="pv-card-head"><h3>表面层级</h3><span class="pv-note">bg → panel → surface</span></div>
+    <div class="pv-card-body">
+      <div class="pv-row">
+        <div class="pv-swatch"><div class="chip" style="background:var(--bg)"></div><div class="meta"><b>--bg</b><span>oklch(98% 0.011 85)</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--panel);box-shadow:inset 0 0 0 1px var(--border)"></div><div class="meta"><b>--panel</b><span>oklch(95.7% 0.018 85)</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--panel-2);box-shadow:inset 0 0 0 1px var(--border)"></div><div class="meta"><b>--panel-2</b><span>oklch(93.1% 0.022 84)</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--surface);box-shadow:inset 0 0 0 1px var(--border)"></div><div class="meta"><b>--surface</b><span>oklch(99.4% 0.006 85)</span></div></div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">层级顺序用于制造纵深：页面底 → 侧栏/看板列 → 嵌套信息井 → 卡片/弹层。静止内容不加投影。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-text">
+    <div class="pv-card-head"><h3>文字层级</h3><span class="pv-note">fg / muted / faint</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="flex-direction:column;align-items:flex-start;gap:var(--sp-4)">
+        <div style="font-size:16px;font-weight:var(--fw-heavy);letter-spacing:var(--ls-tight);color:var(--fg)">频道标题 · --fg oklch(33% 0.045 300)</div>
+        <div style="font-size:13px;color:var(--muted)">次级正文与未激活标签 · --muted oklch(46% 0.030 300)</div>
+        <div style="font-size:11.5px;color:var(--faint)">三级提示、占位符、时间戳 · --faint oklch(52% 0.024 300)</div>
+      </div>
+      <div style="margin-top:var(--sp-5)">
+        <div class="pv-token-row"><span class="k">--fg</span><span class="v">oklch(33% 0.045 300)</span><span class="d">主文字（深梅墨） / 激活态</span></div>
+        <div class="pv-token-row"><span class="k">--muted</span><span class="v">oklch(46% 0.030 300)</span><span class="d">次级文字</span></div>
+        <div class="pv-token-row"><span class="k">--faint</span><span class="v">oklch(52% 0.024 300)</span><span class="d">三级 / 元信息</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-accent">
+    <div class="pv-card-head"><h3>行动族 · 樱粉</h3><span class="pv-note">accent · hue 356.8 · 四档</span></div>
+    <div class="pv-card-body">
+      <div class="pv-row">
+        <div class="pv-swatch"><div class="chip" style="background:var(--accent)"></div><div class="meta"><b>--accent</b><span>oklch(85.7% 0.086 356.8) · fill</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--accent-hover)"></div><div class="meta"><b>--accent-hover</b><span>oklch(79.4% 0.104 356.6) · fill</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--accent-soft)"></div><div class="meta"><b>--accent-soft</b><span>mix 22%</span></div></div>
+        <div class="pv-swatch"><div class="chip" style="background:var(--accent-graphic)"></div><div class="meta"><b>--accent-graphic</b><span>oklch(62.6% 0.086 356.7) · 环·点</span></div></div>
+      </div>
+      <p class="pv-note-inline" style="margin-top:var(--sp-5)">行动 = 樱粉：主按钮 / composer send / agent 身份。填充档只做填充（深墨 <code>--on-accent</code> 压其上 7.75:1）；文字与焦点环分别走 <code>--accent-deep</code>（4.51:1）与 <code>--accent-graphic</code>（3.02:1）。旧方向的「淡线档」已退役，边界一律取图形档（ADR-0015）。</p>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-borders">
+    <div class="pv-card-head"><h3>描边与分隔</h3><span class="pv-note">hairline only</span></div>
+    <div class="pv-card-body">
+      <div class="pv-stage" style="flex-direction:column;align-items:stretch;gap:var(--sp-5)">
+        <div style="border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;font-size:12px">--border · oklch(90% 0.013 86) —— 分隔线、静止卡片</div>
+        <div style="border:1px solid var(--border-strong);border-radius:var(--r-md);padding:10px 12px;font-size:12px">--border-strong · oklch(78% 0.020 86) —— 输入框、可交互边框</div>
+        <div style="border-bottom:1px dashed var(--border);padding-bottom:10px;font-size:12px;color:var(--muted)">虚线用于 .kv 键值行与字体样张的细分隔</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pv-card" data-od-id="card-contract">
+    <div class="pv-card-head"><h3>令牌契约</h3><span class="pv-note">don't rename</span></div>
+    <div class="pv-card-body">
+      <p class="pv-desc" style="max-width:none">现有 Next.js 组件（<code>AppShell</code>、<code>ChannelView</code>、<code>DetailPanel</code>）按名字依赖这六个令牌。改色值可以，改名字会一次性击穿整个应用。</p>
+      <div style="margin-top:var(--sp-5)">
+        <div class="pv-token-row"><span class="k">--bg</span><span class="v">页面画布</span></div>
+        <div class="pv-token-row"><span class="k">--surface</span><span class="v">卡片 / 面板 / 顶栏</span></div>
+        <div class="pv-token-row"><span class="k">--fg</span><span class="v">主文字 / 激活下划线</span></div>
+        <div class="pv-token-row"><span class="k">--muted</span><span class="v">次级文字 / 未激活</span></div>
+        <div class="pv-token-row"><span class="k">--border</span><span class="v">发丝分隔</span></div>
+        <div class="pv-token-row"><span class="k">--accent</span><span class="v">行动 / Agent（fill 档）</span></div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
