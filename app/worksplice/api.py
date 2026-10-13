@@ -131,10 +131,6 @@ def create_app(data_dir: Path | str | None = None, db: Database | None = None) -
         )
         return {"channel": channel, "channels": service.list_channels()}
 
-    @app.get("/api/channels/{channel_id}")
-    def get_channel(channel_id: str) -> dict[str, Any]:
-        return {"channel": database.get_channel(channel_id)}
-
     @app.get("/api/channels/{channel_id}/messages")
     def list_messages(channel_id: str, after_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
         messages = service.channel_messages(channel_id, after_seq=after_seq)

@@ -10,8 +10,6 @@ from typing import Any
 
 from .db import OWNER_ID, Database
 
-UNREAD_BADGE_MIN = 1
-
 
 class WorkspaceService:
     """工作台读写的窄接口。"""

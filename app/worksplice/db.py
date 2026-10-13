@@ -26,6 +26,9 @@ from typing import Any
 OWNER_ID = "owner"
 OWNER_DISPLAY_NAME = "Owner"
 OWNER_AVATAR_SLOT = 4
+
+# 头像色位族大小：与设计系统的 --av-0…--av-4 一一对应（色位按 slot 取模）。
+# 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
 SCHEMA_VERSION = 1
@@ -36,7 +39,6 @@ DATA_DIR_ENV = "WORKSPLICE_DATA_DIR"
 DATABASE_FILE_NAME = "worksplice.db"
 
 MESSAGE_KINDS = ("human", "agent", "system")
-UNREAD_KINDS = ("human", "agent")
 
 MAX_CHANNEL_NAME_LENGTH = 80
 MAX_CHANNEL_DESCRIPTION_LENGTH = 500
@@ -103,6 +105,24 @@ BEFORE DELETE ON message
 BEGIN
   SELECT RAISE(ABORT, 'message is append-only');
 END;
+"""
+
+# 频道读取的唯一一条 SQL（无拼接，值全部经命名占位符绑定）：
+# - ``:channel_id IS NULL`` 时返回全部频道（列表）；给值时返回单条。
+# - 未读计数口径**只在这里写一次**（规格 §2）：已读位置之后、kind ∈ {human, agent}
+#   的顶层消息；不计 system。之前 list/get 各抄一份，口径漂移风险真实存在。
+CHANNEL_SELECT_SQL = """
+    SELECT c.*,
+           COALESCE((SELECT MAX(seq) FROM message m WHERE m.target_id = c.id), 0) AS last_seq,
+           COALESCE(r.last_read_seq, 0) AS last_read_seq,
+           COALESCE((SELECT COUNT(*) FROM message m2
+                      WHERE m2.target_id = c.id
+                        AND m2.seq > COALESCE(r.last_read_seq, 0)
+                        AND m2.kind IN ('human', 'agent')), 0) AS unread_count
+      FROM channel c
+      LEFT JOIN channel_read r ON r.channel_id = c.id AND r.member_id = :member_id
+     WHERE (:channel_id IS NULL OR c.id = :channel_id)
+     ORDER BY c.created_at, c.id
 """
 
 
@@ -224,39 +244,17 @@ class Database:
 
     # ─── 频道 ─────────────────────────────────────────────────────────────
     def list_channels(self, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
-        # 常量 SQL（值全部经占位符绑定），无拼接。
-        sql = """
-            SELECT c.*,
-                   COALESCE((SELECT MAX(seq) FROM message m WHERE m.target_id = c.id), 0) AS last_seq,
-                   COALESCE(r.last_read_seq, 0) AS last_read_seq,
-                   COALESCE((SELECT COUNT(*) FROM message m2
-                              WHERE m2.target_id = c.id
-                                AND m2.seq > COALESCE(r.last_read_seq, 0)
-                                AND m2.kind IN ('human', 'agent')), 0) AS unread_count
-              FROM channel c
-              LEFT JOIN channel_read r ON r.channel_id = c.id AND r.member_id = ?
-             ORDER BY c.created_at, c.id
-        """
         with self._lock:
-            rows = self._conn.execute(sql, (member_id,)).fetchall()
+            rows = self._conn.execute(
+                CHANNEL_SELECT_SQL, {"member_id": member_id, "channel_id": None}
+            ).fetchall()
         return [self._channel_payload(row) for row in rows]
 
     def get_channel(self, channel_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
-        # 常量 SQL（值全部经占位符绑定），无拼接。
-        sql = """
-            SELECT c.*,
-                   COALESCE((SELECT MAX(seq) FROM message m WHERE m.target_id = c.id), 0) AS last_seq,
-                   COALESCE(r.last_read_seq, 0) AS last_read_seq,
-                   COALESCE((SELECT COUNT(*) FROM message m2
-                              WHERE m2.target_id = c.id
-                                AND m2.seq > COALESCE(r.last_read_seq, 0)
-                                AND m2.kind IN ('human', 'agent')), 0) AS unread_count
-              FROM channel c
-              LEFT JOIN channel_read r ON r.channel_id = c.id AND r.member_id = ?
-             WHERE c.id = ?
-        """
         with self._lock:
-            row = self._conn.execute(sql, (member_id, channel_id)).fetchone()
+            row = self._conn.execute(
+                CHANNEL_SELECT_SQL, {"member_id": member_id, "channel_id": channel_id}
+            ).fetchone()
         if row is None:
             raise NotFound(f"频道不存在：{channel_id}")
         return self._channel_payload(row)
@@ -485,17 +483,6 @@ class Database:
                 self._rollback()
                 raise
         return self.get_channel(channel_id, member_id)
-
-    def count_messages(self, channel_id: str | None = None) -> int:
-        """仅供诊断与测试用的只读计数，不参与业务判定。"""
-        with self._lock:
-            if channel_id is None:
-                row = self._conn.execute("SELECT COUNT(*) AS n FROM message").fetchone()
-            else:
-                row = self._conn.execute(
-                    "SELECT COUNT(*) AS n FROM message WHERE target_id = ?", (channel_id,)
-                ).fetchone()
-        return int(row["n"])
 
 
 def open_database(data_dir: Path | str | None = None) -> Database:

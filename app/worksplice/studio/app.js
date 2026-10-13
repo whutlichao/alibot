@@ -170,7 +170,9 @@ function replaceChannel(channel) {
 }
 
 /* ─── 标读：切入频道、以及正在查看时到达的新消息都立即已读 ─────────────── */
-let readTimer = null;
+// 每个频道各持一个待发标读定时器：离开 A 去 B 时，A 的标读不能被 B 的覆盖掉
+// （共用一个定时器会把前一个 clearTimeout 掉，那个频道的已读推进就被静默丢弃）。
+const readTimers = new Map();
 
 function markCurrentRead() {
   const channel = activeChannel();
@@ -182,25 +184,34 @@ function markCurrentRead() {
 }
 
 function scheduleRead(channelId, seq) {
-  if (readTimer) clearTimeout(readTimer);
-  readTimer = setTimeout(async () => {
-    readTimer = null;
-    try {
-      const payload = await api(channelPath(channelId, '/read'), { method: 'POST', body: { seq } });
-      replaceChannel(payload.channel);
-      state.channels = payload.channels;
-      const active = activeChannel();
-      if (active) replaceChannel(active);
-      render();
-    } catch (err) {
-      toast('标读失败：' + err.message, 'err');
-    }
-  }, 120);
+  const existing = readTimers.get(channelId);
+  if (existing) clearTimeout(existing);
+  readTimers.set(
+    channelId,
+    setTimeout(async () => {
+      readTimers.delete(channelId);
+      try {
+        const payload = await api(channelPath(channelId, '/read'), { method: 'POST', body: { seq } });
+        replaceChannel(payload.channel);
+        state.channels = payload.channels;
+        const active = activeChannel();
+        if (active) replaceChannel(active);
+        render();
+      } catch (err) {
+        toast('标读失败：' + err.message, 'err');
+      }
+    }, 120),
+  );
 }
 
 /* ─── 乐观发送：pending → 确认 seq 或显式失败 ─────────────────────────── */
 function renderedMessages() {
-  return state.messages.concat(state.pending);
+  const channelId = state.activeChannelId;
+  if (!channelId) return [];
+  // 只渲染当前频道的 pending（含已失败但仍保留在本地的项）：失败态不得串到别的频道，
+  // 也不得把别的频道的内容算进本频道的顺序里。
+  const pending = state.pending.filter((item) => item.target_id === channelId);
+  return state.messages.concat(pending);
 }
 
 function sendMessage() {
@@ -343,6 +354,9 @@ function renderHeader() {
   if (!hasChannel) return;
   $('#chanTitle').textContent = channel.name;
   $('#chanDesc').textContent = channel.description || '';
+  // 契约里的 placeholder 结构是「发消息到 #<频道名> —— 输入 @ 提及 Agent」。
+  // 本票没有可被点名的 Agent（提及与补全属 #②），所以省掉后半句；
+  // 待 #② 交付 Agent 创建后补回，这一行就是待改点。
   $('#composerInput').placeholder = '发消息到 #' + channel.name;
 }
 
