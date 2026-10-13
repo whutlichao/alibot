@@ -1,0 +1,54 @@
+[project]
+name = "worksplice-app"
+version = "0.1.0"
+description = "Worksplice MVP：本机单用户频道协作工作台的后端（HTTP 人类面）"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "httpx2>=2.0",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["worksplice"]
+
+[tool.hatch.build.targets.sdist]
+include = ["worksplice", "tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
+# 本仓的文档、注释与界面文案是简体中文（AGENTS.md），全角标点是刻意写法而非误输。
+extend-ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error"]
+
+# 类型检查配置在仓库根的 mypy.ini / pyrightconfig.json：pi-lens 与编辑器都以仓库根为
+# cwd 运行检查器，放在这里它们会找不到（且散两份会漂移）。
+
+# pi-lens / ruff 的 "ambiguous punctuation"（RUF001–003）规则会给中文注释与文档串报满屏
+# warning，与「代码检查必须干净」冲突。按 implement 的前置约定在仓库本地配置里关掉这条规则；
+# 关闭不影响任何交付行为。对应 [tool.ruff.lint].extend-ignore。

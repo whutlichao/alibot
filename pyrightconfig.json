@@ -1,0 +1,11 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["app/worksplice", "app/tests"],
+  "extraPaths": ["app"],
+  "exclude": ["**/__pycache__", "worksplice-design-system"],
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": "none",
+  "reportMissingImports": "error",
+  "pythonVersion": "3.11"
+}
