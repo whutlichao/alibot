@@ -265,9 +265,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   .dock { width: 100%; flex-basis: auto; border-left: 0; border-top: 1px solid var(--border); }
   .stream, .chan-head, .composer { padding-left: var(--sp-6); padding-right: var(--sp-6); }
 }
-
-/* ─── 事件流的连接状态（断线时可见；重连带 last_seq 补拉） ─────────────── */
-.conn-banner.steam-state { background: var(--warn-soft); color: var(--warn-deep); }
 /* ─── 「正在回复」指示（进程内事实：该成员有一轮 in-flight） ─────────────── */
 .typing-line {
   display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-4) var(--sp-4) 0;
@@ -278,19 +275,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   animation: pulse 1.5s ease-in-out infinite; flex: 0 0 7px;
 }
 @media (prefers-reduced-motion: reduce) { .typing-line::before { animation: none; } }
-
-/* ─── 轮次结果（只读列表，不做可观测页面） ───────────────────────────── */
-.outcome-list { margin: var(--sp-6) 0 0; display: flex; flex-direction: column; gap: var(--sp-2); }
-.outcome-row {
-  display: flex; align-items: baseline; gap: var(--sp-4); padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface);
-  font-size: var(--fs-caption); color: var(--muted);
-}
-.outcome-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.outcome-status { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
-.outcome-row[data-outcome="failed"] .outcome-status { color: var(--error); }
-.outcome-row[data-outcome="replied"] .outcome-status { color: var(--online-text); }
-.outcome-row[data-outcome="ignored"] .outcome-status { color: var(--muted); }
 
 /* ─── Agent 消息的作者呈现（--accent-deep 作者名 + Agent capsule） ──────── */
 .msg-author.is-agent { color: var(--accent-deep); }

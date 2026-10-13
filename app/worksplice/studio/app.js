@@ -48,13 +48,11 @@ const state = {
   localProviders: [],
   consents: [],
   dataFaces: [],
-  destinations: [],
   activeChannelId: null,
   messages: [],
   pending: [],
   members: [],
   statuses: {},
-  outcomes: [],
   streams: new Map(),
   seenSeqs: new Map(),
   typing: {},
@@ -247,7 +245,6 @@ async function refreshMessages() {
   const channel = activeChannel();
   if (!channel) {
     state.messages = [];
-    state.outcomes = [];
     return;
   }
   const payload = await api(channelPath(channel.id, '/messages'));
@@ -255,17 +252,6 @@ async function refreshMessages() {
   replaceChannel(payload.channel);
   seenSeqsFor(channel.id).clear();
   payload.messages.forEach((message) => seenSeqsFor(channel.id).add(message.seq));
-  await refreshOutcomes();
-}
-
-async function refreshOutcomes() {
-  const channel = activeChannel();
-  if (!channel) {
-    state.outcomes = [];
-    return;
-  }
-  const payload = await api(channelPath(channel.id, '/round-outcomes'));
-  state.outcomes = payload.round_outcomes || [];
 }
 
 async function refreshStatuses() {
@@ -440,6 +426,14 @@ function connectStream(channelId, entry) {
   const cursor = lastSeqOf(channelId);
   const source = new EventSource(channelPath(channelId, '/events') + '?after_seq=' + cursor);
   entry.source = source;
+  // 服务端的例行轮换（event: rotate）不算掉线：它只是要求重新连一次。
+  entry.rotating = false;
+  source.addEventListener('rotate', () => {
+    entry.rotating = true;
+    source.close();
+    if (state.streams.get(channelId) !== entry) return;
+    entry.timer = setTimeout(() => connectStream(channelId, entry), 250);
+  });
   source.onopen = () => {
     const recovered = state.streamState !== 'open';
     state.streamState = 'open';
@@ -453,6 +447,7 @@ function connectStream(channelId, entry) {
     }
   };
   source.onerror = () => {
+    if (entry.rotating) return; // 我们自己关的：不是错误
     // 事件流断开是「后端不可达」最直接的证据：它就是后端的连接。因此这里把线上态置为不可达，
     // 发送被禁、横幅显示，并启动自动重试 —— 不需要人去点重试按钮。
     state.streamState = 'reconnecting';
@@ -560,10 +555,6 @@ function onStreamOutcome(channelId, payload) {
   if (!outcome) return;
   if (outcome.status === 'failed') state.statuses[outcome.member_id] = 'error';
   else if (state.statuses[outcome.member_id] === 'working') state.statuses[outcome.member_id] = 'online';
-  if (state.activeChannelId === channelId) {
-    state.outcomes = state.outcomes.filter((item) => item.id !== outcome.id).concat([outcome]);
-    renderOutcomes();
-  }
   renderMembers();
   renderDock();
 }
@@ -594,7 +585,6 @@ function render() {
   renderConnection();
   renderDock();
   renderTyping();
-  renderOutcomes();
   syncSendButton();
 }
 
@@ -712,30 +702,6 @@ function renderTyping() {
   container.textContent = agent ? agent.display_name + ' 正在回复…' : '';
 }
 
-function renderOutcomes() {
-  const container = $('#outcomeList');
-  if (!container) return;
-  const channel = activeChannel();
-  if (!channel || !state.outcomes.length) {
-    container.hidden = true;
-    replaceChildren(container, []);
-    return;
-  }
-  const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
-  const rows = state.outcomes.slice(-5).map((outcome) => {
-    const agent = byId.get(outcome.member_id);
-    const row = el('div', 'outcome-row');
-    row.dataset.outcome = outcome.status;
-    row.appendChild(el('span', 'outcome-status', outcome.status));
-    row.appendChild(
-      el('span', 'grow', (agent ? agent.display_name : outcome.member_id) + ' · ' + outcome.reason),
-    );
-    if (outcome.merged) row.appendChild(el('span', 'msg-tag', '已合并'));
-    return row;
-  });
-  container.hidden = false;
-  replaceChildren(container, rows);
-}
 
 function renderHeader() {
   const channel = activeChannel();
@@ -1043,7 +1009,6 @@ async function loadRemoteFlow() {
   try {
     remoteFlow = await api('/api/remote-data-flow');
     state.dataFaces = remoteFlow.data_faces || [];
-    state.destinations = remoteFlow.destinations || [];
   } catch {
     // 告知文案读不到不影响主流程；下一次打开面板会重试。
   }

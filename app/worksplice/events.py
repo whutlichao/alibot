@@ -26,8 +26,6 @@ from typing import Any
 # 队列容量：单个订阅者跟不过来时不阻塞发布方（丢的是事件，不是消息——消息已在库里）。
 QUEUE_LIMIT = 256
 
-EVENT_TYPES = ("message", "member_status", "typing", "round_outcome")
-
 
 class EventBus:
     """按频道分组的进程内广播。线程安全（发布方是唤醒编排的工作线程）。"""
@@ -62,10 +60,6 @@ class EventBus:
                     group.discard(channel)
                     if not group:
                         self._subscribers.pop(target_id, None)
-
-    def subscriber_count(self, target_id: str) -> int:
-        with self._lock:
-            return len(self._subscribers.get(target_id, ()))
 
 
 def sse_frame(event: Mapping[str, Any]) -> str:

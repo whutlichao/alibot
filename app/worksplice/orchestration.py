@@ -34,7 +34,7 @@ from .agent_seam import (
     provider_of,
     read_api_key,
 )
-from .db import OWNER_ID, Database, utc_now
+from .db import Database, utc_now
 from .events import EventBus
 from .mentions import mentioned_member_ids, parse_mentions
 
@@ -43,9 +43,6 @@ STATUS_ONLINE = "online"
 STATUS_WORKING = "working"
 STATUS_ERROR = "error"
 STATUS_OFFLINE = "offline"
-
-STATUS_HEALTHY = "healthy"
-STATUS_UNAVAILABLE = "unavailable"
 
 WAKE_REASON_MENTION = "mention"
 WAKE_REASON_CHANNEL_MESSAGE = "channel-message"
@@ -94,9 +91,9 @@ class WakeOrchestrator:
         self._seam = seam
         self._events = events
         self._scheduler: Scheduler = scheduler if scheduler is not None else ThreadScheduler()
-        # in-flight 与「最近一轮失败」都只在内存里：重启后不重放、也不残留错误的错误态。
+        # in-flight 只是运行态（进程内事实）：重启后没有可重放的轮次。
+        # 「最近一轮失败」不在这里 —— 它读库（见 ``status_of``），因为它是一个持久事实。
         self._in_flight: set[str] = set()
-        self._last_failed: set[str] = set()
         self._lock = threading.RLock()
 
     # ─── 唤醒面 ───────────────────────────────────────────────────────────
@@ -208,12 +205,6 @@ class WakeOrchestrator:
                 self._db.mark_read(channel_id, base_seq, member_id=member_id)
             elif outcome.status == "ignored":
                 self._db.mark_read(channel_id, base_seq, member_id=member_id)
-
-            with self._lock:
-                if outcome.status == "failed":
-                    self._last_failed.add(member_id)
-                else:
-                    self._last_failed.discard(member_id)
 
             record = self._db.append_round_outcome(
                 member_id=member_id,
@@ -327,14 +318,20 @@ class WakeOrchestrator:
 
     # ─── 状态点（只表达后端事实） ─────────────────────────────────────────
     def status_of(self, agent: dict[str, Any]) -> str:
-        """四态优先级：未启用 → 正在回复 → 出错 → 空闲。"""
+        """四态优先级：未启用 → 正在轮次中 → 出错 → 在线。
+
+        「出错」读的是**库里最近一轮的结论**，不是内存里的一次失败：
+        「最近一轮失败」是一个持久事实，后端重启后仍然是它。
+        「正在轮次中」确实只是内存事实（in-flight 是进程内的运行态），但重启后就没有在跑的
+        轮次了，所以这个取值不会撒谎。
+        """
         if not self.availability(agent).ok:
             return STATUS_OFFLINE
         with self._lock:
             if agent["id"] in self._in_flight:
                 return STATUS_WORKING
-            if agent["id"] in self._last_failed:
-                return STATUS_ERROR
+        if self._db.latest_round_status(agent["id"]) in ("failed", "budget-exhausted"):
+            return STATUS_ERROR
         return STATUS_ONLINE
 
     def member_statuses(self, agent_ids: list[str] | None = None) -> dict[str, str]:
@@ -354,12 +351,3 @@ class WakeOrchestrator:
             channel_id,
             {"type": "member_status", "member_id": member_id, "seq": seq, "status": self.status_of(agent)},
         )
-
-    # ─── 未读口径的辅助：agent 消费游标 ───────────────────────────────────
-    def owner_visibility(self) -> dict[str, Any]:
-        """给只读快照用的一小组事实（当前没有额外语义，保留给下游扩展）。"""
-        return {"owner_id": OWNER_ID}
-
-
-def owner_unread_guard() -> None:
-    """占位：owner 的未读徽标与 Agent 的消费游标互不干扰（前者读 ``channel_read`` 的 owner 行）。"""

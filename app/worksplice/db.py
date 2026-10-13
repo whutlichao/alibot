@@ -737,6 +737,20 @@ class Database:
         }
 
     # ─── 已读位置（未读的正本） ───────────────────────────────────────────
+    def latest_round_status(self, member_id: str) -> str | None:
+        """该成员最近一轮的结论（库里的正本；没有轮次时为 None）。
+
+        状态点的「出错」必须由**落库的事实**推导，而不是内存里的一张失败表：
+        否则后端重启后状态点会回到「在线」，而库里最近一轮仍是 failed —— 同一条事实两个说法。
+        按 ``finished_at`` 与 ``id`` 同序列定序，与列表端点的顺序一致。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM round_outcome WHERE member_id = ? ORDER BY finished_at DESC, id DESC LIMIT 1",
+                (member_id,),
+            ).fetchone()
+        return row["status"] if row is not None else None
+
     def agent_cursor(self, channel_id: str, member_id: str) -> int:
         """该成员在该频道已经读到哪一条（消费游标）。
 

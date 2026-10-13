@@ -3,7 +3,7 @@
 协作域的唤醒编排需要的全部框架能力被收敛成两个东西：
 
 1. ``AgentSeam``——「一个成员的一轮」这个动作：输入**成员**与该成员**待读的新消息**，
-   输出**零或多条待落库回复** + 一个**轮次结论**。这就是票面要求的「薄适配接口」。
+   输出**零或多条待落库回复** + 一个**轮次结果**。这就是票面要求的「薄适配接口」。
 2. ``AgentScopeAgentSeam``——真实实现，进程内直接调用 AgentScope 2.x（``Agent`` /
    ``agentscope.model`` / ``agentscope.credential``），不使用框架的 Agent Service。
 
@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-# 轮次结论的状态：与规格 §5 的 round outcome status 同一套词。
+# 轮次结果的状态：与规格 §5 的 round outcome status 同一套词。
 SEAM_STATUSES = ("replied", "ignored", "failed")
 
 # provider → 该 provider 需要的凭证环境变量名（可能有多个候选，任一存在即视为有凭证）。
@@ -103,7 +103,7 @@ class RoundMessage:
 
 @dataclass
 class RoundOutcome:
-    """适配接口输出的轮次结论（协作域据此落 ``round_outcome`` 行）。"""
+    """适配接口输出的轮次结果（协作域据此落 ``round_outcome`` 行）。"""
 
     status: str
     reason: str = ""
@@ -114,7 +114,7 @@ class RoundOutcome:
 
     def __post_init__(self) -> None:
         if self.status not in SEAM_STATUSES:
-            raise ValueError(f"轮次结论状态非法：{self.status}")
+            raise ValueError(f"轮次结果状态非法：{self.status}")
         # 「一轮 ↔ 至多一条可落库消息」是契约（spec #1 §5）；越界直接在这里失败，
         # 而不是让落库路径多出一条谁都没预料到的消息。
         if len(self.messages) > 1:

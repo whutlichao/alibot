@@ -335,14 +335,35 @@ def test_status_point_starts_offline_without_a_model(client: TestClient, harness
     assert outcomes(client, channel["id"])[0]["status"] == "replied"
 
 
-def test_missing_model_reason_is_readable(client: TestClient, harness: dict) -> None:
-    """缺模型时 reason 必须可读：把配置清掉的最短路径就是「模型标识非法」被拒。
+def test_unavailable_agent_reason_is_readable(client: TestClient, harness: dict, monkeypatch) -> None:
+    """未启用（缺凭证）的 Agent 被 @ 时，轮次 reason 必须**可读**——不能安静地什么都不做。
 
-    本票没有改配置端点，所以这条用「远端未确认 + 缺凭证」这条真实路径取证（reason 逐条可读）。
+    「缺模型」在 HTTP 面不可达（创建入口要求模型标识非空，且本票没有改配置的端点），
+    所以这里走真实可达的另一条「未启用」路径：已确认告知但环境里没有该 provider 的凭证。
     """
     from tests.conftest import REMOTE_MODEL_ID
 
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     agent = create_agent(client, name="远端", model_id=REMOTE_MODEL_ID).json()["agent"]
+    client.post("/api/remote-data-flow/ack", json={"provider": "dashscope"})
+    channel = channel_with_agent(client, agent["id"])
+
+    send(client, channel["id"], f"@{agent['display_name']} 看一下")
+    harness["scheduler"].drain()
+
+    record = outcomes(client, channel["id"])[0]
+    assert record["status"] == "failed"
+    # 可读性：说清了是哪个 provider、要设哪个环境变量。
+    assert "dashscope" in record["reason"]
+    assert "DASHSCOPE_API_KEY" in record["reason"]
+    assert clients_status(client, agent["id"]) == "offline"
+
+
+def test_unconfirmed_remote_agent_reason_is_readable(client: TestClient, harness: dict) -> None:
+    """未确认远端数据流告知也是「未启用」：reason 要说清是哪一步没做。"""
+    from tests.conftest import REMOTE_MODEL_ID
+
+    agent = create_agent(client, name="远端未确认", model_id=REMOTE_MODEL_ID).json()["agent"]
     channel = channel_with_agent(client, agent["id"])
 
     send(client, channel["id"], f"@{agent['display_name']} 看一下")

@@ -76,8 +76,9 @@ def _env_seconds(name: str, default: float) -> float:
 
 SSE_STREAM_MAX_SECONDS = _env_seconds("WORKSPLICE_SSE_ROTATE_SECONDS", 55.0)
 
-# 保活间隔：没有事件时也让代理与浏览器知道连接还活着。
-SSE_KEEPALIVE_SECONDS = 15.0
+# 事件流的推送轮询间隔：队列在此间无事件时发一个 keep-alive 注释帧，
+# 顺带让事件流能感知关停信号（见 `channel_events` 的循环）。
+SSE_POLL_SECONDS = 0.5
 
 
 def repo_root() -> Path:
@@ -318,11 +319,12 @@ def create_app(
                     if await request.is_disconnected():
                         return
                     if asyncio.get_running_loop().time() >= deadline:
-                        # 主动轮换：浏览器会用最新的 last_seq 重连，事件不会丢。
-                        yield ": rotating\n\n"
+                        # 主动轮换：先**明确告知**，浏览器就能区分「服务端请我重连」与
+                        # 「后端挂了」，不会把例行轮换误报成不可达；随后带最新 last_seq 重连。
+                        yield "event: rotate\ndata: {}\n\n"
                         return
                     try:
-                        event = await asyncio.to_thread(channel.get, True, 0.5)
+                        event = await asyncio.to_thread(channel.get, True, SSE_POLL_SECONDS)
                     except queue.Empty:
                         yield ": keep-alive\n\n"
                         continue

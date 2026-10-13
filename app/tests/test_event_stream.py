@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from pathlib import Path
 
 import httpx
 from fastapi.testclient import TestClient
@@ -20,11 +21,12 @@ from tests.conftest import (
     REMOTE_MODEL_ID,
     channel_with_agent,
     create_agent,
+    live_backend,
     outcomes,
     send,
     sse_frames,
 )
-from tests.scripted import DELAY, FAIL, IGNORE
+from tests.scripted import DELAY, FAIL, IGNORE, ManualScheduler, ScriptedAgentSeam
 
 AGENT_PAYLOAD = {
     "name": "小明",
@@ -270,3 +272,39 @@ def test_stream_frames_use_seq_as_the_event_id(live: dict) -> None:
 
     assert ids == [str(seq) for seq in data_seqs]
     assert "1" in ids
+
+
+def test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage(data_dir: Path, monkeypatch) -> None:
+    """例行轮换必须先发 ``event: rotate``：前端据此区分「服务端请我重连」与「后端挂了」。
+
+    没有这一帧，555 秒后的主动收尾会被前端当成掉线，每分钟闪一次「后端不可达」——
+    那既影响可用性，也是前端不诚实（把服务端的正常行为说成故障）。
+    """
+    monkeypatch.setenv("WORKSPLICE_SSE_ROTATE_SECONDS", "1")
+    scheduler, seam = ManualScheduler(), ScriptedAgentSeam()
+    with (
+        live_backend(data_dir, scheduler=scheduler, seam=seam) as base_url,
+        httpx.Client(base_url=base_url, timeout=httpx.Timeout(30.0, read=None), trust_env=False) as http,
+    ):
+        agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+        channel = _channel_with(http, agent["id"])
+        http.post(f"/api/channels/{channel['id']}/messages", json={"body": "一条"})
+
+        names: list[str] = []
+        with http.stream("GET", f"/api/channels/{channel['id']}/events", params={"after_seq": 0}) as response:
+            current = ""
+            for line in response.iter_lines():
+                text = line.decode() if isinstance(line, bytes) else line
+                if text.startswith("event: "):
+                    current = text[len("event: ") :]
+                    names.append(current)
+                elif text.startswith("data: ") and current == "rotate":
+                    break
+
+    assert "rotate" in names, names
+    # 轮换帧必须是**命名事件**（`event: rotate`），不是普通的 keep-alive 注释：
+    # 注释帧不会触发 EventSource 的任何回调，前端根本看不到它。
+    assert names.count("rotate") == 1
+    # 轮换前先把该发的事件（消息 + 状态点快照）发完，不丢事件。
+    assert "message" in names
+    assert "member_status" in names

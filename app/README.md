@@ -138,6 +138,10 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 快照，然后进入实时推送。前端**带最新 `last_seq` 重连**，因此重连既不会漏也不会重复。
 每一帧的 SSE `id` 就是频道内 `seq`。
 
+单条连接在 `WORKSPLICE_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
+`event: rotate` 帧：前端据此**区分「例行轮换」与「后端不可达」**，不会因为轮换而误报掉线，
+随后立刻带最新 `last_seq` 重连。这个轮换同时保证优雅关停不会卡在长连接上。
+
 状态点四态（`--online` 空闲 / `--working` 正在回复 / `--error` 出错 / `--offline` 未启用）
 **只表达后端事实**，不从任何会话存活推导；`working` 脉冲在 `prefers-reduced-motion: reduce` 下关闭。
 
