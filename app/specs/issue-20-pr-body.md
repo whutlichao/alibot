@@ -42,11 +42,15 @@ Python 包  worksplice                → alibot（import / pyproject name / whe
 | --- | --- | --- |
 | `pytest` | 179 passed, 1 skipped | **179 passed, 1 skipped** |
 | `ruff check app` | All checks passed! | **All checks passed!** |
-| `ruff format --check app` | 45 files already formatted | **45 files already formatted** |
+| `ruff format --check app` | 45 files already formatted | **47 files already formatted** ※ |
 | `mypy` | Success: no issues found in 26 source files | **Success: no issues found in 26 source files** |
 | `pyright app/alibot app/tests` | 0 errors, 0 warnings, 0 informations | **0 errors, 0 warnings, 0 informations** |
 
 读数与基线**逐字相同** —— 行为一字未变的最直接证据。
+
+※ ruff format 的 45 → 47 是唯一的数字差异：ruff 连 `.md` 一起检查，而这 2 个新增文件正是本票
+新建的 `issue-20-{acceptance,pr-body}.md`。`app` 下的 `.py` 文件数改前/改后均为 **26**，
+所以对代码部分「已是格式化状态」的含义未变。
 
 **旧名残留判据**（排除三类后，期望无输出）：
 
