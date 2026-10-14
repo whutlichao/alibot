@@ -502,7 +502,7 @@ $ grep -n "el('article', 'msg outcome')" app/worksplice/studio/app.js
 1129:  const row = el('article', 'msg outcome');
 ```
 
-**修法**（`c4c5b23`，一行）：改回能匹配到那个节点的单类选择器 `.msg-outcome-note`，与同族
+**修法**（`3e1b3b6`，一行）：改回能匹配到那个节点的单类选择器 `.msg-outcome-note`，与同族
 `.msg-outcome-reason` / `.msg-outcome-state` 的写法一致（本文件没有 `.msg ` 前缀的惯例）。
 
 ### 11.2 红→绿（真实 Chromium，逐属性）
@@ -628,11 +628,11 @@ $ node ~/.pi-lens/tools/node_modules/pyright/index.js app/worksplice app/tests
 
 --- 推分支与更新 PR（head 自动跟进）---
 $ git push
-   <before>..c4c5b23  issue-18-outcome-visible -> issue-18-outcome-visible
+   79e74f8..3e1b3b6  issue-18-outcome-visible -> issue-18-outcome-visible
 
 $ gh pr edit 19 --body-file app/specs/issue-18-pr-body.md
 $ gh pr view 19 --json number,headRefOid,state
-{ "number": 19, "state": "OPEN", "headRefOid": "c4c5b23…" }   # 与本地 HEAD 一致
+{ "number": 19, "state": "OPEN", "headRefOid": "3e1b3b6…" }   # 与本地 HEAD 一致
 ```
 
 ## 12. 交付回执
