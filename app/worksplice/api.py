@@ -8,6 +8,7 @@
 - ``GET  /api/channels/{id}/messages``        按 seq 升序取消息（``after_seq`` 增量）
 - ``POST /api/channels/{id}/messages``        发送人类消息（同事务分配频道内单调 seq）
 - ``GET  /api/channels/{id}/members``         频道成员
+- ``POST /api/channels/{id}/members``         把 Agent 成员加入频道（幂等，只接受 Agent）
 - ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
 - ``GET  /api/channels/{id}/budget``          有界响应预算（只读，无 UI）
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
@@ -126,6 +127,14 @@ class RemoteConsent(BaseModel):
     provider: str = ""
 
 
+class ChannelMemberAdd(BaseModel):
+    """把一个 Agent 成员加入频道（人类面动作）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    member_id: str = ""
+
+
 class MarkRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -235,6 +244,18 @@ def create_app(
     @app.get("/api/channels/{channel_id}/members")
     def list_channel_members(channel_id: str) -> dict[str, Any]:
         return {"members": service.channel_members(channel_id)}
+
+    @app.post("/api/channels/{channel_id}/members")
+    def add_channel_member(channel_id: str, payload: ChannelMemberAdd) -> dict[str, Any]:
+        """把一个 Agent 成员加入频道（幂等）。
+
+        状态码与「确认一次远端数据流告知」同形：这是一个**幂等动作**，所以成功一律 200，
+        「新增」还是「本来就在」由载荷里的 ``joined`` 机械区分，而不是靠状态码二次编码。
+
+        只接受 Agent：owner 已由建频道自动加入，不经此端点。响应同时带该频道**最新**成员表，
+        于是前端一次调用就能刷新面板与 `@` 补全的候选，不必「先加再读」两次往返。
+        """
+        return service.add_channel_member(channel_id, payload.member_id)
 
     # ─── 轮次结果（只读；首版没有可观测页面） ─────────────────────────────
     @app.get("/api/channels/{channel_id}/round-outcomes")
@@ -381,6 +402,16 @@ def create_app(
     def no_budget_mutation(channel_id: str) -> JSONResponse:
         """预算只由后端在「人类消息重置 / 一次跳投递」时推进：人类面不能直接改它。"""
         return _not_found("回应预算只读：人类面不存在写入它的端点")
+
+    @app.api_route(
+        "/api/channels/{channel_id}/members/{member_id}",
+        methods=["PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    def no_channel_member_mutation(channel_id: str, member_id: str) -> JSONResponse:
+        """本票没有「移出频道」的端点：离开 / 踢出需要单独的语义裁定（是否写 system 事件消息、
+        是否影响历史未读与唤醒面），因此人类面明确回 404 而不是留一个沉默的 405。"""
+        return _not_found("频道成员只能加入、不能移出：人类面不存在该端点")
 
     @app.api_route(
         "/api/channels/{channel_id}/messages/{seq}",

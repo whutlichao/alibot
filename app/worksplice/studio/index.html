@@ -53,7 +53,7 @@
         <div class="rail-empty" id="channelListEmpty" hidden>还没有频道。新建一个频道就能开始记录。</div>
       </div>
       <div class="group">
-        <div class="group-label">Agent 成员</div>
+        <div class="group-label">本机 Agent</div>
         <div id="memberList"></div>
         <div class="rail-empty" id="memberListEmpty" hidden>还没有 Agent。</div>
       </div>
@@ -109,7 +109,7 @@
         <div class="composer-box">
           <!-- @ 补全弹层：挂在 .composer-box 内、输入区之上，于是它跟着 composer 一起在文档流里
                （不会被祖先裁剪，也不会被消息流盖住），且不需要新 z-index 档位。 -->
-          <div class="composer-mention" id="composerMention" role="listbox" aria-label="可提及的频道 Agent 成员" hidden data-od-id="mention-picker"></div>
+          <div class="composer-mention" id="composerMention" role="listbox" aria-label="可提及的当前频道 Agent 成员" hidden data-od-id="mention-picker"></div>
           <textarea class="composer-input" id="composerInput" rows="1" placeholder="发消息到 #频道名" data-od-id="composer-input" aria-label="消息正文"></textarea>
           <div class="composer-bar">
             <span class="composer-hint" id="composerHint">Enter 发送 · Shift+Enter 换行</span>
@@ -124,11 +124,11 @@
     </footer>
   </main>
 
-  <!-- ─── 右侧详情面板：频道 Agent 成员与状态点（四态只表达后端事实） ────── -->
+  <!-- ─── 右侧详情面板：当前频道的成员表（已加入 / 未加入）与「加入」入口 ────── -->
   <aside class="dock" id="dock" hidden data-od-id="detail-dock" aria-label="详情面板">
     <div class="dock-head">
       <div class="dock-name">频道成员</div>
-      <div class="dock-role" id="dockRole">状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
+      <div class="dock-role" id="dockRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
     </div>
     <div class="dock-scroll" id="dockMembers" data-od-id="dock-members"></div>
   </aside>

@@ -356,7 +356,15 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 
 /* ─── dock 里的成员卡片 ───────────────────────────────────────────────── */
 .dock-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-5) var(--sp-6) var(--sp-7); }
+/* 两段（已加入 / 未加入）：段标签沿用 rail 的分组语汇，段间距用既有 spacing token。 */
+.dock-group + .dock-group { margin-top: var(--sp-7); }
+.dock-group-label {
+  font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider);
+  text-transform: uppercase; color: var(--faint); font-weight: var(--fw-semi); margin-bottom: var(--sp-3);
+}
 .dock-member { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); margin-bottom: var(--sp-4); }
+/* 未加入的那一段用虚线边框：它是「还没在这个频道里」这一事实的呈现，不新造色位。 */
+.dock-member.is-outside { border-style: dashed; }
 .dock-member-head { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); }
 .dock-member-head .presence { margin-left: auto; }
 .dock-member-meta { font-size: var(--fs-mono-xs); color: var(--faint); margin-top: var(--sp-3); }
@@ -364,6 +372,7 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .dock-member-status[data-status="working"] { color: var(--working-text); }
 .dock-member-status[data-status="error"] { color: var(--error); }
 .dock-member-reason { font-size: var(--fs-caption); color: var(--warn-deep); margin-top: var(--sp-2); line-height: var(--lh-snug); }
+.dock-member-foot { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); }
 
 /* ─── 远端数据流告知（必须在首次远端调用之前） ──────────────────────────── */
 .remote-notice {

@@ -99,6 +99,46 @@ class WorkspaceService:
     def channel_members(self, channel_id: str) -> list[dict[str, Any]]:
         return self._db.list_channel_members(channel_id)
 
+    def add_channel_member(self, channel_id: str, member_id: str) -> dict[str, Any]:
+        """把一个 **Agent 成员**加入频道（人类面动作）；返回是否**新增**与该频道最新成员表。
+
+        语义（本票的裁定）：
+
+        - **幂等**：已在频道里再调不报错、不产生重复行；``joined`` 区分「新增」与「本来就在」
+          （它直接取自 ``add_channel_member`` 的返回值——幂等的事实来源是既有写点，不是这里再算一遍）。
+        - 频道不存在 → 404（``get_channel`` 早退）。
+        - 成员不存在或已删除 / 不是 Agent → ``validation_failed``，**整体不落库**（校验先于写入）。
+          错误文案与 ``create_channel`` 的初始成员校验同口径：owner 由建频道自动加入，不经此端点。
+        - 只写 ``channel_member`` + 补 ``channel_read``：两者都由 ``db.add_channel_member`` 完成，
+          这里不新增 SQL 路径、也不改它的语义。
+        - **不写 system 事件消息**：显式加入是人的显式动作，与「穿透加入需要在流里留下一条
+          agent 自己不会解释的变化」动机不同（裁定 1）。
+        """
+        self._db.get_channel(channel_id)  # 404 早退
+        fields: dict[str, str] = {}
+        if not (member_id or "").strip():
+            fields["member_id"] = "成员标识不能为空"
+        else:
+            try:
+                member = self._db.get_member(member_id)
+            except DomainError:
+                fields["member_id"] = f"成员不存在或已删除：{member_id}"
+            else:
+                if member.get("deleted_at"):
+                    fields["member_id"] = f"成员不存在或已删除：{member_id}"
+                elif member["kind"] != "agent":
+                    fields["member_id"] = f"初始成员只能是 Agent：{member_id}"
+        if fields:
+            raise DomainError("validation_failed", "加入频道校验未通过，未加入任何成员", fields=fields)
+
+        joined = self._db.add_channel_member(channel_id, member_id)
+        return {
+            "joined": joined,
+            "member": self._db.get_member(member_id),
+            "members": self._db.list_channel_members(channel_id),
+            "channel": self._db.get_channel(channel_id, self._member_id),
+        }
+
     def round_outcomes(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         """该频道的轮次结果（只读；首版没有可观测页面）。"""
         return self._db.list_round_outcomes(channel_id, after_seq=after_seq)

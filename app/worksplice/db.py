@@ -835,7 +835,7 @@ class Database:
             )
         return used
 
-    # ─── 频道成员（穿透加入的唯一写点） ───────────────────────────────────
+    # ─── 频道成员（唯一写点：人类面「加入」与穿透加入共用） ──────────────────
     def is_channel_member(self, channel_id: str, member_id: str) -> bool:
         self.get_channel(channel_id)  # 404 早退
         with self._lock:
