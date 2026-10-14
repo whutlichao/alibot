@@ -498,6 +498,8 @@ FAILED ...test_cli_process_exits_non_zero_with_a_readable_stderr
 
 ```text
 $ git log --oneline 6d4e6f8..HEAD
+03c40ca docs(spec): #37 PR body 补 review 发现的真缺陷（WAL PRAGMA 改写文件头）与最终读数
+c260c1b docs(spec): #37 验收件（红/绿证据、门禁读数、双轴 review 结论与逐条处置）
 86e3b6e fix(db,repair): #37 处置 Spec 轴 review 的 findings（含一处真实缺陷）
 8c9899d fix(db): #37 版本不匹配时拒绝启动旧库，并补一个显式的手动修复入口
 8c7bfec docs(spec): #37 PR body（Summary / Evidence / Merge Danger，按本机 pr skill 模板）
@@ -506,7 +508,7 @@ $ git log --oneline 6d4e6f8..HEAD
 $ git status --short      # 空
 ```
 
-- **head sha**：`86e3b6e`（推送后与远端分支一致）
+- **head sha**：`03c40ca`（已推送，与远端分支一致）
 - **PR**：[#38](https://github.com/whutlichao/alibot/pull/38)（`issue-37-reject-old-db` → `main`）
 - **最终读数**：`228 passed, 1 skipped`（基线 196 + 新增 32；既有用例零改动）
 - **`~/Alibot`**：全程未读写；`lsof` 显示持有者是开工前就存在的 v3 后端进程（PID 69482，
