@@ -185,6 +185,27 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .composer-send:disabled { background: var(--panel-2); color: var(--faint); cursor: not-allowed; }
 .composer-note { margin-top: var(--sp-3); text-align: center; font-size: var(--fs-caption); color: var(--faint); }
 
+/* ─── @ 补全弹层（成员清单） ─────────────────────────────────────────────
+   形态与新建频道弹窗的成员勾选控件同族（.member-opt 圆角胶囊 + 方形头像块 + 名字），
+   但它是**列**而不是换行排布，且挂在 .composer-box 内部：于是它跟着 composer 一起在文档流里，
+   既不被其它容器裁剪、也不靠新 z-index 档位。色值全部消费既有 token（--selected* / --surface /
+   --border* / --faint 等），不新造色位、不硬编码 hex/rgb。 */
+.composer-mention {
+  max-height: 208px; overflow-y: auto; padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px;
+}
+.mention-opt { width: 100%; justify-content: flex-start; text-align: left; }
+/* 打开清单时用 --selected 族标出「键盘当前指向哪一项」（与 .member-opt.is-on 同一档位语义）。 */
+.mention-opt.is-active {
+  border-color: var(--selected-graphic); background: var(--selected-soft); color: var(--selected-deep);
+}
+.mention-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-note {
+  margin-left: auto; padding-left: var(--sp-5); font-size: var(--fs-caption); color: var(--warn-deep);
+  flex: 0 0 auto;
+}
+.mention-empty { border-style: dashed; text-align: left; }
+
 /* ─── dock（默认隐藏） ────────────────────────────────────────────────── */
 .dock {
   width: var(--dock-w); flex: 0 0 var(--dock-w); border-left: 1px solid var(--border);
