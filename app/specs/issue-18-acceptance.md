@@ -70,7 +70,7 @@
 
 ```text
 $ .venv/bin/python -m pytest
-179 passed, 1 skipped in 105.50s        # skipped = 默认跳过的真模型冒烟测试（基线 174+1，本票新增 5 条）
+179 passed, 1 skipped in 96.80s        # skipped = 默认跳过的真模型冒烟测试（基线 174+1，本票新增 5 条）
 
 $ .venv/bin/ruff check app && .venv/bin/ruff format --check app
 All checks passed!
