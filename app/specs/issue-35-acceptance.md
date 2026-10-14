@@ -182,24 +182,38 @@ Problem Statement 与 User Stories §B 里分开陈述。
 ## 7. 状态流转
 
 - 改动落在分支 `issue-silence-narration-spec`，基线 `9fd31bb`（main HEAD）。
-- worktree 干净（`git status --short` 为空）；提交与推送、PR 的创建与回填见本节下方补充记录。
+- worktree 干净（`git status --short` 为空）；提交 `3216355`、已推送、PR **#36** 已以 `--body-file` 创建。
 - 合并（G-merge）由 coordinator 执行；本票不自行合并、不自行改 #35 的 label 或 state、**不创建实施票**。
 
-### 状态流转记录（收尾逐条核对）
+### 收尾回执（真实输出）
 
 ```console
+$ tail -n +7 app/specs/issue-35-spec.md > /tmp/new35.md && printf '\n' >> /tmp/new35.md
 $ gh issue view 35 --json body --jq .body > /tmp/live35.md
-$ diff /tmp/new35.md /tmp/live35.md          # 留档 vs tracker（仅末尾换行）
-381a382
-> 
+$ diff -q /tmp/new35.md /tmp/live35.md && echo "SPEC COPY == ISSUE BODY ✅"
+SPEC COPY == ISSUE BODY ✅
 
-$ git add app/specs && git commit -m "docs(spec): #35 Agent 的括注/旁白——沉默规格正本（零源码改动）"
+$ git add app/specs/issue-35-*.md && git commit -m "docs(spec): #35 Agent 的括注/旁白——沉默规格正本（零源码改动）"
+[issue-silence-narration-spec 3216355] docs(spec): #35 Agent 的括注/旁白——沉默规格正本（零源码改动）
+
 $ git push -u origin issue-silence-narration-spec
+ * [new branch]      issue-silence-narration-spec -> issue-silence-narration-spec
+
 $ gh pr create --base main --head issue-silence-narration-spec \
     --title "docs(spec): #35 Agent 的括注/旁白——沉默规格正本（零源码改动）" \
     --body-file app/specs/issue-35-pr-body.md
-$ git status --short                          # 空 ⇒ worktree 干净
-$ git rev-parse HEAD                          # head sha 回填于此
+https://github.com/whutlichao/alibot/pull/36
+
+$ gh pr view 36 --json number,state,files --jq '{number,state,files:[.files[].path]}'
+{"number":36,"state":"OPEN",
+ "files":["app/specs/issue-35-acceptance.md","app/specs/issue-35-pr-body.md","app/specs/issue-35-spec.md"]}
+
+$ git status --short          # 空 ⇒ worktree 干净
+$ git rev-parse HEAD
+32163554066da8897bfd55d49fb9931a39606080
 ```
 
-（真实输出见下方「回执」段；本文件提交后如上命令的读数由 coordinator 在 PR 上可直接核对。）
+- **PR**：[#36](https://github.com/whutlichao/alibot/pull/36)（OPEN，base `main`）
+- **PR body 正本**：`app/specs/issue-35-pr-body.md`
+- **head sha**：`32163554066da8897bfd55d49fb9931a39606080`
+- **改动面**：仅 `app/specs/` 下三份文档（add，无修改、无删除）
