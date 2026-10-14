@@ -17,9 +17,13 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+# provider 客户端上「可关闭入口」的候选方法名（协程）。顺序即探测顺序。
+_CLOSE_METHOD_NAMES = ("aclose", "close")
 
 # 轮次结果的状态：与规格 §5 的 round outcome status 同一套词。
 SEAM_STATUSES = ("replied", "ignored", "failed")
@@ -225,22 +229,33 @@ class AgentScopeAgentSeam:
         model_name = model_name_of(str(agent.get("model_id") or ""))
         system_prompt = _system_prompt(agent, mentioned=mentioned)
 
-        async def _reply() -> Any:
-            from agentscope.agent import Agent
-            from agentscope.message import UserMsg
+        async def _round() -> Any:
+            # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
+            # 两件事都在同一个 ``asyncio.run`` 的协程内完成，中间不允许跨到下一个 loop。
+            # 客户端若带着活连接活过这一轮，它的 ``__del__`` 会在之后的某个 loop 里去关一个属于
+            # 已关闭 loop 的 socket transport —— 那正是 issue #30 的 ``Event loop is closed``。
+            model = self._build_model(provider, model_name)
+            try:
+                from agentscope.agent import Agent
+                from agentscope.message import UserMsg
 
-            instance = Agent(
-                name=str(agent.get("display_name") or agent.get("id") or "agent"),
-                system_prompt=system_prompt,
-                model=self._build_model(provider, model_name),
-            )
-            # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
-            # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
-            inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
-            return await instance.reply(inputs if inputs else None)
+                instance = Agent(
+                    name=str(agent.get("display_name") or agent.get("id") or "agent"),
+                    system_prompt=system_prompt,
+                    model=model,
+                )
+                # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
+                # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
+                inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
+                return await asyncio.wait_for(
+                    instance.reply(inputs if inputs else None), timeout=self.timeout_seconds
+                )
+            finally:
+                # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
+                await _aclose_model_client(model)
 
         try:
-            reply = asyncio.run(asyncio.wait_for(_reply(), timeout=self.timeout_seconds))
+            reply = asyncio.run(_round())
         except TimeoutError:
             return RoundOutcome(status="failed", reason=f"模型调用超时（{self.timeout_seconds:.0f} 秒）")
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
@@ -256,6 +271,47 @@ class AgentScopeAgentSeam:
         return RoundOutcome(
             status="replied", reason="模型自主判断需要回应", messages=[RoundMessage(body=text)]
         )
+
+
+def _client_closer(client: Any) -> Any:
+    """从 provider 客户端上取「关闭入口」；取不到返回 ``None``（安静跳过）。
+
+    provider 客户端的关闭入口不统一：``openai.AsyncClient`` / ``anthropic.AsyncAnthropic`` /
+    ``ollama.AsyncClient`` 是协程 ``close()``；``google.genai.Client`` 的异步入口在 ``aio.aclose()``
+    （它的同步 ``close()`` 管不到异步客户端）。所以这里用鸭子类型探测，而不是 instanceof 一串类型。
+
+    只接受**协程函数**是本函数唯一的判定规则：正是这条规则让 ``google.genai.Client`` 跳过它那个
+    同步的 ``close()``、落到 ``aio.aclose()`` 上。于是 ``_aclose_model_client`` 不再需要二次判定。
+    """
+    candidates = [getattr(client, name, None) for name in _CLOSE_METHOD_NAMES]
+    aio = getattr(client, "aio", None)
+    candidates.append(getattr(aio, "aclose", None))
+    for candidate in candidates:
+        if callable(candidate) and inspect.iscoroutinefunction(candidate):
+            return candidate
+    return None
+
+
+async def _aclose_model_client(model: Any) -> None:
+    """在**当前** event loop 内关掉 ``model`` 持有的 provider 客户端。
+
+    为什么必须显式关：``run_round`` 每轮用 ``asyncio.run()`` 新建并随即关闭一个 loop，而 provider
+    客户端若带着 keep-alive 连接活过这一轮，它的 ``__del__`` 会在**之后的**某个 loop 里
+    ``create_task(self.aclose())``，去关一个属于已关闭 loop 的 socket transport —— 那正是
+    issue #30 的 ``RuntimeError: Event loop is closed``。
+
+    取不到可关闭入口（或关闭本身失败）时**安静跳过**：一轮的成败由模型调用决定，收尾不该把一个
+    已经成功的一轮变成 failed。取值入口只由 ``_client_closer`` 一处判定（只接受协程函数），
+    这里只管调用与忍错。
+    """
+    try:
+        client = getattr(model, "client", None)
+        closer = _client_closer(client) if client is not None else None
+        if closer is None:
+            return
+        await closer()
+    except Exception:  # 收尾是尽力而为：理由见 docstring
+        return
 
 
 def _system_prompt(agent: dict[str, Any], *, mentioned: bool) -> str:
