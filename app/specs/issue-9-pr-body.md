@@ -124,11 +124,11 @@ pytest 只是「无带宽成本」的契约断言。
 
 **Blast Radius:** composer 一个交互（`@` 补全）与其取证。
 
-- **已知合并冲突**：#8（轮次失败可见，已合并进 main 的 `8d5c8da`）与本票都改 `app.js` / `app.css`。
-  本票分支基线是旧 main `25108fb`，**按 coordinator 指示未 rebase、未合并 main**；冲突由 coordinator
-  在合并时处理。本票**未碰**消息流渲染、失败呈现、`onStreamOutcome` 及其 CSS（`git diff` 里
-  对这些符号命中数为 0）。中途一处挂在 `onStreamMessage` 上的候选刷新已移出，改挂 composer 的
-  `focus` 事件 + 切频道 + 初始加载。
+- **合并冲突已解决**：#8（轮次失败可见，已合并进 main 的 `8d5c8da`）与本票都改 `app.js` / `app.css`。
+  本票分支基线是旧 main `25108fb`，冲突只有 `app.js` 一个文件两处，已由合并提交 `3c254c4`
+  解决，细节见下方「与 #8 的合并结果」。本票**未碰**消息流渲染、失败呈现、`onStreamOutcome`
+  及其 CSS（`git diff` 里对这些符号命中数为 0）。中途一处挂在 `onStreamMessage` 上的候选刷新已移出，
+  改挂 composer 的 `focus` 事件 + 切频道 + 初始加载。
 - 同权重选择器的顺序依赖：新增 `.mention-opt` 与既有 `.member-pick .member-opt` 同为 (0,2,0)，
   高亮态用的是更具体的 `.mention-opt.is-active` (0,3,0)；真实浏览器已确认生效，无回归。
 - 键盘层只**插一层**：清单打开**且有候选**时才接管 `↑↓`/`Enter`/`Tab`；空态时不接管
@@ -136,3 +136,58 @@ pytest 只是「无带宽成本」的契约断言。
   `isComposing` 从「`Enter` 不发送」收紧为「组合期整段不接管」，行为等价而更一致）。
 - 遗留（票面明确不做，已记录）：`/` 命令面板、跨频道补全、chip/富文本；未做「鼠标悬停与键盘
   高亮联动」（鼠标点击即选中，票面未要求）。
+
+## 与 #8 的合并结果
+
+`origin/main` 的 `8d5c8da`（#8 轮次失败可见）已并入本分支，合并提交
+`3c254c4`，parents = `42c3409`（本票）+ `8d5c8da`（main）。
+
+**冲突范围与解法。** 两处都在「刷新既有数据」的调用序列里，且**纯增量、互不矛盾**，因此
+两处都**保留双方**，没有删除任何一方的调用：
+
+```diff
+ loadWorkspace
+   await refreshMessages()
++  await refreshOutcomes()          # #8 的轮次结果
++  await refreshChannelMembers()    # #9 的候选成员表
+   await refreshStatuses()
+
+ selectChannel
++  closeMentionPicker()             # #9：候选清单属于刚被切换掉的频道
++  state.outcomes = {}              # #8：新频道的轮次结果清空后重建
+   render()
+   await refreshMessages()
++  await refreshOutcomes()
++  await refreshChannelMembers()
+   state.online = true
+```
+
+第 2 处的顺序按「先关清单 → 再清 outcomes → 再 render → 然后依次 await 两个刷新」固定：
+`closeMentionPicker()` 必须在 `render()` 之前（清单描述的是旧频道的成员表），`state.outcomes = {}`
+也必须在 `render()` 之前（否则会先画出旧频道的轮次结果再被清掉）。**两个刷新互不依赖**，
+先后只影响首屏顺序，不影响正确性。除此之外未动任何一行，`app.css` / `index.html` 由 git
+自动合并、无人工介入。
+
+**合入 main 后的门禁读数（本次新增，命令与结果原样）。**
+
+```text
+$ .venv/bin/python -m pytest
+158 passed, 1 skipped in 94.68s        # 152→158：main 带来 test_round_outcome_visibility.py 的 6 条
+                                       # skipped = 默认跳过的真模型冒烟测试
+
+$ .venv/bin/ruff check app
+All checks passed!
+$ .venv/bin/ruff format --check app
+36 files already formatted             # 31→36：main 新增的文件也算在内
+
+$ .venv/bin/python -m mypy
+Success: no issues found in 25 source files
+$ node ~/.pi-lens/tools/node_modules/pyright/index.js --outputjson app/worksplice app/tests
+pyright errors 0 files 25
+
+$ node --check app/worksplice/studio/app.js
+app.js syntax OK                       # 合并后的 app.js 语法自检
+```
+
+合入后这些读数**全绿**，两个函数里的调用序列同时满足 #8 的轮次结果与 #9 的成员表两条刷新
+需求；`git status` 空、worktree 干净。
