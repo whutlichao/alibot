@@ -20,6 +20,13 @@
      `--error` 是这一轮的结论（消息流里的失败行）。
 
    DOM 一律用 createElement/textContent 构建，不用 innerHTML（模板与数据分离）。
+
+   本票（issue #14）新增：
+   - 右侧「频道成员」面板名实相符：按**当前频道的成员表**（`state.channelMembers`，来源
+     `GET /api/channels/{id}/members`）渲染，并分「已加入 / 未加入」两段；未加入的 Agent
+     在面板内直接有「加入」控件（人类裁定 2 选 a），点击调用 `POST /api/channels/{id}/members`。
+   - 加入成功后**不刷新页面**：用响应里的最新成员表覆盖缓存，`@` 补全立刻能选到它。
+     左栏「本机 Agent」（`renderMembers()`）仍是全工作区名单，语义与「频道成员」不再冲突。
    ========================================================================== */
 'use strict';
 
@@ -718,6 +725,24 @@ function presenceNode(status) {
   return node;
 }
 
+/** 该频道的 Agent 成员（已加入）+ 本工作区里未加入的 Agent。
+
+    「已加入」的**唯一来源**是该频道的成员表（`GET /api/channels/{id}/members`），与面板标题
+    「频道成员」一致；「未加入」= 全工作区 Agent 名单（`state.members`）减去已加入者。
+    两者都是后端事实的镜像，前端不自己推断频道关系。
+
+    未加入的 Agent 呈现在**面板内**的「未加入」一段（人类裁定 2 选 a）：入口就在成员面板里，
+    人看到「它不在这个频道」的那一眼就同时看到了「加入」按钮。 */
+function dockGroups(channelId) {
+  const members = state.channelMembers[channelId];
+  const joined = members ? members.filter((member) => member.kind === 'agent') : null;
+  const joinedIds = new Set((joined || []).map((member) => member.id));
+  const outsiders = state.members.filter(
+    (member) => member.kind === 'agent' && !joinedIds.has(member.id),
+  );
+  return { loaded: members !== null && members !== undefined, joined: joined || [], outsiders };
+}
+
 function renderDock() {
   const channel = activeChannel();
   const container = $('#dockMembers');
@@ -726,38 +751,84 @@ function renderDock() {
     replaceChildren(container, [el('div', 'rail-empty', '先打开一个频道。')]);
     return;
   }
-  const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
-  const agents = state.members.filter((member) => member.kind === 'agent');
-  if (!agents.length) {
-    replaceChildren(container, [
-      el('div', 'rail-empty', '还没有 Agent 成员：用左上角「Agent」按钮创建一个，再在新建频道时勾选它。'),
-    ]);
-    return;
+  const groups = dockGroups(channel.id);
+  const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
+  const nodes = [];
+
+  // ── 已加入：本频道的 Agent 成员 ──────────────────────────────────────
+  const joinedSection = el('section', 'dock-group');
+  joinedSection.dataset.odId = 'dock-joined';
+  const joinedLabel = el('div', 'dock-group-label', '已加入（' + groups.joined.length + '）');
+  joinedSection.appendChild(joinedLabel);
+  if (!groups.loaded) {
+    joinedSection.appendChild(el('div', 'rail-empty', '正在读取该频道的成员表…'));
+  } else if (!groups.joined.length) {
+    joinedSection.appendChild(
+      el('div', 'rail-empty', '这个频道还没有 Agent 成员：从下面「未加入」里点「加入」即可。'),
+    );
+  } else {
+    groups.joined.forEach((member) => joinedSection.appendChild(memberCard(member, agentsById)));
   }
-  const rows = agents.map((member) => {
-    const agent = byId.get(member.id) || {};
-    const card = el('div', 'dock-member');
-    card.dataset.member = member.id;
-    const head = el('div', 'dock-member-head');
-    head.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
-    head.appendChild(el('strong', null, member.display_name));
-    if (agent.role) head.appendChild(el('span', 'msg-tag', agent.role));
-    head.appendChild(presenceNode(statusOf(agent)));
-    card.appendChild(head);
-    const meta = el('div', 'dock-member-meta mono', agent.model_id || '未配置模型');
-    card.appendChild(meta);
-    const status = statusOf(agent);
-    const line = el('div', 'dock-member-status', STATUS_LABEL[status] || status);
-    line.dataset.status = status;
-    card.appendChild(line);
-    if (agent.enabled_reason) {
-      const reason = el('div', 'dock-member-reason', agent.enabled_reason);
-      reason.dataset.odId = 'agent-reason-' + member.id;
-      card.appendChild(reason);
-    }
-    return card;
-  });
-  replaceChildren(container, rows);
+  nodes.push(joinedSection);
+
+  // ── 未加入：本工作区的 Agent，点「加入」进入该频道 ────────────────────
+  const outsideSection = el('section', 'dock-group');
+  outsideSection.dataset.odId = 'dock-not-joined';
+  outsideSection.appendChild(
+    el('div', 'dock-group-label', '未加入本频道（' + groups.outsiders.length + '）'),
+  );
+  if (!groups.outsiders.length) {
+    outsideSection.appendChild(
+      el(
+        'div',
+        'rail-empty',
+        state.members.some((member) => member.kind === 'agent')
+          ? '本工作区的 Agent 都已在这个频道里。'
+          : '还没有 Agent：用左上角「Agent」按钮创建一个，再回到这里点「加入」。',
+      ),
+    );
+  } else {
+    groups.outsiders.forEach((member) => outsideSection.appendChild(memberCard(member, agentsById, true)));
+  }
+  nodes.push(outsideSection);
+  replaceChildren(container, nodes);
+}
+
+/** 一张成员卡片。``canJoin`` 为真时附上「加入」控件（与既有 `.btn-sm` 同一语汇，不新造色位）。 */
+function memberCard(member, agentsById, canJoin) {
+  const agent = agentsById.get(member.id) || {};
+  const card = el('div', 'dock-member' + (canJoin ? ' is-outside' : ''));
+  card.dataset.member = member.id;
+  card.setAttribute('data-od-id', (canJoin ? 'dock-outside-' : 'dock-member-') + member.id);
+  const head = el('div', 'dock-member-head');
+  head.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
+  head.appendChild(el('strong', null, member.display_name));
+  if (agent.role) head.appendChild(el('span', 'msg-tag', agent.role));
+  head.appendChild(presenceNode(statusOf(agent)));
+  card.appendChild(head);
+  const meta = el('div', 'dock-member-meta mono', agent.model_id || '未配置模型');
+  card.appendChild(meta);
+  const status = statusOf(agent);
+  const line = el('div', 'dock-member-status', STATUS_LABEL[status] || status);
+  line.dataset.status = status;
+  card.appendChild(line);
+  if (agent.enabled_reason) {
+    const reason = el('div', 'dock-member-reason', agent.enabled_reason);
+    reason.dataset.odId = 'agent-reason-' + member.id;
+    card.appendChild(reason);
+  }
+  if (canJoin) {
+    const foot = el('div', 'dock-member-foot');
+    const button = el('button', 'btn btn-sm', joining.has(member.id) ? '加入中…' : '加入');
+    button.type = 'button';
+    button.dataset.join = member.id;
+    button.setAttribute('data-od-id', 'dock-join-' + member.id);
+    button.setAttribute('aria-label', '把 ' + member.display_name + ' 加入当前频道');
+    button.disabled = joining.has(member.id);
+    foot.appendChild(button);
+    card.appendChild(foot);
+  }
+  return card;
 }
 
 function renderTyping() {
@@ -1012,6 +1083,8 @@ const mentionPicker = {
 // 频道成员清单的读取状态：每个频道各自一份；失败只记事实，不伪造成员。
 const channelMembersFailed = new Set();
 const channelMembersLoading = new Set();
+// 正在「加入频道」的成员 id（按下到后端答复之间禁用那一个控件，防重复提交）。
+const joining = new Set();
 
 function containsAny(text, chars) {
   for (const char of String(text == null ? '' : text)) {
@@ -1091,6 +1164,39 @@ async function refreshChannelMembers() {
   }
 }
 
+/** 把一个 Agent 加入当前频道，然后**不刷新页面**就地刷新成员表与 `@` 补全候选。
+
+    校验全在后端：失败时只呈现后端的可读原因，不在前端建半成品状态。响应自带该频道最新成员表，
+    直接覆盖本地缓存（覆盖而不是「先加再读」，中间没有可读到旧成员表的窗口）。
+    刷新后重判一次补全：清单正开着时，新加入的成员**立刻**可选。 */
+async function joinChannelMember(memberId) {
+  const channel = activeChannel();
+  if (!channel || joining.has(memberId)) return;
+  joining.add(memberId);
+  renderDock();
+  try {
+    const payload = await api(channelPath(channel.id, '/members'), {
+      method: 'POST',
+      body: { member_id: memberId },
+    });
+    state.channelMembers[channel.id] = payload.members || state.channelMembers[channel.id];
+    channelMembersFailed.delete(channel.id);
+    if (payload.channel) replaceChannel(payload.channel);
+    const name = (payload.member && payload.member.display_name) || '成员';
+    toast(
+      payload.joined
+        ? '已把 ' + name + ' 加入 #' + channel.name + '，现在可以在 composer 里用 @ 提到它。'
+        : name + ' 本来就在 #' + channel.name + ' 里。',
+    );
+    updateMentionPicker();
+  } catch (err) {
+    toast('加入失败：' + err.message, 'err');
+  } finally {
+    joining.delete(memberId);
+    renderDock();
+  }
+}
+
 function syncMentionHint() {
   const hint = $('#composerHint');
   if (!hint) return;
@@ -1117,7 +1223,7 @@ function renderMentionPicker() {
     const text =
       mentionPicker.empty === 'unavailable'
         ? '暂时读不到该频道的成员清单（后端请求失败）：恢复后按 @ 会重新给出候选。'
-        : '该频道还没有 Agent 成员：用左上角「Agent」按钮创建一个，再在新建频道时勾选它加入这个频道。';
+        : '该频道还没有 Agent 成员：在右侧「频道成员」面板的「未加入」一段点「加入」，或在新建 Agent 后到那里加入。';
     const empty = el('div', 'member-pick-empty mention-empty', text);
     empty.setAttribute('data-od-id', 'mention-picker-empty');
     replaceChildren(panel, [empty]);
@@ -1418,7 +1524,7 @@ async function submitAgent() {
     state.members = result.members || state.members;
     closeAgentModal();
     await loadWorkspace({ silent: true, keepActive: true });
-    toast('已创建 Agent ' + result.agent.display_name + '，可在新建频道时勾选它。');
+    toast('已创建 Agent ' + result.agent.display_name + '，在右侧「频道成员」面板的「未加入」一段点「加入」即可让它进入当前频道。');
   } catch (err) {
     box.textContent = err.message;
     box.hidden = false;
@@ -1555,6 +1661,12 @@ function bindEvents() {
     chooseMention(member);
   });
   $('#btnSend').addEventListener('click', sendMessage);
+
+  // 成员面板里的「加入」：一个控件一个成员，点击后把它加入当前频道。
+  $('#dockMembers').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-join]');
+    if (button) joinChannelMember(button.dataset.join);
+  });
 
   $('#messageList').addEventListener('click', (event) => {
     const inspect = event.target.closest('[data-dock-toggle]');
