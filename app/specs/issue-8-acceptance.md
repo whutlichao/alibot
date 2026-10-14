@@ -8,7 +8,7 @@
 
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-8-outcome-visible`（Orca 独立顶层 worktree）
-- 分支与 PR：`issue-8-outcome-visible` → **PR #8**（创建后回填见 §10）
+- 分支与 PR：`issue-8-outcome-visible` → **[PR #10](https://github.com/whutlichao/alibot/pull/10)**（OPEN）
 - PR body 正本：`app/specs/issue-8-pr-body.md`（`gh pr create --body-file`）
 - 基线：`origin/main` 的 `25108fb`（#7 合并后）
 - 采集时间：与实际产出同年同月（见 commit 时间戳）；环境：macOS，Python 3.11（`uv venv`），Chromium 152
@@ -177,17 +177,17 @@ $ /tmp/wsps-run-8.sh <worktree> /tmp/wsps-green-8-data 8799   # 本 worktree 的
 ```text
 {
  "existingBehaviors": { "optimisticPendingSeen": true, "typingSeen": true,
-                       "unreadBefore": 0, "unreadAfter": 0, "lastSeq": 3, "navigations": 1 },
+                       "unreadBefore": 0, "unreadAfter": 0, "lastSeq": 3, "pageErrors": [], "navigations": 1 },
  "rows": [
    { "cls":"day-sep" },
-   { "cls":"msg",          "seq":"1", "text":"O | Owner | 08:40 | @royce 看一下这条" },
+   { "cls":"msg",          "seq":"1", "text":"O | Owner | 08:45 | @royce 看一下这条" },
    { "cls":"msg outcome",  "baseSeq":"1",
-     "text":"royce | 未回应 | 没启用 | 08:40 | royce 现在是「未启用」，所以这一轮没有回复。后端给出的原因： | 模型提供商 dashscope 缺少凭证：请先设置环境变量 DASHSCOPE_API_KEY" },
-   { "cls":"msg",          "seq":"2", "text":"O | Owner | 08:40 | @flaky 也看一下" },
+     "text":"royce | 未回应 | 没启用 | 08:45 | royce 现在是「未启用」，所以这一轮没有回复。后端给出的原因： | 模型提供商 dashscope 缺少凭证：请先设置环境变量 DASHSCOPE_API_KEY" },
+   { "cls":"msg",          "seq":"2", "text":"O | Owner | 08:45 | @flaky 也看一下" },
    { "cls":"msg outcome",  "baseSeq":"2", "text":"royce | 未回应 | 没启用 | …DASHSCOPE_API_KEY" },
    { "cls":"msg outcome",  "baseSeq":"2",
-     "text":"flaky | 未回应 | 这一轮失败 | 看成员状态 | 08:40 | 模型调用失败：ConnectionError: Failed to connect to Ollama. …" },
-   { "cls":"msg",          "seq":"3", "text":"O | Owner | 08:40 | @outsider 你来一句" },
+     "text":"flaky | 未回应 | 这一轮失败 | 看成员状态 | 08:45 | 模型调用失败：ConnectionError: Failed to connect to Ollama. …" },
+   { "cls":"msg",          "seq":"3", "text":"O | Owner | 08:45 | @outsider 你来一句" },
    { "cls":"msg outcome",  "baseSeq":"3", "text":"royce | 未回应 | 没启用 | …DASHSCOPE_API_KEY" },
    { "cls":"msg outcome",  "baseSeq":"3", "text":"outsider | 未回应 | 没启用 | …DASHSCOPE_API_KEY" }
  ],
@@ -239,7 +239,7 @@ page errors: []
 ```text
 === 布局契约 ===
 1440: {"rail":252,"dock":380,"streamInner":768,"outcomeRow":784,"overflowX":false,"flexDirection":"row", "reasonFontSize":"12px","reasonLineHeight":"16.8px","reasonMaxWidth":"513.98px"}
-1080: {"rail":252,"dock":340,"streamInner":433,"outcomeRow":449,"overflowX":false,"flexDirection":"row"}
+1080: {"rail":252,"dock":340,"streamInner":448,"outcomeRow":464,"overflowX":false,"flexDirection":"row", "msgTextSize":"14px", "msgTextLineHeight":"23.1px", "msgTextMaxWidth":"599.65px"}
  880: {"rail":880,"dock":880,"streamInner":837,"outcomeRow":853,"overflowX":false,"flexDirection":"column"}
 ```
 
@@ -439,3 +439,21 @@ app/worksplice/studio/app.js
    可由规格侧或 #9 一并处理。
 6. **未做完整双轴 code-review**（票面允许）：影响面可圈定（一处呈现 + 其取证），改做 §8 的
    聚焦自审，两轴各一节 + 一条变异验证（§4.3）。
+
+## 10. 交付回执
+
+```text
+$ git push -u origin issue-8-outcome-visible
+ * [new branch]      issue-8-outcome-visible -> issue-8-outcome-visible
+
+$ gh pr create --title "fix(app): #8 把轮次失败/未启用 reason 变成消息流里可见的事实" \
+               --body-file app/specs/issue-8-pr-body.md --base main
+https://github.com/whutlichao/alibot/pull/10
+
+$ gh pr view 10 --json number,state,headRefName,baseRefName
+{ "number": 10, "state": "OPEN", "headRefName": "issue-8-outcome-visible", "baseRefName": "main" }
+```
+
+- 提交：`3d3db36 fix(app): #8 把轮次失败/未启用的原因变成消息流里可见的事实`（实现 + 测试 + 文档，
+  5 文件 +935 行），随后一次 `docs(app): #8 回填 PR 号与二次取证读数` 只改本文件。
+- 合并由 coordinator 执行（G-merge）；本票不自行合并。
