@@ -10,6 +10,13 @@
    - 四态状态点：`status_of` 由后端事实推导，前端只渲染 `online/working/error/offline`。
    - 新建 Agent 与远端数据流告知的显式确认。
 
+   本票（issue #8）新增：
+   - 轮次失败的可见呈现：消费只读端点 `GET /channels/{id}/round-outcomes` 的**既有事实**
+     （`status` / `reason` / `base_seq`），在消息流里按 `base_seq` 挂到**触发它的那条消息**下面。
+     轮次结果不是消息：它不占 `seq`、不改写任何消息，也不伪造「它答应了」。
+   - 「未启用」与「这一轮失败」在呈现上区分开：`--offline` 是成员状态（侧栏/dock 状态点），
+     `--error` 是这一轮的结论（消息流里的失败行）。
+
    DOM 一律用 createElement/textContent 构建，不用 innerHTML（模板与数据分离）。
    ========================================================================== */
 'use strict';
@@ -50,6 +57,8 @@ const state = {
   dataFaces: [],
   activeChannelId: null,
   messages: [],
+  // 轮次结果按「触发它的那条消息的 seq」分组（后端事实的镜像，不是本地推断）。
+  outcomes: {},
   pending: [],
   members: [],
   statuses: {},
@@ -216,11 +225,13 @@ async function loadWorkspace(options) {
       }
     }
     await refreshMessages();
+    await refreshOutcomes();
     await refreshStatuses();
     syncStreams();
   } catch (err) {
     state.online = false;
     state.ready = true;
+    state.outcomes = {};
     if (!settings.silent) toast('读取后端失败：' + err.message, 'err');
     // 后端不可达不是终点：自动重试，于是「重连后恢复」不需要人点按钮。
     // 这是唯一的本地重试定时器，且它只重读后端状态，不排队任何业务消息。
@@ -252,6 +263,34 @@ async function refreshMessages() {
   replaceChannel(payload.channel);
   seenSeqsFor(channel.id).clear();
   payload.messages.forEach((message) => seenSeqsFor(channel.id).add(message.seq));
+}
+
+async function refreshOutcomes() {
+  const channel = activeChannel();
+  if (!channel) {
+    state.outcomes = {};
+    return;
+  }
+  try {
+    const payload = await api(channelPath(channel.id, '/round-outcomes'));
+    state.outcomes = groupOutcomes(payload.round_outcomes || []);
+  } catch {
+    // 轮次结果读不到不影响消息流（与 refreshStatuses 同一条纪律）：保留上一次已知值，
+    // 也不把整个工作台判成「后端不可达」。
+  }
+}
+
+// 轮次结果按成员分组：同一条消息可能唤醒多个成员，于是同一 `base_seq` 下可能有多条失败。
+function groupOutcomes(records) {
+  const grouped = {};
+  records.forEach((record) => {
+    if (!record || !Number.isInteger(record.base_seq)) return;
+    if (!grouped[record.base_seq]) grouped[record.base_seq] = {};
+    const byMember = grouped[record.base_seq];
+    if (!byMember[record.member_id]) byMember[record.member_id] = [];
+    byMember[record.member_id].push(record);
+  });
+  return grouped;
 }
 
 async function refreshStatuses() {
@@ -524,6 +563,7 @@ async function refreshChannelList() {
 }
 
 function onStreamStatus(channelId, payload) {
+  const previous = state.statuses[payload.member_id];
   state.statuses[payload.member_id] = payload.status;
   state.agents = state.agents.map((agent) =>
     agent.id === payload.member_id ? { ...agent, status: payload.status } : agent,
@@ -531,6 +571,11 @@ function onStreamStatus(channelId, payload) {
   if (payload.status !== 'working') showTypingFor(channelId, null);
   renderMembers();
   renderDock();
+  // 已呈现的轮次结果行里的状态描述（「未启用」/「这一轮失败」）必须跟着后端事实走，
+  // 不能停在一句已经不成立的话上。没呈现过该成员就不重建消息流。
+  if (state.activeChannelId === channelId && previous !== payload.status && outcomeMembers().has(payload.member_id)) {
+    renderMessages();
+  }
 }
 
 function onStreamTyping(channelId, payload) {
@@ -555,8 +600,24 @@ function onStreamOutcome(channelId, payload) {
   if (!outcome) return;
   if (outcome.status === 'failed') state.statuses[outcome.member_id] = 'error';
   else if (state.statuses[outcome.member_id] === 'working') state.statuses[outcome.member_id] = 'online';
+  if (state.activeChannelId === channelId && Number.isInteger(outcome.base_seq)) {
+    const byMember = state.outcomes[outcome.base_seq] || (state.outcomes[outcome.base_seq] = {});
+    const records = byMember[outcome.member_id] || (byMember[outcome.member_id] = []);
+    // 同一 id 只留一条：实时推送与断线补拉说的是同一件事，不重复呈现。
+    if (!records.some((record) => record.id === outcome.id)) records.push(outcome);
+  }
   renderMembers();
   renderDock();
+  if (state.activeChannelId === channelId && outcome.status === 'failed') renderMessages();
+}
+
+// 哪些成员在消息流里有轮次结果呈现（用于状态点变化时只重渲染该重的那部分）。
+function outcomeMembers() {
+  const ids = new Set();
+  Object.keys(state.outcomes).forEach((seq) => {
+    Object.keys(state.outcomes[seq]).forEach((memberId) => ids.add(memberId));
+  });
+  return ids;
 }
 
 function removePending(clientId) {
@@ -743,8 +804,80 @@ function renderMessages() {
       lastDay = day;
     }
     nodes.push(messageNode(message));
+    // 轮次失败挂在**触发它的那条消息**下面（按 base_seq 绑定），不是与消息无关的横幅。
+    if (message.seq) {
+      const byMember = state.outcomes[message.seq];
+      if (byMember) {
+        Object.keys(byMember).forEach((memberId) => {
+          roundOutcomeNode(byMember[memberId]).forEach((node) => nodes.push(node));
+        });
+      }
+    }
   });
   replaceChildren($('#messageList'), nodes);
+}
+
+/**
+ * 把一条轮次结果渲染成消息流里的一行（或零行）。
+ *
+ * 只呈现**失败**这一类：规格要的是「它为什么没说话」不安静地消失。`ignored`（自判忽略、
+ * 预算耗尽、被合并）是正常协议选择，不是用户主诉的缺口，保持与既有前端行为一致（不呈现），
+ * 以免消息流被协议簿记淹没。
+ */
+function roundOutcomeNode(records) {
+  const failed = records.filter((record) => record.status === 'failed');
+  if (!failed.length) return [];
+  const nodes = [];
+  failed.forEach((record) => {
+    const member = state.members.find((item) => item.id === record.member_id);
+    const agent = state.agents.find((item) => item.id === record.member_id);
+    // 状态未知时**不声明**任何成员状态：宁可不提，也不能把「我不知道」说成「未启用」。
+    const status = agent ? statusOf(agent) : null;
+    const disabled = status === 'offline';
+    const name = member ? member.display_name : record.member_id;
+
+    const row = el('article', 'msg outcome');
+    row.dataset.outcome = record.id;
+    row.dataset.member = record.member_id;
+    // 刻意**不**用 `data-seq`：那个属性在本文件里一直是「这一行是 seq=N 的消息」的意思。
+    // 轮次结果不是消息，它只是被那条消息触发，所以用不同的名字。
+    row.dataset.baseSeq = record.base_seq;
+    // 这一行不是消息（不占 seq、不是作者说的话），因此标记成 status 而不是 message：
+    // 屏幕阅读器与自动化取证都不该把它当成「又一条消息」。
+    row.setAttribute('role', 'status');
+    row.setAttribute('aria-label', name + ' 未回应：' + (record.reason || '后端没有留下原因。'));
+
+    const body = el('div', 'msg-body');
+    const head = el('div', 'msg-head');
+    // 作者名用**自己的**类名而不是 `is-agent`：这一行不是一条 Agent 消息，
+    // 任何「数几条 Agent 消息」的统计都不该把它数进去。
+    head.appendChild(el('span', 'msg-author msg-outcome-author', name));
+    head.appendChild(el('span', 'msg-tag', '未回应'));
+    if (status) head.appendChild(el('span', 'msg-outcome-state', disabled ? '没启用' : '这一轮失败'));
+    if (!disabled && agent) {
+      // 从失败现场直接打开成员详情，不用人先找到右上角那个图标。
+      const inspect = el('button', 'msg-outcome-act', '看成员状态');
+      inspect.dataset.dockToggle = '1';
+      head.appendChild(inspect);
+    }
+    head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
+    body.appendChild(head);
+
+    // 「未启用」是成员**此刻**的状态，「这一轮失败」是**库里那一次**轮次的结论。
+    // 两者会同时为真，因此分开陈述，而不是把后者说成前者、也不把前者冒充后者。
+    if (disabled) {
+      body.appendChild(
+        el('div', 'msg-outcome-note', name + ' 现在是「未启用」，所以这一轮没有回复。后端给出的原因：'),
+      );
+    }
+    const reason = el('div', 'msg-outcome-reason', record.reason || '后端没有留下原因。');
+    reason.dataset.odId = 'round-reason-' + record.id;
+    body.appendChild(reason);
+
+    row.appendChild(body);
+    nodes.push(row);
+  });
+  return nodes;
 }
 
 function messageNode(message) {
@@ -1031,9 +1164,11 @@ async function selectChannel(channelId) {
   }
   setActiveChannelId(channelId);
   state.pending = state.pending.filter((item) => item.target_id === channelId || item.status === 'failed');
+  state.outcomes = {};
   render();
   try {
     await refreshMessages();
+    await refreshOutcomes();
     state.online = true;
   } catch (err) {
     state.online = false;
@@ -1093,6 +1228,14 @@ function bindEvents() {
   $('#btnSend').addEventListener('click', sendMessage);
 
   $('#messageList').addEventListener('click', (event) => {
+    const inspect = event.target.closest('[data-dock-toggle]');
+    if (inspect) {
+      // 只打开面板，不滚动页面：失败现场就在眼前，人不需要先去找那个图标。
+      const dock = $('#dock');
+      if (dock) dock.hidden = false;
+      renderDock();
+      return;
+    }
     const retry = event.target.closest('[data-retry]');
     if (retry) {
       const pending = state.pending.find((item) => item.clientId === retry.dataset.retry);
