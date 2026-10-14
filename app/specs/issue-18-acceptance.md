@@ -27,6 +27,23 @@
 页面状态，刷新/换频道即复位（不进 localStorage）；`'没启用'` 与词表「未启用」的字面差
 （#8 既有，本票逐字保留失败块）记为遗留。
 
+### Answer 追加（打回补修，coordinator 验收后）
+
+首轮交付被 coordinator 打回：`660d52c` 在插入摘要行 CSS 时**顺带改坏了** #8 的一条既有规则
+`.msg-outcome-note` → `.msg.outcome-note`（要求同一元素同时带 `outcome` 与 `note` 两个类），
+导致该规则**匹配为零**，「未启用」提示丢掉全部既定样式（回落到与正文同色同字号）。
+
+- **修法**：一行改回单类选择器 `.msg-outcome-note`（与同族 `.msg-outcome-reason` 一致；本文件无 `.msg ` 前缀惯例）。
+- **取证**：三个后端（base `8bb4f9a` / head `79e74f8` 缺陷版 / green 修复版，各自独立 venv 与数据目录）
+  的真实 Chromium 逐属性对比：`font-size` `11.5px→13px→11.5px`、`color` `--muted→--fg→--muted`、
+  `margin-top` `3px→0px→3px`（§11.2）。
+- **逐条核验**：把本票碰过的 19 条选择器机械抽出，在 6 个场景（含新增的「未启用」档）里数命中数，
+  **恒为 0 即判定写错**；结果只有 `.msg.outcome-note` 恒为 0（§11.3）。
+- **为何上一轮没抓到（诚实归因）**：五个浏览器场景里**没有任何成员是 `offline`**，那个分支从未渲染
+  （coordinator 的 `grep -rl "未启用\|offline" /tmp/issue18-evidence/` 无命中）；两轴 review 只看静态代码
+  与票面（无 hex/rgb、不用 `--error`）而**不执行 CSS**，一条语法合法但匹配不到元素的选择器能过。
+- **新增的防护**：§11.3 的选择器↔DOM 交叉核验（可重复脚本化判据）已将「未启用」场景纳入常规场景集。
+
 ### 边界解释（用户本轮显式授权，**原文记录**，以免被当成又一例越界）
 
 > #1 的 Out of Scope 写了「成本看板与可观测页面（轮次结果落库即可，不做页面）」，#3 的 review
@@ -451,8 +468,174 @@ app/worksplice/studio/app.js
 6. **`round-outcomes` 仍是无游标的整频道只读列表**（#8 已记）：本票沿用「进入频道取一次 +
    实时增量合并」，未引入分页。频道长期运行后这张表变大是后端侧的既知事实，若将来要处理应由
    后端侧决定，而不是前端自行截断（截断会静默丢事实）。
+7. **打回补修的那条已修，不列为遗留**：`.msg-outcome-note` 匹配为零是回归，已改回并补了
+   选择器↔DOM 交叉核验（§11）；它的教训（改动过的区域必须自己重新取证，不能沿用「它以前是对的」）
+   已记入 §11.4。
+8. **仍然不修的遗留（维持上一轮的裁定）**：失败块的 `'没启用'` 与词表「未启用」的字面差。
+   它是 #8 既有文案，而本票对失败块的硬要求是「逐字保留」，改它属于另一个票。
+   本次补修**只**修了「样式规则匹配为零」这一条（可见回归），没有顺手改任何其他样式。
 
-## 11. 交付回执
+## 11. 打回补修（coordinator 验收后）：`.msg-outcome-note` 选择器匹配为零
+
+本票（#18）在首轮验收后被 coordinator 打回：`660d52c` 引入了一处**可见回归**。本节是补修的证据与 Answer 追加。
+
+### 11.1 缺陷与根因
+
+`660d52c`（本轮第一个提交、插入摘要行 CSS 时**顺带写错的**）把 `app.css` 的一条规则：
+
+```diff
+-.msg-outcome-note { margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted); }
++.msg.outcome-note { margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted); }
+```
+
+`.msg.outcome-note` 要求**同一个元素**同时带 `outcome-note` 与 `outcome` 两个类；而 JS 产出的节点是
+`el('div', 'msg-outcome-note', …)`（`roundOutcomeNode()` 的 `disabled` 分支），其父 `<article>` 的类名是
+`msg outcome`。于是该规则**匹配为零**，「未启用」提示退化成与正文同色同字号。
+
+```
+$ git log --oneline -L187,187:app/worksplice/studio/app.css
+660d52c feat(app): #18 …        ← 本行 .msg-outcome-note → .msg.outcome-note
+3d3db36 fix(app): #8 …          ← 原始引入（#8 的规则，本票不得改动它的可见效果）
+$ grep -n "msg-outcome-note" app/worksplice/studio/app.js
+1160:      el('div', 'msg-outcome-note', name + ' 现在是「未启用」，所以这一轮没有回复。后端给出的原因：'),
+$ grep -n "el('article', 'msg outcome')" app/worksplice/studio/app.js
+1129:  const row = el('article', 'msg outcome');
+```
+
+**修法**（`c4c5b23`，一行）：改回能匹配到那个节点的单类选择器 `.msg-outcome-note`，与同族
+`.msg-outcome-reason` / `.msg-outcome-state` 的写法一致（本文件没有 `.msg ` 前缀的惯例）。
+
+### 11.2 红→绿（真实 Chromium，逐属性）
+
+三个后端、三个独立数据目录、同一场景（生产路径：`model_id=dashscope:qwen-max` 且**不**确认
+远端数据流告知 ⇒ 状态点 `offline` + 一条 `failed` 轮次 + 可读 reason；可用性检查在适配层之前，
+全程不联网零费用）：
+
+| 后端 | 端口 | 代码 |
+| --- | --- | --- |
+| base | 8823 | `8bb4f9a`（含 #8 原始规则，独立 venv） |
+| head | 8821 | `79e74f8`（**缺陷版**，独立 venv） |
+| green | 8822 | 本 worktree（已修，独立 venv） |
+
+同一探针（`getComputedStyle(document.querySelector('.msg-outcome-note'))`）读回：
+
+| 属性 | base `8bb4f9a` | head `79e74f8`（缺陷） | green（修复后） |
+| --- | --- | --- | --- |
+| `font-size` | `11.5px` = `--fs-caption` | `13px`（回落到继承值） | **`11.5px`** |
+| `color` | `oklch(0.46 0.03 300)` = `--muted` | `oklch(0.33 0.045 300)`（回落到 `--fg`） | **`oklch(0.46 0.03 300)`** |
+| `margin-top` | `3px` | `0px` | **`3px`** |
+| `line-height` | `16.1px` | `19.5px` | `16.1px` |
+| 匹配到该节点的规则 | `[".msg-outcome-note"]` | `[".msg.outcome-note"]` | `[".msg-outcome-note"]` |
+
+`color` 的 token 对照：`--muted: oklch(46% 0.030 300)`、`--fg: oklch(33% 0.045 300)`——缺陷版确实回落到
+了 `--fg`（与正文同色），修复后回到 `--muted`。
+
+截图：`/tmp/issue18-evidence/offline-note-{base-8bb4f9a,head-79e74f8-defect,green-fixed}.png`。
+
+**同族规则作对比**（它们一直是单类选择器，未受本缺陷影响）：`.msg-outcome-reason` 三档均为
+`12px` / `oklch(0.532 0.128 25.9)`（`--fs-sm` / `--error`）——可见缺陷只在被误写的那一条上。
+
+### 11.3 逐条核验：本票新增/改动的每一条 CSS 选择器都有真实匹配的 DOM
+
+票面要求：本票新增或改动的**每一条**CSS 选择器都要说明它匹配的元素由哪个 `el(...)` 调用或既有静态 DOM 产生，
+任何一条找不到匹配就说明它写错了。因此做了一次**机械交叉核验**（不是人工声称）：
+
+1. 从 `git diff 8bb4f9a...HEAD -- app/worksplice/studio/app.css` 机抽出本票碰过的全部选择器（共 19 条，
+   含未提交的修复行）。
+2. 在真实 Chromium 里遍历场景集（未启用 / 产品讨论 / 独自在 / 重复唤醒 / 接力测试 / 混合非失败，
+   几个需要展开的都已展开），对每条选择器数 `querySelectorAll(...).length`。
+3. **从未命中（count 恒为 0）的选择器 = 写错的**：
+
+```text
+$ ego-browser nodejs < /tmp/issue18-selector-check2.py
+=== 逐选择器命中数（场景顺序：未启用|产品讨论|独自在|重复唤醒|接力测试|混合非失败）===
+0,1,1,1,1,3   .msg-outcome-details
+0,2,0,0,1,1   .msg-outcome-line + .msg-outcome-line
+0,3,1,1,2,4   .msg-outcome-line-author
+0,3,1,1,2,4   .msg-outcome-line-head
+0,3,1,1,2,4   .msg-outcome-line-head .msg-time
+0,3,1,1,2,4   .msg-outcome-line-reason
+0,3,1,1,2,4   .msg-outcome-line-state
+1,0,0,0,0,0   .msg-outcome-note          ← 修复后：在「未启用」场景命中 1
+0,1,1,1,1,3   .msg-outcome-summary-mark
+0,1,1,1,1,3   .msg-outcome-summary-names
+0,1,1,1,1,3   .msg-outcome-summary-text
+0,1,1,1,1,3   .msg-outcome-summary-toggle
+0,1,1,1,1,1   .msg-outcome-summary-toggle:hover .msg-outcome-summary-text
+0,1,1,1,1,3   .msg-outcome-summary-why
+0,0,0,0,0,0   .msg.outcome-note          ← 缺陷选择器：任何场景都不命中（恒为 0）
+0,1,1,1,1,3   .msg.outcome-summary
+0,1,1,1,1,3   .msg.outcome-summary .msg-body
+0,1,1,1,1,3   .msg.outcome-summary .msg-head
+0,4,2,2,3,7   .msg.outcome-summary .msg-time
+
+=== 从未命中（恒为 0）的选择器 === [".msg.outcome-note"]
+```
+
+每个选择器与它匹配的 DOM 来源（逐条）：
+
+| 选择器 | 匹配的 DOM | 由谁产生 |
+| --- | --- | --- |
+| `.msg.outcome-summary` | `article.msg.outcome-summary` | `roundOutcomeSummaryNode()` 的 `el('article', 'msg outcome-summary')`（每个摘要行 1 个） |
+| `.msg.outcome-summary .msg-body` / `.msg-head` / `.msg-time` | 同上的子孙 | `el('div','msg-body')` / `el('div','msg-head')` / `el('span','msg-time', …)`（摘要行特有；`.msg-time` 在同一条流里也命中失败行与消息行，故计数大于摘要行数） |
+| `.msg-outcome-summary-toggle` / `-mark` / `-names` / `-text` | `button.msg-outcome-summary-toggle` 及其两个 `span` 子节点 | `el('button','msg-outcome-summary-toggle')` + `el('span','msg-outcome-summary-mark'\|'-names'\|'-text')` |
+| `.msg-outcome-summary-toggle:hover .msg-outcome-summary-text` | 同上（后件静态存在于 DOM，规则只在 hover 时生效；选择器本身可打到） | 同上 |
+| `.msg-outcome-summary-why` | `div.msg-outcome-summary-why` | `el('div','msg-outcome-summary-why', summarizeWhy(items))` |
+| `.msg-outcome-details` | `div.msg-outcome-details` | `el('div','msg-outcome-details')`（恒常渲染 + `hidden`） |
+| `.msg-outcome-line + .msg-outcome-line` | 相邻兄弟对 | `el('div','msg-outcome-line')` 的相邻实例（只在≥ 2 成员才有对；单成员场景 0 是正确结果） |
+| `.msg-outcome-line-author` / `-state` / `-reason` | 逐成员行内部 | `roundOutcomeSummaryLine()` 里的 `el('span','msg-outcome-line-author'\|'-state')` 与 `el('div','msg-outcome-line-reason', record.reason)` |
+| `.msg-outcome-line-head` / `.msg-outcome-line-head .msg-time` | 逐成员行的头 | `el('div','msg-outcome-line-head')` + 它内部的 `el('span','msg-time', …)` |
+| **`.msg-outcome-note`** | `div.msg-outcome-note` | `roundOutcomeNode()` 的 `disabled` 分支：`el('div','msg-outcome-note', name + ' 现在是「未启用」…')`——**只在成员 `offline` 时存在** |
+| ~~`.msg.outcome-note`~~ | 无 | **没有任何节点同时带 `outcome` 与 `note` 两个类**⇒ 这就是缺陷 |
+
+> 上表里 `.msg-outcome-note` 的命中数在「未启用」场景为 `1`，在其余场景为 `0`：这不是「死选择器」，而是
+> 它**只在成员 `offline` 时才有对应节点**（票面「一个成员被 @ 且未启用」就是这个分支）。这也正是
+> 判据必须写成「扫多个场景、恒为 0 才算错」而不是「任一场景 0 就算错」的原因。
+
+### 11.4 为什么上一轮的 review 与浏览器证据没抓到（诚实归因）
+
+1. **取证场景集覆盖不到那个分支**（主因）：上一轮的五个浏览器场景全部是
+   `ignored` / `merged` / `budget-exhausted` / `failed` 组合，**没有任何一个成员是 `offline`**，
+   因此 `.msg-outcome-note` 那个分支从未被渲染过。coordinator 的判据也是这个：
+   `grep -rl "未启用\|offline" /tmp/issue18-evidence/` 无命中。
+   上一轮我还把「未启用」当成 #8 的既有能力，默认它已经被 #8 的验收覆盖过，于是没在**本票**的场景里复核
+   ——但本票恰好重写了这一带的样式表，**改动过的区域必须自己重新取证**，不能沿用「它以前是对的」。
+2. **两轴 review 都只看代码/票面，不执行 CSS**：Standards 轴核了「新增规则无 hex/rgb、只用既有 token」，
+   Spec 轴核了「不得用 `--error`」——两条都成立，因此都没看出**选择器匹配不到任何元素**。
+   静态检查与「样式是否正确」是两件事：一条规则只要语法合法，就能通过 lint 与肉眼审阅。
+3. **`.msg ` 前缀看上去「更具体、更稳妥」**，是个有诱惑力的误写；而本文件里同族规则全是单类选择器，
+   没有这个惯例。
+
+**新增的取证方式（防止同类错误）**：§11.3 的**选择器自 DOM 交叉核验**——把「本票碰过的选择器」机械抽出来，
+在跑得起来的多个场景（现在包含 `offline` 那一个）里数命中数，**恒为 0 即判定写错**。它是可重复的脚本化判据，
+不再依赖「我恰好枚举到了那个分支」。同时场景集已补上「未启用」这一档（它覆盖 `disabled` 分支）。
+
+### 11.5 本次补修的门禁与交付
+
+```text
+$ .venv/bin/python -m pytest
+179 passed, 1 skipped in 97.26s        # 与打回前一致（本修复不涉后端行为，无新增/删除用例）
+
+$ .venv/bin/ruff check app && .venv/bin/ruff format --check app
+All checks passed!
+45 files already formatted
+
+$ .venv/bin/python -m mypy
+Success: no issues found in 26 source files
+
+$ node ~/.pi-lens/tools/node_modules/pyright/index.js app/worksplice app/tests
+0 errors, 0 warnings, 0 informations
+
+--- 推分支与更新 PR（head 自动跟进）---
+$ git push
+   <before>..c4c5b23  issue-18-outcome-visible -> issue-18-outcome-visible
+
+$ gh pr edit 19 --body-file app/specs/issue-18-pr-body.md
+$ gh pr view 19 --json number,headRefOid,state
+{ "number": 19, "state": "OPEN", "headRefOid": "c4c5b23…" }   # 与本地 HEAD 一致
+```
+
+## 12. 交付回执
 
 ```text
 $ git push -u origin issue-18-outcome-visible

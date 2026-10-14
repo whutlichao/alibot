@@ -119,6 +119,25 @@ Space  → aria-expanded: "false"，展开子树消失，焦点仍在同一个�
 Standards 轴（1 条硬违规：注释与一个死键 → 已修；另 4 条 P2 → 3 修 1 记遗留）；
 Spec 轴（缺失/蔓延均为无，1 条 P2：折叠态 `aria-controls` 悬空 → 已修为「明细恒常渲染 + `hidden`」）。
 
+**打回补修（首轮验收后）**：`660d52c` 在插入摘要行 CSS 时顺带把 #8 的既有规则
+`.msg-outcome-note` 改成了 `.msg.outcome-note`（要求同一元素同时带两个类）⇒ 该规则**匹配为零**，
+「未启用」提示退化成与正文同色同字号（可见回归）。已改回单类选择器并补上机械核验。
+三个后端（base / 缺陷版 / 修复版，各自独立 venv + 数据目录）的真实 Chromium 逐属性读数：
+
+```text
+属性          base 8bb4f9a             head 79e74f8（缺陷）        green（修复）
+font-size     11.5px (--fs-caption)    13px（回落继承值）          11.5px
+color         oklch(0.46 0.03 300)     oklch(0.33 0.045 300)       oklch(0.46 0.03 300)
+              = --muted                 = --fg（与正文同色）       = --muted
+margin-top    3px                      0px                        3px
+匹配规则      [".msg-outcome-note"]     [".msg.outcome-note"]      [".msg-outcome-note"]
+```
+
+本票碰过的 19 条选择器做了一次**选择器↔DOM 交叉核验**（抽出选择器 → 在 6 个场景里数命中数）：
+**恒为 0 的只有 `.msg.outcome-note`**，其余每条都能指到真实匹配的 DOM（逐条对照表见 §11.3）。
+为何上一轮没抓到：五个浏览器场景里没有任何成员是 `offline`，那个分支从未渲染；
+两轴 review 只看静态代码与票面，**不执行 CSS**。新场景集已纳入「未启用」档。
+
 ## Merge Danger
 
 **Door:** two-way
@@ -135,8 +154,7 @@ SSE 载荷、状态点推导都没有变化。回滚就是回滚这两个 commit
 无硬编码 hex/rgb。折叠态是内存里的会话状态，不进 `localStorage`（仓硬约束）。与 `#9` 并行改动
 同一对文件的**不同区域**（composer vs 消息流），`git diff -U0 | grep composer|placeholder|mention` 为空。
 
-**已知遗留**（细节在 `app/specs/issue-18-acceptance.md` §10）：`replied` 不挂摘要行（用户裁定）；
-`ignored` 的 append-only 记录数**不因呈现而减少**（只在呈现层收成一行 + 折叠）；
+**已知遗留**（细节在 `app/specs/issue-18-acceptance.md` §10）：`replied` 不挂摘要行（用户裁定）；`ignored` 的 append-only 记录数**不因呈现而减少**（只在呈现层收成一行 + 折叠）；
 `merged` 天然是单成员记录，因此浏览器里取证不到它「多成员收成一行」那一面（该面由 3×`ignored`
 与 2×`budget-exhausted` 取证）。
 

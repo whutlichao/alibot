@@ -184,7 +184,7 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   margin-top: 3px; font-size: var(--fs-sm); line-height: var(--lh-snug); color: var(--error);
   max-width: 68ch; overflow-wrap: anywhere;
 }
-.msg.outcome-note { margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted); }
+.msg-outcome-note { margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted); }
 .msg.outcome .msg-time { margin-left: auto; }
 
 /* ─── 轮次结果摘要行（同一条消息下**至多一行**，默认折叠）───────────────────
