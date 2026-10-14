@@ -15,6 +15,7 @@ from .db import (
     Database,
     DomainError,
     NotFound,
+    SchemaVersionMismatch,
     default_data_dir,
     open_database,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "Database",
     "DomainError",
     "NotFound",
+    "SchemaVersionMismatch",
     "default_data_dir",
     "open_database",
 ]

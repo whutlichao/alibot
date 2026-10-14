@@ -62,6 +62,25 @@ ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
 # 它是**常量**：本票不做配置化（那是 #31 的范围），只把「每频道一份」泛化为「每 target 一份」。
 BUDGET_LIMIT = 3
 
+# 判断「这个库是不是空库」时要看的业务表名（见 :meth:`Database._assert_schema_compatible`）。
+# 版本号缺失时**无法**从版本号判断库来自哪一代，所以新旧两代的名字都在列表里：
+# 只要其中**任意一张表有任何一行**，这个库就有数据，不是空库。
+BUSINESS_TABLES = (
+    "member",
+    "agent_config",
+    "channel",
+    "channel_member",
+    "target",
+    "target_member",
+    "message",
+    "channel_read",
+    "target_read",
+    "channel_budget",
+    "target_budget",
+    "round_outcome",
+    "remote_consent",
+)
+
 MAX_CHANNEL_NAME_LENGTH = 80
 MAX_CHANNEL_DESCRIPTION_LENGTH = 500
 MAX_MESSAGE_BODY_LENGTH = 8000
@@ -275,6 +294,39 @@ UNREAD_TOTAL_SQL = (
 UNREAD_COUNT_SQL = "SELECT COUNT(*) FROM message m\n WHERE m.target_id = :target_id\n" + UNREAD_WHERE_SQL
 
 
+class SchemaVersionMismatch(Exception):
+    """库里的 schema 版本与本代码需要的版本不一致：**拒绝启动**，且不改动旧库一个字节。
+
+    它不是 :class:`DomainError`：这条事实发生在**启动路径**上（进程级的拒绝），不是某个 HTTP
+    请求的领域错误。HTTP 层因此不会把它折成 500——进程根本不会开始监听。
+
+    ``found_version`` 为 ``None`` 表示「版本号缺失」（没有 ``schema_meta`` 表，或没有
+    ``schema_version`` 那一行）。缺失时只有库里**已有业务数据**才会抛这个错：真的空库照常初始化
+    （否则空目录首次启动就起不来了）。
+    """
+
+    def __init__(self, db_path: Path, found_version: str | None, expected_version: int):
+        self.db_path = Path(db_path)
+        self.found_version = found_version
+        self.expected_version = expected_version
+        super().__init__(self._render())
+
+    def _render(self) -> str:
+        found = (
+            str(self.found_version)
+            if self.found_version is not None
+            else "缺失（schema_meta 里没有 schema_version 这一行）"
+        )
+        return (
+            "拒绝启动：数据库的 schema 版本与本代码不匹配。\n"
+            f"  库文件：{self.db_path}\n"
+            f"  库里的版本：{found}\n"
+            f"  本代码需要的版本：{self.expected_version}\n"
+            "  本版不做数据迁移：请先备份该数据目录，再换一个数据目录启动"
+            "（例如 --data-dir <另一个目录>）。"
+        )
+
+
 class DomainError(Exception):
     """可映射为 HTTP 错误响应的领域错误。"""
 
@@ -315,27 +367,101 @@ def new_id(prefix: str) -> str:
 
 
 class Database:
-    """单文件库的窄接口。写路径串行化（SQLite 单写者）。"""
+    """单文件库的窄接口。写路径串行化（SQLite 单写者）。
+
+    **启动时的版本闸门**（见 :meth:`_assert_schema_compatible`）：打开库之后、任何 schema 变更
+    之前，先读 ``schema_meta.schema_version`` 与本代码的 :data:`SCHEMA_VERSION` 比对，不等就抛
+    :class:`SchemaVersionMismatch` —— 于是旧库不会被「静默半改名」（版本号被改写、新表建出来但
+    是空的、旧表数据还在）。
+    """
 
     def __init__(self, data_dir: Path | str):
-        self.data_dir = Path(data_dir)
+        self._connect(Path(data_dir))
+        self._initialize()
+
+    @classmethod
+    def open_without_initializing(cls, data_dir: Path | str) -> Database:
+        """打开库、过**同一道版本闸门**，但**不**做 schema 初始化（不建表、不写行）。
+
+        存在的理由：显式修复入口需要先“看清这个库实际长什么样”——某张表到底在不在、里面有多少行
+        ——才能决定补什么。用 ``Database(...)`` 做不到这点：它的 ``_initialize()`` 会立刻把缺的表
+        ``CREATE IF NOT EXISTS`` 出来，于是“表缺失”这个待诊断的事实会在诊断之前就被抹掉
+        （而且那是一次 schema 变更，不该发生在“先看一眼”的时候）。
+
+        版本闸门照旧生效：版本不等时**连看都不让看**，抛 :class:`SchemaVersionMismatch`。
+        """
+        database = cls.__new__(cls)
+        database._connect(Path(data_dir))
+        database._assert_schema_compatible()
+        return database
+
+    def _connect(self, data_dir: Path) -> None:
+        """建立连接（构造函数与 :meth:`open_without_initializing` 共用）。"""
+        self.data_dir = data_dir
         self.path = self.data_dir / DATABASE_FILE_NAME
         self._lock = threading.RLock()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        # 这三条 PRAGMA 只影响连接参数与文件头（WAL 标志），不写业务行、不改 schema，
+        # 因此可以出现在版本闸门之前；它们让闸门里的读走真实运行时的同一套连接设置。
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA busy_timeout = 5000")
-        self._initialize()
 
     # ─── 生命周期 ──────────────────────────────────────────────────────────
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
+    def _stored_schema_version(self) -> str | None:
+        """读库里的 ``schema_meta.schema_version``；表或行不存在时返回 ``None``（**只读**）。"""
+        meta = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+        ).fetchone()
+        if meta is None:
+            return None
+        row = self._conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+        return None if row is None else str(row[0])
+
+    def _has_business_data(self) -> bool:
+        """库里是否**已有业务数据**（任意业务表有任何一行）。只读；表不存在时按没有数据处理。"""
+        existing = {
+            str(row[0])
+            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        for table in BUSINESS_TABLES:
+            if table not in existing:
+                continue
+            row = self._conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
+            if row is not None and int(row[0]) > 0:
+                return True
+        return False
+
+    def _assert_schema_compatible(self) -> None:
+        """版本闸门：不等就**拒绝**，且**不做任何 schema 变更**。
+
+        三条分支（与票面 Change 逐条对应）：
+
+        - 库不存在 / 没有任何业务数据（且版本号缺失或就是本版）⇒ 放行，由 :meth:`_initialize` 建库。
+        - 版本号**等于** :data:`SCHEMA_VERSION` ⇒ 放行（既有路径行为一字不变）。
+        - 版本号**不等于**本版 ⇒ 抛 :class:`SchemaVersionMismatch`（旧库、未来库、垃圾版本号都算）。
+          版本号**缺失但库里有业务数据**同样拒绝——那不是空库，是来源不明的库。
+
+        **不修版本号、不跳过、不猜测**：本版不做迁移（规格决策 8 / ADR-0004），因此唯一正确的
+        处置是让用户拿一个干净的数据目录启动，并把旧库原样留着（它一个字节都没被动过）。
+        """
+        stored = self._stored_schema_version()
+        if stored == str(SCHEMA_VERSION):
+            return
+        if stored is None and not self._has_business_data():
+            return
+        raise SchemaVersionMismatch(self.path, found_version=stored, expected_version=SCHEMA_VERSION)
+
     def _initialize(self) -> None:
+        """闸门先于**任何** schema 变更：不等就抛，于是旧库不会被静默半改名。"""
         with self._lock:
+            self._assert_schema_compatible()
             self._conn.executescript(SCHEMA)
             self._conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) "

@@ -1,0 +1,342 @@
+"""v4 库的**作用域数据补齐入口**（issue #37 追加范围）。
+
+**这不是自动迁移。** 规格决策 8 与 ADR-0004 明确「不做迁移、新库从空数据开始」，本模块**不改变**
+那条纪律：它只在用户**显式**执行 ``python -m alibot --repair-targets`` 时运行，任何正常启动路径
+都**不会**调用它（``__main__`` 里它是与「起服务」并列的另一条分支，不是启动流程的一步）。
+
+它处置的是**一个具体的历史事故**：#24 把消息作用域升为 ``target`` 并把 ``SCHEMA_VERSION`` 3 → 4，
+而 v4 的 ``_initialize`` 曾经会静默接受 v3 库（那是 #37 主修修掉的那半）。被那样打开过的库会停在
+**半改名**状态——``schema_version`` 已是 4、``channel`` 行都在，但某些 channel 型 target 的
+**影子行缺失**，``channel_member`` / ``channel_read`` / ``channel_budget`` 的数据还留在旧表名里。
+症状是 ``GET /api/channels`` 看起来正常，点进缺影子行的那个频道则成员 / 消息 / 预算 / 标读
+**全部 404**。**数据一条没丢，只是没搬。**
+
+补齐四张表（channel 型 target 的作用域数据，ADR-0004）：
+
+- ``target`` ← ``channel``：影子行（``kind='channel'``，id **复用** ``channel.id``）。
+- ``target_member`` ← ``channel_member``：频道成员关系。
+- ``target_read`` ← ``channel_read``：每成员已读位置。它同时是**未读徽标的唯一正本**。
+- ``target_budget`` ← ``channel_budget``：有界响应预算的账本（``epoch_seq`` / ``used``）。
+
+**第四张表不在事故处置建议的三条语句里，但它同样承重**：只补前三张的话，
+``GET /api/channels/{id}/budget`` 会从 404 变成 **200 而 ``used`` 归零**。那不是「少一行」，
+而是「沉默地抹掉一个已经耗尽的预算」——比 404 更糟，因为它把「预算烧完了」伪装成「还没用过」。
+因此本入口把两张预算表**一并**补齐并核验。
+
+三条纪律（票面追加要求 2–4 条）：**默认不执行**、**幂等**、**不得掩盖版本问题**。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path
+
+# 本模块是**纯数据逻辑**：不 import ``__main__``（那会形成「CLI ↔ 修复」的循环依赖），也不决定
+# 进程退出码——那由 CLI 层（``__main__``）自己映射。于是「同一个库，两条路径给同一个答复」
+# 这件事落在**行为**上（两条路径都经 :class:`Database` 的同一道闸门），而不是靠共享一个常量。
+from .db import Database
+
+# ─── 补齐语句 ─────────────────────────────────────────────────────────────
+# 每张目标表一条 ``INSERT OR IGNORE``。**一句一个模块级常量**（不放进元组再循环取用）：
+# 与 ``db.py`` 的 ``UNREAD_COUNT_SQL`` / ``AGENT_SELECT_SQL`` 同一体例 —— 查询文本对静态检查
+# 是可见常量，也不是注入面。
+#
+# 为什么每条都从 ``channel`` 出发：channel 型 target 的 id **复用** ``channel.id``（ADR-0004 的
+# 影子行语义），所以「channel 型的作用域数据」只可能来自频道。这个起点同时保证了 dm / task 型
+# target，以及挂在它们上面的成员 / 已读 / 预算行，**一个都不会被碰**——本入口没有它们的来源表，
+# 也就没有误伤它们的路径。
+#
+# 为什么显式列出列名（而不是 ``SELECT *``）：新表与旧表的列名本就不同（``channel_id`` →
+# ``target_id``），显式写一次「哪个列搬到哪个列」比赌列顺序更稳，且一眼可审。
+#
+# 幂等来自 ``OR IGNORE``：主键 / 唯一键冲突的行被跳过，已补好的行不会被第二遍改写。
+REPAIR_TARGET_SQL = (
+    "INSERT OR IGNORE INTO target(id, kind, created_at) SELECT id, 'channel', created_at FROM channel"
+)
+REPAIR_TARGET_MEMBER_SQL = (
+    "INSERT OR IGNORE INTO target_member(target_id, member_id) "
+    "SELECT channel_id, member_id FROM channel_member"
+)
+REPAIR_TARGET_READ_SQL = (
+    "INSERT OR IGNORE INTO target_read(member_id, target_id, last_read_seq) "
+    "SELECT member_id, channel_id, last_read_seq FROM channel_read"
+)
+REPAIR_TARGET_BUDGET_SQL = (
+    "INSERT OR IGNORE INTO target_budget(target_id, epoch_seq, used) "
+    "SELECT channel_id, epoch_seq, used FROM channel_budget"
+)
+
+# 补齐语句：每张目标表一条 ``INSERT OR IGNORE``，**带一个可选的来源表**。
+#
+# 为什么每条都从 ``channel`` 出发：channel 型 target 的 id **复用** ``channel.id``（ADR-0004 的
+# 影子行语义），所以「channel 型的作用域数据」只可能来自频道。这个起点同时保证了 dm / task 型
+# target，以及挂在它们上面的成员 / 已读 / 预算行，**一个都不会被碰**——本入口没有它们的来源表，
+# 也就没有误伤它们的路径。
+#
+# 为什么旧表是**可选**来源：v4 的 ``SCHEMA`` 只 CREATE IF NOT EXISTS 新表、**不建** ``channel_*``
+# 旧表。于是一个**全新的 v4 库根本没有这三张表**——那种库本来就不需要补，跳过对应语句即可（否则
+# 会对一个健康的库报错）。真正的事故现场（“v4 打开过 v3 库”）里旧表**在**、带着数据，才是要补的。
+#
+# 为什么显式列出列名（而不是 ``SELECT *``）：新表与旧表的列名本就不同（``channel_id`` →
+# ``target_id``），显式写一次「哪个列搬到哪个列」比赌列顺序更稳，且一眼可审。
+#
+# 幂等来自 ``OR IGNORE``：主键 / 唯一键冲突的行被跳过，已补好的行不会被第二遍改写。
+_REPAIR_ORDER: tuple[tuple[str, str | None, str], ...] = (
+    ("target", "channel", REPAIR_TARGET_SQL),
+    ("target_member", "channel_member", REPAIR_TARGET_MEMBER_SQL),
+    ("target_read", "channel_read", REPAIR_TARGET_READ_SQL),
+    ("target_budget", "channel_budget", REPAIR_TARGET_BUDGET_SQL),
+)
+
+# v4 形态必须存在的表：``channel`` 是作用域数据的来源，四张 ``target*`` 是目标。缺任何一张就不是
+# 「v4 库里 channel 型 target 缺失」，而是别的库——那种情况本入口不处置。
+_V4_REQUIRED_TABLES = ("channel", "target", "target_member", "target_read", "target_budget")
+
+# ─── 事后自校验 ─────────────────────────────────────────────────────────────
+# 旧表的**每一行**都必须在新表里找得到对应行。逐对写 SQL（同样一句一个常量），因为两边的列名
+# 不同（``channel_id`` ↔ ``target_id``）—— 这正是「补齐」这件事唯一需要精确说清的地方。
+# 自校验与补齐用的是同一组列名，所以它检验的是「上面四条语句真的做到了它们声称的事」，
+# 而不是「跑完不报错」。
+CHECK_SHADOW_ROWS_SQL = (
+    "SELECT COUNT(*) FROM channel c LEFT JOIN target t "
+    "ON t.id = c.id AND t.kind = 'channel' WHERE t.id IS NULL"
+)
+CHECK_MEMBER_ROWS_SQL = (
+    "SELECT COUNT(*) FROM channel_member cm LEFT JOIN target_member tm "
+    "ON tm.target_id = cm.channel_id AND tm.member_id = cm.member_id WHERE tm.target_id IS NULL"
+)
+CHECK_READ_ROWS_SQL = (
+    "SELECT COUNT(*) FROM channel_read cr LEFT JOIN target_read tr "
+    "ON tr.target_id = cr.channel_id AND tr.member_id = cr.member_id WHERE tr.target_id IS NULL"
+)
+CHECK_BUDGET_ROWS_SQL = (
+    "SELECT COUNT(*) FROM channel_budget cb LEFT JOIN target_budget tb "
+    "ON tb.target_id = cb.channel_id WHERE tb.target_id IS NULL"
+)
+
+# 每条检查的「标签 + 语句」+ 它用到的表：表缺失时该条检查不适用（库形态不对由调用方另行报错，
+# 不在这里误报成「补齐失败」）。把表名显式写出来，是因为 ``_REPAIR_ORDER`` 里的表清单已经
+# 穷举了本模块认得的八张表，没有需要从 SQL 文本里猜的余地。
+_CONSISTENCY_CHECKS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("每个频道都有 channel 型影子行", CHECK_SHADOW_ROWS_SQL, ("channel", "target")),
+    (
+        "channel_member 的每一行都在 target_member 里",
+        CHECK_MEMBER_ROWS_SQL,
+        ("channel_member", "target_member"),
+    ),
+    (
+        "channel_read 的每一行都在 target_read 里",
+        CHECK_READ_ROWS_SQL,
+        ("channel_read", "target_read"),
+    ),
+    (
+        "channel_budget 的每一行都在 target_budget 里",
+        CHECK_BUDGET_ROWS_SQL,
+        ("channel_budget", "target_budget"),
+    ),
+)
+
+# 报「改动前后」行数用的表清单：四张补齐目标表 + 四张来源表。
+REPORTED_TABLES = (
+    "target",
+    "target_member",
+    "target_read",
+    "target_budget",
+    "channel",
+    "channel_member",
+    "channel_read",
+    "channel_budget",
+)
+
+# 计数语句：同样一句一个模块级常量（避免把表名插进 ``execute`` 的实参）。
+COUNT_TARGET_SQL = 'SELECT COUNT(*) FROM "target"'
+COUNT_TARGET_MEMBER_SQL = 'SELECT COUNT(*) FROM "target_member"'
+COUNT_TARGET_READ_SQL = 'SELECT COUNT(*) FROM "target_read"'
+COUNT_TARGET_BUDGET_SQL = 'SELECT COUNT(*) FROM "target_budget"'
+COUNT_CHANNEL_SQL = 'SELECT COUNT(*) FROM "channel"'
+COUNT_CHANNEL_MEMBER_SQL = 'SELECT COUNT(*) FROM "channel_member"'
+COUNT_CHANNEL_READ_SQL = 'SELECT COUNT(*) FROM "channel_read"'
+COUNT_CHANNEL_BUDGET_SQL = 'SELECT COUNT(*) FROM "channel_budget"'
+
+_ROW_COUNT_SQL: dict[str, str] = {
+    "target": COUNT_TARGET_SQL,
+    "target_member": COUNT_TARGET_MEMBER_SQL,
+    "target_read": COUNT_TARGET_READ_SQL,
+    "target_budget": COUNT_TARGET_BUDGET_SQL,
+    "channel": COUNT_CHANNEL_SQL,
+    "channel_member": COUNT_CHANNEL_MEMBER_SQL,
+    "channel_read": COUNT_CHANNEL_READ_SQL,
+    "channel_budget": COUNT_CHANNEL_BUDGET_SQL,
+}
+
+
+class RepairError(Exception):
+    """修复入口自己发现的问题：库不接受本入口处置（例如本来就不是 v4 形态）。
+
+    与 :class:`alibot.db.SchemaVersionMismatch` 分工不同——那个说「这个库本代码不接受」，
+    这个说「这个库虽然是 v4，但没有本入口能补齐的东西」。
+    """
+
+
+@dataclass(frozen=True)
+class RepairOutcome:
+    """一次补齐的结果。
+
+    ``inserted`` 的键是**目标表**名、值是 ``INSERT OR IGNORE`` 真正写入的行数。它天然就是
+    「本次新增了几行」这个读数，因此「对修好的库再跑一次 ⇒ 改动 0 行」用的是**同一个**账，
+    不需要第二套计数逻辑。
+
+    ``before`` / ``after`` 与 ``inserted`` 口径一致（每表行数），于是「哪几行是这次补上的」
+    可以直接相减看出来，读报告的人不必相信一句「已修复」。
+    """
+
+    db_path: Path
+    inserted: dict[str, int]
+    before: dict[str, int]
+    after: dict[str, int]
+    verified: tuple[str, ...]
+
+    @property
+    def changed_rows(self) -> int:
+        return sum(self.inserted.values())
+
+    @property
+    def already_complete(self) -> bool:
+        return self.changed_rows == 0
+
+
+def _existing_tables(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+
+
+def _counts(conn: sqlite3.Connection, existing: set[str]) -> dict[str, int]:
+    """每张报告表当前有多少行（不存在的表按 0 计，于是「缺表」与「空表」在报告里可分辨）。"""
+    counts: dict[str, int] = {}
+    for table in REPORTED_TABLES:
+        if table not in existing:
+            counts[table] = 0
+            continue
+        row = conn.execute(_ROW_COUNT_SQL[table]).fetchone()
+        counts[table] = int(row[0]) if row is not None else 0
+    return counts
+
+
+def _remaining_gaps(conn: sqlite3.Connection, existing: set[str]) -> list[str]:
+    """还差什么没补齐（空列表 = 已补齐）。
+
+    检查用到的表不全在时**跳过该条**：那种库不是「v4 形态的半改名库」，由调用方另行报错，
+    不在这里误报成「补齐失败」（``_validate_shape`` 已经把这件事说清楚了）。
+    """
+    gaps: list[str] = []
+    for label, statement, tables in _CONSISTENCY_CHECKS:
+        if not set(tables) <= existing:
+            continue
+        row = conn.execute(statement).fetchone()
+        count = int(row[0]) if row is not None else 0
+        if count:
+            gaps.append(f"{label}：还差 {count} 行")
+    return gaps
+
+
+def _check_label(check: tuple[str, str, tuple[str, ...]]) -> str:
+    """取一条检查的标签（写出这个小函数是为了让三元组在调用点只解构出需要的那一项）。"""
+    return check[0]
+
+
+def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
+    """把 **channel 型 target** 缺失的作用域数据补齐（幂等、可自校验）。
+
+    **版本闸门复用 :class:`Database` 的那一个判据**：库的 ``schema_version`` 不等于本代码的常量时，
+    :meth:`Database.open_without_initializing` 会抛 :class:`~alibot.db.SchemaVersionMismatch`，
+    于是本入口在**动任何数据之前**就拒绝执行。这不是「在代码里比对一下常量」的软检查，而是与主修
+    **同一段代码**给出的同一个答复（票面追加要求 4）。
+
+    用 ``open_without_initializing``（而不是 ``Database(...)``）很要紧：后者会先把缺的表
+    ``CREATE IF NOT EXISTS`` 出来，于是「某张表缺失」这个**正要诊断的事实**会在诊断前被抹掉，
+    而且那已经是一次 schema 变更。
+
+    四条 ``INSERT OR IGNORE`` 与自校验在**同一个写事务**内完成：自校验不通过就 ``ROLLBACK`` 并抛
+    :class:`RepairError`。于是「本入口要么把库补齐到它声称的状态，要么一行都不改」是结构性事实，
+    而不是「希望如此」。这同时让「对已修好的库再跑一次 ⇒ 改动 0 行」不可能有半途状态。
+
+    旧表（``channel_member`` / ``channel_read`` / ``channel_budget``）**存在才搬、不存在就跳过**：
+    全新的 v4 库没有它们，也不需要有（本入口对一个健康的库就是个空操作，不报错）。
+
+    只写四张 ``target*`` 表；**不碰** ``channel*`` 旧表（它们是来源，保留原样）、不碰 dm / task 型
+    target、不改 ``schema_meta``、不改任何表结构。
+    """
+    database = Database.open_without_initializing(data_dir)  # 闸门 + **不建表**
+    try:
+        conn = database._conn
+        existing = _existing_tables(conn)
+        missing = sorted(set(_V4_REQUIRED_TABLES) - existing)
+        if missing:
+            raise RepairError(
+                f"这个库不是 v4 形态（缺表：{', '.join(missing)}），本入口只处置「v4 库里 channel 型 "
+                f"target 缺失」这一种情形。"
+            )
+
+        before = _counts(conn, existing)
+        inserted: dict[str, int] = {}
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table, source, statement in _REPAIR_ORDER:
+                # 来源表不在：这个库没那类旧数据可搬（例如全新的 v4 库），跳过。
+                # 记 0 而不是不留键，于是报告里「这张表本次 0 行」仍是显式读数。
+                if source is not None and source not in existing:
+                    inserted[table] = 0
+                    continue
+                cursor = conn.execute(statement)
+                inserted[table] = max(cursor.rowcount, 0)
+            gaps = _remaining_gaps(conn, existing)
+            if gaps:
+                conn.execute("ROLLBACK")
+                raise RepairError("补齐后自校验仍未通过，已回滚、未改动任何行：" + "；".join(gaps))
+            conn.execute("COMMIT")
+        except Exception:
+            # ROLLBACK 在已回滚/提交过的连接上是 no-op（sqlite3 会抛「无事务」，因此吞掉）。
+            with suppress(sqlite3.OperationalError):
+                conn.execute("ROLLBACK")
+            raise
+
+        after = _counts(conn, existing)
+        verified = tuple(_check_label(check) for check in _CONSISTENCY_CHECKS)
+        return RepairOutcome(
+            db_path=database.path,
+            inserted=inserted,
+            before=before,
+            after=after,
+            verified=verified,
+        )
+    finally:
+        database.close()
+
+
+def render_outcome(outcome: RepairOutcome) -> str:
+    """把一次补齐的结果写成人类可读的报告（stdout 用）。"""
+    lines = [f"目标库：{outcome.db_path}", ""]
+    if outcome.already_complete:
+        lines.append("已是最新：没有需要补齐的行（本次改动 0 行）。")
+    else:
+        lines.append("本次补齐的行：")
+        for table, count in outcome.inserted.items():
+            if count:
+                lines.append(f"  + {table}: {count} 行")
+        lines.append(f"本次共补 {outcome.changed_rows} 行。")
+    lines.append("")
+    lines.append("行数（前 → 后）：")
+    for table in REPORTED_TABLES:
+        before, after = outcome.before[table], outcome.after[table]
+        marker = f"  (+{after - before})" if after > before else ""
+        lines.append(f"  {table:16s} {before:5d} → {after:<5d}{marker}")
+    lines.append("")
+    lines.append("自校验通过：")
+    lines.extend(f"  ✓ {label}" for label in outcome.verified)
+    lines.append("")
+    lines.append("提示：旧表（channel_member / channel_read / channel_budget）已不再被读写，")
+    lines.append("      本入口**保留**它们的原样以便随时回退；确认无误后可自行决定是否清理。")
+    return "\n".join(lines)
