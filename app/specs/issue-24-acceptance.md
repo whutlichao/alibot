@@ -545,4 +545,38 @@ P1/P3/P4）、**2 条记遗留**（S7/P5 的旧库版本检测；S8/P2 的 READM
 - worktree 干净（`git status --short` 为空，§7.1）；
 - 提交存在、分支已推送、PR 以 `--body-file` 创建（PR body 正本 `app/specs/issue-24-pr-body.md`，§7.2）。
 
-<!-- DELIVERY -->
+### 7.1 状态
+
+```text
+$ git status --short
+                                            # ← 空（干净）
+$ git log --oneline 9fd31bb..HEAD
+63af608 fix(db): #24 处置双轴 review 的 findings，并补 Answer 与 PR body
+49b8973 refactor(db)!: 消息作用域由「恒为一个频道」升为 target(id, kind)
+$ git rev-parse HEAD
+63af608ec6c12d89603e5cc99d6a3e7f8873204a
+```
+
+### 7.2 PR
+
+```text
+$ git push -u origin issue-24-target-first-class
+ * [new branch]      issue-24-target-first-class -> issue-24-target-first-class
+$ gh pr create --title "refactor(db): #24 消息作用域由「恒为一个频道」升为 target(id, kind)" \
+      --body-file app/specs/issue-24-pr-body.md --base main
+https://github.com/whutlichao/alibot/pull/34
+
+$ gh pr view 34 --json number,state,headRefName,baseRefName,mergeable,url
+{"number":34,"state":"OPEN","headRefName":"issue-24-target-first-class",
+ "baseRefName":"main","mergeable":"MERGEABLE",
+ "url":"https://github.com/whutlichao/alibot/pull/34"}
+```
+
+- **PR 号**：`#34`（`whutlichao/alibot`）
+- **head**：`issue-24-target-first-class` @ `63af608`
+- **base**：`main`
+- **mergeable**：`MERGEABLE`（OPEN）
+- PR body 正本：`app/specs/issue-24-pr-body.md`（体例照 `app/specs/issue-18-pr-body.md`：
+  Summary / Evidence / Merge Danger；Summary 用 diff-sketch + 写路径调用树）
+
+合并（G-merge）由 coordinator 执行；本票不自行合并、不自行改 issue 的 label/state。
