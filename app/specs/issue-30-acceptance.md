@@ -567,7 +567,10 @@ pyright 0 errors；并且重新在 base 隔离副本上确认测试**仍然 2 fa
 ## 8. 交付与状态流转
 
 - **base**：`f6b8039`（main HEAD，与本票开工时一致）
-- **commit**：`7947913`（分支 `issue-30-event-loop-fix`，已推送）
+- **代码 + 测试 commit**：`7947913`（分支 `issue-30-event-loop-fix`，已推送）—— 本票的行为改动固定在
+  这个 commit；`git diff 7947913 HEAD -- app/alibot/agent_seam.py app/tests/` 为空
+- **文档 commit**：`7fc94cb`（本文件的初版与双轴 review 结论回填）—— 之后的文档提交只会推进 head，
+  不再改代码（因此这里不把 head sha 写死）
 - **PR**：[#33](https://github.com/whutlichao/alibot/pull/33)（`--body-file app/specs/issue-30-pr-body.md`）
 - **issue #30 状态**：本票**不自行**改 issue 的 label / state（合并由 coordinator 执行）。
 
