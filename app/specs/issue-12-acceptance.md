@@ -5,8 +5,8 @@ issue 上的 Answer 摘要指向本文件。
 
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-12-budget-ledger`（Orca 独立顶层 worktree）
-- 分支与 PR：`issue-12-budget-ledger` → **PR #14**（base `main`）
-- PR body 正本：`app/specs/issue-12-pr-body.md`（`gh pr create --body-file`）
+- 分支与 PR：`issue-12-budget-ledger` → **[PR #16](https://github.com/whutlichao/alibot/pull/16)**（OPEN，base `main`，head commit `8aa1780`）
+- PR body 正本：`app/specs/issue-12-pr-body.md`（`gh pr create --body-file`，即 PR #16 的正文）
 - 基线：合并后的 `origin/main` `2b8615c`（worktree 由它创建，未 rebase、未合并 main）
 - 采集时间：2026-10-14
 - 环境：macOS，Python 3.11
