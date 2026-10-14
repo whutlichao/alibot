@@ -7,6 +7,7 @@ issue 上的 Answer 摘要指向本文件。
 > 因此频道 id 与 seq 起点在各片段间不同 —— 它们记录的是各自那一次的事实，不是同一条连续时间线。
 
 - 仓库：`whutlichao/alibot`
+- 交付物：PR [#11](https://github.com/whutlichao/alibot/pull/11)（OPEN，base `main`，head `issue-9-mention-complete`，head commit `868f301`）；PR body 正本 `app/specs/issue-9-pr-body.md`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-9-mention-complete`（Orca 独立顶层 worktree）
 - 基线：`origin/main` 的 `25108fb`（#7 合并后的 main）；worktree 由它创建，未 rebase、未合并 main
 - 采集时间：2026-10-14
