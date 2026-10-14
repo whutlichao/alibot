@@ -7,7 +7,7 @@
 - 但「插入的文本**确实是**后端认可的提及」这一条进 pytest：这里构造**前端会插入的那两种文本
   形态**，经 HTTP 面发送，断言 `mention_snapshot` 命中该成员。
 
-**前端不新增一套解析规则**：它只按 `worksplice/mentions.py` 的引号规则拼字符串（名字含分隔符
+**前端不新增一套解析规则**：它只按 `alibot/mentions.py` 的引号规则拼字符串（名字含分隔符
 ——含空格——写 ``@"名字"``，否则写 ``@名字``），「是不是提及」始终由后端在落库时裁决。本文件里
 的 `frontend_bare_form` / `frontend_quoted_form` 就是那两条拼接规则的**文字转录**，用于把「前端
 拼出来的字符串」当成契约的输入端；它们不解析正文，也不预测解析结果。
@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import channel_with_agent, create_agent, send
 
-# 与 `app/worksplice/studio/app.js` 的 MENTION_TOKEN_STOPS 同源（正本是 mentions.py 的 _TOKEN_STOPS）。
+# 与 `app/alibot/studio/app.js` 的 MENTION_TOKEN_STOPS 同源（正本是 mentions.py 的 _TOKEN_STOPS）。
 # 名字里出现其中任一字符时，裸形式会在该字符处被截断 ⇒ 前端必须改用引号形式。
 FRONTEND_TOKEN_STOPS = set(" \t\r\n@,，。、;；:：!！?？'\"“”‘’()（）[]【】{}「」<>《》/\\|~#$%^&*=")
 

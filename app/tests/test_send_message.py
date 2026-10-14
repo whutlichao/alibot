@@ -40,7 +40,7 @@ def test_concurrent_sends_never_share_or_skip_a_seq(data_dir: Path) -> None:
     """并发写入下频道内 seq 唯一且无缺口 —— 只从并发请求的返回值与列表观察。
 
     同一数据目录上同时开 8 个后端，8 条消息并发提交。seq 的唯一性与连续性由
-    ``UNIQUE(target_id, seq)`` 保证（实现事实，见 ``worksplice/db.py`` 模块文档），
+    ``UNIQUE(target_id, seq)`` 保证（实现事实，见 ``alibot/db.py`` 模块文档），
     测试只断言外部可见的结果：8 条各自拿到不同的 seq，合起来恰好是 1…8。
     """
     with peer_backends(data_dir, count=8) as peers:

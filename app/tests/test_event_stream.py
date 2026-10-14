@@ -280,7 +280,7 @@ def test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage(data_dir: P
     没有这一帧，555 秒后的主动收尾会被前端当成掉线，每分钟闪一次「后端不可达」——
     那既影响可用性，也是前端不诚实（把服务端的正常行为说成故障）。
     """
-    monkeypatch.setenv("WORKSPLICE_SSE_ROTATE_SECONDS", "1")
+    monkeypatch.setenv("ALIBOT_SSE_ROTATE_SECONDS", "1")
     scheduler, seam = ManualScheduler(), ScriptedAgentSeam()
     with (
         live_backend(data_dir, scheduler=scheduler, seam=seam) as base_url,

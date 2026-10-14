@@ -9,14 +9,14 @@
 
 手动运行方式（以本机 Ollama 为例，零凭证、零费用）::
 
-    WORKSPLICE_SMOKE_MODEL=ollama:qwen2.5 \
-    WORKSPLICE_SMOKE_ALLOW_REMOTE=0 \
+    ALIBOT_SMOKE_MODEL=ollama:qwen2.5 \
+    ALIBOT_SMOKE_ALLOW_REMOTE=0 \
     .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 
 远端 provider（**会产生费用**，且需要该 provider 的 API key）::
 
-    WORKSPLICE_SMOKE_MODEL=dashscope:qwen-max \
-    WORKSPLICE_SMOKE_ALLOW_REMOTE=1 \
+    ALIBOT_SMOKE_MODEL=dashscope:qwen-max \
+    ALIBOT_SMOKE_ALLOW_REMOTE=1 \
     DASHSCOPE_API_KEY=... \
     .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 
@@ -29,14 +29,14 @@ from __future__ import annotations
 import os
 
 import pytest
-from worksplice.agent_seam import (
+from alibot.agent_seam import (
     AgentScopeAgentSeam,
     is_remote_provider,
     provider_of,
 )
 
-SMOKE_MODEL_ENV = "WORKSPLICE_SMOKE_MODEL"
-ALLOW_REMOTE_ENV = "WORKSPLICE_SMOKE_ALLOW_REMOTE"
+SMOKE_MODEL_ENV = "ALIBOT_SMOKE_MODEL"
+ALLOW_REMOTE_ENV = "ALIBOT_SMOKE_ALLOW_REMOTE"
 
 SMOKE_MODEL = os.environ.get(SMOKE_MODEL_ENV, "")
 ALLOW_REMOTE = os.environ.get(ALLOW_REMOTE_ENV) == "1"

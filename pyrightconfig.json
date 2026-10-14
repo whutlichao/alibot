@@ -1,9 +1,9 @@
 {
   "venvPath": ".",
   "venv": ".venv",
-  "include": ["app/worksplice", "app/tests"],
+  "include": ["app/alibot", "app/tests"],
   "extraPaths": ["app"],
-  "exclude": ["**/__pycache__", "worksplice-design-system"],
+  "exclude": ["**/__pycache__", "alibot-design-system"],
   "typeCheckingMode": "basic",
   "reportMissingTypeStubs": "none",
   "reportMissingImports": "error",
