@@ -53,6 +53,14 @@
         <div class="rail-empty" id="channelListEmpty" hidden>还没有频道。新建一个频道就能开始记录。</div>
       </div>
       <div class="group">
+        <div class="group-label">任务</div>
+        <button class="nav-row" id="btnTaskBoard" type="button" data-od-id="task-board-nav" aria-current="false">
+          <span class="hash" aria-hidden="true">▦</span>
+          <span class="grow">任务看板</span>
+          <span class="badge" id="taskUnreadBadge" hidden></span>
+        </button>
+      </div>
+      <div class="group">
         <div class="group-label">本机 Agent</div>
         <div id="memberList"></div>
         <div class="rail-empty" id="memberListEmpty" hidden>还没有 Agent。</div>
@@ -88,6 +96,59 @@
       </div>
       <div class="chan-desc" id="chanDesc"></div>
     </header>
+
+    <section class="task-board" id="taskBoard" hidden data-od-id="task-board">
+      <header class="task-board-head">
+        <div>
+          <div class="task-eyebrow">WORKSPACE · TASKS</div>
+          <h1>任务看板</h1>
+          <p>每项任务都有独立线程；状态变化会记录在任务时间线中。</p>
+        </div>
+        <label class="task-filter-label" for="taskChannelFilter">频道筛选
+          <select class="input task-filter" id="taskChannelFilter" data-od-id="task-channel-filter"></select>
+        </label>
+      </header>
+      <form class="task-create-form" id="taskCreateForm">
+        <label class="sr-only" for="taskCreateChannel">所属频道</label>
+        <select class="input" id="taskCreateChannel" required aria-label="任务所属频道"></select>
+        <label class="sr-only" for="taskCreateTitle">任务标题</label>
+        <input class="input" id="taskCreateTitle" placeholder="写下一个新任务…" required data-od-id="task-create-title" />
+        <button class="btn btn-primary" id="taskCreateSubmit" type="submit" data-od-id="task-create-submit">新建任务</button>
+      </form>
+      <div class="task-board-empty" id="taskBoardEmpty" hidden>
+        <b>这里还没有任务</b>
+        <p>选择一个频道并创建任务；任务讨论会保存在独立线程中。</p>
+      </div>
+      <div class="task-columns" id="taskColumns" data-od-id="task-columns"></div>
+    </section>
+
+    <section class="task-thread" id="taskThread" hidden data-od-id="task-thread">
+      <header class="task-thread-head">
+        <div class="task-thread-title-row">
+          <button class="btn btn-sm" id="btnBackToBoard" type="button">← 看板</button>
+          <span class="task-channel-label" id="taskChannelLabel"></span>
+        </div>
+        <div class="task-title-edit">
+          <label class="sr-only" for="taskTitleInput">任务标题</label>
+          <input class="task-title-input" id="taskTitleInput" aria-label="任务标题" />
+          <button class="btn btn-sm" id="taskTitleSave" type="button">保存标题</button>
+        </div>
+        <div class="task-thread-controls">
+          <label for="taskStatusSelect">状态</label>
+          <select class="input" id="taskStatusSelect" data-od-id="task-status-select"></select>
+          <label for="taskAssigneeSelect">指派给</label>
+          <select class="input" id="taskAssigneeSelect" data-od-id="task-assignee-select"></select>
+          <span class="task-thread-unread" id="taskThreadUnread"></span>
+        </div>
+      </header>
+      <section class="task-thread-stream" id="taskThreadStream" aria-label="任务讨论">
+        <div class="task-thread-messages" id="taskMessageList"></div>
+      </section>
+      <footer class="task-thread-composer">
+        <textarea class="composer-input" id="taskComposerInput" rows="1" placeholder="在任务线程中发消息…" aria-label="任务消息正文"></textarea>
+        <button class="btn btn-primary" id="taskSend" type="button" data-od-id="task-send">发送</button>
+      </footer>
+    </section>
 
     <section class="stream" id="viewMessages" data-od-id="messages-view">
       <div class="stream-inner" id="streamInner">

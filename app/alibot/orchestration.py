@@ -164,10 +164,8 @@ class WakeOrchestrator:
         这次跳只让 ``target_budget.used`` +1（跳数的单一正本）；下面传给每个成员的
         ``jump_delivered`` 是**行级**标记，投递 N 个成员就有 N 条为真的轮次结果行。
         """
-        # 频道面入口的 404 早退：`notify` 今天的调用点都来自「某频道的一条消息落库」。
-        # 它不是唤醒面查询（那个是下面的 `list_target_agent_members`，**不按 kind 分支**）；
-        # 保留它是因为 #24 不新增 dm / task 的唤醒入口，去掉它反而会改变既有 404 行为。
-        self._db.get_channel(channel_id)
+        # 目标作用域早退：调用入口已按 kind 校验 channel/task；唤醒机制本身对 target 不分支。
+        self._db.get_target(channel_id)
         message = self._db.get_message(channel_id, from_seq)
         author_id = message["author"]["id"]
         author_kind = message["author"]["kind"]
@@ -204,6 +202,31 @@ class WakeOrchestrator:
                 target.pierced,
             )
         return len(targets)
+
+    def notify_task_assignment(self, target_id: str, from_seq: int, member_id: str) -> int:
+        """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。"""
+        target = self._db.get_target(target_id)
+        if target["kind"] != "task":
+            return 0
+        message = self._db.get_message(target_id, from_seq)
+        if message["kind"] != "system":
+            return 0
+        assignee = next(
+            (agent for agent in self._db.list_target_agent_members(target_id) if agent["id"] == member_id),
+            None,
+        )
+        if assignee is None:
+            return 0
+        self._scheduler.submit(
+            self.run_round,
+            assignee,
+            target_id,
+            from_seq,
+            WAKE_REASON_CHANNEL_MESSAGE,
+            False,
+            False,
+        )
+        return 1
 
     def _wake_targets(self, channel_id: str, author_id: str, message: dict[str, Any]) -> list[_WakeTarget]:
         """唤醒面 = **该 target** 的 agent 成员（除作者）+ 被点名但**未加入**该 target 的 Agent（穿透）。

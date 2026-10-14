@@ -38,7 +38,7 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Alibot"
@@ -54,6 +54,22 @@ TARGET_KINDS = ("channel", "dm", "task")
 # 计入工作台快照 ``unread_total`` 的 kind（规格 §2 / 决策 G5）：channel 型 + dm 型之和。
 # **task 型不进** ``unread_total``（看板卡片自带徽标，各自读它）。
 UNREAD_TOTAL_KINDS = ("channel", "dm")
+
+TASK_STATUSES = ("todo", "in_progress", "in_review", "done", "closed")
+TASK_STATUS_TRANSITIONS = {
+    "todo": {"in_progress", "closed"},
+    "in_progress": {"in_review", "todo", "closed"},
+    "in_review": {"done", "in_progress", "todo"},
+    "done": {"in_progress", "closed"},
+    "closed": set(),
+}
+TASK_STATUS_LABELS = {
+    "todo": "待认领",
+    "in_progress": "进行中",
+    "in_review": "待审",
+    "done": "完成",
+    "closed": "已关闭",
+}
 
 # 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
 ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
@@ -72,6 +88,7 @@ BUSINESS_TABLES = (
     "channel_member",
     "target",
     "target_member",
+    "task",
     "message",
     "channel_read",
     "target_read",
@@ -134,6 +151,33 @@ CREATE TABLE IF NOT EXISTS target_member (
   PRIMARY KEY (target_id, member_id)
 );
 
+-- 任务当前态在 task 行上；变更历史只进入该任务 target 的 append-only 消息流（ADR-0006）。
+CREATE TABLE IF NOT EXISTS task (
+  id                 TEXT PRIMARY KEY,
+  target_id          TEXT NOT NULL UNIQUE REFERENCES target(id),
+  channel_id         TEXT NOT NULL REFERENCES channel(id),
+  title              TEXT NOT NULL CHECK (length(trim(title)) > 0),
+  status             TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'in_review', 'done', 'closed')),
+  assignee_member_id TEXT REFERENCES member(id),
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  UNIQUE (target_id, id)
+);
+
+CREATE TRIGGER IF NOT EXISTS task_target_must_be_task
+BEFORE INSERT ON task
+WHEN (SELECT kind FROM target WHERE id = NEW.target_id) != 'task'
+BEGIN
+  SELECT RAISE(ABORT, 'task must own a task target');
+END;
+
+CREATE TRIGGER IF NOT EXISTS task_channel_must_be_channel
+BEFORE INSERT ON task
+WHEN (SELECT kind FROM target WHERE id = NEW.channel_id) != 'channel'
+BEGIN
+  SELECT RAISE(ABORT, 'task must belong to a channel target');
+END;
+
 CREATE TABLE IF NOT EXISTS message (
   id               TEXT PRIMARY KEY,
   target_id        TEXT NOT NULL REFERENCES target(id),
@@ -143,6 +187,8 @@ CREATE TABLE IF NOT EXISTS message (
   body             TEXT NOT NULL,
   created_at       TEXT NOT NULL,
   mention_snapshot TEXT NOT NULL DEFAULT '[]',
+  task_ref         TEXT,
+  FOREIGN KEY (target_id, task_ref) REFERENCES task(target_id, id),
   UNIQUE (target_id, seq)
 );
 
@@ -768,6 +814,225 @@ class Database:
             raise NotFound(f"target 不存在：{target_id}")
         return {"id": row["id"], "kind": row["kind"], "created_at": row["created_at"]}
 
+    # ─── 任务 ─────────────────────────────────────────────────────────────
+    def create_task(self, channel_id: str, title: str) -> dict[str, Any]:
+        clean_title = (title or "").strip()
+        if not clean_title:
+            raise DomainError("validation_failed", "任务标题不能为空", fields={"title": "任务标题不能为空"})
+        self.get_channel(channel_id)  # 必须恰属于一个存在的 channel 型 target
+
+        task_id = new_id("task")
+        target_id = new_id("tgt")
+        now = utc_now()
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO target(id, kind, created_at) VALUES (?, 'task', ?)", (target_id, now)
+                )
+                self._conn.execute(
+                    "INSERT INTO task(id, target_id, channel_id, title, status, assignee_member_id, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, 'todo', NULL, ?, ?)",
+                    (task_id, target_id, channel_id, clean_title, now, now),
+                )
+                self._conn.execute(
+                    "INSERT INTO target_member(target_id, member_id) VALUES (?, ?)", (target_id, OWNER_ID)
+                )
+                self._conn.execute(
+                    "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0)",
+                    (OWNER_ID, target_id),
+                )
+                self._conn.execute(
+                    "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
+                    "mention_snapshot) VALUES (?, ?, 1, ?, 'system', '任务已创建', ?, '[]')",
+                    (new_id("msg"), target_id, OWNER_ID, now),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_task(task_id)
+
+    def get_task(self, task_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT t.*, c.name AS channel_name FROM task t "
+                "JOIN channel c ON c.id = t.channel_id WHERE t.id = ?",
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFound(f"任务不存在：{task_id}")
+        task = {
+            "id": row["id"],
+            "target_id": row["target_id"],
+            "channel_id": row["channel_id"],
+            "channel_name": row["channel_name"],
+            "title": row["title"],
+            "status": row["status"],
+            "assignee_member_id": row["assignee_member_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        task["unread_count"] = self.unread_count(task["target_id"], member_id)
+        return task
+
+    def list_tasks(self, channel_id: str | None = None, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
+        if channel_id is not None:
+            self.get_channel(channel_id)  # 非法筛选频道明确 404，不能伪装成空结果
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM task WHERE (:channel_id IS NULL OR channel_id = :channel_id) "
+                "ORDER BY created_at, id",
+                {"channel_id": channel_id},
+            ).fetchall()
+        return [self.get_task(row["id"], member_id) for row in rows]
+
+    def list_task_messages(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        task = self.get_task(task_id)  # task 面只认任务，不把任意 target 当成任务线程
+        return self.list_messages(task["target_id"], after_seq=after_seq)
+
+    def _append_task_system_message_locked(self, target_id: str, body: str, now: str) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM message WHERE target_id = ?", (target_id,)
+        ).fetchone()
+        seq = int(row["next_seq"])
+        self._conn.execute(
+            "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
+            "mention_snapshot) VALUES (?, ?, ?, ?, 'system', ?, ?, '[]')",
+            (new_id("msg"), target_id, seq, OWNER_ID, body, now),
+        )
+        return seq
+
+    def update_task_status(self, task_id: str, status: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if status not in TASK_STATUSES:
+            raise DomainError("validation_failed", f"未知的任务状态：{status}", fields={"status": "任务状态非法"})
+        self.get_task(task_id)  # 404 早退
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT target_id, status FROM task WHERE id = ?", (task_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound(f"任务不存在：{task_id}")
+                current = str(row["status"])
+                target_id = str(row["target_id"])
+                if status == current:
+                    self._commit()
+                    return self.get_task(task_id), None
+                if status not in TASK_STATUS_TRANSITIONS[current]:
+                    raise DomainError(
+                        "validation_failed",
+                        f"任务不能从 {current} 迁移到 {status}；closed 是终态",
+                        fields={"status": f"不允许从 {current} 迁移到 {status}"},
+                    )
+                now = utc_now()
+                self._conn.execute(
+                    "UPDATE task SET status = ?, updated_at = ? WHERE id = ?", (status, now, task_id)
+                )
+                seq = self._append_task_system_message_locked(
+                    target_id, f"状态推进至 {TASK_STATUS_LABELS[status]}", now
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_task(task_id), self.get_message(target_id, seq)
+
+    def update_task_title(self, task_id: str, title: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        clean_title = (title or "").strip()
+        if not clean_title:
+            raise DomainError("validation_failed", "任务标题不能为空", fields={"title": "任务标题不能为空"})
+        self.get_task(task_id)  # 404 早退
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT target_id, title FROM task WHERE id = ?", (task_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound(f"任务不存在：{task_id}")
+                target_id = str(row["target_id"])
+                if clean_title == row["title"]:
+                    self._commit()
+                    return self.get_task(task_id), None
+                now = utc_now()
+                self._conn.execute(
+                    "UPDATE task SET title = ?, updated_at = ? WHERE id = ?", (clean_title, now, task_id)
+                )
+                seq = self._append_task_system_message_locked(target_id, f"标题已更改为：{clean_title}", now)
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_task(task_id), self.get_message(target_id, seq)
+
+    def update_task_assignee(
+        self, task_id: str, member_id: str | None
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        assignee: dict[str, Any] | None = None
+        if member_id is not None:
+            try:
+                assignee = self.get_member(member_id)
+            except NotFound as exc:
+                raise DomainError(
+                    "validation_failed", "指派对象不存在", fields={"member_id": "Agent 不存在"}
+                ) from exc
+            if assignee["deleted_at"] is not None or assignee["kind"] != "agent":
+                raise DomainError(
+                    "validation_failed", "任务只能指派给未删除的 Agent", fields={"member_id": "指派对象必须是 Agent"}
+                )
+        self.get_task(task_id)  # 404 早退
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT target_id, assignee_member_id FROM task WHERE id = ?", (task_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound(f"任务不存在：{task_id}")
+                target_id = str(row["target_id"])
+                previous_id = row["assignee_member_id"]
+                if member_id == previous_id:
+                    self._commit()
+                    return self.get_task(task_id), None
+                now = utc_now()
+                self._conn.execute(
+                    "UPDATE task SET assignee_member_id = ?, updated_at = ? WHERE id = ?",
+                    (member_id, now, task_id),
+                )
+                if previous_id is not None:
+                    self._conn.execute(
+                        "DELETE FROM target_member WHERE target_id = ? AND member_id = ?",
+                        (target_id, previous_id),
+                    )
+                    self._conn.execute(
+                        "DELETE FROM target_read WHERE target_id = ? AND member_id = ?",
+                        (target_id, previous_id),
+                    )
+                if member_id is not None:
+                    self._conn.execute(
+                        "INSERT INTO target_member(target_id, member_id) VALUES (?, ?)",
+                        (target_id, member_id),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0)",
+                        (member_id, target_id),
+                    )
+                label = f"已指派给 {assignee['display_name']}" if assignee is not None else "指派已取消"
+                seq = self._append_task_system_message_locked(target_id, label, now)
+                if member_id is not None:
+                    self._conn.execute(
+                        "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
+                        "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
+                        (target_id, seq),
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_task(task_id), self.get_message(target_id, seq)
+
     def create_target(self, kind: str, target_id: str | None = None) -> dict[str, Any]:
         """落一个新的 **dm / task 型** target 行。
 
@@ -958,6 +1223,7 @@ class Database:
         author_member_id: str = OWNER_ID,
         kind: str = "human",
         mention_snapshot: Iterable[Mapping[str, Any]] | None = None,
+        task_ref: str | None = None,
     ) -> dict[str, Any]:
         """在同一事务内分配 **target 内**单调 seq 并落库。失败则不落任何行。"""
         if kind not in MESSAGE_KINDS:
@@ -973,6 +1239,19 @@ class Database:
             )
         self.get_target(target_id)  # 404 早退
         self.get_member(author_member_id)
+        if task_ref is not None:
+            try:
+                referenced_task = self.get_task(task_ref)
+            except NotFound as exc:
+                raise DomainError(
+                    "validation_failed", "task_ref 指向的任务不存在", fields={"task_ref": "任务不存在"}
+                ) from exc
+            if referenced_task["target_id"] != target_id:
+                raise DomainError(
+                    "validation_failed",
+                    "task_ref 必须与消息位于同一 target",
+                    fields={"task_ref": "不能引用其他 target 的任务"},
+                )
 
         message_id = new_id("msg")
         now = utc_now()
@@ -986,7 +1265,7 @@ class Database:
                 seq = int(row["next_seq"])
                 self._conn.execute(
                     "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
-                    "mention_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "mention_snapshot, task_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         message_id,
                         target_id,
@@ -996,6 +1275,7 @@ class Database:
                         clean_body,
                         now,
                         json.dumps(list(mention_snapshot or []), ensure_ascii=False),
+                        task_ref,
                     ),
                 )
                 if kind == "human":
@@ -1043,6 +1323,7 @@ class Database:
             "body": row["body"],
             "created_at": row["created_at"],
             "mention_snapshot": mentions,
+            "task_ref": row["task_ref"],
             "author": {
                 "id": row["author_member_id"],
                 "kind": row["author_kind"],

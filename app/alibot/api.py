@@ -13,6 +13,10 @@
 - ``GET  /api/channels/{id}/budget``          有界响应预算（只读，无 UI）
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
+- ``GET  /api/tasks``                         全工作区任务看板（可按频道筛选）
+- ``POST /api/channels/{id}/tasks``           在频道下新建任务与独立线程
+- ``GET/POST /api/tasks/{id}/messages``       读取 / 追加任务线程消息
+- ``GET  /api/tasks/{id}/events``             任务线程事件流（SSE，``after_seq`` 补拉）
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
@@ -106,10 +110,35 @@ class ChannelCreate(BaseModel):
     member_ids: list[str] = Field(default_factory=list)
 
 
+class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = ""
+
+
+class TaskStatusChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = ""
+
+
+class TaskTitleChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = ""
+
+
+class TaskAssigneeChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    member_id: str | None
+
+
 class MessageCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     body: str = ""
+    task_ref: str | None = None
 
 
 class AgentCreate(BaseModel):
@@ -230,6 +259,50 @@ def create_app(
         )
         return {"channel": channel, "channels": service.list_channels()}
 
+    @app.get("/api/tasks")
+    def list_tasks(channel_id: str | None = Query(default=None)) -> dict[str, Any]:
+        return {"tasks": service.tasks(channel_id=channel_id)}
+
+    @app.post("/api/channels/{channel_id}/tasks", status_code=201)
+    def create_task(channel_id: str, payload: TaskCreate) -> dict[str, Any]:
+        return service.create_task(channel_id=channel_id, title=payload.title)
+
+    @app.get("/api/tasks/{task_id}")
+    def get_task(task_id: str) -> dict[str, Any]:
+        return service.task(task_id)
+
+    @app.patch("/api/tasks/{task_id}/status")
+    def update_task_status(task_id: str, payload: TaskStatusChange) -> dict[str, Any]:
+        return service.update_task_status(task_id, payload.status)
+
+    @app.patch("/api/tasks/{task_id}/title")
+    def update_task_title(task_id: str, payload: TaskTitleChange) -> dict[str, Any]:
+        return service.update_task_title(task_id, payload.title)
+
+    @app.patch("/api/tasks/{task_id}/assignee")
+    def update_task_assignee(task_id: str, payload: TaskAssigneeChange) -> dict[str, Any]:
+        return service.update_task_assignee(task_id, payload.member_id)
+
+    @app.get("/api/tasks/{task_id}/members")
+    def list_task_members(task_id: str) -> dict[str, Any]:
+        return {"members": service.task_members(task_id)}
+
+    @app.get("/api/tasks/{task_id}/budget")
+    def get_task_budget(task_id: str) -> dict[str, Any]:
+        return {"budget": service.task_budget(task_id)}
+
+    @app.post("/api/tasks/{task_id}/read")
+    def mark_task_read(task_id: str, payload: MarkRead) -> dict[str, Any]:
+        return {"task": service.mark_task_read(task_id, payload.seq)}
+
+    @app.get("/api/tasks/{task_id}/messages")
+    def list_task_messages(task_id: str, after_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
+        return service.task_messages(task_id, after_seq=after_seq)
+
+    @app.post("/api/tasks/{task_id}/messages", status_code=201)
+    def create_task_message(task_id: str, payload: MessageCreate) -> dict[str, Any]:
+        return {"message": service.send_task_message(task_id, payload.body, payload.task_ref)}
+
     @app.get("/api/channels/{channel_id}/messages")
     def list_messages(channel_id: str, after_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
         messages = service.channel_messages(channel_id, after_seq=after_seq)
@@ -238,7 +311,7 @@ def create_app(
 
     @app.post("/api/channels/{channel_id}/messages", status_code=201)
     def create_message(channel_id: str, payload: MessageCreate) -> dict[str, Any]:
-        message = service.send_message(channel_id, payload.body)
+        message = service.send_message(channel_id, payload.body, payload.task_ref)
         return {"message": message}
 
     @app.get("/api/channels/{channel_id}/members")
@@ -390,6 +463,54 @@ def create_app(
                     if int(event.get("seq", 0)) < after_seq:
                         continue
                     yield sse_frame(event)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/tasks/{task_id}/events")
+    async def task_events(
+        task_id: str,
+        request: Request,
+        after_seq: int = Query(default=0, ge=0),
+    ) -> StreamingResponse:
+        """订阅任务线程事件流；重连时从任务 target 的消息正本补拉。"""
+        task = service.task(task_id)["task"]  # 响应开始前做作用域校验，确保不存在的任务返回 404。
+        subscription = events.subscribe(task["target_id"])
+        subscriber = subscription.__enter__()
+        try:
+            snapshot = service.task_messages(task_id, after_seq=after_seq)["messages"]
+        except Exception:
+            subscription.__exit__(None, None, None)
+            raise
+
+        async def stream() -> AsyncIterator[str]:
+            try:
+                for message in snapshot:
+                    yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
+                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                while not shutting_down.is_set():
+                    if await request.is_disconnected():
+                        return
+                    if asyncio.get_running_loop().time() >= deadline:
+                        yield "event: rotate\ndata: {}\n\n"
+                        return
+                    try:
+                        event = await asyncio.to_thread(subscriber.get, True, SSE_POLL_SECONDS)
+                    except queue.Empty:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if int(event.get("seq", 0)) <= after_seq:
+                        continue
+                    yield sse_frame(event)
+            finally:
+                subscription.__exit__(None, None, None)
 
         return StreamingResponse(
             stream(),
