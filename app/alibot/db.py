@@ -81,6 +81,11 @@ BUSINESS_TABLES = (
     "remote_consent",
 )
 
+# 逐表计数语句：由上面的常量在模块级拼好（与 ``AGENT_SELECT_SQL`` / ``UNREAD_COUNT_SQL`` 同一体例：
+# **不把拼接写进 ``execute`` 的实参**）。表名只能来自上面的字面量元组，不是外部输入，
+# 因此这里不存在标识符注入面。
+BUSINESS_COUNT_SQL: dict[str, str] = {table: f'SELECT COUNT(*) FROM "{table}"' for table in BUSINESS_TABLES}
+
 MAX_CHANNEL_NAME_LENGTH = 80
 MAX_CHANNEL_DESCRIPTION_LENGTH = 500
 MAX_MESSAGE_BODY_LENGTH = 8000
@@ -433,7 +438,7 @@ class Database:
         for table in BUSINESS_TABLES:
             if table not in existing:
                 continue
-            row = self._conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
+            row = self._conn.execute(BUSINESS_COUNT_SQL[table]).fetchone()
             if row is not None and int(row[0]) > 0:
                 return True
         return False

@@ -120,9 +120,9 @@ def _row_counts(data_dir: Path) -> dict[str, int]:
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
         return {
-            table: int(conn.execute(statement).fetchone()[0])
-            for table, statement in _ROW_COUNT_SQL.items()
-            if table in present
+            table: int(conn.execute(_ROW_COUNT_SQL[table]).fetchone()[0])
+            for table in present
+            if table in _ROW_COUNT_SQL
         }
     finally:
         conn.close()

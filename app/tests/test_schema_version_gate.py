@@ -98,8 +98,27 @@ def _build_v3_database(data_dir: Path, version: str | None = "3") -> Path:
     return db_path
 
 
+# 取行数的语句：**一句一个模块级常量**（与 ``db.py`` / ``repair.py`` 同一体例：不把表名插进
+# ``execute`` 的实参）。快照要覆盖新旧两代的作用域表，清单固定。
+_ROW_COUNT_SQL: dict[str, str] = {
+    "target": 'SELECT COUNT(*) FROM "target"',
+    "target_member": 'SELECT COUNT(*) FROM "target_member"',
+    "target_read": 'SELECT COUNT(*) FROM "target_read"',
+    "target_budget": 'SELECT COUNT(*) FROM "target_budget"',
+    "channel": 'SELECT COUNT(*) FROM "channel"',
+    "channel_member": 'SELECT COUNT(*) FROM "channel_member"',
+    "channel_read": 'SELECT COUNT(*) FROM "channel_read"',
+    "channel_budget": 'SELECT COUNT(*) FROM "channel_budget"',
+    "message": 'SELECT COUNT(*) FROM "message"',
+}
+
+
 def _snapshot(db_path: Path) -> dict[str, Any]:
-    """库的逐一比对快照：版本号 + 每张表的行数 + 表清单（只读；**不**改动该库）。"""
+    """库的逐一比对快照：版本号 + 每张表的行数 + 表清单（只读；**不**改动该库）。
+
+    行数只计**库里存在**的表（缺表不进字典），于是「以前没有、现在多了」会被 ``==`` 直接看出来；
+    这正是拒绝路径要断言的事（旧库不许被 ``CREATE TABLE IF NOT EXISTS`` 拓出 ``target*``）。
+    """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         tables = [
@@ -108,7 +127,11 @@ def _snapshot(db_path: Path) -> dict[str, Any]:
                 "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
             ).fetchall()
         ]
-        counts = {table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] for table in tables}
+        counts = {
+            table: conn.execute(_ROW_COUNT_SQL[table]).fetchone()[0]
+            for table in tables
+            if table in _ROW_COUNT_SQL
+        }
         row = conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
         return {"tables": tables, "row_counts": counts, "stored_version": None if row is None else row[0]}
     finally:

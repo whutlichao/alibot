@@ -29,7 +29,6 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,10 +37,10 @@ from pathlib import Path
 # 这件事落在**行为**上（两条路径都经 :class:`Database` 的同一道闸门），而不是靠共享一个常量。
 from .db import Database
 
-# ─── 补齐语句 ─────────────────────────────────────────────────────────────
-# 每张目标表一条 ``INSERT OR IGNORE``。**一句一个模块级常量**（不放进元组再循环取用）：
-# 与 ``db.py`` 的 ``UNREAD_COUNT_SQL`` / ``AGENT_SELECT_SQL`` 同一体例 —— 查询文本对静态检查
-# 是可见常量，也不是注入面。
+# ─── 补齐语句 ────────────────────────────────────────────────────────────
+# 每张目标表一条 ``INSERT OR IGNORE``，SQL 本身**一句一个模块级常量**（表名不插进 ``execute``
+# 的实参，与 ``db.py`` 的 ``UNREAD_COUNT_SQL`` / ``AGENT_SELECT_SQL`` 同一体例）；下面再用一个
+# 元组把「目标表 ← 旧表」与对应语句配起来，供循环取用。
 #
 # 为什么每条都从 ``channel`` 出发：channel 型 target 的 id **复用** ``channel.id``（ADR-0004 的
 # 影子行语义），所以「channel 型的作用域数据」只可能来自频道。这个起点同时保证了 dm / task 型
@@ -68,27 +67,26 @@ REPAIR_TARGET_BUDGET_SQL = (
     "SELECT channel_id, epoch_seq, used FROM channel_budget"
 )
 
-# 补齐语句：每张目标表一条 ``INSERT OR IGNORE``，**带一个可选的来源表**。
+# 「目标表 ← 可选来源表」的配对与执行顺序。
 #
-# 为什么每条都从 ``channel`` 出发：channel 型 target 的 id **复用** ``channel.id``（ADR-0004 的
-# 影子行语义），所以「channel 型的作用域数据」只可能来自频道。这个起点同时保证了 dm / task 型
-# target，以及挂在它们上面的成员 / 已读 / 预算行，**一个都不会被碰**——本入口没有它们的来源表，
-# 也就没有误伤它们的路径。
+# 来源表是**可选**的：v4 的 ``SCHEMA`` 只 CREATE IF NOT EXISTS 新表、**不建** ``channel_*`` 旧表，
+# 所以一个**全新**的 v4 库根本没有它们——那种库本来就不需要补，跳过对应语句即可（否则会对一个
+# 健康的库报错）。真正的事故现场（「v4 打开过 v3 库」）里旧表**在**、带着数据，才是要补的。
 #
-# 为什么旧表是**可选**来源：v4 的 ``SCHEMA`` 只 CREATE IF NOT EXISTS 新表、**不建** ``channel_*``
-# 旧表。于是一个**全新的 v4 库根本没有这三张表**——那种库本来就不需要补，跳过对应语句即可（否则
-# 会对一个健康的库报错）。真正的事故现场（“v4 打开过 v3 库”）里旧表**在**、带着数据，才是要补的。
-#
-# 为什么显式列出列名（而不是 ``SELECT *``）：新表与旧表的列名本就不同（``channel_id`` →
-# ``target_id``），显式写一次「哪个列搬到哪个列」比赌列顺序更稳，且一眼可审。
-#
-# 幂等来自 ``OR IGNORE``：主键 / 唯一键冲突的行被跳过，已补好的行不会被第二遍改写。
-_REPAIR_ORDER: tuple[tuple[str, str | None, str], ...] = (
-    ("target", "channel", REPAIR_TARGET_SQL),
-    ("target_member", "channel_member", REPAIR_TARGET_MEMBER_SQL),
-    ("target_read", "channel_read", REPAIR_TARGET_READ_SQL),
-    ("target_budget", "channel_budget", REPAIR_TARGET_BUDGET_SQL),
+# ``target`` 必须最先：另外三张表的引用约束都指向它。语句本体在 ``_REPAIR_SQL`` 里按目标表索引。
+_REPAIR_ORDER: tuple[tuple[str, str | None], ...] = (
+    ("target", "channel"),
+    ("target_member", "channel_member"),
+    ("target_read", "channel_read"),
+    ("target_budget", "channel_budget"),
 )
+
+_REPAIR_SQL: dict[str, str] = {
+    "target": REPAIR_TARGET_SQL,
+    "target_member": REPAIR_TARGET_MEMBER_SQL,
+    "target_read": REPAIR_TARGET_READ_SQL,
+    "target_budget": REPAIR_TARGET_BUDGET_SQL,
+}
 
 # v4 形态必须存在的表：``channel`` 是作用域数据的来源，四张 ``target*`` 是目标。缺任何一张就不是
 # 「v4 库里 channel 型 target 缺失」，而是别的库——那种情况本入口不处置。
@@ -116,27 +114,23 @@ CHECK_BUDGET_ROWS_SQL = (
     "ON tb.target_id = cb.channel_id WHERE tb.target_id IS NULL"
 )
 
-# 每条检查的「标签 + 语句」+ 它用到的表：表缺失时该条检查不适用（库形态不对由调用方另行报错，
-# 不在这里误报成「补齐失败」）。把表名显式写出来，是因为 ``_REPAIR_ORDER`` 里的表清单已经
-# 穷举了本模块认得的八张表，没有需要从 SQL 文本里猜的余地。
-_CONSISTENCY_CHECKS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("每个频道都有 channel 型影子行", CHECK_SHADOW_ROWS_SQL, ("channel", "target")),
-    (
-        "channel_member 的每一行都在 target_member 里",
-        CHECK_MEMBER_ROWS_SQL,
-        ("channel_member", "target_member"),
-    ),
-    (
-        "channel_read 的每一行都在 target_read 里",
-        CHECK_READ_ROWS_SQL,
-        ("channel_read", "target_read"),
-    ),
-    (
-        "channel_budget 的每一行都在 target_budget 里",
-        CHECK_BUDGET_ROWS_SQL,
-        ("channel_budget", "target_budget"),
-    ),
+# 每条检查的「标签 + 它用到的表」；语句本体在下面按标签索引的字典里（**下标取常量**的形态，
+# 与 ``db.py`` 的 ``BUSINESS_COUNT_SQL[table]`` 一致：不把裸变量直接喂给 ``execute``）。
+# 表名显式写出来，是因为 ``_REPAIR_ORDER`` 里的表清单已经穷举了本模块认得的八张表，
+# 没有需要从 SQL 文本里猜的余地。
+_CONSISTENCY_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("每个频道都有 channel 型影子行", ("channel", "target")),
+    ("channel_member 的每一行都在 target_member 里", ("channel_member", "target_member")),
+    ("channel_read 的每一行都在 target_read 里", ("channel_read", "target_read")),
+    ("channel_budget 的每一行都在 target_budget 里", ("channel_budget", "target_budget")),
 )
+
+_CHECK_SQL: dict[str, str] = {
+    "每个频道都有 channel 型影子行": CHECK_SHADOW_ROWS_SQL,
+    "channel_member 的每一行都在 target_member 里": CHECK_MEMBER_ROWS_SQL,
+    "channel_read 的每一行都在 target_read 里": CHECK_READ_ROWS_SQL,
+    "channel_budget 的每一行都在 target_budget 里": CHECK_BUDGET_ROWS_SQL,
+}
 
 # 报「改动前后」行数用的表清单：四张补齐目标表 + 四张来源表。
 REPORTED_TABLES = (
@@ -232,19 +226,14 @@ def _remaining_gaps(conn: sqlite3.Connection, existing: set[str]) -> list[str]:
     不在这里误报成「补齐失败」（``_validate_shape`` 已经把这件事说清楚了）。
     """
     gaps: list[str] = []
-    for label, statement, tables in _CONSISTENCY_CHECKS:
+    for label, tables in _CONSISTENCY_CHECKS:
         if not set(tables) <= existing:
             continue
-        row = conn.execute(statement).fetchone()
+        row = conn.execute(_CHECK_SQL[label]).fetchone()
         count = int(row[0]) if row is not None else 0
         if count:
             gaps.append(f"{label}：还差 {count} 行")
     return gaps
-
-
-def _check_label(check: tuple[str, str, tuple[str, ...]]) -> str:
-    """取一条检查的标签（写出这个小函数是为了让三元组在调用点只解构出需要的那一项）。"""
-    return check[0]
 
 
 def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
@@ -282,29 +271,30 @@ def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
 
         before = _counts(conn, existing)
         inserted: dict[str, int] = {}
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            for table, source, statement in _REPAIR_ORDER:
-                # 来源表不在：这个库没那类旧数据可搬（例如全新的 v4 库），跳过。
-                # 记 0 而不是不留键，于是报告里「这张表本次 0 行」仍是显式读数。
-                if source is not None and source not in existing:
-                    inserted[table] = 0
-                    continue
-                cursor = conn.execute(statement)
-                inserted[table] = max(cursor.rowcount, 0)
-            gaps = _remaining_gaps(conn, existing)
-            if gaps:
-                conn.execute("ROLLBACK")
-                raise RepairError("补齐后自校验仍未通过，已回滚、未改动任何行：" + "；".join(gaps))
-            conn.execute("COMMIT")
-        except Exception:
-            # ROLLBACK 在已回滚/提交过的连接上是 no-op（sqlite3 会抛「无事务」，因此吞掉）。
-            with suppress(sqlite3.OperationalError):
-                conn.execute("ROLLBACK")
-            raise
+        # 用容器已有的事务助手 + **持它的锁**：``Database`` 的类文档承诺「写路径串行化」，
+        # 本入口也是它的写路径之一，不应绕过那条契约（CLI 单线程下无实害，但契约要一致）。
+        with database._lock:
+            database._begin()
+            try:
+                for table, source in _REPAIR_ORDER:
+                    # 来源表不在：这个库没那类旧数据可搬（例如全新的 v4 库），跳过。
+                    # 记 0 而不是不留键，于是报告里「这张表本次 0 行」仍是显式读数。
+                    if source is not None and source not in existing:
+                        inserted[table] = 0
+                        continue
+                    cursor = conn.execute(_REPAIR_SQL[table])
+                    inserted[table] = max(cursor.rowcount, 0)
+                gaps = _remaining_gaps(conn, existing)
+                if gaps:
+                    database._rollback()
+                    raise RepairError("补齐后自校验仍未通过，已回滚、未改动任何行：" + "；".join(gaps))
+                database._commit()
+            except Exception:
+                database._rollback()  # 已提交/已回滚时它是 no-op（助手内部吞掉「无事务」）
+                raise
 
         after = _counts(conn, existing)
-        verified = tuple(_check_label(check) for check in _CONSISTENCY_CHECKS)
+        verified = tuple(label for label, _ in _CONSISTENCY_CHECKS)
         return RepairOutcome(
             db_path=database.path,
             inserted=inserted,
