@@ -3,6 +3,7 @@
 本文件是 Answer 的支撑材料：逐条列出**依据**与**实际取证命令**，只记跑过后出现的事实。
 
 - 仓库：`whutlichao/alibot`
+- 交付物：PR [#15](https://github.com/whutlichao/alibot/pull/15)（OPEN，base `main`，head `issue-13-glossary`，head commit `50e48dc`）；PR body 正本 `app/specs/issue-13-pr-body.md`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-13-glossary`（Orca 独立顶层 worktree）
 - 基线：`origin/main` 的 `2b8615c`（#11 合并后的 main）；worktree 由它创建，未 rebase
 - 采集时间：2026-10-14
