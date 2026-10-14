@@ -466,8 +466,65 @@ $ node ~/.pi-lens/tools/node_modules/pyright/index.js <worktree>/app/worksplice 
 （基线 worktree 用完已 `git worktree remove --force` 删除。）
 
 **双轴 code-review 不重跑**（按本 follow-up §3 的可数判据）：本次 diff 只有 `CONTEXT.md` 的冲突解决
-（纯文档）与本文件的证据补记，**没有任何源码行为改动**——`git diff origin/main -- <源码文件>`
-显示的只是首轮已评审过的同一批 #14 改动，未新增源码；首轮的双轴结论与逐条处置见 §7。
+（纯文档）与本文件的证据补记，**没有任何源码行为改动**——`git diff origin/main...HEAD --name-only`
+只列出 #14 的文件，未新增源码；首轮的双轴结论与逐条处置见 §7。
+
+### 9.1 #12 与 #14 共存核对（合并的真正风险点）
+
+#12（预算账本）与 #14（加入频道）**都动了 `api.py` 与 `db.py`**，因此必须证明两者都没有因合并而被
+静默丢弃或互相覆盖（coordinator 补充指令点名要求）。核对方式：结构（只读 grep）+ **功能**（真实
+`TestClient` 上把两个端点各跑一遍）。
+
+结构核对（`git show HEAD:...`，只读）：
+
+```text
+api.py   :272  @app.get("/api/channels/{channel_id}/budget")    ← #12 预算端点存在
+api.py   :248  @app.post("/api/channels/{channel_id}/members")  ← #14 加入端点存在
+db.py    :781  def budget_state(...)     :813 def consume_budget(...)   :802 def human_epoch_seq(...)
+         :48   BUDGET_LIMIT = 3         :109 CREATE TABLE channel_budget
+db.py    （#14 的一行分节注释亦保留）
+orchestration.py  :234 _spend_jump   :256 _record_budget_exhausted   ← #12 预算裁决链完整
+```
+
+功能核对（独立临时数据目录 + 脚本化替身；两个端点在同一后端上依次跑）：
+
+```text
+# 1) #12 budget 端点可用
+GET  /api/channels/{id}/budget → 200 {"used":0,"limit":3,"remaining":3,"epoch_seq":0}
+
+# 2) #14 members 端点可用
+POST /api/channels/{id}/members {"member_id":"<agent>"} → 200 {"joined":true, ...}
+     members 表 = [Owner, 小验]
+
+# 3) 两者不互相干扰
+加入之后再读 budget → used 仍为 0（加入**不**消耗预算，它是成员关系动作）
+发一条人类消息后再读 budget → {"epoch_seq":1,"used":0,"remaining":3}
+     ← #12 的**世代推进语义仍然活着**（人类消息落库即开新世代并重置预算）
+```
+
+结论：**两个端点都存活、都可用、都未被丢弃或覆盖**；且 #12 的记账语义（世代推进 / 跳数正本）
+与 #14 的加入语义（只改成员关系、不动预算）互不干扰。此项亦回填 issue #14 的 Answer。
+
+三点 diff（本票真正的交付面，按 coordinator 澄清不用两点 diff）：
+
+```text
+$ git diff origin/main...HEAD --name-only
+CONTEXT.md
+app/README.md
+app/specs/issue-14-acceptance.md
+app/specs/issue-14-pr-body.md
+app/tests/test_channel_join.py
+app/worksplice/api.py            ← 仅 #14 的新增，无 #12 的改动
+app/worksplice/db.py             ← 仅一行分节注释
+app/worksplice/service.py
+app/worksplice/studio/app.css
+app/worksplice/studio/app.js
+app/worksplice/studio/index.html
+```
+
+#12 / #13 的文件（`app/specs/issue-12-*.md`、`issue-13-*.md`、`docs/adr/*`、
+`app/tests/test_bounded_relay.py` 的 #12 改动）**不在**这张单里——它们是 main 的既有成果，
+已如实合入并保留，不接受本票的逐行 review（它们已由各自那票 review 过）。
 
 ## 10. 交付物
 
