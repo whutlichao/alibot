@@ -10,8 +10,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -147,10 +150,77 @@ def test_round_outcomes_can_be_filtered_by_base_seq(client: TestClient, harness:
     assert [record["base_seq"] for record in newer] == [3]
 
 
+@contextmanager
+def _poisoned_target(data_dir: Path, channel_id: str) -> Iterator[None]:
+    """把该频道变成「channel 行在、channel 型 target 影子行缺失」——本地旧库只读取证确认的形态。
+
+    这是缺陷的唯一触发条件（见 `test_event_stream_of_a_channel_whose_target_row_is_missing`）：
+    v4 代码打开一个 v3 库时，`channel` 表被原样留下，而承载作用域的 `target` 影子行不会被补
+    （旧库的成员关系在 `channel_member` / `channel_read` 里，代码已不再读它们）。测试用**最小数据**
+    构造这一形态，因此它不依赖任何迁移或旧库 fixture。
+
+    只删三张表里的行，不动别的：
+
+    - `target` 影子行（`message.target_id` 的外键因此指向空——旧库写入时该外键还不存在）；
+    - `target_member` / `target_read` 里该频道的行（旧库里这两样本来在 `channel_member` /
+      `channel_read` 表里）。
+
+    删完立刻自校验「channel 行还在」，否则用例会退化成「频道不存在」那条既有路径。
+    """
+    conn = sqlite3.connect(data_dir / "alibot.db", isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        assert conn.execute("SELECT COUNT(*) FROM channel WHERE id = ?", (channel_id,)).fetchone()[0] == 1
+        conn.execute("DELETE FROM target_member WHERE target_id = ?", (channel_id,))
+        conn.execute("DELETE FROM target_read WHERE target_id = ?", (channel_id,))
+        conn.execute("DELETE FROM target WHERE id = ?", (channel_id,))
+        # 前提证据：channel 行**仍**在（列表页因此照旧 200），缺的只有作用域那一行。
+        assert conn.execute("SELECT COUNT(*) FROM channel WHERE id = ?", (channel_id,)).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM target WHERE id = ?", (channel_id,)).fetchone()[0] == 0
+    finally:
+        conn.close()
+    yield
+
+
 def test_unknown_channel_event_stream_is_not_found(client: TestClient) -> None:
     response = client.get("/api/channels/ch_missing/events")
 
     assert response.status_code == 404
+
+
+def test_event_stream_of_a_channel_whose_target_row_is_missing(data_dir: Path, launched: dict) -> None:
+    """作用域行缺失时必须在**发出响应之前** 404，而不是先发 200 再中途抛错。
+
+    这是本地旧库（只读取证）那次不一致的确切路径（v3 库被 v4 代码打开）：`GET /api/channels` 照旧 200
+    （`channel` 行还在），点进频道却全部失效。对事件流而言，症状比别的端点更糟——
+    `StreamingResponse` 的 headers（200）在 `stream()` 跑之前就已经送出，于是
+    `service.channel_messages` → `db.get_target` 抛出的 `NotFound` 再也换不成 404：
+    Starlette 只能报 `RuntimeError: Caught handled exception, but response already started`，
+    客户端拿到 **200 + 0 字节** 后断流。
+
+    断言写两件事：状态码是 **404**，且载荷是统一的错误封装（``error.code == "not_found"``）。
+    旧代码在这条路径上红得比断言更早——``RuntimeError`` 会直接从 ``client.get`` 里抛出来（见下），
+    用例因此是失败而不是「拿到了 200」；修复后它才变成一个正常的 404 响应。
+
+    红证据（修复前，真 uvicorn + 真 socket，堆栈逐帧）：
+
+    - `api.py:343 stream()` → `service.py:101 channel_messages` → `db.py:794 list_messages`
+      → `db.py:622 get_target` → `NotFound: target 不存在：ch_…`；
+    - 随后 Starlette `responses.py:253` → `RuntimeError: Caught handled exception, but response
+      already started`，客户端 `bytes received: b''`。
+    """
+    http = launched["client"]  # 与 client 同一后端；这里只用它的 data_dir 构造形态
+    http.post("/api/agents", json=AGENT_PAYLOAD)
+    channel = _channel_with(http, http.get("/api/agents").json()["agents"][0]["id"])
+    http.post(f"/api/channels/{channel['id']}/messages", json={"body": "影子行没了"})
+    # 先证明这条频道在**正常**形态下是可订阅的：否则下面的 404 成了恒真的假证据。
+    assert sse_frames(http, channel["id"], after_seq=0)
+
+    with _poisoned_target(data_dir, channel["id"]):
+        response = http.get(f"/api/channels/{channel['id']}/events")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "not_found"
 
 
 def test_typing_indicator_is_emitted_while_a_round_is_in_flight(live: dict) -> None:

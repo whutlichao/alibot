@@ -335,21 +335,38 @@ def create_app(
         连接建立时先用**库里的正本**补齐 ``after_seq`` 之后的内容：消息（含 Agent 的完整回复）
         与轮次结果，再补一份当前的状态点快照。此后推送实时事件。于是「重连带 ``last_seq``
         补拉」既不会漏、也不会重复——补的是 ``seq > after_seq`` 的事件，实时事件的下界也是它。
+
+        **三类快照都在返回 ``StreamingResponse`` 之前一次读齐**：headers（状态码 200）一旦送出，
+        后面任何 ``DomainError`` 都换不成状态码——Starlette 只会报
+        ``RuntimeError: Caught handled exception, but response already started``，客户端拿到
+        「200 + 0 字节」后断流。前置之后，作用域行缺失（``target`` 影子行不存在）走的是正常的
+        404 封装路径，与 ``database.get_channel`` 的早退同一个形态。
+
+        这条路径**不是理论风险**：v4 代码打开一个 v3 库时，``channel`` 行被原样留下、而承载作用域
+        的 ``target`` 影子行不会被补上（旧库的成员关系在 ``channel_member`` 里，代码已不再读它）。
+        于是 ``GET /api/channels`` 照旧 200、列表里能看到这个频道，点进去的每个端点（含事件流）
+        都会在读写那一刻撞上这个不一致。事件流的症状最糟——它先发 200 再抛错。
+
         """
         database.get_channel(channel_id)  # 404 早退
 
+        # 快照在响应开始之前读完（理由见 docstring）。三类读都要前置：只前置消息的话，
+        # 「消息发了一半、轮次结果读失败」仍会留下一个半真半假的流。
+        snapshot_messages = service.channel_messages(channel_id, after_seq=after_seq)
+        snapshot_outcomes = service.round_outcomes(channel_id, after_seq=after_seq)
+        snapshot_statuses = orchestrator.member_statuses(
+            [member["id"] for member in database.list_target_agent_members(channel_id)]
+        )
+
         async def stream() -> AsyncIterator[str]:
             # 1) 补拉：消息是正本，直接读库（Agent 回复与人类消息走同一条路径）。
-            snapshot = service.channel_messages(channel_id, after_seq=after_seq)
-            for message in snapshot:
+            for message in snapshot_messages:
                 yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
             # 2) 补拉：轮次结果（也只读库）。
-            for outcome in service.round_outcomes(channel_id, after_seq=after_seq):
+            for outcome in snapshot_outcomes:
                 yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
             # 3) 当前状态点快照：四态只表达后端事实，重连后立刻回到真相。
-            for member_id, status in orchestrator.member_statuses(
-                [member["id"] for member in database.list_target_agent_members(channel_id)]
-            ).items():
+            for member_id, status in snapshot_statuses.items():
                 yield sse_frame(
                     {"type": "member_status", "seq": after_seq, "member_id": member_id, "status": status}
                 )
