@@ -156,3 +156,13 @@ SPEC COPY == ISSUE BODY ✅ (逐字一致)     # 375 行 / 375 行
 
 未动：`app/alibot/**`（生产代码与测试）、`app/tests/**`、`alibot-design-system/**`、`CONTEXT.md`、`docs/adr/**`。
 （核对命令 `git status --short` / `git diff --stat` 见 PR body 的 Evidence 段。）
+
+回填读数（PR 已创建/更新后核对，不写死 sha —— 文档提交自身会推进 head）：
+
+| 项 | 值 |
+| --- | --- |
+| PR | [#32](https://github.com/whutlichao/alibot/pull/32)（base `main`，head 分支 `issue-budget-config-spec`） |
+| PR body 正本 | `app/specs/issue-31-pr-body.md`（`gh pr create --body-file` 创建；后续以同一文件更新） |
+| head | `git rev-parse HEAD` == 分支 `issue-budget-config-spec` 的 HEAD（`git ls-remote origin issue-budget-config-spec` 应与之相同） |
+| 产物提交 | 首个提交 `6535e19`（三份文档，630 insertions，零 `.py/.js/.css/.html`） |
+| 分支推送 | `git push -u origin issue-budget-config-spec` → `[new branch]`、已设置 upstream |
