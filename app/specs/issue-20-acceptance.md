@@ -247,7 +247,8 @@ criterion 1 的「旧名残留为 0」字面对立。coordinator 裁定（Q3）�
 - **PR**：https://github.com/whutlichao/alibot/pull/21
 - **head 分支**：`issue-20-rename-alibot`
 - **base**：`main`（merge-base = `49728c88b1979a769cb3b9b8ae8c5e133e708c0d`）
-- **head（创建 PR 时）**：`faf1c55931ceb73e17df96e5207eb46b8be7d16a`
+- **head（不写死 sha —— 回填/文档提交会自身推进 head）**：核对 head == 本分支 HEAD（`git rev-parse HEAD`）
+- **实质改动 commit**：`858a92d`（重命名本体）；其后的提交只加本文件与 PR body
 - body 用本机 `pr` skill 的模板（Summary / Evidence / Merge Danger），经 `--body-file` 提交：
   `gh pr create --body-file app/specs/issue-20-pr-body.md`
 
