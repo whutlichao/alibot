@@ -501,7 +501,51 @@ fixture 的补丁（包括 `stub_provider` 设的 `OPENAI_API_KEY` / `OPENAI_BAS
 
 ### 7.2 Spec 轴
 
-（子代理报告，待回填）
+在 `reviewer` 子代理上并行跑（输入：`git diff app/alibot/agent_seam.py` + 新增测试文件全文 +
+issue #30 正本 + 本票的权威验收规格）。它以 **Merge verdict: OK with notes** 收尾。原文要点：
+
+**判定为「符合规格」**：同步关闭在 seam 内已实现（`model = self._build_model(...)` 提入 `_round()`
+作用域、`finally: await _aclose_model_client(model)` 在同一 loop 内关闭、`asyncio.run(_round())` 收口）；
+鸭子类型适配符合规格点名（`_CLOSE_METHOD_NAMES=("aclose","close")` + coroutine-only 过滤 →
+openai/anthropic/ollama 命中 `close`，`genai.Client` 的同步 `close` 被排除、落到 `aio.aclose`）；
+「关闭失败不得把成功轮次变 failed」由 `except Exception: return` 满足；约束遵守（`run_round` 仍同步，
+线程模型、`testing` 替身、`api.py` 在 diff 中无改动）。子代理另外**独立核对了 provider 侧源码**
+（`agentscope/model/_openai_chat/_model.py:169`、`_gemini/_model.py:242`、`_ollama/_model.py:114`
+均把客户端挂为 `self.client`），证明 `getattr(model, "client")` 这一取值假设与框架一致。
+
+**(b) 未被要求的行为**：无实质越界。`asyncio.wait_for` 内移是 `finally` 关闭的前置必要条件，属该修复
+的一部分；失败路径切片由 §4.3 论证为「字符串判据在失败路径不会变红」的必要补充。
+
+**Spec-P2①（超时分支无测试覆盖）** —— 「Close must be in `finally`（timeout/exception paths too）」
+只在实现上满足，无测试覆盖超时路径；而 §9.2 自承该分支在 AgentScope 2.0.9 下实际不可达。
+
+**→ 处理：不采纳为“加测试”，已在 §9.2 与本节并列写明（参见下）。** 该分支不可达是**框架行为**
+（AgentScope 把 `CancelledError` 吞成 `interruption_message`），本票无法在不改框架的前提下让它可达；
+而 `finally` 的覆盖与路径无关——失败路径的用例（§4.2）已经**实证**了「非成功返回时客户端仍被关闭」。
+
+**Spec-P2②（`await closer()` 无超时）** —— `close` 首次进入轮次关键路径，若某 provider 的 `close()`
+悬挂，轮次会无界阻塞（`timeout_seconds` 只罩 `reply`，不罩 `close`）。
+
+**→ 处理：先采纳、后回退（如实记录）。** 我确实用自己的实测复现了这条（`/tmp/alibot-loop-test/hang_close.py`：
+`close()` 悬挂时 `timeout_seconds=1.0` 但 6s 后仍未返回），并试着按「同一个 `timeout_seconds` 冸底」修：
+加了 `_aclose_model_client(model, timeout_seconds=...)` + 第三条回归用例。**但实测发现这个修法更糟**：
+超时后那个 `close()` 协程被放弃，连接池依旧挂着未回收的 socket，第三条用例的 teardown 新出现
+`ResourceWarning: unclosed <socket.socket ...>`；而它要解决的问题（provider 的 `close()` 悬挂）在真实
+四家客户端里均未观察到。叠加两个约束——用户已裁定做法、Spec 轴自己也写明「报告项，**不建议本票改**」，
+且改它超出本票授权范围——于是**已 `git checkout` 回退**，不在本票引入这个改动。
+**遗留申报**：若日后真观察到某 provider 的 `close()` 悬挂，应单开一票讨论「限时关闭 vs 放弃关闭」的取舍
+（因为放弃关闭等于重新引入泄漏，两者不是简单的「加个 timeout」）。
+
+**Spec-P2③（第二条用例用了库内部符号）** —— 判据换成「`httpx2.AsyncClient.aclose` 调用时点」是对库内部
+符号的依赖。
+
+**→ 处理：保留**。规格明写允许「更直接、更稳的判据 + 在 Answer 里论证等价」，§4.3 的等价性论证已被
+Spec 轴认可（它写「§4.3 论证成立，测试 docstring 亦已登记；仅记录为已接受的偏离，非阻塞」）。
+
+**子代理自报的局限（如实转述）**：它**未**独立重跑门禁、也**未**在 base 隔离副本上复现红证据（本次
+为限时只读审查），且它在自查过程中遇到过一次 `Reviewer-launch HEAD changed or is unavailable`（因为
+我在它运行期间做了提交/推送），所以它的范围声明以 diff + 指定文件为限。红/绿证据由 §4 的**直接命令输出**
+提供，不依赖子代理的复述。
 
 ### 7.3 Findings 处理结果汇总
 
@@ -511,6 +555,9 @@ fixture 的补丁（包括 `stub_provider` 设的 `OPENAI_API_KEY` / `OPENAI_BAS
 | Standards | P2 | judgement（fixture 撤销范围） | **采纳**：`monkeypatch.context()` |
 | Standards | P2 | judgement（awaitable 双重判定） | **采纳**：入口选择收敛为单一规则 |
 | Standards | — | `_aclose_model_client` 近 Middle Man | **不采纳**：与仓库既有 helper 风格（`_system_prompt` / `_msg_text`）一致，且它持有「失败不外抛」这条契约，不是纯转发 |
+| Spec | P2 ① | 超时分支无测试覆盖 | **不采纳（不可达，已写明）**：框架吞掉 `CancelledError`；失败路径用例已实证非成功返回时仍会关闭 |
+| Spec | P2 ② | `close()` 无超时可能无界阻塞 | **先采纳后回退**（改法被实测证明更糟：放弃关闭 = 重新引入泄漏；且超出本票授权范围）。已列入 §9 遗留 |
+| Spec | P2 ③ | 用例依赖库内部符号 | **保留**：规格明许「更直接判据 + 等价论证」，已获 Spec 轴认可 |
 
 改动后所有门禁**重跑**（§6 的读数已是重跑后的）：`181 passed, 1 skipped`、ruff 两项干净、mypy 27 files 干净、
 pyright 0 errors；并且重新在 base 隔离副本上确认测试**仍然 2 failed + 2 errors**（修复没有被 review 改弱）。
@@ -519,9 +566,23 @@ pyright 0 errors；并且重新在 base 隔离副本上确认测试**仍然 2 fa
 
 ## 8. 交付与状态流转
 
-- **commit**：（待回填）
-- **PR**：（待回填，PR body 见 `app/specs/issue-30-pr-body.md`）
+- **base**：`f6b8039`（main HEAD，与本票开工时一致）
+- **commit**：`7947913`（分支 `issue-30-event-loop-fix`，已推送）
+- **PR**：[#33](https://github.com/whutlichao/alibot/pull/33)（`--body-file app/specs/issue-30-pr-body.md`）
 - **issue #30 状态**：本票**不自行**改 issue 的 label / state（合并由 coordinator 执行）。
+
+改动文件（`git diff --cached --stat`，即本票全部交付物）：
+
+```text
+ app/alibot/agent_seam.py                      |  84 +++-
+ app/specs/issue-30-acceptance.md              | 542 ++++++++++++++++++
+ app/specs/issue-30-pr-body.md                 | 107 +++
+ app/tests/test_agent_seam_client_lifecycle.py | 293 ++++++
+```
+
+未提交但需说明的一个**本机环境**改动（不入库）：worktree 里建了 `.venv` 符号链接指向仓库根的
+venv（票据给的命令 `../.venv/bin/python` 需要它）；`.gitignore` 的 `.venv/` 匹配不到符号链接，
+于是在 `.git/info/exclude` 里本地忽略它，因此它不出现在 `git status` 里。**未改**任何已跟踪文件。
 
 ---
 
@@ -537,6 +598,15 @@ pyright 0 errors；并且重新在 base 隔离副本上确认测试**仍然 2 fa
    `run_round` 报 `replied` 而不是 `failed`（实测：`timeout=0.05` → `elapsed=0.85 status=replied`）。
    这不属于本票范围（它影响的是「超时该怎么判定」，不是「跨 loop 关闭」），**未改**；但这也是我把
    切片 2 从「超时路径」改成「失败路径」的原因（失败路径才真的可达、才真的能红）。
-   `finally` 的覆盖与路径无关，超时一旦真发生同样会关闭。
-3. **未做的**：线程模型改造（方案 B，用户明确未选）、`AgentSeam` 接口变更（票面禁止）、
+   对应 Spec 轴 P2①：「`finally` 覆盖与路径无关」因此不是靠超时路径证明的，而是靠**失败路径用例**
+   （§4.2）实证的。
+3. **`close()` 无超时可能无界阻塞（Spec 轴 P2②，先采纳后回退）**：关闭动作是本票新引入的、位于轮次
+   关键路径上的一次等待，而每轮跑在唤醒编排的 **4 线程池**里，因此若某 provider 的 `close()` 悬挂，
+   无界等待会永久占住一线程。我用 `/tmp/alibot-loop-test/hang_close.py` 实证了这一点（`timeout_seconds=1.0`
+   但 6s 后仍未返回），并试着加 `timeout_seconds` 冸底 —— **但实测证明改法更糟**：超时后那个 `close()`
+   协程被放弃，连接池依旧挂着未回收的 socket（第三条用例 teardown 新出现 `ResourceWarning:
+   unclosed <socket.socket ...>`），而这等于**重新引入本票要修的泄漏**。叠加「用户已裁定做法」与
+   「Spec 轴自评『不建议本票改』」两个约束，已**回退**。若日后真观察到悬挂，应单开一票讨论
+   「限时关闭 vs 放弃关闭」（两者不是简单的「加个 timeout」）。四家真实客户端均未观察到悬挂。
+4. **未做的**：线程模型改造（方案 B，用户明确未选）、`AgentSeam` 接口变更（票面禁止）、
    `testing` 替身改动（票面禁止）、issue label/state 变更（coordinator 执行）。
