@@ -155,6 +155,38 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .day-sep::before, .day-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }
 .day-sep span { font-family: var(--mono); font-size: var(--fs-mono-xs); letter-spacing: var(--ls-wide); color: var(--faint); }
 
+/* ─── 轮次失败行（消息流里的后端结论） ─────────────────────────────────
+   它**不是消息**：没有头像、不占 seq、不可编辑、不可删除、也没有「重试发送」按钮
+   （重试那件事的入口是「再发一条消息」，因为消息 append-only）。
+   它与「发送失败」（`.msg.failed`，本地乐观发送的 pending 项）是两件不同的事，因此不共享样式。
+   色位全部按名字消费既有角色族：描边 `--error`（deep 档）、底 `--error-soft`（soft 档）、
+   原因与状态词 `--error`、说明 `--muted`、时间 `--faint`。不新造色位、不硬编码 hex/rgb。 */
+.msg.outcome {
+  display: block; margin: 2px -8px var(--sp-2); padding: var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-6);
+  border-left: 2px solid var(--error); border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--error-soft);
+}
+.msg.outcome .msg-body { max-width: 68ch; }
+.msg.outcome .msg-head { gap: var(--sp-4); }
+/* 「未回应」capsule：与「事件」「Agent」标签同一个形态，只用既有色位。 */
+.msg.outcome .msg-tag {
+  font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--error); border-color: var(--error);
+}
+/* 作者名与 Agent 正文头部同一个字号，但用 `--error` 档（它是失败行，不是一条 Agent 回复）。 */
+.msg-outcome-author { color: var(--error); }
+/* 「这一轮失败」（轮次结果）与「没启用」（成员状态）在同一行里可读地区分开。 */
+.msg-outcome-state { font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--error); }
+.msg-outcome-act {
+  font-size: var(--fs-sm); color: var(--muted); text-decoration: underline; text-underline-offset: 2px;
+}
+.msg-outcome-act:hover { color: var(--fg); }
+.msg-outcome-reason {
+  margin-top: 3px; font-size: var(--fs-sm); line-height: var(--lh-snug); color: var(--error);
+  max-width: 68ch; overflow-wrap: anywhere;
+}
+.msg-outcome-note { margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted); }
+.msg.outcome .msg-time { margin-left: auto; }
+
 .empty { text-align: center; padding: var(--sp-12) var(--sp-9); color: var(--faint); }
 .empty b { display: block; color: var(--muted); font-weight: var(--fw-semi); font-size: 13.5px; margin-bottom: var(--sp-2); }
 .empty p { margin: 0; font-size: 12.5px; }
