@@ -117,7 +117,34 @@ _Avoid_: 会话、session（那是 pi session）
 _Avoid_: 日志（console 日志不落盘、不可事后查）
 
 **频道成员 (Channel Member)**:
-已加入某频道的成员。`#all` 自动加入且不可离开；thread 回复继承频道规则。
+已加入某频道的成员。它是一条**显式成员关系**（`channel_member` 行），不由发消息自动产生：
+新建频道时勾选的初始成员、成员面板里的「加入」动作、以及穿透回复时的顺带加入，是它仅有的三个来处。
+thread 回复继承频道规则。
+_Avoid_: 成员（那是身份行，与是否在某个频道无关）、订阅者（会被读成通知语义）
+
+**加入频道 (Channel Join)**:
+把**已存在的 Agent 成员**放进一个频道的显式动作（人类面 `POST /api/channels/{id}/members`）。
+幂等：已在频道里再调不报错、不产生重复行，响应区分「新增」与「本来就在」；只接受 Agent——
+owner 由建频道自动加入，不经此动作。它只改成员关系，**不**在消息流里留事件消息（人的显式动作
+不需要后端替他解释），与**穿透**那种「agent 自己不会解释的变化」相反。
+_Avoid_: 邀请（带有待接受的含义，本形态没有邀约状态）、订阅（那是可见性语义）、移出频道（本形态不做）
+
+**成员面板 (Member Panel)**:
+右侧 dock，按**当前频道的成员表**（`GET /api/channels/{id}/members`）分两段呈现：
+**已加入**（本频道的 Agent 成员）+ **未加入**（本工作区里尚未加入本频道的 Agent，每行带「加入」控件）。
+它与左栏**本机 Agent** 是两个不同范围的名单，不得混为一谈。
+_Avoid_: 频道成员列表（会被读成只是成员名单，漏掉「未加入者在此可加入」这一半）、在线成员（它表达成员关系，不表达在线状态）
+
+**本机 Agent (Local Agents)**:
+左栏的 Agent 名单，回答「本机有哪些 Agent」（`GET /api/workspace` 的 members 里 `kind == 'agent'` 者），
+**不按频道过滤**。它与**成员面板**的「已加入」段合起来才构成「它在这个频道里吗」的完整读数。
+_Avoid_: Agent 成员（会被误读成频道成员）、成员列表（未指明范围）
+
+**补全 (Mention Completion)**:
+Composer 输入 `@` 弹出的成员菜单：候选 = **当前频道的 Agent 成员**（**成员面板**「已加入」段同一来源，
+`GET /api/channels/{id}/members` 里 `kind == 'agent'` 者）——**不列 owner**、**不列频道外成员**、
+不标注「未加入」。插入 `@名字` 或引号形式（名字含分隔符时，如空格）。
+_Avoid_: 提及菜单、全局成员补全（它只列当前频道的 Agent）
 
 **提及 (Mention / @mention)**:
 消息正文里的 `@名字` token（含空格的名字用 `@"带空格名字"` 引号形式）解析为成员 id。个人提及是注意力信号：被提及的 agent 被唤醒，且穿透 mute 与未加入限制。渲染侧命中成员名的 token 高亮显示，点击可查看成员（agent → 详情面板，人类 → 简介弹窗）。被点名是确定信号——必须回应，ignore 按失败处理（见回应判断）。
@@ -152,13 +179,6 @@ _Avoid_: 任务面板、kanban 直译
 **指针消息 (Pointer Message)**:
 跨频道引介任务的唯一合法形态：一句「某频道有个任务需要 @某某，请到该频道认领/讨论」，不含任务细节。任务的讨论、认领、状态更新只在任务锚定的频道内进行——任务归属既是数据与权限边界，也是讨论边界；mention 穿透仅用于送达指针，不构成在他频道展开任务讨论的许可。
 _Avoid_: 跨频道指派（指派动作只发生在任务所属频道）、转播任务细节
-
-**成员面板 (Member Panel)**:
-频道头部 `Users` 图标展开区，列出该频道的 agent 成员及状态点，点击打开成员详情。
-
-**补全 (Mention Completion)**:
-Composer 输入 `@` 弹出的成员菜单，列出全部 agent（非频道成员标注"未加入"），插入 `@名字` 或引号形式。
-_Avoid_: 提及菜单
 
 **Cwd 互斥 (CwdMutex)**:
 单机单进程下同一 `workspace_path` 的串行门禁——`withCwdMutex(cwd, fn)` per-cwd promise 链（`realpathSync` 归一）+ starting 窗口计数器 + `isCwdBusy`/`findBusySession` 探测与 `waitForSettle(SETTLE_EVENTS)` 等待。深模块 `lib/cwd-mutex.ts` 唯一事实来源，供 `agent-runtime` 与 `driver` 共用。
