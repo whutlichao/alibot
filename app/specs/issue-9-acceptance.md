@@ -290,7 +290,7 @@ $ curl -s http://127.0.0.1:8791/api/health
 `事件频道`（只含 小明，用于 §3.13）、`极端名字频道`（只含 `a"b”c’d`）。
 
 浏览器取证截图（`/tmp/wsps-evidence-9/`）：`01-at-opens-picker.png`、`02-empty-state.png`、
-`03-two-insert-forms.png`、`04-1280x700.png`、`05-880-column.png`、`06-uninsertable-toast.png`、
+`03-two-insert-forms.png`、`05-880-column.png`、`06-uninsertable-toast.png`、
 `07-final-picker.png`。
 
 ## 5. 提问与裁定（走 `orca orchestration ask`，不自行拍板）
