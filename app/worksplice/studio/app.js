@@ -1028,12 +1028,14 @@ function roundOutcomeSummaryNode(records) {
   // 否则读不出「是谁因为哪条原因」。
   body.appendChild(el('div', 'msg-outcome-summary-why', summarizeWhy(items)));
 
-  if (expanded) {
-    const details = el('div', 'msg-outcome-details');
-    details.id = 'outcome-summary-' + baseSeq;
-    items.forEach((record) => details.appendChild(roundOutcomeSummaryLine(record)));
-    body.appendChild(details);
-  }
+  // 逐成员明细**恒常渲染**、用 `hidden` 切可见性（而不是折叠时不存在）：
+  // `aria-controls` 指向的 id 必须在任何时刻都能解析到，否则折叠态的 `aria-controls`
+  // 就是一个悬空引用（无障碍与被自动化取证都会踩到）。
+  const details = el('div', 'msg-outcome-details');
+  details.id = 'outcome-summary-' + baseSeq;
+  details.hidden = !expanded;
+  items.forEach((record) => details.appendChild(roundOutcomeSummaryLine(record)));
+  body.appendChild(details);
 
   row.appendChild(body);
   return row;

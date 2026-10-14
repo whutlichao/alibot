@@ -147,9 +147,11 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
                    tag: "未回应", state: "这一轮失败",
                    reason: "模型调用失败：本机没有可用的模型服务（脚本化替身固定此失败）",
                    edgeColor: "oklch(0.532 0.128 25.9)" }]  ← --error（失败，直接展开）
-  expandedLines: []                                         ← 默认折叠：一条逐成员行都没有
+  expandedLines: []                                         ← 默认折叠：一条逐成员行都不显示
+                                                               （明细容器恒常渲染、在 DOM 里，但 `hidden`）
 展开态：
   ariaExpanded: "true", text: "▾阿墨、云舟 等 3 人收起原因"
+  detailHidden: false, visibleLines: 3
   expandedLines: [
     { status: "ignored", head: "阿墨自判忽略13:04",
       reason: "脚本化替身：自判无关",
@@ -160,6 +162,7 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
 === B. 单成员摘要 ===
   collapsed.text: "▸孤舟没有回应 · 展开看原因"        ← 1 人：不写「等 N 人」
   collapsed.why:  "自判忽略（正常的协议选择，不是失败）"  ← 单一状态：不重复一遍名单
+  collapsed.visibleLines: 0, detailHidden: true
   expandedLines: [{ status: "ignored", head: "孤舟自判忽略13:04", reason: "脚本化替身：自判无关" }]
 
 === C. 被合并 ===
@@ -177,16 +180,18 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
     { status: "budget-exhausted", head: "砚台预算耗尽13:04",
       reason: "本人类世代（最近一条人类消息 seq=1）的agent→agent 预算已用尽（≤3）：本条 Agent 消息照常落库，但没有投递任何唤醒" },
     { status: "budget-exhausted", head: "长庚预算耗尽13:04", reason: "…（同上，逐成员各一条）" }]
-  summaryRows: 1, failedRows: 0, messageRows: 5
+  summaryRows: 1, failedRows: 0, messageRows: 5, visibleLines: 2
 
 === E. 一行摘要里**混两种非 failed 状态**（mixed 分支，补测）===
   单独的端口 8795 + 小场景：成员「迟语」用延迟卡在 in-flight，成员「默然」自判忽略；
   再在迟语还跑着时发第二条消息 ⇒ 迟语的重复唤醒被 merged（base_seq=2）、默然又 ignored（同一 base_seq）。
   collapsed: [
     { baseSeq: "2", text: "▸默然、迟语没有回应 · 展开看原因",
-      why: "默然：自判忽略（正常的协议选择，不是失败）；迟语：重复唤醒被合并进正在进行的那一轮（不是失败）" }]  ← 两种状态**各自点名**，不混为一谈
-  expandedLines: [ { status: "ignored", text: "默然自判忽略13:15脚本化替身：自判无关" },
-                   { status: "merged",  text: "迟语被合并13:15该成员已有一轮在进行中：1 次重复唤醒（#2）合并进那一轮，以最大 seq #2 为准；不排队、不重放" } ]
+      why: "默然：自判忽略（正常的协议选择，不是失败）；迟语：重复唤醒被合并进正在进行的那一轮（不是失败）",
+      ariaExpanded: "false", ctrlResolvable: true, visibleLines: 0 }]  ← 两种状态**各自点名**，不混为一谈
+  expanded（baseSeq=2）: detailHidden: false, lines: [
+    { status: "ignored", text: "默然自判忽略13:15脚本化替身：自判无关" },
+    { status: "merged",  text: "迟语被合并13:15该成员已有一轮在进行中：1 次重复唤醒（#2）合并进那一轮，以最大 seq #2 为准；不排队、不重放" }]
 ```
 
 场景 E 同时给出「`replied` 不挂行」的直接视觉证据：截图
@@ -202,7 +207,7 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
 | --- | --- | --- |
 | 1 | 每条消息下面至多一行摘要（不是每个成员一行） | 场景 A：3 条 `ignored` → **1** 行摘要（`summaryRows: 1`）；名单「阿墨、云舟 等 3 人」 |
 | 1 | 成员名逐个列出，>2 时写可读形式 | `summarizeNames()`：≤2 写全名（场景 D「砚台、长庚」），>2 写「甲、乙 等 N 人」（场景 A） |
-| 2 | 默认折叠 + 可点击展开控件 | `ariaExpanded: "false"` + `expandedLines: []`（折叠态零逐成员行）；点/键盘展开后出现 |
+| 2 | 默认折叠 + 可点击展开控件 | `ariaExpanded: "false"` + `visibleLines: 0`（折叠态零逐成员行可见；明细容器在 DOM 里但 `hidden`）；点/键盘展开后出现 |
 | 2 | 展开后逐成员 `status` 中文名 + `reason` **原文** | 场景 A/C/D 的 `head`（状态词）与 `reason`（后端原文一字未改，`endswith("…")` 断言为假） |
 | 3 | `failed` 保持直接展开、逐字保留 | 场景 A：免点击即读到「未回应 / 这一轮失败 / reason 正文」；`failedRows: 1` |
 | 3 | failed 与非 failed 混存互不吞并 | 场景 A 同时有 `summaryRows: 1` **与** `failedRows: 1`，两者 `baseSeq` 都是 `"1"` |
@@ -211,7 +216,7 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
 | 5 | 折叠态就说清「为什么」（不只列名单） | 场景 A/B `why` = 「自判忽略（正常的协议选择，不是失败）」；场景 C =「重复唤醒被合并进正在进行的那一轮（不是失败）」；场景 D =「预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）」——三态措辞各不相同 |
 | 5 | 沿用既有词汇 | 「轮次结果」「自判忽略」「预算耗尽」「被合并」取自 `CONTEXT.md` `## Language`；失败块的「未回应 / 没启用 / 这一轮失败 / 看成员状态」逐字未改 |
 | 5 | 颜色只用既有 token 名、非 failed 不得用失败视觉 | 摘要行 `--border-strong`（`oklch(0.78 0.02 86)`）作描边、`--muted` / `--faint` 作文字；**无一处** `--error`。失败块仍 `--error`（`oklch(0.532 0.128 25.9)`） |
-| 5 | 折叠控件是可聚焦原生控件、键盘可操作 | `toggle: "BUTTON"` + `aria-expanded` + `aria-controls`（§4.3 真实按键取证） |
+| 5 | 折叠控件是可聚焦原生控件、键盘可操作 | `toggle: "BUTTON"` + `aria-expanded` + `aria-controls`（§4.3 真实按键取证）；`aria-controls` 指向的 id 在**折叠态也解析得到** |
 | 5 | 摘要行 `role="status"`、不占 seq、不被统计数进去 | `role: "status"`、`hasDataSeq: false`、`messageRows` 只数 `[data-seq]`（场景 A 为 1、D 为 5） |
 
 ### 4.3 键盘可达（真实按键，不是读代码）
@@ -229,7 +234,20 @@ focus ring: {"outlineWidth":"2px","outlineStyle":"solid","outlineColor":"oklch(0
  "toggleText": "▾阿墨、云舟 等 3 人收起原因", "detailsId": "outcome-summary-1",
  "why": "自判忽略（正常的协议选择，不是失败）",
  "detailId": "round-reason-round_6c866e768850",          ← 与失败行的 round-reason- 同一前缀
+ "detailHidden": false, "targetOffsetParent": "visible",
  "lines": [{"status":"ignored","head":"阿墨自判忽略13:04","reason":"脚本化替身：自判无关"}, …]}
+
+=== 折叠态的 aria-controls 可解析（Spec 轴 P2 的修正取证）===
+折叠态： { "ariaExpanded": "false", "ariaControls": "outcome-summary-1",
+          "targetResolvable": true, "targetTag": "DIV", "targetId": "outcome-summary-1",
+          "targetHiddenAttr": true, "targetOffsetParent": "none", "targetLines": 3 }
+展开态： { "ariaExpanded": "true", "targetHiddenAttr": false, "targetOffsetParent": "visible", "targetLines": 3 }
+收起态： { "ariaExpanded": "false", "targetHiddenAttr": true, "targetOffsetParent": "none" }
+```
+
+> 为什么会有一条「折叠态 `aria-controls` 可解析」：Spec 轴 review 的 P2 指出，原先明细容器只在展开分支
+> 创建，于是折叠态的 `aria-controls` 是个**悬空引用**。已改为「明细恒常渲染 + `hidden` 切可见性」
+> （§9.2），上面三行就是修正后的读数：折叠态 id 能解析到、且 `hidden`。
 
 === D. Space 收起后 === {"focusStillOnToggle":"1","ariaExpanded":"false","detailsPresent":false}
 
@@ -328,7 +346,52 @@ app/worksplice/studio/app.js
 
 ## 9. 双轴 code-review 结论
 
-（本节由 §7 的并行子代理产出，findings 与逐条处置在此分列。）
+按前置 skill `implement` 的流程，收尾前执行 `code-review`（Standards + Spec 两轴，并行子代理，
+`/Users/apple/.pi/agent/skills/code-review/SKILL.md`）：固定点 `8bb4f9a`，两边都拿到「diff 命令 +
+本仓文档化标准清单 + Fowler 味道基线」。
+
+> 一处运行说明：Spec 轴第一次跑到 7 分钟时命中**上游网络错误**
+> （`upstream_error ... connection reset by peer`，`cafd7ac2`），未产出报告；已在新 commit 上重跑
+> （这属于工具侧瞬态故障，不是代码问题；Standards 轴一次跑完）。
+
+### 9.1 Standards 轴（findings 逐条处置）
+
+子代理的结论原文摘录与处置：
+
+| # | Finding（严重度） | 处置 |
+| --- | --- | --- |
+| P1 | **硬违规（S5 文档与代码不漂移 / S7 不留死代码）**：`OUTCOME_LABEL` 的注释声称「五种轮次结果的说法（词表含 `replied`）」，实际只有 4 键、缺 `replied`；且 `failed` 键**无消费者**——两处读取（`summarizeWhy`、`roundOutcomeSummaryLine`）的入参都已被 `summarizableOutcomes()` 滤掉 | **已修**（`372092e`）：注释改成它真正覆盖的三种，删掉查不到的死词条 |
+| P2 | Duplicated Code（Fowler 基线）：`summarizeNames` 与 `summarizeJoinedNames` 逐字同形 | **已修**（`660d52c` 后、`6fb3c97` 内）：抽成唯一实现 `joinNames()` |
+| P2 | 命名一致性（S4）：同一 `reason` 字段在失败块叫「原因」、摘要行叫「理由」；取证 id 前缀分成 `round-reason-` 与 `round-outcome-reason-` | **已修**（`372092e`）：统一为「原因」与 `round-reason-<id>`（同一字段两个名字/两个前缀只会让取证混淆） |
+| P2 | Repeated Switches / Primitive Obsession（基线）：`OUTCOME_LABEL` / `OUTCOME_SUMMARY_NOTE` / `SUMMARY_STATUSES` 是同一 status 键集的三张平行表，加一态要改三处 | **已修**（`372092e`）：并成一张 `OUTCOME_SUMMARY`（`{ label, note }`），`SUMMARY_STATUSES` 由它的键派生，`outcomeLabel()` 作为唯一取词入口 |
+| P2 | 术语避让：注释用「本会话」指浏览器会话，而 `CONTEXT.md` 把「会话 / session」列为 `_Avoid_` | **已修**（`372092e`）：改成「本浏览器页面」 |
+| P2 | `'没启用'`（失败块状态词）与词表「未启用」不同词 | **不修，记为遗留**：这是 #8 引入的既有文案（本票逐字保留失败块的呈现是硬要求）。它属修字面而非行为，改了会与 #8 的验收截图对不上；留给后续的文案票 |
+
+子代理的 Correct 项（无需处置）：DOM 全走 `el()`/`textContent`（S1）；新增 CSS 无 hex/rgb/hsl、只用既有 token（S2）；
+术语用「轮次结果 / 自判忽略 / 预算耗尽 / 被合并」，`replied` 不挂行符合裁定。
+子代理的合并结论：**Merge verdict: OK with notes**（唯一硬违规是注释与一个死键，一行级修正——已修）。
+
+### 9.2 Spec 轴（findings 逐条处置）
+
+子代理的结论（摘要）：
+
+- **(a) 缺失或部分：无**。逐条对到代码行：「每条消息下面至多一行摘要」→ 每个 `message.seq` 只调用
+  一次 `roundOutcomeSummaryNode`；「默认折叠 + 可展开」→ `aria-expanded` + 展开态才可见的明细；
+  「展开后逐成员 status 中文名 + reason 原文」→ 不改写、不截断；「`failed` 直接展开、与摘要行互不吞并」；
+  「折叠态就说清为什么」→ `summarizeWhy` 三态各用自己的 `note`；「五态全可见」按 A 裁定成立。
+- **(b) 范围蔓延：未发现**。三条硬约束（四态不得混为一谈 / 非 failed 不得用 `--error` / 折叠控件键盘可达）
+  均满足；后端 `.py`、设计系统零改动。
+- **(c) 实现但不对：无票面违背**；一条 P2：`aria-controls` 在折叠态指向不存在的元素。
+- 子代理合并结论：**Merge verdict: OK with notes**（仅 P2 一条，报告级）。
+
+| # | Finding（严重度） | 处置 |
+| --- | --- | --- |
+| P2 | **ARIA 悬空引用**：`aria-controls="outcome-summary-<baseSeq>"` 声明的 id 只在 `expanded` 分支创建，折叠态解析不到 | **已修**：明细容器改为**恒常渲染 + `hidden` 切可见性**（`aria-controls` 在任何时刻都能解析到；§4.3 末的折叠态读数就是修正后的取证）。这是 ARIA 惯例的披露（disclosure）形态，不是只为了取证好看 |
+
+一处方法说明（诚实起见）：Spec 轴没有 `gh`/shell，它是根据本文件（§3 的裁定原文与 §4.2 的逐条转引）
+加代码行核对的。也就是说：**裁定原文与票面要求是我从 `gh issue view 18` 读回后转引进本文件的**，
+子代理核对的是「代码是否兑现了本文件记下的那套要求」。因此本票仍以
+`gh issue view 18 --json number,title,body,labels,comments` 的读到内容为票面正本（§0）。
 
 ## 10. 取舍与遗留
 

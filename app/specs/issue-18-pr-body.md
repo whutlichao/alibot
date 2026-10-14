@@ -13,10 +13,12 @@
      <MessageRow>                                      # 不变
      if state.outcomes[message.seq]
 +      <RoundOutcomeSummary role="status">              # 同一条消息下**至多一块**
-+        <button aria-expanded aria-controls>           # 原生 button：Tab 可聚焦、Enter/Space 可切
++        <button aria-expanded aria-controls="outcome-summary-N">   # 原生 button：Tab 可聚焦、Enter/Space 可切
 +          ▸阿墨、云舟 等 3 人 没有回应 · 展开看原因     # 名单逐个列出；>2 人写「等 N 人」
 +        </button>
 +        自判忽略（正常的协议选择，不是失败）            # 折叠态：三态各自的后端事实说法
++        <div id="outcome-summary-N" hidden>            # 明细恒常渲染、用 hidden 切可见性
++          <div class="msg-outcome-line">                # 逐成员一行（aria-controls 在任何时刻都能解析到）
 +        (展开) <div id="outcome-summary-N">
 +          <div class="msg-outcome-line">                # 逐成员一行
 +            <成员名> <status 中文名> <时间>
@@ -30,6 +32,11 @@
 
  onStreamOutcome(payload)                               # 五种结果都重建消息流
 +  if 该 outcome 是新记录: renderMessages()
+```
+
+```text
+折叠态（默认）：摘要行一行 + 每条 failed 各一块，互不吞并（摘要行在前）
+展开态（Enter/Space）：明细容器从 hidden 变可见，逐成员 status + reason 原文
 ```
 
 ```text
@@ -108,8 +115,9 @@ Space  → aria-expanded: "false"，展开子树消失，焦点仍在同一个�
 新增用例只断言 HTTP/SSE 外部可观察行为（状态码 / JSON / SSE 帧），前端呈现用真实 Chromium
 手跑取证；逐条读数见 `app/specs/issue-18-acceptance.md` §4。
 
-**双轴 code-review**：Standards 轴已跑（本仓既有范式 + Fowler 基线），findings 逐条处置见
-`app/specs/issue-18-acceptance.md` §9；Spec 轴因上游网络错误（`connection reset by peer`）重跑。
+**双轴 code-review**：两轴均跑完，findings 逐条处置见 `app/specs/issue-18-acceptance.md` §9。
+Standards 轴（1 条硬违规：注释与一个死键 → 已修；另 4 条 P2 → 3 修 1 记遗留）；
+Spec 轴（缺失/蔓延均为无，1 条 P2：折叠态 `aria-controls` 悬空 → 已修为「明细恒常渲染 + `hidden`」）。
 
 ## Merge Danger
 
