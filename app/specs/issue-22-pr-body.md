@@ -67,6 +67,14 @@ app/specs/issue-22-pr-body.md                       # 本文件
   含 11 组新增行为测试（target 泛化 / 每 target 一份预算 / 未读分级 / 五态与互审 / 任务写入后果 /
   线程未读分离 / 指针消息 / DM / 搜索 / 隔离 / 恢复）。
 
+- **双轴文档 review 已跑并逐条处置**（门禁 G-docs：本票审**文档一致性**，不审源码风格）：
+  **Standards 轴 OK with notes**（P1 四处作用域措辞 `频道`→`target`、P1 `epoch_seq` 来源、P2 数据面含 DM/任务、
+  P2 自查读数）与 **Spec 轴 OK with notes**（P1 补改动前后对照表、P2 题数更正、P2「任务创建」来源）——
+  **全部 findings 已在 `9831813` 处置**，逐条结论与实测读数见 `app/specs/issue-22-design-notes.md` §6。
+- **补收尾两轮裁定已落地**（第 5 轮，均由用户人定）：① `epoch_seq` 改记「**开世代动作**所在消息的 seq」
+  （`human` 消息 **或** owner 在 task 型 target 上的改指派）；② **补全**作用域由「当前频道」泛化为
+  「**当前 target**」（三种 kind 同规则，保留"不列 target 外成员"，**不**改成全工作区）。
+
 ## Merge Danger
 
 **Door:** two-way（可回退）。
