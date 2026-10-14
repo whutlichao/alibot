@@ -260,6 +260,12 @@ def create_app(
     # ─── 轮次结果（只读；首版没有可观测页面） ─────────────────────────────
     @app.get("/api/channels/{channel_id}/round-outcomes")
     def list_round_outcomes(channel_id: str, base_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
+        """该频道的轮次结果（append-only 事实记录）。
+
+        每行上的 ``consumed_budget`` 是**行级**标记（「这一轮由一次已计一次的 agent→agent 跳送来」），
+        **不是**跳的计数：一次跳投递 N 个成员会得到 N 条为真的行，而跳数只 +1。因此
+        **不要对它们求和**；该人类世代的跳数正本是 ``GET /api/channels/{id}/budget`` 的 ``used``。
+        """
         return {"round_outcomes": service.round_outcomes(channel_id, after_seq=base_seq)}
 
     # ─── 有界响应预算（只读；首版没有可观测页面） ────────────────────────
@@ -269,6 +275,9 @@ def create_app(
 
         它让「任一人类世代内 agent→agent 跳数 ≤ 3」与「重启后预算状态不变」可以经 HTTP 面
         直接断言，而不用从消息与轮次结果反推。
+
+        ``used`` 是「该人类世代已用跳数」的**唯一正本**：要从只读面拿跳数就读它，
+        不要对 ``round_outcome`` 的 ``consumed_budget`` 求和（见那个端点的说明）。
         """
         return {"budget": service.channel_budget(channel_id)}
 

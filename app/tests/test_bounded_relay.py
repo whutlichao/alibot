@@ -278,6 +278,9 @@ def test_agent_to_agent_relay_is_bounded_by_three_jumps_per_human_epoch(
         if harness["scheduler"].pending_count() == 0:
             break
 
+    # **「不再增长」的取证**：接力**自己停下**了，不是因为测试的 12 次上限用尽 —— 若预算恒不耗尽，
+    # 这个循环会一直互相唤醒，pending 永远不会归零。
+    assert harness["scheduler"].pending_count() == 0, "接力必须在上界处自己停下，而不是被测试上限截断"
     assert budget(client, channel["id"]) == {
         "channel_id": channel["id"],
         "epoch_seq": epoch,
@@ -287,6 +290,13 @@ def test_agent_to_agent_relay_is_bounded_by_three_jumps_per_human_epoch(
     }
     # 跳数上界：世代内消耗预算的投递恰好 3 次（每次跳可能唤醒多个成员，但只算一次）。
     assert budget(client, channel["id"])["used"] <= 3
+    # **#12 的判别点（原样复现）**：接力场景里 used=3，而带行级标记的轮次结果只有 2 条 —— 这正是
+    # #4 验收里实测、#12 引用的那条事实。两个数之间**没有固定关系**：used 每次跳恰好 +1，而标记行数
+    # 取决于该跳实际落下了多少条成员轮次结果（例如某次投递的成员已无新消息就不落行，见
+    # `run_round` 的「瞬态轮次返回 None」）。所以按行求和既可能偏大（多成员一跳）也可能偏小（这里）：
+    # 无论如何都不等于跳数 —— 这正是 `used` 必须是正本的原因。
+    marked_rows = [record for record in outcomes(client, channel["id"]) if record["consumed_budget"]]
+    assert len(marked_rows) == 2, "#4 实测：used=3 而 consumed_budget=True 的行只有 2 条"
     # 耗尽之后仍照常落库的 Agent 消息存在（append-only，不可撤回），且它们零唤醒。
     listed = messages(client, channel["id"])
     agent_messages = [message for message in listed if message["kind"] == "agent"]
@@ -349,6 +359,61 @@ def test_multiple_targets_from_one_message_cost_only_one_jump(client: TestClient
     # 甲的回复唤醒了乙与丙（两个投递）→ 仍然只是 1 次跳。
     assert budget(client, channel["id"])["used"] == 1
     assert {call["member_id"] for call in harness["seam"].calls} >= {first["id"], second["id"], third["id"]}
+
+
+def test_one_jump_delivered_to_n_members_still_counts_as_one_jump(client: TestClient, harness: dict) -> None:
+    """**本票的关键判别断言（#12）**：一次跳投递 N（≥2）个成员时，跳数仍只 +1。
+
+    #12 的问题正是这两个数在只读面上对不上：`channel_budget.used` 只 +1，而
+    `round_outcome.consumed_budget` 这个**行级**标记会在该跳的**每个**成员行上出现。因此这里
+    把两个方向都钉住：
+
+    - `budget.used == 1`（跳数正本，不因成员数变化）；
+    - 带标记的行**恰好 2 条**（每个被投递的成员一条）；
+    - 两者**不相等** —— 「按行求和得跳数」这条路必须被证明是错的，否则消歧只是文案。
+
+    构造：甲（人类消息唤醒，行标记为假）回复并点名同在频道里的乙与丙（穿透不参与，两个目标
+    都是频道成员 ⇒ 两条真实投递）；乙丙自判无关，于是这一段没有后续跳。
+    """
+    first = create_agent(client, name="甲").json()["agent"]
+    second = create_agent(client, name="乙").json()["agent"]
+    third = create_agent(client, name="丙").json()["agent"]
+    harness["seam"].replies[first["id"]] = f"@{second['display_name']} @{third['display_name']} 你俩看下"
+    harness["seam"].behaviors = {second["id"]: IGNORE, third["id"]: IGNORE}
+    channel = client.post(
+        "/api/channels",
+        json={
+            "name": "一跳两成员",
+            "description": "",
+            "member_ids": [first["id"], second["id"], third["id"]],
+        },
+    ).json()["channel"]
+
+    send(client, channel["id"], "请甲协调")
+    drain(harness)
+
+    # 甲那条 Agent 消息的 seq（= 人类消息之后的第一条）——它就是这一次跳的触发消息。
+    jump_seq = next(
+        message["seq"] for message in messages(client, channel["id"]) if message["kind"] == "agent"
+    )
+    # 两条投递确实都发生了（否则「仍只 +1」会退化成「零投递」的恒真断言）。
+    assert any(jump_seq in call["seqs"] for call in harness["seam"].calls_for(second["id"]))
+    assert any(jump_seq in call["seqs"] for call in harness["seam"].calls_for(third["id"]))
+    # 甲的回复只记了**一次**跳。
+    assert budget(client, channel["id"])["used"] == 1
+
+    records = outcomes(client, channel["id"])
+    marked = [record for record in records if record["consumed_budget"]]
+    assert len(marked) == 2, "该跳的两个成员各留一条行级标记"
+    assert {record["member_id"] for record in marked} == {second["id"], third["id"]}
+    # 两条标记行同属**同一次跳**：都挂在甲那条 Agent 消息的 seq 上。
+    assert {record["base_seq"] for record in marked} == {jump_seq}
+    # 消歧的核心：行级标记的**和**不等于跳数，因此它不可作为跳数被反推。
+    assert sum(1 for record in records if record["consumed_budget"]) != budget(client, channel["id"])["used"]
+    # 人类消息唤醒甲的那一轮不是跳送的，因此不带标记。
+    assert not [
+        record for record in records if record["member_id"] == first["id"] and record["consumed_budget"]
+    ]
 
 
 def test_system_event_message_neither_wakes_nor_consumes_budget(client: TestClient, harness: dict) -> None:
@@ -473,6 +538,10 @@ def test_repeated_wakes_during_a_round_are_merged_into_one(client: TestClient, h
     # 被合并的重复唤醒不额外计数、也不额外消耗预算。
     assert merged[0]["consumed_budget"] is False
     assert budget(client, channel["id"])["used"] == 0
+    # 与跳数正本一致：这个频道里**没有任何**行带跳级标记 —— 合并与零投递都不构成一次跳，
+    # 因此 `used == 0` 与「标记行数 == 0」在这里正好一致（它们只在**多成员一跳**时才分岔，
+    # 见 `test_one_jump_delivered_to_n_members_still_counts_as_one_jump`）。
+    assert [record for record in outcomes(client, channel["id"]) if record["consumed_budget"]] == []
 
 
 def test_merged_wakes_are_not_replayed_but_not_swallowed(client: TestClient, harness: dict) -> None:
