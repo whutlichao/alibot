@@ -8,6 +8,47 @@
 > `ManualScheduler`，都是 `create_app` 的既有注入点），因为本机没有任何可用的模型 provider
 > （票面也明确不配 key）。前端 `studio/app.js` / `app.css`、只读端点与事件流全部是被测的真实代码。
 
+## Answer
+
+**做了什么**：把轮次结果从「只呈现 `failed`」改成「四态可见，但每一条消息下至多一行」——
+同一条消息（同一 `base_seq`）下的 `ignored` / `budget-exhausted` / `merged` 收成一行默认折叠的
+摘要行（成员逐个列出，>2 人写「等 N 人」；折叠态先说清「为什么」），展开后逐成员给出 status
+中文说法与后端 `reason` 原文；`failed` 保持直接展开、逐字保留，与摘要行同挂一条消息、互不吞并。
+折叠控件是原生 `<button>` + `aria-expanded` / `aria-controls`，键盘可 Tab / Enter / Space。
+后端 `.py` **零改动**，只在呈现层收拢（`ignored` 那批 append-only 记录一条不少）。
+
+**发现了什么**：实现前的只读核实确认五态在数据面都已存在（只读端点 + SSE 同形载荷），
+缺的只是呈现；因此本票无后端面可观察行为新增，5 条新用例断言的是「摘要行据以成形的分组事实」
+（它们在基线上也是绿的，红→绿只能由前端呈现给出：§2.3 vs §4.1）。双轴 review 共得 6 条 findings：
+1 条硬违规（注释声称五态而实际只有三键 + 一个查不到的死键）+ 1 条 ARIA 悬空引用，均已修；
+其余 4 条为可读性/一致性（3 修 1 记遗留）。
+
+**留下了什么**：`replied` 按用户裁定不进摘要行（由它那条回复消息承载）；折叠态是内存里的
+页面状态，刷新/换频道即复位（不进 localStorage）；`'没启用'` 与词表「未启用」的字面差
+（#8 既有，本票逐字保留失败块）记为遗留。
+
+### 边界解释（用户本轮显式授权，**原文记录**，以免被当成又一例越界）
+
+> #1 的 Out of Scope 写了「成本看板与可观测页面（轮次结果落库即可，不做页面）」，#3 的 review
+> 曾把「把最近 5 条轮次结果渲染进消息流」判为越界并删除（`app/specs/issue-3-acceptance.md` 的 S2 条）。
+>
+> 本票**经用户显式授权**收窄该禁令的适用范围，判定标准如下（写进票面以免后续被当成又一例越界）：
+>
+> - **被本票收回的部分**：「消息流里，把某条消息触发的轮次结果内联成**每消息至多一行**的摘要」——
+>   它是**消息流内的就地解释**（与 `failed` 的既有呈现同层、同一锚点 `base_seq`、同一视觉族），
+>   不是独立页面、不做轮次全览、不做筛选/搜索/排序、不做历史浏览界面。
+> - **仍然有效、本票不碰的部分**：「成本看板」「轮次结果全览页面」「预算可视化常驻元素」
+>   （用户在本轮选择中明确未选「频道头预算条」）。`GET /budget` 仍只作为只读取证面。
+
+`GET /budget` 在本票的实现与取证里**一次都没被消费**（§8）；本票没有频道头预算条、没有轮次
+历史页面、没有按成员筛选/搜索/排序。
+
+### 状态流转
+
+- 改动落在分支 `issue-18-outcome-visible`，PR **[#19](https://github.com/whutlichao/alibot/pull/19)**（OPEN），
+  worktree 干净（`git status --short` 为空）。
+- 合并（G-merge）由 coordinator 执行；本票不自行合并、不自行改 issue 的 label/state。
+
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-18-outcome-visible`（Orca 独立顶层 worktree）
 - 分支与 PR：`issue-18-outcome-visible` → **[PR #19](https://github.com/whutlichao/alibot/pull/19)**（OPEN）
