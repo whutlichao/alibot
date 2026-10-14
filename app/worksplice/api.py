@@ -8,7 +8,8 @@
 - ``GET  /api/channels/{id}/messages``        按 seq 升序取消息（``after_seq`` 增量）
 - ``POST /api/channels/{id}/messages``        发送人类消息（同事务分配频道内单调 seq）
 - ``GET  /api/channels/{id}/members``         频道成员
-- ``POST /api/channels/{id}/members``         把 Agent 成员加入频道（幂等，只接受 Agent）- ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
+- ``POST /api/channels/{id}/members``         把 Agent 成员加入频道（幂等，只接受 Agent）
+- ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
 - ``GET  /api/channels/{id}/budget``          有界响应预算（只读，无 UI）
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）

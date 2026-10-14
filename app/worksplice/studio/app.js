@@ -734,13 +734,13 @@ function presenceNode(status) {
     未加入的 Agent 呈现在**面板内**的「未加入」一段（人类裁定 2 选 a）：入口就在成员面板里，
     人看到「它不在这个频道」的那一眼就同时看到了「加入」按钮。 */
 function dockGroups(channelId) {
-  const members = state.channelMembers[channelId];
-  const joined = members ? members.filter((member) => member.kind === 'agent') : null;
+  // 已加入的 Agent 与 @ 补全列表同一个来源（同一个函数），不在这里重写一遍过滤规则。
+  const joined = channelAgentMembers(channelId);
   const joinedIds = new Set((joined || []).map((member) => member.id));
   const outsiders = state.members.filter(
     (member) => member.kind === 'agent' && !joinedIds.has(member.id),
   );
-  return { loaded: members !== null && members !== undefined, joined: joined || [], outsiders };
+  return { loaded: joined !== null, joined: joined || [], outsiders };
 }
 
 function renderDock() {
@@ -761,7 +761,18 @@ function renderDock() {
   const joinedLabel = el('div', 'dock-group-label', '已加入（' + groups.joined.length + '）');
   joinedSection.appendChild(joinedLabel);
   if (!groups.loaded) {
-    joinedSection.appendChild(el('div', 'rail-empty', '正在读取该频道的成员表…'));
+    // 「读不到 / 还没读到」与「真的没有成员」是两件事：不把前者说成后者（与 `@` 清单的
+    // `unavailable` 分档同一纪律）。读失败时也不把已加入的 Agent 列进「未加入」——
+    // 那会伪造一个「它不在这个频道」的事实。
+    joinedSection.appendChild(
+      el(
+        'div',
+        'rail-empty',
+        channelMembersFailed.has(channel.id)
+          ? '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开面板即可。'
+          : '正在读取该频道的成员表…',
+      ),
+    );
   } else if (!groups.joined.length) {
     joinedSection.appendChild(
       el('div', 'rail-empty', '这个频道还没有 Agent 成员：从下面「未加入」里点「加入」即可。'),
@@ -777,7 +788,17 @@ function renderDock() {
   outsideSection.appendChild(
     el('div', 'dock-group-label', '未加入本频道（' + groups.outsiders.length + '）'),
   );
-  if (!groups.outsiders.length) {
+  if (!groups.loaded) {
+    outsideSection.appendChild(
+      el(
+        'div',
+        'rail-empty',
+        channelMembersFailed.has(channel.id)
+          ? '成员表读不到时暂不列「未加入」：否则会把已在频道里的 Agent 误导为未加入。'
+          : '正在读取该频道的成员表…',
+      ),
+    );
+  } else if (!groups.outsiders.length) {
     outsideSection.appendChild(
       el(
         'div',
