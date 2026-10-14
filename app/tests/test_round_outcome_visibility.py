@@ -29,11 +29,12 @@ from tests.conftest import (
     channel_with_agent,
     channels,
     create_agent,
+    create_channel,
     messages,
     outcomes,
     send,
 )
-from tests.scripted import FAIL, REPLY
+from tests.scripted import FAIL, IGNORE, REPLY
 
 
 def _wait_for(events: list[dict], predicate, timeout: float = 5.0) -> bool:
@@ -208,3 +209,141 @@ def test_failed_round_outcome_reaches_the_event_stream(live: dict, monkeypatch) 
     finally:
         stop.set()
         reader_thread.join(timeout=5)
+
+
+# ─── #18：摘要行的呈现依据（同一条消息下非 failed 轮次结果的分组与逐成员事实） ───
+
+
+def _mixed_channel(client: TestClient, harness: dict, ignore: int = 2, fail: int = 1) -> dict:
+    """一个频道里放 `ignore` 个「自判忽略」成员 + `fail` 个「这一轮失败」成员。
+
+    这是 #18 摘要行的核心场景：同一条消息（同一 `base_seq`）下**既有**该收进折叠摘要行的
+    非 `failed` 结果、**也有**必须直接展开的 `failed` 结果。
+    """
+    agents_ = [create_agent(client, name=f"成员{index}").json()["agent"] for index in range(ignore + fail)]
+    ignore_ids = {agent["id"] for agent in agents_[:ignore]}
+    harness["seam"].behaviors = {
+        agent["id"]: (IGNORE if agent["id"] in ignore_ids else FAIL) for agent in agents_
+    }
+    channel = create_channel(client, name="混合结论", member_ids=[agent["id"] for agent in agents_]).json()[
+        "channel"
+    ]
+    send(client, channel["id"], "大家看一下")
+    harness["scheduler"].drain()
+    return channel
+
+
+def test_non_failed_outcomes_of_one_message_are_grouped_under_its_base_seq(
+    client: TestClient, harness: dict
+) -> None:
+    """摘要行的分组依据：同一 `base_seq` 下的多条非 `failed` 结果**同属一条消息**。
+
+    前端「每消息至多一行」的折叠就是按 `base_seq` 分组的，因此这里断言那份分组**在数据面成立**：
+    `ignored` 因当前唤醒面（频道内全部 agent 成员）按成员各有一条，但它们的 `base_seq` 相同，
+    可以收成一行而**不丢任何记录**（append-only 取证面一条不少）。
+    """
+    channel = _mixed_channel(client, harness, ignore=3, fail=0)
+    records = outcomes(client, channel["id"])
+
+    assert [record["status"] for record in records] == ["ignored"] * 3, "三个成员各留一条记录"
+    assert {record["base_seq"] for record in records} == {1}, "同一批唤醒共用同一个 base_seq"
+    assert len({record["member_id"] for record in records}) == 3, "三条记录分属三个不同成员"
+    # 同一 base_seq 下**每成员至多一条**：这就是「一行摘要 + 展开后逐成员一行」的成立前提。
+    assert all(len(record["reason"]) > 0 for record in records), "每条都要有自己的 reason 原文"
+
+
+def test_ignored_is_not_recorded_or_reported_as_failure(client: TestClient, harness: dict) -> None:
+    """`ignored` 不是失败：记录里是 `ignored`、状态点仍空闲（摘要行不得用失败措辞的依据）。"""
+    agent = create_agent(client, name="沉默者").json()["agent"]
+    harness["seam"].behaviors[agent["id"]] = IGNORE
+    channel = channel_with_agent(client, agent["id"])
+
+    send(client, channel["id"], "没有点名谁")
+    harness["scheduler"].drain()
+
+    record = outcomes(client, channel["id"])[0]
+    assert record["status"] == "ignored", "不得把自判忽略写成 failed"
+    assert record["reason"]
+    assert agents(client)[0]["status"] == "online", "ignored 不把成员判成出错"
+
+
+def test_budget_exhausted_rounds_of_one_message_share_the_triggering_seq(
+    client: TestClient, harness: dict
+) -> None:
+    """`budget-exhausted` 也是「同一条消息下可收成一行」的一族，且**不是** failed。
+
+    预算是既存后端事实（本票只消费）：耗尽时每个「本应被唤醒却被压制」的成员各记一条，
+    `base_seq` = 那条触发它的 Agent 消息；状态点仍是空闲（预算耗尽不是出错）。
+    """
+    first = create_agent(client, name="甲").json()["agent"]
+    second = create_agent(client, name="乙").json()["agent"]
+    third = create_agent(client, name="丙").json()["agent"]
+    channel = client.post(
+        "/api/channels",
+        json={
+            "name": "接力",
+            "description": "",
+            "member_ids": [first["id"], second["id"], third["id"]],
+        },
+    ).json()["channel"]
+    harness["seam"].replies = {
+        first["id"]: f"@{second['display_name']} @{third['display_name']} 继续",
+        second["id"]: f"@{first['display_name']} @{third['display_name']} 继续",
+        third["id"]: f"@{first['display_name']} @{second['display_name']} 继续",
+    }
+
+    send(client, channel["id"], "开始接力")
+    for _ in range(12):
+        harness["scheduler"].drain()
+        if harness["scheduler"].pending_count() == 0:
+            break
+
+    exhausted = [
+        record for record in outcomes(client, channel["id"]) if record["status"] == "budget-exhausted"
+    ]
+    assert exhausted, "预算耗尽必须留下可追溯的轮次结论"
+    # 同一跳压制多个成员时，它们的 base_seq 相同 ⇒ 前端收成一行（不逐成员铺满消息流）。
+    by_base: dict[int, set[str]] = {}
+    for record in exhausted:
+        by_base.setdefault(record["base_seq"], set()).add(record["member_id"])
+    assert any(len(members) > 1 for members in by_base.values()), by_base
+    # 预算耗尽不是失败：不写半条消息、状态点不判 error（摘要行不得用失败视觉的依据）。
+    assert all("预算已用尽" in record["reason"] for record in exhausted)
+    assert client.get(f"/api/agents/{first['id']}/status").json()["status"] != "error"
+
+
+def test_failed_and_non_failed_outcomes_of_one_message_coexist_without_swallowing(
+    client: TestClient, harness: dict
+) -> None:
+    """同一条消息下 `failed` 与非 `failed` **混存**：两类都得出现，互不吞并。
+
+    这是摘要行的关键边界 —— 折叠摘要不能把失败吞掉（失败必须免点击可读），失败也不能遮掉
+    那三条正常选择。数据面必须同时给出两组事实，且都绑定到同一条消息的 `base_seq`。
+    """
+    channel = _mixed_channel(client, harness, ignore=2, fail=1)
+    records = outcomes(client, channel["id"])
+    triggering = messages(client, channel["id"])[0]
+
+    grouped: dict[str, list[str]] = {}
+    for record in records:
+        grouped.setdefault(record["status"], []).append(record["member_id"])
+    assert sorted(grouped) == sorted(["failed", "ignored"]), grouped
+    assert len(grouped["ignored"]) == 2
+    assert len(grouped["failed"]) == 1
+    # 两类都在**同一条**消息下 ⇒ 前端在同一锚点下要同时给出「摘要行」与「failed 块」。
+    assert triggering["seq"] == 1
+    assert {record["base_seq"] for record in records} == {triggering["seq"]}
+    failed = next(record for record in records if record["status"] == "failed")
+    assert failed["reason"], "失败块的 reason 必须可读（它免点击就呈现）"
+
+
+def test_every_outcome_reason_is_verbatim_readable_chinese(client: TestClient, harness: dict) -> None:
+    """展开后逐成员呈现的 `reason` 是**可读中文原文**：不重新措辞、不截断成省略号。
+
+    前端直接呈现这个字段，因此断言它自带可读性（既不是空串、也不是被省略号截断的半句话）。
+    """
+    channel = _mixed_channel(client, harness, ignore=2, fail=1)
+    for record in outcomes(client, channel["id"]):
+        assert record["reason"].strip(), record
+        assert not record["reason"].rstrip().endswith("…"), "后端给的是完整可读原文，不该被截断"
+        assert any("\u4e00" <= char <= "\u9fff" for char in record["reason"]), record["reason"]
