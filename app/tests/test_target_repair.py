@@ -21,9 +21,9 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from alibot.db import DATABASE_FILE_NAME, SCHEMA_VERSION, Database, SchemaVersionMismatch
 from alibot.repair import RepairError, render_outcome, repair_target_rows
-
 from tests.conftest import backend, channel_with_agent, create_agent, messages, send
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -299,11 +299,11 @@ def test_repair_refuses_a_database_whose_version_is_not_four(tmp_path: Path) -> 
     assert str(SCHEMA_VERSION) in str(caught.value) and "3" in str(caught.value)
 
 
-def test_repair_refuses_a_library_that_is_not_v4_shaped(tmp_path: Path) -> None:
-    """版本号是 4、**表结构却不是 v4 形态**、**且库里有业务数据** ⇒ ``RepairError``。
+def test_repair_refuses_a_library_that_is_not_current_schema_shaped(tmp_path: Path) -> None:
+    """版本号是当前版本、**表结构却不是当前 schema 形态**、**且库里有业务数据** ⇒ ``RepairError``。
 
     「有数据」是这条用例的要紧前提：**没有**数据的残缺库不算错（那是空库/未初始化库，本入口当作
-    「没什么可补」处理，见下一条用例）。只有「有数据但不是 v4 形态」才是本入口不处置的库。
+    「没什么可补」处理，见下一条用例）。只有「有数据但不是当前 schema 形态」才是本入口不处置的库。
 
     构造：一个只有 ``schema_meta`` + ``member`` 表的库（缺 ``channel`` / ``target*``），并塞一行
     member——于是「有业务数据」成立，而 ``_V4_REQUIRED_TABLES`` 大面积缺失。
@@ -318,7 +318,7 @@ def test_repair_refuses_a_library_that_is_not_v4_shaped(tmp_path: Path) -> None:
             "  id TEXT PRIMARY KEY, kind TEXT NOT NULL, display_name TEXT NOT NULL,\n"
             "  avatar_slot INTEGER NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT\n"
             ");\n"
-            "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4');\n"
+            f"INSERT INTO schema_meta(key, value) VALUES ('schema_version', '{SCHEMA_VERSION}');\n"
             "INSERT INTO member(id, kind, display_name, avatar_slot, created_at)\n"
             "  VALUES ('owner', 'owner', 'Owner', 4, '2026-10-14T09:00:00Z');\n"
         )
@@ -329,7 +329,7 @@ def test_repair_refuses_a_library_that_is_not_v4_shaped(tmp_path: Path) -> None:
     with pytest.raises(RepairError) as caught:
         repair_target_rows(data_dir)
 
-    assert "不是 v4 形态" in str(caught.value)
+    assert "不是当前 schema 形态" in str(caught.value)
 
 
 def test_repair_on_an_empty_directory_is_a_clean_no_op(tmp_path: Path) -> None:
@@ -348,7 +348,7 @@ def test_repair_on_an_empty_directory_is_a_clean_no_op(tmp_path: Path) -> None:
 
 
 def test_repair_on_a_schema_only_library_without_data_is_a_no_op(tmp_path: Path) -> None:
-    """库存在、版本号是 4，但**没有任何业务数据**（初始化到一半）⇒ 空操作，不报错。
+    """库存在、版本号是当前版本，但**没有任何业务数据**（初始化到一半）⇒ 空操作，不报错。
 
     「库形态不对」与「库没有数据」是两件事：只有**有数据却形态不对**时才该报 ``RepairError``。
     """
@@ -357,7 +357,7 @@ def test_repair_on_a_schema_only_library_without_data_is_a_no_op(tmp_path: Path)
     conn = sqlite3.connect(_db_path(data_dir))
     try:
         conn.executescript("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-        conn.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4')")
+        conn.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
         conn.commit()
     finally:
         conn.close()
@@ -511,7 +511,7 @@ def test_repair_never_touches_channels_it_did_not_need_to(tmp_path: Path) -> Non
 
 
 def test_database_class_still_works_normally_after_repair(tmp_path: Path) -> None:
-    """补完之后库仍是普通 v4 库：``Database`` 正常打开，版本号没被动过。"""
+    """补完之后库仍是普通当前 schema 库：``Database`` 正常打开，版本号没被动过。"""
     data_dir = tmp_path / "data"
     _accident(data_dir)
 

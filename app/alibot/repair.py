@@ -88,9 +88,9 @@ _REPAIR_SQL: dict[str, str] = {
     "target_budget": REPAIR_TARGET_BUDGET_SQL,
 }
 
-# v4 形态必须存在的表：``channel`` 是作用域数据的来源，四张 ``target*`` 是目标。缺任何一张就不是
-# 「v4 库里 channel 型 target 缺失」，而是别的库——那种情况本入口不处置。
-_V4_REQUIRED_TABLES = ("channel", "target", "target_member", "target_read", "target_budget")
+# 当前 schema 形态必须存在的表：``channel`` 是来源，四张 ``target*`` 是修复目标；``task`` 是
+# v5 新增的业务表。缺任何一张都不是「当前库里 channel 型 target 行缺失」，本入口不处置。
+_CURRENT_REQUIRED_TABLES = ("channel", "target", "target_member", "target_read", "target_budget", "task")
 
 # ─── 事后自校验 ─────────────────────────────────────────────────────────────
 # 旧表的**每一行**都必须在新表里找得到对应行。逐对写 SQL（同样一句一个常量），因为两边的列名
@@ -191,10 +191,10 @@ _ROW_COUNT_SQL: dict[str, str] = {
 
 
 class RepairError(Exception):
-    """修复入口自己发现的问题：库不接受本入口处置（例如本来就不是 v4 形态）。
+    """修复入口自己发现的问题：库不接受本入口处置（例如本来就不是当前 schema 形态）。
 
     与 :class:`alibot.db.SchemaVersionMismatch` 分工不同——那个说「这个库本代码不接受」，
-    这个说「这个库虽然是 v4，但没有本入口能补齐的东西」。
+    这个说「版本号匹配，但库形态不是本入口能补齐的情况」。
     """
 
 
@@ -246,7 +246,7 @@ def _counts(conn: sqlite3.Connection, existing: set[str]) -> dict[str, int]:
 def _remaining_gaps(conn: sqlite3.Connection, existing: set[str]) -> list[str]:
     """还差什么没补齐（空列表 = 已补齐）。
 
-    检查用到的表不全在时**跳过该条**：那种库不是「v4 形态的半改名库」，由调用方另行报错，
+    检查用到的表不全在时**跳过该条**：那种库不是「当前 schema 形态的半改名库」，由调用方另行报错，
     不在这里误报成「补齐失败」（``_validate_shape`` 已经把这件事说清楚了）。
     """
     gaps: list[str] = []
@@ -283,7 +283,7 @@ def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
     而不是「希望如此」。这同时让「对已修好的库再跑一次 ⇒ 改动 0 行」不可能有半途状态。
 
     旧表（``channel_member`` / ``channel_read`` / ``channel_budget``）**存在才搬、不存在就跳过**：
-    全新的 v4 库没有它们，也不需要有（本入口对一个健康的库就是个空操作，不报错）。
+    全新的当前版本库没有它们，也不需要有（本入口对一个健康的库就是个空操作，不报错）。
 
     空目录 / 压根没有库文件时也是**空操作**（改动 0 行、退出码 0），不报错、也**不"顺手"建一个
     空库出来**：用户跑修复入口是想修已有数据，在一个没数据的目录上凭空生成 ``alibot.db`` 不是他要的。
@@ -300,14 +300,14 @@ def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
     try:
         conn = database._conn
         existing = _existing_tables(conn)
-        missing = sorted(set(_V4_REQUIRED_TABLES) - existing)
+        missing = sorted(set(_CURRENT_REQUIRED_TABLES) - existing)
         if missing:
             # 库形态不对：但「压根没有业务数据」（空库 / 刚建还没初始化的库）不是错误——
             # 没有数据就没什么可补的，报错反而把「空目录上跑一次」变成一个失败。
-            # 只有「**有**业务数据但不是 v4 形态」才是本入口不处置的那种库。
+            # 只有「**有**业务数据但不是当前 schema 形态」才是本入口不处置的那种库。
             if database._has_business_data():
                 raise RepairError(
-                    f"这个库不是 v4 形态（缺表：{', '.join(missing)}），本入口只处置「v4 库里 "
+                    f"这个库不是当前 schema 形态（缺表：{', '.join(missing)}），本入口只处置「当前库里 "
                     f"channel 型 target 缺失」这一种情形。"
                 )
             return _nothing_to_repair(db_path)
@@ -320,7 +320,7 @@ def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
             database._begin()
             try:
                 for table, source in _REPAIR_ORDER:
-                    # 来源表不在：这个库没那类旧数据可搬（例如全新的 v4 库），跳过。
+                    # 来源表不在：这个库没那类旧数据可搬（例如全新的当前版本库），跳过。
                     # 记 0 而不是不留键，于是报告里「这张表本次 0 行」仍是显式读数。
                     if source is not None and source not in existing:
                         inserted[table] = 0
@@ -366,7 +366,7 @@ def render_outcome(outcome: RepairOutcome) -> str:
         before, after = outcome.before[table], outcome.after[table]
         marker = f"  (+{after - before})" if after > before else ""
         lines.append(f"  {table:16s} {before:5d} → {after:<5d}{marker}")
-    # 自校验只在真的跑过补齐（或库本来就是 v4 形态）时才有意义。空目录 / 没有数据的库上它为空，
+    # 自校验只在真的跑过补齐（或库本来就是当前 schema 形态）时才有意义。空目录 / 没有数据的库上它为空，
     # 那就不要打一个空标题出来。
     if outcome.verified:
         lines.append("")

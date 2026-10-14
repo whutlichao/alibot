@@ -96,6 +96,65 @@ class WorkspaceService:
             name=name, description=description, member_ids=member_ids, creator_id=self._member_id
         )
 
+    # ─── 任务看板与任务线程 ───────────────────────────────────────────────
+    def tasks(self, channel_id: str | None = None) -> list[dict[str, Any]]:
+        return self._db.list_tasks(channel_id=channel_id, member_id=self._member_id)
+
+    def create_task(self, channel_id: str, title: str) -> dict[str, Any]:
+        task = self._db.create_task(channel_id=channel_id, title=title)
+        return {"task": task, "target": self._db.get_target(task["target_id"])}
+
+    def task(self, task_id: str) -> dict[str, Any]:
+        task = self._db.get_task(task_id, self._member_id)
+        return {"task": task, "target": self._db.get_target(task["target_id"])}
+
+    def task_messages(self, task_id: str, after_seq: int = 0) -> dict[str, Any]:
+        task = self._db.get_task(task_id, self._member_id)
+        return {
+            "task": task,
+            "target": self._db.get_target(task["target_id"]),
+            "messages": self._db.list_task_messages(task_id, after_seq=after_seq),
+        }
+
+    def task_members(self, task_id: str) -> list[dict[str, Any]]:
+        task = self._db.get_task(task_id, self._member_id)
+        return self._db.list_target_members(task["target_id"])
+
+    def task_budget(self, task_id: str) -> dict[str, Any]:
+        task = self._db.get_task(task_id, self._member_id)
+        return self._db.budget_state(task["target_id"])
+
+    def mark_task_read(self, task_id: str, seq: int) -> dict[str, Any]:
+        task = self._db.get_task(task_id, self._member_id)
+        self._db.mark_read(task["target_id"], seq, member_id=self._member_id)
+        return self._db.get_task(task_id, self._member_id)
+
+    def update_task_status(self, task_id: str, status: str) -> dict[str, Any]:
+        task, message = self._db.update_task_status(task_id, status)
+        if message is not None and self._events is not None:
+            self._events.publish(
+                task["target_id"], {"type": "message", "seq": message["seq"], "message": message}
+            )
+        return {"task": task, "message": message}
+
+    def update_task_title(self, task_id: str, title: str) -> dict[str, Any]:
+        task, message = self._db.update_task_title(task_id, title)
+        if message is not None and self._events is not None:
+            self._events.publish(
+                task["target_id"], {"type": "message", "seq": message["seq"], "message": message}
+            )
+        return {"task": task, "message": message}
+
+    def update_task_assignee(self, task_id: str, member_id: str | None) -> dict[str, Any]:
+        task, message = self._db.update_task_assignee(task_id, member_id)
+        if message is not None and self._events is not None:
+            self._events.publish(
+                task["target_id"], {"type": "message", "seq": message["seq"], "message": message}
+            )
+        if message is not None and member_id is not None and self._orchestrator is not None:
+            self._orchestrator.notify_task_assignment(task["target_id"], message["seq"], member_id)
+        return {"task": task, "message": message}
+
     def channel_messages(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
         return self._db.list_messages(channel_id, after_seq=after_seq)
@@ -244,7 +303,21 @@ class WorkspaceService:
         }
 
     # ─── 消息 ─────────────────────────────────────────────────────────────
-    def send_message(self, channel_id: str, body: str) -> dict[str, Any]:
+    def send_message(self, channel_id: str, body: str, task_ref: str | None = None) -> dict[str, Any]:
+        """频道中的人类消息；task_ref 若存在，数据库要求其与频道 target 同域。"""
+        self._db.get_channel(channel_id)  # 频道面入口只认 channel 型 target
+        return self._send_target_message(channel_id, body, task_ref)
+
+    def send_task_message(
+        self, task_id: str, body: str, task_ref: str | None = None
+    ) -> dict[str, Any]:
+        """任务线程消息落在任务自己的 target，并沿用同一落库、事件流与唤醒路径。"""
+        task = self._db.get_task(task_id, self._member_id)
+        return self._send_target_message(task["target_id"], body, task_ref)
+
+    def _send_target_message(
+        self, target_id: str, body: str, task_ref: str | None = None
+    ) -> dict[str, Any]:
         """人类消息落库 → 推送事件流 → 唤醒成员面的 Agent。
 
         顺序是契约的一部分：``append_message`` 抛错时后面两步都不执行（落库失败不唤醒）。
@@ -252,19 +325,18 @@ class WorkspaceService:
         """
         members = self._db.list_members()
         snapshot = parse_mentions(body, members)
-        # 频道面入口：先按**频道**早退（`/api/channels/{id}/...` 的 404 语义与改名前一模一样）。
-        self._db.get_channel(channel_id)
         message = self._db.append_message(
-            target_id=channel_id,
+            target_id=target_id,
             body=body,
             author_member_id=self._member_id,
             kind="human",
             mention_snapshot=snapshot,
+            task_ref=task_ref,
         )
         if self._events is not None:
-            self._events.publish(channel_id, {"type": "message", "seq": message["seq"], "message": message})
+            self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
         if self._orchestrator is not None:
-            self._orchestrator.notify(channel_id, message["seq"])
+            self._orchestrator.notify(target_id, message["seq"])
         return message
 
     def member_statuses(self) -> dict[str, Any]:

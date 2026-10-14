@@ -50,6 +50,22 @@ const STATUS_LABEL = {
   offline: '未启用',
 };
 
+const TASK_STATUS_LABEL = {
+  todo: '待认领',
+  in_progress: '进行中',
+  in_review: '待审',
+  done: '完成',
+  closed: '已关闭',
+};
+const TASK_STATUS_ORDER = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
+const TASK_STATUS_TRANSITIONS = {
+  todo: ['in_progress', 'closed'],
+  in_progress: ['in_review', 'todo', 'closed'],
+  in_review: ['done', 'in_progress', 'todo'],
+  done: ['in_progress', 'closed'],
+  closed: [],
+};
+
 /* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
    （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
 
@@ -102,10 +118,21 @@ const PROVIDER_LABEL = {
 
 const state = {
   ready: false,
+  mode: 'channel',
   online: true,
   streamState: 'connecting',
   member: OWNER_FALLBACK,
   channels: [],
+  tasks: [],
+  boardTasks: [],
+  taskFilterChannelId: '',
+  activeTaskId: null,
+  activeTask: null,
+  taskMessages: [],
+  taskMembers: [],
+  taskSeenSeqs: new Set(),
+  taskStream: null,
+  taskStreamTimer: null,
   agents: [],
   providers: [],
   localProviders: [],
@@ -231,6 +258,10 @@ function channelPath(channelId, suffix) {
   return '/api/channels/' + encodeURIComponent(channelId) + (suffix || '');
 }
 
+function taskPath(taskId, suffix) {
+  return '/api/tasks/' + encodeURIComponent(taskId) + (suffix || '');
+}
+
 /* ─── 提及：消费后端落库的提及快照（前端不自己解析一遍） ─────────────────── */
 function mentionSpans(message) {
   // 只认「有 start/end 的成员快照」：这是后端在同一事务里随消息落库的解析结果。
@@ -273,6 +304,7 @@ async function loadWorkspace(options) {
     state.consents = snapshot.remote_consents || [];
     state.online = true;
     state.ready = true;
+    await refreshTasks();
     loadRemoteFlow();
     const known = state.channels.some((channel) => channel.id === state.activeChannelId);
     if (!known) {
@@ -372,6 +404,406 @@ function replaceChannel(channel) {
   const index = state.channels.findIndex((item) => item.id === channel.id);
   if (index >= 0) state.channels[index] = channel;
   else state.channels.push(channel);
+}
+
+/* ─── 任务看板与任务线程 ─────────────────────────────────────────────── */
+async function refreshTasks() {
+  try {
+    const payload = await api('/api/tasks');
+    state.tasks = payload.tasks || [];
+    if (state.taskFilterChannelId) {
+      const filtered = await api('/api/tasks?channel_id=' + encodeURIComponent(state.taskFilterChannelId));
+      state.boardTasks = filtered.tasks || [];
+    } else {
+      state.boardTasks = state.tasks.slice();
+    }
+    if (state.activeTaskId) {
+      const current = state.tasks.find((task) => task.id === state.activeTaskId);
+      if (current) state.activeTask = current;
+    }
+  } catch {
+    // 任务面读失败不影响频道消息与发送；保留最后一次成功快照。
+  }
+  renderTaskNav();
+  renderTaskBoard();
+}
+
+async function refreshTaskBoardFilter() {
+  if (!state.taskFilterChannelId) {
+    state.boardTasks = state.tasks.slice();
+    renderTaskBoard();
+    return;
+  }
+  try {
+    const payload = await api('/api/tasks?channel_id=' + encodeURIComponent(state.taskFilterChannelId));
+    state.boardTasks = payload.tasks || [];
+  } catch (err) {
+    toast('筛选任务失败：' + err.message, 'err');
+  }
+  renderTaskBoard();
+}
+
+function taskMemberName(memberId) {
+  const member = state.members.find((item) => item.id === memberId);
+  return member ? member.display_name : memberId;
+}
+
+function taskById(taskId) {
+  return (state.activeTask && state.activeTask.id === taskId ? state.activeTask : null) ||
+    state.tasks.find((task) => task.id === taskId) ||
+    state.boardTasks.find((task) => task.id === taskId) || null;
+}
+
+function renderTaskNav() {
+  const button = $('#btnTaskBoard');
+  if (!button) return;
+  const active = state.mode === 'board' || state.mode === 'task';
+  button.classList.toggle('is-active', active);
+  button.setAttribute('aria-current', active ? 'page' : 'false');
+  const unread = state.tasks.reduce((total, task) => total + (Number(task.unread_count) || 0), 0);
+  const badge = $('#taskUnreadBadge');
+  badge.hidden = unread <= 0;
+  badge.textContent = unread > 99 ? '99+' : String(unread);
+}
+
+function fillTaskChannelSelect(select, includeAll, selected) {
+  const options = [];
+  if (includeAll) {
+    const all = el('option', null, '全部频道');
+    all.value = '';
+    options.push(all);
+  } else {
+    const prompt = el('option', null, state.channels.length ? '选择所属频道' : '请先创建频道');
+    prompt.value = '';
+    options.push(prompt);
+  }
+  state.channels.forEach((channel) => {
+    const option = el('option', null, '#' + channel.name);
+    option.value = channel.id;
+    options.push(option);
+  });
+  replaceChildren(select, options);
+  select.value = selected || '';
+  if (!includeAll) select.disabled = state.channels.length === 0;
+}
+
+function renderTaskBoard() {
+  const filter = $('#taskChannelFilter');
+  const createChannel = $('#taskCreateChannel');
+  if (!filter || !createChannel) return;
+  fillTaskChannelSelect(filter, true, state.taskFilterChannelId);
+  const selectedCreateChannel = createChannel.value || state.activeChannelId || '';
+  fillTaskChannelSelect(createChannel, false, selectedCreateChannel);
+  $('#taskCreateSubmit').disabled = !state.online || state.channels.length === 0;
+
+  const columns = TASK_STATUS_ORDER.map((status) => {
+    const tasks = state.boardTasks.filter((task) => task.status === status);
+    const column = el('section', 'task-column');
+    column.dataset.status = status;
+    const head = el('h2', 'task-column-head');
+    head.appendChild(el('span', 'task-status-dot'));
+    head.appendChild(el('span', null, TASK_STATUS_LABEL[status]));
+    head.appendChild(el('span', 'task-column-count', String(tasks.length)));
+    column.appendChild(head);
+    tasks.forEach((task) => {
+      const card = el('button', 'task-card');
+      card.type = 'button';
+      card.dataset.task = task.id;
+      card.dataset.status = task.status;
+      card.setAttribute('data-od-id', 'task-card-' + task.id);
+      card.setAttribute('aria-label', task.title + '，' + TASK_STATUS_LABEL[task.status] + '，频道 ' + task.channel_name);
+      const title = el('span', 'task-card-heading');
+      title.appendChild(el('span', 'task-card-status-dot'));
+      title.appendChild(el('span', 'task-card-title', task.title));
+      card.appendChild(title);
+      const meta = el('span', 'task-card-meta');
+      meta.appendChild(el('span', 'task-card-channel', '#' + task.channel_name));
+      if (task.assignee_member_id) {
+        meta.appendChild(el('span', 'task-card-assignee', taskMemberName(task.assignee_member_id)));
+      } else {
+        meta.appendChild(el('span', 'task-card-assignee', '未指派'));
+      }
+      if (task.unread_count > 0) {
+        const unread = el('span', 'task-unread', task.unread_count > 99 ? '99+' : task.unread_count);
+        unread.setAttribute('aria-label', task.unread_count + ' 条未读任务消息');
+        meta.appendChild(unread);
+      }
+      card.appendChild(meta);
+      column.appendChild(card);
+    });
+    return column;
+  });
+  replaceChildren($('#taskColumns'), columns);
+  $('#taskBoardEmpty').hidden = state.boardTasks.length > 0;
+  $('#taskColumns').hidden = state.boardTasks.length === 0;
+}
+
+function renderTaskThread() {
+  const task = state.activeTask;
+  if (!task) return;
+  $('#taskChannelLabel').textContent = '#' + task.channel_name;
+  $('#taskTitleInput').value = task.title;
+  const statusSelect = $('#taskStatusSelect');
+  const statuses = [task.status].concat(TASK_STATUS_TRANSITIONS[task.status] || []);
+  replaceChildren(statusSelect, statuses.map((status) => {
+    const option = el('option', null, TASK_STATUS_LABEL[status]);
+    option.value = status;
+    return option;
+  }));
+  statusSelect.value = task.status;
+  const assigneeSelect = $('#taskAssigneeSelect');
+  const assignees = [el('option', null, '未指派')];
+  assignees[0].value = '';
+  state.members.filter((member) => member.kind === 'agent').forEach((member) => {
+    const option = el('option', null, member.display_name);
+    option.value = member.id;
+    assignees.push(option);
+  });
+  replaceChildren(assigneeSelect, assignees);
+  assigneeSelect.value = task.assignee_member_id || '';
+  const unread = Number(task.unread_count) || 0;
+  $('#taskThreadUnread').textContent = unread ? unread + ' 条未读' : '';
+
+  const nodes = [];
+  let lastDay = null;
+  state.taskMessages.forEach((message) => {
+    const day = dayLabel(message.created_at);
+    if (day !== lastDay) {
+      const separator = el('div', 'day-sep');
+      separator.appendChild(el('span', null, day));
+      nodes.push(separator);
+      lastDay = day;
+    }
+    nodes.push(messageNode(message));
+  });
+  replaceChildren($('#taskMessageList'), nodes);
+  renderTaskNav();
+}
+
+function setViewMode(mode) {
+  state.mode = mode;
+  const channelMode = mode === 'channel';
+  $('#chanHead').hidden = !channelMode || !activeChannel();
+  $('#viewMessages').hidden = !channelMode;
+  $('#composer').hidden = !channelMode || !activeChannel();
+  $('#taskBoard').hidden = mode !== 'board';
+  $('#taskThread').hidden = mode !== 'task';
+  renderTaskNav();
+}
+
+async function showTaskBoard() {
+  closeTaskStream();
+  state.mode = 'board';
+  setViewMode('board');
+  render();
+  await refreshTasks();
+}
+
+function taskMaxSeq() {
+  return state.taskMessages.reduce((max, message) => Math.max(max, Number(message.seq) || 0), 0);
+}
+
+async function openTask(taskId) {
+  closeTaskStream();
+  state.mode = 'task';
+  state.activeTaskId = taskId;
+  state.activeTask = null;
+  state.taskMessages = [];
+  state.taskSeenSeqs = new Set();
+  render();
+  setViewMode('task');
+  try {
+    const [thread, members] = await Promise.all([
+      api(taskPath(taskId, '/messages')),
+      api(taskPath(taskId, '/members')),
+    ]);
+    if (state.activeTaskId !== taskId) return;
+    state.activeTask = thread.task;
+    state.taskMessages = thread.messages || [];
+    state.taskMembers = members.members || [];
+    state.taskSeenSeqs = new Set(state.taskMessages.map((message) => message.seq));
+    const index = state.tasks.findIndex((task) => task.id === taskId);
+    if (index >= 0) state.tasks[index] = thread.task;
+    else state.tasks.push(thread.task);
+    renderTaskThread();
+    setViewMode('task');
+    connectTaskStream(taskId, taskMaxSeq());
+    await markTaskRead(taskId, taskMaxSeq());
+    $('#taskThreadStream').scrollTop = $('#taskThreadStream').scrollHeight;
+  } catch (err) {
+    state.mode = 'board';
+    state.activeTaskId = null;
+    setViewMode('board');
+    toast('打开任务失败：' + err.message, 'err');
+  }
+}
+
+async function markTaskRead(taskId, seq) {
+  if (!seq) return;
+  try {
+    const payload = await api(taskPath(taskId, '/read'), { method: 'POST', body: { seq } });
+    if (state.activeTaskId === taskId) state.activeTask = payload.task;
+    const index = state.tasks.findIndex((task) => task.id === taskId);
+    if (index >= 0) state.tasks[index] = payload.task;
+    renderTaskThread();
+    renderTaskBoard();
+  } catch (err) {
+    toast('任务标读失败：' + err.message, 'err');
+  }
+}
+
+function absorbTaskMessage(message) {
+  if (!message || state.taskSeenSeqs.has(message.seq)) return false;
+  state.taskSeenSeqs.add(message.seq);
+  state.taskMessages.push(message);
+  state.taskMessages.sort((a, b) => a.seq - b.seq);
+  renderTaskThread();
+  $('#taskThreadStream').scrollTop = $('#taskThreadStream').scrollHeight;
+  if (state.mode === 'task' && state.activeTaskId) markTaskRead(state.activeTaskId, message.seq);
+  return true;
+}
+
+function connectTaskStream(taskId, cursor) {
+  if (state.activeTaskId !== taskId || state.mode !== 'task') return;
+  const source = new EventSource(taskPath(taskId, '/events') + '?after_seq=' + cursor);
+  const entry = { source, timer: null, taskId };
+  state.taskStream = entry;
+  source.addEventListener('rotate', () => {
+    source.close();
+    if (state.taskStream !== entry) return;
+    entry.timer = setTimeout(() => connectTaskStream(taskId, taskMaxSeq()), 250);
+  });
+  source.addEventListener('message', (event) => {
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    if (payload.message && state.activeTaskId === taskId) {
+      absorbTaskMessage(payload.message);
+      refreshTaskDetails(taskId);
+    }
+  });
+  source.onerror = () => {
+    source.close();
+    if (state.taskStream !== entry) return;
+    entry.timer = setTimeout(() => connectTaskStream(taskId, taskMaxSeq()), 1500);
+  };
+}
+
+function closeTaskStream() {
+  const entry = state.taskStream;
+  state.taskStream = null;
+  if (!entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  if (entry.source) entry.source.close();
+  if (state.taskStreamTimer) clearTimeout(state.taskStreamTimer);
+  state.taskStreamTimer = null;
+}
+
+async function refreshTaskDetails(taskId) {
+  try {
+    const payload = await api(taskPath(taskId));
+    if (state.activeTaskId !== taskId) return;
+    state.activeTask = payload.task;
+    const index = state.tasks.findIndex((task) => task.id === taskId);
+    if (index >= 0) state.tasks[index] = payload.task;
+    renderTaskThread();
+    renderTaskBoard();
+  } catch {
+    // 线程已可见时保留上一份快照；下一条事件或手动重开会再同步。
+  }
+}
+
+async function submitTask() {
+  const channelId = $('#taskCreateChannel').value;
+  const title = $('#taskCreateTitle').value.trim();
+  if (!channelId || !title) return;
+  const button = $('#taskCreateSubmit');
+  button.disabled = true;
+  try {
+    const payload = await api(channelPath(channelId, '/tasks'), { method: 'POST', body: { title } });
+    $('#taskCreateTitle').value = '';
+    if (!state.taskFilterChannelId || state.taskFilterChannelId === channelId) {
+      await refreshTasks();
+    } else {
+      await refreshTaskBoardFilter();
+    }
+    toast('已创建任务「' + payload.task.title + '」。');
+  } catch (err) {
+    toast('创建任务失败：' + err.message, 'err');
+  } finally {
+    button.disabled = !state.online || state.channels.length === 0;
+  }
+}
+
+async function saveTaskTitle() {
+  const task = state.activeTask;
+  if (!task) return;
+  try {
+    const payload = await api(taskPath(task.id, '/title'), {
+      method: 'PATCH', body: { title: $('#taskTitleInput').value.trim() },
+    });
+    state.activeTask = payload.task;
+    await refreshTasks();
+    renderTaskThread();
+  } catch (err) {
+    toast('更新标题失败：' + err.message, 'err');
+    renderTaskThread();
+  }
+}
+
+async function changeTaskStatus(status) {
+  const task = state.activeTask;
+  if (!task || status === task.status) return;
+  try {
+    const payload = await api(taskPath(task.id, '/status'), { method: 'PATCH', body: { status } });
+    state.activeTask = payload.task;
+    if (payload.message) absorbTaskMessage(payload.message);
+    await refreshTasks();
+    renderTaskThread();
+  } catch (err) {
+    toast('更新状态失败：' + err.message, 'err');
+    renderTaskThread();
+  }
+}
+
+async function changeTaskAssignee(memberId) {
+  const task = state.activeTask;
+  if (!task) return;
+  try {
+    const payload = await api(taskPath(task.id, '/assignee'), {
+      method: 'PATCH', body: { member_id: memberId || null },
+    });
+    state.activeTask = payload.task;
+    if (payload.message) absorbTaskMessage(payload.message);
+    const members = await api(taskPath(task.id, '/members'));
+    state.taskMembers = members.members || [];
+    await refreshTasks();
+    renderTaskThread();
+  } catch (err) {
+    toast('更新指派失败：' + err.message, 'err');
+    renderTaskThread();
+  }
+}
+
+async function sendTaskMessage() {
+  const task = state.activeTask;
+  const input = $('#taskComposerInput');
+  const body = input.value.trim();
+  if (!task || !body || !state.online) return;
+  $('#taskSend').disabled = true;
+  try {
+    const payload = await api(taskPath(task.id, '/messages'), {
+      method: 'POST', body: { body, task_ref: task.id },
+    });
+    input.value = '';
+    input.style.height = 'auto';
+    absorbTaskMessage(payload.message);
+    await markTaskRead(task.id, payload.message.seq);
+    await refreshTasks();
+  } catch (err) {
+    toast('任务消息未发送：' + err.message, 'err');
+  } finally {
+    $('#taskSend').disabled = !state.online || !input.value.trim();
+  }
 }
 
 function seenSeqsFor(channelId) {
@@ -711,7 +1143,11 @@ function render() {
   renderIdentity();
   renderChannels();
   renderMembers();
+  renderTaskNav();
+  renderTaskBoard();
+  if (state.activeTask) renderTaskThread();
   renderHeader();
+  setViewMode(state.mode);
   renderMessages();
   renderConnection();
   renderDock();
@@ -921,7 +1357,7 @@ function renderTyping() {
 
 function renderHeader() {
   const channel = activeChannel();
-  const hasChannel = Boolean(channel);
+  const hasChannel = Boolean(channel) && state.mode === 'channel';
   $('#chanHead').hidden = !hasChannel;
   $('#composer').hidden = !hasChannel;
   if (!hasChannel) {
@@ -943,12 +1379,16 @@ function renderConnection() {
     stream.hidden = !reconnecting;
     stream.textContent = reconnecting ? '事件流正在重连：恢复后会自动补拉错过的消息。' : '';
   }
+  const taskInput = $('#taskComposerInput');
+  const taskSend = $('#taskSend');
+  if (taskInput && taskSend) taskSend.disabled = !state.online || !taskInput.value.trim();
 }
 
 function renderMessages() {
   const channel = activeChannel();
-  $('#emptyNoChannel').hidden = Boolean(channel);
-  const messages = channel ? renderedMessages() : [];
+  const channelMode = state.mode === 'channel';
+  $('#emptyNoChannel').hidden = !channelMode || Boolean(channel);
+  const messages = channelMode && channel ? renderedMessages() : [];
   $('#emptyNoMessage').hidden = !channel || messages.length > 0;
 
   const nodes = [];
@@ -1184,6 +1624,7 @@ function messageNode(message) {
     head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
     body.appendChild(head);
     body.appendChild(el('div', 'msg-text', message.body));
+    appendTaskRefChip(body, message);
     article.appendChild(body);
     return article;
   }
@@ -1204,6 +1645,7 @@ function messageNode(message) {
   head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
   body.appendChild(head);
   body.appendChild(messageText(message));
+  appendTaskRefChip(body, message);
 
   if (failed) {
     const retry = el('div', 'msg-retry');
@@ -1219,6 +1661,17 @@ function messageNode(message) {
 
   article.appendChild(body);
   return article;
+}
+
+function appendTaskRefChip(body, message) {
+  if (!message.task_ref) return;
+  const referencedTask = taskById(message.task_ref);
+  const title = referencedTask ? referencedTask.title : message.task_ref;
+  const chip = el('button', 'task-ref-chip', '任务 · ' + title);
+  chip.type = 'button';
+  chip.dataset.openTask = message.task_ref;
+  chip.setAttribute('aria-label', '打开任务 ' + title);
+  body.appendChild(chip);
 }
 
 function dayLabel(iso) {
@@ -1249,7 +1702,7 @@ function autosizeComposer() {
 }
 
 function syncSendButton() {
-  $('#btnSend').disabled = !$('#composerInput').value.trim() || !state.online || !activeChannel();
+  $('#btnSend').disabled = !$('#composerInput').value.trim() || !state.online || !activeChannel() || state.mode !== 'channel';
 }
 
 /* ─── @ 补全：清单只找候选 + 按解析器的引号规则拼字符串（前端不解析提及） ──────
@@ -1760,6 +2213,10 @@ async function selectChannel(channelId) {
     const stale = state.channels.find((item) => item.id === previous);
     if (stale && stale.last_seq > stale.last_read_seq) scheduleRead(previous, stale.last_seq);
   }
+  closeTaskStream();
+  state.mode = 'channel';
+  state.activeTaskId = null;
+  state.activeTask = null;
   setActiveChannelId(channelId);
   state.pending = state.pending.filter((item) => item.target_id === channelId || item.status === 'failed');
   // 候选清单属于刚被切换掉的频道：进新频道时先关掉，再按新频道的成员表重建。
@@ -1815,6 +2272,45 @@ function bindEvents() {
   $('#channelList').addEventListener('click', (event) => {
     const row = event.target.closest('[data-channel]');
     if (row) selectChannel(row.dataset.channel);
+  });
+
+  $('#btnTaskBoard').addEventListener('click', showTaskBoard);
+  $('#taskChannelFilter').addEventListener('change', () => {
+    state.taskFilterChannelId = $('#taskChannelFilter').value;
+    refreshTaskBoardFilter();
+  });
+  $('#taskCreateForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitTask();
+  });
+  $('#taskColumns').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-task]');
+    if (card) openTask(card.dataset.task);
+  });
+  $('#btnBackToBoard').addEventListener('click', showTaskBoard);
+  $('#taskTitleSave').addEventListener('click', saveTaskTitle);
+  $('#taskTitleInput').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); saveTaskTitle(); }
+  });
+  $('#taskStatusSelect').addEventListener('change', (event) => changeTaskStatus(event.target.value));
+  $('#taskAssigneeSelect').addEventListener('change', (event) => changeTaskAssignee(event.target.value));
+  $('#taskSend').addEventListener('click', sendTaskMessage);
+  $('#taskComposerInput').addEventListener('input', () => {
+    const input = $('#taskComposerInput');
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+    $('#taskSend').disabled = !input.value.trim() || !state.online;
+  });
+  $('#taskComposerInput').addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendTaskMessage();
+    }
+  });
+  $('#taskMessageList').addEventListener('click', (event) => {
+    const link = event.target.closest('[data-open-task]');
+    if (link) openTask(link.dataset.openTask);
   });
 
   $('#composerInput').addEventListener('input', () => {
@@ -1879,6 +2375,11 @@ function bindEvents() {
   });
 
   $('#messageList').addEventListener('click', (event) => {
+    const taskRef = event.target.closest('[data-open-task]');
+    if (taskRef) {
+      openTask(taskRef.dataset.openTask);
+      return;
+    }
     // 摘要行的折叠控件：切换的只是**呈现状态**（内存），后端事实一个字不动。
     const summary = event.target.closest('[data-summary-toggle]');
     if (summary) {

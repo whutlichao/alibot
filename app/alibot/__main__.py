@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repair-targets",
         action="store_true",
         help=(
-            "【手动修复入口】把 v4 库里缺失的 channel 型 target 作用域数据补齐"
+            "【手动修复入口】把当前 schema 库里缺失的 channel 型 target 作用域数据补齐"
             "（影子行 / 成员 / 已读 / 预算），幂等、可自校验；不会自动执行、不写迁移脚本"
         ),
     )
@@ -61,7 +61,7 @@ def _run_repair(data_dir: Path) -> int:
 
     - ``SchemaVersionMismatch``（库的版本不是本代码需要的）⇒ :data:`DATA_NOT_ACCEPTED_EXIT_CODE`，
       与主修、与启动路径同义：本入口**不**充当迁就旧库的后门。
-    - ``RepairError``（库是 v4，但不是本入口能处置的形态）⇒ :data:`REPAIR_FAILED_EXIT_CODE`。
+    - ``RepairError``（库版本匹配，但不是本入口能处置的形态）⇒ :data:`REPAIR_FAILED_EXIT_CODE`。
     """
     from .repair import RepairError, render_outcome, repair_target_rows
 
