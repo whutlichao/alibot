@@ -88,7 +88,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m worksplice
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
 | `channel_read` | member_id, channel_id, last_read_seq | 已读位置（未读的正本）。owner 的行使未读徽标；agent 的行是它自己的消费游标 |
 | `message` | id, target_id, seq, author_member_id, kind, 正文, **提及快照** | **append-only**，`UNIQUE(target_id, seq)` |
-| `round_outcome` | member_id, target_id, base_seq, status, reason, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only** |
+| `round_outcome` | member_id, target_id, base_seq, status, reason, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `channel_budget.used` |
 
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   HTTP 面也没有编辑或删除端点。
@@ -143,6 +143,12 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
   构造性保证。
 - **预算落库**（`channel_budget` 表）：`used` / `epoch_seq` 是后端持久事实，重启后可恢复。
 - **`budget-exhausted` 不是出错**：它既不是「不想说」也不是「它坏了」，状态点仍是空闲。
+- **跳数的单一正本**：`channel_budget.used`（= `GET /api/channels/{id}/budget` 的 `used`）是「该人类
+  世代已用跳数」的**唯一权威**，每次跳恰好 +1，不因该跳投递了几个成员而变化。`round_outcome` 行上的
+  `consumed_budget` 只是**行级**标记（「这一轮由那次跳送来」），一次跳投递 N 个成员就有 N 条为真的行，
+  所以 **`sum(round_outcome.consumed_budget)` 不能当跳数用**（行数与跳数之间没有固定关系：投递的成员若
+  无可落库内容就不落行，所以它可能偏大也可能偏小）；要从只读面反推跳数，读
+  `budget.used`。`round_outcome` 的 append-only 约束不变。
 - **并发合并**：同一 Agent 同时最多一轮 in-flight；窗口内到达的重复唤醒**不排队、不重放**，
   收口时合成**恰好一条** `merged` 记录，`base_seq` 取窗口内**最大 seq**。被合并的消息仍在消费
   游标之后，下一次**新的**唤醒会被一并读到（不重放 ≠ 永久吞掉）。

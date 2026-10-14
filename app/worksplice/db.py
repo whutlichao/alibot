@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS remote_consent (
 );
 
 -- 轮次结果（spec #1 §5）：一轮的处理结果。append-only，与消息同级的取证面。
+-- ``consumed_budget`` 是**行级**标记，不是跳的计数：它说的是「这一轮是由**一次已投递并被计一次的
+-- agent→agent 跳**送来的」。**一次跳投递 N 个成员就有 N 条为 1 的行**，而跳数只 +1，因此
+-- **它不可按行求和**。该人类世代的**跳数唯一正本**是 ``channel_budget.used``（见上面的表注释）。
 CREATE TABLE IF NOT EXISTS round_outcome (
   id              TEXT PRIMARY KEY,
   member_id       TEXT NOT NULL REFERENCES member(id),
@@ -468,6 +471,14 @@ class Database:
         merged: bool = False,
         reply_seq: int | None = None,
     ) -> dict[str, Any]:
+        """落一条轮次结果。
+
+        ``consumed_budget`` 是**行级**标记（「这一轮所属的那次跳」），**不是**跳的计数：
+        一次跳投递 N 个成员会写 N 条 ``consumed_budget=1`` 的行，而跳数只 +1。**不可按行求和** ——
+        该人类世代的跳数唯一正本是 ``channel_budget.used``（:meth:`budget_state`）。
+        行数与跳数之间**没有固定关系**（投递的成员若无可落库内容就不落行），所以按行求和得到的数
+        既可能偏大也可能偏小；它不是跳数。
+        """
         if status not in ROUND_STATUSES:
             raise DomainError(
                 "validation_failed", f"未知的轮次结果状态：{status}", fields={"status": "轮次结果状态非法"}
