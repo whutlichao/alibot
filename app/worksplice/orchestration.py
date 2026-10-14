@@ -24,6 +24,11 @@
 - **硬上界（可验收断言）**：任一人类世代内同一频道的 agent→agent 跳数 ≤ 3 —— 由「耗尽的世代里
   一个都不投递」构造性保证，而不是靠事后统计。
 - **穿透不豁免预算**：未加入却被点名的 Agent 同样走这条跳的裁决。
+
+**跳数的单一正本**是 :meth:`Database.budget_state` 据以读出的 ``channel_budget.used``：它每次
+agent→agent 跳恰好 +1，不因成员数变化。``round_outcome.consumed_budget`` 只是**行级**标记
+（「这一轮由那次已计一次的跳送来」），一次跳投递 N 个成员就有 N 条为真的行，因此**不可按行求和**；
+想拿跳数的人只能读 ``channel_budget.used``。
 """
 
 from __future__ import annotations
@@ -155,6 +160,9 @@ class WakeOrchestrator:
         3. ``system`` 事件消息不是对话回合：它既不唤醒任何人，也不消耗预算。
         4. Agent 作者且目标非空 ⇒ 这是**一次 agent→agent 跳**：先看预算。预算耗尽则一个都不投递，
            为每个被压制的成员记一条 ``budget-exhausted``；否则先扣 1 次预算再投递。
+
+        这次跳只让 ``channel_budget.used`` +1（跳数的单一正本）；下面传给每个成员的
+        ``jump_delivered`` 是**行级**标记，投递 N 个成员就有 N 条为真的轮次结果行。
         """
         self._db.get_channel(channel_id)  # 404 早退（频道不存在就不唤醒）
         message = self._db.get_message(channel_id, from_seq)
@@ -169,8 +177,12 @@ class WakeOrchestrator:
         if not targets:
             return 0
 
-        consumed_budget = author_kind == "agent"
-        if consumed_budget and not self._spend_jump(
+        # 这一次跳是否真的发生了（Agent 作者 + 目标非空 + 有余额 ⇒ 投递）。它作为**行级**标记
+        # 下调给每个成员：`channel_budget.used` 已经把跳数记了 1 次，行标记只为「这一轮是怎么来的」。
+        # 名字故意不叫 consumed_budget：`round_outcome.consumed_budget` 是历史列名，读起来像
+        # 「这一行扣了一次」，正是 #12 要消掉的歧义。
+        jump_delivered = author_kind == "agent"
+        if jump_delivered and not self._spend_jump(
             channel_id, from_seq, [target.member for target in targets]
         ):
             return 0
@@ -185,7 +197,7 @@ class WakeOrchestrator:
                 channel_id,
                 from_seq,
                 member_reason,
-                consumed_budget,
+                jump_delivered,
                 target.pierced,
             )
         return len(targets)
@@ -221,6 +233,9 @@ class WakeOrchestrator:
 
     def _spend_jump(self, channel_id: str, from_seq: int, targets: list[dict[str, Any]]) -> bool:
         """扣一次 agent→agent 跳的预算。返回是否投递（False = 预算耗尽，一个都不投）。
+
+        这里是**跳数唯一正本**的**唯一写点**：一次调用让 ``channel_budget.used`` 恰好 +1，
+        与该跳投递了几个成员无关。
 
         「以投递的唤醒为准」有两个落点，都在这一个方法里：
 
@@ -274,7 +289,12 @@ class WakeOrchestrator:
         consumed_budget: bool = False,
         pierced: bool = False,
     ) -> dict[str, Any] | None:
-        """跑一轮。返回落下的轮次结果；瞬态轮次（无新消息、只被合并）返回 None。"""
+        """跑一轮。返回落下的轮次结果；瞬态轮次（无新消息、只被合并）返回 None。
+
+        ``consumed_budget`` 只写进这一行的 ``round_outcome.consumed_budget`` 列：它是**行级**
+        标记（「这一轮由哪次跳送来」），**不是**跳的计数 —— 一次跳投递 N 个成员会写 N 条为真的行，
+        跳数只 +1。跳数的唯一正本是 ``channel_budget.used``。
+        """
         member_id = agent["id"]
 
         with self._lock:
@@ -414,7 +434,7 @@ class WakeOrchestrator:
 
         它们不重放、不额外消耗预算（跳数以**投递的唤醒**为准），但必须留痕：这是
         「它当时为什么没有被单独问一次」的会计事实。consumed_budget 写在这一轮自己的轮次结果行上，
-        这里写 False —— 合并本身没有产生投递。
+        这里写 False —— 合并本身没有产生投递（也不增加 ``channel_budget.used``，那才是跳数正本）。
         """
         if not merged_bases:
             return
