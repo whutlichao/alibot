@@ -401,18 +401,32 @@ class Database:
         return database
 
     def _connect(self, data_dir: Path) -> None:
-        """建立连接（构造函数与 :meth:`open_without_initializing` 共用）。"""
+        """建立连接（构造函数与 :meth:`open_without_initializing` 共用）。
+
+        这里**只**做连接级设置：它们不写业务行、不改 schema，也**不改库文件一个字节**，因此可以
+        安全地出现在版本闸门之前（闸门要在一个原样的库上做判断）。
+        """
         self.data_dir = data_dir
         self.path = self.data_dir / DATABASE_FILE_NAME
         self._lock = threading.RLock()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
-        # 这三条 PRAGMA 只影响连接参数与文件头（WAL 标志），不写业务行、不改 schema，
-        # 因此可以出现在版本闸门之前；它们让闸门里的读走真实运行时的同一套连接设置。
-        self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA busy_timeout = 5000")
+
+    def _apply_write_pragmas(self) -> None:
+        """把这个库切到 WAL。**必须在版本闸门之后调用。**
+
+        ``PRAGMA journal_mode = WAL`` 不是连接级开关：它要把库文件头里的 journal mode 从
+        ``delete`` 改成 ``wal``（实测：对一个非 WAL 库执行它，文件 sha256 会变）。对**拒绝路径**
+        来说那就等于「改动了旧库」，而本票的硬要求是旧库**一个字节都不许变**。所以它不能和上面
+        那两条连接级 PRAGMA 放在一起，而必须等闸门放行之后才执行。
+
+        这一条是实测发现的：初版把它放在闸门之前，只有用**已是 WAL 形态**的旧库取证时看不出问题
+        （那时这条 PRAGMA 是 no-op）；换一个非 WAL 旧库，sha256 就变了。
+        """
+        self._conn.execute("PRAGMA journal_mode = WAL")
 
     # ─── 生命周期 ──────────────────────────────────────────────────────────
     def close(self) -> None:
@@ -464,9 +478,10 @@ class Database:
         raise SchemaVersionMismatch(self.path, found_version=stored, expected_version=SCHEMA_VERSION)
 
     def _initialize(self) -> None:
-        """闸门先于**任何** schema 变更：不等就抛，于是旧库不会被静默半改名。"""
+        """闸门先于**任何** schema 变更（也先于 WAL 切换）：不等就抛，于是旧库不会被静默半改名。"""
         with self._lock:
             self._assert_schema_compatible()
+            self._apply_write_pragmas()
             self._conn.executescript(SCHEMA)
             self._conn.execute(
                 "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) "

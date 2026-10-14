@@ -300,7 +300,58 @@ def test_repair_refuses_a_database_whose_version_is_not_four(tmp_path: Path) -> 
 
 
 def test_repair_refuses_a_library_that_is_not_v4_shaped(tmp_path: Path) -> None:
-    """库版本号对但**表结构不是 v4 形态** ⇒ ``RepairError``（不误判成「补齐失败」）。"""
+    """版本号是 4、**表结构却不是 v4 形态**、**且库里有业务数据** ⇒ ``RepairError``。
+
+    「有数据」是这条用例的要紧前提：**没有**数据的残缺库不算错（那是空库/未初始化库，本入口当作
+    「没什么可补」处理，见下一条用例）。只有「有数据但不是 v4 形态」才是本入口不处置的库。
+
+    构造：一个只有 ``schema_meta`` + ``member`` 表的库（缺 ``channel`` / ``target*``），并塞一行
+    member——于是「有业务数据」成立，而 ``_V4_REQUIRED_TABLES`` 大面积缺失。
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    conn = sqlite3.connect(_db_path(data_dir))
+    try:
+        conn.executescript(
+            "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n"
+            "CREATE TABLE member (\n"
+            "  id TEXT PRIMARY KEY, kind TEXT NOT NULL, display_name TEXT NOT NULL,\n"
+            "  avatar_slot INTEGER NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT\n"
+            ");\n"
+            "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4');\n"
+            "INSERT INTO member(id, kind, display_name, avatar_slot, created_at)\n"
+            "  VALUES ('owner', 'owner', 'Owner', 4, '2026-10-14T09:00:00Z');\n"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(RepairError) as caught:
+        repair_target_rows(data_dir)
+
+    assert "不是 v4 形态" in str(caught.value)
+
+
+def test_repair_on_an_empty_directory_is_a_clean_no_op(tmp_path: Path) -> None:
+    """空目录 / 没有库文件 ⇒ 改动 0 行、退出码语义正常，**且不凭空建一个库出来**。
+
+    用户跑修复入口是想修**已有数据**；在一个没数据的目录上生成 ``alibot.db`` 不是他要的
+    （连接会凭空造一个空库），因此这条路径必须早退。
+    """
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    outcome = repair_target_rows(empty_dir)
+
+    assert outcome.already_complete and outcome.changed_rows == 0
+    assert list(empty_dir.iterdir()) == [], "空目录不得被建出 alibot.db 或其它文件"
+
+
+def test_repair_on_a_schema_only_library_without_data_is_a_no_op(tmp_path: Path) -> None:
+    """库存在、版本号是 4，但**没有任何业务数据**（初始化到一半）⇒ 空操作，不报错。
+
+    「库形态不对」与「库没有数据」是两件事：只有**有数据却形态不对**时才该报 ``RepairError``。
+    """
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     conn = sqlite3.connect(_db_path(data_dir))
@@ -311,10 +362,16 @@ def test_repair_refuses_a_library_that_is_not_v4_shaped(tmp_path: Path) -> None:
     finally:
         conn.close()
 
-    with pytest.raises(RepairError) as caught:
-        repair_target_rows(data_dir)
+    outcome = repair_target_rows(data_dir)
 
-    assert "不是 v4 形态" in str(caught.value)
+    assert outcome.already_complete and outcome.changed_rows == 0
+    # 它没有顺手把缺的表建出来（本入口只补作用域数据行，不改 schema）。
+    conn = sqlite3.connect(f"file:{_db_path(data_dir)}?mode=ro", uri=True)
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+    assert tables == {"schema_meta"}
 
 
 # ─── 默认不执行：正常启动绝不自动补 ─────────────────────────────────────────

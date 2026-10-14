@@ -35,7 +35,7 @@ from pathlib import Path
 # 本模块是**纯数据逻辑**：不 import ``__main__``（那会形成「CLI ↔ 修复」的循环依赖），也不决定
 # 进程退出码——那由 CLI 层（``__main__``）自己映射。于是「同一个库，两条路径给同一个答复」
 # 这件事落在**行为**上（两条路径都经 :class:`Database` 的同一道闸门），而不是靠共享一个常量。
-from .db import Database
+from .db import DATABASE_FILE_NAME, Database
 
 # ─── 补齐语句 ────────────────────────────────────────────────────────────
 # 每张目标表一条 ``INSERT OR IGNORE``，SQL 本身**一句一个模块级常量**（表名不插进 ``execute``
@@ -114,15 +114,37 @@ CHECK_BUDGET_ROWS_SQL = (
     "ON tb.target_id = cb.channel_id WHERE tb.target_id IS NULL"
 )
 
+# ── 反向（1:1 的另一半）──
+# 上面四条只证明「旧表的每一行都搬过来了」。只查单向是不够的：一个库完全可能多出一个
+# ``kind='channel'`` 的 target，却没有对应的 ``channel`` 行、或没有任何成员行——那时单向检查全绿，
+# 但库已经不满足 ADR-0004 的不变量（“channel 型 target 是频道行的影子行”）。
+# 因此这四条从 ``target`` 反向查：每条 channel 型 target 都必须有对应频道行与**至少**一行成员。
+# ``kind='channel'`` 是硬条件：dm / task 型 target 不参与本入口（它们没有频道行，也不该有），
+# 这正是「不误伤 dm/task」在自校验里的体现。
+CHECK_ORPHAN_CHANNEL_TARGETS_SQL = (
+    "SELECT COUNT(*) FROM target t LEFT JOIN channel c ON c.id = t.id "
+    "WHERE t.kind = 'channel' AND c.id IS NULL"
+)
+CHECK_CHANNEL_TARGETS_WITHOUT_MEMBERS_SQL = (
+    "SELECT COUNT(*) FROM target t WHERE t.kind = 'channel' AND NOT EXISTS "
+    "(SELECT 1 FROM target_member tm WHERE tm.target_id = t.id)"
+)
+
 # 每条检查的「标签 + 它用到的表」；语句本体在下面按标签索引的字典里（**下标取常量**的形态，
 # 与 ``db.py`` 的 ``BUSINESS_COUNT_SQL[table]`` 一致：不把裸变量直接喂给 ``execute``）。
 # 表名显式写出来，是因为 ``_REPAIR_ORDER`` 里的表清单已经穷举了本模块认得的八张表，
 # 没有需要从 SQL 文本里猜的余地。
+#
+# 前四条是**补齐方向**（旧表 → 新表：每一行都搬到了吗）；后两条是**反向 1:1**（新表 → 旧表：
+# 每个 channel 型 target 都有频道行与成员行吗）。两个方向合起来才是规格要求的
+# 「target<->channel 1:1」。
 _CONSISTENCY_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("每个频道都有 channel 型影子行", ("channel", "target")),
     ("channel_member 的每一行都在 target_member 里", ("channel_member", "target_member")),
     ("channel_read 的每一行都在 target_read 里", ("channel_read", "target_read")),
     ("channel_budget 的每一行都在 target_budget 里", ("channel_budget", "target_budget")),
+    ("每个 channel 型 target 都有对应的频道行", ("target", "channel")),
+    ("每个 channel 型 target 都至少有一行成员", ("target", "target_member")),
 )
 
 _CHECK_SQL: dict[str, str] = {
@@ -130,6 +152,8 @@ _CHECK_SQL: dict[str, str] = {
     "channel_member 的每一行都在 target_member 里": CHECK_MEMBER_ROWS_SQL,
     "channel_read 的每一行都在 target_read 里": CHECK_READ_ROWS_SQL,
     "channel_budget 的每一行都在 target_budget 里": CHECK_BUDGET_ROWS_SQL,
+    "每个 channel 型 target 都有对应的频道行": CHECK_ORPHAN_CHANNEL_TARGETS_SQL,
+    "每个 channel 型 target 都至少有一行成员": CHECK_CHANNEL_TARGETS_WITHOUT_MEMBERS_SQL,
 }
 
 # 报「改动前后」行数用的表清单：四张补齐目标表 + 四张来源表。
@@ -236,6 +260,12 @@ def _remaining_gaps(conn: sqlite3.Connection, existing: set[str]) -> list[str]:
     return gaps
 
 
+def _nothing_to_repair(db_path: Path) -> RepairOutcome:
+    """「没什么可补」的结果：改动 0 行、自校验项为空（没跑过补齐就不声称验过什么）。"""
+    empty: dict[str, int] = dict.fromkeys(REPORTED_TABLES, 0)
+    return RepairOutcome(db_path=db_path, inserted={}, before=empty, after=dict(empty), verified=())
+
+
 def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
     """把 **channel 型 target** 缺失的作用域数据补齐（幂等、可自校验）。
 
@@ -255,19 +285,32 @@ def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
     旧表（``channel_member`` / ``channel_read`` / ``channel_budget``）**存在才搬、不存在就跳过**：
     全新的 v4 库没有它们，也不需要有（本入口对一个健康的库就是个空操作，不报错）。
 
+    空目录 / 压根没有库文件时也是**空操作**（改动 0 行、退出码 0），不报错、也**不"顺手"建一个
+    空库出来**：用户跑修复入口是想修已有数据，在一个没数据的目录上凭空生成 ``alibot.db`` 不是他要的。
+
     只写四张 ``target*`` 表；**不碰** ``channel*`` 旧表（它们是来源，保留原样）、不碰 dm / task 型
     target、不改 ``schema_meta``、不改任何表结构。
     """
+    db_path = Path(data_dir) / DATABASE_FILE_NAME
+    if not db_path.exists():
+        # 没有库文件：没什么可修的，也**不去创建**它（连接会凭空生成一个空库）。
+        return _nothing_to_repair(db_path)
+
     database = Database.open_without_initializing(data_dir)  # 闸门 + **不建表**
     try:
         conn = database._conn
         existing = _existing_tables(conn)
         missing = sorted(set(_V4_REQUIRED_TABLES) - existing)
         if missing:
-            raise RepairError(
-                f"这个库不是 v4 形态（缺表：{', '.join(missing)}），本入口只处置「v4 库里 channel 型 "
-                f"target 缺失」这一种情形。"
-            )
+            # 库形态不对：但「压根没有业务数据」（空库 / 刚建还没初始化的库）不是错误——
+            # 没有数据就没什么可补的，报错反而把「空目录上跑一次」变成一个失败。
+            # 只有「**有**业务数据但不是 v4 形态」才是本入口不处置的那种库。
+            if database._has_business_data():
+                raise RepairError(
+                    f"这个库不是 v4 形态（缺表：{', '.join(missing)}），本入口只处置「v4 库里 "
+                    f"channel 型 target 缺失」这一种情形。"
+                )
+            return _nothing_to_repair(db_path)
 
         before = _counts(conn, existing)
         inserted: dict[str, int] = {}
@@ -323,9 +366,12 @@ def render_outcome(outcome: RepairOutcome) -> str:
         before, after = outcome.before[table], outcome.after[table]
         marker = f"  (+{after - before})" if after > before else ""
         lines.append(f"  {table:16s} {before:5d} → {after:<5d}{marker}")
-    lines.append("")
-    lines.append("自校验通过：")
-    lines.extend(f"  ✓ {label}" for label in outcome.verified)
+    # 自校验只在真的跑过补齐（或库本来就是 v4 形态）时才有意义。空目录 / 没有数据的库上它为空，
+    # 那就不要打一个空标题出来。
+    if outcome.verified:
+        lines.append("")
+        lines.append("自校验通过：")
+        lines.extend(f"  ✓ {label}" for label in outcome.verified)
     lines.append("")
     lines.append("提示：旧表（channel_member / channel_read / channel_budget）已不再被读写，")
     lines.append("      本入口**保留**它们的原样以便随时回退；确认无误后可自行决定是否清理。")

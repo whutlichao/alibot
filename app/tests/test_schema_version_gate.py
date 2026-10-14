@@ -98,6 +98,12 @@ def _build_v3_database(data_dir: Path, version: str | None = "3") -> Path:
     return db_path
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 # 取行数的语句：**一句一个模块级常量**（与 ``db.py`` / ``repair.py`` 同一体例：不把表名插进
 # ``execute`` 的实参）。快照要覆盖新旧两代的作用域表，清单固定。
 _ROW_COUNT_SQL: dict[str, str] = {
@@ -218,6 +224,43 @@ def test_refused_database_is_still_refused_on_the_second_attempt(tmp_path: Path)
             Database(data_dir)
 
     assert _snapshot(db_path) == before
+
+
+@pytest.mark.parametrize("journal_mode", ["delete", "truncate", "persist"])
+@pytest.mark.parametrize("stored_version", ["3", "5"])
+def test_refusal_leaves_the_file_byte_identical_even_when_it_is_not_already_wal(
+    tmp_path: Path, journal_mode: str, stored_version: str
+) -> None:
+    """**逐字节未改**——且必须用一个**非 WAL** 的旧库来取证。
+
+    这条用例的价值在于它瞪的是一个真实缺陷：初版把 ``PRAGMA journal_mode = WAL`` 放在版本闸门
+    **之前**。那条 PRAGMA 不是连接级开关，它要把库文件头的 journal mode 从 ``delete`` 改成
+    ``wal``——对一个非 WAL 旧库执行它，文件 sha256 **会变**，于是「旧库一个字节不改」在这条路径
+    上并不成立。
+
+    为什么之前没发现：取证用的 v3 fixture 本身已是 WAL 形态，那条 PRAGMA 于是成了 no-op。
+    这条用例用 ``journal_mode IN ('delete','truncate','persist')`` 构造非 WAL 库，
+    所以它能在修复前变红（sha256 不等），而不是只靠逻辑快照。
+
+    同时断言**没有多出同伴文件**（``-wal`` / ``-shm``）：它们同样是「库被动过」的痕迹。
+    """
+    data_dir = tmp_path / "data"
+    db_path = _build_v3_database(data_dir, version=stored_version)
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute(f"PRAGMA journal_mode = {journal_mode}").fetchone()[0] == journal_mode
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal_mode
+    finally:
+        conn.close()
+    files_before = sorted(path.name for path in data_dir.iterdir())
+    digest_before = _sha256(db_path)
+    assert _snapshot(db_path)["stored_version"] == stored_version
+
+    with pytest.raises(SchemaVersionMismatch):
+        Database(data_dir)
+
+    assert _sha256(db_path) == digest_before, "拒绝路径不得改动库文件一个字节（连文件头也不行）"
+    assert sorted(path.name for path in data_dir.iterdir()) == files_before, "不得多出 -wal/-shm"
 
 
 # ─── 正常路径不回归 ─────────────────────────────────────────────────────────
