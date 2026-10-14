@@ -348,7 +348,7 @@ def create_app(
                 yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
             # 3) 当前状态点快照：四态只表达后端事实，重连后立刻回到真相。
             for member_id, status in orchestrator.member_statuses(
-                [member["id"] for member in database.list_channel_agent_members(channel_id)]
+                [member["id"] for member in database.list_target_agent_members(channel_id)]
             ).items():
                 yield sse_frame(
                     {"type": "member_status", "seq": after_seq, "member_id": member_id, "status": status}

@@ -74,7 +74,10 @@ class WorkspaceService:
             "channels": channels,
             "members": self._db.list_members(),
             "agents": self.agents(),
-            "unread_total": sum(channel["unread_count"] for channel in channels),
+            # `unread_total` = **channel 型 + dm 型**之和（决策 G5），由**未读那一条 SQL 形状**直接算，
+            # 不再由频道列表相加——否则 dm 型 target 的未读永远进不来（它不在 `channels` 里）。
+            # 现有数据只有 channel 型，因此读数与改名前的 `sum(channels[].unread_count)` 逐字相等。
+            "unread_total": self._db.unread_total(self._member_id),
             "last_seq": max((channel["last_seq"] for channel in channels), default=0),
             "model_providers": list(PROVIDERS),
             "local_providers": list(LOCAL_PROVIDERS),
@@ -94,10 +97,13 @@ class WorkspaceService:
         )
 
     def channel_messages(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
         return self._db.list_messages(channel_id, after_seq=after_seq)
 
     def channel_members(self, channel_id: str) -> list[dict[str, Any]]:
-        return self._db.list_channel_members(channel_id)
+        """该频道的成员表——即它的 channel 型 target 的成员行（同一个 `target_id` 键）。"""
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        return self._db.list_target_members(channel_id)
 
     def add_channel_member(self, channel_id: str, member_id: str) -> dict[str, Any]:
         """把一个 **Agent 成员**加入频道（人类面动作）；返回是否**新增**与该频道最新成员表。
@@ -109,7 +115,7 @@ class WorkspaceService:
         - 频道不存在 → 404（``get_channel`` 早退）。
         - 成员不存在或已删除 / 不是 Agent → ``validation_failed``，**整体不落库**（校验先于写入）。
           错误文案与 ``create_channel`` 的初始成员校验同口径：owner 由建频道自动加入，不经此端点。
-        - 只写 ``channel_member`` + 补 ``channel_read``：两者都由 ``db.add_channel_member`` 完成，
+        - 只写 ``target_member`` + 补 ``target_read``：两者都由 ``db.add_target_member`` 完成，
           这里不新增 SQL 路径、也不改它的语义。
         - **不写 system 事件消息**：显式加入是人的显式动作，与「穿透加入需要在流里留下一条
           agent 自己不会解释的变化」动机不同（裁定 1）。
@@ -131,23 +137,27 @@ class WorkspaceService:
         if fields:
             raise DomainError("validation_failed", "加入频道校验未通过，未加入任何成员", fields=fields)
 
-        joined = self._db.add_channel_member(channel_id, member_id)
+        joined = self._db.add_target_member(channel_id, member_id)
         return {
             "joined": joined,
             "member": self._db.get_member(member_id),
-            "members": self._db.list_channel_members(channel_id),
+            "members": self._db.list_target_members(channel_id),
             "channel": self._db.get_channel(channel_id, self._member_id),
         }
 
     def round_outcomes(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         """该频道的轮次结果（只读；首版没有可观测页面）。"""
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
         return self._db.list_round_outcomes(channel_id, after_seq=after_seq)
 
     def channel_budget(self, channel_id: str) -> dict[str, Any]:
         """该频道当前人类世代的有界响应预算（只读、落库的后端事实）。
 
-        ``used``/``remaining`` 读的是 ``channel_budget`` 正本，因此后端重启后与压制行为一致。
+        ``used``/``remaining`` 读的是 ``target_budget`` 正本，因此后端重启后与压制行为一致。
+        预算是 **每 target 一份**（ADR-0004）：channel 型 target 与频道同 id，因此这个只读端点的
+        路径与字段名一律不变。
         """
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
         return self._db.budget_state(channel_id)
 
     # ─── 成员面：Agent 创建与配置 ─────────────────────────────────────────
@@ -242,8 +252,10 @@ class WorkspaceService:
         """
         members = self._db.list_members()
         snapshot = parse_mentions(body, members)
+        # 频道面入口：先按**频道**早退（`/api/channels/{id}/...` 的 404 语义与改名前一模一样）。
+        self._db.get_channel(channel_id)
         message = self._db.append_message(
-            channel_id=channel_id,
+            target_id=channel_id,
             body=body,
             author_member_id=self._member_id,
             kind="human",
@@ -274,5 +286,10 @@ class WorkspaceService:
 
     # ─── 已读位置（未读的正本） ───────────────────────────────────────────
     def mark_read(self, channel_id: str, seq: int) -> dict[str, Any]:
-        """把该频道已读位置单调推进到 ``seq``（同一频道内取 max，跨频道互不影响）。"""
+        """把该频道已读位置单调推进到 ``seq``（同一 target 内取 max，跨 target 互不影响）。
+
+        已读位置的正本已泛化为 ``target_read``；这个方法是 **channel 面**的入口，因此仍旧只接受
+        频道（非 channel 型 target 不在此命名空间里）。
+        """
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
         return self._db.mark_read(channel_id, seq, member_id=self._member_id)
