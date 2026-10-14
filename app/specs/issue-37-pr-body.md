@@ -49,6 +49,20 @@ app/tests/
 
 ## Evidence
 
+**双轴 review 发现一处真缺陷（已修）**：`PRAGMA journal_mode = WAL` 原本与两条连接级 PRAGMA
+一起放在版本闸门**之前**。它不是连接级开关——它要改写库文件头的 journal mode，于是对一个
+**非 WAL** 旧库，「拒绝启动」这条路依然改动了文件：
+
+```text
+修复前  打开前 d75adcdf…  打开后 250bc5ae…   ← 文件被改（违反「旧库一个字节不改」）
+修复后  打开前 d75adcdf…  打开后 d75adcdf…   ← 逐字节一致，且无 -wal/-shm
+```
+
+初版没发现，是因为 v3 fixture 本身已是 WAL 形态（该 PRAGMA 成 no-op），而「逐字节」当时只有
+逻辑快照断言（文件头不在它的视野里）。已拆出 `_apply_write_pragmas()` 在闸门**之后**调用，
+并补 6 条参数化用例（`journal_mode ∈ {delete,truncate,persist}` × 版本 `{3,5}`）断言 sha256
+与文件清单逐字不变——**这 6 条在 base 上是红的**。
+
 **Before（base `6d4e6f8` 代码打开 v3 库）** —— 静默半改名：
 
 ```text
@@ -101,17 +115,24 @@ $ python -m alibot --repair-targets --data-dir <副本>
 
 ```text
 $ .venv/bin/ruff check app && .venv/bin/ruff format --check app
-All checks passed!              65 files already formatted
+All checks passed!              66 files already formatted
 $ .venv/bin/python -m mypy
 Success: no issues found in 31 source files
 $ node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests
 0 errors, 0 warnings, 0 informations
 
 $ .venv/bin/python -m pytest
-220 passed, 1 skipped in 101.02s
+228 passed, 1 skipped in 100.21s
         # 基线 6d4e6f8 实测：196 passed, 1 skipped（票面写 194，实测有出入，见验收件 §3.4.2）
-        # 新增 24 条；**既有用例零改动**（git diff --stat 对 app/tests/ 只列出两个新文件）
+        # 新增 32 条；**既有用例零改动**（git diff --stat 对 app/tests/ 只列出两个新文件）
 ```
+
+红侧读数（同一个文件在 base 上）：`13 failed, 4 passed`——全部 13 条拒绝断言在修复前都是红的。
+
+**双轴 code-review**（Standards + Spec，两个并行子代理）共 11 条 findings：Standards 轴 1 条 P1
+（SQL 拼接体例自相矛盾，已统一为「常量字典 + 下标取常量」）+ 5 条 P2；Spec 轴 1 条 P1（自校验只验
+单向，已补反向 1:1 检查）+ 4 条 P2（含上述真缺陷、空目录副作用、README 超量），**全部已修或记遗留**。
+逐条处置见验收件 §5。
 
 「默认不执行」有**结构证据**，不只是「碰巧没调用」：
 
@@ -132,6 +153,8 @@ v4 库与空目录的启动行为回到基线（旧库重新变成「静默半�
 - **启动期新增一个失败模式**：任何 `schema_version != 4` 的库从此**起不来**。这是本 PR 的目的，
   但它是**行为收紧**——若某处部署有版本号异常的库（例如手工改过 `schema_meta`），升级后会启动失败
   而非带病运行。报错文本已含库路径与两个版本号，可据此定位。
+- **拒绝路径不碰旧库**：连文件头也不动（`journal_mode` 的 WAL 切换已移到闸门之后，见 Evidence）。
+  实测 sha256 逐字节一致，且不多出 `-wal` / `-shm`。
 - **`Database` 的构造现在会抛新异常**：`SchemaVersionMismatch` **不是** `DomainError`（后者映射成
   HTTP 400/404）。任何直接构造 `Database` / `create_app` 的调用方需能接住它。本仓内部只有
   `create_app` 一处调用，已在 `__main__` 收口。
