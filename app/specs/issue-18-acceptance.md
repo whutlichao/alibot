@@ -10,7 +10,7 @@
 
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-18-outcome-visible`（Orca 独立顶层 worktree）
-- 分支与 PR：`issue-18-outcome-visible` → **[PR #20](https://github.com/whutlichao/alibot/pull/20)**（OPEN）
+- 分支与 PR：`issue-18-outcome-visible` → **[PR #19](https://github.com/whutlichao/alibot/pull/19)**（OPEN）
 - PR body 正本：`app/specs/issue-18-pr-body.md`（`gh pr create --body-file`）
 - 基线：`8bb4f9a`（main HEAD，本票 base）
 - 采集时间：与实际产出同年同月（见 commit 时间戳）；环境：macOS，Python 3.11，Chromium（ego-browser）
@@ -419,12 +419,16 @@ $ git push -u origin issue-18-outcome-visible
 
 $ gh pr create --title "feat(app): #18 轮次结果五态可见化——消息流里每消息至多一行折叠摘要" \
                --body-file app/specs/issue-18-pr-body.md --base main
-https://github.com/whutlichao/alibot/pull/20
+https://github.com/whutlichao/alibot/pull/19
 
-$ gh pr view 20 --json number,state,headRefName,baseRefName
-{ "number": 20, "state": "OPEN", "headRefName": "issue-18-outcome-visible", "baseRefName": "main" }
+$ gh pr view 19 --json number,state,headRefName,baseRefName,title
+{ "number": 19, "state": "OPEN", "headRefName": "issue-18-outcome-visible", "baseRefName": "main",
+  "title": "feat(app): #18 轮次结果五态可见化——消息流里每消息至多一行折叠摘要" }
 ```
 
-- 提交：`feat(app): #18 轮次结果五态可见化——消息流里每消息至多一行折叠摘要`（实现 + 测试），
-  随后一次 `docs(app): #18 验收取证与 PR body` 只加本文件与 PR body。
+- 提交（4 个，均在本分支）：
+  `660d52c` feat(app)：五态可见化的实现与 5 条新用例；
+  `6fb3c97` docs(app)：验收取证与 PR body；
+  `372092e` refactor(app)：Standards 轴 findings 处置（去死词条、三表并一、统一「原因」与取证 id）；
+  `c55497d` fix(app)：折叠态 `aria-controls` 悬空（明细恒常渲染 + `hidden`）与证据重采。
 - 合并由 coordinator 执行（G-merge）；本票不自行合并。
