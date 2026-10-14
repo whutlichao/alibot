@@ -147,10 +147,12 @@ def test_schema_version_is_bumped_and_no_migration_script(client: TestClient, da
         assert int(row["value"]) == SCHEMA_VERSION
         # bump 过：首版是 3，本票是 4（改名 + 影子行 + 引用约束一起进入同一个版本号）。
         assert SCHEMA_VERSION > 3
-    # 没有迁移脚本：仓库里不存在任何 migrations/ 目录或 *_migrate*.py。
-    repo_root = Path(__file__).resolve().parents[2]
-    assert not (repo_root / "migrations").exists()
-    assert not list(repo_root.rglob("migrate*.py"))
+    # 没有迁移脚本：本票的源码树里不存在任何 migrations/ 目录或 *_migrate*.py。
+    # 只扫 `app/`（本票的源码面）：若从仓库根 rglob，会走进 `.venv/`，于是结论取决于第三方包里
+    # 恰好有没有同名文件，而不是本票做了什么。
+    app_root = Path(__file__).resolve().parents[1]
+    assert not (app_root / "migrations").exists()
+    assert not list(app_root.rglob("migrate*.py"))
 
 
 # ─── 三种 kind 各自独立计数 seq ─────────────────────────────────────────────
@@ -236,47 +238,64 @@ def test_budget_is_per_target_so_burning_one_does_not_lock_another(client: TestC
 
 
 # ─── 未读口径：unread_total = channel + dm，task 不进 ────────────────────────
-def test_unread_total_is_channel_plus_dm_and_task_stays_out(client: TestClient, data_dir: Path) -> None:
+def test_unread_total_is_channel_plus_dm_and_task_stays_out(client: TestClient, harness: dict) -> None:
     """``unread_total`` = channel 型 + dm 型之和；**task 型不进它**（决策 G5）。
 
-    构造（最小数据，见模块文档）：频道未读用一条真实的 Agent 回复产生（走 HTTP 往返）；
-    dm / task 型 target 各由一行 ``target`` + 一条**由 Agent 作者**的 ``human`` 消息产生——
-    未读口径要求「作者非本人」，所以由 Agent 作者的消息才算 owner 的未读。
-    随后用 ``mark_read`` 推进 dm 的已读位置，证明投入 ``unread_total`` 的那部分确实随已读位置变化。
+    构造（最小数据，见模块文档）：
+
+    - **channel 的未读**由一条真实 Agent 回复产生（发人类消息 → ``drain`` → 回复落库）；
+    - **dm / task 型**各由一行 ``target`` + 一条**由 Agent 作者**的 ``human`` 消息产生——未读口径要求
+      「作者非本人」，所以由 Agent 作者的消息才算 owner 的未读；
+    - 随后用 ``mark_read`` 推进 dm 的已读位置，证明投入 ``unread_total`` 的那部分确实随已读位置变化。
+
+    **channel 与 dm 两侧都非零**：否则「之和」与「只算 dm」得到同一个数，断言就区分不出两种口径。
     """
     agent = create_agent(client, name="小明").json()["agent"]
-    create_channel(client, name="频道", member_ids=[agent["id"]])
-    harness_agent = agent["id"]
+    channel = channel_with_agent(client, agent["id"], name="频道")
+    harness["seam"].replies[agent["id"]] = "收到"
 
-    with _store(data_dir) as db:
+    with _store(harness["data_dir"]) as db:
         # dm：两条由 Agent 作者、owner 未读的消息。
         db.create_target("dm", target_id="tgt_dm_unread")
         db.append_message(
-            target_id="tgt_dm_unread", body="私信一", author_member_id=harness_agent, kind="human"
+            target_id="tgt_dm_unread", body="私信一", author_member_id=agent["id"], kind="human"
         )
         db.append_message(
-            target_id="tgt_dm_unread", body="私信二", author_member_id=harness_agent, kind="human"
+            target_id="tgt_dm_unread", body="私信二", author_member_id=agent["id"], kind="human"
         )
         # task：一条同类消息 —— 它必须**只**计入 task 自己，不进 unread_total。
         db.create_target("task", target_id="tgt_task_unread")
         db.append_message(
-            target_id="tgt_task_unread", body="任务线程", author_member_id=harness_agent, kind="human"
+            target_id="tgt_task_unread", body="任务线程", author_member_id=agent["id"], kind="human"
         )
         db.mark_read("tgt_dm_unread", 0, member_id=SPEC_OWNER_ID)
 
         # 数据面：汇总口径 = channel 型 + dm 型，task 型被排除。
+        # 此刻 channel 还没有未读（没发过消息），先只断言 dm 那两条计入、task 那条不进。
         assert db.unread_total(SPEC_OWNER_ID) == 2, "dm 的两条计入，task 的一条不进 unread_total"
-        # 同一个形状（`_unread_count` 与频道列表共用）下，task 自己的读数仍是 1 ——
+        # 同一个形状（``unread_count`` 与频道列表共用）下，task 自己的读数仍是 1 ——
         # 它没有被丢掉，只是不进汇总（看板卡片各自读它）。
-        assert db._unread_count("tgt_task_unread", SPEC_OWNER_ID) == 1
+        assert db.unread_count("tgt_task_unread", SPEC_OWNER_ID) == 1
 
-        # 推进 dm 已读位置后，投入 unread_total 的那部分归零，task 那部分不受影响。
+    # 让 **channel 侧也产生未读**：发一条人类消息，Agent 回复后 channel unread = 1。
+    send(client, channel["id"], "你好")
+    drain(harness)
+
+    with _store(harness["data_dir"]) as db:
+        channel_unread = db.unread_count(channel["id"], SPEC_OWNER_ID)
+        assert channel_unread >= 1, "channel 侧必须有真实未读，否则「之和」与「只算 dm」无法区分"
+        # 两侧都非零：unread_total == channel + dm（而不是只算其中一个）。
+        assert db.unread_total(SPEC_OWNER_ID) == channel_unread + 2
+        # task 的读数仍在，且**不出现在** unread_total 里（已由上一行固定）。
+        assert db.unread_count("tgt_task_unread", SPEC_OWNER_ID) == 1
+
+        # 推进 dm 已读位置后，投入 unread_total 的那部分减 2，task 那部分不受影响。
         db.mark_read("tgt_dm_unread", 2, member_id=SPEC_OWNER_ID)
-        assert db.unread_total(SPEC_OWNER_ID) == 0
-        assert db._unread_count("tgt_task_unread", SPEC_OWNER_ID) == 1
+        assert db.unread_total(SPEC_OWNER_ID) == channel_unread
+        assert db.unread_count("tgt_task_unread", SPEC_OWNER_ID) == 1
 
     # HTTP 面：workspace 快照与库里的汇总口径一致（同一落点，不是第二套算法）。
-    assert client.get("/api/workspace").json()["unread_total"] == 0
+    assert client.get("/api/workspace").json()["unread_total"] == channel_unread
 
 
 def test_unread_total_from_http_matches_channel_unread_when_only_channels_exist(
@@ -363,3 +382,109 @@ def test_round_outcomes_still_read_the_same_shape_after_the_rename(client: TestC
         "merged",
         "reply_seq",
     }
+
+
+# ─── 唤醒面与成员面**不按 kind 分支**（ADR-0004 决策 8）────────────────────────
+def test_membership_and_wake_face_queries_do_not_branch_on_target_kind(
+    client: TestClient, data_dir: Path
+) -> None:
+    """同一个 `target_id` 键服务三种 kind：成员面与唤醒面查询不分 kind。
+
+    票面验收项 4 要的是「成员关系读写在**同一个 `target_id` 键**上进行，**唤醒面与未读口径的查询
+    不按 kind 分支**」。channel 面能走 HTTP；dm / task 型没有 HTTP 入口，因此在这里用**同一个读写点**
+    （``add_target_member`` / ``list_target_agent_members`` / ``is_target_member``）在三种 kind 上各跑
+    一遍，证明它们**共用一条路径**（没有 `if kind == 'channel'`）。
+
+    构造（最小数据，见模块文档）：dm / task 型各写一行 ``target``，然后用**频道那条写点**给它们加
+    成员——不需要任何新 API，也不需要 dm/task 的业务逻辑（那属 #25–#28）。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    channel = create_channel(client, name="频道", member_ids=[agent["id"]]).json()["channel"]
+
+    with _store(data_dir) as db:
+        db.create_target("dm", target_id="tgt_dm_members")
+        db.create_target("task", target_id="tgt_task_members")
+        # 三种 kind 用**同一个**加成员写点（不新增 dm/task 专用路径）。
+        assert db.add_target_member("tgt_dm_members", agent["id"]) is True
+        assert db.add_target_member("tgt_task_members", agent["id"]) is True
+
+        for target_id, label in (
+            (channel["id"], "channel"),
+            ("tgt_dm_members", "dm"),
+            ("tgt_task_members", "task"),
+        ):
+            # 同一条成员面查询、同一个键：返回该 target 的 Agent 成员。
+            agents_here = {member["id"] for member in db.list_target_agent_members(target_id)}
+            assert agent["id"] in agents_here, f"{label} 型的唤醒面必须能从同一个键读到成员"
+            assert db.is_target_member(target_id, agent["id"]) is True
+            # 成员表就是 `target_member` 一行的正本（三种 kind 同表）。
+            rows = db._conn.execute(
+                "SELECT COUNT(*) FROM target_member WHERE target_id = ?", (target_id,)
+            ).fetchone()
+            assert rows[0] >= 1
+
+    # 频道面仍读得到同一条成员行（同一个键的对外读法）。
+    listed = client.get(f"/api/channels/{channel['id']}/members").json()["members"]
+    assert agent["id"] in {member["id"] for member in listed}
+
+
+def test_a_dm_type_target_has_its_own_independent_budget(client: TestClient, data_dir: Path) -> None:
+    """**每 target 一份预算**在 dm 型上也成立：channel 烧满不锁死 dm 的世代与用量。
+
+    票面验收项 2 的「跨 target 不锁死」在 channel↔channel 上由 §4.5 取证；这里补**跨 kind** 的那一半
+    ——预算账本（``target_budget``）认的是 `target_id`，与 kind 无关。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    channel = channel_with_agent(client, agent["id"], name="烧满的频道")
+    send(client, channel["id"], "人类发言")  # 开一个人类世代
+
+    with _store(data_dir) as db:
+        # 把频道那一行的用量顶到上限（模拟「已烧满」）。
+        db.consume_budget(channel["id"], db.human_epoch_seq(channel["id"]), amount=BUDGET_LIMIT)
+        assert db.budget_state(channel["id"])["remaining"] == 0
+        assert db.budget_state(channel["id"])["used"] == BUDGET_LIMIT
+
+        # dm 型 target 有**自己**的一份：它没有人类世代（epoch_seq=0）、用量 0、余额满额。
+        db.create_target("dm", target_id="tgt_dm_budget")
+        dm_state = db.budget_state("tgt_dm_budget")
+        assert dm_state["used"] == 0
+        assert dm_state["remaining"] == BUDGET_LIMIT
+        assert dm_state["limit"] == BUDGET_LIMIT
+
+        # 在 dm 上消耗一次跳：只动 dm 那一行，频道那行纹丝不动。
+        db.consume_budget("tgt_dm_budget", 0, amount=1)
+        assert db.budget_state("tgt_dm_budget")["used"] == 1
+        assert db.budget_state(channel["id"])["used"] == BUDGET_LIMIT
+
+        # 账本里两行各自独立（每 target 一份）。
+        rows = db._conn.execute("SELECT target_id, used FROM target_budget ORDER BY target_id").fetchall()
+        by_target = {row["target_id"]: row["used"] for row in rows}
+        assert by_target[channel["id"]] == BUDGET_LIMIT
+        assert by_target["tgt_dm_budget"] == 1
+
+
+# ─── 未读「只有一个 SQL 形状」是**结构事实**，不是口号（决策 7）───────────────
+def test_unread_where_shape_is_shared_by_every_unread_consumer() -> None:
+    """三个未读消费点（频道列表 / 工作台汇总 / 单 target 计数）嵌的是**同一段 WHERE 文本**。
+
+    票面验收项 5 要「未读计数**只有一个 SQL 形状**」。设计上它由 ``UNREAD_WHERE_SQL`` 这一个模块常量
+    承载；这条用例把它从「声称」变成**可核验**：三个消费 SQL 里都必须出现**逐字相同**的那一段，
+    否则改一处就会出现第二种形状（正是 ADR-0004 决策 7 要禁止的漂移）。
+    """
+
+    from alibot.db import CHANNEL_SELECT_SQL, UNREAD_COUNT_SQL, UNREAD_TOTAL_SQL, UNREAD_WHERE_SQL
+
+    for name, sql in (
+        ("频道列表", CHANNEL_SELECT_SQL),
+        ("工作台汇总", UNREAD_TOTAL_SQL),
+        ("单 target 计数", UNREAD_COUNT_SQL),
+    ):
+        assert UNREAD_WHERE_SQL in sql, f"{name} 必须嵌同一段未读 WHERE 形状（只有一个落点）"
+        # 该形状把三件事一次说清：已读位置之后、human/agent、作者非本人。
+        assert "m.kind IN ('human', 'agent')" in sql
+        assert "m.author_member_id != :member_id" in sql
+        assert "last_read_seq" in sql
+
+    # 汇总口径的取值域由 `UNREAD_TOTAL_KINDS` 拼出（G5 的 channel+dm 只有一个落点）。
+    assert "'channel', 'dm'" in UNREAD_TOTAL_SQL
+    assert "task" not in UNREAD_TOTAL_SQL.split("WHERE t.kind IN")[1]

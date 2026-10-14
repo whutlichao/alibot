@@ -58,10 +58,10 @@ UNREAD_TOTAL_KINDS = ("channel", "dm")
 # 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
 ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
 
-# 有界响应预算（策略 B，spec #1 §5）：一个人类世代内同一频道允许的 agent→agent 跳数上界。
+# 有界响应预算（策略 B，spec #1 §5）：一个**人类世代内同一 target** 允许的 agent→agent 跳数上界。
+# 它是**常量**：本票不做配置化（那是 #31 的范围），只把「每频道一份」泛化为「每 target 一份」。
 BUDGET_LIMIT = 3
 
-# 响应预算上限：**常量**，上限恒为 3（ADR-0002 的策略 B）。本票不做配置化（那是 #31 的范围）。
 MAX_CHANNEL_NAME_LENGTH = 80
 MAX_CHANNEL_DESCRIPTION_LENGTH = 500
 MAX_MESSAGE_BODY_LENGTH = 8000
@@ -261,11 +261,14 @@ CHANNEL_SELECT_SQL = (
 # 工作台快照的 ``unread_total`` = **channel 型 + dm 型**之和（决策 G5）：**task 型不进它**。
 # 它用的是上面**同一条 WHERE 形状**（同一个 ``UNREAD_WHERE_SQL``），只是在 target 上按 kind 过滤后
 # 汇总 ——「只有一个 SQL 形状」因此是结构上的事实，而不是两句彼此长得像的 SQL。
+# 取值域由上面的 ``UNREAD_TOTAL_KINDS`` **拼出来**（不是另写一份字面量）：G5 的「channel + dm」
+# 因此只有一个落点，改一处不会与另一处漂移。
+_UNREAD_TOTAL_KIND_LIST = ", ".join(f"'{kind}'" for kind in UNREAD_TOTAL_KINDS)
 UNREAD_TOTAL_SQL = (
     "SELECT COALESCE(SUM((SELECT COUNT(*) FROM message m\n"
     "                      WHERE m.target_id = t.id\n" + UNREAD_WHERE_SQL + "                    )), 0)\n"
     "  FROM target t\n"
-    " WHERE t.kind IN ('channel', 'dm')\n"
+    " WHERE t.kind IN (" + _UNREAD_TOTAL_KIND_LIST + ")\n"
 )
 
 # 单个 target 的未读条数：**同样的 WHERE 形状**（别名同为 m），区别只在于作用域键直接由参数给出。
@@ -393,8 +396,7 @@ class Database:
         """全部 Agent 成员（含其配置），按创建顺序。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT " + AGENT_COLUMNS + " "
-                "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
+                AGENT_SELECT_SQL + "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE m.kind = 'agent' AND m.deleted_at IS NULL "
                 "ORDER BY m.created_at, m.id",
             ).fetchall()
@@ -403,8 +405,7 @@ class Database:
     def get_agent(self, member_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT " + AGENT_COLUMNS + " "
-                "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
+                AGENT_SELECT_SQL + "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE m.id = ? AND m.kind = 'agent'",
                 (member_id,),
             ).fetchone()
@@ -624,9 +625,10 @@ class Database:
     def create_target(self, kind: str, target_id: str | None = None) -> dict[str, Any]:
         """落一个新的 **dm / task 型** target 行。
 
-        本票只用它构造**数据面取证**所需的最小数据（票面验收项 2 明确授权「用你构造的最小数据...
-        证明该口径成立，并说明你怎么构造的」）。它只插一行 target，**不做**任何 dm / task 的业务
-        校验——幂等（一 agent 一 DM）、两行成员、peer 唯一、看板与唤醒规则都留给 #25–#28。
+        **本票没有生产调用点**（它只插一行 target，不做任何 dm / task 业务校验）：本票只用它构造
+        **数据面取证**所需的最小数据（票面验收项 2 明确授权「用你构造的最小数据……证明该口径成立，
+        并说明你怎么构造的」）。幂等（一 agent 一 DM）、两行成员、peer 唯一、任务归属与看板、
+        看板与唤醒规则都留给 #25–#28——在那之前，这个方法只服务 `app/tests/test_target_scope.py`。
 
         **channel 型不经此处**：它复用 ``channel.id``、由 :meth:`create_channel` 落影子行，
         这里显式拒绝，以免出现'有 target 行却没有对应频道行'的破坏不变量的中间态。
@@ -652,7 +654,7 @@ class Database:
     def unread_total(self, member_id: str = OWNER_ID) -> int:
         """工作台快照的总未读 = **channel 型 + dm 型**之和（决策 G5）；**task 型不进它**。
 
-        它用的是与频道列表**同一条未读 WHERE 形状**（``UNREAD_TOTAL_SQL`` 内的 ``_unread_where``），
+        它用的是与频道列表**同一条未读 WHERE 形状**（``UNREAD_WHERE_SQL`` 这个单一文本落点），
         因此「未读计数只有一个 SQL 形状」是结构上的事实：汇总只多一层 ``kind IN ('channel','dm')``
         过滤，不是第二套计数口径。
         """
@@ -1027,16 +1029,19 @@ class Database:
             ).fetchone()
         return int(row["last_read_seq"]) if row is not None else 0
 
-    def mark_read(self, target_id: str, seq: int, member_id: str = OWNER_ID) -> dict[str, Any]:
-        """把未读位置单调推进到 ``min(seq, 该 target 当前最大 seq)``。
+    def mark_read(self, target_id: str, seq: int, member_id: str = OWNER_ID) -> None:
+        """把未读位置单调推进到 ``min(seq, 该 target 当前最大 seq)``（无返回）。
 
         上界裁剪保证「把未来消息提前标为已读」不可能发生；已读位置永不回退。
-        推进的是 **target** 的已读位置（ADR-0004）：channel 型 target 与频道同 id，因此
-        ``GET/POST /api/channels/{id}/read`` 的外部可观察行为逐字不变。
+        推进的是 **target** 的已读位置（ADR-0004）。
+
+        **返回 None**（早先返回 dict）：channel 面的响应体是**外部契约**（票面 Constraint：响应字段名
+        一律不变），因此它由 channel 面入口 ``WorkspaceService.mark_read`` 用 ``get_channel`` 组出；
+        ``db`` 层不把「channel 型的响应长什么样」写进自己的分支里（于是查询路径上没有 kind 分支）。
         """
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             raise DomainError("validation_failed", "seq 必须是非负整数", fields={"seq": "seq 必须是非负整数"})
-        target = self.get_target(target_id)  # 404 早退（并拿到 kind）
+        self.get_target(target_id)  # 404 早退
         self.get_member(member_id)
         with self._lock:
             self._begin()
@@ -1056,26 +1061,14 @@ class Database:
             except Exception:
                 self._rollback()
                 raise
-        # 返回形状随 kind：channel 型 target 就是频道的读法（其 id 与频道 id 同值），
-        # 因此 `POST /api/channels/{id}/read` 的响应字段逐字不变。
-        if target["kind"] == "channel":
-            return self.get_channel(target_id, member_id)
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) AS last_seq FROM message WHERE target_id = ?",
-                (target_id,),
-            ).fetchone()
-        return {
-            "id": target_id,
-            "kind": target["kind"],
-            "created_at": target["created_at"],
-            "last_seq": int(row["last_seq"]) if row is not None else 0,
-            "last_read_seq": self.agent_cursor(target_id, member_id),
-            "unread_count": self._unread_count(target_id, member_id),
-        }
 
-    def _unread_count(self, target_id: str, member_id: str = OWNER_ID) -> int:
-        """该 target 的未读条数（**与频道列表同一条 WHERE 形状**：``UNREAD_COUNT_SQL``）。"""
+    def unread_count(self, target_id: str, member_id: str = OWNER_ID) -> int:
+        """该 target 的未读条数（**与频道列表同一条 WHERE 形状**：``UNREAD_COUNT_SQL``）。
+
+        形状与 ``CHANNEL_SELECT_SQL`` 里的 ``unread_count`` 子查询、``unread_total`` 汇总
+        完全同源（同一个 ``UNREAD_WHERE_SQL``），**不按 kind 分支**。
+        """
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             row = self._conn.execute(
                 UNREAD_COUNT_SQL, {"member_id": member_id, "target_id": target_id}

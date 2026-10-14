@@ -290,6 +290,11 @@ class WorkspaceService:
 
         已读位置的正本已泛化为 ``target_read``；这个方法是 **channel 面**的入口，因此仍旧只接受
         频道（非 channel 型 target 不在此命名空间里）。
+
+        响应体是**外部契约**（票面 Constraint：响应字段名一律不变），所以由这里用 ``get_channel``
+        组出——``db.mark_read`` 只推进位置、返回 None，不把「channel 型的响应长什么样」写进 db 层的
+        分支里。
         """
         self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
-        return self._db.mark_read(channel_id, seq, member_id=self._member_id)
+        self._db.mark_read(channel_id, seq, member_id=self._member_id)
+        return self._db.get_channel(channel_id, self._member_id)
