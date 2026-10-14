@@ -206,3 +206,32 @@ agent 改指派人**算一次 agent→agent 跳**（决策 2 的推论，规格�
 1. 每票的 blocked-by 用 **GitHub 原生 dependency** 表达（`POST /issues/{n}/dependencies/blocked_by`），
    不是正文里一行 `Blocked by:`——读数见表与上段。
 2. 每票都有 **blocked-by 声明 + 可独立验收的依据**两段；② 与 ③ 的验收依据具体到"能断言 / 能读出什么数字"。
+
+---
+
+## 3. PR 与回填
+
+| 项 | 值 |
+| --- | --- |
+| 规格正本 issue | [#23](https://github.com/whutlichao/alibot/issues/23)（#22 的 sub-issue，标 `ready-for-agent`） |
+| 实施票 | [#24](https://github.com/whutlichao/alibot/issues/24) / [#25](https://github.com/whutlichao/alibot/issues/25) / [#26](https://github.com/whutlichao/alibot/issues/26) / [#27](https://github.com/whutlichao/alibot/issues/27) / [#28](https://github.com/whutlichao/alibot/issues/28) |
+| 本票 PR | [#29](https://github.com/whutlichao/alibot/pull/29)（`--body-file app/specs/issue-22-pr-body.md`） |
+| 分支 | `issue-22-spec-v2` |
+| PR 正文 | `app/specs/issue-22-pr-body.md`（按 `pr` skill 的 Summary / Evidence / Merge Danger 体例） |
+
+## 4. 术语一致性自查（`grep` 读数，发布后复查）
+
+- **`_Avoid_` 词扫描**：对 `CONTEXT.md` 与 `docs/adr/0004…0006` 逐个扫既有 `_Avoid_` 词表（群组 / room /
+  群成员 / 艾特 / 待办 / 工单 / 聊天记录 / 机器人 / 状态灯 / 指示灯 / 配额 / 限流 / 搜索结果页 / 全文检索 /
+  前端高亮 / 正则替换 …），**除 `_Avoid_` 行自身的登记之外零命中**。
+- **规格正文（#23）**：初稿在 Out of Scope 的"不做清单"里写过「群组 DM」，那会让 `频道` 词条的 `_Avoid_`
+  词（群组、room）以自有术语的姿态出现 ⇒ **已改写为「三人及以上的私密 target」**并 push 修正。
+  修订后重扫：除 Out of Scope 的"不做清单"外零命中（那是"明确不做"的清单，不是术语使用）。
+- **自造简称**：检查「通道 / 私聊 / 任务卡 / 讨论区」等，**正文里只用** `target` / `频道` / `私信` / `任务` /
+  `任务线程`（词汇表已收录）；"任务卡片 / 任务卡"仅作为**呈现元素**的普通名词出现，未当术语使用。
+- **与既有词条不冲突**：`频道` / `成员` / `唤醒` / `轮次` / `跳` / `人类世代` 的用法在规格与 ADR 里与
+  `CONTEXT.md` 一致；`target` 的新定义已被 #23 正文与 ADR-0004 引用同一段措辞。
+- **ADR 编号**：`0004` / `0005` / `0006`，与既有 `0001`–`0003` 连续且不重号；格式（段落式 + 取舍 + 代价）
+  与既有三条一致。
+- **与既有 ADR 的冲突处理**：0001 **未推翻**、0002 **泛化**（措辞在 ADR-0004 与规格 §2 写明）、
+  0003 **不受影响**；三处都在 #23 的 Further Notes 显式列出。
