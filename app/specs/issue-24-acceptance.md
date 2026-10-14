@@ -573,7 +573,8 @@ $ gh pr view 34 --json number,state,headRefName,baseRefName,mergeable,url
 ```
 
 - **PR 号**：`#34`（`whutlichao/alibot`）
-- **head**：`issue-24-target-first-class` @ `63af608`
+- **head**：`issue-24-target-first-class`（末次提交 = `a66349d`；**本文件的回填提交本身也会让 head 前进一个
+  commit**，因此以 `git rev-parse origin/issue-24-target-first-class` 为准，不以本节字面号为准）
 - **base**：`main`
 - **mergeable**：`MERGEABLE`（OPEN）
 - PR body 正本：`app/specs/issue-24-pr-body.md`（体例照 `app/specs/issue-18-pr-body.md`：
