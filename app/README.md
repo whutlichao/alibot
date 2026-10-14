@@ -1,4 +1,4 @@
-# worksplice 应用后端 + 浏览器工作台（实施票 ② / ③）
+# alibot 应用后端 + 浏览器工作台（实施票 ② / ③）
 
 在 #① 的频道消息闭环之上，把 **Agent 做成数据库里的成员行 + 模型配置**：新建 Agent（名称 +
 角色 + 模型 + 系统提示）→ 启用远端模型前显式告知并确认数据面 → 在频道里 `@` 它 → 后端进程内的
@@ -17,15 +17,15 @@ uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -e "./app[dev]"
 
 # 2) 启动后端（默认只绑定 loopback，默认端口 8788）
-.venv/bin/python -m worksplice
+.venv/bin/python -m alibot
 #   或显式指定端口与数据目录
-.venv/bin/python -m worksplice --port 8788 --data-dir /tmp/worksplice-smoke
+.venv/bin/python -m alibot --port 8788 --data-dir /tmp/alibot-smoke
 ```
 
 浏览器打开 <http://127.0.0.1:8788/studio/>（根路径 `/` 会 302 到这个地址）。
 
 首版无认证，因此**默认只绑定 loopback**，不提供局域网/远程访问。
-确实需要时设 `WORKSPLICE_ALLOW_REMOTE=1` 显式越界，并自行承担风险。
+确实需要时设 `ALIBOT_ALLOW_REMOTE=1` 显式越界，并自行承担风险。
 
 ### 模型与凭证：只从**进程环境变量**读，库里不存密钥
 
@@ -48,11 +48,11 @@ Agent 的「模型标识」写作 `provider:model`（例如 `dashscope:qwen-max`
 
 ```sh
 # 例：本机 Ollama（零凭证、零费用）
-OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m worksplice
+OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 ```
 
 - **不新增密钥录入界面、不新增密钥落库表**：应用库里没有任何密钥字段（只有「何时确认过数据面」）。
-- 凭证解析收敛在 `worksplice/agent_seam.py` 的 `read_api_key()` 一个窄入口，以后换来源（钥匙串等）
+- 凭证解析收敛在 `alibot/agent_seam.py` 的 `read_api_key()` 一个窄入口，以后换来源（钥匙串等）
   只改这一处。
 
 ### 远端数据流告知（首次远端调用之前）
@@ -69,12 +69,15 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m worksplice
 | 项 | 值 |
 | --- | --- |
 | 默认端口 | `8788`（`--port` 可改） |
-| 默认数据目录 | `~/Worksplice/`（可见、可直接复制） |
-| 覆盖方式 | `--data-dir <路径>` 或环境变量 `WORKSPLICE_DATA_DIR` |
-| 库文件 | `<数据目录>/worksplice.db`（单文件 SQLite，WAL 模式） |
-| 事件流单连接寿命 | `WORKSPLICE_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾、浏览器带 `last_seq` 重连） |
+| 默认数据目录 | `~/Alibot/`（可见、可直接复制） |
+| 覆盖方式 | `--data-dir <路径>` 或环境变量 `ALIBOT_DATA_DIR` |
+| 库文件 | `<数据目录>/alibot.db`（单文件 SQLite，WAL 模式） |
+| 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾、浏览器带 `last_seq` 重连） |
 
-备份：`cp -R ~/Worksplice ~/Worksplice-backup-$(date +%F)`。恢复：反向复制回去。
+改名不保留兼容：只有 `ALIBOT_*` 环境变量生效，旧前缀 `WORKSPLICE_*` 与旧数据目录 `~/Worksplice`
+一律不再被识别，也不做迁移（那是另一个项目的目录）。
+
+备份：`cp -R ~/Alibot ~/Alibot-backup-$(date +%F)`。恢复：反向复制回去。
 库文件旁边可能有 `-wal` / `-shm` 两个伴随文件，一起复制即可。
 
 ## 数据模型（决策级）
@@ -168,7 +171,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 快照，然后进入实时推送。前端**带最新 `last_seq` 重连**，因此重连既不会漏也不会重复。
 每一帧的 SSE `id` 就是频道内 `seq`。
 
-单条连接在 `WORKSPLICE_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
+单条连接在 `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
 `event: rotate` 帧：前端据此**区分「例行轮换」与「后端不可达」**，不会因为轮换而误报掉线，
 随后立刻带最新 `last_seq` 重连。这个轮换同时保证优雅关停不会卡在长连接上。
 
@@ -214,12 +217,12 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 .venv/bin/python -m pytest          # HTTP + SSE 黑盒契约测试（每条用例独立临时数据目录）
 .venv/bin/ruff check app && .venv/bin/ruff format --check app
 .venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
-node ~/.pi-lens/tools/node_modules/pyright/index.js app/worksplice app/tests   # 配置在仓库根 pyrightconfig.json
+node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
 ```
 
 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
 已读位置、未读计数、不可变性、重启后一致），不断言内部函数或前端 DOM。每条用例的库都在
-`tmp_path` 下，**不触碰** `~/Worksplice`。
+`tmp_path` 下，**不触碰** `~/Alibot`。
 
 四类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟。
 测试**不联网、零成本**；「什么时候跑完一轮」由测试自己拨（手动调度器），所以 in-flight 与
@@ -227,15 +230,15 @@ node ~/.pi-lens/tools/node_modules/pyright/index.js app/worksplice app/tests   #
 
 ```sh
 # 本机 Ollama（零凭证、零费用）
-WORKSPLICE_SMOKE_MODEL=ollama:qwen2.5 .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
+ALIBOT_SMOKE_MODEL=ollama:qwen2.5 .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 # 远端 provider（会离开本机、可能产生费用，需要 key 与显式放行）
-WORKSPLICE_SMOKE_MODEL=dashscope:qwen-max WORKSPLICE_SMOKE_ALLOW_REMOTE=1 \
+ALIBOT_SMOKE_MODEL=dashscope:qwen-max ALIBOT_SMOKE_ALLOW_REMOTE=1 \
   DASHSCOPE_API_KEY=... .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 ```
 
 ## 视觉契约
 
-工作台只**只读**参照 `worksplice-design-system/`（原型 `worksplice-app.html` 保持原样，不被修改）：
+工作台只**只读**参照 `alibot-design-system/`（原型 `alibot-app.html` 保持原样，不被修改）：
 token 名、三栏尺寸（rail 252 / 消息流 880 / dock 380）、方形头像块（7px 圆角 + `--av-0…--av-4`）、
 未读徽标色族（`--unread` / `--unread-soft` / `--unread-deep` / `--unread-graphic`）、
 四态状态点、提及高亮（`--accent-soft` 底 + `--accent-deep` 字）与空态文案都按名字消费。

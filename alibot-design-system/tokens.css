@@ -1,0 +1,58 @@
+/* ============================================================================
+   alibot — tokens.css
+   Spacing, radius, elevation and layout constants. Import together with
+   colors_and_type.css. Color + type are canonical there; this file completes
+   the reusable foundation without re-declaring hue values.
+   ========================================================================== */
+
+:root {
+  /* ─── spacing scale · 4px base, 2px half-step ────────────────────────── */
+  --sp-1: 2px;  --sp-2: 4px;  --sp-3: 6px;  --sp-4: 8px;
+  --sp-5: 12px; --sp-6: 14px; --sp-7: 16px; --sp-8: 18px;
+  --sp-9: 20px; --sp-10: 24px; --sp-11: 30px; --sp-12: 56px;
+
+  /* ─── control sizing ─────────────────────────────────────────────────── */
+  --control-h: 32px;
+  --control-h-sm: 27px;
+  --control-h-lg: 38px;
+  --tap-min: 44px;
+  --icon-btn: 30px;
+  --avatar-sm: 22px;
+  --avatar-md: 26px;
+  --avatar-lg: 44px;
+
+  /* ─── radii ──────────────────────────────────────────────────────────── */
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-pill: 99px;
+
+  /* ─── elevation (layered surfaces only) ──────────────────────────────── */
+  /* 阴影的唯一声明处（票 04 去重：colors_and_type.css 曾重复声明同一批值，
+     因 import 顺序本文件生效、那份是死的，已删；不要再复制一份回去）。 */
+  --shadow-composer: 0 1px 2px oklch(33% 0.045 300 / 0.04);
+  --shadow-card: 0 2px 8px -4px oklch(33% 0.045 300 / 0.18);
+  --shadow-pop: 0 10px 30px -12px oklch(33% 0.045 300 / 0.28),
+                0 2px 6px -2px oklch(33% 0.045 300 / 0.12);
+
+  /* ─── layout constants ───────────────────────────────────────────────── */
+  --rail-w: 252px;
+  --dock-w: 380px;
+  --dock-w-md: 340px;
+  --stream-max: 880px;
+  --board-col-w: 236px;
+  --modal-max: 440px;
+  --modal-wide-max: 560px;
+  --cmd-max: 520px;
+
+  /* ─── motion ─────────────────────────────────────────────────────────── */
+  --ease: ease;
+  --dur-fast: 0.1s;
+  --dur: 0.12s;
+  --dur-drawer: 0.2s;
+
+  /* ─── z-index ladder ─────────────────────────────────────────────────── */
+  --z-topbar: 20;
+  --z-scrim: 40;
+  --z-rail: 50;
+  --z-dock: 55;
+  --z-overlay: 60;
+  --z-toast: 80;
+}

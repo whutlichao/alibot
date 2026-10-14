@@ -3,7 +3,7 @@
 约定（issue #2 / #3「边界、安全与测试」）：
 
 - 每条测试使用**独立临时数据目录**（``tmp_path``），绝不触碰用户真实数据目录
-  （``~/Worksplice``，可用 ``WORKSPLICE_DATA_DIR`` 覆盖）。
+  （``~/Alibot``，可用 ``ALIBOT_DATA_DIR`` 覆盖）。
 - 只经 HTTP 面与事件流断言**外部可观察行为**：状态码、JSON 载荷、SSE 帧、
   跨重启 / 跨实例的一致性。测试不 import 实现内部模块、不连数据库、不读表结构。
 - 测试注入**脚本化替身**（``tests/scripted.py``）与**手动调度器**，于是四种行为
@@ -25,7 +25,7 @@ APP_DIR = Path(__file__).resolve().parent.parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from worksplice.api import create_app  # noqa: E402
+from alibot.api import create_app  # noqa: E402
 
 from tests.scripted import ManualScheduler, ScriptedAgentSeam  # noqa: E402
 

@@ -21,7 +21,7 @@ Single-context repo (this repo):
 ├── docs/
 │   ├── agents/             ← this configuration
 │   └── adr/                ← architecture decision records
-└── worksplice-design-system/
+└── alibot-design-system/
 ```
 
 ## Use the glossary's vocabulary

@@ -1,7 +1,7 @@
 """测试替身：脚本化的 AgentSeam 与手动调度器。
 
 为什么替身在**测试侧**而不是生产侧：票面要求「在 AgentScope 之前保留一个薄适配接口，测试注入
-脚本化替身」。替身遵守同一个 :class:`~worksplice.agent_seam.AgentSeam`，于是：
+脚本化替身」。替身遵守同一个 :class:`~alibot.agent_seam.AgentSeam`，于是：
 
 - 四种行为（回应 / 忽略 / 失败 / 延迟）可以固定下来，测试**不联网、零成本**；
 - 协作域的行为测试与「模型是哪一家」完全解耦，换持久化引擎或换模型提供商都不会让测试失败。
@@ -16,7 +16,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from worksplice.agent_seam import RoundMessage, RoundOutcome
+from alibot.agent_seam import RoundMessage, RoundOutcome
 
 REPLY = "reply"
 IGNORE = "ignore"

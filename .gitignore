@@ -13,4 +13,4 @@ __pycache__/
 .DS_Store
 
 # 本机数据目录候选（绝不入库）
-/.worksplice-data/
+/.alibot-data/

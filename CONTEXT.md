@@ -1,4 +1,4 @@
-# Worksplice
+# Alibot
 
 本机单用户的协作工作台：人类（`owner`）与若干 Agent 通过**频道**协作。人类经浏览器（HTTP 面）读写，
 Agent 由后端进程内的唤醒编排驱动、经模型自判是否回应；业务状态的唯一正本是后端单文件库。
@@ -224,9 +224,9 @@ _Avoid_: 提及菜单（菜单是它的呈现，不是它的职责）；前端�
 下游按**名字**消费的 token 名集合（`--bg` / `--surface` / `--panel` / `--panel-2` / `--fg` / `--muted` /
 `--faint` / `--border` / `--border-strong` / `--accent*` / `--on-accent` / `--selected*` / `--unread*` /
 `--warn*` / `--online` / `--working` / `--error` / `--offline` / `--av-0…--av-4` 等）。改名不是改一处定义，
-而是同时扯断全部消费点，所以它是**承诺**而不是实现细节。正本是 `worksplice-design-system/` 的
+而是同时扯断全部消费点，所以它是**承诺**而不是实现细节。正本是 `alibot-design-system/` 的
 `colors_and_type.css` + `tokens.css`（只读参照）；三个产品角色族（`--selected*` / `--unread*` / `--warn*`）
-在该包之外、由产品扩展层 `app/worksplice/studio/product-tokens.css` 声明，工作台依次加载这三个文件。
+在该包之外、由产品扩展层 `app/alibot/studio/product-tokens.css` 声明，工作台依次加载这三个文件。
 该包里 `ADR-00xx` 的形式由**设计系统自己**编号与定义（见 `DESIGN.md` / `README.md` / `SKILL.md`），
 本仓不解析、不复制它的编号空间。
 _Avoid_: 主题变量（会被读成可自由改值的一层）、设计 token（泛指，不说清"按名消费"这条约束）
