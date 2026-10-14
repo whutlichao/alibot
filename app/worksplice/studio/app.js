@@ -9,6 +9,8 @@
    - 提及高亮：消费**消息落库时的提及快照**（不自己再实现一遍解析）。
    - 四态状态点：`status_of` 由后端事实推导，前端只渲染 `online/working/error/offline`。
    - 新建 Agent 与远端数据流告知的显式确认。
+   - `@` 补全：composer 里输入 `@` 弹出**当前频道的 Agent 成员**清单；前端不解析提及，只按
+     `mentions.py` 的引号规则拼出要插入的字符串（「是不是提及」始终由后端在消息落库时裁决）。
 
    本票（issue #8）新增：
    - 轮次失败的可见呈现：消费只读端点 `GET /channels/{id}/round-outcomes` 的**既有事实**
@@ -61,6 +63,7 @@ const state = {
   outcomes: {},
   pending: [],
   members: [],
+  channelMembers: {},
   statuses: {},
   streams: new Map(),
   seenSeqs: new Map(),
@@ -226,6 +229,7 @@ async function loadWorkspace(options) {
     }
     await refreshMessages();
     await refreshOutcomes();
+    await refreshChannelMembers();
     await refreshStatuses();
     syncStreams();
   } catch (err) {
@@ -392,6 +396,8 @@ function sendMessage() {
   autosizeComposer();
   renderMessages();
   syncSendButton();
+  // 正文已经清空：清单不能留在屏上（它描述的是刚被送出的那段前缀）。
+  closeMentionPicker();
   scrollToBottom();
   deliver(pending);
 }
@@ -769,7 +775,10 @@ function renderHeader() {
   const hasChannel = Boolean(channel);
   $('#chanHead').hidden = !hasChannel;
   $('#composer').hidden = !hasChannel;
-  if (!hasChannel) return;
+  if (!hasChannel) {
+    closeMentionPicker();
+    return;
+  }
   $('#chanTitle').textContent = channel.name;
   $('#chanDesc').textContent = channel.description || '';
   // placeholder 结构按契约：发消息到 #频道名 —— 输入 @ 提及 Agent。
@@ -962,6 +971,281 @@ function autosizeComposer() {
 
 function syncSendButton() {
   $('#btnSend').disabled = !$('#composerInput').value.trim() || !state.online || !activeChannel();
+}
+
+/* ─── @ 补全：清单只找候选 + 按解析器的引号规则拼字符串（前端不解析提及） ──────
+   分工：候选来自后端的频道成员表（`GET /api/channels/{id}/members`），插入的字符串按
+   `worksplice/mentions.py` 的规则拼；正文到底是不是提及**只由后端**裁决（`mention_snapshot`
+   随消息落库），前端既不另写一套解析规则、也不预测解析结果。
+
+   从后端借来的两条判据（只决定「要不要弹」与「怎么拼」，不决定「是不是提及」）：
+   1. `@` 的左边界：前面是 ASCII 字母或数字时不算提及（邮箱式）——对应 `_left_boundary_ok`。
+      这类位置**不弹清单**，否则插进去的文本必然不被解析（违背票面硬约束）。
+   2. 裸形式的候选串遇到分隔符即止（正本 `_TOKEN_STOPS`：空白、各类标点、`@`、`\` 等）——
+      名字里含其中任一字符时只能写引号形式（空格是最常见的一种）。引号字符本身也在分隔符里，
+      于是一名叫 `a"b` 的成员必须写引号形式；而正本认**三种**引号对（`"…"` / `“…”` / `‘…’`），
+      所以选“**闭引号不在名字里**”的那一对（正本用 `text.find(closer)`，闭引号若出现在名字中间，
+      名字就会被截断）。只有当名字同时含 `"`、`”`、`’` 三个闭引号时，**没有**任何合法插入形态：
+      选中它时给可读提示、不插入无效文本。
+
+   过滤只用于把候选缩小（包含匹配、ASCII 大小写不敏感），插入的始终是**库里的原名**：
+   于是「最左最长」这类解析语义不会因为前端放宽过滤而改变。 */
+const MENTION_TOKEN_STOPS =
+  " \t\r\n@,，。、;；:：!！?？'\"“”‘’()（）[]【】{}「」<>《》/\\|~#$%^&*=";
+// 与正本 `mentions.py._QUOTE_PAIRS` 同源：开引号 → 闭引号。顺序 = 优先用哪种引号。
+const MENTION_QUOTE_PAIRS = [
+  ['"', '"'],
+  ['“', '”'],
+  ['‘', '’'],
+];
+
+// 补全清单的运行时状态。它不是业务正本：候选只来自后端返回的频道成员表。
+const mentionPicker = {
+  open: false,
+  empty: null, // null = 有候选；'no-members' = 频道没有 Agent 成员；'unavailable' = 成员清单读不到
+  items: [],
+  activeIndex: 0,
+  trigger: null, // {at, query, quote}：@ 的位置、已输入的前缀、引号形式时的开引号
+  signature: '',
+  dismissed: '', // 被 Esc 关掉 / 刚插入完的触发点签名：同一个触发点不再自动弹出
+};
+// 频道成员清单的读取状态：每个频道各自一份；失败只记事实，不伪造成员。
+const channelMembersFailed = new Set();
+const channelMembersLoading = new Set();
+
+function containsAny(text, chars) {
+  for (const char of String(text == null ? '' : text)) {
+    if (chars.includes(char)) return true;
+  }
+  return false;
+}
+
+function isAsciiAlnum(char) {
+  return char !== undefined && ((char >= '0' && char <= '9') || (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z'));
+}
+
+/** 该名字要插入的字符串；`null` = 这个名字没有任何能被解析器识别的插入形态。
+
+    名字不含分隔符 ⇒ 裸形式 `@名字`；否则走引号形式，引号对取「闭引号不在名字里」的第一个
+    （正本的 `find(closer)` 会在名字中间的闭引号处截断）。*/
+function mentionText(name) {
+  const text = String(name == null ? '' : name);
+  if (!containsAny(text, MENTION_TOKEN_STOPS)) return '@' + text;
+  const pair = MENTION_QUOTE_PAIRS.find(([, closer]) => !text.includes(closer));
+  return pair ? '@' + pair[0] + text + pair[1] : null;
+}
+
+/** 该名字有没有能被解析器识别的插入形态（三个闭引号都在名字里时没有）。 */
+function mentionInsertable(name) {
+  return mentionText(name) !== null;
+}
+
+/** 光标处是否正在写一个 `@提及`；是则给出被替换的起点与已输入的前缀。 */
+function mentionTriggerAt(input) {
+  const caret = input.selectionStart;
+  if (caret === null || caret !== input.selectionEnd) return null; // 有选区时不猜位置
+  const before = input.value.slice(0, caret);
+  const at = before.lastIndexOf('@');
+  if (at < 0) return null;
+  // 左边界（与 _left_boundary_ok 对齐）：邮箱式文本不弹清单。
+  if (at > 0 && isAsciiAlnum(before[at - 1])) return null;
+  const after = before.slice(at + 1);
+  const opener = after.slice(0, 1);
+  const closer = MENTION_QUOTE_PAIRS.reduce((found, [open, close]) => (open === opener ? close : found), null);
+  if (closer) {
+    const body = after.slice(1);
+    // 已经写上了闭合引号 = 这段提及写完了，不再提示。
+    if (body.includes(closer)) return null;
+    return { at, query: body, quote: opener };
+  }
+  // 裸形式：候选串遇到分隔符即止（已经离开这个候选串，或它已不可能再被补全）。
+  if (containsAny(after, MENTION_TOKEN_STOPS)) return null;
+  return { at, query: after, quote: null };
+}
+
+function mentionTriggerSignature(input) {
+  const trigger = mentionTriggerAt(input);
+  return trigger ? trigger.at + ':' + trigger.query : '';
+}
+
+function channelAgentMembers(channelId) {
+  const members = state.channelMembers[channelId];
+  // null 与「读到空列表」是两件事：前者是还没读到（去读一次），后者才是真的没有成员。
+  return members ? members.filter((member) => member.kind === 'agent') : null;
+}
+
+async function refreshChannelMembers() {
+  const channel = activeChannel();
+  if (!channel || channelMembersLoading.has(channel.id)) return;
+  channelMembersLoading.add(channel.id);
+  try {
+    const payload = await api(channelPath(channel.id, '/members'));
+    state.channelMembers[channel.id] = payload.members || [];
+    channelMembersFailed.delete(channel.id);
+  } catch {
+    // 读不到就如实记下：不静默清空已读到的候选，也不伪造成员。
+    if (!state.channelMembers[channel.id]) state.channelMembers[channel.id] = [];
+    channelMembersFailed.add(channel.id);
+  } finally {
+    channelMembersLoading.delete(channel.id);
+  }
+}
+
+function syncMentionHint() {
+  const hint = $('#composerHint');
+  if (!hint) return;
+  if (!mentionPicker.open) {
+    hint.textContent = 'Enter 发送 · Shift+Enter 换行';
+  } else if (mentionPicker.items.length) {
+    hint.textContent = '↑↓ 选择 · Enter 选中 · Esc 关闭';
+  } else {
+    // 空态没有可选项：Enter 仍是发送（键盘契约不变），只说明怎么关掉它。
+    hint.textContent = 'Enter 发送 · Esc 关闭清单';
+  }
+}
+
+function renderMentionPicker() {
+  const panel = $('#composerMention');
+  if (!panel) return;
+  if (!mentionPicker.open) {
+    panel.hidden = true;
+    replaceChildren(panel, []);
+    return;
+  }
+  panel.hidden = false;
+  if (mentionPicker.empty) {
+    const text =
+      mentionPicker.empty === 'unavailable'
+        ? '暂时读不到该频道的成员清单（后端请求失败）：恢复后按 @ 会重新给出候选。'
+        : '该频道还没有 Agent 成员：用左上角「Agent」按钮创建一个，再在新建频道时勾选它加入这个频道。';
+    const empty = el('div', 'member-pick-empty mention-empty', text);
+    empty.setAttribute('data-od-id', 'mention-picker-empty');
+    replaceChildren(panel, [empty]);
+    return;
+  }
+  const rows = mentionPicker.items.map((member, index) => {
+    const active = index === mentionPicker.activeIndex;
+    const row = el('button', 'member-opt mention-opt' + (active ? ' is-active' : ''));
+    row.type = 'button';
+    row.dataset.mention = member.id;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', active ? 'true' : 'false');
+    row.setAttribute('data-od-id', 'mention-option-' + member.id);
+    row.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
+    row.appendChild(el('span', 'mention-name', member.display_name));
+    if (!mentionInsertable(member.display_name)) {
+      // 不静默：它在清单里，但明说这个名字无法被 @ 到。
+      row.appendChild(el('span', 'mention-note', '无法 @'));
+    }
+    return row;
+  });
+  replaceChildren(panel, rows);
+  const active = panel.querySelector('.mention-opt.is-active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+
+function closeMentionPicker() {
+  mentionPicker.open = false;
+  mentionPicker.empty = null;
+  mentionPicker.items = [];
+  mentionPicker.activeIndex = 0;
+  mentionPicker.trigger = null;
+  mentionPicker.signature = '';
+  renderMentionPicker();
+  syncMentionHint();
+}
+
+/** 按光标处重判触发点：弹清单、换候选、或让它消失。 */
+function updateMentionPicker() {
+  const input = $('#composerInput');
+  const channel = activeChannel();
+  if (!input || !channel) {
+    closeMentionPicker();
+    return;
+  }
+  const trigger = mentionTriggerAt(input);
+  const signature = mentionTriggerSignature(input);
+  // 触发点变了就撤掉上一次的「已关闭」记录：关掉的只是那一个触发点，不是整个能力。
+  if (mentionPicker.dismissed && mentionPicker.dismissed !== signature) mentionPicker.dismissed = '';
+  if (!trigger || signature === mentionPicker.dismissed) {
+    closeMentionPicker();
+    return;
+  }
+  const agents = channelAgentMembers(channel.id);
+  if (agents === null) {
+    // 候选来源还没读到：先去读一次，回来再判（读失败则落到明确空态，不再重试）。
+    closeMentionPicker();
+    refreshChannelMembers().then(updateMentionPicker);
+    return;
+  }
+  const needle = trigger.query.toLowerCase();
+  const items = agents.filter((member) => String(member.display_name || '').toLowerCase().includes(needle));
+  if (agents.length && !items.length) {
+    // 过滤无匹配：清单消失，且不打断正常输入。
+    closeMentionPicker();
+    return;
+  }
+  const sameTrigger = mentionPicker.open && mentionPicker.signature === signature;
+  mentionPicker.trigger = trigger;
+  mentionPicker.signature = signature;
+  mentionPicker.items = items;
+  if (agents.length) mentionPicker.empty = null;
+  else if (channelMembersFailed.has(channel.id)) mentionPicker.empty = 'unavailable';
+  else mentionPicker.empty = 'no-members';
+  mentionPicker.open = true;
+  // 同一个触发点上重判（例如光标动了）不重置高亮，否则方向键一按高亮就弹回第一项。
+  mentionPicker.activeIndex = sameTrigger ? Math.min(mentionPicker.activeIndex, Math.max(items.length - 1, 0)) : 0;
+  renderMentionPicker();
+  syncMentionHint();
+}
+
+function moveMentionHighlight(delta) {
+  const total = mentionPicker.items.length;
+  if (!total) return;
+  mentionPicker.activeIndex = Math.max(0, Math.min(total - 1, mentionPicker.activeIndex + delta));
+  renderMentionPicker();
+}
+
+function dismissMentionPicker() {
+  // Esc：只关清单、不改正文，并把这个触发点记为已关闭（不然下一次 input 立刻又弹出来）。
+  mentionPicker.dismissed = mentionTriggerSignature($('#composerInput'));
+  closeMentionPicker();
+}
+
+function insertMention(name) {
+  const input = $('#composerInput');
+  const trigger = mentionPicker.trigger;
+  if (!trigger) return;
+  const insert = mentionText(name);
+  if (insert === null) return; // 调用方已拦（chooseMention），这里只保证不插入 null
+  const caret = input.selectionStart;
+  const value = input.value;
+  const after = value.slice(caret);
+  // 光标处的 `@前缀`（引号形式时含开引号）正好是 [trigger.at, caret)：整段替换掉。
+  const tail = /^\s/.test(after) ? insert : insert + ' ';
+  input.value = value.slice(0, trigger.at) + tail + after;
+  const nextCaret = trigger.at + tail.length;
+  input.setSelectionRange(nextCaret, nextCaret);
+  autosizeComposer();
+  syncSendButton();
+  closeMentionPicker();
+  mentionPicker.dismissed = mentionTriggerSignature(input);
+  updateMentionPicker();
+  input.focus();
+}
+
+function chooseMention(member) {
+  if (!member) return;
+  const name = String(member.display_name || '');
+  if (!mentionInsertable(name)) {
+    // 不静默、也不插入无效文本：这个名字没有能被解析器识别的插入形态。
+    toast(
+      '「' + name + '」同时含 " 、” 、’ 三类闭引号，提及解析器没有能表达这种名字的引号形式，因此没有插入任何文本。',
+      'err',
+    );
+    return;
+  }
+  insertMention(name);
 }
 
 /* ─── 新建频道 ──────────────────────────────────────────────────────── */
@@ -1164,11 +1448,14 @@ async function selectChannel(channelId) {
   }
   setActiveChannelId(channelId);
   state.pending = state.pending.filter((item) => item.target_id === channelId || item.status === 'failed');
+  // 候选清单属于刚被切换掉的频道：进新频道时先关掉，再按新频道的成员表重建。
+  closeMentionPicker();
   state.outcomes = {};
   render();
   try {
     await refreshMessages();
     await refreshOutcomes();
+    await refreshChannelMembers();
     state.online = true;
   } catch (err) {
     state.online = false;
@@ -1217,13 +1504,55 @@ function bindEvents() {
   $('#composerInput').addEventListener('input', () => {
     autosizeComposer();
     syncSendButton();
+    updateMentionPicker();
+  });
+  // 光标移动不产生 input 事件：点一下、按左右/Home/End 都要重判触发点。
+  $('#composerInput').addEventListener('click', () => updateMentionPicker());
+  $('#composerInput').addEventListener('keyup', (event) => {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') {
+      updateMentionPicker();
+    }
+  });
+  $('#composerInput').addEventListener('blur', () => closeMentionPicker());
+  // 候选清单是 composer 自己的关注点，因此它的刷新也挂在 composer 上：每次获得焦点重新读一遍
+  // 该频道的成员表（穿透加入这类成员变化就会在下一次落笔前被看到），读完再按当前光标重判。
+  $('#composerInput').addEventListener('focus', () => {
+    refreshChannelMembers().then(updateMentionPicker);
   });
   $('#composerInput').addEventListener('keydown', (event) => {
-    // Enter 发送、Shift+Enter 换行；输入法组合中的 Enter 不算发送。
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    // 输入法组合中的按键一律不接管（含 Enter 不算发送）。
+    if (event.isComposing) return;
+    if (mentionPicker.open && mentionPicker.items.length) {
+      // 清单打开且有候选：↑/↓ 移动高亮、Enter/Tab 选中。
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveMentionHighlight(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault();
+        chooseMention(mentionPicker.items[mentionPicker.activeIndex]);
+        return;
+      }
+    }
+    if (event.key === 'Escape' && mentionPicker.open) {
+      event.preventDefault();
+      dismissMentionPicker();
+      return;
+    }
+    // Enter 发送、Shift+Enter 换行（清单关闭时与补全之前完全一致）。
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       sendMessage();
     }
+  });
+  // 鼠标选择：mousedown 时拦一下，textarea 不失焦（插入要用它当前的选区）。
+  $('#composerMention').addEventListener('mousedown', (event) => {
+    const row = event.target.closest('[data-mention]');
+    if (!row) return;
+    event.preventDefault();
+    const member = mentionPicker.items.find((item) => item.id === row.dataset.mention);
+    chooseMention(member);
   });
   $('#btnSend').addEventListener('click', sendMessage);
 
