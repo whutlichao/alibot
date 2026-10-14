@@ -244,4 +244,26 @@ criterion 1 的「旧名残留为 0」字面对立。coordinator 裁定（Q3）�
 
 ## 7. PR
 
-（PR 号与 head 填入此处）
+- **PR**：https://github.com/whutlichao/alibot/pull/21
+- **head 分支**：`issue-20-rename-alibot`
+- **base**：`main`（merge-base = `49728c88b1979a769cb3b9b8ae8c5e133e708c0d`）
+- **head（创建 PR 时）**：`faf1c55931ceb73e17df96e5207eb46b8be7d16a`
+- body 用本机 `pr` skill 的模板（Summary / Evidence / Merge Danger），经 `--body-file` 提交：
+  `gh pr create --body-file app/specs/issue-20-pr-body.md`
+
+commit 序列：
+
+```text
+858a92d  refactor(app): #20 项目改名 worksplice → alibot（包目录/环境变量/数据目录/设计系统目录）
+faf1c55  docs(app): #20 验收取证与 PR body（新名书写，含双轴 review 结论）
+```
+
+---
+
+## 8. 遗留（记录，不在本票范围）
+
+- **`alibot-design-system/SKILL.md` 指向 `app/globals.css`**：该路径在本仓不存在，正本是
+  `app/alibot/studio/product-tokens.css`。**base 即错**，非本票引入；修它属于非重命名语义改动，
+  超出本票「纯重命名」授权 → 记录不修。（Spec 轴 review P2#1）
+- **`CONTEXT.md` 首行标题**已从 `# Worksplice` 改为 `# Alibot`（属品牌名，在 Target 清单内）。
+- 旧名残留的**唯一**刻意保留处：§5 的三类排除（历史取证 / 外部复制件溯源 / 边界 2 用户告知）。
