@@ -92,9 +92,9 @@ class Availability:
 
 @dataclass
 class _WakeTarget:
-    """一个唤醒目标：成员行 + 它是否**只能靠穿透**送达（被点名但未加入该频道）。
+    """一个唤醒目标：成员行 + 它是否**只能靠穿透**送达（被点名但未加入该 target）。
 
-    ``pierced`` 是判断「回复时要不要顺带加入频道」的依据。它是**显式字段**而不是塞进成员 dict 的
+    ``pierced`` 是判断「回复时要不要改成员关系」的依据。它是**显式字段**而不是塞进成员 dict 的
     隐式标记：那份 dict 会被原样交给适配接口（``AgentSeam.run_round``），往里藏协作域的内部标记
     会同时污染 seam 的输入契约与「成员行就是成员行」这个约定。
     """
@@ -107,8 +107,8 @@ class _WakeTarget:
 class _Committed:
     """一次回复落库的结果。
 
-    ``joined``/``system_seq`` 只在**穿透回复**（被点名却未加入该频道的 Agent）时为真：它顺带加入
-    频道，并在流里追加一条 ``system`` 事件消息说明这件事（成员变化是可见的事实）。
+    ``joined``/``system_seq`` 在既有的非 DM 穿透路径上为真：它记录成员变化并追加一条 ``system``
+    事件消息；DM 上的穿透只送达、不改成员关系。
     顺序由人类裁定：system 先（seq n），回复随后（seq n+1）——避免「一个还没加入的人先发言」。
     """
 
@@ -119,15 +119,30 @@ class _Committed:
 
 
 @dataclass
+class _DeferredWake:
+    """另一 target 上的唤醒：等待该成员当前轮次收口后再按原 target 执行。"""
+
+    agent: dict[str, Any]
+    target_id: str
+    from_seq: int
+    reason: str
+    consumed_budget: bool
+    pierced: bool
+
+
+@dataclass
 class _Turn:
     """一个成员**正在进行中**的那一轮在编排侧的簿记。
 
     ``repeat_bases`` 是 in-flight 期间到达的重复唤醒的 ``base_seq`` 集合。它们**不排队、不重放**
     （不重复跑模型、不为每条各跑一轮），但也不能悄悄消失：轮次收口时合成**恰好一条** merged
-    记录，取值以**最大 seq 为准**（票面原文）。
+    记录，取值以**最大 seq 为准**（票面原文）。另一 target 上的唤醒不属于重复唤醒，放进
+    ``deferred_rounds`` 等当前轮次结束后按其各自作用域运行。
     """
 
+    target_id: str
     repeat_bases: list[int]
+    deferred_rounds: dict[str, _DeferredWake]
 
 
 class WakeOrchestrator:
@@ -150,23 +165,24 @@ class WakeOrchestrator:
         self._lock = threading.RLock()
 
     # ─── 唤醒面 ───────────────────────────────────────────────────────────
-    def notify(self, channel_id: str, from_seq: int, reason: str = WAKE_REASON_CHANNEL_MESSAGE) -> int:
+    def notify(self, target_id: str, from_seq: int, reason: str = WAKE_REASON_CHANNEL_MESSAGE) -> int:
         """消息落库之后计算唤醒集合并投递轮次。返回**投递的成员数**。
 
         目录（顺序就是裁决顺序）：
 
         1. 作者被排除（人类与 Agent 作者都一样）。
-        2. 面 = 该频道全部 agent 成员 + **穿透**（被点名却未加入该频道的 Agent）。
+        2. 面 = 该 target 全部 Agent 成员 + **穿透**（被点名却未加入该 target 的 Agent）。
         3. ``system`` 事件消息不是对话回合：它既不唤醒任何人，也不消耗预算。
-        4. Agent 作者且目标非空 ⇒ 这是**一次 agent→agent 跳**：先看预算。预算耗尽则一个都不投递，
+        4. DM 中 Agent 作者的消息不再唤醒任何人；其它 target 上 Agent 作者且目标非空 ⇒
+           这是**一次 agent→agent 跳**：先看预算。预算耗尽则一个都不投递，
            为每个被压制的成员记一条 ``budget-exhausted``；否则先扣 1 次预算再投递。
 
         这次跳只让 ``target_budget.used`` +1（跳数的单一正本）；下面传给每个成员的
         ``jump_delivered`` 是**行级**标记，投递 N 个成员就有 N 条为真的轮次结果行。
         """
         # 目标作用域早退：调用入口已按 kind 校验 channel/task；唤醒机制本身对 target 不分支。
-        self._db.get_target(channel_id)
-        message = self._db.get_message(channel_id, from_seq)
+        target = self._db.get_target(target_id)
+        message = self._db.get_message(target_id, from_seq)
         author_id = message["author"]["id"]
         author_kind = message["author"]["kind"]
 
@@ -174,7 +190,11 @@ class WakeOrchestrator:
         if message["kind"] == "system":
             return 0
 
-        targets = self._wake_targets(channel_id, author_id, message)
+        # DM 成员关系固定为 owner + 单一 Agent：Agent 回复与其正文提及都不产生唤醒。
+        if target["kind"] == "dm" and author_kind == "agent":
+            return 0
+
+        targets = self._wake_targets(target_id, author_id, message)
         if not targets:
             return 0
 
@@ -182,24 +202,24 @@ class WakeOrchestrator:
         # 下调给每个成员：`target_budget.used` 已经把跳数记了 1 次，行标记只为「这一轮是怎么来的」。
         # 名字故意不叫 consumed_budget：`round_outcome.consumed_budget` 是历史列名，读起来像
         # 「这一行扣了一次」，正是 #12 要消掉的歧义。
-        jump_delivered = author_kind == "agent"
+        jump_delivered = author_kind == "agent" and target["kind"] != "dm"
         if jump_delivered and not self._spend_jump(
-            channel_id, from_seq, [target.member for target in targets]
+            target_id, from_seq, [target.member for target in targets]
         ):
             return 0
 
         mentions = set(mentioned_member_ids(message["mention_snapshot"]))
-        for target in targets:
-            member = target.member
+        for wake_target in targets:
+            member = wake_target.member
             member_reason = WAKE_REASON_MENTION if member["id"] in mentions else reason
             self._scheduler.submit(
                 self.run_round,
                 member,
-                channel_id,
+                target_id,
                 from_seq,
                 member_reason,
                 jump_delivered,
-                target.pierced,
+                wake_target.pierced,
             )
         return len(targets)
 
@@ -228,7 +248,7 @@ class WakeOrchestrator:
         )
         return 1
 
-    def _wake_targets(self, channel_id: str, author_id: str, message: dict[str, Any]) -> list[_WakeTarget]:
+    def _wake_targets(self, target_id: str, author_id: str, message: dict[str, Any]) -> list[_WakeTarget]:
         """唤醒面 = **该 target** 的 agent 成员（除作者）+ 被点名但**未加入**该 target 的 Agent（穿透）。
 
         成员面读的是 ``target_member``（同一个 `target_id` 键），**不按 kind 分支**（ADR-0004 决策 8）；
@@ -236,7 +256,7 @@ class WakeOrchestrator:
         """
         targets = [
             _WakeTarget(member=member)
-            for member in self._db.list_target_agent_members(channel_id)
+            for member in self._db.list_target_agent_members(target_id)
             if member["id"] != author_id
         ]
         seen = {target.member["id"] for target in targets}
@@ -246,7 +266,7 @@ class WakeOrchestrator:
             agent = self._pierce_target(member_id)
             if agent is None:
                 continue
-            # 标记这次唤醒是穿透（未加入却被点名）：回复时它要顺带加入频道。
+            # 标记这次唤醒是穿透（未加入却被点名）；是否改成员关系由 target kind 决定。
             targets.append(_WakeTarget(member=agent, pierced=True))
             seen.add(member_id)
         return targets
@@ -261,7 +281,7 @@ class WakeOrchestrator:
             return None
         return agent
 
-    def _spend_jump(self, channel_id: str, from_seq: int, targets: list[dict[str, Any]]) -> bool:
+    def _spend_jump(self, target_id: str, from_seq: int, targets: list[dict[str, Any]]) -> bool:
         """扣一次 agent→agent 跳的预算。返回是否投递（False = 预算耗尽，一个都不投）。
 
         这里是**跳数唯一正本**的**唯一写点**：一次调用让 ``target_budget.used`` 恰好 +1，
@@ -274,46 +294,49 @@ class WakeOrchestrator:
           消息不可能同时读到「还剩 1」而各投一次（硬上界 ≤ 3 由此成立）。
         """
         with self._lock:
-            if not any(member["id"] not in self._in_flight for member in targets):
+            if not any(
+                member["id"] not in self._in_flight or self._in_flight[member["id"]].target_id != target_id
+                for member in targets
+            ):
                 return True
-            state = self._db.budget_state(channel_id)
+            state = self._db.budget_state(target_id)
             if state["used"] >= BUDGET_LIMIT:
-                self._record_budget_exhausted(channel_id, from_seq, targets)
+                self._record_budget_exhausted(target_id, from_seq, targets)
                 return False
-            self._db.consume_budget(channel_id, self._db.human_epoch_seq(channel_id))
+            self._db.consume_budget(target_id, self._db.human_epoch_seq(target_id))
             return True
 
-    def _record_budget_exhausted(self, channel_id: str, from_seq: int, targets: list[dict[str, Any]]) -> None:
+    def _record_budget_exhausted(self, target_id: str, from_seq: int, targets: list[dict[str, Any]]) -> None:
         """耗尽的世代里不投递任何唤醒，但每个**本应被唤醒**的成员都要留下可追溯的轮次结果。
 
         状态点**不**因此变 ``--error``（``status_of`` 不把 ``budget-exhausted`` 当失败）：预算耗尽
         既不是「它坏了」也不是「它不想说」，它是「这个人类世代已经用过 3 次往返了」这条后端事实。
         """
         reason = (
-            f"本人类世代（最近一条人类消息 seq={self._db.human_epoch_seq(channel_id)}）的"
+            f"本人类世代（最近一条人类消息 seq={self._db.human_epoch_seq(target_id)}）的"
             f"agent→agent 预算已用尽（≤{BUDGET_LIMIT}）：本条 Agent 消息照常落库，但没有投递任何唤醒"
         )
         for member in targets:
             record = self._db.append_round_outcome(
                 member_id=member["id"],
-                target_id=channel_id,
+                target_id=target_id,
                 base_seq=from_seq,
                 status="budget-exhausted",
                 reason=reason,
                 consumed_budget=False,
                 merged=False,
             )
-            self._publish_outcome(channel_id, from_seq, record)
+            self._publish_outcome(target_id, from_seq, record)
 
-    def _publish_outcome(self, channel_id: str, seq: int, record: dict[str, Any]) -> None:
+    def _publish_outcome(self, target_id: str, seq: int, record: dict[str, Any]) -> None:
         """把一条轮次结果推给订阅者（轮次结果事件的唯一发布点）。"""
-        self._events.publish(channel_id, {"type": "round_outcome", "seq": seq, "outcome": record})
+        self._events.publish(target_id, {"type": "round_outcome", "seq": seq, "outcome": record})
 
     # ─── 一轮 ─────────────────────────────────────────────────────────────
     def run_round(
         self,
         agent: dict[str, Any],
-        channel_id: str,
+        target_id: str,
         from_seq: int,
         reason: str,
         consumed_budget: bool = False,
@@ -328,20 +351,39 @@ class WakeOrchestrator:
         member_id = agent["id"]
 
         with self._lock:
-            if member_id in self._in_flight:
-                # 同一成员最多一轮 in-flight。重复唤醒**不排队、不重放**（不为每条再跑一轮），
-                # 也不静默消失：记进那个进行中轮次的簿记，由它收口时合成**一条** merged 记录。
-                self._in_flight[member_id].repeat_bases.append(int(from_seq))
+            active_turn = self._in_flight.get(member_id)
+            if active_turn is not None:
+                if active_turn.target_id == target_id:
+                    # 同 target 重复唤醒**不排队、不重放**，收口时合成一条 merged 记录。
+                    active_turn.repeat_bases.append(int(from_seq))
+                else:
+                    # 跨 target 不是重复唤醒：不能并入错误作用域，也不能并发运行同一 Agent。
+                    deferred = active_turn.deferred_rounds.get(target_id)
+                    if deferred is None:
+                        active_turn.deferred_rounds[target_id] = _DeferredWake(
+                            agent=agent,
+                            target_id=target_id,
+                            from_seq=int(from_seq),
+                            reason=reason,
+                            consumed_budget=consumed_budget,
+                            pierced=pierced,
+                        )
+                    else:
+                        deferred.from_seq = max(deferred.from_seq, int(from_seq))
+                        deferred.consumed_budget = deferred.consumed_budget or consumed_budget
+                        deferred.pierced = deferred.pierced or pierced
+                        if reason == WAKE_REASON_MENTION:
+                            deferred.reason = reason
                 return None
-            self._in_flight[member_id] = _Turn(repeat_bases=[])
+            self._in_flight[member_id] = _Turn(target_id=target_id, repeat_bases=[], deferred_rounds={})
 
         started_at = utc_now()
         base_seq = from_seq
         try:
-            cursor = self._db.agent_cursor(channel_id, member_id)
+            cursor = self._db.agent_cursor(target_id, member_id)
             pending = [
                 message
-                for message in self._db.list_messages(channel_id, after_seq=cursor)
+                for message in self._db.list_messages(target_id, after_seq=cursor)
                 if message["author"]["id"] != member_id
             ]
             if not pending:
@@ -356,9 +398,9 @@ class WakeOrchestrator:
             mentioned = member_id in mentions
             base_seq = max(message["seq"] for message in pending)
 
-            self._emit_status(channel_id, member_id, base_seq)
+            self._emit_status(target_id, member_id, base_seq)
             self._events.publish(
-                channel_id,
+                target_id,
                 {"type": "typing", "member_id": member_id, "seq": base_seq, "active": True, "reason": reason},
             )
 
@@ -366,7 +408,7 @@ class WakeOrchestrator:
             if not availability.ok:
                 outcome = RoundOutcome(status="failed", reason=availability.reason)
             else:
-                outcome = self._run_seam(agent, pending, mentioned=mentioned, channel_id=channel_id)
+                outcome = self._run_seam(agent, pending, mentioned=mentioned, target_id=target_id)
                 # rubric：被个人提及是**确定信号**——必须回应。自判忽略在确定信号下按失败处理，
                 # 不静默（不能把「它坏了」当成「它不想说」）。
                 if mentioned and outcome.status == "ignored":
@@ -392,7 +434,7 @@ class WakeOrchestrator:
                 merged_bases = list(turn.repeat_bases) if turn is not None else []
             reply_seq: int | None = None
             if outcome.status == "replied" and outcome.messages:
-                committed = self._commit_reply(agent, channel_id, outcome.messages[0].body, pierced=pierced)
+                committed = self._commit_reply(agent, target_id, outcome.messages[0].body, pierced=pierced)
                 reply_seq = committed.reply_seq
                 finished_at = committed.finished_at
                 if committed.joined:
@@ -403,14 +445,14 @@ class WakeOrchestrator:
                             f"回复时顺带加入，system 事件消息 seq={committed.system_seq}"
                         ),
                     )
-                self._db.mark_read(channel_id, base_seq, member_id=member_id)
+                self._db.mark_read(target_id, base_seq, member_id=member_id)
             elif outcome.status == "ignored":
-                self._db.mark_read(channel_id, base_seq, member_id=member_id)
+                self._db.mark_read(target_id, base_seq, member_id=member_id)
 
-            self._record_merged(channel_id, member_id, merged_bases, started_at)
+            self._record_merged(target_id, member_id, merged_bases, started_at)
             record = self._db.append_round_outcome(
                 member_id=member_id,
-                target_id=channel_id,
+                target_id=target_id,
                 base_seq=base_seq,
                 status=outcome.status,
                 reason=outcome.reason,
@@ -420,9 +462,9 @@ class WakeOrchestrator:
                 merged=False,
                 reply_seq=reply_seq,
             )
-            self._publish_outcome(channel_id, base_seq, record)
+            self._publish_outcome(target_id, base_seq, record)
             self._events.publish(
-                channel_id,
+                target_id,
                 {
                     "type": "typing",
                     "member_id": member_id,
@@ -438,7 +480,7 @@ class WakeOrchestrator:
             with suppress(Exception):
                 self._db.append_round_outcome(
                     member_id=member_id,
-                    target_id=channel_id,
+                    target_id=target_id,
                     base_seq=base_seq,
                     status="failed",
                     reason=f"轮次内部异常：{type(error).__name__}: {error}",
@@ -448,14 +490,25 @@ class WakeOrchestrator:
             return None
         finally:
             with self._lock:
-                self._in_flight.pop(member_id, None)
+                turn = self._in_flight.pop(member_id, None)
+                deferred_rounds = list(turn.deferred_rounds.values()) if turn is not None else []
+            for deferred in deferred_rounds:
+                self._scheduler.submit(
+                    self.run_round,
+                    deferred.agent,
+                    deferred.target_id,
+                    deferred.from_seq,
+                    deferred.reason,
+                    deferred.consumed_budget,
+                    deferred.pierced,
+                )
             # 收口后的状态点必须在**清掉 in-flight 之后**发：否则最后一帧会停在 working，
             # 前端的状态点就会永久显示「正在回复」。这是后端事实，不是前端补偿。
-            self._emit_status(channel_id, member_id, base_seq)
+            self._emit_status(target_id, member_id, base_seq)
 
     def _record_merged(
         self,
-        channel_id: str,
+        target_id: str,
         member_id: str,
         merged_bases: list[int],
         started_at: str,
@@ -472,7 +525,7 @@ class WakeOrchestrator:
         reasons = "、".join(f"#{seq}" for seq in sorted(set(merged_bases)))
         record = self._db.append_round_outcome(
             member_id=member_id,
-            target_id=channel_id,
+            target_id=target_id,
             base_seq=largest,
             status="merged",
             reason=(
@@ -483,7 +536,7 @@ class WakeOrchestrator:
             consumed_budget=False,
             merged=True,
         )
-        self._publish_outcome(channel_id, largest, record)
+        self._publish_outcome(target_id, largest, record)
 
     # ─── 适配接口调用 ─────────────────────────────────────────────────────
     def _run_seam(
@@ -492,32 +545,32 @@ class WakeOrchestrator:
         pending: list[dict[str, Any]],
         *,
         mentioned: bool,
-        channel_id: str,
+        target_id: str,
     ) -> RoundOutcome:
         try:
-            return self._seam.run_round(agent, pending, mentioned=mentioned, target_id=channel_id)
+            return self._seam.run_round(agent, pending, mentioned=mentioned, target_id=target_id)
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
             return RoundOutcome(status="failed", reason=f"Agent 适配层异常：{type(error).__name__}: {error}")
 
     def _commit_reply(
         self,
         agent: dict[str, Any],
-        channel_id: str,
+        target_id: str,
         body: str,
         pierced: bool = False,
     ) -> _Committed:
-        """把回复落库——本条票唯一的一条「Agent 消息进频道」的路径。
+        """把 Agent 回复 append 到 target 消息流；DM 穿透只送达，其它 target 沿用既有成员变化记录。
 
-        穿透（被点名却未加入该频道）时先写一条 ``system`` 事件消息说明「它加入了」，再写回复。
-        system 消息**不唤醒任何人、不消耗预算**（它不是对话回合）；它以消息行形态落库，因此
-        「成员变化」是 append-only 流里的一条可见事实，而不是不可追溯的隐式副作用。
+        非 DM target 上的穿透先写成员行与 ``system`` 事件消息，再写回复；DM 上绝不写成员行或加入事件。
+        system 消息本身不唤醒任何人、不消耗预算。
         """
         members = self._db.list_members()
+        target = self._db.get_target(target_id)
         system_seq: int | None = None
-        if pierced and not self._db.is_target_member(channel_id, agent["id"]):
-            self._db.add_target_member(channel_id, agent["id"])
+        if target["kind"] != "dm" and pierced and not self._db.is_target_member(target_id, agent["id"]):
+            self._db.add_target_member(target_id, agent["id"])
             system_message = self._db.append_message(
-                target_id=channel_id,
+                target_id=target_id,
                 body=(
                     f"{agent['display_name']} 加入了频道：它被点名时并不在此频道，"
                     f"回复时顺带加入（成员变化只随真实回复发生）"
@@ -528,19 +581,19 @@ class WakeOrchestrator:
             )
             system_seq = int(system_message["seq"])
             self._events.publish(
-                channel_id,
+                target_id,
                 {"type": "message", "seq": system_seq, "message": system_message},
             )
         message = self._db.append_message(
-            target_id=channel_id,
+            target_id=target_id,
             body=body,
             author_member_id=agent["id"],
             kind="agent",
             mention_snapshot=parse_mentions(body, members),
         )
-        self._events.publish(channel_id, {"type": "message", "seq": message["seq"], "message": message})
+        self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
         # 回复落库后照常唤醒（作者自己会被排除）。单 Agent 场景下唤醒集为空，即一次「零唤醒」。
-        self.notify(channel_id, message["seq"], reason=WAKE_REASON_CHANNEL_MESSAGE)
+        self.notify(target_id, message["seq"], reason=WAKE_REASON_CHANNEL_MESSAGE)
         return _Committed(
             reply_seq=int(message["seq"]),
             finished_at=str(message["created_at"]),
@@ -602,12 +655,12 @@ class WakeOrchestrator:
             statuses[agent["id"]] = self.status_of(agent)
         return statuses
 
-    def _emit_status(self, channel_id: str, member_id: str, seq: int) -> None:
+    def _emit_status(self, target_id: str, member_id: str, seq: int) -> None:
         try:
             agent = self._db.get_agent(member_id)
         except Exception:
             return
         self._events.publish(
-            channel_id,
+            target_id,
             {"type": "member_status", "member_id": member_id, "seq": seq, "status": self.status_of(agent)},
         )

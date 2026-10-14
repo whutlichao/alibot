@@ -45,6 +45,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 from .agent_seam import AgentScopeAgentSeam
 from .db import (
@@ -132,6 +133,18 @@ class TaskAssigneeChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     member_id: str | None
+
+
+class DmCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = ""
+
+
+class DmMessageCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = ""
 
 
 class MessageCreate(BaseModel):
@@ -302,6 +315,34 @@ def create_app(
     @app.post("/api/tasks/{task_id}/messages", status_code=201)
     def create_task_message(task_id: str, payload: MessageCreate) -> dict[str, Any]:
         return {"message": service.send_task_message(task_id, payload.body, payload.task_ref)}
+
+    # ─── 私信（显式创建；重复请求复用同一 target） ─────────────────────────
+    @app.get("/api/dms")
+    def list_dms() -> dict[str, Any]:
+        return {"dms": service.list_dms()}
+
+    @app.post("/api/dms")
+    def create_dm(payload: DmCreate) -> JSONResponse:
+        dm, created = service.create_dm(payload.agent_id)
+        return JSONResponse(
+            {"dm": dm, "created": created},
+            status_code=201 if created else 200,
+        )
+
+    @app.get("/api/dms/{dm_id}/messages")
+    def list_dm_messages(dm_id: str, after_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
+        messages = service.dm_messages(dm_id, after_seq=after_seq)
+        dm = next(dm for dm in service.list_dms() if dm["id"] == dm_id)
+        return {"dm": dm, "messages": messages}
+
+    @app.post("/api/dms/{dm_id}/messages", status_code=201)
+    def create_dm_message(dm_id: str, payload: DmMessageCreate) -> dict[str, Any]:
+        return {"message": service.send_dm_message(dm_id, payload.body)}
+
+    @app.post("/api/dms/{dm_id}/read")
+    def mark_dm_read(dm_id: str, payload: MarkRead) -> dict[str, Any]:
+        dm = service.mark_dm_read(dm_id, payload.seq)
+        return {"dm": dm, "dms": service.list_dms()}
 
     @app.get("/api/channels/{channel_id}/messages")
     def list_messages(channel_id: str, after_seq: int = Query(default=0, ge=0)) -> dict[str, Any]:
@@ -494,6 +535,7 @@ def create_app(
             try:
                 for message in snapshot:
                     yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
+
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
@@ -515,6 +557,77 @@ def create_app(
         return StreamingResponse(
             stream(),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/dms/{dm_id}/events")
+    async def dm_events(
+        dm_id: str,
+        request: Request,
+        after_seq: int = Query(default=0, ge=0),
+    ) -> StreamingResponse:
+        """私信事件流：补拉消息与对方 Agent 的状态，不暴露频道轮次结果。"""
+        dm = database.get_dm(dm_id, OWNER_ID)  # 在响应开始前完成 404 早退
+
+        # 先登记订阅再读快照：否则在读完快照、注册订阅之间落库并广播的消息会永久漏掉。
+        # 快照仍在返回 StreamingResponse 前读完，保留错误在 headers 发出前正常返回的保证。
+        subscription = events.subscribe(dm_id)
+        channel = subscription.__enter__()
+        subscription_open = True
+
+        def close_subscription() -> None:
+            nonlocal subscription_open
+            if subscription_open:
+                subscription_open = False
+                subscription.__exit__(None, None, None)
+
+        try:
+            snapshot_messages = service.dm_messages(dm_id, after_seq=after_seq)
+            snapshot_statuses = orchestrator.member_statuses([dm["agent_id"]])
+        except BaseException:
+            close_subscription()
+            raise
+
+        # 若消息在订阅后、读库快照前发布，它同时存在于快照和队列中；快照是正本，
+        # 记录其消息游标以便后续丢弃队列里的重叠副本。
+        snapshot_message_seq = max((int(message["seq"]) for message in snapshot_messages), default=after_seq)
+
+        async def stream() -> AsyncIterator[str]:
+            try:
+                for message in snapshot_messages:
+                    yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
+                for member_id, status in snapshot_statuses.items():
+                    yield sse_frame(
+                        {"type": "member_status", "seq": after_seq, "member_id": member_id, "status": status}
+                    )
+                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                while not shutting_down.is_set():
+                    if await request.is_disconnected():
+                        return
+                    if asyncio.get_running_loop().time() >= deadline:
+                        yield "event: rotate\ndata: {}\n\n"
+                        return
+                    try:
+                        event = await asyncio.to_thread(channel.get, True, SSE_POLL_SECONDS)
+                    except queue.Empty:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if event.get("type") == "message" and int(event.get("seq", 0)) <= snapshot_message_seq:
+                        continue
+                    if int(event.get("seq", 0)) < after_seq:
+                        continue
+                    yield sse_frame(event)
+            finally:
+                close_subscription()
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            background=BackgroundTask(close_subscription),
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",

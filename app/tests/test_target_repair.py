@@ -1,12 +1,12 @@
-"""手动修复入口（issue #37 追加范围）：把 v4 库缺失的 channel 型 target 作用域数据补齐。
+"""手动修复入口（issue #37 追加范围）：把当前 schema 库缺失的 channel 型 target 作用域数据补齐。
 
-**测的是什么**：``~/Alibot`` 上真实发生过的那次事故——库已被 v4 打开过（``schema_version = 4``、
+**历史缘起**：``~/Alibot`` 上真实发生过的事故——库曾被 v4 代码打开（``schema_version = 4``、
 ``channel`` 行都在），但某些 channel 型的**影子行缺失**、成员 / 已读 / 预算还留在 ``channel_*``
 旧表名里。症状是 ``GET /api/channels`` 正常，点进那个频道则成员 / 消息 / 预算 / 标读全部 404。
 
-**怎么构造**（票面明确授权，且不碰 ``~/Alibot``）：用 v4 代码正常建一个库（频道 + Agent + 消息），
-再用 SQL 把那一个频道的 target 作用域数据**搬回旧表名并删掉新表行**——这正是「半改名」的确切形态，
-不是近似。``tmp_path`` 独占目录，真实数据目录全程只读。
+**怎么构造**（票面明确授权，且不碰 ``~/Alibot``）：在 ``tmp_path`` 独占目录用当前代码建库，
+再用 SQL 把那一个频道的 target 作用域数据**搬回旧表名并删掉新表行**，复现相同的缺行形态。
+历史 v4 事故的版本号事实如上；当前代码仍由 schema 闸门拒绝旧版本，不会把这组测试当作迁移。
 
 **为什么这条入口存在**：规格决策 8 / ADR-0004 只规定「不做自动迁移」，没规定「已被半改名的库怎么办」。
 本入口**不是**自动迁移：它只在用户显式跑 ``python -m alibot --repair-targets`` 时执行，
@@ -33,9 +33,9 @@ _SCOPED_TABLES = ("target", "target_member", "target_read", "target_budget")
 
 # v3 那一代的三张旧表。
 #
-# **为什么测试要自己建它们**：v4 的 ``SCHEMA`` 只 **CREATE IF NOT EXISTS** 新表，**不删**旧表。
-# 所以「v4 代码打开过 v3 库」留下的确切形态是：旧表**还在**（带着 v3 的数据）、新表被建出来但是
-# 空的。一个**全新**的 v4 库则根本没有这三张表——两者是不同的状态，而事故是前者。
+# **为什么测试要自己建它们**：历史 v4 的 ``SCHEMA`` 只 **CREATE IF NOT EXISTS** 新表，**不删**旧表。
+# 所以「v4 代码打开过 v3 库」留下的历史形态是：旧表**还在**（带着 v3 的数据）、新表被建出来但是
+# 空的。一个**全新**的当前版本库则根本没有这三张表；隔离测试显式构造旧表以覆盖补齐路径。
 # 因此测试先把旧表建出来、把数据搬回去，才能真的复现事故现场，而不是近似它
 # （``~/Alibot`` 的真实副本就是这个形态：三张旧表带着 dev 的 3 行数据）。
 _V3_LEFTOVER_SCHEMA = """
@@ -75,7 +75,7 @@ def _db_path(data_dir: Path) -> Path:
 def _half_rename_channel(data_dir: Path, channel_id: str) -> None:
     """把该频道的 target 作用域数据搬回 ``channel_*`` 旧表名，并删掉对应的新表行。
 
-    这就是「v4 代码打开过 v3 库」留下的确切形态：**旧表有数据、新表没有**。
+    这复现「v4 代码打开过 v3 库」的缺行形态：**旧表有数据、新表没有**。
     本辅助函数只做数据搬运，不动 schema、不动 ``schema_version``。
     """
     conn = sqlite3.connect(_db_path(data_dir))
@@ -109,7 +109,7 @@ def _half_rename_channel(data_dir: Path, channel_id: str) -> None:
 def _row_counts(data_dir: Path) -> dict[str, int]:
     """相关表的行数快照（只读；用于「再跑一次不改动」与「默认不执行」的取证）。
 
-    只计**库里存在**的表：一个全新的 v4 库根本没有 ``channel_*`` 三张旧表（它们是 v3 那一代的
+    只计**库里存在**的表：一个全新的当前版本库根本没有 ``channel_*`` 三张旧表（它们是 v3 那一代的
     残留），把它们当成 0 行会让快照误报「表不存在」而不是「行数为 0」。缺表本身不进字典，
     于是「以前没有、现在多了」也会被 ``==`` 直接看出来。
     """
@@ -274,8 +274,8 @@ def test_running_repair_on_an_already_healthy_database_is_a_no_op(tmp_path: Path
 
 
 # ─── 版本不符 ⇒ 拒绝（与主修同一个答复） ─────────────────────────────────────
-def test_repair_refuses_a_database_whose_version_is_not_four(tmp_path: Path) -> None:
-    """``schema_version != 4`` ⇒ 拒绝执行并说明；库一行不改。
+def test_repair_refuses_a_database_whose_version_is_not_current(tmp_path: Path) -> None:
+    """``schema_version != SCHEMA_VERSION`` ⇒ 拒绝执行并说明；库一行不改。
 
     修复入口**不是**迁就旧库的后门：它和启动路径读同一道闸门，因此对 v3 库给出同一个答复。
     """
@@ -306,7 +306,7 @@ def test_repair_refuses_a_library_that_is_not_current_schema_shaped(tmp_path: Pa
     「没什么可补」处理，见下一条用例）。只有「有数据但不是当前 schema 形态」才是本入口不处置的库。
 
     构造：一个只有 ``schema_meta`` + ``member`` 表的库（缺 ``channel`` / ``target*``），并塞一行
-    member——于是「有业务数据」成立，而 ``_V4_REQUIRED_TABLES`` 大面积缺失。
+    member——于是「有业务数据」成立，而 ``_CURRENT_REQUIRED_TABLES`` 大面积缺失。
     """
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -318,9 +318,11 @@ def test_repair_refuses_a_library_that_is_not_current_schema_shaped(tmp_path: Pa
             "  id TEXT PRIMARY KEY, kind TEXT NOT NULL, display_name TEXT NOT NULL,\n"
             "  avatar_slot INTEGER NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT\n"
             ");\n"
-            f"INSERT INTO schema_meta(key, value) VALUES ('schema_version', '{SCHEMA_VERSION}');\n"
             "INSERT INTO member(id, kind, display_name, avatar_slot, created_at)\n"
             "  VALUES ('owner', 'owner', 'Owner', 4, '2026-10-14T09:00:00Z');\n"
+        )
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
         )
         conn.commit()
     finally:
@@ -357,7 +359,9 @@ def test_repair_on_a_schema_only_library_without_data_is_a_no_op(tmp_path: Path)
     conn = sqlite3.connect(_db_path(data_dir))
     try:
         conn.executescript("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-        conn.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
+        )
         conn.commit()
     finally:
         conn.close()

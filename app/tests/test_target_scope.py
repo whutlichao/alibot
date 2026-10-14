@@ -11,9 +11,7 @@
 
 “结构”这类事实在 HTTP 面无路径可观察（没有「读表结构」的端点，也不该为测试新增一个），
 所以那几条**直接读库文件**。这是**唯一**允许读库的场合，且在注释里逐条说明原因；
-dm / task 型消息也由测试自己用**最小数据**构造（票面验收项 2 明确授权：「就用你构造的最小数据
-在 HTTP 面或等价层证明该口径成立，并说明你怎么构造的」）——本票不实现 dm / task 的业务逻辑
-（#25–#28 做），只证明 schema 与查询路径**允许**它们。
+DM 与任务的对外行为由各自的契约测试覆盖，这里只取证共享 target / 消息作用域的结构不变量。
 """
 
 from __future__ import annotations
@@ -24,9 +22,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from alibot.db import BUDGET_LIMIT, SCHEMA_VERSION, Database
 from fastapi.testclient import TestClient
 
+from alibot.db import BUDGET_LIMIT, SCHEMA_VERSION, Database
 from tests.conftest import (
     SPEC_OWNER_ID,
     budget,
@@ -63,7 +61,7 @@ def test_target_table_exists_and_kind_is_constrained(client: TestClient, data_di
             db._conn.execute(
                 "INSERT INTO target(id, kind, created_at) VALUES ('tgt_bad', 'nope', '2026-01-01T00:00:00Z')"
             )
-        # 三种合法取值都写得进去（dm / task 是本票要**允许**的第二、第三种 kind）。
+        # 三种合法取值都写得进去；各 kind 的创建与对外行为由对应契约路径覆盖。
         db.create_target("dm", target_id="tgt_dm_probe")
         db.create_target("task", target_id="tgt_task_probe")
         assert db.get_target("tgt_dm_probe")["kind"] == "dm"
@@ -145,8 +143,8 @@ def test_schema_version_is_bumped_and_no_migration_script(client: TestClient, da
     with _store(data_dir) as db:
         row = db._conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
         assert int(row["value"]) == SCHEMA_VERSION
-        # bump 过：首版是 3，本票是 4（改名 + 影子行 + 引用约束一起进入同一个版本号）。
-        assert SCHEMA_VERSION > 3
+        # v4 是 target 作用域首版，v5 加入任务对象，v6 加入 DM；不对旧库做迁移。
+        assert SCHEMA_VERSION == 6
     # 没有迁移脚本：本票的源码树里不存在任何 migrations/ 目录或 *_migrate*.py。
     # 只扫 `app/`（本票的源码面）：若从仓库根 rglob，会走进 `.venv/`，于是结论取决于第三方包里
     # 恰好有没有同名文件，而不是本票做了什么。
@@ -318,9 +316,8 @@ def test_dm_and_task_targets_are_not_reachable_through_the_channel_face(
 ) -> None:
     """改的是内部作用域键：`/api/channels/{id}/...` 只认 channel 型 target，dm/task 一律 404。
 
-    「不改 URL、不加新端点、不改错误码」这条 Constraint 的**负向证据**：dm / task 型 target 已经
-    存在于库里（它不再是「不存在的东西」），但频道面仍然不认它——因为它们不是频道，本票也不给
-    它们任何 HTTP 入口（#25–#28 做）。
+    「不改频道 URL、不改错误码」这条 Constraint 的**负向证据**：dm / task 型 target 已经
+    存在于库里（它不再是「不存在的东西」），但频道面仍然不认它——它们各自使用对应的资源路径。
     """
     create_channel(client, name="频道")
     with _store(data_dir) as db:
@@ -391,12 +388,11 @@ def test_membership_and_wake_face_queries_do_not_branch_on_target_kind(
     """同一个 `target_id` 键服务三种 kind：成员面与唤醒面查询不分 kind。
 
     票面验收项 4 要的是「成员关系读写在**同一个 `target_id` 键**上进行，**唤醒面与未读口径的查询
-    不按 kind 分支**」。channel 面能走 HTTP；dm / task 型没有 HTTP 入口，因此在这里用**同一个读写点**
-    （``add_target_member`` / ``list_target_agent_members`` / ``is_target_member``）在三种 kind 上各跑
-    一遍，证明它们**共用一条路径**（没有 `if kind == 'channel'`）。
+    不按 kind 分支**」。这里用**同一个读写点**（``add_target_member`` / ``list_target_agent_members`` /
+    ``is_target_member``）在三种 kind 上各跑一遍，证明它们**共用一条路径**（没有 `if kind == 'channel'`）。
 
-    构造（最小数据，见模块文档）：dm / task 型各写一行 ``target``，然后用**频道那条写点**给它们加
-    成员——不需要任何新 API，也不需要 dm/task 的业务逻辑（那属 #25–#28）。
+    构造（最小数据，见模块文档）：dm / task 型各写一行 ``target``，然后用**共享写点**给它们加成员；
+    其余业务规则由 DM 与任务的契约测试覆盖。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     channel = create_channel(client, name="频道", member_ids=[agent["id"]]).json()["channel"]

@@ -26,7 +26,6 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from alibot.api import create_app  # noqa: E402
-
 from tests.scripted import ManualScheduler, ScriptedAgentSeam  # noqa: E402
 
 # 规格固定的唯一成员行 id（issue #2 正文写明的对外身份，不是实现内部结构）。
@@ -172,7 +171,9 @@ def live(data_dir: Path) -> Iterator[dict]:
             state["http"].close()
 
 
-def sse_frames(http: Any, channel_id: str, after_seq: int = 0, limit: int = 60) -> list[dict]:
+def sse_frames(
+    http: Any, target_id: str, after_seq: int = 0, limit: int = 60, target_collection: str = "channels"
+) -> list[dict]:
     """读一段事件流，返回解析后的事件列表。
 
     读到 replay 之后的第一个 keep-alive（``:`` 开头的注释帧）就主动断开：那就是「历史发完了」的
@@ -182,7 +183,7 @@ def sse_frames(http: Any, channel_id: str, after_seq: int = 0, limit: int = 60) 
 
     events: list[dict] = []
     with http.stream(
-        "GET", f"/api/channels/{channel_id}/events", params={"after_seq": after_seq}
+        "GET", f"/api/{target_collection}/{target_id}/events", params={"after_seq": after_seq}
     ) as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
