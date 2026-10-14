@@ -187,6 +187,49 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .msg-outcome-note { margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted); }
 .msg.outcome .msg-time { margin-left: auto; }
 
+/* ─── 轮次结果摘要行（同一条消息下**至多一行**，默认折叠）───────────────────
+   与上面那族（`failed`，直接展开）是同一个消息锚点 `base_seq` 下的两块，互不吞并、顺序为
+   「摘要行在前、failed 块在后」。它同样**不是消息**：不占 seq（用 `data-base-seq`）、没有头像、
+   不参与「数几条消息 / 几条 Agent 消息」的统计，`role="status"`。
+
+   它覆盖的三态（`ignored` / `budget-exhausted` / `merged`）**都不是失败**，因此这里**不得**
+   出现 `--error` 或任何表示失败的视觉：描边用 `--border-strong`，文字一族用 `--muted` / `--faint`。
+   色位全部按名字消费既有角色族，不新造色位、不硬编码 hex/rgb。 */
+.msg.outcome-summary {
+  display: block; margin: 2px -8px var(--sp-2); padding: var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-6);
+  border-left: 2px solid var(--border-strong); border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: color-mix(in oklch, var(--fg) 3%, transparent);
+}
+.msg.outcome-summary .msg-body { max-width: 68ch; }
+.msg.outcome-summary .msg-head { gap: var(--sp-4); }
+.msg.outcome-summary .msg-time { margin-left: auto; }
+/* 折叠控件是原生 `<button>`：键盘可 Tab 聚焦、Enter/Space 激活，`aria-expanded` 表达展开态。
+   全局 `:focus-visible` 规则给它可见的焦点环，不另造焦点样式。 */
+.msg-outcome-summary-toggle {
+  display: inline-flex; align-items: baseline; gap: var(--sp-3); padding: 0; text-align: left;
+  font-size: var(--fs-sm); color: var(--muted);
+}
+.msg-outcome-summary-toggle:hover .msg-outcome-summary-text { color: var(--fg); }
+/* 展开/收起的小标记：`▸` / `▾`，与它描述的那句话同色一档。 */
+.msg-outcome-summary-mark { color: var(--faint); font-size: var(--fs-mono-xs); }
+.msg-outcome-summary-names { color: var(--muted); font-weight: var(--fw-semi); }
+.msg-outcome-summary-text { color: var(--faint); }
+/* 折叠态的那一句「为什么」：三态各自的后端事实不同，说法就不同（不混为一谈）。 */
+.msg-outcome-summary-why {
+  margin-top: 3px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted);
+}
+/* 展开后：逐成员一行（状态词 + 后端 reason 原文，不重新措辞、不截断）。 */
+.msg-outcome-details { margin-top: var(--sp-3); border-left: 1px solid var(--border); padding-left: var(--sp-6); }
+.msg-outcome-line + .msg-outcome-line { margin-top: var(--sp-3); }
+.msg-outcome-line-head { display: flex; align-items: baseline; gap: var(--sp-4); }
+.msg-outcome-line-author { font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--muted); }
+.msg-outcome-line-state { font-size: var(--fs-sm); color: var(--faint); }
+.msg-outcome-line-head .msg-time { margin-left: auto; }
+.msg-outcome-line-reason {
+  margin-top: 1px; font-size: var(--fs-sm); line-height: var(--lh-snug); color: var(--muted);
+  max-width: 68ch; overflow-wrap: anywhere;
+}
+
 .empty { text-align: center; padding: var(--sp-12) var(--sp-9); color: var(--faint); }
 .empty b { display: block; color: var(--muted); font-weight: var(--fw-semi); font-size: 13.5px; margin-bottom: var(--sp-2); }
 .empty p { margin: 0; font-size: 12.5px; }

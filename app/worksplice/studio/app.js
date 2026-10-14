@@ -19,6 +19,17 @@
    - 「未启用」与「这一轮失败」在呈现上区分开：`--offline` 是成员状态（侧栏/dock 状态点），
      `--error` 是这一轮的结论（消息流里的失败行）。
 
+   本票（issue #18）新增：
+   - 轮次结果**五态全可见**，但**每一条消息下面至多一行**：同一条消息（同一 `base_seq`）下
+     若有多条**非 `failed`** 的轮次结果（`ignored` / `budget-exhausted` / `merged`），收成
+     **一行默认折叠的摘要行**（成员名按后端返回序逐个列出，超过 2 人写成「甲、乙 等 N 人」）；
+     展开后逐成员一行给出该成员的 status 中文说法与后端 `reason` 原文（不重新措辞、不截断）。
+   - `failed` 保持**直接展开**（不藏在折叠后面），与摘要行同挂一条消息、互不吞并。
+     「它为什么没说话」的三种**正常协议选择**（自判忽略 / 预算已用尽 / 被合并）从静默
+     变成可读，但不得淹没对话，也不得与「它坏了」混为一谈。
+   - 折叠/展开是本浏览器页面的呈现状态（内存里的 `state.expandedOutcomes`），不进 localStorage：
+     本文件依旧不用浏览器存储保存任何业务状态。
+
    DOM 一律用 createElement/textContent 构建，不用 innerHTML（模板与数据分离）。
 
    本票（issue #14）新增：
@@ -38,6 +49,42 @@ const STATUS_LABEL = {
   error: '出错',
   offline: '未启用',
 };
+
+/* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
+   （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
+
+   键集是 `CONTEXT.md` `## Language` 词表里、**不进摘要行**的那三个：`ignored`（自判忽略）、
+   `budget-exhausted`（预算耗尽）、`merged`（被合并）。它们**不得混为一谈**：`ignored` 是正常
+   协议选择、`budget-exhausted` 不是出错、`merged` 不是失败。
+
+   `replied` 与 `failed` 不在表里：`replied` 的可见事实就是那条回复消息本身（不为它挂行）；
+   `failed` 直接展开（状态词要在「成员此刻未启用」与「这一轮失败」之间区分，写在 `roundOutcomeNode()` 里）。
+   不给它们留查不到的死词条。
+
+   `note` 是折叠态那一句「为什么」——三态各自的后端事实不同，说法就应当不同。 */
+const OUTCOME_SUMMARY = {
+  ignored: {
+    label: '自判忽略',
+    note: '自判忽略（正常的协议选择，不是失败）',
+  },
+  'budget-exhausted': {
+    label: '预算耗尽',
+    note: '预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）',
+  },
+  merged: {
+    label: '被合并',
+    note: '重复唤醒被合并进正在进行的那一轮（不是失败）',
+  },
+};
+
+/** 摘要行一行里要列出的三种状态（`OUTCOME_SUMMARY` 的键集，顺序就是行内的排列顺序）。 */
+const SUMMARY_STATUSES = Object.keys(OUTCOME_SUMMARY);
+
+/** 取一个 status 的中文说法；不在摘要词表里就原样回退（不伪造一个说法）。 */
+function outcomeLabel(status) {
+  const entry = OUTCOME_SUMMARY[status];
+  return entry ? entry.label : status;
+}
 
 const PROVIDER_LABEL = {
   dashscope: 'DashScope（远端）',
@@ -68,6 +115,9 @@ const state = {
   messages: [],
   // 轮次结果按「触发它的那条消息的 seq」分组（后端事实的镜像，不是本地推断）。
   outcomes: {},
+  // 摘要行的展开/折叠：**会话内的呈现状态**，不是业务状态（不进任何浏览器存储）。
+  // 键 = 触发它的那条消息的 seq。
+  expandedOutcomes: {},
   pending: [],
   members: [],
   channelMembers: {},
@@ -243,6 +293,7 @@ async function loadWorkspace(options) {
     state.online = false;
     state.ready = true;
     state.outcomes = {};
+    state.expandedOutcomes = {};
     if (!settings.silent) toast('读取后端失败：' + err.message, 'err');
     // 后端不可达不是终点：自动重试，于是「重连后恢复」不需要人点按钮。
     // 这是唯一的本地重试定时器，且它只重读后端状态，不排队任何业务消息。
@@ -613,15 +664,21 @@ function onStreamOutcome(channelId, payload) {
   if (!outcome) return;
   if (outcome.status === 'failed') state.statuses[outcome.member_id] = 'error';
   else if (state.statuses[outcome.member_id] === 'working') state.statuses[outcome.member_id] = 'online';
+  let added = false;
   if (state.activeChannelId === channelId && Number.isInteger(outcome.base_seq)) {
     const byMember = state.outcomes[outcome.base_seq] || (state.outcomes[outcome.base_seq] = {});
     const records = byMember[outcome.member_id] || (byMember[outcome.member_id] = []);
     // 同一 id 只留一条：实时推送与断线补拉说的是同一件事，不重复呈现。
-    if (!records.some((record) => record.id === outcome.id)) records.push(outcome);
+    if (!records.some((record) => record.id === outcome.id)) {
+      records.push(outcome);
+      added = true;
+    }
   }
   renderMembers();
   renderDock();
-  if (state.activeChannelId === channelId && outcome.status === 'failed') renderMessages();
+  // 五种结果都要重建消息流：只有 `failed` 会被状态点推导拦住（`ignored` 等三态**不是**失败，
+  // 状态点仍空闲），但它们的摘要行同样要在不刷新页面的情况下出现。
+  if (state.activeChannelId === channelId && added) renderMessages();
 }
 
 // 哪些成员在消息流里有轮次结果呈现（用于状态点变化时只重渲染该重的那部分）。
@@ -905,80 +962,210 @@ function renderMessages() {
       lastDay = day;
     }
     nodes.push(messageNode(message));
-    // 轮次失败挂在**触发它的那条消息**下面（按 base_seq 绑定），不是与消息无关的横幅。
+    // 轮次结果挂在**触发它的那条消息**下面（按 base_seq 绑定），不是与消息无关的横幅。
+    // 同一条消息下**至多**两块：一块默认折叠的摘要行 + 每个 `failed` 各一块（直接展开）。
     if (message.seq) {
       const byMember = state.outcomes[message.seq];
       if (byMember) {
-        Object.keys(byMember).forEach((memberId) => {
-          roundOutcomeNode(byMember[memberId]).forEach((node) => nodes.push(node));
-        });
+        const records = Object.keys(byMember).flatMap((memberId) => byMember[memberId]);
+        const summary = roundOutcomeSummaryNode(records);
+        if (summary) nodes.push(summary);
+        records
+          .filter((record) => record.status === 'failed')
+          .forEach((record) => nodes.push(roundOutcomeNode(record)));
       }
     }
   });
   replaceChildren($('#messageList'), nodes);
 }
 
+/** 摘要行要覆盖的三种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
+function summarizableOutcomes(records) {
+  return records.filter((record) => SUMMARY_STATUSES.includes(record.status));
+}
+
 /**
- * 把一条轮次结果渲染成消息流里的一行（或零行）。
+ * 把同一条消息（同一 `base_seq`）下的**非 `failed`** 轮次结果收成**一行**可折叠摘要（或零行）。
  *
- * 只呈现**失败**这一类：规格要的是「它为什么没说话」不安静地消失。`ignored`（自判忽略、
- * 预算耗尽、被合并）是正常协议选择，不是用户主诉的缺口，保持与既有前端行为一致（不呈现），
- * 以免消息流被协议簿记淹没。
+ * 为什么收成一行：`ignored` 在当前唤醒面（频道内全部 agent 成员）下会按成员各有一条，
+ * 那是 append-only 的取证面、**不得**在后端过滤掉；但逐成员铺在消息流里会淹没对话。
+ * 因此只在**呈现**层合并：默认折叠（一行说清「谁没有回应、为什么是正常选择」），
+ * 展开后才逐成员给出 `status` 中文说法 + 后端 `reason` 原文。
+ *
+ * 它**不是消息**：不占 `seq`（刻意用 `data-base-seq`）、没有头像、不参与「数几条消息」的统计。
  */
-function roundOutcomeNode(records) {
-  const failed = records.filter((record) => record.status === 'failed');
-  if (!failed.length) return [];
-  const nodes = [];
-  failed.forEach((record) => {
-    const member = state.members.find((item) => item.id === record.member_id);
-    const agent = state.agents.find((item) => item.id === record.member_id);
-    // 状态未知时**不声明**任何成员状态：宁可不提，也不能把「我不知道」说成「未启用」。
-    const status = agent ? statusOf(agent) : null;
-    const disabled = status === 'offline';
-    const name = member ? member.display_name : record.member_id;
+function roundOutcomeSummaryNode(records) {
+  const items = summarizableOutcomes(records);
+  if (!items.length) return null;
+  const baseSeq = items[0].base_seq;
+  const expanded = Boolean(state.expandedOutcomes[baseSeq]);
 
-    const row = el('article', 'msg outcome');
-    row.dataset.outcome = record.id;
-    row.dataset.member = record.member_id;
-    // 刻意**不**用 `data-seq`：那个属性在本文件里一直是「这一行是 seq=N 的消息」的意思。
-    // 轮次结果不是消息，它只是被那条消息触发，所以用不同的名字。
-    row.dataset.baseSeq = record.base_seq;
-    // 这一行不是消息（不占 seq、不是作者说的话），因此标记成 status 而不是 message：
-    // 屏幕阅读器与自动化取证都不该把它当成「又一条消息」。
-    row.setAttribute('role', 'status');
-    row.setAttribute('aria-label', name + ' 未回应：' + (record.reason || '后端没有留下原因。'));
+  const row = el('article', 'msg outcome-summary');
+  row.dataset.baseSeq = baseSeq;
+  // 与失败行同一个理由：这一行不是一条消息，不能被数进「几条消息」。
+  row.setAttribute('role', 'status');
+  row.setAttribute('aria-label', summarizeNames(items) + ' 没有回应：' + items.length + ' 条轮次结果');
 
-    const body = el('div', 'msg-body');
-    const head = el('div', 'msg-head');
-    // 作者名用**自己的**类名而不是 `is-agent`：这一行不是一条 Agent 消息，
-    // 任何「数几条 Agent 消息」的统计都不该把它数进去。
-    head.appendChild(el('span', 'msg-author msg-outcome-author', name));
-    head.appendChild(el('span', 'msg-tag', '未回应'));
-    if (status) head.appendChild(el('span', 'msg-outcome-state', disabled ? '没启用' : '这一轮失败'));
-    if (!disabled && agent) {
-      // 从失败现场直接打开成员详情，不用人先找到右上角那个图标。
-      const inspect = el('button', 'msg-outcome-act', '看成员状态');
-      inspect.dataset.dockToggle = '1';
-      head.appendChild(inspect);
+  const body = el('div', 'msg-body');
+  const head = el('div', 'msg-head');
+
+  // 折叠控件是**原生 `<button>`**：它天然可 Tab 聚焦、可 Enter/Space 激活，且 `aria-expanded`
+  // 让展开态对屏幕阅读器可感知。不复用 `msg-outcome-act`（那是失败行里的「看成员状态」，
+  // 动词开头的一条动作链接），它是另一件事。
+  const toggle = el('button', 'msg-outcome-summary-toggle');
+  toggle.dataset.summaryToggle = String(baseSeq);
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  toggle.setAttribute('aria-controls', 'outcome-summary-' + baseSeq);
+  toggle.appendChild(el('span', 'msg-outcome-summary-mark', expanded ? '\u25be' : '\u25b8'));
+  toggle.appendChild(el('span', 'msg-outcome-summary-names', summarizeNames(items)));
+  toggle.appendChild(el('span', 'msg-outcome-summary-text', expanded ? '收起原因' : '没有回应 · 展开看原因'));
+  head.appendChild(toggle);
+  head.appendChild(el('span', 'msg-time', timeLabel(items[0].finished_at)));
+  body.appendChild(head);
+
+  // 折叠态：一行说清「为什么」——三态的**后端事实不同，说法就不同**，不得混为一谈。
+  // 只有一种状态时不重复上一行的名单（名单已经在折叠控件里）；混合状态时才逐组点名，
+  // 否则读不出「是谁因为哪条原因」。
+  body.appendChild(el('div', 'msg-outcome-summary-why', summarizeWhy(items)));
+
+  // 逐成员明细**恒常渲染**、用 `hidden` 切可见性（而不是折叠时不存在）：
+  // `aria-controls` 指向的 id 必须在任何时刻都能解析到，否则折叠态的 `aria-controls`
+  // 就是一个悬空引用（无障碍与被自动化取证都会踩到）。
+  const details = el('div', 'msg-outcome-details');
+  details.id = 'outcome-summary-' + baseSeq;
+  details.hidden = !expanded;
+  items.forEach((record) => details.appendChild(roundOutcomeSummaryLine(record)));
+  body.appendChild(details);
+
+  row.appendChild(body);
+  return row;
+}
+
+/** 摘要行的成员名单：按后端返回序（`finished_at, id` 升序）逐个列出，超过 2 人写成「等 N 人」。 */
+function summarizeNames(items) {
+  return joinNames(items.map((record) => outcomeMemberName(record.member_id)));
+}
+
+/** 名单的**唯一**拼法：≤2 个逐个列出，>2 个写「甲、乙 等 N 人」（摘要行与折叠说明共用）。 */
+function joinNames(names) {
+  if (names.length <= 2) return names.join('、');
+  return names[0] + '、' + names[1] + ' 等 ' + names.length + ' 人';
+}
+
+/**
+ * 折叠行那一句「为什么」：把成员按 status 归组，每组用自己的后端事实说法（不把三态混为一谈）。
+ *
+ * 例：「阿墨、云舟：自判忽略（正常的协议选择，不是失败）；风间：预算已用尽，本轮零投递……」。
+ */
+function summarizeWhy(items) {
+  const order = [];
+  const groups = new Map();
+  items.forEach((record) => {
+    // 按 status 归组（不是按 label）：同一状态的成员聚在一起，各自用自己的后端事实说法。
+    if (!groups.has(record.status)) {
+      groups.set(record.status, []);
+      order.push(record.status);
     }
-    head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
-    body.appendChild(head);
-
-    // 「未启用」是成员**此刻**的状态，「这一轮失败」是**库里那一次**轮次的结论。
-    // 两者会同时为真，因此分开陈述，而不是把后者说成前者、也不把前者冒充后者。
-    if (disabled) {
-      body.appendChild(
-        el('div', 'msg-outcome-note', name + ' 现在是「未启用」，所以这一轮没有回复。后端给出的原因：'),
-      );
-    }
-    const reason = el('div', 'msg-outcome-reason', record.reason || '后端没有留下原因。');
-    reason.dataset.odId = 'round-reason-' + record.id;
-    body.appendChild(reason);
-
-    row.appendChild(body);
-    nodes.push(row);
+    groups.get(record.status).push(outcomeMemberName(record.member_id));
   });
-  return nodes;
+  const mixed = order.length > 1;
+  return order
+    .map((status) => {
+      const entry = OUTCOME_SUMMARY[status];
+      const text = entry ? entry.note : status;
+      // 单一状态：名单已在折叠控件上，这里只陈述「为什么」（不重复一遍名字）。
+      if (!mixed) return text;
+      return joinNames(groups.get(status)) + '：' + text;
+    })
+    .join('；');
+}
+
+/**
+ * 展开后的一行：一个成员的 `status` 中文说法 + 后端给出的 `reason` **原文**。
+ *
+ * `reason` 已是可读中文，因此直接呈现——不重新措辞、不截断成省略号（票面硬要求）。
+ * 成员名与状态词用 `--faint`/`--muted` 一档：这三态都**不是失败**，不得使用 `--error`。
+ */
+function roundOutcomeSummaryLine(record) {
+  const line = el('div', 'msg-outcome-line');
+  line.dataset.outcome = record.id;
+  line.dataset.member = record.member_id;
+  line.dataset.status = record.status;
+  const head = el('div', 'msg-outcome-line-head');
+  head.appendChild(el('span', 'msg-outcome-line-author', outcomeMemberName(record.member_id)));
+  head.appendChild(el('span', 'msg-outcome-line-state', outcomeLabel(record.status)));
+  head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
+  line.appendChild(head);
+  const reason = el('div', 'msg-outcome-line-reason', record.reason || '后端没有留下原因。');
+  // 与失败行的取证 id 同一前缀（`round-reason-<id>`）：同一字段两个前缀只会让取证混淆。
+  reason.dataset.odId = 'round-reason-' + record.id;
+  line.appendChild(reason);
+  return line;
+}
+
+/** 成员显示名：拿不到成员表时退回 id（与失败行同一个纪律，不伪造名字）。 */
+function outcomeMemberName(memberId) {
+  const member = state.members.find((item) => item.id === memberId);
+  return member ? member.display_name : memberId;
+}
+
+/**
+ * 把**一条** `failed` 轮次结果渲染成消息流里直接展开的一块（非 `failed` 返回 `null`）。
+ *
+ * 失败是用户主诉的缺口（含「被点名却不回应」），因此它**不藏在折叠后面**：既有的呈现
+ * （「未回应」tag、`这一轮失败`/`没启用` 状态词、`看成员状态`、reason 正文）逐字保留，
+ * 只把它并入与摘要行同一个消息锚点（同一 `base_seq`）下。三者由 `renderMessages()` 调度：
+ * 摘要行在前、failed 块在后（失败文本更重，放最后离触发消息更近）。
+ */
+function roundOutcomeNode(record) {
+  if (!record || record.status !== 'failed') return null;
+  const member = state.members.find((item) => item.id === record.member_id);
+  const agent = state.agents.find((item) => item.id === record.member_id);
+  // 状态未知时**不声明**任何成员状态：宁可不提，也不能把「我不知道」说成「未启用」。
+  const status = agent ? statusOf(agent) : null;
+  const disabled = status === 'offline';
+  const name = member ? member.display_name : record.member_id;
+
+  const row = el('article', 'msg outcome');
+  row.dataset.outcome = record.id;
+  row.dataset.member = record.member_id;
+  // 刻意**不**用 `data-seq`：那个属性在本文件里一直是「这一行是 seq=N 的消息」的意思。
+  // 轮次结果不是消息，它只是被那条消息触发，所以用不同的名字。
+  row.dataset.baseSeq = record.base_seq;
+  // 这一行不是消息（不占 seq、不是作者说的话），因此标记成 status 而不是 message：
+  // 屏幕阅读器与自动化取证都不该把它当成「又一条消息」。
+  row.setAttribute('role', 'status');
+  row.setAttribute('aria-label', name + ' 未回应：' + (record.reason || '后端没有留下原因。'));
+
+  const body = el('div', 'msg-body');
+  const head = el('div', 'msg-head');
+  // 作者名用**自己的**类名而不是 `is-agent`：这一行不是一条 Agent 消息，
+  // 任何「数几条 Agent 消息」的统计都不该把它数进去。
+  head.appendChild(el('span', 'msg-author msg-outcome-author', name));
+  head.appendChild(el('span', 'msg-tag', '未回应'));
+  if (status) head.appendChild(el('span', 'msg-outcome-state', disabled ? '没启用' : '这一轮失败'));
+  if (!disabled && agent) {
+    // 从失败现场直接打开成员详情，不用人先找到右上角那个图标。
+    const inspect = el('button', 'msg-outcome-act', '看成员状态');
+    inspect.dataset.dockToggle = '1';
+    head.appendChild(inspect);
+  }
+  head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
+  body.appendChild(head);
+
+  // 「未启用」是成员**此刻**的状态，「这一轮失败」是**库里那一次**轮次的结论。
+  // 两者会同时为真，因此分开陈述，而不是把后者说成前者、也不把前者冒充后者。
+  if (disabled) {
+    body.appendChild(
+      el('div', 'msg-outcome-note', name + ' 现在是「未启用」，所以这一轮没有回复。后端给出的原因：'),
+    );
+  }
+  const reason = el('div', 'msg-outcome-reason', record.reason || '后端没有留下原因。');
+  reason.dataset.odId = 'round-reason-' + record.id;
+  body.appendChild(reason);
+
+  row.appendChild(body);
+  return row;
 }
 
 function messageNode(message) {
@@ -1578,6 +1765,8 @@ async function selectChannel(channelId) {
   // 候选清单属于刚被切换掉的频道：进新频道时先关掉，再按新频道的成员表重建。
   closeMentionPicker();
   state.outcomes = {};
+  // 折叠态的键是「触发它的那条消息的 seq」，跨频道不通用：换频道时一并清掉。
+  state.expandedOutcomes = {};
   render();
   try {
     await refreshMessages();
@@ -1690,6 +1879,21 @@ function bindEvents() {
   });
 
   $('#messageList').addEventListener('click', (event) => {
+    // 摘要行的折叠控件：切换的只是**呈现状态**（内存），后端事实一个字不动。
+    const summary = event.target.closest('[data-summary-toggle]');
+    if (summary) {
+      const baseSeq = summary.dataset.summaryToggle;
+      const wasExpanded = Boolean(state.expandedOutcomes[baseSeq]);
+      if (wasExpanded) delete state.expandedOutcomes[baseSeq];
+      else state.expandedOutcomes[baseSeq] = true;
+      // 重建整条消息流（消息节点无状态，重建是既有做法）。重建会把刚被点击的按钮换成新节点，
+      // 键盘焦点会落到 body；因此重建后把焦点还给**同一个控件**的新节点，否则「Tab 到它、
+      // Enter 展开」之后就再也无法用键盘收起（焦点已丢）。
+      renderMessages();
+      const next = $('#messageList').querySelector('[data-summary-toggle="' + baseSeq + '"]');
+      if (next) next.focus();
+      return;
+    }
     const inspect = event.target.closest('[data-dock-toggle]');
     if (inspect) {
       // 只打开面板，不滚动页面：失败现场就在眼前，人不需要先去找那个图标。
