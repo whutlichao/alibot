@@ -110,7 +110,15 @@ $ cd /tmp/wsps-red-14 && .venv/bin/python -m pytest app/tests/test_channel_join.
 ## Merge Danger
 
 - **低**。新增 1 个端点 + 1 个 service 方法；前端只改 `renderDock()` 与三处文案；`CONTEXT.md`
-  文档对齐。`db.py`、`orchestration.py`、`mentions.py` 一行未动。
+  文档对齐。`orchestration.py`、`mentions.py` 一行未动（`db.py` 只改了一行分节注释）。
+- **已与 `origin/main` 合并（follow-up）**：唯一冲突文件 `CONTEXT.md`，已按「以 main 的
+  #13 分节结构为准、不回退其删除动作、本票语义融入」解决。`git merge-base --is-ancestor
+  origin/main HEAD` 为真，`git merge-tree --write-tree origin/main HEAD` 已无 `CONFLICT`
+  ⇒ **PR 可合并**。合并后门禁重跑：`174 passed, 1 skipped`（main 基线 `159`，
+  `174 - 159 = 15` 恰好是本票新增的 15 条），ruff / format / mypy / pyright 全绿。
+  详见 `app/specs/issue-14-acceptance.md` §9。
+- **与 ADR-0003（Agent 只有结构身份，不经 HTTP）方向一致**：新端点是人类面端点（人的显式动作），
+  没有给 Agent 任何 HTTP 路径，也不引入「以某成员名义调 HTTP」。ADR 判定与理由见验收文档 §8。
 - **两条被钉住的语义**（本票明确不改，且测试继续通过）：`@` 补全的频道-only 候选来源
   （`test_mention_completion.py` 未修改）、穿透的「被点名 ≠ 加入」（`test_bounded_relay.py`）。
 - **一处已知缺口**（按人类裁定不测、已在验收文档写明）：`member_id` **已删除** → 校验失败

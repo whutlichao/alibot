@@ -12,7 +12,8 @@ issue 上的 Answer 摘要指向本文件。
 - 采集时间：2026-10-14
 - 环境：macOS，Python 3.11（`uv venv`），真实 Chromium（ego-browser）驱动
 - 基线读数（coordinator 在本票 base 上实测）：`158 passed, 1 skipped`
-- 本票收尾读数：**`173 passed, 1 skipped`**（158 + 15 条新增；skipped 仍是那条默认跳过的真模型冒烟测试）
+- 首轮收尾读数：`173 passed, 1 skipped`（158 + 15 条新增）
+- **合并 `origin/main` 后（本次 follow-up）**：**`174 passed, 1 skipped`**（见 §9）
 
 ## 0. 前置 skill 与流程
 
@@ -26,7 +27,8 @@ issue 上的 Answer 摘要指向本文件。
 
 ## 1. 门禁结果（全量）
 
-从仓库根 `/Users/apple/orca/alibot` 执行（venv 在仓库根 `.venv/`）：
+从仓库根 `/Users/apple/orca/alibot` 执行（venv 在仓库根 `.venv/`）。
+**下表是首轮（base `2b8615c`）的读数；合并 `origin/main` 后的重跑读数见 §9 末尾**：
 
 ```text
 $ .venv/bin/python -m pytest app
@@ -363,23 +365,115 @@ $ grep -nE "#[0-9a-fA-F]{3,8}\b|rgb\(" app/worksplice/studio/app.css
 
 ## 8. ADR 判定（按 `docs/agents/domain.md`）
 
-**不新增 ADR。** 理由：
+**不新增 ADR。** 结论在合并 `origin/main` **之后仍成立**（合并前本节写「仓库目前没有
+`docs/adr/`」——那句话已过期，见下）。
 
-- `docs/agents/domain.md` 写明 ADR「lazily when terms or decisions actually get resolved」，
-  只要求「**架构级**决断」。本票的决断是「显式加入是一个人类面端点，且只改成员关系、
-  不写事件消息」——它在既有架构里落位明确：仍然是「人类面 HTTP 端点 + 复用既有写点」，
-  没有引入新的机制、新的边界或新的持久化结构（`channel_member` / `channel_read` 表与写点都不变）。
-- 与之最接近的既有架构边界（人类面 / 成员面分离、穿透的语义）本票**没有修改**，只是新增了
-  一个不违反它们的动作；`CONTEXT.md` 新增的 **加入频道 (Channel Join)** 词条已经承载了
-  「显式动作 vs 穿透副作用」这一区分，那正是该区分应当被记录的地方。
-- 仓库目前**没有** `docs/adr/` 目录（`ls docs` 只有 `agents/`），既有 ADR 编号（ADR-0003/0004/
-  0013/0014/0015/0016）都只在 `CONTEXT.md` 与设计系统文档里被**引用**。本票不新建这个目录——
-  新建目录本身就是一条应当先有裁定的仓库结构变更。
+**当前事实（合并 `origin/main` 后）**：`docs/adr/` **存在**，由 issue #13 治理票建立，
+现有三条：`0001-messages-are-append-only.md`、`0002-response-budget-caps-relay-at-three.md`、
+`0003-agents-have-structural-identity-only.md`。（首轮本节写的「仓库没有 `docs/adr/`、既有 ADR 编号
+只在文档里被引用」描述的是当时的 `2b8615c`；#13 同时删掉了 `CONTEXT.md` 里对旧编号
+ADR-0003/0004/0013… 的引用，改为直接落成这三份文件。）
 
-## 9. 交付物
+**结论仍为不新增**，且现在有**可判定的依据**：
+
+- 本票与最相关的 **ADR-0003（Agent 只有结构身份，不经 HTTP）** **方向一致而非冲突**。该 ADR 把边界定在
+  「HTTP 面自始至终属于人类面」，而本票新增的 `POST /api/channels/{id}/members` 正是一条**人类面**端点
+  （人的显式动作）；它**没有**给 Agent 任何 HTTP 路径，也不引入「以某成员名义调 HTTP」——成员面的动作仍全
+  由进程内接缝发起（穿透加入还在 `orchestration.py::_commit_reply`，零改动）。因此它是对该 ADR 的**例证**
+  而不是修改，不需要新 ADR。
+- 本票的决断（显式加入是人的动作、幂等、只接受 Agent、**不写**系统事件消息）在既有架构里落位明确：
+  不引入新机制、新边界或新持久化结构（`channel_member` / `channel_read` 表与唯一写点都不变）。
+  `CONTEXT.md` 的 **加入频道 (Channel Join)** 词条已经承载「显式动作 vs 穿透副作用」这一区分——那正是该
+  区分应当被记录的地方（`domain.md` 写明 ADR 只在**架构级**决断处 `lazily` 新增）。
+- **仓库惯例作旁证**：与 ADR-0002（回应预算）同一主题的 issue #12 预算账本票（已由 PR #16 合入 main）
+  同样**没有**新增 ADR，而是在既有 ADR 下继续；本票与之同级。
+- `docs/agents/domain.md` 要求「若输出与既有 ADR 矛盾要明确推到台面」。本票没有矛盾，因此无此义务；
+  这也是本节逐条对照 ADR-0003 的原因。
+
+## 9. 本次冲突解决（follow-up：合并 `origin/main`）
+
+首轮 PR #17 与 `origin/main` 冲突，本次把它合了进来。
+
+| 项 | 值 |
+| --- | --- |
+| 合并前本票 head | `7f05bae` |
+| 合并进来的 main | `2d3df1d`（PR #15 → issue #13 治理票重建 `CONTEXT.md` 分节结构 + 建 `docs/adr/`；PR #16 → issue #12 预算账本票） |
+| 合并提交 | 见 issue #14 的 Answer（两个父提交 = 本票 head 与 `2d3df1d`） |
+| 冲突文件 | **仅 `CONTEXT.md` 一个**（`git merge-tree --write-tree origin/main 7f05bae` 报 `CONFLICT (content)`）；其余改动（`app/README.md`、`app/worksplice/{api,db,orchestration}.py`、测试、`docs/adr/*`）均自动合并成功 |
+| 冲突块 | 2 处（均在 `CONTEXT.md`） |
+
+**解决取向（按人类裁定，以 `origin/main` 的组织结构为准）**：
+
+1. **保留 #13 的新结构**：按域分节（`### 协作域` / `### 唤醒与回应` / `### 有界响应（策略 B）` /
+   `### 身份与边界` / `### 未读与订阅` / `### 前端与视觉`）与词条顺序、`_Avoid_` 写法全部来自 main；
+   本票的新词条与修订词条**融入**其中，而不是把 main 回退到本票原来的排布。
+2. **不回退 #13 的删除动作**：冲突块里本票那一侧全是 #13 已删的旧方案词条
+   （`任务线程未读` / `任务视图` / `指针消息` / `Cwd 互斥` / `成本看板`），因此该块**直接取 main 侧**
+   （`轮次结果 (Round Outcome)`）。合并后逐项核对：这些旧词条在 `CONTEXT.md` 里计数为 0。
+3. **本票已交付与已裁定的语义全部保留**，只是换成 main 的措辞与位置：
+   - `频道成员 (Channel Member)`（§协作域）：补上「加入频道」这条显式动作也是成员关系的来处
+     （main 原文只说了「显式勾选」与穿透）。
+   - **新增 `加入频道 (Channel Join)`**（§协作域，紧随频道成员）：显式、幂等、只接受 Agent、
+     **不写**系统事件消息。
+   - `系统事件消息 (System Event Message)`（§协作域）：点明显式加入不写它（main 原文的「唯一来源是穿透回复」会因此失真）。
+   - `成员面板 (Member Panel)`（§前端与视觉）：改为按当前频道成员表分「已加入 / 未加入」两段，
+     未加入行带「加入」控件，并点明与左栏两个名单的范围差异。
+   - **新增 `本机 Agent (Local Agents)`**（§前端与视觉）。
+   - `补全 (Mention Completion)`（§前端与视觉）：main 侧**已经**写明候选来自当前频道 Agent 成员表
+     ——与本票的反向对齐**方向一致**（这是「好消息」：main 上已以另一种措辞存在）；本票补上
+     「不列 owner、不列频道外成员、不标注未加入」与「与成员面板同一来源」。
+
+**核对读数**：
+
+```text
+$ grep -c '<<<<<<<' CONTEXT.md           → 0
+$ grep -c '=======' CONTEXT.md           → 0
+$ grep -c '>>>>>>>' CONTEXT.md           → 0
+$ grep -c '### 协作域' CONTEXT.md         → 1        ← #13 的分节结构保留
+$ grep -n '^###' CONTEXT.md              → 6 个分节，与 main 逐一对应
+$ 重复词条标题（uniq -d）               → 空       ← 无重复
+$ #13 删除的旧词条计数                    → 全 0     ← 未被合并复活
+$ git merge-base --is-ancestor origin/main HEAD  → 真（exit 0）
+$ git merge-tree --write-tree origin/main HEAD   → 0 处 CONFLICT（PR 已可合并）
+```
+
+**合并后全量门禁重跑**（从本 worktree 执行）：
+
+```text
+$ .venv/bin/python -m pytest app
+174 passed, 1 skipped in 95.16s      ← 比首轮 173 多 1 条：#12 合入的测试
+
+$ .venv/bin/ruff check app
+All checks passed!
+$ .venv/bin/ruff format --check app
+43 files already formatted            ← 首轮 37（main 新增了文件）
+$ .venv/bin/python -m mypy
+Success: no issues found in 26 source files
+$ node ~/.pi-lens/tools/node_modules/pyright/index.js <worktree>/app/worksplice <worktree>/app/tests
+0 errors, 0 warnings, 0 informations
+```
+
+**关于读数变化**（带基线对照，不猜）：
+
+| 树上跑的 | 读数 | 说明 |
+| --- | --- | --- |
+| 本票 base `2b8615c`（首轮基线） | `158 passed, 1 skipped` | coordinator 实测 |
+| `origin/main` `2d3df1d`（隔离 worktree `/tmp/wsps-main-base` 实测） | `159 passed, 1 skipped` | #12/#13 合入后**只多 1 条** |
+| 合并后的本票 head | `174 passed, 1 skipped` | 159 + 本票的 15 条 |
+
+因此 `174 - 159 = 15`，与 `app/tests/test_channel_join.py` 的 15 条**恰好对齐**；`failed = 0`，
+`1 skipped` 仍是同一条真模型冒烟测试。三条硬指标均成立：无 failed、有基线对照、没有跳过新增。
+（基线 worktree 用完已 `git worktree remove --force` 删除。）
+
+**双轴 code-review 不重跑**（按本 follow-up §3 的可数判据）：本次 diff 只有 `CONTEXT.md` 的冲突解决
+（纯文档）与本文件的证据补记，**没有任何源码行为改动**——`git diff origin/main -- <源码文件>`
+显示的只是首轮已评审过的同一批 #14 改动，未新增源码；首轮的双轴结论与逐条处置见 §7。
+
+## 10. 交付物
 
 - worktree 干净（`git status --porcelain` 为空）
-- 6 个提交（按逻辑单元：后端端点 / 测试 / 前端入口 / 文档对齐 / 验收文档与 PR 正文 /
-  review findings 处置；commit message 为仓库既有的 Conventional Commits 风格，正文简体中文）
-- 分支已推送、PR 已创建（body 正本 `app/specs/issue-14-pr-body.md`），PR 号与 body 路径回填
-  issue #14 的 Answer
+- 提交：首轮 6 个（后端端点 / 测试 / 前端入口 / 文档对齐 / 验收文档与 PR 正文 /
+  review findings 处置）+ 本次 **1 个合并提交**（`origin/main` → 本分支）；
+  commit message 为仓库既有的 Conventional Commits 风格，正文简体中文
+- 分支已推送、**PR 复用 #17**（不新建）；body 正本 `app/specs/issue-14-pr-body.md`，
+  PR 号与 body 路径回填 issue #14 的 Answer
