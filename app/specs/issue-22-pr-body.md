@@ -31,7 +31,7 @@ CONTEXT.md                                          # target 词条改写 + 9 �
 docs/adr/0004-target-becomes-a-first-class-object.md
 docs/adr/0005-dispatching-a-task-is-a-human-utterance.md
 docs/adr/0006-task-state-lives-on-the-row-history-in-the-stream.md
-app/specs/issue-22-design-notes.md                  # 本票过程文档：20 问的 Q→A 原文 + 票清单
+app/specs/issue-22-design-notes.md                  # 本票过程文档：23 问的 Q→A 原文 + 票清单
 app/specs/issue-22-pr-body.md                       # 本文件
 ```
 
@@ -43,8 +43,8 @@ app/specs/issue-22-pr-body.md                       # 本文件
   `## ` 级小节 **8 个**（用户已确认的边界 + #1 体例的七节），与 #1 体例一致。
   **Before:** 第二版没有规格，只有 #22 的票面（含 A/B/C/D 四组"必须定清"问题）。
   **After:** 每条承重决定都查得到依据——票面已定 9 条 / grill 人定 16 条 / 代答 8 条，逐条标注裁定来源。
-- **grill 真的跑了**：20 问分四轮经 `orca orchestration ask` 提出（A 组 6 问 → B 组 6 问 → C+D 组 8 问 →
-  拆票 3 问），每轮 Q → A 原文与理由逐字记进 `app/specs/issue-22-design-notes.md`。
+- **grill 真的跑了**：23 问分五轮经 `orca orchestration ask` 提出（A 组 6 问 → B 组 6 问 → C+D 组 8 问 →
+  拆票 3 问 → 补收尾 2 问；前四轮为 grill 与拆票，第五轮见 design-notes §5），每轮 Q → A 原文与理由逐字记进 `app/specs/issue-22-design-notes.md`。
   **没有**用 AskUserQuestion；**没有**对已定 9 条决策重复提问。
 - **词汇表改动前后对照**（同一文件，`git diff` 可核）。
   **Before:** `target` 写着「首版 target 恒为一个频道——它是"频道内单调"里的"频道"」；
