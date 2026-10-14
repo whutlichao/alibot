@@ -92,11 +92,16 @@ ModuleNotFoundError: No module named 'worksplice'      # 旧名确实不再可�
 | --- | --- | --- | --- |
 | pytest | `.venv/bin/python -m pytest` | 179 passed, 1 skipped | **179 passed, 1 skipped** ✅ |
 | ruff check | `.venv/bin/ruff check app` | All checks passed! | **All checks passed!** ✅ |
-| ruff format | `.venv/bin/ruff format --check app` | 45 files already formatted | **45 files already formatted** ✅ |
+| ruff format | `.venv/bin/ruff format --check app` | 45 files already formatted | **47 files already formatted** ✅ |
 | mypy | `.venv/bin/python -m mypy` | Success: no issues found in 26 source files | **Success: no issues found in 26 source files** ✅ |
 | pyright | `node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests` | 0 errors, 0 warnings, 0 informations | **0 errors, 0 warnings, 0 informations** ✅ |
 
 读数与基线**逐字相同**：这是「行为一字未变」的最直接证据。
+
+> **关于 ruff format 的 45 → 47**：唯一的数字差异。ruff 连 `.md` 一起检查（本项目 26 个 `.py`
+> 之外的文档也计入），而这 2 个新增文件正是本票新建的 `issue-20-{acceptance,pr-body}.md`。
+> 核对：`.py` 文件数改前/改后均为 **26**（`find app -name '*.py' -not -path '*/__pycache__/*' | wc -l`），
+> 故「已是格式化状态」对代码部分的含义未变；差异全部来自本票新增的文档。
 
 **基线是实测的**（非引用票面）：在 `49728c8` 的未改动工作区上先跑了一遍五条命令，得到上表 base 列。
 
