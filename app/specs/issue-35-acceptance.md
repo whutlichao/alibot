@@ -210,13 +210,13 @@ $ gh pr view 36 --json number,state,files --jq '{number,state,files:[.files[].pa
 
 $ git status --short          # 空 ⇒ worktree 干净
 $ git rev-parse HEAD
-0cb9c4d8d59286a52c46731fff7e3afe0c2489c4        # 收尾提交（规格提交为 3216355）
+<本文件回填提交的 sha>          # head 随本文件自身的回填移动；实质产物提交为 3216355
 ```
 
 - **PR**：[#36](https://github.com/whutlichao/alibot/pull/36)（OPEN，base `main`）
 - **PR body 正本**：`app/specs/issue-35-pr-body.md`
-- **提交**：规格提交 `3216355`（issue 留档 + 验收件 + PR body）；本行回填所在的收尾提交 `0cb9c4d` ——
-  以该提交为分支 head 时 PR #36 上可见的 head sha 即 `0cb9c4d`，最终 head 为 `73093ac`（若之后再有提交，以 `git rev-parse HEAD` 为准；
-  文件无法包含自身的 sha，故此处记两个提交而不是单一 sha）
+- **提交**：规格提交 `3216355`（issue 留档 + 验收件 + PR body，本票的实质产物）。此后本文件自身的回填还会
+  产生若干收尾提交，因此分支 head 是移动的 —— **本文件无法包含自身的 sha**，取 head 请用
+  `gh pr view 36 --json headRefOid`（或 `git rev-parse HEAD`），不要引用本文件里的数字当 head
 - **改动面**：仅 `app/specs/` 下三份文档（三次提交均为 add / 追加，无修改、无删除其它文件）
 - **基线**：`9fd31bb`（`origin/main`）
