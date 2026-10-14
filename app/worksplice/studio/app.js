@@ -27,7 +27,7 @@
    - `failed` 保持**直接展开**（不藏在折叠后面），与摘要行同挂一条消息、互不吞并。
      「它为什么没说话」的三种**正常协议选择**（自判忽略 / 预算已用尽 / 被合并）从静默
      变成可读，但不得淹没对话，也不得与「它坏了」混为一谈。
-   - 折叠/展开是本会话的呈现状态（内存里的 `state.expandedOutcomes`），不进 localStorage：
+   - 折叠/展开是本浏览器页面的呈现状态（内存里的 `state.expandedOutcomes`），不进 localStorage：
      本文件依旧不用浏览器存储保存任何业务状态。
 
    DOM 一律用 createElement/textContent 构建，不用 innerHTML（模板与数据分离）。
@@ -50,27 +50,41 @@ const STATUS_LABEL = {
   offline: '未启用',
 };
 
-/* 五种轮次结果的**可读中文说法**（`CONTEXT.md` `## Language` 的词表：`replied` / `ignored` /
-   `failed` / `merged` / `budget-exhausted`）。它们**不得混为一谈**：`ignored` 是正常协议选择、
-   `budget-exhausted` 不是出错、`merged` 不是失败，只有 `failed` 需排查。
-   摘要行只消费其中三种（见 `summarizableOutcomes()`）：`replied` 的可见事实是流里那条它自己的
-   回复消息，不为它额外挂行（每消息至多一行的授权面）。 */
-const OUTCOME_LABEL = {
-  ignored: '自判忽略',
-  'budget-exhausted': '预算耗尽',
-  merged: '被合并',
-  failed: '这一轮失败',
+/* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
+   （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
+
+   键集是 `CONTEXT.md` `## Language` 词表里、**不进摘要行**的那三个：`ignored`（自判忽略）、
+   `budget-exhausted`（预算耗尽）、`merged`（被合并）。它们**不得混为一谈**：`ignored` 是正常
+   协议选择、`budget-exhausted` 不是出错、`merged` 不是失败。
+
+   `replied` 与 `failed` 不在表里：`replied` 的可见事实就是那条回复消息本身（不为它挂行）；
+   `failed` 直接展开（状态词要在「成员此刻未启用」与「这一轮失败」之间区分，写在 `roundOutcomeNode()` 里）。
+   不给它们留查不到的死词条。
+
+   `note` 是折叠态那一句「为什么」——三态各自的后端事实不同，说法就应当不同。 */
+const OUTCOME_SUMMARY = {
+  ignored: {
+    label: '自判忽略',
+    note: '自判忽略（正常的协议选择，不是失败）',
+  },
+  'budget-exhausted': {
+    label: '预算耗尽',
+    note: '预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）',
+  },
+  merged: {
+    label: '被合并',
+    note: '重复唤醒被合并进正在进行的那一轮（不是失败）',
+  },
 };
 
-/* 摘要行里「没有回应」的一句话说清**为什么**：三态各自的后端事实不同，说法就应当不同。 */
-const OUTCOME_SUMMARY_NOTE = {
-  ignored: '自判忽略（正常的协议选择，不是失败）',
-  'budget-exhausted': '预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）',
-  merged: '重复唤醒被合并进正在进行的那一轮（不是失败）',
-};
+/** 摘要行一行里要列出的三种状态（`OUTCOME_SUMMARY` 的键集，顺序就是行内的排列顺序）。 */
+const SUMMARY_STATUSES = Object.keys(OUTCOME_SUMMARY);
 
-/* 摘要行一行里要列出的三种状态：`failed` 不进去（它直接展开，见 `roundOutcomeNode()`）。 */
-const SUMMARY_STATUSES = ['ignored', 'budget-exhausted', 'merged'];
+/** 取一个 status 的中文说法；不在摘要词表里就原样回退（不伪造一个说法）。 */
+function outcomeLabel(status) {
+  const entry = OUTCOME_SUMMARY[status];
+  return entry ? entry.label : status;
+}
 
 const PROVIDER_LABEL = {
   dashscope: 'DashScope（远端）',
@@ -1004,7 +1018,7 @@ function roundOutcomeSummaryNode(records) {
   toggle.setAttribute('aria-controls', 'outcome-summary-' + baseSeq);
   toggle.appendChild(el('span', 'msg-outcome-summary-mark', expanded ? '\u25be' : '\u25b8'));
   toggle.appendChild(el('span', 'msg-outcome-summary-names', summarizeNames(items)));
-  toggle.appendChild(el('span', 'msg-outcome-summary-text', expanded ? '收起理由' : '没有回应 · 展开看理由'));
+  toggle.appendChild(el('span', 'msg-outcome-summary-text', expanded ? '收起原因' : '没有回应 · 展开看原因'));
   head.appendChild(toggle);
   head.appendChild(el('span', 'msg-time', timeLabel(items[0].finished_at)));
   body.appendChild(head);
@@ -1045,21 +1059,21 @@ function summarizeWhy(items) {
   const order = [];
   const groups = new Map();
   items.forEach((record) => {
-    const label = OUTCOME_LABEL[record.status] || record.status;
-    if (!groups.has(label)) {
-      groups.set(label, []);
-      order.push(label);
+    // 按 status 归组（不是按 label）：同一状态的成员聚在一起，各自用自己的后端事实说法。
+    if (!groups.has(record.status)) {
+      groups.set(record.status, []);
+      order.push(record.status);
     }
-    groups.get(label).push(outcomeMemberName(record.member_id));
+    groups.get(record.status).push(outcomeMemberName(record.member_id));
   });
   const mixed = order.length > 1;
   return order
-    .map((label) => {
-      const note = OUTCOME_SUMMARY_NOTE[label];
-      const text = note || label;
+    .map((status) => {
+      const entry = OUTCOME_SUMMARY[status];
+      const text = entry ? entry.note : status;
       // 单一状态：名单已在折叠控件上，这里只陈述「为什么」（不重复一遍名字）。
       if (!mixed) return text;
-      return joinNames(groups.get(label)) + '：' + text;
+      return joinNames(groups.get(status)) + '：' + text;
     })
     .join('；');
 }
@@ -1077,11 +1091,12 @@ function roundOutcomeSummaryLine(record) {
   line.dataset.status = record.status;
   const head = el('div', 'msg-outcome-line-head');
   head.appendChild(el('span', 'msg-outcome-line-author', outcomeMemberName(record.member_id)));
-  head.appendChild(el('span', 'msg-outcome-line-state', OUTCOME_LABEL[record.status] || record.status));
+  head.appendChild(el('span', 'msg-outcome-line-state', outcomeLabel(record.status)));
   head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
   line.appendChild(head);
   const reason = el('div', 'msg-outcome-line-reason', record.reason || '后端没有留下原因。');
-  reason.dataset.odId = 'round-outcome-reason-' + record.id;
+  // 与失败行的取证 id 同一前缀（`round-reason-<id>`）：同一字段两个前缀只会让取证混淆。
+  reason.dataset.odId = 'round-reason-' + record.id;
   line.appendChild(reason);
   return line;
 }

@@ -14,7 +14,7 @@
      if state.outcomes[message.seq]
 +      <RoundOutcomeSummary role="status">              # 同一条消息下**至多一块**
 +        <button aria-expanded aria-controls>           # 原生 button：Tab 可聚焦、Enter/Space 可切
-+          ▸阿墨、云舟 等 3 人 没有回应 · 展开看理由     # 名单逐个列出；>2 人写「等 N 人」
++          ▸阿墨、云舟 等 3 人 没有回应 · 展开看原因     # 名单逐个列出；>2 人写「等 N 人」
 +        </button>
 +        自判忽略（正常的协议选择，不是失败）            # 折叠态：三态各自的后端事实说法
 +        (展开) <div id="outcome-summary-N">
@@ -74,7 +74,8 @@
   summaryRows: 1, failedRows: 1
   summary: { baseSeq: "1", role: "status", hasDataSeq: false, toggle: "BUTTON",
              ariaExpanded: "false", ariaControls: "outcome-summary-1",
-             text: "▸阿墨、云舟 等 3 人没有回应 · 展开看理由", why: "自判忽略",
+             text: "▸阿墨、云舟 等 3 人没有回应 · 展开看原因",
+             why: "自判忽略（正常的协议选择，不是失败）",
              edgeColor: "oklch(0.78 0.02 86)" }            ← --border-strong，不是 --error
   failedBlocks: [{ tag: "未回应", state: "这一轮失败",
                    reason: "模型调用失败：…（脚本化替身固定此失败）",
@@ -97,9 +98,9 @@ Space  → aria-expanded: "false"，展开子树消失，焦点仍在同一个�
 **其余三个场景**（同一条消息下的三类正常选择的措辞与依据）：
 
 ```text
-单成员    ：「▸孤舟没有回应 · 展开看理由」/ why「自判忽略」
-被合并    ：「▸回声没有回应 · 展开看理由」/ why「被合并」/ reason「…1 次重复唤醒（#2）合并进那一轮…」
-预算耗尽  ：「▸砚台、长庚没有回应 · 展开看理由」/ why「预算耗尽」/ 2 条 budget-exhausted 各带自己的 reason
+单成员    ：「▸孤舟没有回应 · 展开看原因」/ why「自判忽略（正常的协议选择，不是失败）」
+被合并    ：「▸回声没有回应 · 展开看原因」/ why「重复唤醒被合并进正在进行的那一轮（不是失败）」
+预算耗尽  ：「▸砚台、长庚没有回应 · 展开看原因」/ why「预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）」
 ```
 
 **门禁**：`179 passed, 1 skipped`（基线 `174 passed, 1 skipped`；本票新增 5 条）·
@@ -107,8 +108,8 @@ Space  → aria-expanded: "false"，展开子树消失，焦点仍在同一个�
 新增用例只断言 HTTP/SSE 外部可观察行为（状态码 / JSON / SSE 帧），前端呈现用真实 Chromium
 手跑取证；逐条读数见 `app/specs/issue-18-acceptance.md` §4。
 
-**双轴 code-review**：见 `app/specs/issue-18-acceptance.md` §9（Standards + Spec 分列，
-findings 逐条处置）。
+**双轴 code-review**：Standards 轴已跑（本仓既有范式 + Fowler 基线），findings 逐条处置见
+`app/specs/issue-18-acceptance.md` §9；Spec 轴因上游网络错误（`connection reset by peer`）重跑。
 
 ## Merge Danger
 

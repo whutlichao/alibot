@@ -140,8 +140,8 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
   summaryRows: 1, failedRows: 1
   summary: { baseSeq: "1", role: "status", hasDataSeq: false,
              toggle: "BUTTON", ariaExpanded: "false", ariaControls: "outcome-summary-1",
-             text: "▸阿墨、云舟 等 3 人没有回应 · 展开看理由",
-             why: "自判忽略",
+             text: "▸阿墨、云舟 等 3 人没有回应 · 展开看原因",
+             why: "自判忽略（正常的协议选择，不是失败）",
              edgeColor: "oklch(0.78 0.02 86)" }             ← --border-strong，不是 --error
   failedBlocks: [{ baseSeq: "1", role: "status", hasDataSeq: false,
                    tag: "未回应", state: "这一轮失败",
@@ -149,7 +149,7 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
                    edgeColor: "oklch(0.532 0.128 25.9)" }]  ← --error（失败，直接展开）
   expandedLines: []                                         ← 默认折叠：一条逐成员行都没有
 展开态：
-  ariaExpanded: "true", text: "▾阿墨、云舟 等 3 人收起理由"
+  ariaExpanded: "true", text: "▾阿墨、云舟 等 3 人收起原因"
   expandedLines: [
     { status: "ignored", head: "阿墨自判忽略13:04",
       reason: "脚本化替身：自判无关",
@@ -158,21 +158,21 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
     { status: "ignored", head: "风间自判忽略13:04", reason: "脚本化替身：自判无关", ... }]
 
 === B. 单成员摘要 ===
-  collapsed.text: "▸孤舟没有回应 · 展开看理由"        ← 1 人：不写「等 N 人」
-  collapsed.why:  "自判忽略"                          ← 单一状态：不重复一遍名单
+  collapsed.text: "▸孤舟没有回应 · 展开看原因"        ← 1 人：不写「等 N 人」
+  collapsed.why:  "自判忽略（正常的协议选择，不是失败）"  ← 单一状态：不重复一遍名单
   expandedLines: [{ status: "ignored", head: "孤舟自判忽略13:04", reason: "脚本化替身：自判无关" }]
 
 === C. 被合并 ===
-  collapsed.text: "▸回声没有回应 · 展开看理由"
-  collapsed.why:  "被合并"
+  collapsed.text: "▸回声没有回应 · 展开看原因"
+  collapsed.why:  "重复唤醒被合并进正在进行的那一轮（不是失败）"
   expandedLines: [{ status: "merged", head: "回声被合并13:04",
     reason: "该成员已有一轮在进行中：1 次重复唤醒（#2）合并进那一轮，以最大 seq #2 为准；不排队、不重放" }]
   streamRows: [day-sep, msg, msg, "msg outcome-summary", msg]    ← 摘要行挂在 base_seq=2 那条消息下
   failedRows: 0
 
 === D. 预算耗尽（3 跳用尽后零投递）===
-  collapsed.text: "▸砚台、长庚没有回应 · 展开看理由"
-  collapsed.why:  "预算耗尽"                                    ← 与「自判忽略」措辞不同
+  collapsed.text: "▸砚台、长庚没有回应 · 展开看原因"
+  collapsed.why:  "预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）"   ← 与「自判忽略」措辞不同
   expandedLines: [
     { status: "budget-exhausted", head: "砚台预算耗尽13:04",
       reason: "本人类世代（最近一条人类消息 seq=1）的agent→agent 预算已用尽（≤3）：本条 Agent 消息照常落库，但没有投递任何唤醒" },
@@ -183,8 +183,8 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
   单独的端口 8795 + 小场景：成员「迟语」用延迟卡在 in-flight，成员「默然」自判忽略；
   再在迟语还跑着时发第二条消息 ⇒ 迟语的重复唤醒被 merged（base_seq=2）、默然又 ignored（同一 base_seq）。
   collapsed: [
-    { baseSeq: "2", text: "▸默然、迟语没有回应 · 展开看理由",
-      why: "默然：自判忽略；迟语：被合并" }]        ← 两种状态**各自点名**，不混为一谈
+    { baseSeq: "2", text: "▸默然、迟语没有回应 · 展开看原因",
+      why: "默然：自判忽略（正常的协议选择，不是失败）；迟语：重复唤醒被合并进正在进行的那一轮（不是失败）" }]  ← 两种状态**各自点名**，不混为一谈
   expandedLines: [ { status: "ignored", text: "默然自判忽略13:15脚本化替身：自判无关" },
                    { status: "merged",  text: "迟语被合并13:15该成员已有一轮在进行中：1 次重复唤醒（#2）合并进那一轮，以最大 seq #2 为准；不排队、不重放" } ]
 ```
@@ -207,7 +207,8 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
 | 3 | `failed` 保持直接展开、逐字保留 | 场景 A：免点击即读到「未回应 / 这一轮失败 / reason 正文」；`failedRows: 1` |
 | 3 | failed 与非 failed 混存互不吞并 | 场景 A 同时有 `summaryRows: 1` **与** `failedRows: 1`，两者 `baseSeq` 都是 `"1"` |
 | 4 | 四态各有可读说法且不混为一谈 | `ignored`→「自判忽略（正常的协议选择，不是失败）」；`budget-exhausted`→「预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）」；`merged`→「重复唤醒被合并进正在进行的那一轮（不是失败）」；`failed`→「这一轮失败」（且 `--error`） |
-| 4 | 同一行里混存多种状态时各自点名 | 场景 E：`why` = 「默然：自判忽略；迟语：被合并」，两种状态分开陈述 |
+| 4 | 同一行里混存多种状态时各自点名 | 场景 E：`why` = 「默然：自判忽略（正常的协议选择，不是失败）；迟语：重复唤醒被合并进正在进行的那一轮（不是失败）」，两种状态分开陈述 |
+| 5 | 折叠态就说清「为什么」（不只列名单） | 场景 A/B `why` = 「自判忽略（正常的协议选择，不是失败）」；场景 C =「重复唤醒被合并进正在进行的那一轮（不是失败）」；场景 D =「预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）」——三态措辞各不相同 |
 | 5 | 沿用既有词汇 | 「轮次结果」「自判忽略」「预算耗尽」「被合并」取自 `CONTEXT.md` `## Language`；失败块的「未回应 / 没启用 / 这一轮失败 / 看成员状态」逐字未改 |
 | 5 | 颜色只用既有 token 名、非 failed 不得用失败视觉 | 摘要行 `--border-strong`（`oklch(0.78 0.02 86)`）作描边、`--muted` / `--faint` 作文字；**无一处** `--error`。失败块仍 `--error`（`oklch(0.532 0.128 25.9)`） |
 | 5 | 折叠控件是可聚焦原生控件、键盘可操作 | `toggle: "BUTTON"` + `aria-expanded` + `aria-controls`（§4.3 真实按键取证） |
@@ -219,14 +220,16 @@ budget used: {'epoch_seq': 1, 'limit': 3, 'used': 3, 'remaining': 0}
 === B. Tab 走到的焦点序列 ===
 {"reached": true, "tabs": 6,
  "last": {"tag":"BUTTON","cls":"msg-outcome-summary-toggle","summaryToggle":"1","expanded":"false",
-          "text":"▸云舟、阿墨 等 3 人没有回应 · 展开看理由"},
+          "text":"▸阿墨、云舟 等 3 人没有回应 · 展开看原因"},
  "outline": ["BUTTON.nav-row","BUTTON.nav-row","BUTTON.nav-row","BUTTON.nav-row","BUTTON.icon-btn","SUMMARY"]}
 focus ring: {"outlineWidth":"2px","outlineStyle":"solid","outlineColor":"oklch(0.626 0.086 356.7)"}
 
 === C. Enter 展开后 ===
 {"focusStillOnToggle": "1", "ariaExpanded": "true", "mark": "▾",
- "toggleText": "▾云舟、阿墨 等 3 人收起理由", "detailsId": "outcome-summary-1",
- "lines": [{"status":"ignored","head":"云舟自判忽略13:02","reason":"脚本化替身：自判无关"}, …]}
+ "toggleText": "▾阿墨、云舟 等 3 人收起原因", "detailsId": "outcome-summary-1",
+ "why": "自判忽略（正常的协议选择，不是失败）",
+ "detailId": "round-reason-round_6c866e768850",          ← 与失败行的 round-reason- 同一前缀
+ "lines": [{"status":"ignored","head":"阿墨自判忽略13:04","reason":"脚本化替身：自判无关"}, …]}
 
 === D. Space 收起后 === {"focusStillOnToggle":"1","ariaExpanded":"false","detailsPresent":false}
 
