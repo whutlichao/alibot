@@ -13,9 +13,9 @@
    唤醒会重新读到这条消息——但**不是自动重放**：in-flight 状态只在内存里，后端重启后没有
    任何可重放的记录，只等下一次唤醒。
 
-预算策略（策略 B，实施票 ③）在本模块实现，且落库（``channel_budget``）：
+预算策略（策略 B，实施票 ③）在本模块实现，且落库（``target_budget``）：
 
-- **人类世代** = 该频道最近一条人类消息的 `seq`；人类消息落库即开启新世代并把预算重置为 3。
+- **人类世代** = 该 target 最近一次**开世代动作**所在消息的 `seq`；人类消息落库即开启新世代并把预算重置为 3。
 - **一次 agent→agent 跳** = 一条 Agent 消息**投递了至少一个**唤醒给其它 Agent。一条消息即使唤醒
   多个成员也只消耗 1 次——它就是一次跳。被**合并**掉的重复唤醒不额外计数、也不额外消耗预算
   （「跳数以投递的唤醒为准」）。
@@ -25,10 +25,10 @@
   一个都不投递」构造性保证，而不是靠事后统计。
 - **穿透不豁免预算**：未加入却被点名的 Agent 同样走这条跳的裁决。
 
-**跳数的单一正本**是 :meth:`Database.budget_state` 据以读出的 ``channel_budget.used``：它每次
+**跳数的单一正本**是 :meth:`Database.budget_state` 据以读出的 ``target_budget.used``：它每次
 agent→agent 跳恰好 +1，不因成员数变化。``round_outcome.consumed_budget`` 只是**行级**标记
 （「这一轮由那次已计一次的跳送来」），一次跳投递 N 个成员就有 N 条为真的行，因此**不可按行求和**；
-想拿跳数的人只能读 ``channel_budget.used``。
+想拿跳数的人只能读 ``target_budget.used``。
 """
 
 from __future__ import annotations
@@ -161,10 +161,13 @@ class WakeOrchestrator:
         4. Agent 作者且目标非空 ⇒ 这是**一次 agent→agent 跳**：先看预算。预算耗尽则一个都不投递，
            为每个被压制的成员记一条 ``budget-exhausted``；否则先扣 1 次预算再投递。
 
-        这次跳只让 ``channel_budget.used`` +1（跳数的单一正本）；下面传给每个成员的
+        这次跳只让 ``target_budget.used`` +1（跳数的单一正本）；下面传给每个成员的
         ``jump_delivered`` 是**行级**标记，投递 N 个成员就有 N 条为真的轮次结果行。
         """
-        self._db.get_channel(channel_id)  # 404 早退（频道不存在就不唤醒）
+        # 频道面入口的 404 早退：`notify` 今天的调用点都来自「某频道的一条消息落库」。
+        # 它不是唤醒面查询（那个是下面的 `list_target_agent_members`，**不按 kind 分支**）；
+        # 保留它是因为 #24 不新增 dm / task 的唤醒入口，去掉它反而会改变既有 404 行为。
+        self._db.get_channel(channel_id)
         message = self._db.get_message(channel_id, from_seq)
         author_id = message["author"]["id"]
         author_kind = message["author"]["kind"]
@@ -178,7 +181,7 @@ class WakeOrchestrator:
             return 0
 
         # 这一次跳是否真的发生了（Agent 作者 + 目标非空 + 有余额 ⇒ 投递）。它作为**行级**标记
-        # 下调给每个成员：`channel_budget.used` 已经把跳数记了 1 次，行标记只为「这一轮是怎么来的」。
+        # 下调给每个成员：`target_budget.used` 已经把跳数记了 1 次，行标记只为「这一轮是怎么来的」。
         # 名字故意不叫 consumed_budget：`round_outcome.consumed_budget` 是历史列名，读起来像
         # 「这一行扣了一次」，正是 #12 要消掉的歧义。
         jump_delivered = author_kind == "agent"
@@ -203,10 +206,14 @@ class WakeOrchestrator:
         return len(targets)
 
     def _wake_targets(self, channel_id: str, author_id: str, message: dict[str, Any]) -> list[_WakeTarget]:
-        """唤醒面 = 频道 agent 成员（除作者）+ 被点名但**未加入**该频道的 Agent（穿透）。"""
+        """唤醒面 = **该 target** 的 agent 成员（除作者）+ 被点名但**未加入**该 target 的 Agent（穿透）。
+
+        成员面读的是 ``target_member``（同一个 `target_id` 键），**不按 kind 分支**（ADR-0004 决策 8）；
+        channel 型 target 的 id 就是频道 id，所以这里的传参与改名前的值逐字相同。
+        """
         targets = [
             _WakeTarget(member=member)
-            for member in self._db.list_channel_agent_members(channel_id)
+            for member in self._db.list_target_agent_members(channel_id)
             if member["id"] != author_id
         ]
         seen = {target.member["id"] for target in targets}
@@ -234,7 +241,7 @@ class WakeOrchestrator:
     def _spend_jump(self, channel_id: str, from_seq: int, targets: list[dict[str, Any]]) -> bool:
         """扣一次 agent→agent 跳的预算。返回是否投递（False = 预算耗尽，一个都不投）。
 
-        这里是**跳数唯一正本**的**唯一写点**：一次调用让 ``channel_budget.used`` 恰好 +1，
+        这里是**跳数唯一正本**的**唯一写点**：一次调用让 ``target_budget.used`` 恰好 +1，
         与该跳投递了几个成员无关。
 
         「以投递的唤醒为准」有两个落点，都在这一个方法里：
@@ -293,7 +300,7 @@ class WakeOrchestrator:
 
         ``consumed_budget`` 只写进这一行的 ``round_outcome.consumed_budget`` 列：它是**行级**
         标记（「这一轮由哪次跳送来」），**不是**跳的计数 —— 一次跳投递 N 个成员会写 N 条为真的行，
-        跳数只 +1。跳数的唯一正本是 ``channel_budget.used``。
+        跳数只 +1。跳数的唯一正本是 ``target_budget.used``。
         """
         member_id = agent["id"]
 
@@ -434,7 +441,7 @@ class WakeOrchestrator:
 
         它们不重放、不额外消耗预算（跳数以**投递的唤醒**为准），但必须留痕：这是
         「它当时为什么没有被单独问一次」的会计事实。consumed_budget 写在这一轮自己的轮次结果行上，
-        这里写 False —— 合并本身没有产生投递（也不增加 ``channel_budget.used``，那才是跳数正本）。
+        这里写 False —— 合并本身没有产生投递（也不增加 ``target_budget.used``，那才是跳数正本）。
         """
         if not merged_bases:
             return
@@ -484,10 +491,10 @@ class WakeOrchestrator:
         """
         members = self._db.list_members()
         system_seq: int | None = None
-        if pierced and not self._db.is_channel_member(channel_id, agent["id"]):
-            self._db.add_channel_member(channel_id, agent["id"])
+        if pierced and not self._db.is_target_member(channel_id, agent["id"]):
+            self._db.add_target_member(channel_id, agent["id"])
             system_message = self._db.append_message(
-                channel_id=channel_id,
+                target_id=channel_id,
                 body=(
                     f"{agent['display_name']} 加入了频道：它被点名时并不在此频道，"
                     f"回复时顺带加入（成员变化只随真实回复发生）"
@@ -502,7 +509,7 @@ class WakeOrchestrator:
                 {"type": "message", "seq": system_seq, "message": system_message},
             )
         message = self._db.append_message(
-            channel_id=channel_id,
+            target_id=channel_id,
             body=body,
             author_member_id=agent["id"],
             kind="agent",

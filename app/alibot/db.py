@@ -1,12 +1,18 @@
-"""单文件 SQLite 持久化：频道、成员、消息与每频道已读位置的正本。
+"""单文件 SQLite 持久化：target、成员、消息与每 target 已读位置的正本。
 
-本模块是应用后端的持久化正本（spec #1 §2）。约束：
+本模块是应用后端的持久化正本（spec #1 §2、第二版规格 #23 §2）。约束：
 
 - 消息 **append-only**：不存在更新或删除消息的代码路径（库级触发器兜底）。
-- 频道内单调 ``seq``：``UNIQUE(target_id, seq)``，由本模块在同一事务内分配。
-- 已读位置 ``channel_read.last_read_seq`` 只在同一频道内取 max 单调推进。
+- **target 内**单调 ``seq``：``UNIQUE(target_id, seq)``，由本模块在同一事务内分配。
+- 已读位置 ``target_read.last_read_seq`` 只在同一 target 内取 max 单调推进。
 - 未读计数 = ``last_read_seq`` 之后 ``kind in ('human','agent')``、**作者不是本人**的顶层
   消息条数（#4 的人类裁定排除本人作者：#2 原本把 owner 自己的消息也计入）。
+
+**消息作用域是 target，不是频道**（ADR-0004）：``target(id, kind ∈ {channel, dm, task})`` 是消息、
+已读位置、回应预算与轮次结果的共同键。**channel 型 target 复用 ``channel.id``**——同一个字符串既是
+频道主键也是 target 主键，``target`` 行对 channel 型是一张**影子行**（id 同值、只承载 ``kind``）；
+频道的 ``name`` / ``description`` 仍留在 ``channel`` 表，**没有**映射表。三处旧名随作用域改名：
+``channel_member → target_member``、``channel_read → target_read``、``channel_budget → target_budget``。
 
 空库只含一条固定成员行 ``owner``（规格固定的唯一成员行），没有任何业务种子数据。
 """
@@ -32,7 +38,7 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Alibot"
@@ -41,10 +47,19 @@ DATABASE_FILE_NAME = "alibot.db"
 
 MESSAGE_KINDS = ("human", "agent", "system")
 
+# target 的三种 kind（ADR-0004 / 规格 #23 §1）：channel 型复用 channel.id（影子行），
+# dm / task 后续票（#25–#28）才产生数据；本票只让 schema 与查询路径允许它们。
+TARGET_KINDS = ("channel", "dm", "task")
+
+# 计入工作台快照 ``unread_total`` 的 kind（规格 §2 / 决策 G5）：channel 型 + dm 型之和。
+# **task 型不进** ``unread_total``（看板卡片自带徽标，各自读它）。
+UNREAD_TOTAL_KINDS = ("channel", "dm")
+
 # 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
 ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
 
-# 有界响应预算（策略 B，spec #1 §5）：一个人类世代内同一频道允许的 agent→agent 跳数上界。
+# 有界响应预算（策略 B，spec #1 §5）：一个**人类世代内同一 target** 允许的 agent→agent 跳数上界。
+# 它是**常量**：本票不做配置化（那是 #31 的范围），只把「每频道一份」泛化为「每 target 一份」。
 BUDGET_LIMIT = 3
 
 MAX_CHANNEL_NAME_LENGTH = 80
@@ -77,15 +92,27 @@ CREATE TABLE IF NOT EXISTS channel (
   created_at  TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS channel_member (
-  channel_id TEXT NOT NULL REFERENCES channel(id),
-  member_id  TEXT NOT NULL REFERENCES member(id),
-  PRIMARY KEY (channel_id, member_id)
+-- target 是一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果四件事
+-- 全部挂 ``target_id``，``UNIQUE(target_id, seq)`` 因此说的是「target 内单调」。
+-- **channel 型是一张影子行**：``id`` 与 ``channel.id`` 同值（复用，同一个字符串既是频道主键也是
+-- target 主键），本表只承载 ``kind``；频道自己的 ``name`` / ``description`` 仍留在 ``channel`` 表，
+-- 因此**没有**映射表。影子行的生命周期由频道决定：本仓没有删除频道的入口，也就没有删除它的路径。
+-- 列的 CHECK 是 ``kind`` 受约束的正本（三种取值）；dm / task 型的数据由后续票 #25–#28 产生。
+CREATE TABLE IF NOT EXISTS target (
+  id         TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK (kind IN ('channel', 'dm', 'task')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS target_member (
+  target_id TEXT NOT NULL REFERENCES target(id),
+  member_id TEXT NOT NULL REFERENCES member(id),
+  PRIMARY KEY (target_id, member_id)
 );
 
 CREATE TABLE IF NOT EXISTS message (
   id               TEXT PRIMARY KEY,
-  target_id        TEXT NOT NULL,
+  target_id        TEXT NOT NULL REFERENCES target(id),
   seq              INTEGER NOT NULL,
   author_member_id TEXT NOT NULL REFERENCES member(id),
   kind             TEXT NOT NULL CHECK (kind IN ('human', 'agent', 'system')),
@@ -95,21 +122,22 @@ CREATE TABLE IF NOT EXISTS message (
   UNIQUE (target_id, seq)
 );
 
-CREATE TABLE IF NOT EXISTS channel_read (
+CREATE TABLE IF NOT EXISTS target_read (
   member_id     TEXT NOT NULL REFERENCES member(id),
-  channel_id    TEXT NOT NULL REFERENCES channel(id),
+  target_id     TEXT NOT NULL REFERENCES target(id),
   last_read_seq INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (member_id, channel_id)
+  PRIMARY KEY (member_id, target_id)
 );
 
--- 有界响应预算（策略 B，spec #1 §5）的正本：每频道一行。
--- ``epoch_seq`` = 人类世代（该频道最近一条人类消息的 seq；0 = 还没有人类消息）；
+-- 有界响应预算（策略 B，spec #1 §5）的正本：每 **target** 一行（ADR-0004 的泛化，机制逐字不变）。
+-- ``epoch_seq`` = 人类世代（该 target 最近一次**开世代动作**所在消息的 seq；0 = 还没有开世代动作）；
 -- ``used`` = 该世代内**已投递**的 agent→agent 跳数。
 -- 落库而不是放进程内存：「已用/剩余」必须在后端重启后仍是同一条事实（验收项明写）。
-CREATE TABLE IF NOT EXISTS channel_budget (
-  channel_id TEXT PRIMARY KEY REFERENCES channel(id),
-  epoch_seq  INTEGER NOT NULL DEFAULT 0,
-  used       INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0)
+-- **每 target 一份**：「一个频道烧完把另一个频道锁死」因此不可能发生（跨 target 不锁死）。
+CREATE TABLE IF NOT EXISTS target_budget (
+  target_id TEXT PRIMARY KEY REFERENCES target(id),
+  epoch_seq INTEGER NOT NULL DEFAULT 0,
+  used      INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0)
 );
 
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
@@ -134,11 +162,11 @@ CREATE TABLE IF NOT EXISTS remote_consent (
 -- 轮次结果（spec #1 §5）：一轮的处理结果。append-only，与消息同级的取证面。
 -- ``consumed_budget`` 是**行级**标记，不是跳的计数：它说的是「这一轮是由**一次已投递并被计一次的
 -- agent→agent 跳**送来的」。**一次跳投递 N 个成员就有 N 条为 1 的行**，而跳数只 +1，因此
--- **它不可按行求和**。该人类世代的**跳数唯一正本**是 ``channel_budget.used``（见上面的表注释）。
+-- **它不可按行求和**。该人类世代的**跳数唯一正本**是 ``target_budget.used``（见上面的表注释）。
 CREATE TABLE IF NOT EXISTS round_outcome (
   id              TEXT PRIMARY KEY,
   member_id       TEXT NOT NULL REFERENCES member(id),
-  target_id       TEXT NOT NULL,
+  target_id       TEXT NOT NULL REFERENCES target(id),
   base_seq        INTEGER NOT NULL,
   status          TEXT NOT NULL CHECK (status IN
                     ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted')),
@@ -153,7 +181,7 @@ CREATE TABLE IF NOT EXISTS round_outcome (
 CREATE INDEX IF NOT EXISTS idx_round_outcome_target ON round_outcome(target_id, finished_at);
 CREATE INDEX IF NOT EXISTS idx_round_outcome_member ON round_outcome(member_id, finished_at);
 
-CREATE INDEX IF NOT EXISTS idx_channel_member_member ON channel_member(member_id);
+CREATE INDEX IF NOT EXISTS idx_target_member_member ON target_member(member_id);
 
 -- append-only 兜底：任何更新/删除消息的路径（含未来的代码路径与人工 SQL）都被拒绝。
 CREATE TRIGGER IF NOT EXISTS message_no_update
@@ -186,26 +214,65 @@ END;
 # - ``:channel_id IS NULL`` 时返回全部频道（列表）；给值时返回单条。
 # - 未读计数口径**只在这里写一次**（规格 §2 与 #4 的人类裁定）：已读位置之后、
 #   kind ∈ {human, agent}、**且作者不是本人**的顶层消息；不计 system。
-#   unread_count（列表/单条）与 unread_total（workspace 快照由前者相加）因此只有这一个落点。
+#   unread_count（列表/单条）与 unread_total（workspace 汇总）因此共享同一个形状。
+# - 作用域键是 **target_id**，不是 channel_id：channel 型 target 复用 ``channel.id``（影子行），
+#   所以 ``m.target_id = c.id`` 这条既有事实逐字不变，但查询本身是 **target 作用域**——
+#   **不按 kind 分支**（ADR-0004 决策 8）。
 # Agent 行的列清单（member 行 + agent_config 配置列）。三处查询共用：
 # 加一个配置列时只改这里，不会只改到其中一两处。
 # 三处 FROM/WHERE 各自保留（起点与过滤条件本就不同）—— #3 的双轴 review 已为这个形态裁决过。
 AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at"
 
-CHANNEL_SELECT_SQL = """
+# 由常量 ``AGENT_COLUMNS`` 拼出的 Agent 选取语句（**在模块级拼好**，不把拼接写进
+# ``execute`` 的实参：查询文本对静态检查是可见常量，也不是注入面）。
+AGENT_SELECT_SQL = "SELECT " + AGENT_COLUMNS + " "
+
+# 未读的**唯一一个 WHERE 形状**（ADR-0004 决策 7）：已读位置之后、``kind ∈ {human, agent}``、
+# 作者非本人、**只算顶层**。三种 kind 用同一个形状，**不按 kind 分支**。
+# 它是**单一字面量落点**：下面三个消费点（频道列表、工作台汇总、单 target 计数）都把它原样拼进
+# 自己的 FROM 里，于是不存在第二个形状。别名统一用 ``m``（三个消费点里它是各自子查询的局部名字，
+# 互不冲突），因此这里只需一条常量，而不是按别名派生多份。
+UNREAD_WHERE_SQL = """
+                     AND m.seq > COALESCE(
+                           (SELECT r.last_read_seq FROM target_read r
+                             WHERE r.member_id = :member_id AND r.target_id = m.target_id), 0)
+                     AND m.kind IN ('human', 'agent')
+                     AND m.author_member_id != :member_id
+"""
+
+CHANNEL_SELECT_SQL = (
+    """
     SELECT c.*,
            COALESCE((SELECT MAX(seq) FROM message m WHERE m.target_id = c.id), 0) AS last_seq,
            COALESCE(r.last_read_seq, 0) AS last_read_seq,
-           COALESCE((SELECT COUNT(*) FROM message m2
-                      WHERE m2.target_id = c.id
-                        AND m2.seq > COALESCE(r.last_read_seq, 0)
-                        AND m2.kind IN ('human', 'agent')
-                        AND m2.author_member_id != :member_id), 0) AS unread_count
+           COALESCE((SELECT COUNT(*) FROM message m
+                      WHERE m.target_id = c.id
+"""
+    + UNREAD_WHERE_SQL
+    + """
+                    ), 0) AS unread_count
       FROM channel c
-      LEFT JOIN channel_read r ON r.channel_id = c.id AND r.member_id = :member_id
+      LEFT JOIN target_read r ON r.target_id = c.id AND r.member_id = :member_id
      WHERE (:channel_id IS NULL OR c.id = :channel_id)
      ORDER BY c.created_at, c.id
 """
+)
+
+# 工作台快照的 ``unread_total`` = **channel 型 + dm 型**之和（决策 G5）：**task 型不进它**。
+# 它用的是上面**同一条 WHERE 形状**（同一个 ``UNREAD_WHERE_SQL``），只是在 target 上按 kind 过滤后
+# 汇总 ——「只有一个 SQL 形状」因此是结构上的事实，而不是两句彼此长得像的 SQL。
+# 取值域由上面的 ``UNREAD_TOTAL_KINDS`` **拼出来**（不是另写一份字面量）：G5 的「channel + dm」
+# 因此只有一个落点，改一处不会与另一处漂移。
+_UNREAD_TOTAL_KIND_LIST = ", ".join(f"'{kind}'" for kind in UNREAD_TOTAL_KINDS)
+UNREAD_TOTAL_SQL = (
+    "SELECT COALESCE(SUM((SELECT COUNT(*) FROM message m\n"
+    "                      WHERE m.target_id = t.id\n" + UNREAD_WHERE_SQL + "                    )), 0)\n"
+    "  FROM target t\n"
+    " WHERE t.kind IN (" + _UNREAD_TOTAL_KIND_LIST + ")\n"
+)
+
+# 单个 target 的未读条数：**同样的 WHERE 形状**（别名同为 m），区别只在于作用域键直接由参数给出。
+UNREAD_COUNT_SQL = "SELECT COUNT(*) FROM message m\n WHERE m.target_id = :target_id\n" + UNREAD_WHERE_SQL
 
 
 class DomainError(Exception):
@@ -329,8 +396,7 @@ class Database:
         """全部 Agent 成员（含其配置），按创建顺序。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT " + AGENT_COLUMNS + " "
-                "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
+                AGENT_SELECT_SQL + "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE m.kind = 'agent' AND m.deleted_at IS NULL "
                 "ORDER BY m.created_at, m.id",
             ).fetchall()
@@ -339,8 +405,7 @@ class Database:
     def get_agent(self, member_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT " + AGENT_COLUMNS + " "
-                "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
+                AGENT_SELECT_SQL + "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
                 "WHERE m.id = ? AND m.kind = 'agent'",
                 (member_id,),
             ).fetchone()
@@ -475,7 +540,7 @@ class Database:
 
         ``consumed_budget`` 是**行级**标记（「这一轮所属的那次跳」），**不是**跳的计数：
         一次跳投递 N 个成员会写 N 条 ``consumed_budget=1`` 的行，而跳数只 +1。**不可按行求和** ——
-        该人类世代的跳数唯一正本是 ``channel_budget.used``（:meth:`budget_state`）。
+        该人类世代的跳数唯一正本是 ``target_budget.used``（:meth:`budget_state`）。
         行数与跳数之间**没有固定关系**（投递的成员若无可落库内容就不落行），所以按行求和得到的数
         既可能偏大也可能偏小；它不是跳数。
         """
@@ -518,8 +583,8 @@ class Database:
         }
 
     def list_round_outcomes(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
-        """按 ``finished_at`` 升序取该频道的轮次结果（``after_seq`` 按 ``base_seq`` 过滤）。"""
-        self.get_channel(target_id)  # 404 早退
+        """按 ``finished_at`` 升序取该 target 的轮次结果（``after_seq`` 按 ``base_seq`` 过滤）。"""
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM round_outcome WHERE target_id = ? AND base_seq >= ? ORDER BY finished_at, id",
@@ -542,7 +607,62 @@ class Database:
             for row in rows
         ]
 
-    # ─── 频道 ─────────────────────────────────────────────────────────────
+    # ─── target（消息作用域的正本） ───────────────────────────────────────
+    def get_target(self, target_id: str) -> dict[str, Any]:
+        """取一个 target 行；不存在则 404。**不按 kind 分支**（ADR-0004 决策 8）。
+
+        它是所有**目标作用域**读写的 404 早退点：``message`` / ``target_read`` / ``target_budget`` /
+        ``round_outcome`` 四张表的外键都指向这里，因此'键存在'就是'作用域可用'。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, kind, created_at FROM target WHERE id = ?", (target_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFound(f"target 不存在：{target_id}")
+        return {"id": row["id"], "kind": row["kind"], "created_at": row["created_at"]}
+
+    def create_target(self, kind: str, target_id: str | None = None) -> dict[str, Any]:
+        """落一个新的 **dm / task 型** target 行。
+
+        **本票没有生产调用点**（它只插一行 target，不做任何 dm / task 业务校验）：本票只用它构造
+        **数据面取证**所需的最小数据（票面验收项 2 明确授权「用你构造的最小数据……证明该口径成立，
+        并说明你怎么构造的」）。幂等（一 agent 一 DM）、两行成员、peer 唯一、任务归属与看板、
+        看板与唤醒规则都留给 #25–#28——在那之前，这个方法只服务 `app/tests/test_target_scope.py`。
+
+        **channel 型不经此处**：它复用 ``channel.id``、由 :meth:`create_channel` 落影子行，
+        这里显式拒绝，以免出现'有 target 行却没有对应频道行'的破坏不变量的中间态。
+        """
+        if kind not in TARGET_KINDS:
+            raise DomainError(
+                "validation_failed", f"未知的 target 类型：{kind}", fields={"kind": "target 类型非法"}
+            )
+        if kind == "channel":
+            raise DomainError(
+                "validation_failed",
+                "channel 型 target 由频道创建时落影子行，不经此处",
+                fields={"kind": "channel 型 target 复用 channel.id"},
+            )
+        new_target_id = target_id or new_id("tgt")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO target(id, kind, created_at) VALUES (?, ?, ?)",
+                (new_target_id, kind, utc_now()),
+            )
+        return self.get_target(new_target_id)
+
+    def unread_total(self, member_id: str = OWNER_ID) -> int:
+        """工作台快照的总未读 = **channel 型 + dm 型**之和（决策 G5）；**task 型不进它**。
+
+        它用的是与频道列表**同一条未读 WHERE 形状**（``UNREAD_WHERE_SQL`` 这个单一文本落点），
+        因此「未读计数只有一个 SQL 形状」是结构上的事实：汇总只多一层 ``kind IN ('channel','dm')``
+        过滤，不是第二套计数口径。
+        """
+        with self._lock:
+            row = self._conn.execute(UNREAD_TOTAL_SQL, {"member_id": member_id}).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    # ─── 频道（channel 型 target 的呈现面：name / description 仍留在 channel 表） ──
     def list_channels(self, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -571,27 +691,27 @@ class Database:
             "unread_count": row["unread_count"],
         }
 
-    def list_channel_members(self, channel_id: str) -> list[dict[str, Any]]:
-        self.get_channel(channel_id)  # 404 早退
+    def list_target_members(self, target_id: str) -> list[dict[str, Any]]:
+        """该 target 的成员行（成员面/唤醒面的正本）。**不按 kind 分支**（三种 kind 同一张表、一个键）。"""
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             rows = self._conn.execute(
-                "SELECT m.* FROM channel_member cm JOIN member m ON m.id = cm.member_id "
-                "WHERE cm.channel_id = ? ORDER BY CASE m.kind WHEN 'owner' THEN 0 ELSE 1 END, m.created_at",
-                (channel_id,),
+                "SELECT m.* FROM target_member tm JOIN member m ON m.id = tm.member_id "
+                "WHERE tm.target_id = ? ORDER BY CASE m.kind WHEN 'owner' THEN 0 ELSE 1 END, m.created_at",
+                (target_id,),
             ).fetchall()
         return [self._member_payload(row) for row in rows]
 
-    def list_channel_agent_members(self, channel_id: str) -> list[dict[str, Any]]:
-        """该频道的全部 Agent 成员（唤醒面的正本；调用方自行排除作者）。"""
-        self.get_channel(channel_id)  # 404 早退
+    def list_target_agent_members(self, target_id: str) -> list[dict[str, Any]]:
+        """该 target 的全部 Agent 成员（唤醒面的正本；调用方自行排除作者）。**不按 kind 分支**。"""
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             rows = self._conn.execute(
-                "SELECT " + AGENT_COLUMNS + " "
-                "FROM channel_member cm JOIN member m ON m.id = cm.member_id "
+                AGENT_SELECT_SQL + "FROM target_member tm JOIN member m ON m.id = tm.member_id "
                 "LEFT JOIN agent_config c ON c.member_id = m.id "
-                "WHERE cm.channel_id = ? AND m.kind = 'agent' AND m.deleted_at IS NULL "
+                "WHERE tm.target_id = ? AND m.kind = 'agent' AND m.deleted_at IS NULL "
                 "ORDER BY m.created_at, m.id",
-                (channel_id,),
+                (target_id,),
             ).fetchall()
         return [self._agent_payload(row) for row in rows]
 
@@ -646,14 +766,21 @@ class Database:
                     (channel_id, clean_name, clean_description, now),
                 )
                 participants = [creator_id] + [member["id"] for member in selected]
+                # channel 型的**影子行**：id 与 channel.id 同值、只承载 kind（ADR-0004 决策 1）。
+                # 写在这里而不是别处，是因为它必须与频道行**同一个事务**：否则会出现
+                # 「频道在、影子行不在」的中间态，而 message.target_id 的外键就指不到它了。
+                self._conn.execute(
+                    "INSERT INTO target(id, kind, created_at) VALUES (?, 'channel', ?)",
+                    (channel_id, now),
+                )
                 for member_id in participants:
                     self._conn.execute(
-                        "INSERT INTO channel_member(channel_id, member_id) VALUES (?, ?)",
+                        "INSERT INTO target_member(target_id, member_id) VALUES (?, ?)",
                         (channel_id, member_id),
                     )
                     self._conn.execute(
-                        "INSERT INTO channel_read(member_id, channel_id, last_read_seq) VALUES (?, ?, 0) "
-                        "ON CONFLICT(member_id, channel_id) DO NOTHING",
+                        "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0) "
+                        "ON CONFLICT(member_id, target_id) DO NOTHING",
                         (member_id, channel_id),
                     )
                 self._commit()
@@ -662,9 +789,9 @@ class Database:
                 raise
         return self.get_channel(channel_id, creator_id)
 
-    # ─── 消息 ─────────────────────────────────────────────────────────────
-    def list_messages(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
-        self.get_channel(channel_id)  # 404 早退
+    # ─── 消息（作用域键是 **target_id**） ────────────────────────────────
+    def list_messages(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -674,19 +801,19 @@ class Database:
                  WHERE m.target_id = ? AND m.seq > ?
                  ORDER BY m.seq
                 """,
-                (channel_id, after_seq),
+                (target_id, after_seq),
             ).fetchall()
         return [self._message_payload(row) for row in rows]
 
     def append_message(
         self,
-        channel_id: str,
+        target_id: str,
         body: str,
         author_member_id: str = OWNER_ID,
         kind: str = "human",
         mention_snapshot: Iterable[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """在同一事务内分配频道内单调 seq 并落库。失败则不落任何行。"""
+        """在同一事务内分配 **target 内**单调 seq 并落库。失败则不落任何行。"""
         if kind not in MESSAGE_KINDS:
             raise DomainError("validation_failed", f"未知的消息类型：{kind}", fields={"kind": "消息类型非法"})
         clean_body = (body or "").strip()
@@ -698,7 +825,7 @@ class Database:
                 f"消息正文最多 {MAX_MESSAGE_BODY_LENGTH} 个字符",
                 fields={"body": f"消息正文最多 {MAX_MESSAGE_BODY_LENGTH} 个字符"},
             )
-        self.get_channel(channel_id)  # 404 早退
+        self.get_target(target_id)  # 404 早退
         self.get_member(author_member_id)
 
         message_id = new_id("msg")
@@ -708,7 +835,7 @@ class Database:
             try:
                 row = self._conn.execute(
                     "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM message WHERE target_id = ?",
-                    (channel_id,),
+                    (target_id,),
                 ).fetchone()
                 seq = int(row["next_seq"])
                 self._conn.execute(
@@ -716,7 +843,7 @@ class Database:
                     "mention_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         message_id,
-                        channel_id,
+                        target_id,
                         seq,
                         author_member_id,
                         kind,
@@ -729,18 +856,19 @@ class Database:
                     # 人类消息落库**即**开启新世代并把回应预算重置为满额（spec #1 §5）。
                     # 写在这里而不是等到下一次扣款时惰性重置：「人类消息随后落库即重置」
                     # 是落库那一刻的事实，预算状态端点与压制行为必须同时看到它。
+                    # 预算按 **target** 一份（ADR-0004 决策 4）：同一个写点服务三种 kind。
                     self._conn.execute(
-                        "INSERT INTO channel_budget(channel_id, epoch_seq, used) VALUES (?, ?, 0) "
-                        "ON CONFLICT(channel_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
-                        (channel_id, seq),
+                        "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
+                        "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
+                        (target_id, seq),
                     )
                 self._commit()
             except Exception:
                 self._rollback()
                 raise
-        return self.get_message(channel_id, seq)
+        return self.get_message(target_id, seq)
 
-    def get_message(self, channel_id: str, seq: int) -> dict[str, Any]:
+    def get_message(self, target_id: str, seq: int) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
                 """
@@ -749,10 +877,10 @@ class Database:
                   FROM message m JOIN member a ON a.id = m.author_member_id
                  WHERE m.target_id = ? AND m.seq = ?
                 """,
-                (channel_id, seq),
+                (target_id, seq),
             ).fetchone()
         if row is None:
-            raise NotFound(f"消息不存在：{channel_id}#{seq}")
+            raise NotFound(f"消息不存在：{target_id}#{seq}")
         return self._message_payload(row)
 
     @staticmethod
@@ -778,39 +906,42 @@ class Database:
         }
 
     # ─── 有界响应预算（策略 B 的正本，落库） ──────────────────────────────
-    def budget_state(self, channel_id: str, limit: int = BUDGET_LIMIT) -> dict[str, Any]:
-        """该频道当前人类世代的预算状态（只读）。没有行时 used=0、epoch_seq=0。
+    def budget_state(self, target_id: str, limit: int = BUDGET_LIMIT) -> dict[str, Any]:
+        """该 target 当前人类世代的预算状态（只读）。没有行时 used=0、epoch_seq=0。
 
-        ``epoch_seq=0`` 表示还没有人类消息 —— 此时预算按满额生效：预算约束的是
-        「一次人类发言能引发多少 agent 往返」，无人类发言时没有可越界的世代。
+        ``epoch_seq=0`` 表示还没有开世代动作 —— 此时预算按满额生效：预算约束的是
+        「一次人类发言能引发多少 agent 往返」，没有开世代动作时没有可越界的世代。
+
+        返回载荷里的 ``channel_id`` 是 **HTTP 面既有字段名**（票面 Constraint：响应字段名一律不变），
+        它承载的是这个 target 的 id——channel 型下就等于频道 id。
         """
-        self.get_channel(channel_id)  # 404 早退
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             row = self._conn.execute(
-                "SELECT epoch_seq, used FROM channel_budget WHERE channel_id = ?", (channel_id,)
+                "SELECT epoch_seq, used FROM target_budget WHERE target_id = ?", (target_id,)
             ).fetchone()
         epoch_seq = int(row["epoch_seq"]) if row is not None else 0
         used = int(row["used"]) if row is not None else 0
         return {
-            "channel_id": channel_id,
+            "channel_id": target_id,
             "epoch_seq": epoch_seq,
             "limit": limit,
             "used": used,
             "remaining": max(limit - used, 0),
         }
 
-    def human_epoch_seq(self, channel_id: str) -> int:
-        """该频道最近一条**人类**消息的 seq（人类世代的定义，spec #1 §5）。没有则为 0。"""
-        self.get_channel(channel_id)  # 404 早退
+    def human_epoch_seq(self, target_id: str) -> int:
+        """该 target 最近一条**人类**消息的 seq（人类世代的定义，spec #1 §5）。没有则为 0。"""
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             row = self._conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) AS epoch_seq FROM message "
                 "WHERE target_id = ? AND kind = 'human'",
-                (channel_id,),
+                (target_id,),
             ).fetchone()
         return int(row["epoch_seq"])
 
-    def consume_budget(self, channel_id: str, epoch_seq: int, amount: int = 1) -> int:
+    def consume_budget(self, target_id: str, epoch_seq: int, amount: int = 1) -> int:
         """把预算推进到世代 ``epoch_seq`` 并消耗 ``amount``；返回消耗后的 ``used``。
 
         开新世代并重置用量发生在**人类消息落库那一刻**（``append_message``），本方法只负责
@@ -820,47 +951,47 @@ class Database:
         上界（≤ ``BUDGET_LIMIT``）由调用方（``WakeOrchestrator._spend_jump``）在同一把锁内
         裁决后才调用本方法 —— 这里只记事实，不重复做上界判定。
         """
-        self.get_channel(channel_id)  # 404 早退
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             row = self._conn.execute(
-                "SELECT epoch_seq, used FROM channel_budget WHERE channel_id = ?", (channel_id,)
+                "SELECT epoch_seq, used FROM target_budget WHERE target_id = ?", (target_id,)
             ).fetchone()
             previous = None if row is None else (int(row["epoch_seq"]), int(row["used"]))
             used = previous[1] if previous is not None and previous[0] >= int(epoch_seq) else 0
             used += max(int(amount), 0)
             self._conn.execute(
-                "INSERT INTO channel_budget(channel_id, epoch_seq, used) VALUES (?, ?, ?) "
-                "ON CONFLICT(channel_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = excluded.used",
-                (channel_id, int(epoch_seq), used),
+                "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, ?) "
+                "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = excluded.used",
+                (target_id, int(epoch_seq), used),
             )
         return used
 
-    # ─── 频道成员（唯一写点：人类面「加入」与穿透加入共用） ──────────────────
-    def is_channel_member(self, channel_id: str, member_id: str) -> bool:
-        self.get_channel(channel_id)  # 404 早退
+    # ─── target 成员（唯一写点：人类面「加入」与穿透加入共用） ──────────────
+    def is_target_member(self, target_id: str, member_id: str) -> bool:
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             row = self._conn.execute(
-                "SELECT 1 FROM channel_member WHERE channel_id = ? AND member_id = ?",
-                (channel_id, member_id),
+                "SELECT 1 FROM target_member WHERE target_id = ? AND member_id = ?",
+                (target_id, member_id),
             ).fetchone()
         return row is not None
 
-    def add_channel_member(self, channel_id: str, member_id: str) -> bool:
-        """把成员加入频道；返回是否**新增**（已在频道里则返回 False，幂等）。"""
-        self.get_channel(channel_id)  # 404 早退
+    def add_target_member(self, target_id: str, member_id: str) -> bool:
+        """把成员加入该 target；返回是否**新增**（已在该 target 里则返回 False，幂等）。"""
+        self.get_target(target_id)  # 404 早退
         self.get_member(member_id)
         with self._lock:
             cursor = self._conn.execute(
-                "INSERT INTO channel_member(channel_id, member_id) VALUES (?, ?) "
-                "ON CONFLICT(channel_id, member_id) DO NOTHING",
-                (channel_id, member_id),
+                "INSERT INTO target_member(target_id, member_id) VALUES (?, ?) "
+                "ON CONFLICT(target_id, member_id) DO NOTHING",
+                (target_id, member_id),
             )
             inserted = cursor.rowcount > 0
             if inserted:
                 self._conn.execute(
-                    "INSERT INTO channel_read(member_id, channel_id, last_read_seq) VALUES (?, ?, 0) "
-                    "ON CONFLICT(member_id, channel_id) DO NOTHING",
-                    (member_id, channel_id),
+                    "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0) "
+                    "ON CONFLICT(member_id, target_id) DO NOTHING",
+                    (member_id, target_id),
                 )
         return inserted
 
@@ -884,48 +1015,65 @@ class Database:
             ).fetchone()
         return row["status"] if row is not None else None
 
-    def agent_cursor(self, channel_id: str, member_id: str) -> int:
-        """该成员在该频道已经读到哪一条（消费游标）。
+    def agent_cursor(self, target_id: str, member_id: str) -> int:
+        """该成员在该 target 已经读到哪一条（消费游标）。
 
-        复用 ``channel_read``——该表语义就是「每成员每频道的已读位置」，owner 的行是未读徽标的
+        复用 ``target_read``——该表语义就是「每成员每 target 的已读位置」，owner 的行是未读徽标的
         正本，Agent 的行只是它自己的消费位置，两者互不干扰。没有行时为 0（从头读）。
         """
-        self.get_channel(channel_id)  # 404 早退
+        self.get_target(target_id)  # 404 早退
         with self._lock:
             row = self._conn.execute(
-                "SELECT last_read_seq FROM channel_read WHERE member_id = ? AND channel_id = ?",
-                (member_id, channel_id),
+                "SELECT last_read_seq FROM target_read WHERE member_id = ? AND target_id = ?",
+                (member_id, target_id),
             ).fetchone()
         return int(row["last_read_seq"]) if row is not None else 0
 
-    def mark_read(self, channel_id: str, seq: int, member_id: str = OWNER_ID) -> dict[str, Any]:
-        """把已读位置单调推进到 ``min(seq, 该频道当前最大 seq)``。
+    def mark_read(self, target_id: str, seq: int, member_id: str = OWNER_ID) -> None:
+        """把未读位置单调推进到 ``min(seq, 该 target 当前最大 seq)``（无返回）。
 
         上界裁剪保证「把未来消息提前标为已读」不可能发生；已读位置永不回退。
+        推进的是 **target** 的已读位置（ADR-0004）。
+
+        **返回 None**（早先返回 dict）：channel 面的响应体是**外部契约**（票面 Constraint：响应字段名
+        一律不变），因此它由 channel 面入口 ``WorkspaceService.mark_read`` 用 ``get_channel`` 组出；
+        ``db`` 层不把「channel 型的响应长什么样」写进自己的分支里（于是查询路径上没有 kind 分支）。
         """
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             raise DomainError("validation_failed", "seq 必须是非负整数", fields={"seq": "seq 必须是非负整数"})
-        self.get_channel(channel_id)
+        self.get_target(target_id)  # 404 早退
         self.get_member(member_id)
         with self._lock:
             self._begin()
             try:
                 row = self._conn.execute(
                     "SELECT COALESCE(MAX(seq), 0) AS last_seq FROM message WHERE target_id = ?",
-                    (channel_id,),
+                    (target_id,),
                 ).fetchone()
                 effective = min(seq, int(row["last_seq"]))
                 self._conn.execute(
-                    "INSERT INTO channel_read(member_id, channel_id, last_read_seq) VALUES (?, ?, ?) "
-                    "ON CONFLICT(member_id, channel_id) DO UPDATE SET "
-                    "last_read_seq = MAX(channel_read.last_read_seq, excluded.last_read_seq)",
-                    (member_id, channel_id, effective),
+                    "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, ?) "
+                    "ON CONFLICT(member_id, target_id) DO UPDATE SET "
+                    "last_read_seq = MAX(target_read.last_read_seq, excluded.last_read_seq)",
+                    (member_id, target_id, effective),
                 )
                 self._commit()
             except Exception:
                 self._rollback()
                 raise
-        return self.get_channel(channel_id, member_id)
+
+    def unread_count(self, target_id: str, member_id: str = OWNER_ID) -> int:
+        """该 target 的未读条数（**与频道列表同一条 WHERE 形状**：``UNREAD_COUNT_SQL``）。
+
+        形状与 ``CHANNEL_SELECT_SQL`` 里的 ``unread_count`` 子查询、``unread_total`` 汇总
+        完全同源（同一个 ``UNREAD_WHERE_SQL``），**不按 kind 分支**。
+        """
+        self.get_target(target_id)  # 404 早退
+        with self._lock:
+            row = self._conn.execute(
+                UNREAD_COUNT_SQL, {"member_id": member_id, "target_id": target_id}
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
 
 
 def open_database(data_dir: Path | str | None = None) -> Database:
