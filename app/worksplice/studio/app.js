@@ -1027,7 +1027,11 @@ function roundOutcomeSummaryNode(records) {
 
 /** 摘要行的成员名单：按后端返回序（`finished_at, id` 升序）逐个列出，超过 2 人写成「等 N 人」。 */
 function summarizeNames(items) {
-  const names = items.map((record) => outcomeMemberName(record.member_id));
+  return joinNames(items.map((record) => outcomeMemberName(record.member_id)));
+}
+
+/** 名单的**唯一**拼法：≤2 个逐个列出，>2 个写「甲、乙 等 N 人」（摘要行与折叠说明共用）。 */
+function joinNames(names) {
   if (names.length <= 2) return names.join('、');
   return names[0] + '、' + names[1] + ' 等 ' + names.length + ' 人';
 }
@@ -1055,15 +1059,9 @@ function summarizeWhy(items) {
       const text = note || label;
       // 单一状态：名单已在折叠控件上，这里只陈述「为什么」（不重复一遍名字）。
       if (!mixed) return text;
-      return summarizeJoinedNames(groups.get(label)) + '：' + text;
+      return joinNames(groups.get(label)) + '：' + text;
     })
     .join('；');
-}
-
-/** 按 status 归组后的名单（与摘要行同一套说法，但这里没有「等 N 人」的必要）。 */
-function summarizeJoinedNames(names) {
-  if (names.length <= 2) return names.join('、');
-  return names[0] + '、' + names[1] + ' 等 ' + names.length + ' 人';
 }
 
 /**
