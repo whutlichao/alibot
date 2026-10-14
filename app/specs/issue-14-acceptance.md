@@ -320,8 +320,46 @@ $ grep -nE "#[0-9a-fA-F]{3,8}\b|rgb\(" app/worksplice/studio/app.css
 
 ## 7. 双轴 code-review（Standards + Spec）
 
-按前置 skill `implement` 的流程，收尾前执行 `code-review`（Standards + Spec 两轴，并行子代理）。
-两轴的结论、findings 清单与逐条处理结果见 issue #14 的 Answer（每条标明「已修 / 不修 + 理由」）。
+按前置 skill `implement` 的流程，收尾前执行 `code-review`（Standards + Spec 两轴，并行子代理，
+对本 diff `git diff 2b8615c...HEAD` 审查）。逐条处理结果：
+
+### Standards 轴
+
+| # | Finding | 级别 | 处理 |
+| --- | --- | --- | --- |
+| S1 | `api.py` 模块 docstring 端点清单被并成一行（新端点吞掉下一行）——该清单是对齐列表 | P1 硬违规 | **已修**：恢复一条一行（ruff 不查 docstring，所以门禁此前没报） |
+| S2 | `app/README.md` 的「HTTP 契约」表未收录新端点 | P1 硬违规 | **已修**：补一行（幂等、`{member_id}`、校验失败整体不加入） |
+| S3 | `db.py` 分节注释「穿透加入的**唯一**写点」被本票证伪 | P2 判断项 | **已修**：改为「唯一写点：人类面『加入』与穿透加入共用」 |
+| S4 | `service.py` 的 `kind != 'agent'` / `deleted_at` 校验与 `create_channel` 同形重复；`deleted_at` 分支在 HTTP 面不可达 | P2 判断项 | **不修（刻意镜像）**，理由见下 |
+| S5 | `app.js` 两处各自重写「本频道 agent 成员」的过滤 | P2 判断项 | **已修**：`dockGroups()` 改调 `channelAgentMembers()`，与 `@` 清单同一实现 |
+| S6 | `WorkspaceService.add_channel_member` 与 `Database.add_channel_member` 同名但返回类型不同（bool / dict） | P2 判断项 | **不修**，理由见下 |
+
+**S4 不修的理由**：票面 Constraints 明写「错误文案与 `create_channel` 的『初始成员只能是 Agent』
+**同口径**」，因此这句文案是**被要求的重复**而不是疏忽；抽共用判据要动 `db.create_channel`
+（不在本票 Target 内，需先 ask）。`deleted_at` 分支按 Q5 的人类裁定保留（见 §5）。
+
+**S6 不修的理由**：三层同名是这个名字的既有惯例（`db` 返回事实、`service` 返回该动作的完整
+结果包）；改名会造成 `db`/`service` 两层对同一动作用不同词汇，与仓库「术语对齐 `CONTEXT.md`」
+的取向相反。
+
+### Spec 轴
+
+| # | Finding | 级别 | 处理 |
+| --- | --- | --- | --- |
+| P1 | `renderDock()` 忽略 `channelMembersFailed`：读失败/未载入被显示成「还没有 Agent 成员」，同时把**已加入**的 Agent 列进「未加入」 | P2 报告项 | **已修**：两段各自如实分档（读不到 / 正在读 / 空）；读不到时不列「未加入」（不伪造「它不在这个频道」） |
+| P2 | `app/README.md` 见 S2；`db.py` 注释见 S3 | — | 已修（同上） |
+| P3 | `api.py` 的 PUT/PATCH/DELETE 404 守卫路由被列为 scope creep | P2 | **不修**：写成明确 404 是本仓既有惯例（`no_agent_mutation` / `no_message_mutation` 同形），且它把「本票不做移出」变成可断言的事实 |
+| P4 | 票面「每个成员配一个『已加入』控件」未逐行实现 | P2 | **由裁定 2 覆盖**：Q2 的人定是「分两段表达」（已加入段不再加一个冗余控件），子代理判 OK |
+
+两条被钉住的不回归经 Spec 轴逐字核对：`test_mention_completion.py` 与基线逐字相同、
+`mentions.py` 与 `GET /members` 路径未改；`test_bounded_relay.py` 的「被点名 ≠ 加入」断言行号一致、
+`orchestration.py` 零改动。两者本票实测均通过（§3.2 的 49 passed）。
+
+### 处置后的复验
+
+改动了前端渲染逻辑，因此**重跑真实 Chromium 全链路**（§4.1 的读数即来自复验后的这一轮）：
+加入前选项数 0 → 加入后 1、`pageLoads` 恒为 1、`mention_snapshot` 命中、Agent 经频道成员路径回复。
+全量门禁重跑：`173 passed, 1 skipped`（§1）。
 
 ## 8. ADR 判定（按 `docs/agents/domain.md`）
 
@@ -341,7 +379,7 @@ $ grep -nE "#[0-9a-fA-F]{3,8}\b|rgb\(" app/worksplice/studio/app.css
 ## 9. 交付物
 
 - worktree 干净（`git status --porcelain` 为空）
-- 4 个提交（按逻辑单元：后端端点 / 前端入口 / 文档对齐 / 测试；commit message 为仓库既有的
-  Conventional Commits 风格，正文简体中文）
+- 6 个提交（按逻辑单元：后端端点 / 测试 / 前端入口 / 文档对齐 / 验收文档与 PR 正文 /
+  review findings 处置；commit message 为仓库既有的 Conventional Commits 风格，正文简体中文）
 - 分支已推送、PR 已创建（body 正本 `app/specs/issue-14-pr-body.md`），PR 号与 body 路径回填
   issue #14 的 Answer
