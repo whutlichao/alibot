@@ -508,7 +508,8 @@ c260c1b docs(spec): #37 验收件（红/绿证据、门禁读数、双轴 review
 $ git status --short      # 空
 ```
 
-- **head sha**：`03c40ca`（已推送，与远端分支一致）
+- **head sha**：以远端分支 `origin/issue-37-reject-old-db` 为准（不内嵌 sha：那种自指会在每次
+  收尾提交后漂移，本仓 #35 已为此立过规矩，见 `f858ee7`）
 - **PR**：[#38](https://github.com/whutlichao/alibot/pull/38)（`issue-37-reject-old-db` → `main`）
 - **最终读数**：`228 passed, 1 skipped`（基线 196 + 新增 32；既有用例零改动）
 - **`~/Alibot`**：全程未读写；`lsof` 显示持有者是开工前就存在的 v3 后端进程（PID 69482，
