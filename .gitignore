@@ -14,3 +14,6 @@ __pycache__/
 
 # 本机数据目录候选（绝不入库）
 /.alibot-data/
+
+# 工作区临时目录：agent 的自检脚本、截图与 Answer / PR body 草稿（绝不入库）
+/.scratch/
