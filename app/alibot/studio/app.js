@@ -179,6 +179,7 @@ const state = {
   search: { query: '', targetId: '', hits: [], loading: false, error: '' },
 };
 
+let searchRequestVersion = 0;
 let remoteFlow = { statement: '', data_faces: [], local_providers: [] };
 
 /* ─── 工具 ──────────────────────────────────────────────────────────── */
@@ -433,10 +434,13 @@ function closeSearchModal() {
 async function submitSearch() {
   const input = $('#searchQueryInput');
   const search = state.search;
+  const requestVersion = ++searchRequestVersion;
   search.query = input.value.trim();
   search.targetId = $('#searchTargetSelect').value;
   search.error = '';
   search.hits = [];
+  search.loading = false;
+  $('#searchSubmit').disabled = false;
   if (!search.query) {
     search.error = '请输入搜索关键词。';
     renderSearchResults();
@@ -455,14 +459,18 @@ async function submitSearch() {
   if (search.targetId) params.set('target_id', search.targetId);
   try {
     const payload = await api('/api/search?' + params.toString());
+    if (requestVersion !== searchRequestVersion) return;
     search.hits = Array.isArray(payload.hits) ? payload.hits : [];
   } catch (err) {
+    if (requestVersion !== searchRequestVersion) return;
     // 搜索失败与零命中是两种事实：错误必须留在结果面里，不能只清空列表。
     search.error = '搜索失败：后端不可达或请求未完成（' + err.message + '）。';
   } finally {
-    search.loading = false;
-    $('#searchSubmit').disabled = false;
-    renderSearchResults();
+    if (requestVersion === searchRequestVersion) {
+      search.loading = false;
+      $('#searchSubmit').disabled = false;
+      renderSearchResults();
+    }
   }
 }
 
