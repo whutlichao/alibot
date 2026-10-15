@@ -127,6 +127,10 @@ const PROVIDER_LABEL = {
   ollama: 'Ollama（本机）',
 };
 
+// 工作台快照到齐之前的占位视图。它**不是** provider 清单的正本（正本只有后端 `/api/workspace`
+// 的 `model_providers`），只为了刷新后马上点「Agent」时不至于给一个空选择器。
+const PROVIDER_PLACEHOLDER = ['ollama', 'dashscope', 'openai'];
+
 const state = {
   ready: false,
   mode: 'channel',
@@ -339,6 +343,9 @@ async function loadWorkspace(options) {
     state.consents = snapshot.remote_consents || [];
     state.online = true;
     state.ready = true;
+    // 清单已就位就立刻刷已打开的弹窗：下面每一步都是 `await`，任何一步抛错都会跳到 catch，
+    // 而已经拿到的 provider 快照不该因为「其它请求挂了」而白白丢掉。
+    syncOpenAgentModal();
     await refreshTasks();
     loadRemoteFlow();
     const known = state.channels.some((channel) => channel.id === state.activeChannelId)
@@ -2656,12 +2663,20 @@ async function submitChannel() {
 }
 
 /* ─── 新建 Agent 与远端数据流告知 ───────────────────────────────────── */
+// 「新建 Agent」表单里，选择器当前的提供商是否出自人的手（而不是 hydration 之前的占位默认值）。
+let agentProviderTouched = false;
+
+function markProviderTouched() {
+  agentProviderTouched = true;
+}
+
 function openAgentModal() {
   $('#agentFormError').hidden = true;
   $('#agentNameInput').value = '';
   $('#agentRoleInput').value = '';
   $('#agentModelInput').value = '';
   $('#agentPromptInput').value = '';
+  agentProviderTouched = false;
   renderProviderSelect();
   renderRemoteNotice();
   $('#agentOverlay').hidden = false;
@@ -2672,17 +2687,30 @@ function closeAgentModal() {
   $('#agentOverlay').hidden = true;
 }
 
-function renderProviderSelect() {
+// 重建选项会清掉当前选择。`preserveUserPick` 为真时保留它：只有确实出自人的手（agentProviderTouched）、
+// 且仍然在这份清单里的那一项才保留；其余一律回到清单首项。
+function renderProviderSelect(preserveUserPick) {
   const select = $('#agentProviderSelect');
-  const providers = state.providers.length ? state.providers : ['ollama', 'dashscope', 'openai'];
-  const options = providers.map((provider) => {
+  const previous = preserveUserPick ? select.value : '';
+  const providers = state.providers.length ? state.providers : PROVIDER_PLACEHOLDER;
+  const optionNodes = providers.map((provider) => {
     const option = el('option', null, PROVIDER_LABEL[provider] || provider);
     option.value = provider;
     return option;
   });
-  replaceChildren(select, options);
-  select.value = providers[0];
+  replaceChildren(select, optionNodes);
+  select.value = providers.includes(previous) ? previous : providers[0];
   updateProviderHint();
+}
+
+// 工作台快照可能晚于「新建 Agent」弹窗到达（刷新后马上点 Agent）：清单到齐时刷新已打开的弹窗，
+// 于是人不必先关再开一次。provider 清单的正本只有后端 `/api/workspace` 一处。
+// 只在人真的动过选择器时保留选择：hydration 之前那一项只是占位默认值，不是用户选择，
+// 换完整清单后应回到清单首项（与常规加载先打开弹窗看到的一致）。
+function syncOpenAgentModal() {
+  if ($('#agentOverlay').hidden) return;
+  renderProviderSelect(agentProviderTouched);
+  renderRemoteNotice();
 }
 
 function currentProvider() {
@@ -2774,6 +2802,10 @@ async function loadRemoteFlow() {
   try {
     remoteFlow = await api('/api/remote-data-flow');
     state.dataFaces = remoteFlow.data_faces || [];
+    // 告知文案要用这份响应里的数据面来拼。响应晚到、而弹窗已经开着时，正文会一时停在空数据面
+    // （这是异步加载本就存在的窗口）；响应一到就重绘，避免界面一直停在空正文。
+    // 只重绘告知，不重建选择器、不动人的选择与同意语义。
+    if (!$('#agentOverlay').hidden) renderRemoteNotice();
   } catch {
     // 告知文案读不到不影响主流程；下一次打开面板会重试。
   }
@@ -2838,7 +2870,13 @@ function bindEvents() {
   $('#agentModalClose').addEventListener('click', closeAgentModal);
   $('#agentCreateSubmit').addEventListener('click', submitAgent);
   $('#agentRemoteConfirm').addEventListener('click', confirmRemoteFlow);
+  // 只监听 change 不够：重新点选「已经选中的那一项」不派发 change，而 hydration 期间那一项还只是
+  // 占位默认值，清单到齐后的重建正好会把它换成完整清单首项 —— 静默把本机模型换成远端模型。
+  // 因此指针按下与键盘操作也记为「选择出自人的手」。
+  $('#agentProviderSelect').addEventListener('pointerdown', markProviderTouched);
+  $('#agentProviderSelect').addEventListener('keydown', markProviderTouched);
   $('#agentProviderSelect').addEventListener('change', () => {
+    markProviderTouched();
     updateProviderHint();
     renderRemoteNotice();
   });
