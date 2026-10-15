@@ -342,6 +342,8 @@ async function loadWorkspace(options) {
     await refreshChannelMembers();
     await refreshStatuses();
     syncStreams();
+    // 清单已就位：已打开的弹窗此刻才拿到完整 provider 列表，不必等人关了再开一次。
+    syncOpenAgentModal();
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -2297,12 +2299,16 @@ async function submitChannel() {
 }
 
 /* ─── 新建 Agent 与远端数据流告知 ───────────────────────────────────── */
+// 「新建 Agent」表单里的模型提供商是否被人动过：用来区分人的选择与 hydration 前的占位默认值。
+let agentProviderPicked = false;
+
 function openAgentModal() {
   $('#agentFormError').hidden = true;
   $('#agentNameInput').value = '';
   $('#agentRoleInput').value = '';
   $('#agentModelInput').value = '';
   $('#agentPromptInput').value = '';
+  agentProviderPicked = false;
   renderProviderSelect();
   renderRemoteNotice();
   $('#agentOverlay').hidden = false;
@@ -2313,17 +2319,30 @@ function closeAgentModal() {
   $('#agentOverlay').hidden = true;
 }
 
-function renderProviderSelect() {
+// 选项列表始终镜像 state.providers（弹窗只是它的一份视图）。`keepChoice` 为真时（刷新已打开的弹窗）
+// 保留当前选择：人在 hydrate 期间已经选好的项仍然有效，不能被重建抹掉。
+function renderProviderSelect(keepChoice) {
   const select = $('#agentProviderSelect');
+  const previous = keepChoice ? select.value : '';
   const providers = state.providers.length ? state.providers : ['ollama', 'dashscope', 'openai'];
-  const options = providers.map((provider) => {
+  const optionNodes = providers.map((provider) => {
     const option = el('option', null, PROVIDER_LABEL[provider] || provider);
     option.value = provider;
     return option;
   });
-  replaceChildren(select, options);
-  select.value = providers[0];
+  replaceChildren(select, optionNodes);
+  select.value = providers.includes(previous) ? previous : providers[0];
   updateProviderHint();
+}
+
+// 工作台快照可能晚于「新建 Agent」弹窗到达（刷新后马上点 Agent）：清单到齐时刷新已打开的弹窗，
+// 于是人不必先关再开一次。provider 清单的正本只有后端 `/api/workspace` 一处。
+// 只在人真的动过选择器时保留选择：hydration 之前那一项只是占位默认值，不是用户选择，
+// 换完整清单后应回到清单首项（与常规加载先打开弹窗看到的一致）。
+function syncOpenAgentModal() {
+  if ($('#agentOverlay').hidden) return;
+  renderProviderSelect(agentProviderPicked);
+  renderRemoteNotice();
 }
 
 function currentProvider() {
@@ -2480,6 +2499,7 @@ function bindEvents() {
   $('#agentCreateSubmit').addEventListener('click', submitAgent);
   $('#agentRemoteConfirm').addEventListener('click', confirmRemoteFlow);
   $('#agentProviderSelect').addEventListener('change', () => {
+    agentProviderPicked = true;
     updateProviderHint();
     renderRemoteNotice();
   });
