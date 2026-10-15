@@ -355,6 +355,33 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   background: var(--error-soft); color: var(--error); font-size: var(--fs-sm);
 }
 
+/* ─── 工作台搜索 ───────────────────────────────────────────────────────── */
+.search-modal { max-width: 680px; }
+.search-results {
+  max-height: min(48dvh, 440px); overflow-y: auto; margin: var(--sp-5) calc(-1 * var(--sp-2)) 0;
+  padding: 0 var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.search-empty {
+  border: 1px dashed var(--border-strong); border-radius: var(--r-md); padding: var(--sp-5);
+  color: var(--faint); font-size: var(--fs-sm); text-align: center;
+}
+.search-hit {
+  border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-5); background: var(--surface);
+}
+.search-hit-meta, .search-hit-head { display: flex; align-items: baseline; gap: var(--sp-3); min-width: 0; }
+.search-hit-head { margin-top: var(--sp-2); }
+.search-target { color: var(--selected-deep); font-size: var(--fs-sm); font-weight: var(--fw-semi); }
+.search-target-id, .search-hit-time { color: var(--faint); font-size: var(--fs-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-target-id { margin-left: auto; }
+.search-author { color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-semi); }
+.search-author-deleted {
+  border-radius: var(--r-pill); background: var(--warn-soft); color: var(--warn-deep);
+  padding: 1px var(--sp-3); font-size: var(--fs-caption);
+}
+.search-hit-time { margin-left: auto; }
+.search-hit-text { margin-top: var(--sp-3); color: var(--fg); overflow-wrap: anywhere; }
+.search-mark { border-radius: 2px; background: var(--accent-soft); color: var(--accent-deep); padding: 0 1px; }
+
 /* ─── toast ───────────────────────────────────────────────────────────── */
 .toast-wrap {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: var(--z-toast);

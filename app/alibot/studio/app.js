@@ -175,6 +175,8 @@ const state = {
   streams: new Map(),
   seenSeqs: new Map(),
   typing: {},
+  // 搜索是纯呈现状态：命中、target 信息和高亮区间都来自后端，不在浏览器保存或重算。
+  search: { query: '', targetId: '', hits: [], loading: false, error: '' },
 };
 
 let remoteFlow = { statement: '', data_faces: [], local_providers: [] };
@@ -325,6 +327,143 @@ function messageText(message) {
   });
   if (cursor < body.length) container.appendChild(document.createTextNode(body.slice(cursor)));
   return container;
+}
+
+/* ─── 工作台搜索：只消费后端命中与区间，不在前端重新判定正文 ─────────────── */
+function searchTargetLabel(target) {
+  const name = target && target.display_name ? target.display_name : '未知 target';
+  if (!target) return name;
+  if (target.kind === 'channel') return '频道 · #' + name;
+  if (target.kind === 'dm') return '私信 · ' + name;
+  if (target.kind === 'task') return '任务 · ' + name;
+  return name;
+}
+
+function searchResultText(hit) {
+  const message = (hit && hit.message) || {};
+  const body = String(message.body == null ? '' : message.body);
+  // 不传 query、不调 indexOf：这个函数唯一的切分依据就是后端的 highlight_ranges。
+  const ranges = Array.isArray(hit && hit.highlight_ranges) ? hit.highlight_ranges : [];
+  const container = el('div', 'search-hit-text');
+  let cursor = 0;
+  ranges.forEach((range) => {
+    if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end)) return;
+    if (range.start < cursor || range.end <= range.start || range.end > body.length) return;
+    if (range.start > cursor) container.appendChild(document.createTextNode(body.slice(cursor, range.start)));
+    container.appendChild(el('mark', 'search-mark', body.slice(range.start, range.end)));
+    cursor = range.end;
+  });
+  if (cursor < body.length) container.appendChild(document.createTextNode(body.slice(cursor)));
+  return container;
+}
+
+function searchTargetOption(value, label) {
+  const option = el('option', null, label);
+  option.value = value;
+  return option;
+}
+
+function renderSearchTargetSelect() {
+  const select = $('#searchTargetSelect');
+  const selected = state.search.targetId;
+  const options = [searchTargetOption('', '整个工作台')];
+  state.channels.forEach((channel) => options.push(searchTargetOption(channel.id, '频道 · #' + channel.name)));
+  state.dms.forEach((dm) => options.push(searchTargetOption(dm.id, '私信 · ' + dm.peer.display_name)));
+  state.tasks.forEach((task) => options.push(searchTargetOption(task.target_id, '任务 · ' + task.title)));
+  replaceChildren(select, options);
+  select.value = selected;
+}
+
+function searchResultNode(hit) {
+  const message = hit.message || {};
+  const target = hit.target || {};
+  const author = message.author || {};
+  const article = el('article', 'search-hit');
+  const meta = el('div', 'search-hit-meta');
+  meta.appendChild(el('span', 'search-target', searchTargetLabel(target)));
+  meta.appendChild(el('span', 'search-target-id mono', target.id || ''));
+  article.appendChild(meta);
+
+  const head = el('div', 'search-hit-head');
+  head.appendChild(el('span', 'search-author', author.display_name || '未知作者'));
+  if (author.deleted) head.appendChild(el('span', 'search-author-deleted', '作者已删除'));
+  if (message.created_at) head.appendChild(el('span', 'search-hit-time', timeLabel(message.created_at)));
+  article.appendChild(head);
+  article.appendChild(searchResultText(hit));
+  return article;
+}
+
+function renderSearchResults() {
+  const results = $('#searchResults');
+  const error = $('#searchError');
+  const search = state.search;
+  error.hidden = !search.error;
+  error.textContent = search.error;
+  if (search.error) {
+    replaceChildren(results, []);
+    return;
+  }
+  if (search.loading) {
+    replaceChildren(results, [el('div', 'search-empty', '正在搜索…')]);
+    return;
+  }
+  if (!search.query) {
+    replaceChildren(results, [el('div', 'search-empty', '输入关键词，搜索频道、私信与任务线程。')]);
+    return;
+  }
+  if (!search.hits.length) {
+    replaceChildren(results, [el('div', 'search-empty', '没有匹配的普通消息。')]);
+    return;
+  }
+  replaceChildren(results, search.hits.map(searchResultNode));
+}
+
+function openSearchModal() {
+  renderSearchTargetSelect();
+  $('#searchQueryInput').value = state.search.query;
+  $('#searchOverlay').hidden = false;
+  renderSearchResults();
+  $('#searchQueryInput').focus();
+}
+
+function closeSearchModal() {
+  $('#searchOverlay').hidden = true;
+}
+
+async function submitSearch() {
+  const input = $('#searchQueryInput');
+  const search = state.search;
+  search.query = input.value.trim();
+  search.targetId = $('#searchTargetSelect').value;
+  search.error = '';
+  search.hits = [];
+  if (!search.query) {
+    search.error = '请输入搜索关键词。';
+    renderSearchResults();
+    input.focus();
+    return;
+  }
+  if (!state.online) {
+    search.error = '后端不可达：无法执行搜索。';
+    renderSearchResults();
+    return;
+  }
+  search.loading = true;
+  $('#searchSubmit').disabled = true;
+  renderSearchResults();
+  const params = new URLSearchParams({ q: search.query });
+  if (search.targetId) params.set('target_id', search.targetId);
+  try {
+    const payload = await api('/api/search?' + params.toString());
+    search.hits = Array.isArray(payload.hits) ? payload.hits : [];
+  } catch (err) {
+    // 搜索失败与零命中是两种事实：错误必须留在结果面里，不能只清空列表。
+    search.error = '搜索失败：后端不可达或请求未完成（' + err.message + '）。';
+  } finally {
+    search.loading = false;
+    $('#searchSubmit').disabled = false;
+    renderSearchResults();
+  }
 }
 
 /* ─── 后端状态 → 前端 ───────────────────────────────────────────────── */
@@ -2850,6 +2989,16 @@ async function selectTarget(targetId) {
 }
 
 function bindEvents() {
+  $('#btnSearch').addEventListener('click', openSearchModal);
+  $('#searchClose').addEventListener('click', closeSearchModal);
+  $('#searchCancel').addEventListener('click', closeSearchModal);
+  $('#searchSubmit').addEventListener('click', submitSearch);
+  $('#searchOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'searchOverlay') closeSearchModal();
+  });
+  $('#searchQueryInput').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); submitSearch(); }
+  });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   $('#btnNewDm').addEventListener('click', openDmModal);
   $('#dmCancel').addEventListener('click', closeDmModal);

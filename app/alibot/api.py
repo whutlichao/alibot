@@ -3,6 +3,7 @@
 端点（浏览器只经这里读写，业务正本在后端单文件库）：
 
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
+- ``GET  /api/search``                        工作台普通消息搜索（可限定一个 target）
 - ``GET  /api/channels``                      频道列表（含未读计数）
 - ``POST /api/channels``                      新建频道（名称 + 描述 + 初始成员，原子校验）
 - ``GET  /api/channels/{id}/messages``        按 seq 升序取消息（``after_seq`` 增量）
@@ -49,7 +50,9 @@ from starlette.background import BackgroundTask
 
 from .agent_seam import AgentScopeAgentSeam
 from .db import (
+    MAX_MESSAGE_BODY_LENGTH,
     OWNER_ID,
+    SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
     open_database,
@@ -259,6 +262,15 @@ def create_app(
     @app.get("/api/health")
     def get_health() -> dict[str, Any]:
         return {"status": "ok", "member_id": OWNER_ID, "data_dir": str(app.state.data_dir)}
+
+    @app.get("/api/search")
+    def search_messages(
+        q: Annotated[str, Query(min_length=1, max_length=MAX_MESSAGE_BODY_LENGTH)],
+        target_id: str | None = Query(default=None),
+        limit: int = Query(default=SEARCH_RESULT_LIMIT, ge=1, le=SEARCH_RESULT_LIMIT),
+    ) -> dict[str, Any]:
+        """搜索三个 target kind 的普通消息；高亮判定与区间都由后端产生。"""
+        return {"hits": service.search_messages(q, target_id=target_id, limit=limit)}
 
     # ─── 频道 ─────────────────────────────────────────────────────────────
     @app.get("/api/channels")
