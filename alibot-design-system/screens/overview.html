@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>alibot · 切片索引 · screens/ 全景</title>
+<!--
+  切片 overview：全页全景索引。
+  它是 screens/ 的入口 —— 把九张切片按「壳 → 视图 → 面板 → 层 → 状态 → 平台」
+  的顺序列出来，并指回另外两个参照物入口（ui_kits/app/index.html 标准装配、
+  preview/index.html 令牌卡片）。每张卡片上写清该切片的语义与它展示的关键状态。
+
+  本页只做导航，不复刻任何组件；色与排版一律走 ../colors_and_type.css +
+  ../tokens.css 的令牌，不引入新的颜色字面量。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: var(--font); font-size: var(--fs-body); line-height: var(--lh-body);
+    -webkit-font-smoothing: antialiased; padding: var(--sp-10);
+  }
+  a { color: var(--accent-deep); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  .idx-head { margin-bottom: var(--sp-9); }
+  .idx-eyebrow {
+    font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider);
+    text-transform: uppercase; color: var(--accent-deep); font-weight: var(--fw-semi); margin-bottom: var(--sp-3);
+  }
+  .idx-title { font-size: 22px; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight); margin: 0 0 var(--sp-3); }
+  .idx-desc { color: var(--muted); max-width: 78ch; margin: 0; }
+  .idx-nav { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-5); }
+  .idx-nav a {
+    font-size: var(--fs-sm); padding: 3px 9px; border: 1px solid var(--border);
+    border-radius: var(--r-pill); color: var(--muted); background: var(--surface);
+  }
+  .idx-nav a:hover { border-color: var(--border-strong); color: var(--fg); text-decoration: none; }
+  .idx-nav a.is-on { border-color: var(--accent-graphic); background: var(--accent-soft); color: var(--accent-deep); }
+
+  .idx-sec { margin-top: var(--sp-10); }
+  .idx-sec > h2 {
+    display: flex; align-items: baseline; gap: var(--sp-4);
+    font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider);
+    text-transform: uppercase; color: var(--faint); font-weight: var(--fw-semi);
+    margin: 0 0 var(--sp-5); padding-bottom: var(--sp-4); border-bottom: 1px solid var(--border);
+  }
+  .idx-sec > h2 em { font-style: normal; color: var(--muted); text-transform: none; letter-spacing: 0; }
+
+  .idx-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-6); }
+  @media (max-width: 900px) { .idx-grid { grid-template-columns: 1fr; } body { padding: var(--sp-5); } }
+
+  .idx-card {
+    display: block; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-lg); padding: var(--sp-6); color: inherit;
+  }
+  .idx-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card); text-decoration: none; }
+  .idx-card .p {
+    font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--accent-deep);
+    display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3);
+  }
+  .idx-card .p .n {
+    font-family: var(--mono); font-size: 10px; background: var(--panel-2); color: var(--muted);
+    border-radius: 4px; padding: 0 5px;
+  }
+  .idx-card h3 { margin: 0 0 var(--sp-3); font-size: var(--fs-title); font-weight: var(--fw-bold); letter-spacing: var(--ls-snug); }
+  .idx-card p { margin: 0 0 var(--sp-4); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-body); }
+  .idx-tags { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .idx-tags span {
+    font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: 0.04em;
+    padding: 1px 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted);
+  }
+  .idx-tags span.acc { background: var(--accent-soft); color: var(--accent-deep); }
+
+  .idx-note {
+    margin-top: var(--sp-10); padding: var(--sp-6);
+    border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel);
+    color: var(--muted); font-size: var(--fs-sm);
+  }
+  .idx-note h3 { margin: 0 0 var(--sp-4); font-size: var(--fs-body-lg); font-weight: var(--fw-bold); color: var(--fg); }
+  .idx-note ul { margin: 0; padding-left: 18px; }
+  .idx-note li { margin-bottom: var(--sp-3); }
+  .idx-note li:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="idx-head" data-od-id="screens-index-head">
+    <div class="idx-eyebrow">alibot design system · screens</div>
+    <h1 class="idx-title">切片索引 · 九张可独立打开的参照物</h1>
+    <p class="idx-desc">
+      这些切片是从源单文件 <code>alibot-app.html</code>（1,890 行）按界面语义切出来的静态再现：
+      每张都能单独在浏览器里打开，全部复用 <code>ui_kits/app/app.css</code> 的类，
+      不重复实现任何组件。要对照「标准装配」看 <a href="../ui_kits/app/index.html">ui_kits/app/index.html</a>；
+      要对照令牌与类型看 <a href="../preview/index.html">preview/index.html</a>。
+    </p>
+    <nav class="idx-nav" data-od-id="screens-index-nav">
+      <a href="overview.html" class="is-on">切片索引</a>
+      <a href="../ui_kits/app/index.html">标准装配</a>
+      <a href="../preview/index.html">令牌卡片</a>
+      <a href="../DESIGN.md">DESIGN.md</a>
+      <a href="../SKILL.md">SKILL.md</a>
+    </nav>
+  </header>
+
+  <!-- ─── 外壳与主视图 ──────────────────────────────────────────────────── -->
+  <section class="idx-sec">
+    <h2>外壳与主视图 <em>shell &amp; views</em></h2>
+    <div class="idx-grid">
+
+      <a class="idx-card" href="channel-view.html" data-od-id="card-channel-view">
+        <div class="p"><span class="n">01</span>screens/channel-view.html</div>
+        <h3>频道视图 · 完整三栏 AppShell</h3>
+        <p>rail 252 ─ main flex ─ dock 380；channel header（标题 · 工具 · 描述 · 置顶条 · .tabs）、
+           居中在 880px 的消息流（含代码块、任务 chip、提及、系统消息）、以及带 focus ring 的 composer。</p>
+        <div class="idx-tags"><span class="acc">AppShell</span><span>.msg</span><span>.pin-strip</span><span>.tabs</span><span>.composer</span></div>
+      </a>
+
+      <a class="idx-card" href="task-board.html" data-od-id="card-task-board">
+        <div class="p"><span class="n">02</span>screens/task-board.html</div>
+        <h3>任务看板 · 拖拽状态机</h3>
+        <p>四列固定 236px、横向滚动不拉伸。逐态摆出静止看板、拖拽中（合法落点 .drag-over /
+           非法落点 .invalid-over / 被拖卡片 .dragging）、列表视图 + 「我的任务」筛选、以及空态。</p>
+        <div class="idx-tags"><span class="acc">状态机</span><span>.col</span><span>.card</span><span>.drag-over</span><span>.invalid-over</span></div>
+      </a>
+
+      <a class="idx-card" href="search-command.html" data-od-id="card-search-command">
+        <div class="p"><span class="n">06</span>screens/search-command.html</div>
+        <h3>搜索视图 + ⌘K 命令面板</h3>
+        <p>搜索字段带 ESC 提示、四个 facet chip、三类结果行（消息 / 任务 / Agent）与
+           <code>&lt;mark&gt;</code> 命中高亮；右侧是分组（跳转 / 动作 / 频道）的命令面板，含 is-active 行与快捷键列。</p>
+        <div class="idx-tags"><span class="acc">搜索</span><span>.search-field</span><span>.result</span><span>.cmd</span><span>.cmd-item</span></div>
+      </a>
+
+      <a class="idx-card" href="mobile-shell.html" data-od-id="card-mobile-shell">
+        <div class="p"><span class="n">07</span>screens/mobile-shell.html</div>
+        <h3>≤900px 抽屉外壳</h3>
+        <p>sticky 顶栏 + 左抽屉（.rail.is-open）+ 遮罩（.rail-scrim）+ 右侧 dock 抽屉；
+           媒体查询本身归 <code>app.css</code>，切片只把外壳摆进真实状态。
+           <b>请在 ≤900px 宽的窗口打开</b>，宽窗口下会按 app.css 退化成桌面三栏。</p>
+        <div class="idx-tags"><span class="acc">响应式</span><span>.mobile-topbar</span><span>.rail-scrim</span><span>.is-open</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ─── 右侧 dock 的两个形态 ──────────────────────────────────────────── -->
+  <section class="idx-sec">
+    <h2>右侧 dock 的两个形态 <em>dock · agent &amp; thread</em></h2>
+    <div class="idx-grid">
+
+      <a class="idx-card" href="thread-panel.html" data-od-id="card-thread-panel">
+        <div class="p"><span class="n">03</span>screens/thread-panel.html</div>
+        <h3>任务线程（.tt-*）</h3>
+        <p>sticky .tt-summary（状态胶囊 + 指派胶囊 + 标签）、推进与指派两行 chip（推进项来自 TRANSITIONS，
+           标签来自 THREAD_TRANSITION_LABEL）、讨论与状态变更记录两条 .tt-log（含 ok / warn / err / is-now 点）、
+           底部 sticky 回复框。另附「已关闭 · 无可用推进」形态。</p>
+        <div class="idx-tags"><span class="acc">线程</span><span>.tt-summary</span><span>.tt-status</span><span>.tt-actions</span><span>.tt-log</span></div>
+      </a>
+
+      <a class="idx-card" href="agent-detail.html" data-od-id="card-agent-detail">
+        <div class="p"><span class="n">04</span>screens/agent-detail.html</div>
+        <h3>Agent 概览 / 运行时 / 活动</h3>
+        <p>三个 dock tab 各自成 frame：概览（.kv 状态行、2×2 .stat-grid 本周用量、.meter 上下文占用、操作按钮）、
+           运行时（模型 / 温度 / 工具权限 / 内存 / 时长 / 延迟 + 三行 .switch）、日志（info / ok / warn / err 四种 .lv）。
+           覆盖 working / online / error / offline 四态。</p>
+        <div class="idx-tags"><span class="acc">Agent</span><span>.dock-tabs</span><span>.kv</span><span>.stat-grid</span><span>.meter</span><span>.log-row</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ─── 浮层与独立组件 ───────────────────────────────────────────────── -->
+  <section class="idx-sec">
+    <h2>浮层与独立左栏 <em>layers &amp; rail</em></h2>
+    <div class="idx-grid">
+
+      <a class="idx-card" href="modals.html" data-od-id="card-modals">
+        <div class="p"><span class="n">05</span>screens/modals.html</div>
+        <h3>六张弹窗</h3>
+        <p>新建频道 / 新建任务 / 新建 Agent / 提醒 / 设置 / 频道成员，每张都套在真实
+           <code>.overlay</code>（scrim + blur）里。含 wide 变体（560px）、.member-opt 多选、
+           .radio-card 单选、.reminder-row 列表与只读字段。</p>
+        <div class="idx-tags"><span class="acc">浮层</span><span>.overlay</span><span>.modal</span><span>.field</span><span>.member-opt</span><span>.radio-card</span></div>
+      </a>
+
+      <a class="idx-card" href="workspace-sidebar.html" data-od-id="card-workspace-sidebar">
+        <div class="p"><span class="n">08</span>screens/workspace-sidebar.html</div>
+        <h3>独立左栏 · 每个导航态</h3>
+        <p>固定 252px 的 rail 拆成四张 frame：头部（含 .icon-btn.is-on 与未读 .dot）、
+           频道分组的默认 / 激活 / 未读 / .badge.soft、头像五档 + presence 四态 + 三种头像尺寸、
+           以及「激活且未读」「超长名截断」「无状态点」等边界组合。</p>
+        <div class="idx-tags"><span class="acc">导航</span><span>.nav-row</span><span>.is-active</span><span>.badge</span><span>.avatar</span><span>.presence</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <div class="idx-note" data-od-id="screens-index-note">
+    <h3>看这些切片时的三条约定</h3>
+    <ul>
+      <li>
+        <b>组件只有一份实现。</b>所有类来自 <code>ui_kits/app/app.css</code>；切片文件里只有
+        「切片机架」样式（返回索引的角标、把 <code>position:fixed</code> 的浮层收进对照舞台）。
+        改动视觉请改 <code>app.css</code>，不要改切片。
+      </li>
+      <li>
+        <b>状态类以静态方式呈现。</b>原型里的交互脚本已按本包惯例裁剪，因此
+        <code>.is-active</code> / <code>.is-on</code> / <code>.drag-over</code> / <code>.invalid-over</code> /
+        <code>.dragging</code> / <code>.badge</code> 这类状态被显式摆出；而纯 hover 态
+        （<code>.msg-tools</code>、<code>.nav-row:hover</code>）无法在静止页驻留，
+        各切片用一行注解说明取值，不伪造常驻效果。
+      </li>
+      <li>
+        <b>产品角色族来自 app 层。</b>切片按 <code>SKILL.md</code> §1 依次加载两个 foundation
+        与产品扩展层 <code>app/alibot/studio/product-tokens.css</code>
+        （<code>--selected*</code> / <code>--unread*</code> / <code>--warn*</code>）——
+        这三个族归产品层是纪律，本包不声明第二份值。
+      </li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>

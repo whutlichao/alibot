@@ -30,11 +30,15 @@ split; see `colors_and_type.css` for which one.
 
 **Product role families.** If you are building *inside the alibot app* (not a
 standalone surface), three more families come from the product extension layer
-(`app/globals.css`): `--selected*` (current position: nav / anchor row / tab /
-selected chip), `--unread*` (unread badge, search-hit highlight) and `--warn*`
-(warning: pending review, banners). `ui_kits/app/app.css` consumes them too, so
-loading the kit means loading that layer (or declaring the three families
-yourself). `--online-text` is the same shape at baseline.
+(`app/alibot/studio/product-tokens.css`): `--selected*` (current position: nav /
+anchor row / tab / selected chip), `--unread*` (unread badge, search-hit
+highlight) and `--warn*` (warning: pending review, banners). `ui_kits/app/app.css`
+consumes them too, so loading the kit means loading that layer (or declaring the
+three families yourself). `--online-text` is the same shape at baseline.
+
+Those three families stay in the app layer on purpose — they are product
+vocabulary, not reusable foundations. Do not move them into `colors_and_type.css`
+or `tokens.css`; load the extension layer (or redeclare the names) instead.
 
 Never hard-code a hex, rgb, hsl or named color. Derive everything from tokens with
 `var(--…)` or `color-mix(in oklch, …)`.
@@ -46,10 +50,30 @@ Never hard-code a hex, rgb, hsl or named color. Derive everything from tokens wi
 | A new workspace surface | `ui_kits/app/index.html` + `ui_kits/app/app.css` |
 | A single isolated screen | the closest file in `screens/` |
 | A token/component review | a card in `preview/` |
-| A new component in-app | copy the matching class block from `ui_kits/app/spec.css` |
+| A new component in-app | copy the matching class block from `ui_kits/app/app.css` |
 
 The applied kit `ui_kits/app/` is the canonical assembly: AppShell → rail → main
-(header + view + composer) → dock, plus modals and the command palette.
+(header + view + composer) → dock, plus modals and the command palette. Open
+`ui_kits/app/index.html` to see it live before building anything new.
+
+When you build one isolated surface, start from the slice that already shows its
+structure (`screens/`), then delete what you do not need:
+
+| Surface | Slice |
+| --- | --- |
+| Channel with messages + composer | `screens/channel-view.html` |
+| Task board / list, drag states | `screens/task-board.html` |
+| Task thread in the dock | `screens/thread-panel.html` |
+| Agent dock (overview / runtime / activity) | `screens/agent-detail.html` |
+| Any modal | `screens/modals.html` |
+| Search results, ⌘K palette | `screens/search-command.html` |
+| Drawer shell at ≤900px | `screens/mobile-shell.html` |
+| The rail alone, in every nav state | `screens/workspace-sidebar.html` |
+
+Every slice is self-contained and opens directly in a browser; all of them import
+the two foundations, the product extension layer, and `ui_kits/app/app.css`. Never
+re-declare a component inside a slice — if a slice needs a visual change, change
+`ui_kits/app/app.css` so the single implementation stays single.
 
 ## 3. Structural rules (non-negotiable)
 

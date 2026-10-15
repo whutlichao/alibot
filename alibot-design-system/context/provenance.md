@@ -6,9 +6,9 @@ How this design system was derived, what is exact, and what is reconstructed.
 
 | Source | Role |
 | --- | --- |
-| `worksplice-app.html` (1,865 lines) | **Primary evidence.** Copied from Open Design project "Web Prototype" (`228a9bdf-5a68-4d36-a153-9771522ea041`). |
+| `alibot-app.html` (1,890 lines) | **Primary evidence.** Copied from Open Design project "Web Prototype" (`228a9bdf-5a68-4d36-a153-9771522ea041`). Renamed from `worksplice-app.html` in #20; content unchanged. |
 | `context/source-context.md` | Open Design handoff record (source id, metadata, generation contract). |
-| `worksplice-app.html.artifact.json` | Artifact manifest: kind `html`, entry `worksplice-app.html`. |
+| `alibot-app.html.artifact.json` | Artifact manifest: kind `html`, entry `alibot-app.html`. |
 
 No reference images, browser snapshots, sketches, font files or binary assets were
 present in the copied project. The single HTML file is complete and self-contained
@@ -16,7 +16,7 @@ present in the copied project. The single HTML file is complete and self-contain
 
 ## Method
 
-1. Read `context/source-context.md`, then the full `worksplice-app.html`.
+1. Read `context/source-context.md`, then the full `alibot-app.html`.
 2. Extracted the `:root` token block **verbatim** — it already declares the
    `modern-minimal` direction and the `--bg/--surface/--fg/--muted/--border/--accent`
    contract the product's Next.js components depend on. Copied unchanged into
@@ -50,8 +50,9 @@ present in the copied project. The single HTML file is complete and self-contain
   the collection of inline stroke paths used across the app (pin, plus, search, task,
   user, members, settings, bell, panel, attach, mention, send). Stroke width 1.9–2.4,
   `viewBox 0 0 24 24`, `stroke="currentColor"`, no fill.
-- `fonts/` is intentionally empty: the system stack is a deliberate choice (it
-  renders CJK natively). No font files exist in the source to preserve.
+- `fonts/` ships no font files on purpose: the system stack is a deliberate choice (it
+  renders CJK natively). No font files exist in the source to preserve. The directory
+  carries a `README.md` stating exactly that so the reference has a real destination.
 
 ## Known gaps (honest placeholders)
 

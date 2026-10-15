@@ -10,7 +10,9 @@
    .nav-row.is-active / .filter-chip.is-on / .reaction.mine), `--unread*`
    (2 refs, .badge / .result mark) and `--warn*` (4 refs, .meter.warn i /
    .lv.warn / .tt-log li.warn) — whose definitions live in the product
-   extension layer (`app/globals.css`), not in the two foundations above.
+   extension layer (`app/alibot/studio/product-tokens.css` — the real path; an
+   earlier revision of these headers said `app/globals.css`, which never
+   existed), not in the two foundations above.
    Dropping this kit into a product therefore means loading that layer too (or
    declaring the three role families yourself). The same shape already existed
    at baseline for `--online-text` (1 ref, .lv.ok); the three families are the

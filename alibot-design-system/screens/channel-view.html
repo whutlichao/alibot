@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>alibot · 切片 · 频道视图（三栏 AppShell）</title>
+<!--
+  切片 channel-view：完整三栏 AppShell + 消息流 + composer。
+  来源 = 原型 alibot-app.html 的静态摘录（渠道 #设计系统重构 的消息数据、
+  侧栏数据、dock 概览数据均逐字取自该文件的 MESSAGES.design / CHANNELS /
+  DMS / AGENTS / LOGS 常量）。交互脚本按本票要求裁剪，状态类以静态方式呈现。
+
+  加载顺序与产品一致（app/alibot/studio/index.html 同序）：
+    两个 foundation → 产品扩展层（--selected* / --unread* / --warn*）→ 组件库。
+  产品角色族归 app 层是纪律，不由本包声明第二份（见 SKILL.md §1）。
+  组件一律来自 ../ui_kits/app/app.css —— 本文件不定义任何产品组件。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="../../app/alibot/studio/product-tokens.css" />
+<link rel="stylesheet" href="../ui_kits/app/app.css" />
+<style>
+  /* 切片机架（slice chrome，非组件）：只放返回索引的角标。 */
+  .slice-tag {
+    position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 90;
+    display: inline-flex; align-items: center; gap: var(--sp-3);
+    font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-pill); padding: 3px 10px; text-decoration: none;
+  }
+  .slice-tag:hover { border-color: var(--border-strong); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="app" data-od-id="app-shell">
+
+  <!-- ─── workspace rail（固定 252px） ──────────────────────────────────── -->
+  <aside class="rail" data-od-id="workspace-sidebar" aria-label="工作区导航">
+    <div class="rail-head">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 7h12M6 12h8M6 17h12"/><circle cx="18" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>
+        </div>
+        <div style="min-width:0">
+          <div class="brand-name">alibot</div>
+          <div class="brand-sub">LOCAL · E2EE</div>
+        </div>
+      </div>
+      <button class="icon-btn" data-od-id="btn-reminders" aria-label="提醒" title="提醒">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+        <span class="dot"></span>
+      </button>
+      <button class="icon-btn" data-od-id="btn-settings" aria-label="设置" title="设置">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+      </button>
+    </div>
+
+    <div class="search-shell">
+      <button class="search-btn" data-od-id="btn-search-open">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span>搜索消息、任务…</span>
+        <kbd>⌘K</kbd>
+      </button>
+    </div>
+
+    <div class="rail-actions">
+      <button class="btn btn-primary" style="flex:1" data-od-id="btn-new-channel">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+        新建频道
+      </button>
+      <button class="btn" data-od-id="btn-new-agent" aria-label="新建 Agent" title="新建 Agent">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9" opacity=".35"/></svg>
+      </button>
+    </div>
+
+    <nav class="rail-scroll" data-od-id="nav-lists">
+      <div class="group">
+        <div class="group-label">频道 <button data-od-id="btn-new-channel-2" title="新建频道" aria-label="新建频道"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <button class="nav-row is-active" data-od-id="channel-design">
+          <span class="hash">#</span><span class="grow">设计系统重构</span>
+        </button>
+        <button class="nav-row" data-od-id="channel-backend">
+          <span class="hash">#</span><span class="grow">后端 · raft</span><span class="badge">1</span>
+        </button>
+        <button class="nav-row" data-od-id="channel-growth">
+          <span class="hash">#</span><span class="grow">增长实验</span>
+        </button>
+        <button class="nav-row" data-od-id="channel-random">
+          <span class="hash">#</span><span class="grow">茶水间</span>
+        </button>
+      </div>
+      <div class="group">
+        <div class="group-label">私信</div>
+        <button class="nav-row" data-od-id="dm-susan">
+          <span class="avatar sm av-0" aria-hidden="true">S</span>
+          <span class="grow">Susan</span>
+          <span class="presence working" title="正在干活"></span>
+          <span class="badge">2</span>
+        </button>
+        <button class="nav-row" data-od-id="dm-atlas">
+          <span class="avatar sm av-1" aria-hidden="true">A</span>
+          <span class="grow">Atlas</span>
+          <span class="presence online" title="在线"></span>
+        </button>
+      </div>
+      <div class="group">
+        <div class="group-label">Agent 成员 <button data-od-id="btn-new-agent-2" title="新建 Agent" aria-label="新建 Agent"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <button class="nav-row" data-od-id="agent-susan">
+          <span class="avatar sm av-0" aria-hidden="true">S</span>
+          <span class="grow">Susan<span style="color:var(--faint);font-weight:400"> · 秘书</span></span>
+          <span class="presence working" title="正在干活"></span>
+        </button>
+        <button class="nav-row" data-od-id="agent-atlas">
+          <span class="avatar sm av-1" aria-hidden="true">A</span>
+          <span class="grow">Atlas<span style="color:var(--faint);font-weight:400"> · 架构师</span></span>
+          <span class="presence online" title="在线"></span>
+        </button>
+        <button class="nav-row" data-od-id="agent-pixel">
+          <span class="avatar sm av-2" aria-hidden="true">P</span>
+          <span class="grow">Pixel<span style="color:var(--faint);font-weight:400"> · 前端工程师</span></span>
+          <span class="presence error" title="出错"></span>
+        </button>
+        <button class="nav-row" data-od-id="agent-quill">
+          <span class="avatar sm av-3" aria-hidden="true">Q</span>
+          <span class="grow">Quill<span style="color:var(--faint);font-weight:400"> · 文档</span></span>
+          <span class="presence offline" title="离线"></span>
+        </button>
+        <button class="nav-row" data-od-id="agent-sentry">
+          <span class="avatar sm av-4" aria-hidden="true">S</span>
+          <span class="grow">Sentry<span style="color:var(--faint);font-weight:400"> · 测试</span></span>
+          <span class="presence online" title="在线"></span>
+        </button>
+      </div>
+    </nav>
+
+    <div class="rail-foot">
+      <div class="avatar av-4" aria-hidden="true">我</div>
+      <div style="flex:1; min-width:0">
+        <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">林舟</div>
+        <div class="brand-sub" style="letter-spacing:0">@linzhou · 在线</div>
+      </div>
+      <span class="presence online" title="在线"></span>
+    </div>
+  </aside>
+
+  <!-- ─── main（flex:1） ───────────────────────────────────────────────── -->
+  <main class="main" data-od-id="main-column">
+    <header class="chan-head" data-od-id="channel-header">
+      <div class="chan-top">
+        <h1 class="chan-title"><span class="hash">#</span><span>设计系统重构</span></h1>
+        <div class="chan-tools">
+          <button class="icon-btn" title="置顶消息" aria-label="置顶消息">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 3H7l3-3-1-7Z"/></svg>
+          </button>
+          <button class="icon-btn" title="频道成员" aria-label="频道成员">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M17 20a5.5 5.5 0 0 0-2.5-4.6"/></svg>
+          </button>
+          <div class="chan-divider"></div>
+          <button class="icon-btn is-on" title="切换详情面板" aria-label="切换详情面板">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="chan-desc">重构产品设计令牌与组件，统一到 modern-minimal 方向。</div>
+      <div class="pin-strip" data-od-id="pinned-strip">
+        <span class="icon" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 3H7l3-3-1-7Z"/></svg></span>
+        <span><b>设计令牌 v2 已定稿</b> — 见 <code style="font-family:var(--mono)">ui-tokens.css</code>，含 6 个语义色与 4 档圆角</span>
+        <a href="channel-view.html">查看</a>
+      </div>
+      <div class="tabs" role="tablist" data-od-id="channel-tabs">
+        <button class="tab is-active" role="tab" aria-selected="true" data-od-id="tab-messages">消息 <span class="count">7</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-od-id="tab-tasks">任务 <span class="count">8</span></button>
+      </div>
+    </header>
+
+    <!-- messages view：消息流居中在 --stream-max 880px -->
+    <section class="stream" data-od-id="messages-view">
+      <div class="stream-inner">
+
+        <div class="day-sep"><span>今天</span></div>
+
+        <div class="msg" data-od-id="message-m1">
+          <div class="avatar av-4" aria-hidden="true">我</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author">林舟</span>
+              <span class="msg-time">09:12</span>
+            </div>
+            <div class="msg-text">早上好。今天目标：把 <code>globals.css</code> 里的马卡龙色全部替换成语义令牌，不再出现裸 hex。</div>
+          </div>
+        </div>
+
+        <div class="msg" data-od-id="message-m2">
+          <div class="avatar av-0" aria-hidden="true">S</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author is-agent">Susan</span>
+              <span class="msg-tag">Agent</span>
+              <span class="msg-time">09:13</span>
+            </div>
+            <div class="msg-text">收到。我已扫描出 <b>37 处</b>裸色值，主要集中在 <code>AppShell</code> 与 <code>ChannelView</code>。建议先冻结 6 个语义令牌再逐个替换。</div>
+            <!-- app.css 声明了 .reactions / .reaction / .reaction.mine，但原型消息数据未带 reactions。
+                 此处按 DESIGN.md §6 的类组合补两枚胶囊，目的是让「我的表态」这个 selected 族状态可见。 -->
+            <div class="reactions">
+              <span class="reaction">👍 <b>3</b></span>
+              <span class="reaction mine">✓ 已确认 <b>1</b></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg" data-od-id="message-m3">
+          <div class="avatar av-4" aria-hidden="true">我</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author">林舟</span>
+              <span class="msg-time">09:14</span>
+            </div>
+            <div class="msg-text">同意。令牌就叫 bg / surface / fg / muted / border / accent，全部用 <code>oklch()</code>。</div>
+          </div>
+        </div>
+
+        <div class="msg" data-od-id="message-m4">
+          <div class="avatar av-0" aria-hidden="true">S</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author is-agent">Susan</span>
+              <span class="msg-tag">Agent</span>
+              <span class="msg-time">09:16</span>
+            </div>
+            <div class="msg-text">已固化会话文件 <code>session-0412.json</code> 并开启新窗口。这是本次替换的迁移脚本草稿：</div>
+            <pre><span class="cmt">// tokens-v2.mjs</span>
+<span class="kw">export</span> <span class="kw">const</span> map = {
+  "#fffaef": "var(--bg)",
+  "#141111": "var(--fg)",
+  "#27ccf3": "var(--accent)",
+};</pre>
+          </div>
+        </div>
+
+        <div class="msg" data-od-id="message-m5">
+          <div class="avatar av-2" aria-hidden="true">P</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author is-agent">Pixel</span>
+              <span class="msg-tag">Agent</span>
+              <span class="msg-time">09:21</span>
+            </div>
+            <div class="msg-text">提醒：硬偏移阴影 <code>2px 2px 0</code> 在深色面板上会啃掉边框，我打算换成发丝阴影 + 1px 描边。</div>
+            <button class="task-chip" data-od-id="task-chip-4">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+              <span>关联任务 <b>#4</b></span>
+            </button>
+          </div>
+          <!-- .msg-tools 是 hover/focus 才出现的工具条（opacity:0），
+               按反模式纪律不在静止切片里强制显示。 -->
+          <div class="msg-tools">
+            <button title="回复"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/></svg></button>
+            <button title="置顶"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 3H7l3-3-1-7Z"/></svg></button>
+            <button title="转为任务"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg></button>
+          </div>
+        </div>
+
+        <div class="msg" data-od-id="message-m6">
+          <div class="avatar av-4" aria-hidden="true">我</div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author">林舟</span>
+              <span class="msg-time">09:24</span>
+            </div>
+            <div class="msg-text">好。<span class="mention">@Pixel</span> 你顺便把看板拖拽的状态机校验做掉，非法转移要拦下来。</div>
+          </div>
+        </div>
+
+        <div class="msg sys" data-od-id="message-m7">
+          <div class="avatar sys-avatar" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          </div>
+          <div class="msg-body">
+            <div class="msg-head">
+              <span class="msg-author">系统</span>
+              <span class="msg-time">09:25</span>
+            </div>
+            <div class="msg-text">任务 #3「为任务看板加入状态机拖拽校验」已创建并指派给 @Pixel。</div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- composer：居中在 --stream-max，focus ring 用 --accent-soft -->
+    <footer class="composer" data-od-id="composer">
+      <div class="composer-inner">
+        <div class="composer-box">
+          <textarea class="composer-input" rows="1" placeholder="发消息到 #设计系统重构 —— 输入 @ 提及 Agent，/ 查看命令" data-od-id="composer-input"></textarea>
+          <div class="composer-bar">
+            <button class="icon-btn" title="附件" aria-label="附件">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 11.5 12.5 20a5 5 0 1 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L10 17.7a1.6 1.6 0 0 1-2.3-2.3l7.8-7.8"/></svg>
+            </button>
+            <button class="icon-btn" title="提及 Agent" aria-label="提及 Agent">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+            </button>
+            <button class="icon-btn" title="作为任务发送" aria-label="作为任务发送">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            </button>
+            <span class="sep"></span>
+            <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+            <button class="composer-send" disabled aria-label="发送" data-od-id="btn-send">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <!-- ─── detail dock（固定 380px，agent 形态） ─────────────────────────── -->
+  <aside class="dock" data-od-id="detail-dock" aria-label="详情面板">
+    <div class="dock-agent">
+      <div class="dock-head">
+        <div class="dock-id">
+          <div class="avatar lg av-0" aria-hidden="true">S</div>
+          <div class="meta">
+            <div class="dock-name"><span>Susan</span> <span class="msg-tag">Agent</span></div>
+            <div class="dock-role"><span class="presence working"></span><span>秘书 · 正在干活</span></div>
+          </div>
+          <button class="icon-btn" aria-label="关闭面板" data-od-id="btn-dock-close">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="dock-tabs" role="tablist">
+        <button class="dock-tab is-active" role="tab" aria-selected="true" data-od-id="docktab-overview">概览</button>
+        <button class="dock-tab" role="tab" aria-selected="false" data-od-id="docktab-runtime">运行时</button>
+        <button class="dock-tab" role="tab" aria-selected="false" data-od-id="docktab-activity">日志</button>
+      </div>
+
+      <div class="dock-scroll" data-od-id="dock-overview">
+        <div class="d-sec">
+          <div class="d-sec-title">状态</div>
+          <div class="kv"><span class="k">当前状态</span><span class="v">正在干活</span></div>
+          <div class="kv"><span class="k">家目录</span><span class="v">~/agents/susan</span></div>
+          <div class="kv"><span class="k">项目目录</span><span class="v">/alibot</span></div>
+          <div class="kv"><span class="k">会话文件</span><span class="v">session-0412.json</span></div>
+          <div class="kv"><span class="k">订阅频道</span><span class="v">4 个</span></div>
+        </div>
+        <div class="d-sec">
+          <div class="d-sec-title">本周用量</div>
+          <div class="stat-grid">
+            <div class="stat"><div class="n">148</div><div class="l">消息处理</div></div>
+            <div class="stat"><div class="n">23</div><div class="l">完成任务</div></div>
+            <div class="stat"><div class="n">1.2M</div><div class="l">Token 消耗</div></div>
+            <div class="stat"><div class="n">96%</div><div class="l">成功率</div></div>
+          </div>
+        </div>
+        <div class="d-sec">
+          <div class="d-sec-title">上下文用量</div>
+          <div class="kv" style="border:0;padding-bottom:2px"><span class="k">窗口占用</span><span class="v">72%</span></div>
+          <div class="meter warn"><i style="width:72%"></i></div>
+          <div style="margin-top:6px;color:var(--faint);font-size:11.5px">接近上限时将自动固化会话文件并开启新窗口。</div>
+        </div>
+        <div class="d-sec">
+          <div class="d-sec-title">操作</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-sm" style="flex:1" data-od-id="btn-pause-agent">暂停</button>
+            <button class="btn btn-sm" style="flex:1" data-od-id="btn-edit-agent">编辑配置</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<a class="slice-tag" href="overview.html">screens/channel-view.html · 切片索引</a>
+
+</body>
+</html>

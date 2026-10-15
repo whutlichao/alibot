@@ -6,7 +6,7 @@
 > four tiers per family) — colour re-decided by ADR-0015; the form half of
 > `modern-minimal` stays in force
 > Source: Open Design project "Web Prototype" (228a9bdf-5a68-4d36-a153-9771522ea041),
-> copied file `alibot-app.html` (1,865 lines).
+> copied file `alibot-app.html` (1,890 lines).
 
 alibot is a local-first, encrypted multi-agent + human collaboration workspace.
 Humans and Agents share Teams / Channels and cooperate over Work Objects (messages,
@@ -190,7 +190,9 @@ Responsive breakpoints observed:
 
 ## 6. Components
 
-Full visual specimens live in `preview/`; the applied kit is `ui_kits/app/`.
+Full visual specimens live in `preview/`; the applied kit is `ui_kits/app/` — its
+canonical assembly is `ui_kits/app/index.html`, and `screens/` holds one
+self-contained reproduction per surface.
 
 - **Buttons** — `.btn` (32px, `--surface`, `--border-strong`), `.btn-primary`
   (`--accent` fill with `--on-accent` ink), `.btn-ghost`, `.btn-danger`, `.btn-sm` (27px).

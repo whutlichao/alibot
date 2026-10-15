@@ -15,14 +15,18 @@ colors_and_type.css    canonical color + typography tokens (the --bg/--surface/-
 tokens.css             spacing, radius, elevation, layout, motion, z-index
 SKILL.md               agent-facing: how to compose new surfaces with this system
 README.md              this file
+alibot-app.html        the source monolith (1,890 lines) — kept for exact comparison
+                       (`alibot-app.html.artifact.json` is its artifact manifest)
 context/
   provenance.md        where every value came from + fidelity notes
   source-context.md    Open Design handoff record
 assets/                brand-mark.svg, wordmark.svg, icon-sprite.svg (source vectors)
 build/                 icons.svg (compiled sprite) + icons.json (id → viewBox)
-fonts/                 (empty) — system stack is intentional; no font files shipped
+fonts/                 README.md only — system stack is intentional; no font files shipped
 preview/               focused review cards + index.html manifest
-ui_kits/app/           applied interface kit (AppShell, rail, stream, board, dock …)
+ui_kits/app/           applied interface kit
+  app.css              every product component class (the one implementation of each)
+  index.html           the canonical assembly: AppShell → rail → main → dock
 screens/               sliced per-surface reproductions of the source monolith
   channel-view.html    full three-column app shell + messages + composer
   task-board.html      kanban / list task board with drag state machine
@@ -39,10 +43,13 @@ screens/               sliced per-surface reproductions of the source monolith
 
 1. **Reviewers**: open `preview/index.html` — a manifest linking every focused card.
    Best first cards: `preview/colors-primary.html`, `preview/typography-specimens.html`,
-   `preview/components-buttons.html`, then `preview/applied-app-shell.html`.
+   `preview/spacing-tokens.html`, then `preview/colors-semantic.html`.
 2. **Designers/engineers**: read `DESIGN.md`, then import
-   `colors_and_type.css` + `tokens.css`.
-3. **Agents**: read `SKILL.md`.
+   `colors_and_type.css` + `tokens.css`. For the assembled interface open
+   `ui_kits/app/index.html`; for one surface at a time start at
+   `screens/overview.html`.
+3. **Agents**: read `SKILL.md`, then open `ui_kits/app/index.html` for the canonical
+   assembly and the matching file in `screens/` for the nearest surface.
 
 ## Core principles
 

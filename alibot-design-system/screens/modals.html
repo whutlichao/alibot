@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>alibot · 切片 · 弹窗集合</title>
+<!--
+  切片 modals：新建频道 / 新建任务 / 新建 Agent / 提醒 / 设置 / 成员。
+  每张弹窗的标题、副标题、字段、占位文案、底部按钮都逐字取自原型
+  alibot-app.html 的 openNewChannel() / openNewTask() / openNewAgent() /
+  openReminders() / openSettings() / openChannelMembers()。
+
+  这里把六张 .modal 并排摆出来，是为了让「一次只有一个 overlay」的运行时约束
+  不遮挡对照；每张都套在真实的 .overlay（scrim + blur）里。
+  注意 .overlay 是 position:fixed，切片里靠 .slice-stage 的 transform 把它
+  限制在舞台内，好让六张能同屏对照。
+
+  组件全部来自 ../ui_kits/app/app.css。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="../../app/alibot/studio/product-tokens.css" />
+<link rel="stylesheet" href="../ui_kits/app/app.css" />
+<style>
+  /* 切片机架（非组件）：把 fixed overlay 收进各自的舞台。 */
+  body { margin: 0; background: var(--bg); }
+  .slice-wrap { display: flex; flex-wrap: wrap; gap: var(--sp-9); padding: var(--sp-9); }
+  .slice-stage {
+    position: relative; transform: translateZ(0);
+    width: 640px; height: 560px; overflow: hidden;
+    border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel);
+  }
+  .slice-stage .overlay { position: absolute; inset: 0; padding: var(--sp-9); }
+  .slice-cap {
+    position: absolute; left: var(--sp-5); top: var(--sp-4); z-index: 70;
+    font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide);
+    text-transform: uppercase; color: var(--faint); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--r-pill); padding: 2px 9px;
+  }
+  .slice-tag {
+    position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 90;
+    display: inline-flex; align-items: center; gap: var(--sp-3);
+    font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-pill); padding: 3px 10px; text-decoration: none;
+  }
+  .slice-tag:hover { border-color: var(--border-strong); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="slice-wrap">
+
+  <!-- ─── 1. 新建频道（wide） ──────────────────────────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">新建频道 · wide</span>
+    <div class="overlay" data-od-id="overlay-new-channel">
+      <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="modalTitleChannel">
+        <div class="modal-head">
+          <div style="flex:1">
+            <h2 id="modalTitleChannel">新建频道</h2>
+            <div class="sub">频道创建后成员可被订阅与唤醒</div>
+          </div>
+          <button class="icon-btn" aria-label="关闭">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>频道名称</label>
+            <input class="input" placeholder="例如：移动端体验">
+          </div>
+          <div class="field">
+            <label>描述</label>
+            <textarea class="textarea" placeholder="这个频道讨论什么？"></textarea>
+          </div>
+          <div class="field">
+            <label>初始成员</label>
+            <div class="member-pick">
+              <button class="member-opt"><span class="avatar sm av-0" aria-hidden="true">S</span>Susan</button>
+              <button class="member-opt is-on"><span class="avatar sm av-1" aria-hidden="true">A</span>Atlas</button>
+              <button class="member-opt is-on"><span class="avatar sm av-2" aria-hidden="true">P</span>Pixel</button>
+              <button class="member-opt"><span class="avatar sm av-3" aria-hidden="true">Q</span>Quill</button>
+              <button class="member-opt"><span class="avatar sm av-4" aria-hidden="true">S</span>Sentry</button>
+            </div>
+            <div class="hint">选中的 Agent 会自动订阅该频道。</div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="sep"></span>
+          <button class="btn">取消</button>
+          <button class="btn btn-primary">创建频道</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── 2. 新建任务 ──────────────────────────────────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">新建任务 · 待认领列</span>
+    <div class="overlay" data-od-id="overlay-new-task">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitleTask">
+        <div class="modal-head">
+          <div style="flex:1">
+            <h2 id="modalTitleTask">新建任务</h2>
+            <div class="sub">将创建于「待认领」列</div>
+          </div>
+          <button class="icon-btn" aria-label="关闭">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>任务描述</label>
+            <textarea class="textarea" placeholder="描述任务…（⌘Enter 创建）"></textarea>
+          </div>
+          <div class="field">
+            <label>指派给</label>
+            <select class="select">
+              <option>未认领</option>
+              <option>Susan · 秘书</option>
+              <option>Atlas · 架构师</option>
+              <option>Pixel · 前端工程师</option>
+              <option>Quill · 文档</option>
+              <option>Sentry · 测试</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="sep"></span>
+          <button class="btn">取消</button>
+          <button class="btn btn-primary">创建任务</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── 3. 新建 Agent ────────────────────────────────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">新建 Agent</span>
+    <div class="overlay" data-od-id="overlay-new-agent">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitleAgent">
+        <div class="modal-head">
+          <div style="flex:1">
+            <h2 id="modalTitleAgent">新建 Agent</h2>
+            <div class="sub">配置家目录、模型与订阅</div>
+          </div>
+          <button class="icon-btn" aria-label="关闭">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="field"><label>名称</label><input class="input" placeholder="例如：Nova"></div>
+          <div class="field"><label>角色</label><input class="input" placeholder="例如：数据分析"></div>
+          <div class="field">
+            <label>模型</label>
+            <select class="select">
+              <option>claude-sonnet-4</option>
+              <option>claude-opus-4</option>
+              <option>gpt-5-codex</option>
+              <option>gpt-5-mini</option>
+            </select>
+          </div>
+          <div class="field"><label>家目录</label><input class="input" value="~/agents/nova" readonly></div>
+        </div>
+        <div class="modal-foot">
+          <span class="sep"></span>
+          <button class="btn">取消</button>
+          <button class="btn btn-primary">创建 Agent</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── 4. 提醒（wide，含空态） ──────────────────────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">提醒 · wide · 含空态</span>
+    <div class="overlay" data-od-id="overlay-reminders">
+      <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="modalTitleReminders">
+        <div class="modal-head">
+          <div style="flex:1">
+            <h2 id="modalTitleReminders">提醒</h2>
+            <div class="sub">到点后 ⏰ 系统消息会直接出现在对应频道的消息流中</div>
+          </div>
+          <button class="icon-btn" aria-label="关闭">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div style="max-height:40vh">
+            <div class="reminder-row">
+              <span class="time">14:30</span>
+              <span class="grow">检查令牌替换进度 <span style="color:var(--faint)">· #设计系统重构</span></span>
+              <button class="icon-btn" aria-label="删除提醒">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+            </div>
+            <div class="reminder-row">
+              <span class="time">明天 10:00</span>
+              <span class="grow">评审 raft 快照方案 <span style="color:var(--faint)">· #后端 · raft</span></span>
+              <button class="icon-btn" aria-label="删除提醒">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="field" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+            <label>新提醒</label>
+            <div style="display:flex;gap:8px">
+              <input class="input" placeholder="提醒内容" style="flex:1">
+              <input class="input" type="time" value="09:00" style="width:110px">
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="sep"></span>
+          <button class="btn">取消</button>
+          <button class="btn btn-primary">添加提醒</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── 5. 设置（单列 modal，radio-card 双组） ───────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">设置 · radio-card</span>
+    <div class="overlay" data-od-id="overlay-settings">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitleSettings">
+        <div class="modal-head">
+          <div style="flex:1">
+            <h2 id="modalTitleSettings">设置</h2>
+            <div class="sub">工作区偏好</div>
+          </div>
+          <button class="icon-btn" aria-label="关闭">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>主题</label>
+            <div class="radio-row">
+              <button class="radio-card is-on"><b>浅色</b><span>当前</span></button>
+              <button class="radio-card"><b>跟随系统</b><span>自动切换</span></button>
+            </div>
+          </div>
+          <div class="field">
+            <label>语言</label>
+            <select class="select"><option>简体中文</option><option>English</option></select>
+          </div>
+          <div class="field">
+            <label>消息密度</label>
+            <div class="radio-row">
+              <button class="radio-card is-on"><b>舒适</b><span>默认</span></button>
+              <button class="radio-card"><b>紧凑</b><span>更多消息</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="sep"></span>
+          <button class="btn btn-primary">完成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── 6. 频道成员（wide，.kv 行 + presence 点） ────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">频道成员 · wide</span>
+    <div class="overlay" data-od-id="overlay-members">
+      <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="modalTitleMembers">
+        <div class="modal-head">
+          <div style="flex:1">
+            <h2 id="modalTitleMembers">#设计系统重构 成员</h2>
+            <div class="sub">4 位成员</div>
+          </div>
+          <button class="icon-btn" aria-label="关闭">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="kv" style="padding:9px 0">
+            <span class="k" style="display:flex;align-items:center;gap:9px;color:var(--fg)">
+              <span class="avatar sm av-4" aria-hidden="true">我</span>
+              <span><b style="font-weight:600">林舟</b><br><span style="color:var(--faint);font-size:11.5px">产品负责人</span></span>
+            </span>
+            <span class="v">我</span>
+          </div>
+          <div class="kv" style="padding:9px 0">
+            <span class="k" style="display:flex;align-items:center;gap:9px;color:var(--fg)">
+              <span class="avatar sm av-0" aria-hidden="true">S</span>
+              <span><b style="font-weight:600">Susan</b><br><span style="color:var(--faint);font-size:11.5px">秘书</span></span>
+            </span>
+            <span class="v"><span class="presence working" title="正在干活"></span></span>
+          </div>
+          <div class="kv" style="padding:9px 0">
+            <span class="k" style="display:flex;align-items:center;gap:9px;color:var(--fg)">
+              <span class="avatar sm av-1" aria-hidden="true">A</span>
+              <span><b style="font-weight:600">Atlas</b><br><span style="color:var(--faint);font-size:11.5px">架构师</span></span>
+            </span>
+            <span class="v"><span class="presence online" title="在线"></span></span>
+          </div>
+          <div class="kv" style="padding:9px 0">
+            <span class="k" style="display:flex;align-items:center;gap:9px;color:var(--fg)">
+              <span class="avatar sm av-2" aria-hidden="true">P</span>
+              <span><b style="font-weight:600">Pixel</b><br><span style="color:var(--faint);font-size:11.5px">前端工程师</span></span>
+            </span>
+            <span class="v"><span class="presence error" title="出错"></span></span>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="sep"></span>
+          <button class="btn btn-primary">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<a class="slice-tag" href="overview.html">screens/modals.html · 切片索引</a>
+
+</body>
+</html>

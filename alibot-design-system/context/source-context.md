@@ -32,7 +32,13 @@ This design-system workspace was created from an existing Open Design project. T
 
 ## Copied files
 
-- worksplice-app.html
+- `alibot-app.html` — copied from the source project as `worksplice-app.html` and
+  renamed in #20; content unchanged. The JSON block above is quoted verbatim from the
+  source handoff and therefore still shows the original file name.
+
+The `linkedDirs` entry above is an **absolute path on the machine that ran the export**
+(`/Users/apple/workspace/worksplice`), not a path inside this package; nothing in this
+package resolves against it.
 
 ## Skipped files
 
