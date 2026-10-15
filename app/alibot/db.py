@@ -1572,6 +1572,7 @@ class Database:
             return []
         ranges: list[dict[str, int]] = []
         seen: set[tuple[int, int]] = set()
+        previous_original_end = 0
         cursor = 0
         while True:
             folded_start = folded_text.find(folded_query, cursor)
@@ -1582,7 +1583,7 @@ class Database:
             end = original_ends[folded_end - 1]
             original_range = (start, end)
             # JavaScript 的 String.slice 按 UTF-16 code unit 计数；转换留在唯一判定落点，前端无需重算。
-            if original_range not in seen:
+            if original_range not in seen and start >= previous_original_end:
                 ranges.append(
                     {
                         "start": len(body[:start].encode("utf-16-le")) // 2,
@@ -1590,6 +1591,7 @@ class Database:
                     }
                 )
                 seen.add(original_range)
+                previous_original_end = end
             cursor = folded_end
         return ranges
 

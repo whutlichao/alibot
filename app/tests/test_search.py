@@ -119,6 +119,16 @@ def test_search_casefolds_unicode_without_drifting_highlight_ranges(client: Test
     assert x_hit[0]["highlight_ranges"] == [{"start": 10, "end": 11}]
 
 
+def test_search_casefold_expansion_does_not_emit_overlapping_source_ranges(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+    message = send(client, channel["id"], "sßs").json()["message"]
+
+    hits = search(client, "ss")["hits"]
+
+    assert [hit["message"]["id"] for hit in hits] == [message["id"]]
+    assert hits[0]["highlight_ranges"] == [{"start": 0, "end": 2}]
+
+
 def test_search_reports_every_non_overlapping_match(client: TestClient) -> None:
     channel = create_channel(client).json()["channel"]
     message = send(client, channel["id"], "banana").json()["message"]
