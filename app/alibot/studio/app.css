@@ -458,10 +458,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
    任务线程：右侧 dock 的**第二种形态**（`#dockTask`），形态来自原型 726-790 行的 `.tt-*`。
    拖拽未实现（`#26` 的剩余交付），因此不引入 `.drag-over` / `.invalid-over` / `.dragging`
    这些没有行为支撑的状态类。
-   档位纪律（ADR-0015）：`.seg button.is-active` 是**填充档**，因此墨色只能是 `--on-accent`
-   （原型那行写的是 `oklch(98% 0.005 250)` 字面量，本文件禁止裸色值）；`.filter-chip.is-on`
-   用 `--selected-soft` 底 + `--selected-deep` 字：`.filter-chip` 本来就是**纸面**控件
-   （原型 `--surface` 底），而 `--selected` base 是 fill 档，放在纸上当文字会违反档位纪律。
+   档位纪律（ADR-0015）：`.seg button.is-active` 的底是 `--fg`（深梅墨），所以它的墨色必须是
+   `--bg`（纸族浅色，与仓内 `.toast` 同一形态）；**不能**用 `--on-accent`——它是 `var(--fg)`，
+   压在 `--fg` 底上就是同色同底、字看不见。`.filter-chip.is-on` 用 `--selected-soft`
+   底 + `--selected-graphic` 环 + `--fg` 字（选中信号走底与环，文字不回退对比度；
+   实测 `--selected-deep` 在这个底上只有 3.44:1，低于未选中的 7.08:1）。
    `.tt-log li::before` 是**状态点**，因此用 `--selected-graphic` 而不是 `--selected`。 */
 .board-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .board-toolbar { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-5) var(--sp-9); border-bottom: 1px solid var(--border); background: var(--bg); }
@@ -470,11 +471,23 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .seg button { padding: 0 11px; height: var(--icon-btn); font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--muted); border-right: 1px solid var(--border); }
 .seg button:last-child { border-right: 0; }
 .seg button:hover { background: var(--fg-soft); color: var(--fg); }
-.seg button.is-active { background: var(--fg); color: var(--on-accent); }
+/* `.seg` 的选中态：`--fg` 做**填充**，墨色用 `--bg`（纸族浅色）。
+   这里**不能用 `--on-accent`**：它的值是 `var(--fg)`（深梅墨），而 `--on-accent` 约定只压在
+   马卡龙亮档（`--accent` 等）上；压在同为 `--fg` 的底上就是同色同底、字看不见。
+   本仓已有的同一形态先例：`.toast { background: var(--fg); color: var(--bg) }`。
+   原型那行写的是 `oklch(98% 0.005 250)` 字面量，本文件禁止裸色值，`--bg` 是它的同族近似。 */
+.seg button.is-active { background: var(--fg); color: var(--bg); }
 .board-filters { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; min-width: 0; }
 .filter-chip { display: inline-flex; align-items: center; gap: var(--sp-3); height: var(--icon-btn); padding: 0 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--muted); font-size: var(--fs-sm); }
 .filter-chip:hover { border-color: var(--border-strong); color: var(--fg); }
-.filter-chip.is-on { border-color: var(--selected-graphic); color: var(--selected-deep); background: var(--selected-soft); }
+/* 选中态：`--selected-soft` 只做**背景提示**（soft 档的生定用途）、环用 `--selected-graphic`
+   （ring 档），文字仍用 `--fg`。
+
+   为什么不照原型的 `color: var(--selected-deep)`（ui_kits 也是这一行）：实测它在这个
+   底上只有 **3.44:1**，比**未选中**的 `--muted` (7.08:1) 更低 —— 这正是 `SKILL.md` §5
+   禁止的「交互态降低对比度」。选中信号由**底 + 环**承担（两者都是 color 之外的通道），
+   文字不回退，于是对比度从 **7.08:1 升到 7.65:1**（高于未选中态）。 */
+.filter-chip.is-on { border-color: var(--selected-graphic); color: var(--fg); background: var(--selected-soft); }
 .filter-sep { width: 1px; height: 18px; flex: 0 0 1px; background: var(--border); }
 
 /* 横向滚动就发生在这里：列宽固定，行宽由列数与间距决定（`min-width:min-content`）。 */
@@ -533,8 +546,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 /* 吸顶摘要：标题（可编辑）+ 状态 pill + 指派 pill。 */
 .tt-summary { position: sticky; top: 0; z-index: 2; background: var(--surface); border-bottom: 1px solid var(--border); padding: 13px var(--sp-7) var(--sp-6); }
 .tt-title { margin: 0; font-size: var(--fs-title); font-weight: var(--fw-heavy); letter-spacing: var(--ls-snug); line-height: var(--lh-snug); }
-.tt-title-input { width: 100%; padding: 0 0 1px; border: 0; border-bottom: 1px solid transparent; background: none; color: var(--fg); font: inherit; letter-spacing: inherit; outline: none; }
-/* 悬停/聚焦不把文字往下退：底子往 `--surface` 走、下缘给一条 `--border-strong` 提示可编辑。 */
+.tt-title-input { width: 100%; padding: 0 0 1px; border: 0; border-bottom: 1px solid transparent; background: none; color: var(--fg); font: inherit; letter-spacing: inherit; }
+/* 悬停/聚焦不把文字往下退——文字始终是 `--fg`，只在**移动下缘**上做提示。
+   刻意**不**使用 `outline: none`：全局 `:focus-visible` 的 `--accent-graphic` 焦点环必须
+   留在键盘可达的输入框上（`SKILL.md` §5）；鼠标点击不触发 `:focus-visible`，
+   因此下面的悬停 / `:focus` 下缘承担点击态的提示。 */
 .tt-title-input:hover { border-bottom-color: var(--border-strong); }
 .tt-title-input:focus { border-bottom-color: var(--accent-graphic); }
 .tt-meta { display: flex; align-items: center; gap: var(--sp-4); margin-top: 9px; flex-wrap: wrap; }
