@@ -105,6 +105,42 @@ def test_search_returns_all_backend_highlight_ranges_and_uses_strict_substring_m
     assert search(client, "search product")["hits"] == []
 
 
+def test_search_casefolds_unicode_without_drifting_highlight_ranges(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+    message = send(client, channel["id"], "😀 ÄLPHA İX").json()["message"]
+
+    accented = search(client, "älpha")["hits"]
+    assert [hit["message"]["id"] for hit in accented] == [message["id"]]
+    assert accented[0]["highlight_ranges"] == [{"start": 3, "end": 8}]
+
+    x_hit = search(client, "x")["hits"]
+    assert [hit["message"]["id"] for hit in x_hit] == [message["id"]]
+    # emoji 占两个 UTF-16 code unit，İ 的 casefold 会展开；后端区间仍须精确落到 X。
+    assert x_hit[0]["highlight_ranges"] == [{"start": 10, "end": 11}]
+
+
+def test_search_reports_every_non_overlapping_match(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+    message = send(client, channel["id"], "banana").json()["message"]
+
+    hits = search(client, "ana")["hits"]
+    assert [hit["message"]["id"] for hit in hits] == [message["id"]]
+    # 两次 ana 重叠；产品裁定为标准非重叠命中，所以只标出首个区间 [1, 4)。
+    assert hits[0]["highlight_ranges"] == [{"start": 1, "end": 4}]
+
+
+def test_search_treats_like_wildcards_as_literal_substrings(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+    message = send(client, channel["id"], r"100%_safe\path").json()["message"]
+
+    for query, expected_starts in (("%", [3]), ("_", [4]), ("\\", [9])):
+        hits = search(client, query)["hits"]
+        assert [hit["message"]["id"] for hit in hits] == [message["id"]]
+        assert hits[0]["highlight_ranges"] == [
+            {"start": start, "end": start + 1} for start in expected_starts
+        ]
+
+
 def test_search_excludes_system_messages_but_marks_a_soft_deleted_author(client: TestClient) -> None:
     agent = create_agent(client, name="已删除作者").json()["agent"]
     channel = create_channel(client, member_ids=[agent["id"]]).json()["channel"]
@@ -133,3 +169,14 @@ def test_search_caps_the_result_count(client: TestClient) -> None:
     hits = search(client, "needle", limit=2)["hits"]
     assert len(hits) == 2
     assert all("needle" in hit["message"]["body"] for hit in hits)
+
+    invalid_limit = client.get("/api/search", params={"q": "needle", "limit": 201})
+    assert invalid_limit.status_code == 400
+    assert invalid_limit.json()["error"]["code"] == "validation_failed"
+
+
+def test_search_does_not_turn_an_invalid_target_into_zero_hits(client: TestClient) -> None:
+    response = client.get("/api/search", params={"q": "needle", "target_id": "missing-target"})
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"

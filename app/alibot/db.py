@@ -373,11 +373,11 @@ DM_SELECT_SQL = (
     " ORDER BY t.created_at, t.id"
 )
 
-# 工作台搜索的唯一查询形状：匹配判定留在后端，前端只消费下面返回的高亮区间。
+# 工作台搜索的唯一判定：SQLite CASEFOLD + LIKE 子串匹配，前端只消费后端高亮区间。
 #
 # ``LIKE`` 的模式由 ``_search_like_pattern`` 绑定为 ``%关键词%``，并转义用户输入里的通配符，
-# 所以它仍是严格的子串匹配。限定 target 的版本把 ``m.target_id`` 放进 WHERE；SQLite 可以继续
-# 使用 message 上既有的 ``UNIQUE(target_id, seq)`` 索引，不新增 schema / FTS5。
+# 所以它仍是严格的子串匹配。全工作区版本由 target 驱动，经 message 上既有的
+# ``UNIQUE(target_id, seq)`` 索引读取各 target 消息；不新增 schema / FTS5。
 SEARCH_HIT_SELECT_SQL = """
     SELECT m.*, a.kind AS author_kind, a.display_name AS author_name,
            a.avatar_slot AS author_avatar_slot, a.deleted_at AS author_deleted_at,
@@ -389,36 +389,39 @@ SEARCH_HIT_SELECT_SQL = """
            END AS target_display_name
 """
 SEARCH_HIT_FROM_SQL = """
-      FROM message m
-      JOIN target t ON t.id = m.target_id
+      FROM target t
+      CROSS JOIN message m
       JOIN member a ON a.id = m.author_member_id
  LEFT JOIN channel c ON c.id = t.id AND t.kind = 'channel'
  LEFT JOIN member peer ON peer.id = t.dm_peer_member_id AND t.kind = 'dm'
  LEFT JOIN task ON task.target_id = t.id AND t.kind = 'task'
 """
-SEARCH_HIT_ORDER_LIMIT_SQL = """
-     ORDER BY m.created_at DESC, m.id DESC
-     LIMIT :limit
-"""
 SEARCH_ALL_HITS_SQL = (
     SEARCH_HIT_SELECT_SQL
     + SEARCH_HIT_FROM_SQL
     + """
-     WHERE m.kind != 'system'
-       AND LOWER(m.body) LIKE :pattern ESCAPE '\\'
+     WHERE m.target_id = t.id
+       AND m.kind != 'system'
+       AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
+     LIMIT :limit
 """
-    + SEARCH_HIT_ORDER_LIMIT_SQL
 )
 SEARCH_TARGET_HITS_SQL = (
     SEARCH_HIT_SELECT_SQL
     + SEARCH_HIT_FROM_SQL
     + """
      WHERE m.target_id = :target_id
+       AND m.target_id = t.id
        AND m.kind != 'system'
-       AND LOWER(m.body) LIKE :pattern ESCAPE '\\'
+       AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
+     LIMIT :limit
 """
-    + SEARCH_HIT_ORDER_LIMIT_SQL
 )
+
+
+def _sqlite_casefold(value: str | None) -> str | None:
+    """为 SQLite ``LIKE`` 提供与 Python 正文区间判定一致的 Unicode 大小写折叠。"""
+    return value.casefold() if value is not None else None
 
 
 class SchemaVersionMismatch(Exception):
@@ -534,6 +537,7 @@ class Database:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        self._conn.create_function("CASEFOLD", 1, _sqlite_casefold, deterministic=True)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA busy_timeout = 5000")
 
@@ -1548,28 +1552,45 @@ class Database:
     def _search_like_pattern(query: str) -> str:
         """把用户文本变为 SQLite ``LIKE '%kw%' ESCAPE '\\'`` 的字面子串模式。"""
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        return "%" + escaped.lower() + "%"
+        return "%" + escaped.casefold() + "%"
 
     @staticmethod
     def _search_highlight_ranges(body: str, query: str) -> list[dict[str, int]]:
         """给出全部不重叠命中的 UTF-16 区间，供浏览器直接 ``slice`` 呈现。"""
-        lowered_body = body.lower()
-        lowered_query = query.lower()
+        folded_body: list[str] = []
+        original_starts: list[int] = []
+        original_ends: list[int] = []
+        for index, character in enumerate(body):
+            folded_character = character.casefold()
+            folded_body.append(folded_character)
+            original_starts.extend([index] * len(folded_character))
+            original_ends.extend([index + 1] * len(folded_character))
+
+        folded_text = "".join(folded_body)
+        folded_query = query.casefold()
+        if not folded_query:
+            return []
         ranges: list[dict[str, int]] = []
+        seen: set[tuple[int, int]] = set()
         cursor = 0
         while True:
-            start = lowered_body.find(lowered_query, cursor)
-            if start < 0:
+            folded_start = folded_text.find(folded_query, cursor)
+            if folded_start < 0:
                 break
-            end = start + len(query)
+            folded_end = folded_start + len(folded_query)
+            start = original_starts[folded_start]
+            end = original_ends[folded_end - 1]
+            original_range = (start, end)
             # JavaScript 的 String.slice 按 UTF-16 code unit 计数；转换留在唯一判定落点，前端无需重算。
-            ranges.append(
-                {
-                    "start": len(body[:start].encode("utf-16-le")) // 2,
-                    "end": len(body[:end].encode("utf-16-le")) // 2,
-                }
-            )
-            cursor = end
+            if original_range not in seen:
+                ranges.append(
+                    {
+                        "start": len(body[:start].encode("utf-16-le")) // 2,
+                        "end": len(body[:end].encode("utf-16-le")) // 2,
+                    }
+                )
+                seen.add(original_range)
+            cursor = folded_end
         return ranges
 
     @classmethod

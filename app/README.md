@@ -187,6 +187,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
+| `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
 | `GET /api/channels` | 频道列表（含 `last_seq` / `last_read_seq` / `unread_count`） |
 | `POST /api/channels` | 新建频道 `{name, description, member_ids}`；校验失败**整体不创建** |
 | `GET /api/channels/{id}/messages` | 按 seq 升序取消息（`?after_seq=n` 取增量） |
