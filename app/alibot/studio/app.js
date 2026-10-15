@@ -146,7 +146,6 @@ const state = {
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
-  taskMembers: [],
   taskSeenSeqs: new Set(),
   taskStream: null,
   taskStreamTimer: null,
@@ -671,7 +670,6 @@ function boardList() {
     }
     row.appendChild(snip);
     row.dataset.status = task.status;
-    row.classList.add('card');
     wrap.appendChild(row);
   });
   return wrap;
@@ -760,7 +758,7 @@ function renderTaskThread() {
     replaceChildren($('#ttTransitions'), [el('span', 'tt-note', '已关闭，无可用推进')]);
   }
 
-  // ── 指派 chips：该频道成员里的 Agent（`taskMembers` 的另一半靠频道成员表补齐）──
+  // ── 指派 chips：该频道成员里的 Agent（见 `renderAssignChips` 的候选来源）──
   renderAssignChips(task);
 
   // ── 关联消息 ──
@@ -829,8 +827,10 @@ function renderTaskThread() {
 
     数据面的事实：`task_ref` 必须与消息同 target（`db.py:append_message` 的校验，
     `test_tasks.py` 逐条盯住），所以在任务线程里能出现的指针**就是指向这个任务自己的**。
-    于是这一段与「讨论」有重叠（一条回复可以同时挂了指针），这是数据本身的样子，
-    不是漏了去重：两段是同一流的不同视图，「讨论」的定义由票面钉在「system 以外的行」。
+    于是这一段与「讨论」必然有重叠（一条回复可以同时挂了指针）——**这是数据本身的样子，
+    不是漏了去重**：票面明确说这两段是同一数据源的两个视图，`task_ref` 与 `kind='system'`
+    是两个正交字段（刚创建的 `system` 行 task_ref 为 null，人类回复可以带 task_ref），
+    所以「关联消息 ⊆ 讨论」是这个域的语义，而不是冗余展示。
     该指针在「讨论」里另外以 `.task-ref-chip` 就地显示（已有行为，不另造一套）。 */
 function linkedTaskMessages(task) {
   return state.taskMessages.filter((message) => message.kind !== 'system' && message.task_ref === task.id);
@@ -861,25 +861,22 @@ function renderAssigneePill(task) {
     这里的正确候选面；线程成员表仍用于判断「该 target 现有哪些 Agent」。 */
 function renderAssignChips(task) {
   const channelAgents = channelAgentMembers(task.channel_id);
-  const agents = channelAgents === null
-    ? state.taskMembers.filter((member) => member.kind === 'agent')
-    : channelAgents;
   const box = $('#ttAssign');
   if (channelAgents === null) {
-    replaceChildren($('#ttAssign'), [
+    replaceChildren(box, [
       el('span', 'tt-note', channelMembersFailed.has(task.channel_id)
         ? '暂时读不到该频道的成员表：指派候选不可用。'
         : '正在读取该频道的成员…'),
     ]);
     return;
   }
-  if (!agents.length) {
+  if (!channelAgents.length) {
     replaceChildren(box, [
       el('span', 'tt-note', '该频道还没有 Agent 成员：先在右侧「频道成员」面板把 Agent 加入这个频道。'),
     ]);
     return;
   }
-  const chips = agents.map((member) => {
+  const chips = channelAgents.map((member) => {
     const chip = filterChip(member.display_name, task.assignee_member_id === member.id, {
       ttAssign: member.id,
       odId: 'thread-assign-' + member.id,
@@ -936,13 +933,13 @@ function syncChromeVisibility(mode) {
 
 /** 「任务」页签：看板（全工作区视图 + 频道筛选，见 #44 重做其结构）。
 
-    页签与左栏是同一个看板的两个入口，区别在默认筛选：从频道页签进来默认筛到**当前频道**
-    （人在 #甲 的任务里，就该先看 #甲 的任务），左栏/全工作区视角保留「全部频道」。 */
-async function showTaskBoard(fromChannelTab) {
+    从频道页签进来默认筛到**当前频道**（人在 #甲 的任务里，就该先看 #甲 的任务）。
+    看板本身仍是全工作区视图：工具栏上的「全部频道」chip 回到全部任务，不靠入口区分。 */
+async function showTaskBoard() {
   closeTaskStream();
   closeTaskDock();
   state.mode = 'board';
-  if (fromChannelTab) state.taskFilterChannelId = state.activeChannelId || '';
+  state.taskFilterChannelId = state.activeChannelId || '';
   setViewMode('board');
   render();
   await refreshTasks();
@@ -984,17 +981,14 @@ async function openTask(taskId) {
   setDockMode('task');
   renderTaskThread();
   try {
-    const [thread, members] = await Promise.all([
-      api(taskPath(taskId, '/messages')),
-      api(taskPath(taskId, '/members')),
-    ]);
+    // 任务线程成员表（`GET /api/tasks/{id}/members`）**不取**：指派 chip 的候选是**频道**的
+    // Agent 成员（见 `renderAssignChips`），target 成员表没有消费者，取它只是多一次请求。
+    const thread = await api(taskPath(taskId, '/messages'));
     if (state.activeTaskId !== taskId) return;
     state.activeTask = thread.task;
     state.taskMessages = thread.messages || [];
-    state.taskMembers = members.members || [];
     state.taskSeenSeqs = new Set(state.taskMessages.map((message) => message.seq));
-    // 指派 chip 的候选是该**频道**的 Agent 成员，而不是这个 task target 的成员表。
-    // 看板是全工作区视图，所以任务所属频道可能并非当前频道：按需单独拉一次。
+    // 看板是全工作区视图，任务所属频道可能并非当前频道：按需单独拉该频道的成员表。
     if (channelAgentMembers(thread.task.channel_id) === null) {
       await refreshChannelMembers(thread.task.channel_id);
     }
@@ -1192,8 +1186,8 @@ async function changeTaskAssignee(memberId) {
     });
     state.activeTask = payload.task;
     if (payload.message) absorbTaskMessage(payload.message);
-    const members = await api(taskPath(task.id, '/members'));
-    state.taskMembers = members.members || [];
+    // 指派写路径会改该 target 的成员行；chip 候选来自**频道**成员表（未变），
+    // 因此这里只需重读任务面与线程，不必再拉成员表。
     await refreshTasks();
     renderTaskThread();
   } catch (err) {
@@ -2879,7 +2873,7 @@ function bindEvents() {
   // 页签：两个页签在同一内容区切换（任务的唯一入口）。
   // 任务页签带 `fromChannelTab`：进入看板时默认筛到**当前频道**（左栏/全工作区视角仍看全部）。
   $('#tabMessages').addEventListener('click', showMessagesView);
-  $('#tabTasks').addEventListener('click', () => { showTaskBoard(true); });
+  $('#tabTasks').addEventListener('click', showTaskBoard);
 
   // `.seg`：看板 / 列表（同一批任务的两种呈现，不重取）。
   document.querySelectorAll('.seg [data-taskview]').forEach((button) => {
@@ -2933,10 +2927,6 @@ function bindEvents() {
     }
   });
   titleInput.addEventListener('blur', () => { saveTaskTitle(); });
-  // pill 只提示；真正的两个入口是下方两排 chip（与原型一致）。
-  $('#ttAssignee').addEventListener('click', () => {
-    $('#ttAssign').scrollIntoView({ block: 'nearest' });
-  });
   $('#ttTransitions').addEventListener('click', (event) => {
     const chip = event.target.closest('[data-tt-move]');
     if (chip) changeTaskStatus(chip.dataset.ttMove);

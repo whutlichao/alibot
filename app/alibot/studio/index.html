@@ -200,8 +200,11 @@
         </h2>
         <div class="tt-meta">
           <span class="tt-status" id="ttStatus" data-od-id="thread-status"><span class="dot"></span><span id="ttStatusText"></span></span>
-          <button class="assignee" type="button" id="ttAssignee" data-od-id="thread-assignee"></button>
-          <span class="task-thread-unread" id="taskThreadUnread"></span>
+          <!-- 指派 pill 是 `<span>` 而不是 `<button>`：它不对应任何动作（真正的入口是下方「指派」
+               chips），做成按钮只会给键盘用户一个按下去什么都不发生的站。原型里它是 `<button>`
+               且绑定一条 toast，那个占位行为这里不做。 -->
+          <span class="assignee" id="ttAssignee" data-od-id="thread-assignee"></span>
+          <!-- 未读数已在头部副行 `#ttHeadSub` 里给出（原型那一行的形状），不在这里再放一份。 -->
         </div>
       </div>
       <div class="tt-actions">

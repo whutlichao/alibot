@@ -466,7 +466,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
    `.tt-log li::before` 是**状态点**，因此用 `--selected-graphic` 而不是 `--selected`。 */
 .board-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .board-toolbar { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-5) var(--sp-9); border-bottom: 1px solid var(--border); background: var(--bg); }
-.board-toolbar .sep { flex: 1; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--surface); }
 .seg button { padding: 0 11px; height: var(--icon-btn); font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--muted); border-right: 1px solid var(--border); }
 .seg button:last-child { border-right: 0; }
@@ -523,16 +522,15 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .board-list .result .r-snip { display: flex; align-items: center; gap: var(--sp-3); font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: var(--lh-snug); }
 .board-list .result .card-owner { margin-left: 0; }
 
-/* 状态色位：沿用既有产品角色族（`CONTEXT.md` **任务看板**；不新造色位）。
-   一张表同时驱动 `.col` 的列头点、`.card` 的左侧状态条与列表行的行内状态点，
-   以及 dock 里 `.tt-status` 的状态点（后者不需要 JS 内联赋值）。 */
-.col, .card, .tt-status { --task-status-color: var(--faint); }
-.col[data-status="todo"], .card[data-status="todo"], .tt-status[data-status="todo"] { --task-status-color: var(--faint); }
-.col[data-status="in_progress"], .card[data-status="in_progress"], .tt-status[data-status="in_progress"] { --task-status-color: var(--accent-graphic); }
-.col[data-status="in_review"], .card[data-status="in_review"], .tt-status[data-status="in_review"] { --task-status-color: var(--working); }
-.col[data-status="done"], .card[data-status="done"], .tt-status[data-status="done"] { --task-status-color: var(--online); }
-.col[data-status="closed"], .card[data-status="closed"], .tt-status[data-status="closed"] { --task-status-color: var(--offline); }
-.col .st-dot, .card .st-dot { background: var(--task-status-color); }
+/* 列表行不使用 `.card`（`.card` 带 3px 左状态条，而原型 `renderTaskList()` 的列表行
+   只能用行内的 `.st-dot` 陈述状态）。两处共用同一张 `--task-status-color` 表。 */
+.col, .card, .tt-status, .board-list .result { --task-status-color: var(--faint); }
+.col[data-status="todo"], .card[data-status="todo"], .tt-status[data-status="todo"], .board-list .result[data-status="todo"] { --task-status-color: var(--faint); }
+.col[data-status="in_progress"], .card[data-status="in_progress"], .tt-status[data-status="in_progress"], .board-list .result[data-status="in_progress"] { --task-status-color: var(--accent-graphic); }
+.col[data-status="in_review"], .card[data-status="in_review"], .tt-status[data-status="in_review"], .board-list .result[data-status="in_review"] { --task-status-color: var(--working); }
+.col[data-status="done"], .card[data-status="done"], .tt-status[data-status="done"], .board-list .result[data-status="done"] { --task-status-color: var(--online); }
+.col[data-status="closed"], .card[data-status="closed"], .tt-status[data-status="closed"], .board-list .result[data-status="closed"] { --task-status-color: var(--offline); }
+.col .st-dot, .card .st-dot, .board-list .result .st-dot { background: var(--task-status-color); }
 /* 卡片左侧的状态条：状态点的图形档（≥3:1），不做文字。 */
 .card { border-left: 3px solid var(--task-status-color); }
 /* 悬停时**显式保色**：`border-color` 是全四边简写，不补这一行会把左边 3px 状态条
@@ -609,7 +607,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .tt-reply { border-top: 1px solid var(--border); padding: 11px var(--sp-7) var(--sp-6); background: var(--surface); }
 .tt-reply .composer-box { box-shadow: none; }
 .tt-reply textarea { min-height: 38px; max-height: 140px; }
-.task-thread-unread { color: var(--faint); font-size: var(--fs-caption); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 900px) {
   .board-toolbar { flex-wrap: wrap; padding-left: var(--sp-6); padding-right: var(--sp-6); }
