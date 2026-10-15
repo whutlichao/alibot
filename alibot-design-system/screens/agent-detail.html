@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>alibot · 切片 · Agent 详情面板（概览 / 运行时 / 活动）</title>
+<!--
+  切片 agent-detail：右侧 dock 的 agent 概览 / 运行时 / 活动。
+  数据逐字取自原型 alibot-app.html：AGENTS（五个 agent 与它们的 role/status/home/
+  ctx/msgs/done/tokens/rate）、LOGS（每个 agent 的日志行）、RUNTIME（模型 / 温度 /
+  工具权限 / 内存 / 运行时长 / 延迟），以及 renderDock() 里的
+  「能力开关」switchRow 三行与「本周用量」stat-grid 四格。
+
+  dock 的三个 tab（概览 / 运行时 / 日志）各自成一张 frame；
+  三个 agent 的存在态（working / online / error / offline）各挑一个代表。
+
+  组件全部来自 ../ui_kits/app/app.css。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<!-- 产品角色族的包内落点：与 app/alibot/studio/product-tokens.css 是同值同源的两份落点（见 SKILL.md §1 / product-ext.css 头部）。 -->
+<link rel="stylesheet" href="../ui_kits/app/product-ext.css" />
+<link rel="stylesheet" href="../ui_kits/app/app.css" />
+<style>
+  /* 切片机架（非组件）。 */
+  body { margin: 0; background: var(--bg); }
+  .slice-wrap { display: flex; gap: var(--sp-9); padding: var(--sp-9); align-items: flex-start; flex-wrap: wrap; }
+  .slice-frame { border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; background: var(--bg); }
+  .slice-cap {
+    display: flex; align-items: center; gap: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border);
+    background: var(--panel); font-family: var(--mono); font-size: var(--fs-mono-micro);
+    letter-spacing: var(--ls-wide); text-transform: uppercase; color: var(--faint);
+  }
+  .slice-cap b { color: var(--fg); }
+  .slice-frame .dock { height: 700px; }
+  .slice-tag {
+    position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 90;
+    display: inline-flex; align-items: center; gap: var(--sp-3);
+    font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-pill); padding: 3px 10px; text-decoration: none;
+  }
+  .slice-tag:hover { border-color: var(--border-strong); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="slice-wrap">
+
+  <!-- ─── 1. Susan · 概览（working，上下文告警） ─────────────────────────── -->
+  <div class="slice-frame">
+    <div class="slice-cap"><b>概览</b> Susan · 正在干活 · ctx 72%</div>
+    <aside class="dock" data-od-id="detail-dock" aria-label="详情面板">
+      <div class="dock-agent">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="avatar lg av-0" aria-hidden="true">S</div>
+            <div class="meta">
+              <div class="dock-name"><span>Susan</span> <span class="msg-tag">Agent</span></div>
+              <div class="dock-role"><span class="presence working"></span><span>秘书 · 正在干活</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板" data-od-id="btn-dock-close">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="dock-tabs" role="tablist">
+          <button class="dock-tab is-active" role="tab" aria-selected="true" data-od-id="docktab-overview">概览</button>
+          <button class="dock-tab" role="tab" aria-selected="false" data-od-id="docktab-runtime">运行时</button>
+          <button class="dock-tab" role="tab" aria-selected="false" data-od-id="docktab-activity">日志</button>
+        </div>
+
+        <div class="dock-scroll" data-od-id="dock-overview">
+          <div class="d-sec">
+            <div class="d-sec-title">状态</div>
+            <div class="kv"><span class="k">当前状态</span><span class="v">正在干活</span></div>
+            <div class="kv"><span class="k">家目录</span><span class="v">~/agents/susan</span></div>
+            <div class="kv"><span class="k">项目目录</span><span class="v">/alibot</span></div>
+            <div class="kv"><span class="k">会话文件</span><span class="v">session-0412.json</span></div>
+            <div class="kv"><span class="k">订阅频道</span><span class="v">4 个</span></div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">本周用量</div>
+            <div class="stat-grid">
+              <div class="stat"><div class="n">148</div><div class="l">消息处理</div></div>
+              <div class="stat"><div class="n">23</div><div class="l">完成任务</div></div>
+              <div class="stat"><div class="n">1.2M</div><div class="l">Token 消耗</div></div>
+              <div class="stat"><div class="n">96%</div><div class="l">成功率</div></div>
+            </div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">上下文用量</div>
+            <div class="kv" style="border:0;padding-bottom:2px"><span class="k">窗口占用</span><span class="v">72%</span></div>
+            <div class="meter warn"><i style="width:72%"></i></div>
+            <div style="margin-top:6px;color:var(--faint);font-size:11.5px">接近上限时将自动固化会话文件并开启新窗口。</div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">操作</div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" style="flex:1" data-od-id="btn-pause-agent">暂停</button>
+              <button class="btn btn-sm" style="flex:1" data-od-id="btn-edit-agent">编辑配置</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─── 2. Atlas · 概览（online，上下文健康，meter 走 accent-graphic） ── -->
+  <div class="slice-frame">
+    <div class="slice-cap"><b>概览</b> Atlas · 在线 · ctx 38%</div>
+    <aside class="dock" aria-label="详情面板">
+      <div class="dock-agent">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="avatar lg av-1" aria-hidden="true">A</div>
+            <div class="meta">
+              <div class="dock-name"><span>Atlas</span> <span class="msg-tag">Agent</span></div>
+              <div class="dock-role"><span class="presence online"></span><span>架构师 · 在线</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="dock-tabs" role="tablist">
+          <button class="dock-tab is-active" role="tab" aria-selected="true">概览</button>
+          <button class="dock-tab" role="tab" aria-selected="false">运行时</button>
+          <button class="dock-tab" role="tab" aria-selected="false">日志</button>
+        </div>
+
+        <div class="dock-scroll">
+          <div class="d-sec">
+            <div class="d-sec-title">状态</div>
+            <div class="kv"><span class="k">当前状态</span><span class="v">在线</span></div>
+            <div class="kv"><span class="k">家目录</span><span class="v">~/agents/atlas</span></div>
+            <div class="kv"><span class="k">项目目录</span><span class="v">/alibot</span></div>
+            <div class="kv"><span class="k">会话文件</span><span class="v">session-0408.json</span></div>
+            <div class="kv"><span class="k">订阅频道</span><span class="v">3 个</span></div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">本周用量</div>
+            <div class="stat-grid">
+              <div class="stat"><div class="n">96</div><div class="l">消息处理</div></div>
+              <div class="stat"><div class="n">11</div><div class="l">完成任务</div></div>
+              <div class="stat"><div class="n">820K</div><div class="l">Token 消耗</div></div>
+              <div class="stat"><div class="n">99%</div><div class="l">成功率</div></div>
+            </div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">上下文用量</div>
+            <div class="kv" style="border:0;padding-bottom:2px"><span class="k">窗口占用</span><span class="v">38%</span></div>
+            <div class="meter"><i style="width:38%"></i></div>
+            <div style="margin-top:6px;color:var(--faint);font-size:11.5px">接近上限时将自动固化会话文件并开启新窗口。</div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">操作</div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" style="flex:1">暂停</button>
+              <button class="btn btn-sm" style="flex:1">编辑配置</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─── 3. Pixel · 运行时 tab（error 态） ─────────────────────────────── -->
+  <div class="slice-frame">
+    <div class="slice-cap"><b>运行时</b> Pixel · 出错 · switch 三行</div>
+    <aside class="dock" aria-label="详情面板">
+      <div class="dock-agent">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="avatar lg av-2" aria-hidden="true">P</div>
+            <div class="meta">
+              <div class="dock-name"><span>Pixel</span> <span class="msg-tag">Agent</span></div>
+              <div class="dock-role"><span class="presence error"></span><span>前端工程师 · 出错</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="dock-tabs" role="tablist">
+          <button class="dock-tab" role="tab" aria-selected="false">概览</button>
+          <button class="dock-tab is-active" role="tab" aria-selected="true" data-od-id="docktab-runtime">运行时</button>
+          <button class="dock-tab" role="tab" aria-selected="false">日志</button>
+        </div>
+
+        <div class="dock-scroll" data-od-id="dock-runtime">
+          <div class="d-sec">
+            <div class="d-sec-title">运行时</div>
+            <div class="kv"><span class="k">模型</span><span class="v">gpt-5-codex</span></div>
+            <div class="kv"><span class="k">温度</span><span class="v">0.5</span></div>
+            <div class="kv"><span class="k">工具权限</span><span class="v">shell, fs, browser</span></div>
+            <div class="kv"><span class="k">内存占用</span><span class="v">4.0 GB</span></div>
+            <div class="kv"><span class="k">运行时长</span><span class="v">2h 47m</span></div>
+            <div class="kv"><span class="k">平均延迟</span><span class="v">1.2s</span></div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">能力开关</div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="flex:1">自动认领任务</span>
+                <input class="switch" type="checkbox" checked>
+              </label>
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="flex:1">跨作者内容去重</span>
+                <input class="switch" type="checkbox" checked>
+              </label>
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="flex:1">backfill 归属门禁</span>
+                <input class="switch" type="checkbox">
+              </label>
+            </div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">上下文用量</div>
+            <div class="kv" style="border:0;padding-bottom:2px"><span class="k">窗口占用</span><span class="v">91%</span></div>
+            <div class="meter warn"><i style="width:91%"></i></div>
+            <div style="margin-top:6px;color:var(--faint);font-size:11.5px">接近上限时将自动固化会话文件并开启新窗口。</div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─── 4. 日志 tab（四个 level 各一条，含 err / warn） ────────────────── -->
+  <div class="slice-frame">
+    <div class="slice-cap"><b>日志</b> Pixel · info / ok / warn / err</div>
+    <aside class="dock" aria-label="详情面板">
+      <div class="dock-agent">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="avatar lg av-2" aria-hidden="true">P</div>
+            <div class="meta">
+              <div class="dock-name"><span>Pixel</span> <span class="msg-tag">Agent</span></div>
+              <div class="dock-role"><span class="presence error"></span><span>前端工程师 · 出错</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="dock-tabs" role="tablist">
+          <button class="dock-tab" role="tab" aria-selected="false">概览</button>
+          <button class="dock-tab" role="tab" aria-selected="false">运行时</button>
+          <button class="dock-tab is-active" role="tab" aria-selected="true" data-od-id="docktab-activity">日志</button>
+        </div>
+
+        <div class="dock-scroll" data-od-id="dock-activity">
+          <div class="d-sec">
+            <div class="d-sec-title">近期日志 · 3 条</div>
+            <div class="log-row"><span class="ts">09:22:11</span><span class="lv err">ERR</span><span class="msg">构建失败：CSS 变量 --yellow 未定义</span></div>
+            <div class="log-row"><span class="ts">09:21:48</span><span class="lv warn">WARN</span><span class="msg">非法状态转移被拦截：todo → done</span></div>
+            <div class="log-row"><span class="ts">09:20:03</span><span class="lv info">INFO</span><span class="msg">认领任务 #2 重构三栏骨架</span></div>
+          </div>
+
+          <div class="d-sec">
+            <div class="d-sec-title">近期日志 · Susan（4 条，含 ok）</div>
+            <div class="log-row"><span class="ts">09:24:58</span><span class="lv ok">OK</span><span class="msg">任务 #3 创建并指派 @Pixel</span></div>
+            <div class="log-row"><span class="ts">09:16:41</span><span class="lv info">INFO</span><span class="msg">会话文件 session-0412.json 固化完成</span></div>
+            <div class="log-row"><span class="ts">09:16:30</span><span class="lv warn">WARN</span><span class="msg">上下文占用 72%，接近固化阈值</span></div>
+            <div class="log-row"><span class="ts">09:13:07</span><span class="lv info">INFO</span><span class="msg">扫描 37 处裸色值</span></div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─── 5. Quill · 离线（offline fill / deep，运行时长与延迟为 —） ─────── -->
+  <div class="slice-frame">
+    <div class="slice-cap"><b>运行时</b> Quill · 离线 · 指标为空</div>
+    <aside class="dock" aria-label="详情面板">
+      <div class="dock-agent">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="avatar lg av-3" aria-hidden="true">Q</div>
+            <div class="meta">
+              <div class="dock-name"><span>Quill</span> <span class="msg-tag">Agent</span></div>
+              <div class="dock-role"><span class="presence offline"></span><span>文档 · 离线</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="dock-tabs" role="tablist">
+          <button class="dock-tab" role="tab" aria-selected="false">概览</button>
+          <button class="dock-tab is-active" role="tab" aria-selected="true">运行时</button>
+          <button class="dock-tab" role="tab" aria-selected="false">日志</button>
+        </div>
+
+        <div class="dock-scroll">
+          <div class="d-sec">
+            <div class="d-sec-title">运行时</div>
+            <div class="kv"><span class="k">模型</span><span class="v">claude-haiku-3.5</span></div>
+            <div class="kv"><span class="k">温度</span><span class="v">0.6</span></div>
+            <div class="kv"><span class="k">工具权限</span><span class="v">fs, web</span></div>
+            <div class="kv"><span class="k">内存占用</span><span class="v">0.8 GB</span></div>
+            <div class="kv"><span class="k">运行时长</span><span class="v">—</span></div>
+            <div class="kv"><span class="k">平均延迟</span><span class="v">—</span></div>
+          </div>
+          <div class="d-sec">
+            <div class="d-sec-title">能力开关</div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="flex:1">自动认领任务</span>
+                <input class="switch" type="checkbox">
+              </label>
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="flex:1">跨作者内容去重</span>
+                <input class="switch" type="checkbox" checked>
+              </label>
+              <label style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="flex:1">backfill 归属门禁</span>
+                <input class="switch" type="checkbox">
+              </label>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+</div>
+
+<a class="slice-tag" href="overview.html">screens/agent-detail.html · 切片索引</a>
+
+</body>
+</html>

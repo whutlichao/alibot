@@ -6,7 +6,7 @@
 > four tiers per family) — colour re-decided by ADR-0015; the form half of
 > `modern-minimal` stays in force
 > Source: Open Design project "Web Prototype" (228a9bdf-5a68-4d36-a153-9771522ea041),
-> copied file `alibot-app.html` (1,865 lines).
+> copied file `alibot-app.html` (1,890 lines).
 
 alibot is a local-first, encrypted multi-agent + human collaboration workspace.
 Humans and Agents share Teams / Channels and cooperate over Work Objects (messages,
@@ -82,6 +82,13 @@ that was its main use before the split:
 | `--warn` | warning: pending review, banners | `oklch(86.3% 0.084 52.2)` | `oklch(52.6% 0.084 51.9)` | `oklch(62.1% 0.083 51.6)` |
 
 `--accent-hover` is `oklch(79.4% 0.104 356.6)` (a fill, one step deeper).
+
+`--selected*` / `--unread*` / `--warn*` are **product** vocabulary: they are declared
+outside the two foundations, not inside `colors_and_type.css` or `tokens.css`. There are
+two landing sites with these exact names and values — `ui_kits/app/product-ext.css`
+(in-package, linked by every slice and by `ui_kits/app/index.html`) and the app's
+`app/alibot/studio/product-tokens.css`. They are two landing sites of one family, not a
+copy and its stale twin; keep both in step. See `SKILL.md` §1 for the operational rule.
 
 ### Semantic status
 
@@ -190,7 +197,9 @@ Responsive breakpoints observed:
 
 ## 6. Components
 
-Full visual specimens live in `preview/`; the applied kit is `ui_kits/app/`.
+Full visual specimens live in `preview/`; the applied kit is `ui_kits/app/` — its
+canonical assembly is `ui_kits/app/index.html`, and `screens/` holds one
+self-contained reproduction per surface.
 
 - **Buttons** — `.btn` (32px, `--surface`, `--border-strong`), `.btn-primary`
   (`--accent` fill with `--on-accent` ink), `.btn-ghost`, `.btn-danger`, `.btn-sm` (27px).

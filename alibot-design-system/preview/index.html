@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>alibot · 参照物索引 · preview</title>
+<!--
+  preview/index.html —— README.md 让人从这里开始的那个 manifest。
+
+  本页**只列真实存在的卡片**：下面六张就是 preview/ 目录里的全部卡片
+  （colors-primary / colors-semantic / colors-avatars / typography-specimens /
+  spacing-tokens / radius-shadows）。每张卡片旁边给出它的 .artifact.json。
+
+  这里没有 components-*.html / brand-assets.html / applied-app-shell.html
+  —— 它们不存在，因此不在这个 manifest 里；卡片上的对应入口由本目录
+  各卡片的 .pv-nav 负责，不在此处凑数新建（新建卡片不在本包的设计意图内）。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="preview.css" />
+<style>
+  /* 索引页专属：卡片清单（沿用 preview.css 的令牌，不引入新颜色）。 */
+  .pv-manifest { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-5); }
+  @media (max-width: 900px) { .pv-manifest { grid-template-columns: 1fr; } }
+
+  .pv-entry {
+    display: flex; flex-direction: column; gap: var(--sp-3);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-lg); padding: var(--sp-6); color: inherit;
+  }
+  .pv-entry:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card); }
+  .pv-entry .idx { font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider); color: var(--faint); text-transform: uppercase; }
+  .pv-entry h3 { margin: 0; font-size: var(--fs-body-lg); font-weight: var(--fw-bold); letter-spacing: var(--ls-snug); }
+  .pv-entry h3 a { color: var(--fg); }
+  .pv-entry h3 a:hover { color: var(--accent-deep); text-decoration: none; }
+  .pv-entry p { margin: 0; color: var(--muted); font-size: var(--fs-caption); line-height: var(--lh-body); }
+  .pv-entry .file { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--accent-deep); }
+  .pv-entry .artifact { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+  .pv-links { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-5); }
+  .pv-links a {
+    font-size: var(--fs-sm); padding: 3px 9px; border: 1px solid var(--border);
+    border-radius: var(--r-pill); color: var(--muted); background: var(--surface);
+  }
+  .pv-links a:hover { border-color: var(--border-strong); color: var(--fg); text-decoration: none; }
+</style>
+</head>
+<body>
+<header class="pv-head" data-od-id="pv-head">
+  <div class="pv-eyebrow">alibot design system · preview index</div>
+  <h1 class="pv-title">参照物索引 · 为什么每个值长这样</h1>
+  <p class="pv-desc">
+    这些卡片是<b>评审用</b>的：它们把令牌、字号、间距、圆角与阴影摊开，回答「这个值是什么、它用在哪」。
+    要复制结构请去 <a href="../ui_kits/app/index.html">ui_kits/app/index.html</a>（标准装配），
+    要按语义找某一屏请去 <a href="../screens/overview.html">screens/overview.html</a>（切片索引），
+    这两个入口和卡片一样，都是可独立打开的真实文件。
+  </p>
+  <nav class="pv-nav" data-od-id="pv-nav">
+    <a href="index.html" class="is-on">索引</a>
+    <a href="../screens/overview.html">切片索引</a>
+    <a href="../ui_kits/app/index.html">标准装配</a>
+    <a href="../DESIGN.md">DESIGN.md</a>
+    <a href="../SKILL.md">SKILL.md</a>
+  </nav>
+</header>
+
+<main>
+  <section aria-labelledby="cards" data-od-id="preview-manifest">
+    <div class="pv-label" id="cards">已发布的卡片 · 6 张</div>
+    <div class="pv-manifest">
+
+      <div class="pv-entry" data-od-id="entry-colors-primary">
+        <span class="idx">color 01</span>
+        <h3><a href="colors-primary.html">基础色板 · 表面、文字与强调色</a></h3>
+        <p>六个承重令牌 <code>--bg / --surface / --fg / --muted / --border / --accent</code> 与它们的层级色，
+           含描边档位与「不许改名」的令牌契约。</p>
+        <span class="file">preview/colors-primary.html</span>
+        <span class="artifact">preview/colors-primary.html.artifact.json</span>
+      </div>
+
+      <div class="pv-entry" data-od-id="entry-colors-semantic">
+        <span class="idx">color 02</span>
+        <h3><a href="colors-semantic.html">语义色 · 存在状态与任务状态机</a></h3>
+        <p>四个 presence 色（online / working / error / offline）与任务状态映射；
+           它们不是装饰色，同一套色贯穿侧栏、消息、卡片、线程与日志行。</p>
+        <span class="file">preview/colors-semantic.html</span>
+        <span class="artifact">preview/colors-semantic.html.artifact.json</span>
+      </div>
+
+      <div class="pv-entry" data-od-id="entry-colors-avatars">
+        <span class="idx">color 03</span>
+        <h3><a href="colors-avatars.html">头像色 · 五档确定性底色</a></h3>
+        <p><code>--av-0…--av-4</code> 按成员索引确定性取色；方片头像（不是圆形）与深梅墨的对比度。</p>
+        <span class="file">preview/colors-avatars.html</span>
+        <span class="artifact">preview/colors-avatars.html.artifact.json</span>
+      </div>
+
+      <div class="pv-entry" data-od-id="entry-typography">
+        <span class="idx">type 01</span>
+        <h3><a href="typography-specimens.html">字体样张 · 字号与行高</a></h3>
+        <p>13px 通用密度、ADR-0016 的频道/线程正文例外（14px、68ch、1.65/1.7）、
+           mono 结构声部与 CJK 渲染。</p>
+        <span class="file">preview/typography-specimens.html</span>
+        <span class="artifact">preview/typography-specimens.html.artifact.json</span>
+      </div>
+
+      <div class="pv-entry" data-od-id="entry-spacing">
+        <span class="idx">space 01</span>
+        <h3><a href="spacing-tokens.html">间距刻度 · 4px 基与 2px 半步</a></h3>
+        <p><code>--sp-1…--sp-12</code>、控件高度（32 / 27 / 44）与布局常量
+           （rail 252 / dock 380 / stream 880 / board 236）。</p>
+        <span class="file">preview/spacing-tokens.html</span>
+        <span class="artifact">preview/spacing-tokens.html.artifact.json</span>
+      </div>
+
+      <div class="pv-entry" data-od-id="entry-radius-shadows">
+        <span class="idx">form 01</span>
+        <h3><a href="radius-shadows.html">圆角与阴影 · 分层不是投影</a></h3>
+        <p><code>--r-sm/md/lg/xl/pill</code> 与三档 elevation：静止内容不加阴影，
+           阴影只给弹层、模态与抽屉。</p>
+        <span class="file">preview/radius-shadows.html</span>
+        <span class="artifact">preview/radius-shadows.html.artifact.json</span>
+      </div>
+
+    </div>
+
+    <div class="pv-links" data-od-id="preview-related">
+      <a href="../screens/overview.html">screens/ 切片索引</a>
+      <a href="../screens/channel-view.html">切片 · 频道视图</a>
+      <a href="../screens/task-board.html">切片 · 看板与拖拽</a>
+      <a href="../screens/workspace-sidebar.html">切片 · 独立左栏</a>
+      <a href="../ui_kits/app/index.html">ui_kits/app/index.html · 标准装配</a>
+    </div>
+  </section>
+</main>
+</body>
+</html>

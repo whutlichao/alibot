@@ -28,13 +28,21 @@ never a boundary), `deep` (text: ≥4.5:1) and `graphic` (ring / dot / boundary:
 ≥3:1). A family's bare name holds the tier that was its main use before the tier
 split; see `colors_and_type.css` for which one.
 
-**Product role families.** If you are building *inside the alibot app* (not a
-standalone surface), three more families come from the product extension layer
-(`app/globals.css`): `--selected*` (current position: nav / anchor row / tab /
-selected chip), `--unread*` (unread badge, search-hit highlight) and `--warn*`
-(warning: pending review, banners). `ui_kits/app/app.css` consumes them too, so
-loading the kit means loading that layer (or declaring the three families
-yourself). `--online-text` is the same shape at baseline.
+**Product role families.** Three more families are product vocabulary, not reusable
+foundations: `--selected*` (current position: nav / anchor row / tab / selected chip),
+`--unread*` (unread badge, search-hit highlight) and `--warn*` (warning: pending
+review, banners). They are deliberately absent from `colors_and_type.css` and
+`tokens.css`. This package ships them at **`ui_kits/app/product-ext.css`** — link it
+as `../ui_kits/app/product-ext.css` from a slice and `./product-ext.css` from
+`ui_kits/app/index.html`. That file and `app/alibot/studio/product-tokens.css` are
+**two landing sites of one family** (same names, same values): neither is the other's
+stale copy, so keep both and change both when a value changes. `ui_kits/app/app.css`
+consumes them, so loading the kit means loading one of the two. `--online-text` is the
+same shape at baseline.
+
+Do not move the three families into `colors_and_type.css` or `tokens.css`, and do not
+have a slice reach outside this package for them — the package must still render when
+it is copied somewhere else.
 
 Never hard-code a hex, rgb, hsl or named color. Derive everything from tokens with
 `var(--…)` or `color-mix(in oklch, …)`.
@@ -46,10 +54,31 @@ Never hard-code a hex, rgb, hsl or named color. Derive everything from tokens wi
 | A new workspace surface | `ui_kits/app/index.html` + `ui_kits/app/app.css` |
 | A single isolated screen | the closest file in `screens/` |
 | A token/component review | a card in `preview/` |
-| A new component in-app | copy the matching class block from `ui_kits/app/spec.css` |
+| A new component in-app | copy the matching class block from `ui_kits/app/app.css` |
 
 The applied kit `ui_kits/app/` is the canonical assembly: AppShell → rail → main
-(header + view + composer) → dock, plus modals and the command palette.
+(header + view + composer) → dock, plus modals and the command palette. Open
+`ui_kits/app/index.html` to see it live before building anything new.
+
+When you build one isolated surface, start from the slice that already shows its
+structure (`screens/`), then delete what you do not need:
+
+| Surface | Slice |
+| --- | --- |
+| Channel with messages + composer | `screens/channel-view.html` |
+| Task board / list, drag states | `screens/task-board.html` |
+| Task thread in the dock | `screens/thread-panel.html` |
+| Agent dock (overview / runtime / activity) | `screens/agent-detail.html` |
+| Any modal | `screens/modals.html` |
+| Search results, ⌘K palette | `screens/search-command.html` |
+| Drawer shell at ≤900px | `screens/mobile-shell.html` |
+| The rail alone, in every nav state | `screens/workspace-sidebar.html` |
+
+Every slice is self-contained and opens directly in a browser; all of them import
+the two foundations, the product extension layer, and `ui_kits/app/app.css`. Never
+re-declare a component inside a slice — if a slice needs a visual change, change
+`ui_kits/app/app.css` so the single implementation stays single. Every path a slice
+links is inside this package, so the whole directory can be copied and still render.
 
 ## 3. Structural rules (non-negotiable)
 
@@ -131,8 +160,10 @@ boundaries take that family's `graphic` tier.
 
 ## 8. Verify before shipping
 
-- [ ] Both token files imported (plus the product extension layer when building
-      in-app); no raw color literals.
+- [ ] Both token files imported (plus the product extension layer —
+      `ui_kits/app/product-ext.css` in this package, or the app's
+      `app/alibot/studio/product-tokens.css` when building in-app); no raw color
+      literals.
 - [ ] Three-column shell correct; centered stream at 880px; board at 236px columns.
 - [ ] Hover/focus/active pairs pass contrast; focus-visible ring present; every fill
       tier pairs only with `--on-accent`.

@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>alibot · 切片 · 任务线程面板</title>
+<!--
+  切片 thread-panel：右侧 dock 的任务线程（.tt-*）。
+  数据逐字取自原型 alibot-app.html：任务 #3 来自 TASKS[2]，讨论来自
+  TASK_COMMENTS[3]，状态变更记录来自 TASK_HISTORY[3]，推进按钮来自
+  transitionsFor('in_progress') → ['in_review','todo','closed'] 配
+  THREAD_TRANSITION_LABEL（提交待审 / 退回待认领 / 关闭任务），
+  指派 chip 来自 renderTaskThread() 的 $ttAssign 拼装。
+
+  dock 宽度 380px（--dock-w），≤1080px 收到 340px（--dock-w-md），
+  两个形态都在这张切片里并排给出。
+
+  组件全部来自 ../ui_kits/app/app.css。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<!-- 产品角色族的包内落点：与 app/alibot/studio/product-tokens.css 是同值同源的两份落点（见 SKILL.md §1 / product-ext.css 头部）。 -->
+<link rel="stylesheet" href="../ui_kits/app/product-ext.css" />
+<link rel="stylesheet" href="../ui_kits/app/app.css" />
+<style>
+  /* 切片机架（非组件）：并排摆放两个 dock 形态的舞台。 */
+  body { margin: 0; background: var(--bg); }
+  .slice-wrap { display: flex; gap: var(--sp-9); padding: var(--sp-9); align-items: flex-start; flex-wrap: wrap; }
+  .slice-frame { border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; background: var(--bg); }
+  .slice-cap {
+    display: flex; align-items: center; gap: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border);
+    background: var(--panel); font-family: var(--mono); font-size: var(--fs-mono-micro);
+    letter-spacing: var(--ls-wide); text-transform: uppercase; color: var(--faint);
+  }
+  .slice-cap b { color: var(--fg); }
+  .slice-frame .dock { height: 860px; }
+  .slice-frame.tall .dock { height: 860px; }
+  .slice-frame.short .dock { height: 470px; }
+  .slice-tag {
+    position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 90;
+    display: inline-flex; align-items: center; gap: var(--sp-3);
+    font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-pill); padding: 3px 10px; text-decoration: none;
+  }
+  .slice-tag:hover { border-color: var(--border-strong); color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="slice-wrap">
+
+  <!-- ─── 形态 A：进行中 · 已指派 · 有讨论与变更记录 ───────────────────── -->
+  <div class="slice-frame tall">
+    <div class="slice-cap"><b>形态 A</b> 进行中 · 已指派 @Pixel</div>
+    <aside class="dock" data-od-id="detail-dock" aria-label="详情面板">
+      <div class="task-thread" data-od-id="task-thread">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="meta">
+              <div class="dock-name">
+                <span class="msg-tag" style="background:var(--panel-2);color:var(--muted)">任务线程</span>
+                <span style="font-family:var(--mono);color:var(--faint)">#3</span>
+              </div>
+              <div class="dock-role"><span>#设计系统重构 · 关联消息 0 条</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板" data-od-id="btn-thread-close">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="tt-summary">
+          <h2 class="tt-title">为任务看板加入状态机拖拽校验</h2>
+          <div class="tt-meta">
+            <button class="tt-status" data-od-id="thread-status">
+              <span class="dot" style="background:var(--accent-graphic)"></span>
+              <span>进行中</span>
+            </button>
+            <button class="assignee" data-od-id="thread-assignee">
+              <span class="avatar sm av-2" style="width:18px;height:18px;flex-basis:18px;font-size:9px">P</span>
+              Pixel<span style="color:var(--faint)">· 改派</span>
+            </button>
+            <span class="card-tag">交互</span>
+          </div>
+        </div>
+
+        <div class="tt-actions">
+          <div class="tt-actions-row">
+            <span class="tt-label">推进</span>
+            <div class="tt-chips">
+              <button class="filter-chip" data-od-id="thread-move-in_review">提交待审</button>
+              <button class="filter-chip" data-od-id="thread-move-todo">退回待认领</button>
+              <button class="filter-chip" data-od-id="thread-move-closed">关闭任务</button>
+            </div>
+          </div>
+          <div class="tt-actions-row">
+            <span class="tt-label">指派</span>
+            <div class="tt-chips">
+              <button class="filter-chip" data-od-id="thread-assign-me">
+                <span class="avatar sm av-4" style="width:16px;height:16px;flex-basis:16px;font-size:8px">我</span>我
+              </button>
+              <button class="filter-chip" data-od-id="thread-assign-susan">
+                <span class="avatar sm av-0" style="width:16px;height:16px;flex-basis:16px;font-size:8px">S</span>Susan
+              </button>
+              <button class="filter-chip" data-od-id="thread-assign-atlas">
+                <span class="avatar sm av-1" style="width:16px;height:16px;flex-basis:16px;font-size:8px">A</span>Atlas
+              </button>
+              <button class="filter-chip is-on" data-od-id="thread-assign-pixel">
+                <span class="avatar sm av-2" style="width:16px;height:16px;flex-basis:16px;font-size:8px">P</span>Pixel
+              </button>
+              <button class="filter-chip" data-od-id="thread-assign-quill">
+                <span class="avatar sm av-3" style="width:16px;height:16px;flex-basis:16px;font-size:8px">Q</span>Quill
+              </button>
+              <button class="filter-chip" data-od-id="thread-assign-sentry">
+                <span class="avatar sm av-4" style="width:16px;height:16px;flex-basis:16px;font-size:8px">S</span>Sentry
+              </button>
+              <button class="filter-chip" data-od-id="thread-unassign">取消指派</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tt-scroll">
+          <div class="d-sec" style="margin-top:14px">
+            <div class="d-sec-title">关联消息</div>
+            <div class="tt-empty">该任务还没有关联消息</div>
+          </div>
+
+          <div class="d-sec">
+            <div class="d-sec-title">讨论 · <span>2</span> 条</div>
+            <ul class="tt-log">
+              <li style="list-style:none">
+                <div class="msg" style="padding:2px 8px;margin:0 -8px">
+                  <div class="avatar av-2" style="width:24px;height:24px;flex-basis:24px;font-size:10px" aria-hidden="true">P</div>
+                  <div class="msg-body">
+                    <div class="msg-head">
+                      <span class="msg-author is-agent">Pixel</span>
+                      <span class="msg-tag">Agent</span>
+                      <span class="msg-time">09:21</span>
+                    </div>
+                    <div class="msg-text">状态机抽成 <code>TRANSITIONS</code> 表了，非法转移直接 toast 拦截。</div>
+                  </div>
+                </div>
+              </li>
+              <li style="list-style:none">
+                <div class="msg" style="padding:2px 8px;margin:0 -8px">
+                  <div class="avatar av-2" style="width:24px;height:24px;flex-basis:24px;font-size:10px" aria-hidden="true">P</div>
+                  <div class="msg-body">
+                    <div class="msg-head">
+                      <span class="msg-author is-agent">Pixel</span>
+                      <span class="msg-tag">Agent</span>
+                      <span class="msg-time">09:28</span>
+                    </div>
+                    <div class="msg-text">拖拽落点用 <code>dragover</code> 判定，非法列给红色边框；合法列给强调色高亮。</div>
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="d-sec">
+            <div class="d-sec-title">状态变更记录</div>
+            <ul class="tt-log">
+              <li class="ok">由 <b>@Pixel</b> 认领<span class="ts">09:20</span></li>
+              <li class="info">状态推进至 <b>进行中</b><span class="ts">09:20</span></li>
+              <li class="err is-now">非法转移 <b>待认领 → 完成</b> 被拦截<span class="ts">09:21</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="tt-reply">
+          <div class="composer-box">
+            <textarea class="composer-input" rows="1" placeholder="回复该任务线程 —— 输入 @ 提及成员" data-od-id="thread-reply-input"></textarea>
+            <div class="composer-bar">
+              <span class="composer-hint">Enter 回复 · Shift+Enter 换行</span>
+              <button class="composer-send" disabled aria-label="回复" data-od-id="thread-reply-send">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─── 形态 B：已关闭 · 无可用推进 · 未认领 ─────────────────────────── -->
+  <div class="slice-frame short">
+    <div class="slice-cap"><b>形态 B</b> 已关闭 · 推进为空</div>
+    <aside class="dock" aria-label="详情面板">
+      <div class="task-thread">
+
+        <div class="dock-head">
+          <div class="dock-id">
+            <div class="meta">
+              <div class="dock-name">
+                <span class="msg-tag" style="background:var(--panel-2);color:var(--muted)">任务线程</span>
+                <span style="font-family:var(--mono);color:var(--faint)">#11</span>
+              </div>
+              <div class="dock-role"><span>#增长实验 · 关联消息 0 条</span></div>
+            </div>
+            <button class="icon-btn" aria-label="关闭面板">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="tt-summary">
+          <h2 class="tt-title">懒创建 DM 的引导文案</h2>
+          <div class="tt-meta">
+            <button class="tt-status">
+              <span class="dot" style="background:var(--offline)"></span>
+              <span>已关闭</span>
+            </button>
+            <button class="assignee">
+              <span class="avatar sm av-3" style="width:18px;height:18px;flex-basis:18px;font-size:9px">Q</span>
+              Quill<span style="color:var(--faint)">· 改派</span>
+            </button>
+            <span class="card-tag">文案</span>
+          </div>
+        </div>
+
+        <div class="tt-actions">
+          <div class="tt-actions-row">
+            <span class="tt-label">推进</span>
+            <div class="tt-chips">
+              <span style="font-size:11.5px;color:var(--faint)">已关闭，无可用推进</span>
+            </div>
+          </div>
+          <div class="tt-actions-row">
+            <span class="tt-label">指派</span>
+            <div class="tt-chips">
+              <button class="filter-chip">
+                <span class="avatar sm av-4" style="width:16px;height:16px;flex-basis:16px;font-size:8px">我</span>我
+              </button>
+              <button class="filter-chip is-on">
+                <span class="avatar sm av-3" style="width:16px;height:16px;flex-basis:16px;font-size:8px">Q</span>Quill
+              </button>
+              <button class="filter-chip">取消指派</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tt-scroll">
+          <div class="d-sec" style="margin-top:14px">
+            <div class="d-sec-title">状态变更记录</div>
+            <ul class="tt-log">
+              <li class="info">创建并指派给 <b>@Quill</b><span class="ts">周一 10:04</span></li>
+              <li class="info">状态推进至 <b>进行中</b><span class="ts">周一 11:20</span></li>
+              <li class="is-now">状态推进至 <b>已关闭</b><span class="ts">周一 18:02</span></li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+</div>
+
+<a class="slice-tag" href="overview.html">screens/thread-panel.html · 切片索引</a>
+
+</body>
+</html>

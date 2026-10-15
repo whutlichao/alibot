@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>alibot · 切片 · 搜索视图与 ⌘K 命令面板</title>
+<!--
+  切片 search-command：搜索视图 + ⌘K 命令面板。
+  搜索视图的字段、facets、结果行逐字取自原型 alibot-app.html 的 renderSearch() /
+  mark()（含 <mark> 命中高亮，--unread 族）与 .result 三类结果（消息 / 任务 / Agent）；
+  命令面板的条目逐字取自该文件的 CMDS 常量与 renderCmd() 的分组渲染。
+
+  .overlay 是 position:fixed，切片里靠 .slice-stage 的 transform 限制在舞台内。
+
+  组件全部来自 ../ui_kits/app/app.css。
+-->
+<link rel="stylesheet" href="../colors_and_type.css" />
+<link rel="stylesheet" href="../tokens.css" />
+<!-- 产品角色族的包内落点：与 app/alibot/studio/product-tokens.css 是同值同源的两份落点（见 SKILL.md §1 / product-ext.css 头部）。 -->
+<link rel="stylesheet" href="../ui_kits/app/product-ext.css" />
+<link rel="stylesheet" href="../ui_kits/app/app.css" />
+<style>
+  /* 切片机架（非组件）。 */
+  body { margin: 0; background: var(--bg); display: flex; gap: var(--sp-9); padding: var(--sp-9); align-items: flex-start; flex-wrap: wrap; }
+  .slice-main {
+    flex: 1 1 640px; min-width: 560px; height: 760px;
+    display: flex; flex-direction: column; background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden;
+  }
+  .slice-stage {
+    position: relative; transform: translateZ(0);
+    width: 600px; height: 760px; overflow: hidden;
+    border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel);
+  }
+  .slice-stage .overlay { position: absolute; inset: 0; padding: var(--sp-9); }
+  .slice-cap {
+    position: absolute; left: var(--sp-5); top: var(--sp-4); z-index: 70;
+    font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide);
+    text-transform: uppercase; color: var(--faint); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--r-pill); padding: 2px 9px;
+  }
+  .slice-tag {
+    position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 90;
+    display: inline-flex; align-items: center; gap: var(--sp-3);
+    font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-pill); padding: 3px 10px; text-decoration: none;
+  }
+  .slice-tag:hover { border-color: var(--border-strong); color: var(--fg); }
+</style>
+</head>
+<body>
+
+  <!-- ─── 左：搜索视图（.search-view 接管 main 列） ─────────────────────── -->
+  <div class="slice-main">
+    <section class="search-view" data-od-id="search-view">
+      <div class="search-scroll">
+        <div class="search-inner">
+          <div class="search-field">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input value="令牌" placeholder="搜索消息、任务、成员…" aria-label="搜索">
+            <kbd>ESC</kbd>
+          </div>
+
+          <div class="facet-row" data-od-id="search-facets">
+            <button class="filter-chip is-on">全部</button>
+            <button class="filter-chip">消息</button>
+            <button class="filter-chip">任务</button>
+            <button class="filter-chip">Agent</button>
+          </div>
+
+          <div data-od-id="search-results">
+            <!-- 消息命中：.result + .r-top + <mark> -->
+            <button class="result">
+              <div class="r-top"><span class="hash">#设计系统重构</span><span class="card-tag">消息</span></div>
+              <div class="r-title">同意。<mark>令牌</mark>就叫 bg / surface / fg / muted / border / accent，全部用 <code>oklch()</code>。</div>
+              <div class="r-snip">来自 林舟</div>
+            </button>
+
+            <button class="result">
+              <div class="r-top"><span class="hash">#设计系统重构</span><span class="card-tag">消息</span></div>
+              <div class="r-title">收到。我已扫描出 37 处裸色值，主要集中在 <code>AppShell</code> 与 <code>ChannelView</code>。建议先冻结 6 个语义<mark>令牌</mark>再逐个替换。</div>
+              <div class="r-snip">来自 Susan</div>
+            </button>
+
+            <!-- 任务命中：data-od-id="search-task" -->
+            <button class="result" data-od-id="search-task">
+              <div class="r-top"><span class="hash">#设计系统重构</span><span class="card-tag">任务</span></div>
+              <div class="r-title">提取现有 CSS 变量并映射到 6 个语义<mark>令牌</mark></div>
+              <div class="r-snip">#1 · 完成</div>
+            </button>
+
+            <button class="result" data-od-id="search-task">
+              <div class="r-top"><span class="hash">#设计系统重构</span><span class="card-tag">任务</span></div>
+              <div class="r-title">对比度审计：hover / focus / disabled</div>
+              <div class="r-snip">#7 · 完成</div>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ─── 右：⌘K 命令面板 ──────────────────────────────────────────────── -->
+  <div class="slice-stage">
+    <span class="slice-cap">⌘K 命令面板 · 无过滤</span>
+    <div class="overlay" data-od-id="cmd-overlay">
+      <div class="cmd" role="dialog" aria-modal="true" aria-label="命令面板">
+        <div class="cmd-field">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input placeholder="输入命令或搜索…" autocomplete="off">
+          <kbd class="kbd">ESC</kbd>
+        </div>
+        <div class="cmd-list">
+          <div class="cmd-group">跳转</div>
+          <button class="cmd-item is-active">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">消息视图</span><span class="kbd">M</span>
+          </button>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">任务看板</span><span class="kbd">T</span>
+          </button>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">搜索</span><span class="kbd">⌘K</span>
+          </button>
+
+          <div class="cmd-group">动作</div>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">新建频道</span><span class="kbd">N</span>
+          </button>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">新建任务</span><span class="kbd">⇧N</span>
+          </button>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">切换详情面板</span><span class="kbd">D</span>
+          </button>
+
+          <div class="cmd-group">频道</div>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">#设计系统重构</span>
+          </button>
+          <button class="cmd-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            <span class="grow">#后端 · raft</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<a class="slice-tag" href="overview.html">screens/search-command.html · 切片索引</a>
+
+</body>
+</html>
