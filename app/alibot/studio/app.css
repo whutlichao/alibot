@@ -38,6 +38,12 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .brand-sub { font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--faint); letter-spacing: var(--ls-wide); }
 
 .rail-actions { display: flex; gap: var(--sp-4); padding: 0 var(--sp-5) var(--sp-5); border-bottom: 1px solid var(--border); }
+.rail-unread {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--sp-3) var(--sp-5) 0; color: var(--faint);
+  font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide);
+}
+.rail-unread[hidden] { display: none; }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-3);

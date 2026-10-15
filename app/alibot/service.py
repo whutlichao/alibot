@@ -69,9 +69,11 @@ class WorkspaceService:
     def bootstrap(self) -> dict[str, Any]:
         """工作台启动时的全量快照。空库返回空频道表、零业务消息、仅 owner 成员行。"""
         channels = self._db.list_channels(self._member_id)
+        dms = self.list_dms()
         return {
             "member": self._db.get_member(self._member_id),
             "channels": channels,
+            "dms": dms,
             "members": self._db.list_members(),
             "agents": self.agents(),
             # `unread_total` = **channel 型 + dm 型**之和（决策 G5），由**未读那一条 SQL 形状**直接算，
@@ -87,6 +89,35 @@ class WorkspaceService:
     # ─── 频道 ─────────────────────────────────────────────────────────────
     def list_channels(self) -> list[dict[str, Any]]:
         return self._db.list_channels(self._member_id)
+
+    def list_dms(self) -> list[dict[str, Any]]:
+        """工作台左栏私信；对方状态点沿用本机 Agent 的状态事实。"""
+        agents = {agent["id"]: agent for agent in self.agents()}
+        dms = self._db.list_dms(self._member_id)
+        for dm in dms:
+            agent = agents.get(dm["agent_id"], {})
+            dm["peer"]["status"] = agent.get("status", "offline")
+        return dms
+
+    def create_dm(self, agent_id: str) -> tuple[dict[str, Any], bool]:
+        dm, created = self._db.create_dm(agent_id, owner_id=self._member_id)
+        agent = self._agent_view(self._db.get_agent(dm["agent_id"]))
+        dm["peer"]["status"] = agent["status"]
+        return dm, created
+
+    def dm_messages(self, dm_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        self._db.get_dm(dm_id, self._member_id)
+        return self._db.list_messages(dm_id, after_seq=after_seq)
+
+    def send_dm_message(self, dm_id: str, body: str) -> dict[str, Any]:
+        """owner 在私信发言：消息成功 append 后唤醒私信成员面与被点名的穿透 Agent。"""
+        self._db.get_dm(dm_id, self._member_id)
+        return self._send_target_message(dm_id, body)
+
+    def mark_dm_read(self, dm_id: str, seq: int) -> dict[str, Any]:
+        self._db.get_dm(dm_id, self._member_id)
+        self._db.mark_read(dm_id, seq, member_id=self._member_id)
+        return self._db.get_dm(dm_id, self._member_id)
 
     def create_channel(
         self, name: str, description: str = "", member_ids: list[str] | None = None

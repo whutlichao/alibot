@@ -38,7 +38,7 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Alibot"
@@ -48,7 +48,7 @@ DATABASE_FILE_NAME = "alibot.db"
 MESSAGE_KINDS = ("human", "agent", "system")
 
 # target 的三种 kind（ADR-0004 / 规格 #23 §1）：channel 型复用 channel.id（影子行），
-# dm / task 后续票（#25–#28）才产生数据；本票只让 schema 与查询路径允许它们。
+# dm / task 由各自的服务路径创建与管理；本表统一承载三种 target 作用域。
 TARGET_KINDS = ("channel", "dm", "task")
 
 # 计入工作台快照 ``unread_total`` 的 kind（规格 §2 / 决策 G5）：channel 型 + dm 型之和。
@@ -138,12 +138,17 @@ CREATE TABLE IF NOT EXISTS channel (
 -- **channel 型是一张影子行**：``id`` 与 ``channel.id`` 同值（复用，同一个字符串既是频道主键也是
 -- target 主键），本表只承载 ``kind``；频道自己的 ``name`` / ``description`` 仍留在 ``channel`` 表，
 -- 因此**没有**映射表。影子行的生命周期由频道决定：本仓没有删除频道的入口，也就没有删除它的路径。
--- 列的 CHECK 是 ``kind`` 受约束的正本（三种取值）；dm / task 型的数据由后续票 #25–#28 产生。
+-- 列的 CHECK 是 ``kind`` 受约束的正本（三种取值）；dm / task 型由各自的业务路径创建。
 CREATE TABLE IF NOT EXISTS target (
-  id         TEXT PRIMARY KEY,
-  kind       TEXT NOT NULL CHECK (kind IN ('channel', 'dm', 'task')),
-  created_at TEXT NOT NULL
+  id                 TEXT PRIMARY KEY,
+  kind               TEXT NOT NULL CHECK (kind IN ('channel', 'dm', 'task')),
+  dm_peer_member_id  TEXT REFERENCES member(id),
+  created_at         TEXT NOT NULL
 );
+
+-- 每个 Agent 最多一条 DM；频道与任务行的该列为空，不参与索引。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_target_dm_peer_unique
+ON target(dm_peer_member_id) WHERE kind = 'dm' AND dm_peer_member_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS target_member (
   target_id TEXT NOT NULL REFERENCES target(id),
@@ -343,6 +348,27 @@ UNREAD_TOTAL_SQL = (
 
 # 单个 target 的未读条数：**同样的 WHERE 形状**（别名同为 m），区别只在于作用域键直接由参数给出。
 UNREAD_COUNT_SQL = "SELECT COUNT(*) FROM message m\n WHERE m.target_id = :target_id\n" + UNREAD_WHERE_SQL
+
+DM_SELECT_SQL = (
+    "SELECT t.id, t.created_at, 'dm' AS kind, "
+    "       p.id AS peer_id, p.kind AS peer_kind, p.display_name AS peer_display_name, "
+    "       p.avatar_slot AS peer_avatar_slot, p.created_at AS peer_created_at, "
+    "       p.deleted_at AS peer_deleted_at, COALESCE(MAX(m.seq), 0) AS last_seq, "
+    "       COALESCE(r.last_read_seq, 0) AS last_read_seq, "
+    "       COALESCE((SELECT COUNT(*) FROM message unread WHERE unread.target_id = t.id\n"
+    + UNREAD_WHERE_SQL.replace("m.", "unread.")
+    + "       ), 0) AS unread_count "
+    "  FROM target t "
+    "  JOIN target_member owner_members ON owner_members.target_id = t.id "
+    "                              AND owner_members.member_id = :member_id "
+    "  JOIN member p ON p.id = t.dm_peer_member_id "
+    "  LEFT JOIN message m ON m.target_id = t.id "
+    "  LEFT JOIN target_read r ON r.target_id = t.id AND r.member_id = :member_id "
+    " WHERE t.kind = 'dm' AND (:dm_id IS NULL OR t.id = :dm_id) "
+    " GROUP BY t.id, t.created_at, p.id, p.kind, p.display_name, p.avatar_slot, "
+    "          p.created_at, p.deleted_at, r.last_read_seq "
+    " ORDER BY t.created_at, t.id"
+)
 
 
 class SchemaVersionMismatch(Exception):
@@ -1036,10 +1062,9 @@ class Database:
     def create_target(self, kind: str, target_id: str | None = None) -> dict[str, Any]:
         """落一个新的 **dm / task 型** target 行。
 
-        **本票没有生产调用点**（它只插一行 target，不做任何 dm / task 业务校验）：本票只用它构造
-        **数据面取证**所需的最小数据（票面验收项 2 明确授权「用你构造的最小数据……证明该口径成立，
-        并说明你怎么构造的」）。幂等（一 agent 一 DM）、两行成员、peer 唯一、任务归属与看板、
-        看板与唤醒规则都留给 #25–#28——在那之前，这个方法只服务 `app/tests/test_target_scope.py`。
+        **本方法没有生产调用点**：它只插一行 target，不做 dm / task 业务校验；业务创建分别走
+        :meth:`create_dm` / :meth:`create_task` 的完整写路径。这里只供
+        `app/tests/test_target_scope.py` 构造作用域数据、取证共享 target 结构。
 
         **channel 型不经此处**：它复用 ``channel.id``、由 :meth:`create_channel` 落影子行，
         这里显式拒绝，以免出现'有 target 行却没有对应频道行'的破坏不变量的中间态。
@@ -1089,6 +1114,87 @@ class Database:
         if row is None:
             raise NotFound(f"频道不存在：{channel_id}")
         return self._channel_payload(row)
+
+    def create_dm(self, agent_id: str, owner_id: str = OWNER_ID) -> tuple[dict[str, Any], bool]:
+        """创建或复用 owner 与单一 Agent 的两方私信，返回 (DM, 是否新建)。"""
+        clean_agent_id = (agent_id or "").strip()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM member WHERE id = ?", (clean_agent_id,)).fetchone()
+        if row is None or row["deleted_at"] is not None or row["kind"] != "agent":
+            raise DomainError(
+                "validation_failed",
+                "私信对象必须是存在且未删除的 Agent",
+                fields={"agent_id": f"Agent 不存在或不可用：{clean_agent_id}"},
+            )
+        owner = self.get_member(owner_id)
+        if owner["kind"] != "owner":
+            raise DomainError("validation_failed", "私信创建者必须是 owner")
+
+        target_id: str
+        created = False
+        with self._lock:
+            self._begin()
+            try:
+                existing = self._conn.execute(
+                    "SELECT id FROM target WHERE kind = 'dm' AND dm_peer_member_id = ?",
+                    (clean_agent_id,),
+                ).fetchone()
+                if existing is not None:
+                    target_id = str(existing["id"])
+                else:
+                    target_id = new_id("dm")
+                    now = utc_now()
+                    self._conn.execute(
+                        "INSERT INTO target(id, kind, dm_peer_member_id, created_at) VALUES (?, 'dm', ?, ?)",
+                        (target_id, clean_agent_id, now),
+                    )
+                    for member_id in (owner_id, clean_agent_id):
+                        self._conn.execute(
+                            "INSERT INTO target_member(target_id, member_id) VALUES (?, ?)",
+                            (target_id, member_id),
+                        )
+                        self._conn.execute(
+                            "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0)",
+                            (member_id, target_id),
+                        )
+                    created = True
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_dm(target_id, owner_id), created
+
+    def list_dms(self, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(DM_SELECT_SQL, {"member_id": member_id, "dm_id": None}).fetchall()
+        return [self._dm_payload(row) for row in rows]
+
+    def get_dm(self, dm_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(DM_SELECT_SQL, {"member_id": member_id, "dm_id": dm_id}).fetchone()
+        if row is None:
+            raise NotFound(f"私信不存在：{dm_id}")
+        return self._dm_payload(row)
+
+    @staticmethod
+    def _dm_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "created_at": row["created_at"],
+            "agent_id": row["peer_id"],
+            "peer": {
+                "id": row["peer_id"],
+                "kind": row["peer_kind"],
+                "display_name": row["peer_display_name"],
+                "avatar_slot": row["peer_avatar_slot"],
+                "created_at": row["peer_created_at"],
+                "deleted_at": row["peer_deleted_at"],
+            },
+            "last_seq": row["last_seq"],
+            "last_read_seq": row["last_read_seq"],
+            "unread_count": row["unread_count"],
+        }
 
     @staticmethod
     def _channel_payload(row: sqlite3.Row) -> dict[str, Any]:

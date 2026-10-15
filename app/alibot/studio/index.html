@@ -40,10 +40,16 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
         新建频道
       </button>
+      <button class="btn" id="btnNewDm" data-od-id="btn-new-dm" title="新建私信">私信</button>
       <button class="btn" id="btnNewAgent" data-od-id="btn-new-agent" title="新建 Agent">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 13h.01M15 13h.01"/></svg>
         Agent
       </button>
+    </div>
+
+    <div class="rail-unread" id="unreadSummary" hidden data-od-id="workspace-unread" aria-live="polite">
+      <span>工作区未读</span>
+      <span class="badge" id="unreadTotal">0</span>
     </div>
 
     <nav class="rail-scroll" data-od-id="nav-lists">
@@ -51,6 +57,11 @@
         <div class="group-label">频道</div>
         <div id="channelList"></div>
         <div class="rail-empty" id="channelListEmpty" hidden>还没有频道。新建一个频道就能开始记录。</div>
+      </div>
+      <div class="group" data-od-id="dm-section">
+        <div class="group-label">私信</div>
+        <div id="dmList"></div>
+        <div class="rail-empty" id="dmListEmpty">还没有私信。新建私信后会在这里显示。</div>
       </div>
       <div class="group">
         <div class="group-label">任务</div>
@@ -87,7 +98,7 @@
 
     <header class="chan-head" id="chanHead" hidden data-od-id="channel-header">
       <div class="chan-top">
-        <h1 class="chan-title"><span class="hash">#</span><span id="chanTitle"></span></h1>
+      <h1 class="chan-title"><span class="hash" id="chanHash">#</span><span id="chanTitle"></span></h1>
         <div class="chan-tools">
           <button class="icon-btn" id="btnDockToggle" title="切换详情面板" aria-label="切换详情面板">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
@@ -232,6 +243,34 @@
 </div>
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<!-- ─── 新建私信 ─────────────────────────────────────────────────────── -->
+<div class="overlay" id="dmOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dmModalTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="dmModalTitle">新建私信</h2>
+        <div class="sub">选择一个 Agent；每个 Agent 只有一条私信，重复创建会复用。</div>
+      </div>
+      <button class="icon-btn" id="dmModalClose" aria-label="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>私信对象</label>
+        <div class="member-pick" id="dmAgentPicker" data-od-id="dm-agent-picker"></div>
+        <div class="hint">私信始终只有 owner 与所选 Agent；不能加入或离开。</div>
+      </div>
+      <div class="form-error" id="dmFormError" hidden role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn" id="dmCancel">取消</button>
+      <button class="btn btn-primary" id="dmCreateSubmit" data-od-id="btn-create-dm" disabled>创建私信</button>
+    </div>
+  </div>
+</div>
 
 <!-- ─── 新建 Agent ─────────────────────────────────────────────────────── -->
 <div class="overlay" id="agentOverlay" hidden>

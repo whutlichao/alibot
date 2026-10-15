@@ -4,7 +4,8 @@
 脚本**。规格决策 8 / ADR-0004 只规定「不做迁移」，没规定「旧库怎么办」——于是 v4 代码打开 v3 库时
 会**静默半改名**：``schema_version`` 被改写成 4、新的 ``target*`` 表被建出来但是空的、旧表数据还在、
 ``GET /api/channels`` 返 200 看起来正常，而成员 / 预算 / 发消息 / 标读**全部 404**。
-本票 #25 又把 schema 升为 v5；闸门持续拒绝所有非当前版本库，不做隐式迁移。
+#37 补的是「不做迁移」的另一半：**不接受旧库**。#25 把 schema 升为 v5；#27 合入 DM 后升为 v6。
+闸门持续拒绝所有非当前版本库，不做隐式迁移。
 
 与 ``conftest.py`` 的体例一致：经 HTTP 面或 ``Database`` 的公开入口取证，``tmp_path`` 独占数据目录，
 绝不触碰 ``~/Alibot``。**唯一**直接读库的场合是「库未变」这类结构事实——它没有 HTTP 路径可观察，
@@ -151,13 +152,15 @@ def _free_port() -> int:
 
 
 # ─── 拒绝对旧库：库一个字节都不改 ────────────────────────────────────────────
-@pytest.mark.parametrize("stored_version", ["4", "6", "not-a-number"])
+@pytest.mark.parametrize(
+    "stored_version", ["3", str(SCHEMA_VERSION - 1), str(SCHEMA_VERSION + 1), "not-a-number"]
+)
 def test_older_or_unknown_version_is_refused_and_the_file_is_untouched(
     tmp_path: Path, stored_version: str
 ) -> None:
     """库里版本 ≠ 常量 ⇒ 抛错终止；库的版本号、表清单与各表行数**逐项一致**。
 
-    ``"4"`` 是本票的上一版库，``"6"``/垃圾值覆盖「未来库」与坏库——三种都不得被
+    ``"3"`` 是真实的旧库（历史缺陷现场），前一版 / 下一版覆盖当前变更的两侧，垃圾值覆盖坏库——都不得被
     静默接受，也都不许被改写。
     """
     data_dir = tmp_path / "data"
@@ -227,7 +230,7 @@ def test_refused_database_is_still_refused_on_the_second_attempt(tmp_path: Path)
 
 
 @pytest.mark.parametrize("journal_mode", ["delete", "truncate", "persist"])
-@pytest.mark.parametrize("stored_version", ["4", "6"])
+@pytest.mark.parametrize("stored_version", ["3", str(SCHEMA_VERSION - 1), str(SCHEMA_VERSION + 1)])
 def test_refusal_leaves_the_file_byte_identical_even_when_it_is_not_already_wal(
     tmp_path: Path, journal_mode: str, stored_version: str
 ) -> None:
@@ -273,7 +276,7 @@ def test_empty_data_dir_still_starts(tmp_path: Path) -> None:
     assert _snapshot(data_dir / DATABASE_FILE_NAME)["stored_version"] == str(SCHEMA_VERSION)
 
 
-def test_current_database_still_starts_and_keeps_its_rows(tmp_path: Path) -> None:
+def test_current_schema_database_still_starts_and_keeps_its_rows(tmp_path: Path) -> None:
     """当前 schema 库再次启动成功，且既有数据（频道 + 消息）读得回来——闸门**不误伤**正常库。"""
     data_dir = tmp_path / "data"
 
