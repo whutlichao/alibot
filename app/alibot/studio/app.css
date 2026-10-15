@@ -136,15 +136,14 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 
 /* ─── 频道页签（原型形态） ──────────────────────────────────────────────
    与消息流在**同一内容区**切换：任务的唯一入口是这里。token 按名消费（`--selected-deep`
-   是 tab 计数选中态的**文字档**，见 `SKILL.md` §4「Tag / count」与 ADR-0015 档位纪律）；
-   悬停只提亮文字到 `--fg`，不降对比度（§5 交互态契约）。 */
+   是 tab 计数选中态的**文字档**，见 `SKILL.md` §4「Tag / count」与 ADR-0015 档位纪律）。
+   悬停同时定 fg 与 bg（`--fg-soft` 淡底 = 往浅了走 surface，不把文字往 `--muted` 退）。 */
 .tabs {
   display: flex; gap: 2px; margin-top: 11px; border-bottom: 1px solid var(--border);
 }
 .tab {
   position: relative; padding: 9px var(--sp-5); font-size: 12.5px; font-weight: var(--fw-medium);
   color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px;
-  transition: color var(--dur-fast) var(--ease);
 }
 .tab:hover { background: var(--fg-soft); color: var(--fg); }
 .tab.is-active { color: var(--fg); border-bottom-color: var(--fg); }

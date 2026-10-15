@@ -615,17 +615,24 @@ function renderTaskThread() {
 
 function setViewMode(mode) {
   state.mode = mode;
-  const channelMode = mode === 'channel';
-  const target = activeTarget();
-  // 频道 header（含「消息 / 任务」页签）在消息页与任务页**都**可见：两个页签在同一个内容区
-  // 切换，收起 header 就把页签本身收走了（原型 `renderViews()` 在任务视图里连 header 一起隐藏，
-  // 那与它自己的「页签切换」自相矛盾；按票面「同一内容区切换」的形态保留 header）。
-  $('#chanHead').hidden = !target;
-  $('#viewMessages').hidden = !channelMode;
-  $('#composer').hidden = !channelMode || !target;
+  syncChromeVisibility(mode);
+  $('#viewMessages').hidden = mode !== 'channel';
   $('#taskBoard').hidden = mode !== 'board';
   $('#taskThread').hidden = mode !== 'task';
   renderTabs();
+}
+
+/** 频道 header（含「消息 / 任务」页签）与 composer 的可见性。
+
+    两个页签在**同一内容区**切换，因此 header 在消息页与任务页**都**可见——原型
+    `renderViews()` 写的是 `$('#chanHead').hidden = search;`，只在搜索视图隐藏它，
+    任务视图下 header 与页签本身就是可见的。收起 header 等于把页签一起收走。
+    composer 只属于消息页（原型同理：`$('#composer').hidden = search || tasks`）。
+    两处调用（`setViewMode` 与 `renderHeader`）共用这一条规则，不各写一遍。 */
+function syncChromeVisibility(mode) {
+  const hasTarget = Boolean(activeTarget());
+  $('#chanHead').hidden = !hasTarget;
+  $('#composer').hidden = !hasTarget || mode !== 'channel';
 }
 
 /** 「任务」页签：看板（全工作区视图 + 频道筛选，见 #44 重做其结构）。 */
@@ -1496,9 +1503,7 @@ function renderTyping() {
 function renderHeader() {
   const target = activeTarget();
   const hasTarget = Boolean(target);
-  // header（含页签）在消息页 / 任务页都可见；composer 只在消息页。
-  $('#chanHead').hidden = !hasTarget;
-  $('#composer').hidden = !hasTarget || state.mode !== 'channel';
+  syncChromeVisibility(state.mode);
   if (!hasTarget) {
     closeMentionPicker();
     return;
