@@ -1592,7 +1592,11 @@ class Database:
                 )
                 seen.add(original_range)
                 previous_original_end = end
-            cursor = folded_end
+                cursor = folded_end
+            else:
+                # casefold 展开可能让 folded 匹配映回重叠原文；从下一个 folded 起点继续，
+                # 不能直接跳过候选尾部，否则会漏掉紧随其后的非重叠原文命中。
+                cursor = folded_start + 1
         return ranges
 
     @classmethod
