@@ -3,7 +3,7 @@
 协作域的唤醒编排需要的全部框架能力被收敛成两个东西：
 
 1. ``AgentSeam``——「一个成员的一轮」这个动作：输入**成员**与该成员**待读的新消息**，
-   输出**零或多条待落库回复** + 一个**轮次结果**。这就是票面要求的「薄适配接口」。
+   输出**零或多条待落库回复** + 一个**轮次结果**；轮次结果可带受限的结构化任务动作。
 2. ``AgentScopeAgentSeam``——真实实现，进程内直接调用 AgentScope 2.x（``Agent`` /
    ``agentscope.model`` / ``agentscope.credential``），不使用框架的 Agent Service。
 
@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import inspect
 import os
+import threading
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 # provider 客户端上「可关闭入口」的候选方法名（协程）。顺序即探测顺序。
 _CLOSE_METHOD_NAMES = ("aclose", "close")
@@ -105,9 +106,56 @@ class RoundMessage:
     body: str
 
 
+@dataclass(frozen=True)
+class TransferTaskAction:
+    """Agent 在当前任务轮次中把任务转派给另一位 Agent 的结构化动作。"""
+
+    task_id: str
+    assignee_member_id: str
+
+
+TaskStatus: TypeAlias = Literal["todo", "in_progress", "in_review", "done", "closed"]
+
+
+@dataclass(frozen=True)
+class SetTaskStatusAction:
+    """Agent 在当前任务轮次中推进任务状态的结构化动作。"""
+
+    task_id: str
+    status: TaskStatus
+
+
+AgentTaskAction: TypeAlias = TransferTaskAction | SetTaskStatusAction
+
+
+@dataclass(frozen=True)
+class TaskAgentOption:
+    """任务动作工具可选的 Agent（模型只看到序号与显示名，不接收内部成员 id）。"""
+
+    member_id: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class TaskActionContext:
+    """当前任务专用工具的服务端上下文；task id 与成员 id 不由模型提供。"""
+
+    task_id: str
+    assignee_member_id: str | None
+    agent_members: tuple[TaskAgentOption, ...]
+
+    def transfer_options_for(self, actor_id: str) -> tuple[TaskAgentOption, ...]:
+        """模型不可见的转派目标正本，顺序由服务端固定，允许显示名重复。"""
+        return tuple(option for option in self.agent_members if option.member_id != actor_id)
+
+
 @dataclass
 class RoundOutcome:
-    """适配接口输出的轮次结果（协作域据此落 ``round_outcome`` 行）。"""
+    """适配接口输出的轮次结果（协作域据此落 ``round_outcome`` 行）。
+
+    ``task_action`` 是内部类型化值，不含 actor 身份；编排器必须把动作绑定到本轮输入的 Agent，
+    不得从消息正文或动作载荷推断执行者。
+    """
 
     status: str
     reason: str = ""
@@ -115,6 +163,7 @@ class RoundOutcome:
     started_at: str | None = None
     finished_at: str | None = None
     consumed_budget: bool = False
+    task_action: AgentTaskAction | None = None
 
     def __post_init__(self) -> None:
         if self.status not in SEAM_STATUSES:
@@ -123,6 +172,10 @@ class RoundOutcome:
         # 而不是让落库路径多出一条谁都没预料到的消息。
         if len(self.messages) > 1:
             raise ValueError("一轮最多产出 1 条频道消息")
+        if self.task_action is not None and not isinstance(
+            self.task_action, (TransferTaskAction, SetTaskStatusAction)
+        ):
+            raise ValueError("Agent 任务动作必须使用受支持的结构化类型")
 
 
 @runtime_checkable
@@ -140,6 +193,7 @@ class AgentSeam(Protocol):
         *,
         mentioned: bool,
         target_id: str,
+        task_context: TaskActionContext | None = None,
     ) -> RoundOutcome:
         """跑一轮，返回结论。
 
@@ -149,6 +203,7 @@ class AgentSeam(Protocol):
             messages: 该成员**待读的新消息**（经同一个读接口取得，不含正文的第二通道）。
             mentioned: 这批新消息里是否个人提及了该成员（rubric：被点名必须回应）。
             target_id: 频道 id。
+            task_context: 仅任务线程提供的内部动作上下文；频道与 DM 不开放任务工具。
         """
         ...
 
@@ -222,12 +277,14 @@ class AgentScopeAgentSeam:
         *,
         mentioned: bool,
         target_id: str,
+        task_context: TaskActionContext | None = None,
     ) -> RoundOutcome:
         import asyncio
 
         provider = provider_of(str(agent.get("model_id") or ""))
         model_name = model_name_of(str(agent.get("model_id") or ""))
-        system_prompt = _system_prompt(agent, mentioned=mentioned)
+        system_prompt = _system_prompt(agent, mentioned=mentioned, task_context=task_context)
+        task_actions: list[AgentTaskAction] = []
 
         async def _round() -> Any:
             # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
@@ -239,11 +296,16 @@ class AgentScopeAgentSeam:
                 from agentscope.agent import Agent
                 from agentscope.message import UserMsg
 
-                instance = Agent(
-                    name=str(agent.get("display_name") or agent.get("id") or "agent"),
-                    system_prompt=system_prompt,
-                    model=model,
-                )
+                agent_options: dict[str, Any] = {
+                    "name": str(agent.get("display_name") or agent.get("id") or "agent"),
+                    "system_prompt": system_prompt,
+                    "model": model,
+                }
+                if task_context is not None:
+                    agent_options["toolkit"] = _task_action_toolkit(
+                        task_context, str(agent["id"]), task_actions
+                    )
+                instance = Agent(**agent_options)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
                 inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
@@ -265,11 +327,21 @@ class AgentScopeAgentSeam:
         if reply_error:
             return RoundOutcome(status="failed", reason=f"模型返回错误：{reply_error}")
 
+        task_action = task_actions[0] if task_actions else None
         text = _msg_text(reply)
         if not text.strip():
+            if task_action is not None:
+                return RoundOutcome(
+                    status="replied",
+                    reason="模型通过任务工具提交了结构化动作",
+                    task_action=task_action,
+                )
             return RoundOutcome(status="ignored", reason="模型没有产出可落库的正文（本轮自判不回应）")
         return RoundOutcome(
-            status="replied", reason="模型自主判断需要回应", messages=[RoundMessage(body=text)]
+            status="replied",
+            reason="模型自主判断需要回应",
+            messages=[RoundMessage(body=text)],
+            task_action=task_action,
         )
 
 
@@ -314,7 +386,9 @@ async def _aclose_model_client(model: Any) -> None:
         return
 
 
-def _system_prompt(agent: dict[str, Any], *, mentioned: bool) -> str:
+def _system_prompt(
+    agent: dict[str, Any], *, mentioned: bool, task_context: TaskActionContext | None = None
+) -> str:
     """把成员配置里的系统提示 + 本轮的回应 rubric 合成一次调用的 system prompt。"""
     base = str(agent.get("system_prompt") or "").strip()
     role = str(agent.get("role") or "").strip()
@@ -330,7 +404,67 @@ def _system_prompt(agent: dict[str, Any], *, mentioned: bool) -> str:
     )
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
+    if task_context is not None:
+        transfer_options = task_context.transfer_options_for(str(agent.get("id") or ""))
+        option_names = "\n".join(
+            f"{index}. {option.display_name}" for index, option in enumerate(transfer_options, start=1)
+        )
+        parts.append(
+            "当前在任务线程中。需要改状态时使用 set_task_status 工具，不要只在正文中声称已改；"
+            "仅当前受派者可使用 transfer_task 工具转派给另一位 Agent。每轮最多提交一个动作，"
+            "动作最终是否成功以系统记录为准。可转派 Agent（工具参数 recipient_number 对应序号）：\n"
+            f"{option_names if option_names else '暂无其他 Agent'}"
+        )
     return "\n\n".join(parts)
+
+
+def _task_action_toolkit(
+    context: TaskActionContext, actor_id: str, actions: list[AgentTaskAction]
+) -> Any:
+    """仅在任务轮次提供两种类型化动作工具；工具只收集意图，写入仍由编排器授权。"""
+    from agentscope.permission import PermissionBehavior, PermissionDecision
+    from agentscope.tool import FunctionTool, ToolBase, Toolkit
+
+    action_lock = threading.Lock()
+
+    def record(action: AgentTaskAction) -> str:
+        with action_lock:
+            if actions:
+                return "本轮只接受一个任务动作；已记录的动作保持不变。"
+            actions.append(action)
+        return "已记录任务动作请求；系统会在本轮结束时校验并应用。"
+
+    def set_task_status(status: TaskStatus) -> str:
+        """请求推进当前任务状态。
+
+        Args:
+            status: 目标状态：todo、in_progress、in_review、done 或 closed。
+        """
+        return record(SetTaskStatusAction(context.task_id, status))
+
+    # ALLOW 仅批准把动作请求放进本轮结果；数据库写入仍由编排器在回复后校验并执行。
+    permission = PermissionDecision(
+        behavior=PermissionBehavior.ALLOW,
+        message="任务动作只记录为本轮结构化结果，执行前仍会经过服务端授权校验。",
+    )
+    # AgentScope 2.0.9 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
+    tools: list[ToolBase] = [FunctionTool(set_task_status, permission=permission)]  # type: ignore[arg-type]
+    if actor_id == context.assignee_member_id:
+        transfer_options = context.transfer_options_for(actor_id)
+
+        def transfer_task(recipient_number: int) -> str:
+            """把当前任务转派给一位 Agent。
+
+            Args:
+                recipient_number: 系统提示中可转派 Agent 的 1-based 序号。
+            """
+            if recipient_number < 1 or recipient_number > len(transfer_options):
+                return "转派目标序号无效；没有记录转派动作。"
+            recipient = transfer_options[recipient_number - 1]
+            return record(TransferTaskAction(context.task_id, recipient.member_id))
+
+        tools.append(FunctionTool(transfer_task, permission=permission))  # type: ignore[arg-type]
+    return Toolkit(tools=tools)
 
 
 def _author_name(message: dict[str, Any]) -> str:

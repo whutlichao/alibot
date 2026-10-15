@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from itertools import pairwise
+
+from alibot.agent_seam import SetTaskStatusAction, TransferTaskAction
+from alibot.db import BUDGET_LIMIT
 from fastapi.testclient import TestClient
 
 from tests.conftest import create_agent, create_channel, drain, messages
-from tests.scripted import REPLY
+from tests.scripted import ACTION_ONLY, REPLY
 
 
 def test_creating_a_task_creates_its_own_thread_without_a_channel_message(client: TestClient) -> None:
@@ -214,3 +218,168 @@ def test_task_unread_is_separate_and_ordinary_system_events_do_not_wake_or_spend
     assert task_after_events["unread_count"] == 0
     assert client.get("/api/channels").json()["channels"][0]["unread_count"] == 0
     assert client.get("/api/workspace").json()["unread_total"] == 0
+
+    thread_messages = client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
+    assert [message["body"] for message in thread_messages[-2:]] == [
+        "状态推进至 进行中",
+        "标题已更改为：核对完成",
+    ]
+    assert [message["kind"] for message in thread_messages[-2:]] == ["system", "system"]
+
+    event_path = f"/api/tasks/{task['id']}/messages/{thread_messages[-1]['seq']}"
+    for method in ("put", "patch", "delete"):
+        request = getattr(client, method)
+        if method == "delete":
+            response = request(event_path)
+        else:
+            response = request(event_path, json={"body": "改写事件"})
+        assert response.status_code == 404
+    assert client.get(f"/api/tasks/{task['id']}/messages").json()["messages"] == thread_messages
+
+
+def test_agent_reassignment_spends_one_jump_and_obeys_the_budget_limit(
+    client: TestClient, harness: dict
+) -> None:
+    channel = create_channel(client).json()["channel"]
+    agents = [create_agent(client, name=name).json()["agent"] for name in ("甲", "乙", "丙", "丁", "戊")]
+    task = client.post(
+        f"/api/channels/{channel['id']}/tasks", json={"title": "逐次转派"}
+    ).json()["task"]
+    assignee_path = f"/api/tasks/{task['id']}/assignee"
+    harness["seam"].task_actions = {
+        agent["id"]: TransferTaskAction(task["id"], agents[index + 1]["id"])
+        for index, agent in enumerate(agents[:-1])
+    }
+
+    owner_assignment = client.patch(assignee_path, json={"member_id": agents[0]["id"]}).json()
+    epoch_seq = owner_assignment["message"]["seq"]
+    assert client.get(f"/api/tasks/{task['id']}/budget").json()["budget"]["used"] == 0
+    assert harness["scheduler"].pending_count() == 1
+
+    spoofed_actor = client.patch(
+        assignee_path,
+        json={"member_id": agents[1]["id"], "actor_member_id": agents[0]["id"]},
+    )
+    assert spoofed_actor.status_code == 400
+    assert client.get(f"/api/tasks/{task['id']}").json()["task"]["assignee_member_id"] == agents[0]["id"]
+
+    for hop, (actor, recipient) in enumerate(pairwise(agents), start=1):
+        assert harness["scheduler"].pending_count() == 1
+        assert len(harness["scheduler"].drain(limit=1)) == 1
+        assert client.get(f"/api/tasks/{task['id']}").json()["task"]["assignee_member_id"] == recipient["id"]
+        budget = client.get(f"/api/tasks/{task['id']}/budget").json()["budget"]
+        assert budget["epoch_seq"] == epoch_seq
+        assert budget["used"] == min(hop, BUDGET_LIMIT)
+        assert len(harness["seam"].calls_for(actor["id"])) == 1
+        if hop <= BUDGET_LIMIT:
+            assert harness["scheduler"].pending_count() == 1
+            assert harness["seam"].calls_for(recipient["id"]) == []
+        else:
+            assert harness["scheduler"].pending_count() == 0
+            assert harness["seam"].calls_for(recipient["id"]) == []
+
+    owner_reassignment = client.patch(assignee_path, json={"member_id": agents[0]["id"]}).json()
+    reset_budget = client.get(f"/api/tasks/{task['id']}/budget").json()["budget"]
+    assert reset_budget["epoch_seq"] == owner_reassignment["message"]["seq"]
+    assert reset_budget["epoch_seq"] > epoch_seq
+    assert reset_budget["used"] == 0
+    assert harness["scheduler"].pending_count() == 1
+    drain(harness)
+    assert len(harness["seam"].calls_for(agents[0]["id"])) == 2
+
+
+def test_mentioned_agent_can_complete_a_task_action_without_chat_text(
+    client: TestClient, harness: dict
+) -> None:
+    channel = create_channel(client).json()["channel"]
+    first = create_agent(client, name="甲").json()["agent"]
+    second = create_agent(client, name="乙").json()["agent"]
+    task = client.post(
+        f"/api/channels/{channel['id']}/tasks", json={"title": "点名后转派"}
+    ).json()["task"]
+    assignee_path = f"/api/tasks/{task['id']}/assignee"
+    assert client.patch(assignee_path, json={"member_id": first["id"]}).status_code == 200
+    drain(harness)
+
+    harness["seam"].behaviors[first["id"]] = ACTION_ONLY
+    harness["seam"].task_actions[first["id"]] = TransferTaskAction(task["id"], second["id"])
+    mentioned = client.post(
+        f"/api/tasks/{task['id']}/messages",
+        json={"body": f"@{first['display_name']} 请转派", "task_ref": task["id"]},
+    )
+    assert mentioned.status_code == 201
+    assert harness["scheduler"].pending_count() == 1
+
+    assert len(harness["scheduler"].drain(limit=1)) == 1
+
+    assert client.get(f"/api/tasks/{task['id']}").json()["task"]["assignee_member_id"] == second["id"]
+    assert harness["scheduler"].pending_count() == 1
+    assert harness["seam"].calls_for(second["id"]) == []
+    agent_outcome = next(
+        outcome
+        for outcome in reversed(client.app.state.db.list_round_outcomes(task["target_id"]))
+        if outcome["member_id"] == first["id"]
+    )
+    assert agent_outcome["status"] == "replied"
+    assert agent_outcome["reply_seq"] is None
+
+
+def test_assigned_agent_cannot_approve_own_task_but_owner_can(client: TestClient, harness: dict) -> None:
+    channel = create_channel(client).json()["channel"]
+    agent = create_agent(client, name="审阅者").json()["agent"]
+    task = client.post(
+        f"/api/channels/{channel['id']}/tasks", json={"title": "待审任务"}
+    ).json()["task"]
+
+    status_path = f"/api/tasks/{task['id']}/status"
+    assert client.patch(status_path, json={"status": "in_progress"}).status_code == 200
+    assert client.patch(status_path, json={"status": "in_review"}).status_code == 200
+    harness["seam"].task_actions[agent["id"]] = SetTaskStatusAction(task["id"], "done")
+
+    client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": agent["id"]})
+    drain(harness)
+    task_messages = client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
+    assert client.get(f"/api/tasks/{task['id']}").json()["task"]["status"] == "in_review"
+    assert not any(message["body"] == "状态推进至 完成" for message in task_messages)
+    assert len(harness["seam"].calls_for(agent["id"])) == 1
+    agent_outcome = next(
+        outcome
+        for outcome in client.app.state.db.list_round_outcomes(task["target_id"])
+        if outcome["member_id"] == agent["id"]
+    )
+    assert "不能批准" in agent_outcome["reason"]
+
+    owner_approval = client.patch(status_path, json={"status": "done"})
+    assert owner_approval.status_code == 200
+    assert owner_approval.json()["task"]["status"] == "done"
+
+
+def test_other_task_member_can_review_assignee_output(client: TestClient, harness: dict) -> None:
+    channel = create_channel(client).json()["channel"]
+    assignee = create_agent(client, name="实现者").json()["agent"]
+    reviewer = create_agent(client, name="复核者").json()["agent"]
+    task = client.post(
+        f"/api/channels/{channel['id']}/tasks", json={"title": "独立复核"}
+    ).json()["task"]
+    status_path = f"/api/tasks/{task['id']}/status"
+    assert client.patch(status_path, json={"status": "in_progress"}).status_code == 200
+    assert client.patch(status_path, json={"status": "in_review"}).status_code == 200
+    assert client.patch(
+        f"/api/tasks/{task['id']}/assignee", json={"member_id": assignee["id"]}
+    ).status_code == 200
+    drain(harness)
+
+    harness["seam"].task_actions[reviewer["id"]] = SetTaskStatusAction(task["id"], "done")
+    review_request = client.post(
+        f"/api/tasks/{task['id']}/messages",
+        json={"body": f"@{reviewer['display_name']} 请复核", "task_ref": task["id"]},
+    )
+    assert review_request.status_code == 201
+    drain(harness)
+
+    assert client.get(f"/api/tasks/{task['id']}").json()["task"]["status"] == "done"
+    task_messages = client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
+    assert sum(message["body"] == "状态推进至 完成" for message in task_messages) == 1
+    assert reviewer["id"] in {
+        member["id"] for member in client.get(f"/api/tasks/{task['id']}/members").json()["members"]
+    }

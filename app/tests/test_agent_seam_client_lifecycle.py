@@ -40,7 +40,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 
 import pytest
-from alibot.agent_seam import AgentScopeAgentSeam
+from alibot.agent_seam import (
+    AgentScopeAgentSeam,
+    SetTaskStatusAction,
+    TaskActionContext,
+    TaskAgentOption,
+    TransferTaskAction,
+)
 
 # 跨 loop 关闭时真正被打到 stderr 的那句话（issue #30 的原始症状）。
 CLOSED_LOOP_MARKER = "Event loop is closed"
@@ -58,26 +64,60 @@ class _StubProviderHandler(BaseHTTPRequestHandler):
     # 端点自证：测试用它断言真的发生过一次 HTTP 往返（否则「不报错」可能只是因为压根没连）。
     # ClassVar 是刻意的：这份共享状态属于端点类本身，不是某个 handler 实例的状态。
     requests: ClassVar[list[str]] = []
+    request_bodies: ClassVar[list[dict[str, Any]]] = []
     # 非 0 时端点回这个状态码（失败路径用它把一轮逼成 failed）。
     fail_status: ClassVar[int] = 0
+    # 有值时首轮返回该结构化 tool call，后续轮次回复固定文本。
+    tool_call: ClassVar[dict[str, Any] | None] = None
+    tool_call_sent: ClassVar[bool] = False
 
     def do_POST(self) -> None:
         length = int(self.headers.get("content-length") or 0)
-        self.rfile.read(length)
+        request_body = json.loads(self.rfile.read(length))
         type(self).requests.append(self.path)
+        type(self).request_bodies.append(request_body)
         if type(self).fail_status:
-            payload = json.dumps(
-                {"error": {"message": "stub 端点按用例设定拒绝这一轮", "type": "invalid_request_error"}}
-            ).encode()
             # 保持 keep-alive 地回错误（不发送 Connection: close）：连接仍然留在连接池里，
             # 于是「客户端有没有被关掉」这件事仍然可观察。
-            self.send_response(type(self).fail_status)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._send_json(
+                {"error": {"message": "stub 端点按用例设定拒绝这一轮", "type": "invalid_request_error"}},
+                status=type(self).fail_status,
+            )
             return
-        payload = json.dumps(
+        if type(self).tool_call is not None and not type(self).tool_call_sent:
+            type(self).tool_call_sent = True
+            tool_call = type(self).tool_call
+            self._send_json(
+                {
+                    "id": "chatcmpl-issue-26-tool-stub",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "stub-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-task-action",
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_call["name"],
+                                            "arguments": json.dumps(tool_call["arguments"]),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+            )
+            return
+        self._send_json(
             {
                 "id": "chatcmpl-issue-30-stub",
                 "object": "chat.completion",
@@ -92,12 +132,15 @@ class _StubProviderHandler(BaseHTTPRequestHandler):
                 ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             }
-        ).encode()
-        self.send_response(200)
+        )
+
+    def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
+        encoded = json.dumps(payload).encode()
+        self.send_response(status)
         self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(payload)))
+        self.send_header("content-length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(payload)
+        self.wfile.write(encoded)
 
     def log_message(self, *args: Any) -> None:
         """静音：stderr / 日志是本次断言要独占的通道。"""
@@ -108,7 +151,10 @@ class _StubProviderHandler(BaseHTTPRequestHandler):
 def stub_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """本机 stub provider 端点：返回 OpenAI 兼容的 ``base_url``，并把凭证指到它。"""
     _StubProviderHandler.requests = []
+    _StubProviderHandler.request_bodies = []
     _StubProviderHandler.fail_status = 0
+    _StubProviderHandler.tool_call = None
+    _StubProviderHandler.tool_call_sent = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StubProviderHandler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -291,3 +337,53 @@ def test_failed_round_also_closes_provider_client(
 
     transcript = "\n".join(seen)
     assert CLOSED_LOOP_MARKER not in transcript, f"失败路径仍出现跨 loop 回收失败：\n{transcript}"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected"),
+    [
+        (
+            "set_task_status",
+            {"status": "done"},
+            SetTaskStatusAction(task_id="task_issue_26", status="done"),
+        ),
+        (
+            "transfer_task",
+            {"recipient_number": 2},
+            TransferTaskAction(task_id="task_issue_26", assignee_member_id="mem_issue_32"),
+        ),
+    ],
+)
+def test_task_tools_return_only_structured_actions(
+    stub_provider: str,
+    tool_name: str,
+    arguments: dict[str, str],
+    expected: SetTaskStatusAction | TransferTaskAction,
+) -> None:
+    """AgentScope 工具调用被转换成类型化动作，不从最终回复正文解析命令。"""
+    _StubProviderHandler.tool_call = {"name": tool_name, "arguments": arguments}
+    agent, messages = board_inputs()
+    task_context = TaskActionContext(
+        task_id="task_issue_26",
+        assignee_member_id=agent["id"],
+        agent_members=(
+            TaskAgentOption(member_id=agent["id"], display_name="小明"),
+            TaskAgentOption(member_id="mem_issue_31", display_name="乙"),
+            TaskAgentOption(member_id="mem_issue_32", display_name="乙"),
+        ),
+    )
+
+    outcome = AgentScopeAgentSeam(timeout_seconds=10.0).run_round(
+        agent,
+        messages,
+        mentioned=False,
+        target_id="tgt_issue_26",
+        task_context=task_context,
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    assert outcome.task_action == expected
+    assert len(_StubProviderHandler.requests) == 2
+    tools = _StubProviderHandler.request_bodies[0]["tools"]
+    assert {tool["function"]["name"] for tool in tools} == {"set_task_status", "transfer_task"}
+    assert "mem_issue_32" not in json.dumps(_StubProviderHandler.request_bodies[0])

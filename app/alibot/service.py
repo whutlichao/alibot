@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .agent_seam import (
     LOCAL_PROVIDERS,
@@ -24,7 +24,9 @@ from .agent_seam import (
 from .db import OWNER_ID, Database, DomainError
 from .events import EventBus
 from .mentions import parse_mentions
-from .orchestration import WakeOrchestrator
+
+if TYPE_CHECKING:
+    from .orchestration import WakeOrchestrator
 
 # 会离开本机的数据面（spec #1 §8）：告知文案与接口载荷共用这一份，避免两处漂移。
 REMOTE_DATA_FACES: tuple[str, ...] = (
@@ -161,7 +163,7 @@ class WorkspaceService:
         return self._db.get_task(task_id, self._member_id)
 
     def update_task_status(self, task_id: str, status: str) -> dict[str, Any]:
-        task, message = self._db.update_task_status(task_id, status)
+        task, message = self._db.update_task_status(task_id, status, actor_member_id=self._member_id)
         if message is not None and self._events is not None:
             self._events.publish(
                 task["target_id"], {"type": "message", "seq": message["seq"], "message": message}
@@ -177,13 +179,19 @@ class WorkspaceService:
         return {"task": task, "message": message}
 
     def update_task_assignee(self, task_id: str, member_id: str | None) -> dict[str, Any]:
-        task, message = self._db.update_task_assignee(task_id, member_id)
+        actor = self._db.get_member(self._member_id)
+        if actor["kind"] == "agent" and self._orchestrator is None:
+            raise DomainError("validation_failed", "Agent 转派任务需要启用成员面编排")
+        task, message = self._db.update_task_assignee(task_id, member_id, actor_member_id=self._member_id)
         if message is not None and self._events is not None:
             self._events.publish(
                 task["target_id"], {"type": "message", "seq": message["seq"], "message": message}
             )
         if message is not None and member_id is not None and self._orchestrator is not None:
-            self._orchestrator.notify_task_assignment(task["target_id"], message["seq"], member_id)
+            if actor["kind"] == "owner":
+                self._orchestrator.notify_task_assignment(task["target_id"], message["seq"], member_id)
+            else:
+                self._orchestrator.notify_task_reassignment(task["target_id"], message["seq"], member_id)
         return {"task": task, "message": message}
 
     def channel_messages(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
