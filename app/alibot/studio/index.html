@@ -106,57 +106,29 @@
       </div>
     </header>
 
-    <section class="task-board" id="taskBoard" hidden data-od-id="task-board">
-      <header class="task-board-head">
-        <div>
-          <div class="task-eyebrow">WORKSPACE · TASKS</div>
-          <h1>任务看板</h1>
-          <p>每项任务都有独立线程；状态变化会记录在任务时间线中。</p>
+    <!-- 任务看板（原型 `.board-wrap` 形态）：工具栏 + 横向滚动的固定 236px 列。
+         任务线程**不在这里**——它搬进了右侧 dock（见下方 `#dockTask`），因为「点卡片 →
+         dock 出线程」在原型里是同一组交互。
+         列表视图是 `.seg` 的另一半，与看板同一份 `GET /api/tasks` 数据。 -->
+    <section class="board-wrap" id="taskBoard" hidden data-od-id="tasks-view">
+      <div class="board-toolbar">
+        <div class="seg" role="tablist" aria-label="任务视图" data-od-id="task-view-seg">
+          <button class="is-active" type="button" role="tab" data-taskview="board" aria-selected="true" aria-controls="taskColumns" data-od-id="taskview-board">看板</button>
+          <button type="button" role="tab" data-taskview="list" aria-selected="false" aria-controls="taskListWrap" data-od-id="taskview-list">列表</button>
         </div>
-        <label class="task-filter-label" for="taskChannelFilter">频道筛选
-          <select class="input task-filter" id="taskChannelFilter" data-od-id="task-channel-filter"></select>
-        </label>
-      </header>
-      <form class="task-create-form" id="taskCreateForm">
-        <label class="sr-only" for="taskCreateChannel">所属频道</label>
-        <select class="input" id="taskCreateChannel" required aria-label="任务所属频道"></select>
-        <label class="sr-only" for="taskCreateTitle">任务标题</label>
-        <input class="input" id="taskCreateTitle" placeholder="写下一个新任务…" required data-od-id="task-create-title" />
-        <button class="btn btn-primary" id="taskCreateSubmit" type="submit" data-od-id="task-create-submit">新建任务</button>
-      </form>
-      <div class="task-board-empty" id="taskBoardEmpty" hidden>
-        <b>这里还没有任务</b>
-        <p>选择一个频道并创建任务；任务讨论会保存在独立线程中。</p>
+        <!-- 筛选是 `.filter-chip` 形态（原型 `#filterMine` 是先例）：
+             「我的任务」+ 频道筛选。看板是**全工作区视图**（`CONTEXT.md` **任务看板**），
+             因此「全部频道」是一个显式选项，不是缺失状态；从频道「任务」页签进来时默认选当前频道。 -->
+        <div class="board-filters" id="boardFilters" role="group" aria-label="任务筛选" data-od-id="board-filters"></div>
+        <button class="btn btn-sm" id="btnNewTask" type="button" data-od-id="btn-new-task">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+          新建任务
+        </button>
       </div>
-      <div class="task-columns" id="taskColumns" data-od-id="task-columns"></div>
-    </section>
-
-    <section class="task-thread" id="taskThread" hidden data-od-id="task-thread">
-      <header class="task-thread-head">
-        <div class="task-thread-title-row">
-          <button class="btn btn-sm" id="btnBackToBoard" type="button">← 看板</button>
-          <span class="task-channel-label" id="taskChannelLabel"></span>
-        </div>
-        <div class="task-title-edit">
-          <label class="sr-only" for="taskTitleInput">任务标题</label>
-          <input class="task-title-input" id="taskTitleInput" aria-label="任务标题" />
-          <button class="btn btn-sm" id="taskTitleSave" type="button">保存标题</button>
-        </div>
-        <div class="task-thread-controls">
-          <label for="taskStatusSelect">状态</label>
-          <select class="input" id="taskStatusSelect" data-od-id="task-status-select"></select>
-          <label for="taskAssigneeSelect">指派给</label>
-          <select class="input" id="taskAssigneeSelect" data-od-id="task-assignee-select"></select>
-          <span class="task-thread-unread" id="taskThreadUnread"></span>
-        </div>
-      </header>
-      <section class="task-thread-stream" id="taskThreadStream" aria-label="任务讨论">
-        <div class="task-thread-messages" id="taskMessageList"></div>
-      </section>
-      <footer class="task-thread-composer">
-        <textarea class="composer-input" id="taskComposerInput" rows="1" placeholder="在任务线程中发消息…" aria-label="任务消息正文"></textarea>
-        <button class="btn btn-primary" id="taskSend" type="button" data-od-id="task-send">发送</button>
-      </footer>
+      <div class="board" id="boardScroll">
+        <div class="board-cols" id="taskColumns" data-od-id="task-columns"></div>
+        <div class="board-list" id="taskListWrap" hidden data-od-id="task-list"></div>
+      </div>
     </section>
 
     <section class="stream" id="viewMessages" data-od-id="messages-view">
@@ -194,14 +166,114 @@
     </footer>
   </main>
 
-  <!-- ─── 右侧详情面板：当前频道的成员表（已加入 / 未加入）与「加入」入口 ────── -->
+  <!-- ─── 右侧详情面板：**双形态**容器（原型 `.dock` 的做法）：
+       `#dockAgent` 频道成员（默认）与 `#dockTask` 任务线程，由 app.js 按当前形态切换显示。
+       任务线程的入口是看板卡片，不是页签——「点卡片 → dock 出线程」是同一组交互。 ─── -->
   <aside class="dock" id="dock" hidden data-od-id="detail-dock" aria-label="详情面板">
-    <div class="dock-head">
-      <div class="dock-name">频道成员</div>
-      <div class="dock-role" id="dockRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
+    <div class="dock-agent" id="dockAgent">
+      <div class="dock-head">
+        <div class="dock-name">频道成员</div>
+        <div class="dock-role" id="dockRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
+      </div>
+      <div class="dock-scroll" id="dockMembers" data-od-id="dock-members"></div>
     </div>
-    <div class="dock-scroll" id="dockMembers" data-od-id="dock-members"></div>
+    <div class="task-thread" id="dockTask" hidden data-od-id="task-thread">
+      <div class="dock-head">
+        <div class="dock-id">
+          <div class="meta">
+            <div class="dock-name"><span class="dock-tag">任务线程</span> <span class="dock-task-id" id="ttHeadId"></span></div>
+            <div class="dock-role"><span id="ttHeadSub"></span></div>
+          </div>
+          <button class="icon-btn" type="button" id="btnThreadClose" aria-label="关闭任务线程" data-od-id="btn-thread-close">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <!-- `.tt-summary` 是 dock 内的吸顶区：标题 + 状态 pill + 指派 pill。
+           标题在原型里是只读 `<h2>`，本票保留就地编辑（`CONTEXT.md` **任务**词条：
+           任务行是可变的：标题 / 状态 / 指派者），编辑用原生 `<input>`，因此原型那层只读
+           外壳不能再套在它上面。 -->
+      <div class="tt-summary">
+        <h2 class="tt-title">
+          <label class="sr-only" for="ttTitleInput">任务标题</label>
+          <input class="tt-title-input" id="ttTitleInput" data-od-id="thread-title-input" />
+        </h2>
+        <div class="tt-meta">
+          <span class="tt-status" id="ttStatus" data-od-id="thread-status"><span class="dot"></span><span id="ttStatusText"></span></span>
+          <button class="assignee" type="button" id="ttAssignee" data-od-id="thread-assignee"></button>
+          <span class="task-thread-unread" id="taskThreadUnread"></span>
+        </div>
+      </div>
+      <div class="tt-actions">
+        <div class="tt-actions-row">
+          <span class="tt-label">推进</span>
+          <div class="tt-chips" id="ttTransitions" data-od-id="thread-transitions"></div>
+        </div>
+        <div class="tt-actions-row">
+          <span class="tt-label">指派</span>
+          <div class="tt-chips" id="ttAssign" data-od-id="thread-assign"></div>
+        </div>
+      </div>
+      <div class="tt-scroll" id="ttScroll">
+        <div class="d-sec">
+          <div class="d-sec-title">关联消息</div>
+          <div id="ttLinked"></div>
+        </div>
+        <div class="d-sec">
+          <div class="d-sec-title">讨论 · <span id="ttReplyCount">0</span> 条</div>
+          <div id="ttReplies"></div>
+        </div>
+        <div class="d-sec">
+          <div class="d-sec-title">状态变更记录</div>
+          <ul class="tt-log" id="ttHistory"></ul>
+        </div>
+      </div>
+      <div class="tt-reply">
+        <div class="composer-box">
+          <textarea class="composer-input" id="taskComposerInput" rows="1" placeholder="回复该任务线程…" aria-label="任务消息正文" data-od-id="thread-reply-input"></textarea>
+          <div class="composer-bar">
+            <span class="composer-hint">Enter 回复 · Shift+Enter 换行</span>
+            <span class="sep"></span>
+            <button class="composer-send" type="button" id="taskSend" disabled aria-label="回复" data-od-id="thread-reply-send">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </aside>
+</div>
+
+<!-- ─── 新建任务 ─────────────────────────────────────────────────────── -->
+<div class="overlay" id="taskOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="taskModalTitle">新建任务</h2>
+        <div class="sub">任务创建后拥有独立线程；状态变化会记录在它的变更记录里。</div>
+      </div>
+      <button class="icon-btn" type="button" id="taskModalClose" aria-label="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="taskCreateTitle">任务标题</label>
+        <input class="input" id="taskCreateTitle" placeholder="写下一个新任务…" autocomplete="off" data-od-id="task-create-title" />
+      </div>
+      <div class="field">
+        <label for="taskCreateChannel">所属频道</label>
+        <select class="input" id="taskCreateChannel" data-od-id="task-create-channel"></select>
+        <div class="hint">任务恰好属于一个频道；指派在任务线程里用「指派」chip 完成。</div>
+      </div>
+      <div class="form-error" id="taskFormError" hidden role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn" type="button" id="taskCreateCancel">取消</button>
+      <button class="btn btn-primary" type="button" id="taskCreateSubmit" data-od-id="task-create-submit">新建任务</button>
+    </div>
+  </div>
 </div>
 
 <!-- ─── 新建频道 ─────────────────────────────────────────────────────── -->
