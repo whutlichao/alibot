@@ -435,7 +435,8 @@ async function submitSearch() {
   const input = $('#searchQueryInput');
   const search = state.search;
   const requestVersion = ++searchRequestVersion;
-  search.query = input.value.trim();
+  // 空格也是字面子串的一部分，不能像一般表单字段那样静默去掉首尾空白。
+  search.query = input.value;
   search.targetId = $('#searchTargetSelect').value;
   search.error = '';
   search.hits = [];

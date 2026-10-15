@@ -141,6 +141,15 @@ def test_search_treats_like_wildcards_as_literal_substrings(client: TestClient) 
         ]
 
 
+def test_search_preserves_whitespace_as_part_of_the_literal_query(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+    message = send(client, channel["id"], "needle").json()["message"]
+
+    assert [hit["message"]["id"] for hit in search(client, "needle")["hits"]] == [message["id"]]
+    assert search(client, " needle")["hits"] == []
+    assert search(client, "needle ")["hits"] == []
+
+
 def test_search_excludes_system_messages_but_marks_a_soft_deleted_author(client: TestClient) -> None:
     agent = create_agent(client, name="已删除作者").json()["agent"]
     channel = create_channel(client, member_ids=[agent["id"]]).json()["channel"]
