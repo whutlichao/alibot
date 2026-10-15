@@ -624,7 +624,6 @@ function boardColumns() {
     head.appendChild(el('span', 'col-count', String(items.length)));
     column.appendChild(head);
     const body = el('div', 'col-body');
-    body.dataset.drop = status;
     if (items.length) items.forEach((task) => body.appendChild(taskCardNode(task)));
     // 空态只陈述事实。「拖拽任务到此」是原型文案，但拖拽属 #26、现在拖不动，
     // 写上去就是一句假话（`SKILL.md` §7 的「不实现就不摆样子」同一条纪律）。
@@ -672,10 +671,9 @@ function boardList() {
     }
     row.appendChild(snip);
     row.dataset.status = task.status;
+    row.classList.add('card');
     wrap.appendChild(row);
   });
-  // 状态色位挂在行自身上（`.card` / `.col` 用同一个 `--task-status-color` 机制）。
-  wrap.querySelectorAll('.result').forEach((row) => { row.classList.add('card'); });
   return wrap;
 }
 
@@ -739,8 +737,9 @@ function renderTaskThread() {
   const titleInput = $('#ttTitleInput');
   if (document.activeElement !== titleInput) titleInput.value = task.title;
   const status = $('#ttStatus');
+  // 状态色位由 CSS 的 `.tt-status[data-status=…]` 表驱动（与 `.col` / `.card` 共用同一张表），
+  // 这里只声明状态，不内联色位：同一个映射存在两份就会漂移。
   status.dataset.status = task.status;
-  status.style.setProperty('--task-status-color', TASK_STATUS_COLOR[task.status]);
   $('#ttStatusText').textContent = TASK_STATUS_LABEL[task.status];
   renderAssigneePill(task);
 
@@ -825,15 +824,6 @@ function renderTaskThread() {
   const last = log.lastElementChild;
   if (last && last.tagName === 'LI') last.classList.add('is-now');
 }
-
-/** 状态 pill 与迁移 chip 共用的状态色位（`CONTEXT.md` **任务看板**；不新造色位）。 */
-const TASK_STATUS_COLOR = {
-  todo: 'var(--faint)',
-  in_progress: 'var(--accent-graphic)',
-  in_review: 'var(--working)',
-  done: 'var(--online)',
-  closed: 'var(--offline)',
-};
 
 /** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
 
