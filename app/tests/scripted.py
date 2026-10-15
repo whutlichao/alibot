@@ -16,12 +16,13 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from alibot.agent_seam import RoundMessage, RoundOutcome
+from alibot.agent_seam import AgentTaskAction, RoundMessage, RoundOutcome, TaskActionContext
 
 REPLY = "reply"
 IGNORE = "ignore"
 FAIL = "fail"
 DELAY = "delay"
+ACTION_ONLY = "action-only"
 
 
 class ManualScheduler:
@@ -65,9 +66,12 @@ class ScriptedAgentSeam:
         behaviors: dict[str, str] | None = None,
         replies: dict[str, str] | None = None,
         default: str = REPLY,
+        *,
+        task_actions: dict[str, AgentTaskAction] | None = None,
     ) -> None:
         self.behaviors = dict(behaviors or {})
         self.replies = dict(replies or {})
+        self.task_actions = dict(task_actions or {})
         self.default = default
         self.calls: list[dict[str, Any]] = []
         self._gate = threading.Event()
@@ -103,6 +107,7 @@ class ScriptedAgentSeam:
         *,
         mentioned: bool,
         target_id: str,
+        task_context: TaskActionContext | None = None,
     ) -> RoundOutcome:
         member_id = str(agent["id"])
         with self._lock:
@@ -116,6 +121,8 @@ class ScriptedAgentSeam:
                 }
             )
         behavior = self.behavior_of(member_id)
+        with self._lock:
+            task_action = self.task_actions.pop(member_id, None)
 
         if behavior == DELAY:
             # 延迟行为：停在闸门上直到测试放行。它模拟的是「这一轮还没结束」这个真实窗口。
@@ -125,19 +132,33 @@ class ScriptedAgentSeam:
                 status="failed", reason=self.replies.get(member_id, "脚本化替身：模型调用失败")
             )
         if behavior == IGNORE:
-            return RoundOutcome(status="ignored", reason=self.replies.get(member_id, "脚本化替身：自判无关"))
+            return RoundOutcome(
+                status="ignored",
+                reason=self.replies.get(member_id, "脚本化替身：自判无关"),
+                task_action=task_action,
+            )
         if behavior == DELAY:
             # 延迟结束后按「回应」收口——延迟只推迟一轮的结束，不改变它的结论类型。
             return RoundOutcome(
                 status="replied",
                 reason="脚本化替身：延迟后回应",
                 messages=[RoundMessage(body=self.replies.get(member_id, "延迟后的回应"))],
+                task_action=task_action,
+            )
+        if behavior == ACTION_ONLY:
+            if task_action is None:
+                return RoundOutcome(status="ignored", reason="脚本化替身：没有结构化任务动作")
+            return RoundOutcome(
+                status="replied", reason="脚本化替身：仅提交结构化任务动作", task_action=task_action
             )
         if behavior == REPLY:
             body = self.replies.get(member_id) or f"收到（{','.join(str(m['seq']) for m in messages)}）"
             if mentioned:
                 body = self.replies.get(f"{member_id}:mentioned", body)
             return RoundOutcome(
-                status="replied", reason="脚本化替身：决定回应", messages=[RoundMessage(body=body)]
+                status="replied",
+                reason="脚本化替身：决定回应",
+                messages=[RoundMessage(body=body)],
+                task_action=task_action,
             )
         raise AssertionError(f"未知的脚本化行为：{behavior}")

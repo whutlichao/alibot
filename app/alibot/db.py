@@ -913,6 +913,17 @@ class Database:
             ).fetchall()
         return [self.get_task(row["id"], member_id) for row in rows]
 
+    def task_for_target(self, target_id: str) -> dict[str, Any] | None:
+        """取 task 型 target 对应的任务；channel / DM 型 target 返回 None。"""
+        target = self.get_target(target_id)
+        if target["kind"] != "task":
+            return None
+        with self._lock:
+            row = self._conn.execute("SELECT id FROM task WHERE target_id = ?", (target_id,)).fetchone()
+        if row is None:
+            raise NotFound(f"任务 target 没有关联任务：{target_id}")
+        return self.get_task(str(row["id"]))
+
     def list_task_messages(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         task = self.get_task(task_id)  # task 面只认任务，不把任意 target 当成任务线程
         return self.list_messages(task["target_id"], after_seq=after_seq)
@@ -929,15 +940,18 @@ class Database:
         )
         return seq
 
-    def update_task_status(self, task_id: str, status: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    def update_task_status(
+        self, task_id: str, status: str, *, actor_member_id: str = OWNER_ID
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if status not in TASK_STATUSES:
             raise DomainError("validation_failed", f"未知的任务状态：{status}", fields={"status": "任务状态非法"})
+        actor = self.get_member(actor_member_id)
         self.get_task(task_id)  # 404 早退
         with self._lock:
             self._begin()
             try:
                 row = self._conn.execute(
-                    "SELECT target_id, status FROM task WHERE id = ?", (task_id,)
+                    "SELECT target_id, status, assignee_member_id FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
                     raise NotFound(f"任务不存在：{task_id}")
@@ -951,6 +965,17 @@ class Database:
                         "validation_failed",
                         f"任务不能从 {current} 迁移到 {status}；closed 是终态",
                         fields={"status": f"不允许从 {current} 迁移到 {status}"},
+                    )
+                if (
+                    current == "in_review"
+                    and status == "done"
+                    and actor["kind"] == "agent"
+                    and row["assignee_member_id"] == actor_member_id
+                ):
+                    raise DomainError(
+                        "validation_failed",
+                        "被指派 Agent 不能批准自己的待审任务",
+                        fields={"status": "in_review → done 必须由指派者之外的成员批准"},
                     )
                 now = utc_now()
                 self._conn.execute(
@@ -994,8 +1019,9 @@ class Database:
         return self.get_task(task_id), self.get_message(target_id, seq)
 
     def update_task_assignee(
-        self, task_id: str, member_id: str | None
+        self, task_id: str, member_id: str | None, *, actor_member_id: str = OWNER_ID
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        actor = self.get_member(actor_member_id)
         assignee: dict[str, Any] | None = None
         if member_id is not None:
             try:
@@ -1019,6 +1045,15 @@ class Database:
                     raise NotFound(f"任务不存在：{task_id}")
                 target_id = str(row["target_id"])
                 previous_id = row["assignee_member_id"]
+                if actor["kind"] == "agent":
+                    if actor["deleted_at"] is not None or previous_id != actor_member_id:
+                        raise DomainError(
+                            "validation_failed", "只有当前受派 Agent 可以转派这项任务"
+                        )
+                    if member_id is None:
+                        raise DomainError("validation_failed", "Agent 转派必须指定另一位 Agent")
+                elif actor["kind"] != "owner":
+                    raise DomainError("validation_failed", "只有 owner 或当前受派 Agent 可以改派任务")
                 if member_id == previous_id:
                     self._commit()
                     return self.get_task(task_id), None
@@ -1047,7 +1082,7 @@ class Database:
                     )
                 label = f"已指派给 {assignee['display_name']}" if assignee is not None else "指派已取消"
                 seq = self._append_task_system_message_locked(target_id, label, now)
-                if member_id is not None:
+                if member_id is not None and actor["kind"] == "owner":
                     self._conn.execute(
                         "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
                         "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",

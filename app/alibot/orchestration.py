@@ -42,14 +42,19 @@ from .agent_seam import (
     AgentSeam,
     CredentialUnavailable,
     RoundOutcome,
+    SetTaskStatusAction,
+    TaskActionContext,
+    TaskAgentOption,
+    TransferTaskAction,
     is_remote_provider,
     model_name_of,
     provider_of,
     read_api_key,
 )
-from .db import BUDGET_LIMIT, Database, utc_now
+from .db import BUDGET_LIMIT, Database, DomainError, utc_now
 from .events import EventBus
 from .mentions import mentioned_member_ids, parse_mentions
+from .service import WorkspaceService
 
 # 状态点四态（spec #1 §3）：只表达后端事实，不从任何会话存活推导。
 STATUS_ONLINE = "online"
@@ -225,6 +230,16 @@ class WakeOrchestrator:
 
     def notify_task_assignment(self, target_id: str, from_seq: int, member_id: str) -> int:
         """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。"""
+        return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=False)
+
+    def notify_task_reassignment(self, target_id: str, from_seq: int, member_id: str) -> int:
+        """Agent 转派按一次有界 agent→agent 跳处理；预算耗尽时保留记录但不唤醒。"""
+        return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=True)
+
+    def _notify_task_assignee(
+        self, target_id: str, from_seq: int, member_id: str, *, agent_jump: bool
+    ) -> int:
+        """验证任务指派事件、按动作预算裁决后唤醒新受派 Agent。"""
         target = self._db.get_target(target_id)
         if target["kind"] != "task":
             return 0
@@ -237,13 +252,15 @@ class WakeOrchestrator:
         )
         if assignee is None:
             return 0
+        if agent_jump and not self._spend_jump(target_id, from_seq, [assignee]):
+            return 0
         self._scheduler.submit(
             self.run_round,
             assignee,
             target_id,
             from_seq,
             WAKE_REASON_CHANNEL_MESSAGE,
-            False,
+            agent_jump,
             False,
         )
         return 1
@@ -303,7 +320,7 @@ class WakeOrchestrator:
             if state["used"] >= BUDGET_LIMIT:
                 self._record_budget_exhausted(target_id, from_seq, targets)
                 return False
-            self._db.consume_budget(target_id, self._db.human_epoch_seq(target_id))
+            self._db.consume_budget(target_id, state["epoch_seq"])
             return True
 
     def _record_budget_exhausted(self, target_id: str, from_seq: int, targets: list[dict[str, Any]]) -> None:
@@ -312,8 +329,9 @@ class WakeOrchestrator:
         状态点**不**因此变 ``--error``（``status_of`` 不把 ``budget-exhausted`` 当失败）：预算耗尽
         既不是「它坏了」也不是「它不想说」，它是「这个人类世代已经用过 3 次往返了」这条后端事实。
         """
+        epoch_seq = self._db.budget_state(target_id)["epoch_seq"]
         reason = (
-            f"本人类世代（最近一条人类消息 seq={self._db.human_epoch_seq(target_id)}）的"
+            f"本 target 人类世代（epoch_seq={epoch_seq}）的"
             f"agent→agent 预算已用尽（≤{BUDGET_LIMIT}）：本条 Agent 消息照常落库，但没有投递任何唤醒"
         )
         for member in targets:
@@ -408,7 +426,14 @@ class WakeOrchestrator:
             if not availability.ok:
                 outcome = RoundOutcome(status="failed", reason=availability.reason)
             else:
-                outcome = self._run_seam(agent, pending, mentioned=mentioned, target_id=target_id)
+                task_context = self._task_action_context(target_id)
+                outcome = self._run_seam(
+                    agent,
+                    pending,
+                    mentioned=mentioned,
+                    target_id=target_id,
+                    task_context=task_context,
+                )
                 # rubric：被个人提及是**确定信号**——必须回应。自判忽略在确定信号下按失败处理，
                 # 不静默（不能把「它坏了」当成「它不想说」）。
                 if mentioned and outcome.status == "ignored":
@@ -420,7 +445,12 @@ class WakeOrchestrator:
                         ),
                     )
                 # 被点名却不产出正文同理：不是「不想说」，是没做到。
-                elif mentioned and outcome.status == "replied" and not outcome.messages:
+                elif (
+                    mentioned
+                    and outcome.status == "replied"
+                    and not outcome.messages
+                    and outcome.task_action is None
+                ):
                     outcome = RoundOutcome(
                         status="failed",
                         reason="被个人提及是确定信号，但本轮没有产出可落库的正文，按失败处理",
@@ -444,10 +474,18 @@ class WakeOrchestrator:
                             f"{outcome.reason}；本轮是被点名的**穿透**唤醒（它原本不在该频道），"
                             f"回复时顺带加入，system 事件消息 seq={committed.system_seq}"
                         ),
+                        task_action=outcome.task_action,
                     )
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
-            elif outcome.status == "ignored":
+            elif outcome.status == "ignored" or (
+                outcome.status == "replied" and outcome.task_action is not None
+            ):
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
+
+            if outcome.status == "replied" and outcome.task_action is not None:
+                rejection = self._apply_task_action(agent, target_id, outcome.task_action)
+                if rejection:
+                    outcome.reason = "；".join(part for part in (outcome.reason, rejection) if part)
 
             self._record_merged(target_id, member_id, merged_bases, started_at)
             record = self._db.append_round_outcome(
@@ -506,6 +544,32 @@ class WakeOrchestrator:
             # 前端的状态点就会永久显示「正在回复」。这是后端事实，不是前端补偿。
             self._emit_status(target_id, member_id, base_seq)
 
+    def _apply_task_action(
+        self, agent: dict[str, Any], target_id: str, action: TransferTaskAction | SetTaskStatusAction
+    ) -> str | None:
+        """以当前轮次 Agent 的可信身份执行一个结构化任务动作；动作不得跨 target。"""
+        try:
+            task = self._db.get_task(action.task_id)
+            if task["target_id"] != target_id:
+                raise DomainError("validation_failed", "Agent 任务动作只能操作当前任务线程")
+            if isinstance(action, SetTaskStatusAction) and not self._db.is_target_member(
+                target_id, str(agent["id"])
+            ):
+                raise DomainError("validation_failed", "只有任务成员可以更新任务状态")
+            service = WorkspaceService(
+                self._db,
+                member_id=str(agent["id"]),
+                orchestrator=self,
+                events=self._events,
+            )
+            if isinstance(action, TransferTaskAction):
+                service.update_task_assignee(action.task_id, action.assignee_member_id)
+            else:
+                service.update_task_status(action.task_id, action.status)
+        except DomainError as error:
+            return f"Agent 任务动作被拒绝：{error.message}"
+        return None
+
     def _record_merged(
         self,
         target_id: str,
@@ -539,6 +603,20 @@ class WakeOrchestrator:
         self._publish_outcome(target_id, largest, record)
 
     # ─── 适配接口调用 ─────────────────────────────────────────────────────
+    def _task_action_context(self, target_id: str) -> TaskActionContext | None:
+        task = self._db.task_for_target(target_id)
+        if task is None:
+            return None
+        agents = tuple(
+            TaskAgentOption(member_id=str(agent["id"]), display_name=str(agent["display_name"]))
+            for agent in self._db.agent_members()
+        )
+        return TaskActionContext(
+            task_id=str(task["id"]),
+            assignee_member_id=task["assignee_member_id"],
+            agent_members=agents,
+        )
+
     def _run_seam(
         self,
         agent: dict[str, Any],
@@ -546,9 +624,16 @@ class WakeOrchestrator:
         *,
         mentioned: bool,
         target_id: str,
+        task_context: TaskActionContext | None = None,
     ) -> RoundOutcome:
         try:
-            return self._seam.run_round(agent, pending, mentioned=mentioned, target_id=target_id)
+            return self._seam.run_round(
+                agent,
+                pending,
+                mentioned=mentioned,
+                target_id=target_id,
+                task_context=task_context,
+            )
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
             return RoundOutcome(status="failed", reason=f"Agent 适配层异常：{type(error).__name__}: {error}")
 
