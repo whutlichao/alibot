@@ -2443,9 +2443,9 @@ async function loadRemoteFlow() {
   try {
     remoteFlow = await api('/api/remote-data-flow');
     state.dataFaces = remoteFlow.data_faces || [];
-    // 告知文案是从这份响应里拼的：它晚到时弹窗可能已经开着，必须重画，
-    // 否则人看到的是「以下数据会离开本机：。」这种空数据面的告知。
-    // 只重画告知，不重建选择器：人的选择与同意语义不受这次数据到达影响。
+    // 告知文案要用这份响应里的数据面来拼。响应晚到、而弹窗已经开着时，正文会一时停在空数据面
+    // （这是异步加载本就存在的窗口）；响应一到就重绘，避免界面一直停在空正文。
+    // 只重绘告知，不重建选择器、不动人的选择与同意语义。
     if (!$('#agentOverlay').hidden) renderRemoteNotice();
   } catch {
     // 告知文案读不到不影响主流程；下一次打开面板会重试。
