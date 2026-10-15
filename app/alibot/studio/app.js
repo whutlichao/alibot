@@ -327,6 +327,9 @@ async function loadWorkspace(options) {
     state.consents = snapshot.remote_consents || [];
     state.online = true;
     state.ready = true;
+    // 清单已就位就立刻刷已打开的弹窗：下面每一步都是 `await`，任何一步抛错都会跳到 catch，
+    // 而已经拿到的 provider 快照不该因为「其它请求挂了」而白白丢掉。
+    syncOpenAgentModal();
     await refreshTasks();
     loadRemoteFlow();
     const known = state.channels.some((channel) => channel.id === state.activeChannelId)
@@ -346,8 +349,6 @@ async function loadWorkspace(options) {
     await refreshChannelMembers();
     await refreshStatuses();
     syncStreams();
-    // 清单已就位：已打开的弹窗此刻才拿到完整 provider 列表，不必等人关了再开一次。
-    syncOpenAgentModal();
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -2442,6 +2443,10 @@ async function loadRemoteFlow() {
   try {
     remoteFlow = await api('/api/remote-data-flow');
     state.dataFaces = remoteFlow.data_faces || [];
+    // 告知文案是从这份响应里拼的：它晚到时弹窗可能已经开着，必须重画，
+    // 否则人看到的是「以下数据会离开本机：。」这种空数据面的告知。
+    // 只重画告知，不重建选择器：人的选择与同意语义不受这次数据到达影响。
+    if (!$('#agentOverlay').hidden) renderRemoteNotice();
   } catch {
     // 告知文案读不到不影响主流程；下一次打开面板会重试。
   }
