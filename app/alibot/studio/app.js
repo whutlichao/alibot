@@ -445,7 +445,6 @@ async function refreshTasks() {
   } catch {
     // 任务面读失败不影响频道消息与发送；保留最后一次成功快照。
   }
-  renderTaskNav();
   renderTaskBoard();
 }
 
@@ -475,16 +474,30 @@ function taskById(taskId) {
     state.boardTasks.find((task) => task.id === taskId) || null;
 }
 
-function renderTaskNav() {
-  const button = $('#btnTaskBoard');
-  if (!button) return;
-  const active = state.mode === 'board' || state.mode === 'task';
-  button.classList.toggle('is-active', active);
-  button.setAttribute('aria-current', active ? 'page' : 'false');
-  const unread = state.tasks.reduce((total, task) => total + (Number(task.unread_count) || 0), 0);
-  const badge = $('#taskUnreadBadge');
-  badge.hidden = unread <= 0;
-  badge.textContent = unread > 99 ? '99+' : String(unread);
+function renderTabs() {
+  const target = activeTarget();
+  const isDm = Boolean(target) && target.kind === 'dm';
+  const messagesTab = $('#tabMessages');
+  const tasksTab = $('#tabTasks');
+  if (!messagesTab || !tasksTab) return;
+  // DM 里没有任务板这个概念（任务恰好属于一个频道）：整个页签不出现，而不是点开看空态。
+  tasksTab.hidden = isDm;
+  const selected = state.mode === 'board' || state.mode === 'task' ? 'tasks' : 'messages';
+  [messagesTab, tasksTab].forEach((tab) => {
+    if (tab.hidden) return;
+    const active = tab.dataset.tab === selected;
+    tab.classList.toggle('is-active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  $('#msgCount').textContent = target ? renderedMessages().length : 0;
+  $('#taskCount').textContent = isDm ? 0 : channelTaskCount();
+}
+
+/** 当前频道的任务数（该频道 = 当前 target；与看板的频道筛选无关）。 */
+function channelTaskCount() {
+  const channelId = state.activeChannelId;
+  if (!channelId) return 0;
+  return state.tasks.filter((task) => task.channel_id === channelId).length;
 }
 
 function fillTaskChannelSelect(select, includeAll, selected) {
@@ -598,27 +611,43 @@ function renderTaskThread() {
     nodes.push(messageNode(message));
   });
   replaceChildren($('#taskMessageList'), nodes);
-  renderTaskNav();
 }
 
 function setViewMode(mode) {
   state.mode = mode;
   const channelMode = mode === 'channel';
   const target = activeTarget();
-  $('#chanHead').hidden = !channelMode || !target;
+  // 频道 header（含「消息 / 任务」页签）在消息页与任务页**都**可见：两个页签在同一个内容区
+  // 切换，收起 header 就把页签本身收走了（原型 `renderViews()` 在任务视图里连 header 一起隐藏，
+  // 那与它自己的「页签切换」自相矛盾；按票面「同一内容区切换」的形态保留 header）。
+  $('#chanHead').hidden = !target;
   $('#viewMessages').hidden = !channelMode;
   $('#composer').hidden = !channelMode || !target;
   $('#taskBoard').hidden = mode !== 'board';
   $('#taskThread').hidden = mode !== 'task';
-  renderTaskNav();
+  renderTabs();
 }
 
+/** 「任务」页签：看板（全工作区视图 + 频道筛选，见 #44 重做其结构）。 */
 async function showTaskBoard() {
   closeTaskStream();
   state.mode = 'board';
+  state.activeTaskId = null;
+  state.activeTask = null;
   setViewMode('board');
   render();
   await refreshTasks();
+}
+
+/** 「消息」页签：消息流 + composer（同一条流的既有渲染，不重取—— SSE 一直在线跟踪）。 */
+function showMessagesView() {
+  closeTaskStream();
+  state.mode = 'channel';
+  state.activeTaskId = null;
+  state.activeTask = null;
+  setViewMode('channel');
+  render();
+  markCurrentRead();
 }
 
 function taskMaxSeq() {
@@ -1206,7 +1235,6 @@ function render() {
   renderChannels();
   renderDms();
   renderMembers();
-  renderTaskNav();
   renderTaskBoard();
   if (state.activeTask) renderTaskThread();
   renderHeader();
@@ -1467,20 +1495,24 @@ function renderTyping() {
 
 function renderHeader() {
   const target = activeTarget();
-  const hasTarget = Boolean(target) && state.mode === 'channel';
+  const hasTarget = Boolean(target);
+  // header（含页签）在消息页 / 任务页都可见；composer 只在消息页。
   $('#chanHead').hidden = !hasTarget;
-  $('#composer').hidden = !hasTarget;
+  $('#composer').hidden = !hasTarget || state.mode !== 'channel';
   if (!hasTarget) {
     closeMentionPicker();
     return;
   }
   const isDm = target.kind === 'dm';
   const name = isDm ? target.peer.display_name : target.name;
+  // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
-  $('#chanTitle').textContent = name;
+  $('#chanTitle').textContent = isDm ? '@' + name : name;
+  // desc 保持现状的写法：原型那句「懒创建会话」与 `CONTEXT.md` **私信**词条的
+  // `_Avoid_`（明确否定「懒创建」）冲突，是原型的过时文案，不照抄。
   $('#chanDesc').textContent = isDm ? '与 ' + name + ' 的两方私信' : target.description || '';
   $('#composerInput').placeholder = isDm
-    ? '发消息给 ' + name + ' —— 可手动 @ 送达其他 Agent'
+    ? '发消息给 @' + name + ' —— 可手动 @ 送达其他 Agent'
     : '发消息到 #' + name + ' —— 输入 @ 提及 Agent';
 }
 
@@ -1531,6 +1563,8 @@ function renderMessages() {
     }
   });
   replaceChildren($('#messageList'), nodes);
+  // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
+  renderTabs();
 }
 
 /** 摘要行要覆盖的三种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
@@ -2472,7 +2506,9 @@ function bindEvents() {
     if (row) selectTarget(row.dataset.dm);
   });
 
-  $('#btnTaskBoard').addEventListener('click', showTaskBoard);
+  // 页签：两个页签在同一内容区切换（任务的唯一入口）。
+  $('#tabMessages').addEventListener('click', showMessagesView);
+  $('#tabTasks').addEventListener('click', showTaskBoard);
   $('#taskChannelFilter').addEventListener('change', () => {
     state.taskFilterChannelId = $('#taskChannelFilter').value;
     refreshTaskBoardFilter();
