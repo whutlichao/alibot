@@ -125,13 +125,30 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 .conn-banner span { flex: 1; min-width: 0; }
 
-.chan-head { padding: 13px var(--sp-9) var(--sp-5); border-bottom: 1px solid var(--border); background: var(--surface); }
+/* 页签在 header 底部，因此底部内边距交给 `.tabs`（padding 收到 0）。 */
+.chan-head { padding: 13px var(--sp-9) 0; border-bottom: 1px solid var(--border); background: var(--surface); }
 .chan-top { display: flex; align-items: center; gap: var(--sp-5); }
 .chan-title { font-size: var(--fs-heading); font-weight: var(--fw-heavy); display: flex; align-items: center; gap: 7px; min-width: 0; }
 .chan-title .hash { font-family: var(--mono); color: var(--accent-deep); font-weight: var(--fw-black); flex: 0 0 auto; }
 .chan-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chan-tools { margin-left: auto; display: flex; align-items: center; gap: var(--sp-3); }
 .chan-desc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+
+/* ─── 频道页签（原型形态） ──────────────────────────────────────────────
+   与消息流在**同一内容区**切换：任务的唯一入口是这里。token 按名消费（`--selected-deep`
+   是 tab 计数选中态的**文字档**，见 `SKILL.md` §4「Tag / count」与 ADR-0015 档位纪律）。
+   悬停同时定 fg 与 bg（`--fg-soft` 淡底 = 往浅了走 surface，不把文字往 `--muted` 退）。 */
+.tabs {
+  display: flex; gap: 2px; margin-top: 11px; border-bottom: 1px solid var(--border);
+}
+.tab {
+  position: relative; padding: 9px var(--sp-5); font-size: 12.5px; font-weight: var(--fw-medium);
+  color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { background: var(--fg-soft); color: var(--fg); }
+.tab.is-active { color: var(--fg); border-bottom-color: var(--fg); }
+.tab .count { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); margin-left: 5px; }
+.tab.is-active .count { color: var(--selected-deep); }
 
 /* 消息流居中于 --stream-max(880px)；正文另受 68ch / 14px / 1.65 的局部例外约束。 */
 .stream { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9) var(--sp-4); }
