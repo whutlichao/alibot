@@ -66,6 +66,17 @@ const TASK_STATUS_TRANSITIONS = {
   closed: [],
 };
 
+/** 状态迁移 chip 上的**动词**文案（原型 `THREAD_TRANSITION_LABEL`）。
+    按钮一律动宾式（`SKILL.md` §6）；`closed` 是终态，因此它没有目标描述符，
+    那张表里也不会有 `closed → *` 的条目（不是「漏了一格」，是这一格不存在）。 */
+const TASK_TRANSITION_LABEL = {
+  in_progress: '推进至进行中',
+  in_review: '提交待审',
+  done: '标记完成',
+  todo: '退回待认领',
+  closed: '关闭任务',
+};
+
 /* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
    （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
 
@@ -125,11 +136,16 @@ const state = {
   channels: [],
   tasks: [],
   boardTasks: [],
+  // 看板的呈现状态（不是业务状态）：`.seg` 的两半、频道筛选（`''` = 全工作区）、
+  // 「我的任务」。「我的任务」由 owner 与任务指派者（或未指派）的直接比较决定。
+  taskView: 'board',
   taskFilterChannelId: '',
+  taskFilterMine: false,
+  // 任务线程现在是右侧 dock 的**第二种形态**（`dockMode`），不再是主线上的一个视图。
+  dockMode: 'agent',
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
-  taskMembers: [],
   taskSeenSeqs: new Set(),
   taskStream: null,
   taskStreamTimer: null,
@@ -427,16 +443,26 @@ function replaceChannel(channel) {
   else state.channels.push(channel);
 }
 
-/* ─── 任务看板与任务线程 ─────────────────────────────────────────────── */
+/* ─── 任务看板与任务线程 ───────────────────────────────────────────────
+   看板是**全工作区视图**（`CONTEXT.md` **任务看板**：可按频道筛选）——「任务恰好属于一个频道」
+   是归属事实，筛选是呈现，两者不是一回事，所以「全部频道」是一个显式选项。
+   频道页签是其中一个入口：从它进来时默认筛到**当前频道**（左栏视角仍是全部）。
+   任务线程挂在**右侧 dock**（`dockMode`），与频道成员面板共用那个 380px 容器。 */
 async function refreshTasks() {
   try {
-    const payload = await api('/api/tasks');
-    state.tasks = payload.tasks || [];
+    const query = state.taskFilterChannelId
+      ? '?channel_id=' + encodeURIComponent(state.taskFilterChannelId)
+      : '';
+    const payload = await api('/api/tasks' + query);
+    state.boardTasks = payload.tasks || [];
+    // `state.tasks` 是「未筛选的全量」：频道页签计数、卡片查名、以及刷新分派的默认落点都用它。
+    // 筛选态下它就是另一个查询，所以再读一次（图省一次请求而拿筛选后的清单冒充全量，
+    // 会让未筛选的频道计数偏低）。
     if (state.taskFilterChannelId) {
-      const filtered = await api('/api/tasks?channel_id=' + encodeURIComponent(state.taskFilterChannelId));
-      state.boardTasks = filtered.tasks || [];
+      const all = await api('/api/tasks');
+      state.tasks = all.tasks || [];
     } else {
-      state.boardTasks = state.tasks.slice();
+      state.tasks = state.boardTasks.slice();
     }
     if (state.activeTaskId) {
       const current = state.tasks.find((task) => task.id === state.activeTaskId);
@@ -448,24 +474,25 @@ async function refreshTasks() {
   renderTaskBoard();
 }
 
-async function refreshTaskBoardFilter() {
-  if (!state.taskFilterChannelId) {
-    state.boardTasks = state.tasks.slice();
-    renderTaskBoard();
-    return;
-  }
-  try {
-    const payload = await api('/api/tasks?channel_id=' + encodeURIComponent(state.taskFilterChannelId));
-    state.boardTasks = payload.tasks || [];
-  } catch (err) {
-    toast('筛选任务失败：' + err.message, 'err');
-  }
-  renderTaskBoard();
+/** 「我的任务」：指派给我（`assignee_member_id === owner`）或还没人认领的任务。
+    它**不是**「我创建的任务」——任务不记录创建者归属。 */
+function isMyTask(task) {
+  return !task.assignee_member_id || task.assignee_member_id === state.member.id;
+}
+
+function visibleBoardTasks() {
+  return state.taskFilterMine ? state.boardTasks.filter(isMyTask) : state.boardTasks;
 }
 
 function taskMemberName(memberId) {
   const member = state.members.find((item) => item.id === memberId);
   return member ? member.display_name : memberId;
+}
+
+/** 任务在成员表里的下标（决定 `--av-*` 色位；与消息流同一个头像色位规则）。 */
+function memberSlotOf(memberId) {
+  const member = state.members.find((item) => item.id === memberId);
+  return member ? member.avatar_slot : 0;
 }
 
 function taskById(taskId) {
@@ -482,7 +509,7 @@ function renderTabs() {
   if (!messagesTab || !tasksTab) return;
   // DM 里没有任务板这个概念（任务恰好属于一个频道）：整个页签不出现，而不是点开看空态。
   tasksTab.hidden = isDm;
-  const selected = state.mode === 'board' || state.mode === 'task' ? 'tasks' : 'messages';
+  const selected = state.mode === 'board' ? 'tasks' : 'messages';
   [messagesTab, tasksTab].forEach((tab) => {
     if (tab.hidden) return;
     const active = tab.dataset.tab === selected;
@@ -521,104 +548,373 @@ function fillTaskChannelSelect(select, includeAll, selected) {
   if (!includeAll) select.disabled = state.channels.length === 0;
 }
 
-function renderTaskBoard() {
-  const filter = $('#taskChannelFilter');
-  const createChannel = $('#taskCreateChannel');
-  if (!filter || !createChannel) return;
-  fillTaskChannelSelect(filter, true, state.taskFilterChannelId);
-  const selectedCreateChannel = createChannel.value || state.activeChannelId || '';
-  fillTaskChannelSelect(createChannel, false, selectedCreateChannel);
-  $('#taskCreateSubmit').disabled = !state.online || state.channels.length === 0;
-
-  const columns = TASK_STATUS_ORDER.map((status) => {
-    const tasks = state.boardTasks.filter((task) => task.status === status);
-    const column = el('section', 'task-column');
-    column.dataset.status = status;
-    const head = el('h2', 'task-column-head');
-    head.appendChild(el('span', 'task-status-dot'));
-    head.appendChild(el('span', null, TASK_STATUS_LABEL[status]));
-    head.appendChild(el('span', 'task-column-count', String(tasks.length)));
-    column.appendChild(head);
-    tasks.forEach((task) => {
-      const card = el('button', 'task-card');
-      card.type = 'button';
-      card.dataset.task = task.id;
-      card.dataset.status = task.status;
-      card.setAttribute('data-od-id', 'task-card-' + task.id);
-      card.setAttribute('aria-label', task.title + '，' + TASK_STATUS_LABEL[task.status] + '，频道 ' + task.channel_name);
-      const title = el('span', 'task-card-heading');
-      title.appendChild(el('span', 'task-card-status-dot'));
-      title.appendChild(el('span', 'task-card-title', task.title));
-      card.appendChild(title);
-      const meta = el('span', 'task-card-meta');
-      meta.appendChild(el('span', 'task-card-channel', '#' + task.channel_name));
-      if (task.assignee_member_id) {
-        meta.appendChild(el('span', 'task-card-assignee', taskMemberName(task.assignee_member_id)));
-      } else {
-        meta.appendChild(el('span', 'task-card-assignee', '未指派'));
-      }
-      if (task.unread_count > 0) {
-        const unread = el('span', 'task-unread', task.unread_count > 99 ? '99+' : task.unread_count);
-        unread.setAttribute('aria-label', task.unread_count + ' 条未读任务消息');
-        meta.appendChild(unread);
-      }
-      card.appendChild(meta);
-      column.appendChild(card);
-    });
-    return column;
-  });
-  replaceChildren($('#taskColumns'), columns);
-  $('#taskBoardEmpty').hidden = state.boardTasks.length > 0;
-  $('#taskColumns').hidden = state.boardTasks.length === 0;
+/** 一个筛选 chip（原型 `#filterMine` 的形态）：`.is-on` 只用 `--selected*` 族。 */
+function filterChip(label, on, dataset) {
+  const chip = el('button', 'filter-chip' + (on ? ' is-on' : ''));
+  chip.type = 'button';
+  chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  Object.keys(dataset || {}).forEach((key) => { chip.dataset[key] = dataset[key]; });
+  chip.textContent = label;
+  return chip;
 }
 
+function renderBoardToolbar() {
+  const filters = $('#boardFilters');
+  if (!filters) return;
+  const nodes = [
+    // 「我的任务」= 指派给我或未认领（任务不记录创建者归属，所以这不是「我建的」）。
+    filterChip('我的任务', state.taskFilterMine, { boardMine: '1', odId: 'filter-mine' }),
+    el('span', 'filter-sep'),
+    filterChip('全部频道', state.taskFilterChannelId === '', { boardChannel: '', odId: 'filter-channel-all' }),
+  ];
+  state.channels.forEach((channel) => {
+    nodes.push(
+      filterChip(
+        '#' + channel.name,
+        state.taskFilterChannelId === channel.id,
+        { boardChannel: channel.id, odId: 'filter-channel-' + channel.id },
+      ),
+    );
+  });
+  replaceChildren(filters, nodes);
+}
+
+/** 一张看板卡片（原型 `cardHtml()`）：标题 + mono 序号 + 频道 tag + 指派者 / 未认领。
+    它是 `<button>`（可点击打开 dock 线程），**不**带 `draggable`：拖拽属 #26。 */
+function taskCardNode(task) {
+  const card = el('button', 'card');
+  card.type = 'button';
+  card.dataset.task = task.id;
+  card.dataset.status = task.status;
+  card.setAttribute('data-od-id', 'task-card-' + task.id);
+  card.setAttribute('aria-label', task.title + '，' + TASK_STATUS_LABEL[task.status] + '，打开任务线程');
+  card.appendChild(el('div', 'card-title', task.title));
+  const meta = el('div', 'card-meta');
+  meta.appendChild(el('span', 'card-num', '#' + String(task.id).slice(-6)));
+  meta.appendChild(el('span', 'card-tag', '#' + task.channel_name));
+  if (task.assignee_member_id) {
+    const owner = el('span', 'card-owner');
+    owner.appendChild(avatarNode(taskMemberName(task.assignee_member_id), memberSlotOf(task.assignee_member_id), 'sm'));
+    owner.appendChild(document.createTextNode(taskMemberName(task.assignee_member_id)));
+    meta.appendChild(owner);
+  } else {
+    meta.appendChild(el('span', 'card-owner unassigned', '未认领'));
+  }
+  card.appendChild(meta);
+  if (task.unread_count > 0) {
+    const unread = el('span', 'card-unread', task.unread_count > 99 ? '99+' : task.unread_count);
+    unread.setAttribute('aria-label', task.unread_count + ' 条未读任务消息');
+    meta.appendChild(unread);
+  }
+  return card;
+}
+
+/** 看板列（`TASK_STATUS_ORDER` 五态）：固定 `--board-col-w`(236px) → 超出时容器横向滚动。 */
+function boardColumns() {
+  const tasks = visibleBoardTasks();
+  return TASK_STATUS_ORDER.map((status) => {
+    const items = tasks.filter((task) => task.status === status);
+    const column = el('section', 'col');
+    column.dataset.status = status;
+    column.setAttribute('data-od-id', 'task-column-' + status);
+    const head = el('div', 'col-head');
+    head.appendChild(el('span', 'st-dot'));
+    head.appendChild(el('b', null, TASK_STATUS_LABEL[status]));
+    head.appendChild(el('span', 'col-count', String(items.length)));
+    column.appendChild(head);
+    const body = el('div', 'col-body');
+    if (items.length) items.forEach((task) => body.appendChild(taskCardNode(task)));
+    // 空态只陈述事实。「拖拽任务到此」是原型文案，但拖拽属 #26、现在拖不动，
+    // 写上去就是一句假话（`SKILL.md` §7 的「不实现就不摆样子」同一条纪律）。
+    else body.appendChild(el('div', 'drop-hint', '这一列还没有任务'));
+    column.appendChild(body);
+    return column;
+  });
+}
+
+/** 列表视图：`.seg` 的另一半，`max-width:880px` 居中（原型 `#taskListWrap`）。 */
+function boardList() {
+  const tasks = visibleBoardTasks();
+  if (!tasks.length) {
+    const empty = el('div', 'empty');
+    empty.appendChild(el('b', null, '没有匹配的任务'));
+    empty.appendChild(el('p', null, '试试关掉筛选，或新建一个任务。'));
+    return empty;
+  }
+  const wrap = el('div');
+  tasks.forEach((task) => {
+    const row = el('button', 'result');
+    row.type = 'button';
+    row.dataset.task = task.id;
+    row.setAttribute('data-od-id', 'task-row-' + task.id);
+    row.setAttribute('aria-label', task.title + '，' + TASK_STATUS_LABEL[task.status] + '，打开任务线程');
+    const top = el('div', 'r-top');
+    top.appendChild(el('span', 'st-dot'));
+    top.appendChild(el('span', null, TASK_STATUS_LABEL[task.status]));
+    top.appendChild(el('span', 'hash', '#' + String(task.id).slice(-6)));
+    top.appendChild(el('span', 'card-tag', '#' + task.channel_name));
+    top.appendChild(el('span', 'r-open', '打开线程 →'));
+    row.appendChild(top);
+    row.appendChild(el('div', 'r-title', task.title));
+    const snip = el('div', 'r-snip');
+    if (task.assignee_member_id) {
+      snip.appendChild(avatarNode(taskMemberName(task.assignee_member_id), memberSlotOf(task.assignee_member_id), 'sm'));
+      snip.appendChild(document.createTextNode(taskMemberName(task.assignee_member_id)));
+    } else {
+      snip.appendChild(el('span', 'card-owner unassigned', '未认领'));
+    }
+    if (task.unread_count > 0) {
+      const unread = el('span', 'card-unread', task.unread_count);
+      unread.setAttribute('aria-label', task.unread_count + ' 条未读任务消息');
+      snip.appendChild(unread);
+    }
+    row.appendChild(snip);
+    row.dataset.status = task.status;
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+function renderTaskBoard() {
+  const columns = $('#taskColumns');
+  const list = $('#taskListWrap');
+  if (!columns || !list) return;
+  renderBoardToolbar();
+  const creating = $('#taskCreateSubmit');
+  if (creating) creating.disabled = !state.online || state.channels.length === 0;
+  const createChannel = $('#taskCreateChannel');
+  if (createChannel) {
+    // 新建任务的默认频道：当前频道优先（人在这个频道里按「新建任务」，就该建在这里）。
+    const selected = createChannel.value || state.activeChannelId || '';
+    fillTaskChannelSelect(createChannel, false, selected);
+  }
+  const isList = state.taskView === 'list';
+  columns.hidden = isList;
+  list.hidden = !isList;
+  if (isList) {
+    replaceChildren(list, [boardList()]);
+    return;
+  }
+  replaceChildren(columns, boardColumns());
+}
+
+/** `.seg` 的选中态与 `aria-selected` 只在**一处**同步（切换与重渲染都走它）。 */
+function syncTaskViewSeg() {
+  document.querySelectorAll('.seg [data-taskview]').forEach((button) => {
+    const on = button.dataset.taskview === state.taskView;
+    button.classList.toggle('is-active', on);
+    button.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+}
+
+/** 任务线程（dock 形态 B，原型的 `.tt-*`）。
+
+    「讨论」与「状态变更记录」是**同一个数据源的两个视图**：后端把每次任务变更
+    （创建 / 标题 / 状态 / 指派）追加成一条 `kind='system'` 消息进该 task 的 target 消息流
+    （`CONTEXT.md` **任务**、ADR-0006）。`kind='system'` 的那些行进「状态变更记录」
+    与「关联消息」的语义分得开：后者是**人类 / Agent 主动发的、带 `task_ref` 指针的消息**
+    （`CONTEXT.md` **指针消息**），一个 kind 不会同时落在两边。
+
+    原型那个伪造的 `TASK_HISTORY` 常量不移植：历史就是这一条流。 */
 function renderTaskThread() {
   const task = state.activeTask;
   if (!task) return;
-  $('#taskChannelLabel').textContent = '#' + task.channel_name;
-  $('#taskTitleInput').value = task.title;
-  const statusSelect = $('#taskStatusSelect');
-  const statuses = [task.status].concat(TASK_STATUS_TRANSITIONS[task.status] || []);
-  replaceChildren(statusSelect, statuses.map((status) => {
-    const option = el('option', null, TASK_STATUS_LABEL[status]);
-    option.value = status;
-    return option;
-  }));
-  statusSelect.value = task.status;
-  const assigneeSelect = $('#taskAssigneeSelect');
-  const assignees = [el('option', null, '未指派')];
-  assignees[0].value = '';
-  state.members.filter((member) => member.kind === 'agent').forEach((member) => {
-    const option = el('option', null, member.display_name);
-    option.value = member.id;
-    assignees.push(option);
-  });
-  replaceChildren(assigneeSelect, assignees);
-  assigneeSelect.value = task.assignee_member_id || '';
-  const unread = Number(task.unread_count) || 0;
-  $('#taskThreadUnread').textContent = unread ? unread + ' 条未读' : '';
+  const channelName = task.channel_name;
+  const linked = linkedTaskMessages(task);
+  const history = state.taskMessages.filter((message) => message.kind === 'system');
+  const systemIds = new Set(history.map((message) => message.id));
+  const replies = state.taskMessages.filter((message) => !systemIds.has(message.id));
 
-  const nodes = [];
-  let lastDay = null;
-  state.taskMessages.forEach((message) => {
-    const day = dayLabel(message.created_at);
-    if (day !== lastDay) {
-      const separator = el('div', 'day-sep');
-      separator.appendChild(el('span', null, day));
-      nodes.push(separator);
-      lastDay = day;
-    }
-    nodes.push(messageNode(message));
+  // ── dock 头部：「任务线程」tag + mono #id + 「#频道名 · 关联消息 N 条」──
+  $('#ttHeadId').textContent = '#' + String(task.id).slice(-6);
+  const unread = Number(task.unread_count) || 0;
+  $('#ttHeadSub').textContent = '#' + channelName + ' · 关联消息 ' + linked.length + ' 条'
+    + (unread ? ' · ' + unread + ' 条未读' : '');
+
+  // ── 摘要：标题（就地可编辑）+ 状态 pill + 指派 pill ──
+  const titleInput = $('#ttTitleInput');
+  if (document.activeElement !== titleInput) titleInput.value = task.title;
+  const status = $('#ttStatus');
+  // 状态色位由 CSS 的 `.tt-status[data-status=…]` 表驱动（与 `.col` / `.card` 共用同一张表），
+  // 这里只声明状态，不内联色位：同一个映射存在两份就会漂移。
+  status.dataset.status = task.status;
+  $('#ttStatusText').textContent = TASK_STATUS_LABEL[task.status];
+  renderAssigneePill(task);
+
+  // ── 推进 chips：**只**出现迁移集合里的目标（`closed` 是终态 ⇒ 一个都不出）──
+  const transitions = TASK_STATUS_TRANSITIONS[task.status] || [];
+  if (transitions.length) {
+    replaceChildren($('#ttTransitions'), transitions.map((target) => {
+      const chip = filterChip(
+        TASK_TRANSITION_LABEL[target] || TASK_STATUS_LABEL[target],
+        false,
+        { ttMove: target, odId: 'thread-move-' + target },
+      );
+      chip.disabled = !state.online;
+      return chip;
+    }));
+  } else {
+    // 原型那句「已关闭，无可用推进」在这里是**真话**（`closed` 确实是终态）。
+    replaceChildren($('#ttTransitions'), [el('span', 'tt-note', '已关闭，无可用推进')]);
+  }
+
+  // ── 指派 chips：该频道成员里的 Agent（见 `renderAssignChips` 的候选来源）──
+  renderAssignChips(task);
+
+  // ── 关联消息 ──
+  const linkedBox = $('#ttLinked');
+  if (linked.length) {
+    const wrap = el('div', 'tt-linked');
+    linked.forEach((message) => {
+      const row = el('div', 'tt-linked-row');
+      const top = el('div', 'tt-linked-top');
+      top.appendChild(el('span', 'hash', '#' + channelName));
+      top.appendChild(el('span', null, message.author ? message.author.display_name : '未知作者'));
+      top.appendChild(el('span', 'card-tag', timeLabel(message.created_at)));
+      row.appendChild(top);
+      row.appendChild(el('div', 'tt-linked-body', message.body));
+      wrap.appendChild(row);
+    });
+    replaceChildren(linkedBox, [wrap]);
+  } else {
+    replaceChildren(linkedBox, [el('div', 'tt-empty', '该任务还没有关联消息')]);
+  }
+
+  // ── 讨论 · N 条 ──
+  $('#ttReplyCount').textContent = String(replies.length);
+  replaceChildren(
+    $('#ttReplies'),
+    replies.length
+      ? replies.map((message) => {
+        const row = el('div', 'tt-reply-row');
+        const author = message.author || state.member;
+        row.appendChild(avatarNode(author.display_name, author.avatar_slot, 'sm'));
+        const body = el('div', 'msg-body');
+        const head = el('div', 'msg-head');
+        head.appendChild(el('span', 'msg-author' + (author.kind === 'agent' ? ' is-agent' : ''), author.display_name));
+        if (author.kind === 'agent') head.appendChild(el('span', 'msg-tag', 'Agent'));
+        head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
+        body.appendChild(head);
+        // 正文直接用消息流同一套渲染（`.msg-text`，ADR-0016 的 14px / 68ch）：
+        // 提及高亮、换行与量例都与主线一致，不另造一套（也不多套一层壳）。
+        body.appendChild(messageText(message));
+        appendTaskRefChip(body, message);
+        row.appendChild(body);
+        return row;
+      })
+      : [el('div', 'tt-empty', '还没有讨论，来写第一条回复')],
+  );
+
+  // ── 状态变更记录：该流的 `system` 行（不另行伪造历史）──
+  const log = $('#ttHistory');
+  replaceChildren(
+    log,
+    history.length
+      ? history.map((message) => {
+        const li = el('li');
+        li.appendChild(document.createTextNode((message.author ? message.author.display_name + ' ' : '') + message.body));
+        li.appendChild(el('span', 'ts', timeLabel(message.created_at)));
+        return li;
+      })
+      : [el('div', 'tt-empty', '暂无变更记录')],
+  );
+  // 最近一次变更用 graphic 档的点标出来（原型 `.is-now`；不是新色位）。
+  const last = log.lastElementChild;
+  if (last && last.tagName === 'LI') last.classList.add('is-now');
+}
+
+/** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
+
+    数据面的事实：`task_ref` 必须与消息同 target（`db.py:append_message` 的校验，
+    `test_tasks.py` 逐条盯住），所以在任务线程里能出现的指针**就是指向这个任务自己的**。
+    于是这一段与「讨论」必然有重叠（一条回复可以同时挂了指针）——**这是数据本身的样子，
+    不是漏了去重**：票面明确说这两段是同一数据源的两个视图，`task_ref` 与 `kind='system'`
+    是两个正交字段（刚创建的 `system` 行 task_ref 为 null，人类回复可以带 task_ref），
+    所以「关联消息 ⊆ 讨论」是这个域的语义，而不是冗余展示。
+    该指针在「讨论」里另外以 `.task-ref-chip` 就地显示（已有行为，不另造一套）。 */
+function linkedTaskMessages(task) {
+  return state.taskMessages.filter((message) => message.kind !== 'system' && message.task_ref === task.id);
+}
+
+/** 指派 pill：点击展开 / 收起下方的指派 chips（原型：pill 只提示，chips 才是入口）。 */
+function renderAssigneePill(task) {
+  const pill = $('#ttAssignee');
+  const assigned = task.assignee_member_id;
+  if (!assigned) {
+    pill.className = 'assignee unassigned';
+    pill.textContent = '未认领 · 点击指派';
+    return;
+  }
+  pill.className = 'assignee';
+  replaceChildren(pill, []);
+  pill.appendChild(avatarNode(taskMemberName(assigned), memberSlotOf(assigned), 'sm'));
+  pill.appendChild(document.createTextNode(taskMemberName(assigned)));
+  pill.appendChild(el('span', 'assignee-hint', '· 改派'));
+}
+
+/** 指派 chips：**该任务所属频道的 Agent 成员**。
+
+    为什么不拿 `GET /api/tasks/{id}/members`（target 成员）当候选：那张表 = {owner} ∪ {当前指派者}
+    （`create_task` 只写入 owner，`update_task_assignee` 随后把被指派者加进去）——
+    拿它当候选就永远只能「取消指派」，换不了人。票面写的就是「指派 chip 用该频道成员里的 Agent」。
+    后端写路径不限制候选必须已在频道里（只校「未删除的 Agent」），所以频道成员是
+    这里的正确候选面；线程成员表仍用于判断「该 target 现有哪些 Agent」。 */
+function renderAssignChips(task) {
+  const channelAgents = channelAgentMembers(task.channel_id);
+  const box = $('#ttAssign');
+  if (channelAgents === null) {
+    replaceChildren(box, [
+      el('span', 'tt-note', channelMembersFailed.has(task.channel_id)
+        ? '暂时读不到该频道的成员表：指派候选不可用。'
+        : '正在读取该频道的成员…'),
+    ]);
+    return;
+  }
+  if (!channelAgents.length) {
+    replaceChildren(box, [
+      el('span', 'tt-note', '该频道还没有 Agent 成员：先在右侧「频道成员」面板把 Agent 加入这个频道。'),
+    ]);
+    return;
+  }
+  const chips = channelAgents.map((member) => {
+    const chip = filterChip(member.display_name, task.assignee_member_id === member.id, {
+      ttAssign: member.id,
+      odId: 'thread-assign-' + member.id,
+    });
+    chip.insertBefore(avatarNode(member.display_name, member.avatar_slot, 'sm'), chip.firstChild);
+    chip.disabled = !state.online;
+    return chip;
   });
-  replaceChildren($('#taskMessageList'), nodes);
+  if (task.assignee_member_id) {
+    const clear = filterChip('取消指派', false, { ttAssign: '', odId: 'thread-unassign' });
+    clear.disabled = !state.online;
+    chips.push(clear);
+  }
+  replaceChildren(box, chips);
+}
+
+/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）。
+
+    与消息流不在同一个维度：看板仍在主线（`state.mode === 'board'`），
+    而任务线程只是 dock 里显示什么。两者组合出「看板 + 右侧线程」这个原型交互。 */
+function setDockMode(mode) {
+  state.dockMode = mode;
+  const dock = $('#dock');
+  if (!dock) return;
+  const isTask = mode === 'task' && state.activeTaskId;
+  if (isTask) dock.hidden = false;
+  $('#dockAgent').hidden = Boolean(isTask);
+  $('#dockTask').hidden = !isTask;
 }
 
 function setViewMode(mode) {
   state.mode = mode;
   syncChromeVisibility(mode);
   $('#viewMessages').hidden = mode !== 'channel';
+  // 看板是**唯一**的任务主线视图：任务线程不再占用主线（它搬进了 dock）。
+  // dock 的形态与主线视图是两个维度（原型 `renderDock()` 同样独立于 `renderViews()`）：
+  // 从频道消息里的任务 chip 打开线程时，主线仍是消息流，dock 里就是那条线程。
   $('#taskBoard').hidden = mode !== 'board';
-  $('#taskThread').hidden = mode !== 'task';
   renderTabs();
 }
 
@@ -635,12 +931,15 @@ function syncChromeVisibility(mode) {
   $('#composer').hidden = !hasTarget || mode !== 'channel';
 }
 
-/** 「任务」页签：看板（全工作区视图 + 频道筛选，见 #44 重做其结构）。 */
+/** 「任务」页签：看板（全工作区视图 + 频道筛选，见 #44 重做其结构）。
+
+    从频道页签进来默认筛到**当前频道**（人在 #甲 的任务里，就该先看 #甲 的任务）。
+    看板本身仍是全工作区视图：工具栏上的「全部频道」chip 回到全部任务，不靠入口区分。 */
 async function showTaskBoard() {
   closeTaskStream();
+  closeTaskDock();
   state.mode = 'board';
-  state.activeTaskId = null;
-  state.activeTask = null;
+  state.taskFilterChannelId = state.activeChannelId || '';
   setViewMode('board');
   render();
   await refreshTasks();
@@ -649,49 +948,62 @@ async function showTaskBoard() {
 /** 「消息」页签：消息流 + composer（同一条流的既有渲染，不重取—— SSE 一直在线跟踪）。 */
 function showMessagesView() {
   closeTaskStream();
+  closeTaskDock();
   state.mode = 'channel';
-  state.activeTaskId = null;
-  state.activeTask = null;
   setViewMode('channel');
   render();
   markCurrentRead();
+}
+
+/** 关闭 dock 的任务线程，回到频道成员形态（卡片与线程都留在看板上）。
+    形态的切换写在这一处（而不是等某次整体重绘顺手改掉）：所有关闭路径（关闭按钮、切到
+    消息页、看板重入）共用它，于是「关闭了但 dock 还停在任务形态」不可能发生。 */
+function closeTaskDock() {
+  closeTaskStream();
+  state.activeTaskId = null;
+  state.activeTask = null;
+  state.taskMessages = [];
+  state.taskSeenSeqs = new Set();
+  setDockMode('agent');
 }
 
 function taskMaxSeq() {
   return state.taskMessages.reduce((max, message) => Math.max(max, Number(message.seq) || 0), 0);
 }
 
+/** 点看板卡片：在**右侧 dock** 开任务线程（主线仍留在看板上）。 */
 async function openTask(taskId) {
   closeTaskStream();
-  state.mode = 'task';
   state.activeTaskId = taskId;
-  state.activeTask = null;
+  state.activeTask = taskById(taskId);
   state.taskMessages = [];
   state.taskSeenSeqs = new Set();
-  render();
-  setViewMode('task');
+  setDockMode('task');
+  renderTaskThread();
   try {
-    const [thread, members] = await Promise.all([
-      api(taskPath(taskId, '/messages')),
-      api(taskPath(taskId, '/members')),
-    ]);
+    // 任务线程成员表（`GET /api/tasks/{id}/members`）**不取**：指派 chip 的候选是**频道**的
+    // Agent 成员（见 `renderAssignChips`），target 成员表没有消费者，取它只是多一次请求。
+    const thread = await api(taskPath(taskId, '/messages'));
     if (state.activeTaskId !== taskId) return;
     state.activeTask = thread.task;
     state.taskMessages = thread.messages || [];
-    state.taskMembers = members.members || [];
     state.taskSeenSeqs = new Set(state.taskMessages.map((message) => message.seq));
+    // 看板是全工作区视图，任务所属频道可能并非当前频道：按需单独拉该频道的成员表。
+    if (channelAgentMembers(thread.task.channel_id) === null) {
+      await refreshChannelMembers(thread.task.channel_id);
+    }
     const index = state.tasks.findIndex((task) => task.id === taskId);
     if (index >= 0) state.tasks[index] = thread.task;
     else state.tasks.push(thread.task);
+    setDockMode('task');
     renderTaskThread();
-    setViewMode('task');
     connectTaskStream(taskId, taskMaxSeq());
     await markTaskRead(taskId, taskMaxSeq());
-    $('#taskThreadStream').scrollTop = $('#taskThreadStream').scrollHeight;
+    $('#ttScroll').scrollTop = $('#ttScroll').scrollHeight;
   } catch (err) {
-    state.mode = 'board';
-    state.activeTaskId = null;
-    setViewMode('board');
+    closeTaskDock();
+    setDockMode('agent');
+    renderTaskBoard();
     toast('打开任务失败：' + err.message, 'err');
   }
 }
@@ -716,13 +1028,14 @@ function absorbTaskMessage(message) {
   state.taskMessages.push(message);
   state.taskMessages.sort((a, b) => a.seq - b.seq);
   renderTaskThread();
-  $('#taskThreadStream').scrollTop = $('#taskThreadStream').scrollHeight;
-  if (state.mode === 'task' && state.activeTaskId) markTaskRead(state.activeTaskId, message.seq);
+  const scroll = $('#ttScroll');
+  if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  if (state.activeTaskId) markTaskRead(state.activeTaskId, message.seq);
   return true;
 }
 
 function connectTaskStream(taskId, cursor) {
-  if (state.activeTaskId !== taskId || state.mode !== 'task') return;
+  if (state.activeTaskId !== taskId) return;
   const source = new EventSource(taskPath(taskId, '/events') + '?after_seq=' + cursor);
   const entry = { source, timer: null, taskId };
   state.taskStream = entry;
@@ -770,36 +1083,74 @@ async function refreshTaskDetails(taskId) {
   }
 }
 
+/** 新建任务：弹窗形态（原型 `#btnNewTask` → `openNewTask()`），字段收窄为
+    「标题 + 所属频道」——与搬过来的内联表单采集的字段等价，不借机新增输入路径。
+    这里的频道下拉是**所属频道**（任务的归属），不是看板的筛选。 */
+function openTaskModal() {
+  $('#taskFormError').hidden = true;
+  $('#taskCreateTitle').value = '';
+  const select = $('#taskCreateChannel');
+  fillTaskChannelSelect(select, false, state.activeChannelId || '');
+  $('#taskCreateSubmit').disabled = !state.online || state.channels.length === 0;
+  $('#taskOverlay').hidden = false;
+  $('#taskCreateTitle').focus();
+}
+
+function closeTaskModal() {
+  $('#taskOverlay').hidden = true;
+}
+
 async function submitTask() {
   const channelId = $('#taskCreateChannel').value;
   const title = $('#taskCreateTitle').value.trim();
-  if (!channelId || !title) return;
+  const box = $('#taskFormError');
+  if (!title) {
+    // 弹窗不再是 `<form>`（按钮是 type=button），因此没有浏览器自带的 required 提示：
+    // 空标题要自己说出来，不能默默什么都不发生。
+    box.textContent = state.channels.length ? '任务标题不能为空。' : '还没有频道：先新建一个频道再建任务。';
+    box.hidden = false;
+    $('#taskCreateTitle').focus();
+    return;
+  }
   const button = $('#taskCreateSubmit');
   button.disabled = true;
+  box.hidden = true;
   try {
     const payload = await api(channelPath(channelId, '/tasks'), { method: 'POST', body: { title } });
-    $('#taskCreateTitle').value = '';
+    closeTaskModal();
+    // 新任务要能看见：把筛选放到「能让它可见」的那一档，而不是让它落在一个被筛掉的频道之外。
     if (!state.taskFilterChannelId || state.taskFilterChannelId === channelId) {
       await refreshTasks();
     } else {
-      await refreshTaskBoardFilter();
+      state.taskFilterChannelId = channelId;
+      await refreshTasks();
     }
+    renderTaskBoard();
     toast('已创建任务「' + payload.task.title + '」。');
   } catch (err) {
-    toast('创建任务失败：' + err.message, 'err');
+    box.textContent = err.message;
+    box.hidden = false;
   } finally {
     button.disabled = !state.online || state.channels.length === 0;
   }
 }
 
+/** 标题就地保存：`PATCH /api/tasks/{id}/title`（`CONTEXT.md` **任务**：任务行是可变的）。
+    保存成功后后端会追加一条 `system` 消息，因此「状态变更记录」里会出现这一行。 */
 async function saveTaskTitle() {
   const task = state.activeTask;
   if (!task) return;
+  const input = $('#ttTitleInput');
+  const title = input.value.trim();
+  if (!title || title === task.title) {
+    input.value = task.title;
+    return;
+  }
   try {
-    const payload = await api(taskPath(task.id, '/title'), {
-      method: 'PATCH', body: { title: $('#taskTitleInput').value.trim() },
-    });
+    const payload = await api(taskPath(task.id, '/title'), { method: 'PATCH', body: { title } });
     state.activeTask = payload.task;
+    // 变更记录是本票要展示的事实：把后端返回的那条 system 消息立即收进线程。
+    if (payload.message) absorbTaskMessage(payload.message);
     await refreshTasks();
     renderTaskThread();
   } catch (err) {
@@ -811,6 +1162,9 @@ async function saveTaskTitle() {
 async function changeTaskStatus(status) {
   const task = state.activeTask;
   if (!task || status === task.status) return;
+  // 前端只渲染合法迁移的 chip（`closed` 是终态 ⇒ 它一个都不出），但把这条不变量
+  // 再当守卫写一遍：chip 是呈现，不变量是语义，两者不互相代替。
+  if (!(TASK_STATUS_TRANSITIONS[task.status] || []).includes(status)) return;
   try {
     const payload = await api(taskPath(task.id, '/status'), { method: 'PATCH', body: { status } });
     state.activeTask = payload.task;
@@ -832,8 +1186,8 @@ async function changeTaskAssignee(memberId) {
     });
     state.activeTask = payload.task;
     if (payload.message) absorbTaskMessage(payload.message);
-    const members = await api(taskPath(task.id, '/members'));
-    state.taskMembers = members.members || [];
+    // 指派写路径会改该 target 的成员行；chip 候选来自**频道**成员表（未变），
+    // 因此这里只需重读任务面与线程，不必再拉成员表。
     await refreshTasks();
     renderTaskThread();
   } catch (err) {
@@ -1243,7 +1597,11 @@ function render() {
   renderDms();
   renderMembers();
   renderTaskBoard();
+  // dock 的两种形态共用同一个 380px 容器：每次整体重绘都把两者的可见性重新同步一遍，
+  // 否则某次局部重建会把「现在是哪种形态」留在上一帧。
+  setDockMode(state.activeTaskId ? 'task' : 'agent');
   if (state.activeTask) renderTaskThread();
+  syncTaskViewSeg();
   renderHeader();
   setViewMode(state.mode);
   renderMessages();
@@ -1962,20 +2320,21 @@ function channelAgentMembers(channelId) {
   return members ? members.filter((member) => member.kind === 'agent') : null;
 }
 
-async function refreshChannelMembers() {
-  const channel = activeChannel();
-  if (!channel || channelMembersLoading.has(channel.id)) return;
-  channelMembersLoading.add(channel.id);
+async function refreshChannelMembers(channelId) {
+  const id = channelId || state.activeChannelId;
+  const channel = state.channels.find((item) => item.id === id);
+  if (!channel || channelMembersLoading.has(id)) return;
+  channelMembersLoading.add(id);
   try {
-    const payload = await api(channelPath(channel.id, '/members'));
-    state.channelMembers[channel.id] = payload.members || [];
-    channelMembersFailed.delete(channel.id);
+    const payload = await api(channelPath(id, '/members'));
+    state.channelMembers[id] = payload.members || [];
+    channelMembersFailed.delete(id);
   } catch {
     // 读不到就如实记下：不静默清空已读到的候选，也不伪造成员。
-    if (!state.channelMembers[channel.id]) state.channelMembers[channel.id] = [];
-    channelMembersFailed.add(channel.id);
+    if (!state.channelMembers[id]) state.channelMembers[id] = [];
+    channelMembersFailed.add(id);
   } finally {
-    channelMembersLoading.delete(channel.id);
+    channelMembersLoading.delete(id);
   }
 }
 
@@ -2512,27 +2871,81 @@ function bindEvents() {
   });
 
   // 页签：两个页签在同一内容区切换（任务的唯一入口）。
+  // 任务页签带 `fromChannelTab`：进入看板时默认筛到**当前频道**（左栏/全工作区视角仍看全部）。
   $('#tabMessages').addEventListener('click', showMessagesView);
   $('#tabTasks').addEventListener('click', showTaskBoard);
-  $('#taskChannelFilter').addEventListener('change', () => {
-    state.taskFilterChannelId = $('#taskChannelFilter').value;
-    refreshTaskBoardFilter();
+
+  // `.seg`：看板 / 列表（同一批任务的两种呈现，不重取）。
+  document.querySelectorAll('.seg [data-taskview]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.taskView = button.dataset.taskview;
+      syncTaskViewSeg();
+      renderTaskBoard();
+    });
   });
-  $('#taskCreateForm').addEventListener('submit', (event) => {
-    event.preventDefault();
-    submitTask();
+  // 看板筛选 chips（一次委派服务看板与列表两个视图）。
+  $('#boardFilters').addEventListener('click', (event) => {
+    const mine = event.target.closest('[data-board-mine]');
+    if (mine) {
+      state.taskFilterMine = !state.taskFilterMine;
+      renderTaskBoard();
+      return;
+    }
+    const channel = event.target.closest('[data-board-channel]');
+    if (!channel) return;
+    state.taskFilterChannelId = channel.dataset.boardChannel;
+    refreshTasks();
   });
-  $('#taskColumns').addEventListener('click', (event) => {
-    const card = event.target.closest('[data-task]');
-    if (card) openTask(card.dataset.task);
+  // 卡片与列表行都打开同一个 dock 线程（点击是唯一入口；不实现拖拽）。
+  ['#taskColumns', '#taskListWrap'].forEach((selector) => {
+    $(selector).addEventListener('click', (event) => {
+      const card = event.target.closest('[data-task]');
+      if (card) openTask(card.dataset.task);
+    });
   });
-  $('#btnBackToBoard').addEventListener('click', showTaskBoard);
-  $('#taskTitleSave').addEventListener('click', saveTaskTitle);
-  $('#taskTitleInput').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); saveTaskTitle(); }
+
+  // 新建任务：弹窗形态（标题 + 所属频道）。
+  $('#btnNewTask').addEventListener('click', openTaskModal);
+  $('#taskCreateCancel').addEventListener('click', closeTaskModal);
+  $('#taskModalClose').addEventListener('click', closeTaskModal);
+  $('#taskCreateSubmit').addEventListener('click', submitTask);
+  $('#taskOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'taskOverlay') closeTaskModal();
   });
-  $('#taskStatusSelect').addEventListener('change', (event) => changeTaskStatus(event.target.value));
-  $('#taskAssigneeSelect').addEventListener('change', (event) => changeTaskAssignee(event.target.value));
+  $('#taskCreateTitle').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); submitTask(); }
+  });
+
+  // dock 任务线程：标题就地编辑（Enter 保存 / Esc 取消 / 失焦保存）、迁移与指派 chips、回复。
+  const titleInput = $('#ttTitleInput');
+  titleInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); titleInput.blur(); }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (state.activeTask) titleInput.value = state.activeTask.title;
+      titleInput.blur();
+    }
+  });
+  titleInput.addEventListener('blur', () => { saveTaskTitle(); });
+  $('#ttTransitions').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-tt-move]');
+    if (chip) changeTaskStatus(chip.dataset.ttMove);
+  });
+  $('#ttAssign').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-tt-assign]');
+    if (chip) changeTaskAssignee(chip.dataset.ttAssign);
+  });
+  $('#ttReplies').addEventListener('click', (event) => {
+    const link = event.target.closest('[data-open-task]');
+    if (link) openTask(link.dataset.openTask);
+  });
+  $('#btnThreadClose').addEventListener('click', () => {
+    closeTaskDock();
+    renderDock();
+    renderTaskBoard();
+    renderTabs();
+  });
+
   $('#taskSend').addEventListener('click', sendTaskMessage);
   $('#taskComposerInput').addEventListener('input', () => {
     const input = $('#taskComposerInput');
@@ -2546,10 +2959,6 @@ function bindEvents() {
       event.preventDefault();
       sendTaskMessage();
     }
-  });
-  $('#taskMessageList').addEventListener('click', (event) => {
-    const link = event.target.closest('[data-open-task]');
-    if (link) openTask(link.dataset.openTask);
   });
 
   $('#composerInput').addEventListener('input', () => {
@@ -2667,6 +3076,7 @@ function bindEvents() {
     if (!$('#channelOverlay').hidden) closeChannelModal();
     if (!$('#dmOverlay').hidden) closeDmModal();
     if (!$('#agentOverlay').hidden) closeAgentModal();
+    if (!$('#taskOverlay').hidden) closeTaskModal();
   });
 
   window.addEventListener('online', () => loadWorkspace({ silent: true }));

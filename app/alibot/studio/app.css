@@ -451,71 +451,168 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .remote-notice-foot { display: flex; align-items: center; gap: var(--sp-4); }
 .remote-notice-foot .hint { flex: 1; margin: 0; }
 
-/* ─── 任务看板与独立任务线程 ─────────────────────────────────────────── */
-.task-board { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9); }
-.task-board-head { max-width: var(--stream-max); margin: 0 auto var(--sp-6); display: flex; align-items: end; gap: var(--sp-6); }
-.task-board-head h1 { font-size: var(--fs-heading); }
-.task-board-head p { margin: var(--sp-2) 0 0; color: var(--muted); font-size: var(--fs-sm); }
-.task-eyebrow { font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider); color: var(--faint); margin-bottom: var(--sp-2); }
-.task-filter-label { margin-left: auto; display: flex; align-items: center; gap: var(--sp-3); color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
-.task-filter { width: auto; min-width: 180px; padding: var(--sp-2) var(--sp-4); }
-.task-create-form { max-width: var(--stream-max); margin: 0 auto var(--sp-7); display: flex; gap: var(--sp-3); }
-.task-create-form select { flex: 0 0 190px; padding: var(--sp-2) var(--sp-4); }
-.task-create-form input { min-width: 0; flex: 1; padding: var(--sp-2) var(--sp-4); }
-.task-columns { max-width: var(--stream-max); margin: 0 auto; display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: var(--sp-3); align-items: start; }
-.task-column { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); padding: var(--sp-3); }
-.task-column-head { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-3); padding: 0 var(--sp-1); font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--muted); }
-.task-column-count { margin-left: auto; color: var(--faint); font-family: var(--mono); font-size: var(--fs-mono-xs); }
-.task-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: var(--r-pill); }
-.task-column, .task-card { --task-status-color: var(--faint); }
-.task-column[data-status="todo"], .task-card[data-status="todo"] { --task-status-color: var(--faint); }
-.task-column[data-status="in_progress"], .task-card[data-status="in_progress"] { --task-status-color: var(--accent-graphic); }
-.task-column[data-status="in_review"], .task-card[data-status="in_review"] { --task-status-color: var(--working); }
-.task-column[data-status="done"], .task-card[data-status="done"] { --task-status-color: var(--online); }
-.task-column[data-status="closed"], .task-card[data-status="closed"] { --task-status-color: var(--offline); }
-.task-status-dot { background: var(--task-status-color); }
-.task-card { display: block; width: 100%; text-align: left; border: 1px solid var(--border); border-left: 3px solid var(--task-status-color); border-radius: var(--r-sm); background: var(--surface); padding: var(--sp-4); margin-bottom: var(--sp-3); transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
-.task-card:hover { border-color: var(--border-strong); border-left-color: var(--task-status-color); transform: translateY(-1px); }
-.task-card-heading { display: flex; align-items: flex-start; gap: var(--sp-3); }
-.task-card-status-dot { width: 8px; height: 8px; flex: 0 0 8px; margin-top: 4px; border-radius: var(--r-pill); background: var(--task-status-color); }
-.task-card-title { display: block; min-width: 0; font-size: var(--fs-sm); font-weight: var(--fw-semi); line-height: var(--lh-snug); overflow-wrap: anywhere; }
-.task-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); color: var(--faint); font-size: var(--fs-caption); }
-.task-card-channel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-card-assignee { color: var(--muted); }
-.task-unread { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--unread); color: var(--on-accent); font-family: var(--mono); font-size: var(--fs-mono-xs); font-weight: var(--fw-black); text-align: center; }
-.task-board-empty { max-width: var(--stream-max); margin: var(--sp-12) auto; text-align: center; color: var(--faint); }
-.task-board-empty b { display: block; color: var(--muted); margin-bottom: var(--sp-2); }
-.task-board-empty p { margin: 0; font-size: var(--fs-sm); }
-.task-thread { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.task-thread-head { padding: var(--sp-5) var(--sp-9); background: var(--surface); border-bottom: 1px solid var(--border); }
-.task-thread-title-row { display: flex; align-items: center; gap: var(--sp-4); }
-.task-channel-label { color: var(--faint); font-size: var(--fs-sm); }
-.task-title-edit { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
-.task-title-input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--fg); font-size: var(--fs-title); font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight); }
-.task-thread-controls { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); color: var(--muted); font-size: var(--fs-sm); }
-.task-thread-controls .input { width: auto; min-width: 125px; padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm); }
-.task-thread-unread { margin-left: auto; color: var(--faint); font-size: var(--fs-caption); }
-.task-thread-stream { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-7) var(--sp-9); }
-.task-thread-messages { max-width: var(--stream-max); min-height: 100%; margin: 0 auto; }
-.task-thread-composer { display: flex; align-items: end; gap: var(--sp-3); padding: var(--sp-4) var(--sp-9) var(--sp-6); border-top: 1px solid var(--border); background: var(--bg); }
-.task-thread-composer textarea { max-width: var(--stream-max); min-height: 42px; max-height: 140px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface); }
-.task-thread-composer .btn { align-self: stretch; }
+/* ─── 任务看板与任务线程（原型 `.board-wrap` / `.col` / `.card` / `.tt-*` 形态）─────
+   看板：工具栏（`.seg` + `.filter-chip` + 新建任务）+**固定 236px 列**的横向滚动行
+   （`SKILL.md` §3 第 3 条：Never stretch columns to fill）。列表视图与看板是 `.seg`
+   的两半，共用同一份 `GET /api/tasks`。
+   任务线程：右侧 dock 的**第二种形态**（`#dockTask`），形态来自原型 726-790 行的 `.tt-*`。
+   拖拽未实现（`#26` 的剩余交付），因此不引入 `.drag-over` / `.invalid-over` / `.dragging`
+   这些没有行为支撑的状态类。
+   档位纪律（ADR-0015）：`.seg button.is-active` 的底是 `--fg`（深梅墨），所以它的墨色必须是
+   `--bg`（纸族浅色，与仓内 `.toast` 同一形态）；**不能**用 `--on-accent`——它是 `var(--fg)`，
+   压在 `--fg` 底上就是同色同底、字看不见。`.filter-chip.is-on` 用 `--selected-soft`
+   底 + `--selected-graphic` 环 + `--fg` 字（选中信号走底与环，文字不回退对比度；
+   实测 `--selected-deep` 在这个底上只有 3.44:1，低于未选中的 7.08:1）。
+   `.tt-log li::before` 是**状态点**，因此用 `--selected-graphic` 而不是 `--selected`。 */
+.board-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.board-toolbar { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-5) var(--sp-9); border-bottom: 1px solid var(--border); background: var(--bg); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--surface); }
+.seg button { padding: 0 11px; height: var(--icon-btn); font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--muted); border-right: 1px solid var(--border); }
+.seg button:last-child { border-right: 0; }
+.seg button:hover { background: var(--fg-soft); color: var(--fg); }
+/* `.seg` 的选中态：`--fg` 做**填充**，墨色用 `--bg`（纸族浅色）。
+   这里**不能用 `--on-accent`**：它的值是 `var(--fg)`（深梅墨），而 `--on-accent` 约定只压在
+   马卡龙亮档（`--accent` 等）上；压在同为 `--fg` 的底上就是同色同底、字看不见。
+   本仓已有的同一形态先例：`.toast { background: var(--fg); color: var(--bg) }`。
+   原型那行写的是 `oklch(98% 0.005 250)` 字面量，本文件禁止裸色值，`--bg` 是它的同族近似。 */
+.seg button.is-active { background: var(--fg); color: var(--bg); }
+.board-filters { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; min-width: 0; }
+.filter-chip { display: inline-flex; align-items: center; gap: var(--sp-3); height: var(--icon-btn); padding: 0 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--muted); font-size: var(--fs-sm); }
+.filter-chip:hover { border-color: var(--border-strong); color: var(--fg); }
+/* 选中态：`--selected-soft` 只做**背景提示**（soft 档的生定用途）、环用 `--selected-graphic`
+   （ring 档），文字仍用 `--fg`。
+
+   为什么不照原型的 `color: var(--selected-deep)`（ui_kits 也是这一行）：实测它在这个
+   底上只有 **3.44:1**，比**未选中**的 `--muted` (7.08:1) 更低 —— 这正是 `SKILL.md` §5
+   禁止的「交互态降低对比度」。选中信号由**底 + 环**承担（两者都是 color 之外的通道），
+   文字不回退，于是对比度从 **7.08:1 升到 7.65:1**（高于未选中态）。 */
+.filter-chip.is-on { border-color: var(--selected-graphic); color: var(--fg); background: var(--selected-soft); }
+.filter-sep { width: 1px; height: 18px; flex: 0 0 1px; background: var(--border); }
+
+/* 横向滚动就发生在这里：列宽固定，行宽由列数与间距决定（`min-width:min-content`）。 */
+.board { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-6) var(--sp-7) var(--sp-10); }
+.board-cols { display: flex; gap: var(--sp-5); align-items: flex-start; min-width: min-content; }
+.col { width: var(--board-col-w); flex: 0 0 var(--board-col-w); background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); display: flex; flex-direction: column; min-height: 0; }
+.col-head { display: flex; align-items: center; gap: var(--sp-4); padding: 10px var(--sp-5) var(--sp-4); }
+.col-head .st-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: var(--r-pill); }
+.col-head b { font-size: 12.5px; font-weight: var(--fw-bold); }
+.col-head .col-count { margin-left: auto; font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 6px; }
+.col-body { flex: 1; padding: 2px var(--sp-4) 10px; display: flex; flex-direction: column; gap: 7px; min-height: 44px; }
+.card { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 11px; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
+.card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card); }
+.card-title { font-size: 12.5px; font-weight: var(--fw-semi); line-height: var(--lh-snug); margin-bottom: 7px; overflow-wrap: anywhere; }
+.card-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.card-num { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
+.card-tag { font-family: var(--mono); font-size: var(--fs-mono-micro); padding: 1px 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
+.card-owner { margin-left: auto; display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.card-owner.unassigned { font-style: italic; color: var(--faint); }
+/* 列内空态：原型在拖拽未实现前用它做落点提示；本票不实现拖拽，因此它只陈述
+   「这一列还没有任务」这一事实（不写「拖拽任务到此」——那句话目前是假的）。 */
+.drop-hint { border: 1px dashed var(--border-strong); border-radius: var(--r-md); padding: 9px; text-align: center; font-size: 11px; color: var(--faint); }
+
+/* 列表视图：`.seg` 的另一半。`max-width:880px` 居中（原型 `#taskListWrap`）。 */
+.board-list { max-width: var(--stream-max); margin: 0 auto; }
+.board-list .result { display: block; width: 100%; text-align: left; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); margin-bottom: 7px; }
+.board-list .result:hover { border-color: var(--border-strong); background: var(--panel); }
+.board-list .result .r-top { display: flex; align-items: center; gap: var(--sp-4); font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.board-list .result .r-top .st-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: var(--r-pill); }
+.board-list .result .r-top .hash { font-family: var(--mono); color: var(--accent-deep); }
+.board-list .result .r-top .r-open { margin-left: auto; color: var(--faint); font-size: 11px; }
+.board-list .result .r-title { font-size: var(--fs-body); font-weight: var(--fw-semi); }
+.board-list .result .r-snip { display: flex; align-items: center; gap: var(--sp-3); font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: var(--lh-snug); }
+.board-list .result .card-owner { margin-left: 0; }
+
+/* 列表行不使用 `.card`（`.card` 带 3px 左状态条，而原型 `renderTaskList()` 的列表行
+   只能用行内的 `.st-dot` 陈述状态）。两处共用同一张 `--task-status-color` 表。 */
+.col, .card, .tt-status, .board-list .result { --task-status-color: var(--faint); }
+.col[data-status="todo"], .card[data-status="todo"], .tt-status[data-status="todo"], .board-list .result[data-status="todo"] { --task-status-color: var(--faint); }
+.col[data-status="in_progress"], .card[data-status="in_progress"], .tt-status[data-status="in_progress"], .board-list .result[data-status="in_progress"] { --task-status-color: var(--accent-graphic); }
+.col[data-status="in_review"], .card[data-status="in_review"], .tt-status[data-status="in_review"], .board-list .result[data-status="in_review"] { --task-status-color: var(--working); }
+.col[data-status="done"], .card[data-status="done"], .tt-status[data-status="done"], .board-list .result[data-status="done"] { --task-status-color: var(--online); }
+.col[data-status="closed"], .card[data-status="closed"], .tt-status[data-status="closed"], .board-list .result[data-status="closed"] { --task-status-color: var(--offline); }
+.col .st-dot, .card .st-dot, .board-list .result .st-dot { background: var(--task-status-color); }
+/* 卡片左侧的状态条：状态点的图形档（≥3:1），不做文字。 */
+.card { border-left: 3px solid var(--task-status-color); }
+/* 悬停时**显式保色**：`border-color` 是全四边简写，不补这一行会把左边 3px 状态条
+   一起换成 `--border-strong`——交互态丢了状态色（`DESIGN.md` §1「status made visible」
+   与 §7 的「悬停不得削弱」）。这条是本文件的承重行，不是冗余。 */
+.card:hover { border-left-color: var(--task-status-color); }
+.card-unread { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--unread); color: var(--on-accent); font-family: var(--mono); font-size: var(--fs-mono-xs); font-weight: var(--fw-black); text-align: center; }
+
+/* ─── dock 形态 B：任务线程（`.tt-*`，原型 726-790 行）──────────────────── */
+.task-thread { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.dock-agent[hidden], .task-thread[hidden] { display: none; }
+.dock-id { display: flex; align-items: center; gap: var(--sp-5); }
+.dock-id .meta { flex: 1; min-width: 0; }
+/* 「任务线程」tag 与 `--panel-2` 底 / `--muted` 字：它是 dock 头部的一个标记，不是填充档按钮。 */
+.dock-tag { font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide); text-transform: uppercase; padding: 1px 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
+.dock-task-id { font-family: var(--mono); font-size: var(--fs-sm); color: var(--faint); }
+/* 吸顶摘要：标题（可编辑）+ 状态 pill + 指派 pill。 */
+.tt-summary { position: sticky; top: 0; z-index: 2; background: var(--surface); border-bottom: 1px solid var(--border); padding: 13px var(--sp-7) var(--sp-6); }
+.tt-title { margin: 0; font-size: var(--fs-title); font-weight: var(--fw-heavy); letter-spacing: var(--ls-snug); line-height: var(--lh-snug); }
+.tt-title-input { width: 100%; padding: 0 0 1px; border: 0; border-bottom: 1px solid transparent; background: none; color: var(--fg); font: inherit; letter-spacing: inherit; }
+/* 悬停/聚焦不把文字往下退——文字始终是 `--fg`，只在**移动下缘**上做提示。
+   刻意**不**使用 `outline: none`：全局 `:focus-visible` 的 `--accent-graphic` 焦点环必须
+   留在键盘可达的输入框上（`SKILL.md` §5）；鼠标点击不触发 `:focus-visible`，
+   因此下面的悬停 / `:focus` 下缘承担点击态的提示。 */
+.tt-title-input:hover { border-bottom-color: var(--border-strong); }
+.tt-title-input:focus { border-bottom-color: var(--accent-graphic); }
+.tt-meta { display: flex; align-items: center; gap: var(--sp-4); margin-top: 9px; flex-wrap: wrap; }
+.tt-status { display: inline-flex; align-items: center; gap: var(--sp-3); height: 26px; padding: 0 10px; border-radius: var(--r-pill); border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg); font-size: 11.5px; font-weight: var(--fw-semi); font-family: var(--mono); }
+/* 状态点用 graphic 档（≥3:1）：`.dot` 由 `.tt-status` 上的 `--task-status-color` 着色。 */
+.tt-status .dot { width: 7px; height: 7px; border-radius: var(--r-pill); flex: 0 0 7px; background: var(--task-status-color, var(--faint)); }
+.assignee { display: inline-flex; align-items: center; gap: var(--sp-3); height: 26px; padding: 0 9px 0 var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface); font-size: 11.5px; color: var(--muted); }
+.assignee:hover { border-color: var(--border-strong); color: var(--fg); }
+.assignee.unassigned { font-style: italic; padding: 0 10px; }
+.assignee .avatar.sm { width: 18px; height: 18px; flex-basis: 18px; font-size: 9px; }
+.assignee .assignee-hint { color: var(--faint); }
+.tt-actions { display: flex; flex-direction: column; gap: var(--sp-4); padding: var(--sp-5) var(--sp-7); border-bottom: 1px solid var(--border); }
+.tt-actions-row { display: flex; align-items: flex-start; gap: var(--sp-4); }
+.tt-actions .tt-label { font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider); text-transform: uppercase; color: var(--faint); font-weight: var(--fw-semi); width: 32px; flex: 0 0 32px; padding-top: 7px; }
+.tt-chips { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
+.tt-chips .filter-chip { height: 26px; font-size: 11.5px; }
+.tt-chips .filter-chip .avatar.sm { width: 16px; height: 16px; flex-basis: 16px; font-size: 8px; }
+.tt-note { font-size: 11.5px; color: var(--faint); padding-top: 5px; }
+.tt-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--sp-7) var(--sp-7); }
+.d-sec { margin-top: var(--sp-6); margin-bottom: var(--sp-8); }
+.d-sec:last-child { margin-bottom: var(--sp-2); }
+.d-sec-title { font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider); text-transform: uppercase; color: var(--faint); font-weight: var(--fw-semi); margin-bottom: 9px; }
+.tt-log { list-style: none; margin: 0; padding: var(--sp-2) 0 0; }
+.tt-log li { position: relative; padding: 0 0 var(--sp-6) var(--sp-8); font-size: 12px; color: var(--muted); line-height: var(--lh-snug); }
+.tt-log li::before { content: ""; position: absolute; left: 3px; top: 4px; width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--border-strong); }
+.tt-log li::after { content: ""; position: absolute; left: 6px; top: 13px; bottom: 2px; width: 1px; background: var(--border); }
+.tt-log li:last-child::after { display: none; }
+.tt-log li b { color: var(--fg); font-weight: var(--fw-semi); }
+/* 时间戳用 `--mono`（`SKILL.md` §6：计数与 id 一律 mono）。 */
+.tt-log li .ts { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); margin-left: var(--sp-3); }
+/* 「最近一次变更」用 graphic 档的点 + soft 档的环（不拿 base/fill 档当状态点）。 */
+.tt-log li.is-now::before { box-shadow: 0 0 0 3px var(--selected-soft); background: var(--selected-graphic); }
+.tt-log li.is-now { color: var(--fg); }
+/* 「讨论」里的回复：与消息流同一个方块头像 + 作者／时间语汇（不新造一套）。
+   正文字号/量例沿用 `.msg-text`（14px / 68ch），**行高与行距按 ADR-0016 的线程档**
+   而不是频道档：`SKILL.md` §3.4 与 `DESIGN.md` §6/§5 明写「thread rows use 16px, 12px
+   and 1.7」——线程在 380px 窄栏里，行间节奏要比频道更宽。 */
+.tt-reply-row { display: flex; gap: var(--sp-4); padding: var(--sp-7) 0 var(--sp-5); }
+.tt-reply-row .msg-body { flex: 1; min-width: 0; }
+.tt-reply-row .msg-text { line-height: 1.7; }
+.tt-empty { padding: 18px var(--sp-2); text-align: center; color: var(--faint); font-size: 12px; }
+/* 关联消息：chip 是「这条消息在说哪个任务」的指针（`CONTEXT.md` **指针消息**）。 */
 .task-ref-chip { display: inline-flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); padding: 2px var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-pill); color: var(--accent-deep); background: var(--accent-soft); font-size: var(--fs-caption); }
 .task-ref-chip:hover { border-color: var(--accent-graphic); }
+.tt-linked { display: flex; gap: var(--sp-4); flex-direction: column; }
+.tt-linked-row { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); background: var(--panel); }
+.tt-linked-top { display: flex; align-items: center; gap: var(--sp-4); font-size: 12px; color: var(--muted); }
+.tt-linked-top .hash { font-family: var(--mono); color: var(--accent-deep); }
+.tt-linked-body { margin-top: 3px; font-size: 12.5px; color: var(--fg); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.tt-reply { border-top: 1px solid var(--border); padding: 11px var(--sp-7) var(--sp-6); background: var(--surface); }
+.tt-reply .composer-box { box-shadow: none; }
+.tt-reply textarea { min-height: 38px; max-height: 140px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-@media (max-width: 1100px) { .task-columns { grid-template-columns: repeat(3, minmax(160px, 1fr)); } }
 @media (max-width: 900px) {
-  .task-board { padding: var(--sp-6); }
-  .task-board-head { align-items: start; flex-direction: column; }
-  .task-filter-label { margin-left: 0; }
-  .task-columns { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
-  .task-thread-head { padding-left: var(--sp-6); padding-right: var(--sp-6); }
-  .task-thread-stream { padding-left: var(--sp-6); padding-right: var(--sp-6); }
-  .task-thread-composer { padding-left: var(--sp-6); padding-right: var(--sp-6); }
-}
-@media (max-width: 560px) {
-  .task-columns { grid-template-columns: 1fr; }
-  .task-create-form { flex-wrap: wrap; }
-  .task-create-form select { flex: 1 1 100%; }
-  .task-thread-controls { flex-wrap: wrap; }
+  .board-toolbar { flex-wrap: wrap; padding-left: var(--sp-6); padding-right: var(--sp-6); }
+  .board { padding-left: var(--sp-6); padding-right: var(--sp-6); }
+  /* `SKILL.md` §5：≤900px 时看板**堆成单列全宽**（横向滚动到此为止）。
+     这是 `/900` 以下的行为，与上面「列宽固定 236px + 横向滚动」是同一份契约的两半。 */
+  .board-cols { flex-direction: column; }
+  .col { width: 100%; flex-basis: auto; }
 }
