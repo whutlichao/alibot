@@ -223,7 +223,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 .venv/bin/ruff check app && .venv/bin/ruff format --check app
 .venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
 node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
-node --test tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
+node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
 ```
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
