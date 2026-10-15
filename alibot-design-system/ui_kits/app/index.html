@@ -17,14 +17,16 @@
   没有渲染函数、没有第二份状态机。
 
   依次加载（与产品 app/alibot/studio/index.html 同序）：
-    ../../colors_and_type.css                      两个 foundation
+    ../../colors_and_type.css   两个 foundation
     ../../tokens.css
-    ../../../app/alibot/studio/product-tokens.css  产品扩展层（--selected* / --unread* / --warn*）
-    ./app.css                                      组件库（每个组件唯一实现）
+    ./product-ext.css           产品扩展层（--selected* / --unread* / --warn*）
+                                包内落点；与 app/alibot/studio/product-tokens.css
+                                是同值同源的两份落点（见该文件头部与 SKILL.md §1）
+    ./app.css                   组件库（每个组件唯一实现）
 -->
 <link rel="stylesheet" href="../../colors_and_type.css" />
 <link rel="stylesheet" href="../../tokens.css" />
-<link rel="stylesheet" href="../../../app/alibot/studio/product-tokens.css" />
+<link rel="stylesheet" href="./product-ext.css" />
 <link rel="stylesheet" href="./app.css" />
 <style>
   /* 装配页自身的说明浮标（非组件）。 */

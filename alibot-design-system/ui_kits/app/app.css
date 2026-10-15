@@ -10,14 +10,17 @@
    .nav-row.is-active / .filter-chip.is-on / .reaction.mine), `--unread*`
    (2 refs, .badge / .result mark) and `--warn*` (4 refs, .meter.warn i /
    .lv.warn / .tt-log li.warn) — whose definitions live in the product
-   extension layer (`app/alibot/studio/product-tokens.css` — the real path; an
-   earlier revision of these headers said `app/globals.css`, which never
-   existed), not in the two foundations above.
-   Dropping this kit into a product therefore means loading that layer too (or
-   declaring the three role families yourself). The same shape already existed
-   at baseline for `--online-text` (1 ref, .lv.ok); the three families are the
-   ADR-0015 product vocabulary (当前位置 / 未读 / 警示), deliberately kept in
-   the app layer instead of the reusable foundations.
+   extension layer, not in the two foundations above. That layer has two
+   landing sites with identical names and values, neither a stale copy of the
+   other: this package ships `product-ext.css` (same directory as this file),
+   and the app declares `app/alibot/studio/product-tokens.css` (the real path;
+   an earlier revision of these headers said `app/globals.css`, which never
+   existed). Load whichever site fits — in-package files load the former, the
+   product loads the latter — or declare the three role families yourself.
+   The same shape already existed at baseline for `--online-text` (1 ref,
+   .lv.ok); the three families are the ADR-0015 product vocabulary (当前位置 /
+   未读 / 警示), deliberately kept in the product layer instead of the
+   reusable foundations (`colors_and_type.css` / `tokens.css` stay untouched).
    ========================================================================== */
 
 /* ─── reset ──────────────────────────────────────────────────────────────── */

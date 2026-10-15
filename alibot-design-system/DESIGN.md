@@ -83,6 +83,13 @@ that was its main use before the split:
 
 `--accent-hover` is `oklch(79.4% 0.104 356.6)` (a fill, one step deeper).
 
+`--selected*` / `--unread*` / `--warn*` are **product** vocabulary: they are declared
+outside the two foundations, not inside `colors_and_type.css` or `tokens.css`. There are
+two landing sites with these exact names and values — `ui_kits/app/product-ext.css`
+(in-package, linked by every slice and by `ui_kits/app/index.html`) and the app's
+`app/alibot/studio/product-tokens.css`. They are two landing sites of one family, not a
+copy and its stale twin; keep both in step. See `SKILL.md` §1 for the operational rule.
+
 ### Semantic status
 
 The four presence hues are the exception to "the bare name is the fill tier": their

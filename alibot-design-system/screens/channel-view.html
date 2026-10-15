@@ -12,12 +12,15 @@
 
   加载顺序与产品一致（app/alibot/studio/index.html 同序）：
     两个 foundation → 产品扩展层（--selected* / --unread* / --warn*）→ 组件库。
-  产品角色族归 app 层是纪律，不由本包声明第二份（见 SKILL.md §1）。
+  产品扩展层在本包内的落点是 ../ui_kits/app/product-ext.css；它与
+  app/alibot/studio/product-tokens.css 是同值同源的两份落点，切片只引用包内那份，
+  因此本包被复制到别处也不会掉色（见 SKILL.md §1）。
   组件一律来自 ../ui_kits/app/app.css —— 本文件不定义任何产品组件。
 -->
 <link rel="stylesheet" href="../colors_and_type.css" />
 <link rel="stylesheet" href="../tokens.css" />
-<link rel="stylesheet" href="../../app/alibot/studio/product-tokens.css" />
+<!-- 产品角色族的包内落点：与 app/alibot/studio/product-tokens.css 是同值同源的两份落点（见 SKILL.md §1 / product-ext.css 头部）。 -->
+<link rel="stylesheet" href="../ui_kits/app/product-ext.css" />
 <link rel="stylesheet" href="../ui_kits/app/app.css" />
 <style>
   /* 切片机架（slice chrome，非组件）：只放返回索引的角标。 */

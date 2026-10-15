@@ -26,6 +26,10 @@ fonts/                 README.md only — system stack is intentional; no font f
 preview/               focused review cards + index.html manifest
 ui_kits/app/           applied interface kit
   app.css              every product component class (the one implementation of each)
+  product-ext.css      the product extension layer inside this package: --selected* /
+                       --unread* / --warn* (values identical to
+                       app/alibot/studio/product-tokens.css — two landing sites of
+                       one family; see SKILL.md §1)
   index.html           the canonical assembly: AppShell → rail → main → dock
 screens/               sliced per-surface reproductions of the source monolith
   channel-view.html    full three-column app shell + messages + composer
@@ -45,7 +49,14 @@ screens/               sliced per-surface reproductions of the source monolith
    Best first cards: `preview/colors-primary.html`, `preview/typography-specimens.html`,
    `preview/spacing-tokens.html`, then `preview/colors-semantic.html`.
 2. **Designers/engineers**: read `DESIGN.md`, then import
-   `colors_and_type.css` + `tokens.css`. For the assembled interface open
+   `colors_and_type.css` + `tokens.css`. Building inside the app also needs the three
+   product role families (`--selected*` / `--unread*` / `--warn*`); this package ships
+   its own copy at `ui_kits/app/product-ext.css`, linked as `../ui_kits/app/product-ext.css`
+   from `screens/` and `./product-ext.css` from `ui_kits/app/index.html`. Every slice
+   loads that in-package file — nothing in this package points outside it, so the
+   package can be copied elsewhere and still render. The app declares the same values
+   at `app/alibot/studio/product-tokens.css`; those two are two landing sites of one
+   family, not a copy and its stale twin. For the assembled interface open
    `ui_kits/app/index.html`; for one surface at a time start at
    `screens/overview.html`.
 3. **Agents**: read `SKILL.md`, then open `ui_kits/app/index.html` for the canonical
@@ -75,7 +86,9 @@ density for general UI, small radii (6/8/12/16), hairline dividers, soft shadows
 and first-letter avatar tiles. Channel/thread message prose is a local 14px
 exception with line-height 1.65 / 1.7 respectively (ADR-0016); global type and
 spacing token values remain unchanged. Colour is authored once in
-`colors_and_type.css` (+ the product role families in the app layer); every value
+`colors_and_type.css` (+ the product role families, whose two landing sites are the
+in-package `ui_kits/app/product-ext.css` and the app's
+`app/alibot/studio/product-tokens.css`); every value
 is `oklch()` and every family carries the four tiers.
 
 ## Fidelity

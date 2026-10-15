@@ -10,11 +10,13 @@
   的顺序列出来，并指回另外两个参照物入口（ui_kits/app/index.html 标准装配、
   preview/index.html 令牌卡片）。每张卡片上写清该切片的语义与它展示的关键状态。
 
-  本页只做导航，不复刻任何组件；色与排版一律走 ../colors_and_type.css +
-  ../tokens.css 的令牌，不引入新的颜色字面量。
+  本页只做导航，不复刻任何组件；色与排版一律走两个 foundation（../colors_and_type.css +
+  ../tokens.css）与产品扩展层（../ui_kits/app/product-ext.css）的令牌，不引入新的颜色字面量。
+  overview 目前不直接消费三个产品角色族，但仍按全包同序加载，保持九张切片的加载清单一致。
 -->
 <link rel="stylesheet" href="../colors_and_type.css" />
 <link rel="stylesheet" href="../tokens.css" />
+<link rel="stylesheet" href="../ui_kits/app/product-ext.css" />
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; }
@@ -219,10 +221,11 @@
         各切片用一行注解说明取值，不伪造常驻效果。
       </li>
       <li>
-        <b>产品角色族来自 app 层。</b>切片按 <code>SKILL.md</code> §1 依次加载两个 foundation
-        与产品扩展层 <code>app/alibot/studio/product-tokens.css</code>
+        <b>产品角色族来自包内的产品扩展层。</b>切片按 <code>SKILL.md</code> §1 依次加载两个 foundation
+        与产品扩展层 <code>ui_kits/app/product-ext.css</code>
         （<code>--selected*</code> / <code>--unread*</code> / <code>--warn*</code>）——
-        这三个族归产品层是纪律，本包不声明第二份值。
+        它与 app 层的 <code>app/alibot/studio/product-tokens.css</code> 是同值同源的两份落点，
+        本包只引用包内那份，因此包被复制到别处也不会掉色。
       </li>
     </ul>
   </div>

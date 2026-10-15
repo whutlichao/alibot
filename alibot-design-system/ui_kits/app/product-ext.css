@@ -1,0 +1,68 @@
+/* ============================================================================
+   alibot 设计系统 —— 产品扩展层（product extension layer，包内落点）
+   ============================================================================
+
+   本文件（`ui_kits/app/product-ext.css`）与 `app/alibot/studio/product-tokens.css`
+   是**同一份产品角色族的两个落点**，
+   二者都有效，谁都不是对方的过期副本 —— **不要删掉任意一个**。
+
+     正本语义（按名消费的承诺）由仓库根 `CONTEXT.md` 的**视觉契约 (Visual Contract)**
+     词条约束：三个产品角色族（`--selected*` / `--unread*` / `--warn*`）在该设计系统
+     包**之外**、由产品扩展层声明；`colors_and_type.css` 与 `tokens.css` **故意不含**
+     它们（两个 foundation 是可复用部分，三个族是产品词汇，不随之复用）。
+
+     两个落点的分工：
+       app/ 侧  app/alibot/studio/product-tokens.css   产品工作台自己加载的那一份
+       包内     ui_kits/app/product-ext.css            本包切片与装配入口加载的那一份
+     两份文件的四个块**逐字一致**（值来自原型 `alibot-app.html` 的 `:root`）。
+     改色时两处同改；`CONTEXT.md` 把消费面定为「按名」，所以名字与档位语义不可改。
+
+   为什么包内需要自己的一份：
+     设计系统包应当可以被复制到别处独立使用。若切片 `<link>` 回仓库的
+     `app/alibot/studio/product-tokens.css`（那会是从本包穿出三层之外的相对路径），
+     包一旦离开本仓库目录结构，切片就掉色。因此包内自带一份同值声明，
+     使本包的每一个 HTML 都只依赖包内文件。
+
+   加载顺序（与产品 `app/alibot/studio/index.html` 同序）：
+     colors_and_type.css → tokens.css → product-ext.css → ui_kits/app/app.css
+
+   值的来源（value source of truth）：原型 `alibot-design-system/alibot-app.html`
+   的 `:root`（下方逐字照抄，含注释里的色相/用途）。原型的 `--unread` 族有 2 个消费点
+   （`.badge` / `.result mark`），`--selected` 族 16 个，`--warn` 族 4 个 —— 与 ui_kits
+   的登记一致。
+
+   色值一律 oklch()；档位纪律遵循 colors_and_type.css 的 tier rule：
+     fill = 马卡龙亮档（只做填充，深墨压其上）/ soft = 淡底档 / deep = 文字档 / graphic = 环·点档。
+   徽标只用 base 档 + `--on-accent` 墨色；**不**把 -fill 档用于徽标文字或状态点。
+
+   本文件只声明产品角色族；两个 foundation（`colors_and_type.css` / `tokens.css`）逐字不动，
+   本包也不复制任何业务状态。
+   ========================================================================== */
+
+:root {
+  /* ─── selected 族（当前位置：侧栏当前频道 / 锚点行 / 标签页 / 勾选项）───────── */
+  /* 原型 alibot-app.html: prototype base = graphic 档；此处照抄四个名字与值。 */
+  --selected:         oklch(84.9% 0.081 299.9);
+  --selected-soft:    color-mix(in oklch, var(--selected) 21%, transparent);
+  --selected-deep:    oklch(52.4% 0.081 299.8);
+  --selected-graphic: oklch(62.4% 0.081 300.5);
+
+  /* ─── unread 族（注意：频道未读徽标）────────────────────────────────────── */
+  /* base 档直接做徽标底（.badge 背景）+ --on-accent 墨色；其余三档按需。 */
+  --unread:         oklch(91% 0.100 94.8);
+  --unread-soft:    color-mix(in oklch, var(--unread) 36%, transparent);
+  --unread-deep:    oklch(51.8% 0.100 94.5);
+  --unread-graphic: oklch(61.6% 0.099 94.7);
+
+  /* ─── warn 族（警告：后端不可达横幅 / 计量条）──────────────────────────── */
+  --warn:         oklch(86.3% 0.084 52.2);
+  --warn-soft:    color-mix(in oklch, var(--warn) 24%, transparent);
+  --warn-deep:    oklch(52.6% 0.084 51.9);
+  --warn-graphic: oklch(62.1% 0.083 51.6);
+
+  /* ─── 存在态的两档文字名 ────────────────────────────────────────────────── */
+  /* 原型里 --online-text / --working-text 有消费点，但两个 foundation 文件不含它们；
+     ui_kits/app/app.css 头部把 --online-text 登记成同一形态的既有先例。 */
+  --online-text:  oklch(50.6% 0.107 159.9);
+  --working-text: oklch(52.3% 0.110 75.2);
+}
