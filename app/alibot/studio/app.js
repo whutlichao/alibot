@@ -1119,9 +1119,18 @@ function closeTaskModal() {
 async function submitTask() {
   const channelId = $('#taskCreateChannel').value;
   const title = $('#taskCreateTitle').value.trim();
-  if (!channelId || !title) return;
+  const box = $('#taskFormError');
+  if (!title) {
+    // 弹窗不再是 `<form>`（按钮是 type=button），因此没有浏览器自带的 required 提示：
+    // 空标题要自己说出来，不能默默什么都不发生。
+    box.textContent = state.channels.length ? '任务标题不能为空。' : '还没有频道：先新建一个频道再建任务。';
+    box.hidden = false;
+    $('#taskCreateTitle').focus();
+    return;
+  }
   const button = $('#taskCreateSubmit');
   button.disabled = true;
+  box.hidden = true;
   try {
     const payload = await api(channelPath(channelId, '/tasks'), { method: 'POST', body: { title } });
     closeTaskModal();
@@ -1135,7 +1144,6 @@ async function submitTask() {
     renderTaskBoard();
     toast('已创建任务「' + payload.task.title + '」。');
   } catch (err) {
-    const box = $('#taskFormError');
     box.textContent = err.message;
     box.hidden = false;
   } finally {
@@ -3088,6 +3096,7 @@ function bindEvents() {
     if (!$('#channelOverlay').hidden) closeChannelModal();
     if (!$('#dmOverlay').hidden) closeDmModal();
     if (!$('#agentOverlay').hidden) closeAgentModal();
+    if (!$('#taskOverlay').hidden) closeTaskModal();
   });
 
   window.addEventListener('online', () => loadWorkspace({ silent: true }));
