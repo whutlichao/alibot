@@ -2997,16 +2997,23 @@ async function selectTarget(targetId) {
   scrollToBottom();
 }
 
+function bindSearchEvents() {
+  $('#searchSubmit').addEventListener('click', submitSearch);
+  $('#searchQueryInput').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      return submitSearch();
+    }
+  });
+}
+
 function bindEvents() {
   $('#btnSearch').addEventListener('click', openSearchModal);
   $('#searchClose').addEventListener('click', closeSearchModal);
   $('#searchCancel').addEventListener('click', closeSearchModal);
-  $('#searchSubmit').addEventListener('click', submitSearch);
+  bindSearchEvents();
   $('#searchOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'searchOverlay') closeSearchModal();
-  });
-  $('#searchQueryInput').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); submitSearch(); }
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   $('#btnNewDm').addEventListener('click', openDmModal);

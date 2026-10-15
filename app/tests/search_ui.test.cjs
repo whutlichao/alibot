@@ -10,6 +10,7 @@ class FakeNode {
     this.children = [];
     this.dataset = {};
     this.attributes = {};
+    this.listeners = new Map();
     this.hidden = false;
     this.disabled = false;
     this.value = "";
@@ -50,6 +51,16 @@ class FakeNode {
     this.attributes[name] = String(value);
   }
 
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+
+  dispatchEvent(event) {
+    const results = (this.listeners.get(event.type) || []).map((listener) => listener.call(this, event));
+    return Promise.all(results.filter((result) => result && typeof result.then === "function"));
+  }
+
   focus() {}
 }
 
@@ -81,11 +92,11 @@ function createHarness(fetch) {
   assert.match(source, startup, "app startup calls should remain at the end of app.js");
   const testSource = source.replace(
     startup,
-    "\nglobalThis.__searchUiTest = { submitSearch, state };\n",
+    "\nglobalThis.__searchUiTest = { bindSearchEvents, state };\n",
   );
   vm.runInContext(testSource, context, { filename: appPath });
+  context.__searchUiTest.bindSearchEvents();
   return {
-    submitSearch: context.__searchUiTest.submitSearch,
     state: context.__searchUiTest.state,
     input: elements.get("#searchQueryInput"),
     target: elements.get("#searchTargetSelect"),
@@ -111,21 +122,37 @@ function hit(body, ranges) {
   };
 }
 
-test("renders every backend-provided highlight interval", async () => {
+function enterSearch(harness) {
+  let prevented = false;
+  return harness.input.dispatchEvent({
+    type: "keydown",
+    key: "Enter",
+    preventDefault() {
+      prevented = true;
+    },
+  }).then(() => assert.equal(prevented, true));
+}
+
+test("renders only the two backend intervals among three matching occurrences on button click", async () => {
   const harness = createHarness(async () => response({
-    hits: [hit("Needle banana needle", [{ start: 0, end: 6 }, { start: 14, end: 20 }])],
+    hits: [hit("Needle banana needle, needle", [{ start: 0, end: 6 }, { start: 14, end: 20 }])],
   }));
   harness.input.value = "needle";
 
-  await harness.submitSearch();
+  await harness.button.dispatchEvent({ type: "click" });
 
-  assert.deepEqual(
-    descendants(harness.results).filter((node) => node.tagName === "mark").map((node) => node.textContent),
-    ["Needle", "needle"],
-  );
+  const renderedNodes = descendants(harness.results);
+  const marks = renderedNodes.filter((node) => node.tagName === "mark");
+  const plainText = renderedNodes
+    .filter((node) => node.tagName === "#text")
+    .map((node) => node.textContent)
+    .join("");
+  assert.equal(marks.length, 2);
+  assert.deepEqual(marks.map((node) => node.textContent), ["Needle", "needle"]);
+  assert.equal(plainText, " banana , needle");
 });
 
-test("preserves leading and trailing whitespace in the literal query", async () => {
+test("preserves leading and trailing whitespace in the literal query on Enter", async () => {
   let requestedQuery = null;
   const harness = createHarness(async (url) => {
     requestedQuery = new URLSearchParams(url.split("?")[1]).get("q");
@@ -133,7 +160,7 @@ test("preserves leading and trailing whitespace in the literal query", async () 
   });
   harness.input.value = " needle ";
 
-  await harness.submitSearch();
+  await enterSearch(harness);
 
   assert.equal(requestedQuery, " needle ");
   assert.equal(harness.state.search.query, " needle ");
@@ -145,7 +172,7 @@ test("shows a backend failure instead of an empty-result state", async () => {
   });
   harness.input.value = "needle";
 
-  await harness.submitSearch();
+  await harness.button.dispatchEvent({ type: "click" });
 
   assert.equal(harness.error.hidden, false);
   assert.match(harness.error.textContent, /后端不可达/);
@@ -165,9 +192,9 @@ test("ignores an older response after a newer query completes", async () => {
   });
 
   harness.input.value = "older";
-  const olderRequest = harness.submitSearch();
+  const olderRequest = harness.button.dispatchEvent({ type: "click" });
   harness.input.value = "newer";
-  await harness.submitSearch();
+  await enterSearch(harness);
   resolveOlder();
   await olderRequest;
 
