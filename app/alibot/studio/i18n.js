@@ -38,6 +38,9 @@ const I18N_CATALOGS = {
     'identity.human': '人类 · 本机',
     'identity.me': '我',
 
+    /* ─── 移动端壳（≤900px）：顶部栏只有一个控件 ──────────────────────── */
+    'mobile.railToggle': '打开导航',
+
     /* ─── 左栏 ─────────────────────────────────────────────────────── */
     'rail.nav': '工作区导航',
     'rail.newChannel': '新建频道',
@@ -225,6 +228,8 @@ const I18N_CATALOGS = {
     'dock.history': '状态变更记录',
     'dock.label': '详情面板',
     'dock.toggle': '切换详情面板',
+    // ≤900px：dock 变右侧抽屉时，抽屉**自己的**出口（`>900px` 不出现，见 `app.css`）。
+    'dock.closePanel': '关闭详情面板',
     'dock.membersTitle': '频道成员',
     'dock.membersRole':
       '本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用',
@@ -378,6 +383,9 @@ const I18N_CATALOGS = {
     'app.brandSub': 'LOCAL · this machine',
     'identity.human': 'Human · this machine',
     'identity.me': 'Me',
+
+    /* ─── Mobile shell (≤900px): the topbar carries a single control ── */
+    'mobile.railToggle': 'Open navigation',
 
     /* ─── Left rail ────────────────────────────────────────────────── */
     'rail.nav': 'Workspace navigation',
@@ -574,6 +582,8 @@ const I18N_CATALOGS = {
     'dock.history': 'Change history',
     'dock.label': 'Detail panel',
     'dock.toggle': 'Toggle detail panel',
+    // ≤900px: the dock's own way out once it is a right-hand drawer (never shown above 900px, see `app.css`).
+    'dock.closePanel': 'Close the details panel',
     'dock.membersTitle': 'Channel members',
     'dock.membersRole':
       'Agents already in this channel and agents that can still be added; the status dot is derived from backend facts: idle / replying / error / disabled',

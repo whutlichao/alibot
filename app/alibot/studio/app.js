@@ -1303,12 +1303,12 @@ function renderAssignChips(task) {
     而任务线程只是 dock 里显示什么。两者组合出「看板 + 右侧线程」这个原型交互。 */
 function setDockMode(mode) {
   state.dockMode = mode;
-  const dock = $('#dock');
-  if (!dock) return;
   const isTask = mode === 'task' && state.activeTaskId;
-  if (isTask) dock.hidden = false;
   $('#dockAgent').hidden = Boolean(isTask);
   $('#dockTask').hidden = !isTask;
+  // 滑入放在**形态定下来之后**：≤900px 打开抽屉要把焦点送进第一个可聚焦控件，
+  // 而那一步要跳过 `hidden` 子树 —— 先开抽屉会把焦点送给一个还在 `hidden` 里的控件。
+  if (isTask) setDockOpen(true);
 }
 
 function setViewMode(mode) {
@@ -1362,10 +1362,100 @@ function showMessagesView() {
   markCurrentRead();
 }
 
+/* ─── 移动端抽屉壳（≤900px）：左抽屉（rail）/ 遮罩 / 右抽屉（dock） ──────────
+   类名与断点照原型 `alibot-app.html:459-495` 与切片 `screens/mobile-shell.html:14-18`，
+   规格决策 D11 把 `.mobile-topbar` / `.rail-scrim` / `.is-open` 三个名字定为契约。
+
+   呈现态只有一个正本：`.is-open`（CSS 在 ≤900px 认它）。`hidden` 保留它原本的语义
+   ——`rail` 从来没有这个属性，`dock` 的 `hidden` 是「这里没有内容 / 人把它收起来了」；
+   ≤900px 下它由 CSS 改写成「离屏 + 不可见」，于是开着没有只看那一个类。
+
+   键盘可达：抽屉在 ≤900px 关着时是 `visibility: hidden` 的离屏件，Tab 命不中它；
+   打开时把焦点送进抽屉的第一个控件、收起时还给触发它的控件，于是焦点不会停在
+   一个屏幕外、看不见的控件上。这一条只在移动壳里做（`mobileShell()`），
+   桌面的焦点行为一个字不动。 */
+
+/** 移动壳是否生效。这里是 JS 侧唯一知道那个断点的地方，取值必须与 `app.css` 的
+    `@media (max-width: 900px)` 一致 —— 它只用来决定「要不要替抽屉搬焦点」。
+    （节点本身在不在屏幕上、可不可见，一律由 CSS 裁决，JS 不镜像一套。） */
+const MOBILE_SHELL_QUERY = '(max-width: 900px)';
+
+function mobileShell() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return Boolean(window.matchMedia(MOBILE_SHELL_QUERY).matches);
+}
+
+function focusNode(node) {
+  if (node && typeof node.focus === 'function') node.focus();
+}
+
+/** 抽屉里第一个能接焦点的控件（跳过 `hidden` 子树与禁用件）。 */
+function firstFocusable(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return null;
+  const nodes = root.querySelectorAll('button, a[href], input, select, textarea, [tabindex]');
+  for (const node of nodes) {
+    if (node.disabled) continue;
+    if (typeof node.closest === 'function' && node.closest('[hidden]')) continue;
+    return node;
+  }
+  return null;
+}
+
+/** 焦点现在在不在这个容器里（收起抽屉时据此决定要不要把焦点还回去）。 */
+function focusInside(container) {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!active || !container || typeof container.contains !== 'function') return false;
+  return container.contains(active);
+}
+
+function railOpen() {
+  const rail = $('#rail');
+  return Boolean(rail && rail.classList.contains('is-open'));
+}
+
+/** 开左抽屉：`.is-open` + 遮罩出 + `aria-expanded=true`（三者同步，不靠人记）。 */
+function openRail() {
+  const rail = $('#rail');
+  if (!rail) return;
+  rail.classList.add('is-open');
+  const scrim = $('#railScrim');
+  if (scrim) scrim.hidden = false;
+  const toggle = $('#railToggle');
+  if (toggle) toggle.setAttribute('aria-expanded', 'true');
+  if (mobileShell()) focusNode(firstFocusable(rail));
+}
+
+/** 收左抽屉（scrim 点击 / ESC / 选中一个导航行共用它）。 */
+function closeRail() {
+  const rail = $('#rail');
+  if (!rail) return;
+  rail.classList.remove('is-open');
+  const scrim = $('#railScrim');
+  if (scrim) scrim.hidden = true;
+  const toggle = $('#railToggle');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  if (mobileShell()) focusNode(toggle);
+}
+
+/** dock 的开合：`hidden` 与 `.is-open` 必须同进同出（票面：状态与类名同步），
+    因此所有写 `dock.hidden` 的地方都走这里，不各写一遍。 */
+function setDockOpen(open) {
+  const dock = $('#dock');
+  if (!dock) return;
+  const wasOpen = !dock.hidden;
+  dock.hidden = !open;
+  dock.classList.toggle('is-open', open);
+  const toggle = $('#btnDockToggle');
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!mobileShell()) return;
+  if (open && !wasOpen) focusNode(firstFocusable(dock));
+  else if (!open && wasOpen && focusInside(dock)) focusNode(toggle);
+}
+
 /** 详情面板的开合（rail 图标与命令面板里的「切换详情面板」共用同一个动作，不各写一遍）。 */
 function toggleDock() {
   const dock = $('#dock');
-  if (dock) dock.hidden = !dock.hidden;
+  if (dock) setDockOpen(dock.hidden);
 }
 
 /** 关闭 dock 的任务线程，回到频道成员形态（卡片与线程都留在看板上）。
@@ -2034,6 +2124,8 @@ function render() {
   renderHeader();
   setViewMode(state.mode);
   renderMessages();
+  // 顶部栏（≤900px）显示**当前 target 的标题**：它跟着 target 走，因此和 header 一起刷。
+  renderMobileTopbar();
   // 搜索面的文案（facet / 结果行 / 空态）都按词条取值，因此它和别的面一样随整体重绘刷新——
   // 切语言后搜索结果不会留在上一门语言里。
   renderSearchFacets();
@@ -2408,6 +2500,23 @@ function renderHeader() {
   $('#composerInput').placeholder = isDm
     ? t('header.dmPlaceholder', { name })
     : t('header.channelPlaceholder', { name });
+}
+
+/** 移动端顶部栏的标题（≤900px）：**当前 target 名**，形态跟频道头一致 ——
+    频道是 `#名`、私信是 `@名`（原型 `alibot-app.html:1647,1655` 对 `#mtTitle` 的两处赋值）。
+    `>900px` 时顶栏 `display:none`，这次赋值没有可见效果 —— 但它与断点无关地保持正确，
+    窗口宽度在两边来回时不会留下一条旧标题。没有当前 target 时退回品牌名：
+    顶栏是常显件，不留一条空标题。（`alibot` 是本页的品牌名，`index.html` 的品牌块同样
+    直接写它、不进词条表。） */
+function renderMobileTopbar() {
+  const title = $('#mtTitle');
+  if (!title) return;
+  const target = activeTarget();
+  if (!target) {
+    title.textContent = 'alibot';
+    return;
+  }
+  title.textContent = target.kind === 'dm' ? '@' + target.peer.display_name : '#' + target.name;
 }
 
 function renderConnection() {
@@ -3527,11 +3636,17 @@ function bindEvents() {
 
   $('#channelList').addEventListener('click', (event) => {
     const row = event.target.closest('[data-channel]');
-    if (row) selectTarget(row.dataset.channel);
+    if (!row) return;
+    selectTarget(row.dataset.channel);
+    // 挑完目标就把左抽屉收起来：抽屉盖着刚选中的那块内容，留着它等于把结果挡住
+    // （桌面上这个动作是空转 —— 抽屉在那里根本不存在，`closeRail()` 是幂等的）。
+    closeRail();
   });
   $('#dmList').addEventListener('click', (event) => {
     const row = event.target.closest('[data-dm]');
-    if (row) selectTarget(row.dataset.dm);
+    if (!row) return;
+    selectTarget(row.dataset.dm);
+    closeRail();
   });
 
   // 页签：两个页签在同一内容区切换（任务的唯一入口）。
@@ -3688,6 +3803,10 @@ function bindEvents() {
     const button = event.target.closest('[data-join]');
     if (button) joinChannelMember(button.dataset.join);
   });
+  // ≤900px 抽屉自己的出口（`>900px` 时那个控件 `display:none`，所以这里在桌面是空转）。
+  $('#dock').addEventListener('click', (event) => {
+    if (event.target.closest('[data-dock-close]')) setDockOpen(false);
+  });
 
   $('#messageList').addEventListener('click', (event) => {
     const taskRef = event.target.closest('[data-open-task]');
@@ -3713,8 +3832,7 @@ function bindEvents() {
     const inspect = event.target.closest('[data-dock-toggle]');
     if (inspect) {
       // 只打开面板，不滚动页面：失败现场就在眼前，人不需要先去找那个图标。
-      const dock = $('#dock');
-      if (dock) dock.hidden = false;
+      setDockOpen(true);
       renderDock();
       return;
     }
@@ -3734,6 +3852,13 @@ function bindEvents() {
   });
 
   $('#btnDockToggle').addEventListener('click', toggleDock);
+  // 移动端壳（≤900px）：顶部栏按钮开合左抽屉，点遮罩收起。
+  // 同一个按钮承担开与合（`aria-expanded` 是它的状态），键盘用户因此有来有回。
+  $('#railToggle').addEventListener('click', () => {
+    if (railOpen()) closeRail();
+    else openRail();
+  });
+  $('#railScrim').addEventListener('click', closeRail);
   $('#btnReconnect').addEventListener('click', () => loadWorkspace());
 
   // ── 全局键盘：⌘K / Ctrl+K 打开命令面板、ESC 关闭最上面那一层、M/T 两个单键跳转 ──
@@ -3755,6 +3880,17 @@ function bindEvents() {
       if (!$('#dmOverlay').hidden) closeDmModal();
       if (!$('#agentOverlay').hidden) closeAgentModal();
       if (!$('#taskOverlay').hidden) closeTaskModal();
+      // 移动端壳的左抽屉盖在内容上，因此 ESC 先收它（它比搜索视图更靠前），收到就到此为止。
+      if (railOpen()) {
+        closeRail();
+        return;
+      }
+      // ≤900px 的右抽屉同样盖在内容上（它没有遮罩，因此 ESC 是它的键盘出口）。
+      // 桌面 dock 是常驻列，ESC 不管它 —— 那会改掉既有行为。
+      if (mobileShell() && !$('#dock').hidden) {
+        setDockOpen(false);
+        return;
+      }
       if (state.mode === 'search') showMessagesView();
       return;
     }
