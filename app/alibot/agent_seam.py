@@ -284,7 +284,13 @@ class AgentScopeAgentSeam:
         credential_type = PROVIDER_CREDENTIAL_TYPE[provider]
         credential_class = cred.CredentialFactory.get_credential_class(credential_type)
         if credential_class is None:
-            raise RuntimeError(f"AgentScope 不认识这个凭证类型：{credential_type}")
+            raise RuntimeError(
+                render(
+                    "seam.unknown_credential_type",
+                    self._locale(),
+                    credential_type=credential_type,
+                )
+            )
         # 用 model_validate 而不是派生专属构造参数：providers 的凭证形状不一致
         # （``api_key`` / ``host`` / ``api_host``），model_validate 是框架自己的反序列化入口。
         credential = credential_class.model_validate({"api_key": api_key} if api_key else {})

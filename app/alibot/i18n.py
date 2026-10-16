@@ -122,6 +122,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "模型通过任务工具提交了结构化动作",
         "seam.no_body": "模型没有产出可落库的正文（本轮自判不回应）",
         "seam.replied": "模型自主判断需要回应",
+        "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "消息正文",
         "remote.face.author": "发送者显示名",
@@ -308,6 +309,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "The model submitted a structured action through the task tool",
         "seam.no_body": "The model produced no storable body (it chose not to answer this round)",
         "seam.replied": "The model decided an answer was needed",
+        "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "message bodies",
         "remote.face.author": "sender display names",
