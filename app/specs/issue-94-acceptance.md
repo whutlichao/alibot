@@ -12,7 +12,7 @@
 | 分支 | `schema-migration-t94` |
 | 提交 | `3b4b800` feat（别名接线）/ `b584a28` test（14 条验收 + 旧口径注释同步）/ `1863497` docs（CONTEXT.md）/ `88b574c` refactor（双轴 review 收口）/ + 本文件与 PR 正文的 docs 提交 |
 | 本票 base | `36873c7`（`main`，即 #93 合并后的读数） |
-| PR | 见 §2.11（本 Answer 回填时填入） |
+| PR | [#102](https://github.com/whutlichao/alibot/pull/102)（base `main`，head `schema-migration-t94`） |
 | PR body | `app/specs/issue-94-pr-body.md`（`--body-file` 用） |
 | 新增验收 | `app/tests/test_repair_targets_alias.py`（14 条：4 个具名 + 9 个范围参数 + 1 个 dry-run 等价） |
 
@@ -229,10 +229,10 @@ $ git diff 36873c7...HEAD -- app/tests/test_target_scope.py \
 
 | 项 | 值 |
 | --- | --- |
-| 分支已推送 | `schema-migration-t94` → `origin`（见 PR 回执） |
-| PR | **（本 Answer 回填时填入）** |
+| 分支已推送 | `schema-migration-t94` → `origin` |
+| PR | [#102](https://github.com/whutlichao/alibot/pull/102)（base `main`，head `schema-migration-t94`） |
 | PR body | `app/specs/issue-94-pr-body.md`（`gh pr create --body-file`） |
-| #94 摘要 comment | **（回填）** |
+| #94 摘要 comment | 已发（逐条读数摘要 + Answer / PR 指针） |
 | `worker_done` | 从本 worker 终端发送并已收到成功回执（`succeeded`，带 Task ID / Dispatch ID） |
 
 ---
