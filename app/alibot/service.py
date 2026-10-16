@@ -21,7 +21,7 @@ from .agent_seam import (
     model_name_of,
     provider_of,
 )
-from .db import OWNER_ID, Database, DomainError
+from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError
 from .events import EventBus
 from .mentions import parse_mentions
 
@@ -100,6 +100,13 @@ class WorkspaceService:
             agent = agents.get(dm["agent_id"], {})
             dm["peer"]["status"] = agent.get("status", "offline")
         return dms
+
+    # ─── 工作台搜索 ───────────────────────────────────────────────────────
+    def search_messages(
+        self, query: str, *, target_id: str | None = None, limit: int = SEARCH_RESULT_LIMIT
+    ) -> list[dict[str, Any]]:
+        """跨 channel / DM / task target 搜索普通消息；可显式收窄到一个 target。"""
+        return self._db.search_messages(query, target_id=target_id, limit=limit)
 
     def create_dm(self, agent_id: str) -> tuple[dict[str, Any], bool]:
         dm, created = self._db.create_dm(agent_id, owner_id=self._member_id)

@@ -40,6 +40,7 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
         新建频道
       </button>
+      <button class="btn" id="btnSearch" type="button" data-od-id="btn-workspace-search" title="搜索工作台">搜索</button>
       <button class="btn" id="btnNewDm" data-od-id="btn-new-dm" title="新建私信">私信</button>
       <button class="btn" id="btnNewAgent" data-od-id="btn-new-agent" title="新建 Agent">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 13h.01M15 13h.01"/></svg>
@@ -245,6 +246,38 @@
       </div>
     </div>
   </aside>
+</div>
+
+<!-- ─── 工作台搜索：命中判定和高亮区间由后端给出，前端只做呈现 ─────────── -->
+<div class="overlay" id="searchOverlay" hidden>
+  <div class="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="searchModalTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="searchModalTitle">搜索工作台</h2>
+        <div class="sub">搜索频道、私信与任务线程中的普通消息；可限定一个 target。</div>
+      </div>
+      <button class="icon-btn" type="button" id="searchClose" aria-label="关闭搜索">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="searchQueryInput">关键词</label>
+        <input class="input" id="searchQueryInput" placeholder="大小写不敏感的子串匹配" autocomplete="off" data-od-id="search-query" />
+      </div>
+      <div class="field">
+        <label for="searchTargetSelect">限定 target</label>
+        <select class="input" id="searchTargetSelect" data-od-id="search-target"></select>
+      </div>
+      <div class="form-error" id="searchError" hidden role="alert"></div>
+      <div class="search-results" id="searchResults" role="status" aria-live="polite" data-od-id="search-results"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" type="button" id="searchCancel">关闭</button>
+      <span class="sep"></span>
+      <button class="btn btn-primary" type="button" id="searchSubmit" data-od-id="search-submit">搜索</button>
+    </div>
+  </div>
 </div>
 
 <!-- ─── 新建任务 ─────────────────────────────────────────────────────── -->

@@ -187,6 +187,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
+| `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
 | `GET /api/channels` | 频道列表（含 `last_seq` / `last_read_seq` / `unread_count`） |
 | `POST /api/channels` | 新建频道 `{name, description, member_ids}`；校验失败**整体不创建** |
 | `GET /api/channels/{id}/messages` | 按 seq 升序取消息（`?after_seq=n` 取增量） |
@@ -222,11 +223,12 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 .venv/bin/ruff check app && .venv/bin/ruff format --check app
 .venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
 node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
+node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
 ```
 
-测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
-已读位置、未读计数、不可变性、重启后一致），不断言内部函数或前端 DOM。每条用例的库都在
-`tmp_path` 下，**不触碰** `~/Alibot`。
+Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
+已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 搜索 DOM 行为由
+上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
 
 四类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟。
 测试**不联网、零成本**；「什么时候跑完一轮」由测试自己拨（手动调度器），所以 in-flight 与

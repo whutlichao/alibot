@@ -78,6 +78,9 @@ ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
 # 它是**常量**：本票不做配置化（那是 #31 的范围），只把「每频道一份」泛化为「每 target 一份」。
 BUDGET_LIMIT = 3
 
+# 工作台搜索的硬上限：前端可以请求更小的窗口，但不能把整张消息表一次搬到浏览器。
+SEARCH_RESULT_LIMIT = 200
+
 # 判断「这个库是不是空库」时要看的业务表名（见 :meth:`Database._assert_schema_compatible`）。
 # 版本号缺失时**无法**从版本号判断库来自哪一代，所以新旧两代的名字都在列表里：
 # 只要其中**任意一张表有任何一行**，这个库就有数据，不是空库。
@@ -370,6 +373,56 @@ DM_SELECT_SQL = (
     " ORDER BY t.created_at, t.id"
 )
 
+# 工作台搜索的唯一判定：SQLite CASEFOLD + LIKE 子串匹配，前端只消费后端高亮区间。
+#
+# ``LIKE`` 的模式由 ``_search_like_pattern`` 绑定为 ``%关键词%``，并转义用户输入里的通配符，
+# 所以它仍是严格的子串匹配。全工作区版本由 target 驱动，经 message 上既有的
+# ``UNIQUE(target_id, seq)`` 索引读取各 target 消息；不新增 schema / FTS5。
+SEARCH_HIT_SELECT_SQL = """
+    SELECT m.*, a.kind AS author_kind, a.display_name AS author_name,
+           a.avatar_slot AS author_avatar_slot, a.deleted_at AS author_deleted_at,
+           t.kind AS target_kind,
+           CASE t.kind
+             WHEN 'channel' THEN c.name
+             WHEN 'dm' THEN peer.display_name
+             WHEN 'task' THEN task.title
+           END AS target_display_name
+"""
+SEARCH_HIT_FROM_SQL = """
+      FROM target t
+      CROSS JOIN message m
+      JOIN member a ON a.id = m.author_member_id
+ LEFT JOIN channel c ON c.id = t.id AND t.kind = 'channel'
+ LEFT JOIN member peer ON peer.id = t.dm_peer_member_id AND t.kind = 'dm'
+ LEFT JOIN task ON task.target_id = t.id AND t.kind = 'task'
+"""
+SEARCH_ALL_HITS_SQL = (
+    SEARCH_HIT_SELECT_SQL
+    + SEARCH_HIT_FROM_SQL
+    + """
+     WHERE m.target_id = t.id
+       AND m.kind != 'system'
+       AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
+     LIMIT :limit
+"""
+)
+SEARCH_TARGET_HITS_SQL = (
+    SEARCH_HIT_SELECT_SQL
+    + SEARCH_HIT_FROM_SQL
+    + """
+     WHERE m.target_id = :target_id
+       AND m.target_id = t.id
+       AND m.kind != 'system'
+       AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
+     LIMIT :limit
+"""
+)
+
+
+def _sqlite_casefold(value: str | None) -> str | None:
+    """为 SQLite ``LIKE`` 提供与 Python 正文区间判定一致的 Unicode 大小写折叠。"""
+    return value.casefold() if value is not None else None
+
 
 class SchemaVersionMismatch(Exception):
     """库里的 schema 版本与本代码需要的版本不一致：**拒绝启动**，且不改动旧库一个字节。
@@ -484,6 +537,7 @@ class Database:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
+        self._conn.create_function("CASEFOLD", 1, _sqlite_casefold, deterministic=True)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA busy_timeout = 5000")
 
@@ -1357,6 +1411,27 @@ class Database:
             ).fetchall()
         return [self._message_payload(row) for row in rows]
 
+    def search_messages(
+        self, query: str, *, target_id: str | None = None, limit: int = SEARCH_RESULT_LIMIT
+    ) -> list[dict[str, Any]]:
+        """搜索全工作台普通消息；给定 target 时只在该作用域内查。
+
+        本仓是单用户工作台，target_member 表表达唤醒与未读的成员面，不是可见性 ACL；所以这里
+        **不**附加 target_member 过滤。target 仅在调用方显式限定时校验存在，避免把错误 target
+        伪装成零命中。
+        """
+        if target_id is not None:
+            self.get_target(target_id)
+        sql = SEARCH_TARGET_HITS_SQL if target_id is not None else SEARCH_ALL_HITS_SQL
+        params = {
+            "pattern": self._search_like_pattern(query),
+            "target_id": target_id,
+            "limit": limit,
+        }
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._search_hit_payload(row, query) for row in rows]
+
     def append_message(
         self,
         target_id: str,
@@ -1471,6 +1546,71 @@ class Database:
                 "display_name": row["author_name"],
                 "avatar_slot": row["author_avatar_slot"],
             },
+        }
+
+    @staticmethod
+    def _search_like_pattern(query: str) -> str:
+        """把用户文本变为 SQLite ``LIKE '%kw%' ESCAPE '\\'`` 的字面子串模式。"""
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return "%" + escaped.casefold() + "%"
+
+    @staticmethod
+    def _search_highlight_ranges(body: str, query: str) -> list[dict[str, int]]:
+        """给出全部不重叠命中的 UTF-16 区间，供浏览器直接 ``slice`` 呈现。"""
+        folded_body: list[str] = []
+        original_starts: list[int] = []
+        original_ends: list[int] = []
+        for index, character in enumerate(body):
+            folded_character = character.casefold()
+            folded_body.append(folded_character)
+            original_starts.extend([index] * len(folded_character))
+            original_ends.extend([index + 1] * len(folded_character))
+
+        folded_text = "".join(folded_body)
+        folded_query = query.casefold()
+        if not folded_query:
+            return []
+        ranges: list[dict[str, int]] = []
+        seen: set[tuple[int, int]] = set()
+        previous_original_end = 0
+        cursor = 0
+        while True:
+            folded_start = folded_text.find(folded_query, cursor)
+            if folded_start < 0:
+                break
+            folded_end = folded_start + len(folded_query)
+            start = original_starts[folded_start]
+            end = original_ends[folded_end - 1]
+            original_range = (start, end)
+            # JavaScript 的 String.slice 按 UTF-16 code unit 计数；转换留在唯一判定落点，前端无需重算。
+            if original_range not in seen and start >= previous_original_end:
+                ranges.append(
+                    {
+                        "start": len(body[:start].encode("utf-16-le")) // 2,
+                        "end": len(body[:end].encode("utf-16-le")) // 2,
+                    }
+                )
+                seen.add(original_range)
+                previous_original_end = end
+                cursor = folded_end
+            else:
+                # casefold 展开可能让 folded 匹配映回重叠原文；从下一个 folded 起点继续，
+                # 不能直接跳过候选尾部，否则会漏掉紧随其后的非重叠原文命中。
+                cursor = folded_start + 1
+        return ranges
+
+    @classmethod
+    def _search_hit_payload(cls, row: sqlite3.Row, query: str) -> dict[str, Any]:
+        message = cls._message_payload(row)
+        message["author"]["deleted"] = row["author_deleted_at"] is not None
+        return {
+            "message": message,
+            "target": {
+                "id": row["target_id"],
+                "kind": row["target_kind"],
+                "display_name": row["target_display_name"],
+            },
+            "highlight_ranges": cls._search_highlight_ranges(message["body"], query),
         }
 
     # ─── 有界响应预算（策略 B 的正本，落库） ──────────────────────────────
