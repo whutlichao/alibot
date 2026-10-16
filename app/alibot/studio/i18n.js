@@ -310,6 +310,65 @@ const I18N_CATALOGS = {
     'agent.create': '创建 Agent',
     'agent.providerLocalHint': '本机模型：不离开本机，不需要数据流确认。',
     'agent.providerRemoteHint': '远端模型：启用前需要先确认数据会离开本机（见下方告知）。',
+    'agent.enabledLabel': '启用状态',
+    'agent.enabledOn': '启用',
+    'agent.enabledOnHint': '正常参与频道与任务',
+    'agent.enabledOff': '停用',
+    'agent.enabledOffHint': '不产出回复',
+
+    /* ─── Agent 详情（dock 第三形态）：概览 + 运行时两个页签（日志页签不做，D24） ──
+       概览的每个数字都由**后端既有事实**推导（`stats`：`round_outcome` 聚合 + 任务行），
+       运行时**只**放 `agent_config` 里真实存在的字段。原型的内存 / 延迟 / 工具权限 / 温度 /
+       Token 消耗 / 上下文占用在本仓没有数据面，因此这里也没有它们的词条（不是漏了）。 */
+    'agentDetail.tag': 'Agent',
+    'agentDetail.tabsLabel': 'Agent 详情视图',
+    'agentDetail.tabOverview': '概览',
+    'agentDetail.tabRuntime': '运行时',
+    'agentDetail.closeAria': '关闭 Agent 详情',
+    'agentDetail.openAria': '查看 {name} 的详情',
+    'agentDetail.sectionFacts': '事实',
+    'agentDetail.statChannels': '订阅频道数',
+    'agentDetail.statChannelsHint': '来源：它是成员的频道数（后端频道成员表）。',
+    'agentDetail.statRounds': '消息处理数',
+    'agentDetail.statRoundsHint': '来源：它参与过的轮次结果条数（round_outcome，跨频道与任务）。',
+    'agentDetail.statTasksDone': '完成任务数',
+    'agentDetail.statTasksDoneHint': '来源：指派给它且状态为「完成」的任务行。',
+    'agentDetail.statSuccess': '成功率',
+    'agentDetail.statSuccessHint':
+      '来源：回复的轮次数 ÷（回复 + 自判忽略 + 失败）的轮次数；没有样本时显示「—」。',
+    'agentDetail.noSamples': '—',
+    'agentDetail.sectionStatus': '当前状态',
+    'agentDetail.kvStatus': '当前状态',
+    'agentDetail.kvReason': '未启用原因',
+    'agentDetail.sectionActions': '操作',
+    'agentDetail.pause': '暂停',
+    'agentDetail.resume': '恢复',
+    'agentDetail.edit': '编辑配置',
+    'agentDetail.pauseNote':
+      '暂停只写配置：它仍会被唤醒并留下一条可读原因的失败轮次结果，只是不产出回复。',
+    'agentDetail.sectionRuntime': '运行时',
+    'agentDetail.runtimeNote': '只呈现配置里真实存在的字段。',
+    'agentDetail.kvModel': '模型标识',
+    'agentDetail.kvProvider': '提供商',
+    'agentDetail.kvRemote': '是否远端',
+    'agentDetail.remoteYes': '远端（数据会离开本机）',
+    'agentDetail.remoteNo': '本机（数据不出本机）',
+    'agentDetail.kvConsent': '远端数据流告知',
+    'agentDetail.consentAck': '已确认',
+    'agentDetail.consentPending': '未确认（启用前会先告知）',
+    'agentDetail.consentNotNeeded': '本机提供商：不需要确认',
+    'agentDetail.kvRole': '角色',
+    'agentDetail.kvPrompt': '系统提示',
+    'agentDetail.kvEnabled': '启用状态',
+    'agentDetail.enabledOn': '已启用',
+    'agentDetail.enabledOff': '已暂停',
+    'agentDetail.emptyField': '（未填写）',
+    'agentDetail.editTitle': '编辑配置',
+    'agentDetail.editSub': '保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。',
+    'agentDetail.save': '保存',
+    'agentDetail.saveFailed': '保存失败：{reason}',
+    'agentDetail.pauseFailed': '暂停失败：{reason}',
+    'agentDetail.resumeFailed': '恢复失败：{reason}',
 
     /* ─── 成员名册（频道成员的**只读**全名单，`CONTEXT.md` **成员名册**） ────
        入口在频道头部；弹窗只回答「这个频道里有谁」，**唯一动作是关闭**——
@@ -362,6 +421,10 @@ const I18N_CATALOGS = {
       '已创建 Agent {name}，在右侧「频道成员」面板的「未加入」一段点「加入」即可让它进入当前频道。',
     'toast.remoteAck': '已记录数据流告知确认：{provider}。',
     'toast.remoteAckFailed': '确认失败：{reason}',
+    'toast.agentUpdated': '已保存 {name} 的配置。',
+    'toast.agentDetailFailed': '读取 Agent 详情失败：{reason}',
+    'toast.agentPaused': '已暂停 {name}：它仍会被唤醒并留下失败轮次结果，只是不产出回复。',
+    'toast.agentResumed': '已恢复 {name}。',
   },
 
   en: {
@@ -661,6 +724,69 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': 'Local model: it never leaves this machine and needs no data-flow consent.',
     'agent.providerRemoteHint':
       'Remote model: enabling it first requires confirming that data leaves this machine (see the notice below).',
+    'agent.enabledLabel': 'Enabled',
+    'agent.enabledOn': 'Enabled',
+    'agent.enabledOnHint': 'Takes part in channels and tasks',
+    'agent.enabledOff': 'Disabled',
+    'agent.enabledOffHint': 'Produces no replies',
+
+    /* ─── Agent detail (dock form C): overview + runtime tabs (no log tab, D24) ──
+       Every number on the overview is derived from **backend facts** (`stats`: aggregates over
+       `round_outcome` plus task rows); the runtime tab carries **only** fields that really exist in
+       `agent_config`. Memory / latency / tool permissions / temperature / token usage / context
+       usage have no data surface in this repo, so there are no strings for them here. */
+    'agentDetail.tag': 'Agent',
+    'agentDetail.tabsLabel': 'Agent detail views',
+    'agentDetail.tabOverview': 'Overview',
+    'agentDetail.tabRuntime': 'Runtime',
+    'agentDetail.closeAria': 'Close agent details',
+    'agentDetail.openAria': 'Open the details of {name}',
+    'agentDetail.sectionFacts': 'Facts',
+    'agentDetail.statChannels': 'Subscribed channels',
+    'agentDetail.statChannelsHint':
+      'Source: how many channels it is a member of (the backend channel member list).',
+    'agentDetail.statRounds': 'Messages processed',
+    'agentDetail.statRoundsHint':
+      'Source: how many round outcomes it took part in (round_outcome, across channels and tasks).',
+    'agentDetail.statTasksDone': 'Tasks completed',
+    'agentDetail.statTasksDoneHint': 'Source: task rows assigned to it whose status is “Done”.',
+    'agentDetail.statSuccess': 'Success rate',
+    'agentDetail.statSuccessHint':
+      'Source: replied rounds ÷ (replied + deliberately ignored + failed) rounds; shows “—” with no samples.',
+    'agentDetail.noSamples': '—',
+    'agentDetail.sectionStatus': 'Current status',
+    'agentDetail.kvStatus': 'Current status',
+    'agentDetail.kvReason': 'Why it is disabled',
+    'agentDetail.sectionActions': 'Actions',
+    'agentDetail.pause': 'Pause',
+    'agentDetail.resume': 'Resume',
+    'agentDetail.edit': 'Edit configuration',
+    'agentDetail.pauseNote':
+      'Pausing only writes configuration: it is still woken and still leaves a failed round outcome with a readable reason — it just produces no reply.',
+    'agentDetail.sectionRuntime': 'Runtime',
+    'agentDetail.runtimeNote': 'Only fields that really exist in the configuration are shown.',
+    'agentDetail.kvModel': 'Model id',
+    'agentDetail.kvProvider': 'Provider',
+    'agentDetail.kvRemote': 'Remote',
+    'agentDetail.remoteYes': 'Remote (data leaves this machine)',
+    'agentDetail.remoteNo': 'Local (data stays on this machine)',
+    'agentDetail.kvConsent': 'Remote data-flow notice',
+    'agentDetail.consentAck': 'Acknowledged',
+    'agentDetail.consentPending': 'Not acknowledged (you will be told before enabling)',
+    'agentDetail.consentNotNeeded': 'Local provider: no acknowledgement needed',
+    'agentDetail.kvRole': 'Role',
+    'agentDetail.kvPrompt': 'System prompt',
+    'agentDetail.kvEnabled': 'Enabled',
+    'agentDetail.enabledOn': 'Enabled',
+    'agentDetail.enabledOff': 'Paused',
+    'agentDetail.emptyField': '(empty)',
+    'agentDetail.editTitle': 'Edit configuration',
+    'agentDetail.editSub':
+      'Saving only writes agent configuration: no message, no wake-up, no budget consumed.',
+    'agentDetail.save': 'Save',
+    'agentDetail.saveFailed': 'Could not save: {reason}',
+    'agentDetail.pauseFailed': 'Could not pause: {reason}',
+    'agentDetail.resumeFailed': 'Could not resume: {reason}',
 
     /* ─── Member roster (the read-only full list of a channel's members) ─── */
     'roster.entryTitle': 'Channel members',
@@ -714,6 +840,11 @@ const I18N_CATALOGS = {
       'Created agent {name}; press “Join” in the “Not in this channel” group of the “Channel members” panel to add it here.',
     'toast.remoteAck': 'Recorded the data-flow acknowledgement for {provider}.',
     'toast.remoteAckFailed': 'Acknowledgement failed: {reason}',
+    'toast.agentUpdated': 'Saved the configuration of {name}.',
+    'toast.agentDetailFailed': 'Could not read the agent details: {reason}',
+    'toast.agentPaused':
+      'Paused {name}: it is still woken and still leaves a failed round outcome — it just produces no reply.',
+    'toast.agentResumed': 'Resumed {name}.',
   },
 };
 

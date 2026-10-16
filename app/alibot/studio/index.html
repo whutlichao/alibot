@@ -295,6 +295,31 @@
         </div>
       </div>
     </div>
+    <!-- dock 形态 C：**Agent 详情**（本票）——与「频道成员」「任务线程」共用同一个 380px 容器。
+         只有「概览」「运行时」两个页签：**日志页签不做**（用户人定 D24，另立 backlog 票 #72）。
+         概览的每个数字都来自后端既有事实（`GET /api/agents/{id}` 的 `stats`，由 `round_outcome`
+         与任务行聚合）；运行时**只**呈现 `agent_config` 里真实存在的字段——原型的内存 / 延迟 /
+         工具权限 / 温度 / Token 消耗 / 上下文占用一律不出现（本仓没有那些数据面）。
+         两页的内容都是后端读数，因此由 `app.js` 渲染；这里只有骨架与两个页签。 -->
+    <div class="agent-detail" id="dockDetail" hidden data-od-id="agent-detail">
+      <div class="dock-head">
+        <div class="dock-id">
+          <div class="meta">
+            <div class="dock-name"><span id="adName"></span> <span class="dock-tag" data-i18n="agentDetail.tag" data-od-id="agent-detail-tag">Agent</span></div>
+            <div class="dock-role"><span class="presence" id="adPresence"></span><span id="adStatusText"></span></div>
+          </div>
+          <button class="icon-btn" type="button" id="btnAgentDetailClose" data-i18n-attr="aria-label:agentDetail.closeAria" aria-label="关闭 Agent 详情" data-od-id="btn-agent-detail-close">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="dock-tabs" role="tablist" data-i18n-attr="aria-label:agentDetail.tabsLabel" aria-label="Agent 详情视图" data-od-id="agent-detail-tabs">
+        <button class="dock-tab is-active" type="button" role="tab" id="adTabOverview" data-adtab="overview" aria-selected="true" aria-controls="adOverview" data-i18n="agentDetail.tabOverview" data-od-id="agent-detail-tab-overview">概览</button>
+        <button class="dock-tab" type="button" role="tab" id="adTabRuntime" data-adtab="runtime" aria-selected="false" aria-controls="adRuntime" data-i18n="agentDetail.tabRuntime" data-od-id="agent-detail-tab-runtime">运行时</button>
+      </div>
+      <div class="dock-scroll" id="adOverview" role="tabpanel" aria-labelledby="adTabOverview" data-od-id="agent-detail-overview"></div>
+      <div class="dock-scroll" id="adRuntime" role="tabpanel" aria-labelledby="adTabRuntime" hidden data-od-id="agent-detail-runtime"></div>
+    </div>
   </aside>
 </div>
 
@@ -536,6 +561,80 @@
     <div class="modal-foot">
       <span class="sep"></span>
       <button class="btn btn-primary" type="button" id="settingsDone" data-i18n="settings.done" data-od-id="settings-done">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 编辑 Agent 配置（`PATCH /api/agents/{id}` 的人类面入口，ADR-0011） ─────
+     字段集 = 端点的**可写字段**（显示名 / 角色 / 模型标识 / 系统提示 / 启用状态），一个不多
+     一个不少：`auto_claim` 属 #65，本票不落它。改到远端 provider 时沿用与「新建 Agent」同形的
+     **远端数据流告知**块（同一套「未确认就不发起远端调用」语义；保存后状态点由后端推导为未启用）。
+     这里只写配置：不落消息、不唤醒、不消耗预算。 -->
+<div class="overlay" id="agentEditOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="agentEditTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="agentEditTitle" data-i18n="agentDetail.editTitle">编辑配置</h2>
+        <div class="sub" data-i18n="agentDetail.editSub">保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。</div>
+      </div>
+      <button class="icon-btn" type="button" id="agentEditClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="agentEditName" data-i18n="agent.nameLabel">名称</label>
+        <input class="input" id="agentEditName" autocomplete="off" data-od-id="agent-edit-name" />
+      </div>
+      <div class="field">
+        <label for="agentEditRole" data-i18n="agent.roleLabel">角色</label>
+        <input class="input" id="agentEditRole" autocomplete="off" data-od-id="agent-edit-role" />
+      </div>
+      <div class="field">
+        <label for="agentEditProviderSelect" data-i18n="agent.providerLabel">模型提供商</label>
+        <select class="input" id="agentEditProviderSelect" data-od-id="agent-edit-provider"></select>
+        <div class="hint" id="agentEditProviderHint"></div>
+      </div>
+      <div class="field">
+        <label for="agentEditModelInput" data-i18n="agent.modelLabel">模型名</label>
+        <input class="input" id="agentEditModelInput" autocomplete="off" data-od-id="agent-edit-model" />
+        <div class="hint"><span data-i18n="agent.modelHintPrefix">保存为 </span><span class="mono">provider:model</span><span data-i18n="agent.modelHintSuffix"> 形式的模型标识。</span></div>
+      </div>
+      <div class="field">
+        <label for="agentEditPromptInput" data-i18n="agent.promptLabel">系统提示</label>
+        <textarea class="textarea" id="agentEditPromptInput" data-od-id="agent-edit-prompt"></textarea>
+      </div>
+      <div class="field">
+        <label data-i18n="agent.enabledLabel">启用状态</label>
+        <div class="radio-row" id="agentEditEnabled" role="group" data-od-id="agent-edit-enabled">
+          <button class="radio-card" type="button" data-enabled="on" data-od-id="agent-edit-enabled-on">
+            <b data-i18n="agent.enabledOn">启用</b>
+            <span data-i18n="agent.enabledOnHint">正常参与频道与任务</span>
+          </button>
+          <button class="radio-card" type="button" data-enabled="off" data-od-id="agent-edit-enabled-off">
+            <b data-i18n="agent.enabledOff">停用</b>
+            <span data-i18n="agent.enabledOffHint">不产出回复</span>
+          </button>
+        </div>
+        <div class="hint" data-i18n="agentDetail.pauseNote">暂停只写配置：它仍会被唤醒并留下一条可读原因的失败轮次结果，只是不产出回复。</div>
+      </div>
+      <div class="remote-notice" id="agentEditRemoteNotice" hidden data-od-id="edit-remote-notice">
+        <div class="remote-notice-head">
+          <span class="dot"></span>
+          <b id="agentEditRemoteTitle" data-i18n="agent.remoteTitleStatic">启用远端模型前需要你确认一次</b>
+        </div>
+        <p class="remote-notice-body" id="agentEditRemoteBody"></p>
+        <div class="remote-notice-foot">
+          <span class="hint" id="agentEditRemoteHint"></span>
+          <button class="btn btn-sm btn-primary" id="agentEditRemoteConfirm" type="button" data-i18n="agent.remoteConfirm" data-od-id="edit-remote-ack">我已了解，确认发送</button>
+        </div>
+      </div>
+      <div class="form-error" id="agentEditFormError" hidden role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn" type="button" id="agentEditCancel" data-i18n="common.cancel">取消</button>
+      <button class="btn btn-primary" type="button" id="agentEditSubmit" data-i18n="agentDetail.save" data-od-id="agent-edit-submit">保存</button>
     </div>
   </div>
 </div>

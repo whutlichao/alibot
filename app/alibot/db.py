@@ -851,6 +851,141 @@ class Database:
                 raise
         return self.get_agent(member_id)
 
+    def update_agent(
+        self,
+        member_id: str,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        model_id: str | None = None,
+        system_prompt: str | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
+
+        校验先于写入：**任一字段不合法则整体不改**（与 ``create_agent`` /
+        ``update_workspace_settings`` 同一偏序——没有「一半新一半旧」的中间态）。``model_id`` 的
+        **形状**校验（provider 白名单）由服务层在进到本层之前完成；本层只判与持久化同构的判据
+        （空值 / 长度）。
+
+        它只写 ``member.display_name`` 与 ``agent_config`` 那一行（后者由 ``create_agent`` 在同一
+        事务里创建，因此本写路径没有「缺行」的中间态）：**不落消息、不唤醒、不消耗任何预算、
+        也不开世代**——配置变更不是一次对话动作（ADR-0011）。
+        """
+        self.get_agent(member_id)  # 存在性 + 「必须是 Agent」：不是就抛 NotFound
+        clean = {
+            "display_name": None if display_name is None else (display_name or "").strip(),
+            "role": None if role is None else (role or "").strip(),
+            "model_id": None if model_id is None else (model_id or "").strip(),
+            "system_prompt": None if system_prompt is None else (system_prompt or "").strip(),
+        }
+
+        fields: dict[str, str] = {}
+        if clean["display_name"] is not None:
+            if not clean["display_name"]:
+                fields["display_name"] = self._render_copy("error.field.agent_name_empty")
+            elif len(clean["display_name"]) > MAX_MEMBER_NAME_LENGTH:
+                fields["display_name"] = self._render_copy(
+                    "error.field.agent_name_too_long", limit=MAX_MEMBER_NAME_LENGTH
+                )
+        if clean["model_id"] is not None:
+            if not clean["model_id"]:
+                fields["model_id"] = self._render_copy("error.model_id_empty")
+            elif len(clean["model_id"]) > MAX_MODEL_ID_LENGTH:
+                fields["model_id"] = self._render_copy(
+                    "error.field.model_id_too_long", limit=MAX_MODEL_ID_LENGTH
+                )
+        if clean["role"] is not None and len(clean["role"]) > MAX_AGENT_ROLE_LENGTH:
+            fields["role"] = self._render_copy("error.field.role_too_long", limit=MAX_AGENT_ROLE_LENGTH)
+        if clean["system_prompt"] is not None and len(clean["system_prompt"]) > MAX_SYSTEM_PROMPT_LENGTH:
+            fields["system_prompt"] = self._render_copy(
+                "error.field.system_prompt_too_long", limit=MAX_SYSTEM_PROMPT_LENGTH
+            )
+        if fields:
+            raise DomainError(
+                "validation_failed", self._render_copy("error.agent_update_invalid"), fields=fields
+            )
+
+        with self._lock:
+            self._begin()
+            try:
+                if clean["display_name"] is not None:
+                    self._conn.execute(
+                        "UPDATE member SET display_name = ? WHERE id = ?",
+                        (clean["display_name"], member_id),
+                    )
+                # `COALESCE` 就是「没提到的字段保持原值」这条部分更新语义的落点：它让「只写该写的」
+                # 与「绝不部分写入」在**同一条语句**里成立，不靠 Python 侧拼 SQL。
+                self._conn.execute(
+                    "UPDATE agent_config SET "
+                    "role = COALESCE(?, role), "
+                    "model_id = COALESCE(?, model_id), "
+                    "system_prompt = COALESCE(?, system_prompt), "
+                    "enabled = COALESCE(?, enabled), "
+                    "updated_at = ? WHERE member_id = ?",
+                    (
+                        clean["role"],
+                        clean["model_id"],
+                        clean["system_prompt"],
+                        None if enabled is None else int(bool(enabled)),
+                        utc_now(),
+                        member_id,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        # 读回落库后的那一份（不是把入参回显出去）：调用方看到的是**持久化事实**。
+        return self.get_agent(member_id)
+
+    def agent_stats(self, member_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """按成员聚合的**只读既有事实**（Agent 概览页每个数字的唯一来源）——不新增数据面。
+
+        - ``channel_count``：它是成员的 **channel 型 target** 数（``target_member`` ⟕ ``target.kind``）；
+        - ``round_count``：它的 ``round_outcome`` 行数（参与过的轮次），append-only 事实；
+        - ``completed_task_count``：指派给它且 ``status='done'`` 的 ``task`` 行数；
+        - ``replied_count`` / ``verdict_count``：成功率的两项（``replied`` ÷ 有结论的轮次
+          ``replied|ignored|failed``）。``merged``（不是它的决定）与 ``budget-exhausted``
+          （根本没跑起来）**不计入**分母。
+
+        三处读的都是**行级事实**，不读内存、不做推断：后端重启后读数逐字不变。
+        ``member_id`` 为 ``None`` 时一次聚合全部成员（列表面用它，避免 N+1 查询）。
+        """
+        channel_sql = (
+            "SELECT tm.member_id AS member_id, COUNT(*) AS n FROM target_member tm "
+            "JOIN target t ON t.id = tm.target_id WHERE t.kind = 'channel'"
+            + ("" if member_id is None else " AND tm.member_id = ?")
+            + " GROUP BY tm.member_id"
+        )
+        round_sql = (
+            "SELECT member_id, COUNT(*) AS n, "
+            "SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) AS replied, "
+            "SUM(CASE WHEN status IN ('replied', 'ignored', 'failed') THEN 1 ELSE 0 END) AS verdicts "
+            "FROM round_outcome"
+            + ("" if member_id is None else " WHERE member_id = ?")
+            + " GROUP BY member_id"
+        )
+        task_sql = (
+            "SELECT assignee_member_id AS member_id, COUNT(*) AS n FROM task "
+            "WHERE status = 'done' AND assignee_member_id IS NOT NULL"
+            + ("" if member_id is None else " AND assignee_member_id = ?")
+            + " GROUP BY assignee_member_id"
+        )
+        args: tuple[Any, ...] = () if member_id is None else (member_id,)
+        stats: dict[str, dict[str, Any]] = {}
+        with self._lock:
+            for row in self._conn.execute(channel_sql, args).fetchall():
+                stats.setdefault(row["member_id"], {})["channel_count"] = int(row["n"])
+            for row in self._conn.execute(round_sql, args).fetchall():
+                entry = stats.setdefault(row["member_id"], {})
+                entry["round_count"] = int(row["n"])
+                entry["replied_count"] = int(row["replied"] or 0)
+                entry["verdict_count"] = int(row["verdicts"] or 0)
+            for row in self._conn.execute(task_sql, args).fetchall():
+                stats.setdefault(row["member_id"], {})["completed_task_count"] = int(row["n"])
+        return stats
+
     # ─── 远端数据流告知（按模型提供商一次性确认） ────────────────────────
     def list_remote_consents(self) -> list[dict[str, Any]]:
         with self._lock:

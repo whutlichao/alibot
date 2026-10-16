@@ -333,6 +333,50 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .modal-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-8) var(--sp-7); }
 .modal-foot .sep { flex: 1; }
 
+/* ─── dock 形态 C：Agent 详情（概览 / 运行时） ────────────────────────────
+   形态与 `.task-thread` 同构（竖直 flex 撑满容器）。`.dock-tabs` / `.kv` / `.stat-grid`
+   的形状照设计系统切片 `screens/agent-detail.html`（:71-73 页签、:86-104 的 `.d-sec` 与四格），
+   但只消费本仓已有的 token 名：零裸色值、不新造色位。 */
+.agent-detail { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.agent-detail .dock-role { display: flex; align-items: center; gap: var(--sp-3); }
+.dock-tabs {
+  display: flex; gap: var(--sp-2); padding: var(--sp-4) var(--sp-6) 0;
+  border-bottom: 1px solid var(--border);
+}
+.dock-tab {
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-sm) var(--r-sm) 0 0;
+  color: var(--muted); font-size: var(--fs-sm); font-weight: var(--fw-semi);
+  border-bottom: 2px solid transparent;
+}
+.dock-tab:hover { color: var(--fg); }
+/* 当前页签用 `--selected` 族（与 `.rail` 的当前位置同一档位语义）。 */
+.dock-tab.is-active { color: var(--fg); border-bottom-color: var(--selected-graphic); }
+
+/* 一行「键 / 值」：键是 mono 小字（与 `.d-sec-title` 同一语汇），值靠左对齐撑满。 */
+.kv { display: flex; align-items: baseline; gap: var(--sp-4); padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.kv:last-child { border-bottom: 0; }
+.kv .k { flex: 0 0 74px; color: var(--faint); font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide); text-transform: uppercase; }
+.kv .v { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
+/* 四个数字（订阅频道数 / 消息处理数 / 完成任务数 / 成功率）：数字等宽、标签小字。 */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+.stat { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5); background: var(--panel); }
+.stat .n { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--fs-body-lg); font-weight: var(--fw-black); color: var(--fg); }
+.stat .l { font-size: var(--fs-caption); color: var(--muted); margin-top: var(--sp-2); }
+/* 系统提示是**多行文本**：保留换行，不让它被折成一段（它是配置数据的原文）。 */
+.prompt-body {
+  font-size: var(--fs-sm); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere;
+  border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5);
+  background: var(--panel); max-height: 220px; overflow-y: auto;
+}
+.agent-actions { display: flex; gap: var(--sp-4); }
+.agent-actions .btn { flex: 1; }
+/* 成员面板里**打开详情**的那个控件：它是名字本身（卡片里已有「加入」按钮，不能嵌套按钮）。 */
+.dock-member-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--fg); text-align: left;
+}
+.dock-member-name:hover { color: var(--accent-deep); text-decoration: underline; }
+
 /* ─── 成员名册（频道成员的只读全名单） ──────────────────────────────────
    弹窗骨架沿用既有 `.overlay` / `.modal`（不新造一套）；这里只有两件事：
    （a）`.modal.wide` 的宽度档——设计系统 `ui_kits/app/app.css:373` 就是这么写的，

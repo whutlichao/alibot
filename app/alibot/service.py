@@ -304,18 +304,21 @@ class WorkspaceService:
 
     # ─── 成员面：Agent 创建与配置 ─────────────────────────────────────────
     def agents(self) -> list[dict[str, Any]]:
-        """全部 Agent 成员 + 配置 + 由后端事实推导的状态点。"""
-        agents = self._db.agent_members()
-        return [self._agent_view(agent) for agent in agents]
+        """全部 Agent 成员 + 配置 + 由后端事实推导的状态点 + 概览读数。"""
+        # 概览读数一次聚合全部成员（与列表同一个来源），不做逐个成员的 N+1 查询。
+        stats = self._db.agent_stats()
+        return [self._agent_view(agent, stats.get(agent["id"])) for agent in self._db.agent_members()]
 
     def agent(self, member_id: str) -> dict[str, Any]:
-        return self._agent_view(self._db.get_agent(member_id))
+        agent = self._db.get_agent(member_id)
+        return self._agent_view(agent, self._db.agent_stats(member_id).get(member_id))
 
-    def _agent_view(self, agent: dict[str, Any]) -> dict[str, Any]:
+    def _agent_view(self, agent: dict[str, Any], stats: dict[str, Any] | None = None) -> dict[str, Any]:
         view = dict(agent)
         view["provider"] = provider_of(str(agent.get("model_id") or ""))
         view["is_remote"] = is_remote_provider(view["provider"])
         view["remote_consent"] = self._db.has_remote_consent(view["provider"]) if view["provider"] else False
+        view["stats"] = self._agent_stats_view(stats)
         if self._orchestrator is not None:
             view["status"] = self._orchestrator.status_of(agent)
             availability = self._orchestrator.availability(agent)
@@ -335,7 +338,59 @@ class WorkspaceService:
                 "validation_failed", render("error.agent_invalid", locale), fields={"model_id": error}
             )
         agent = self._db.create_agent(name=name, role=role, model_id=model_id, system_prompt=system_prompt)
-        return self._agent_view(agent)
+        return self._agent_view(agent, self._db.agent_stats(agent["id"]).get(agent["id"]))
+
+    def update_agent(
+        self,
+        member_id: str,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        model_id: str | None = None,
+        system_prompt: str | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
+
+        `model_id` 沿用与创建**同一套校验**（``model_id_error``：provider 白名单 + ``provider:model``
+        形状）；改到远端 provider 也就沿用了同一套**远端数据流告知**语义——可用性判定读的是落库后的
+        ``model_id``（``WakeOrchestrator.availability``），因此这里不需要第二个机制，改完的
+        ``enabled_reason`` / 状态点由既有推导给出。
+
+        「暂停」就是本方法上的 ``enabled=False``：它写 `enabled = 0`，**不改唤醒面**（ADR-0011）。
+        任一字段不合法则整体不写（校验先于写入）。
+        """
+        locale = self._locale()
+        if model_id is not None:
+            error = model_id_error(model_id, locale)
+            if error is not None:
+                raise DomainError(
+                    "validation_failed",
+                    render("error.agent_update_invalid", locale),
+                    fields={"model_id": error},
+                )
+        self._db.update_agent(
+            member_id,
+            display_name=display_name,
+            role=role,
+            model_id=model_id,
+            system_prompt=system_prompt,
+            enabled=enabled,
+        )
+        return self.agent(member_id)
+
+    @staticmethod
+    def _agent_stats_view(stats: dict[str, Any] | None) -> dict[str, Any]:
+        """把 ``Database.agent_stats`` 的行级事实整理成概览页的读数（缺样本时成功率为 ``None``）。"""
+        counts = stats or {}
+        verdicts = int(counts.get("verdict_count") or 0)
+        replied = int(counts.get("replied_count") or 0)
+        return {
+            "channel_count": int(counts.get("channel_count") or 0),
+            "round_count": int(counts.get("round_count") or 0),
+            "completed_task_count": int(counts.get("completed_task_count") or 0),
+            "success_rate": (replied / verdicts) if verdicts else None,
+        }
 
     # ─── 工作区设置（配置类取值；人类面可写，用量类事实不可写） ─────────────
     def settings(self) -> dict[str, Any]:
