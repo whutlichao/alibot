@@ -494,11 +494,13 @@
   </div>
 </div>
 
-<!-- ─── 工作区设置（本轮：语言偏好 + 消息密度两个真档位） ─────────────────
+<!-- ─── 工作区设置（#61 + #71：语言偏好 / 消息密度 / 主题三个真档位） ────────
      形态照原型 `alibot-app.html:1586-1597` 的设置弹窗：`.field` + `radio-row`/`.radio-card`
-     两个控件族。**没有主题档位**——主题由 #71 追加第三档（它要先有深色 token 族），
-     本票不得出现它的字段或档位（票面 Change 3 与 Constraints）。
-     两个档位都**立刻生效并持久化**：写 `PATCH /api/settings`，后端是唯一正本。 -->
+     两个控件族。语言与消息密度来自 #61；**主题**是 #71 追加的第三档（浅色 / 深色 / 跟随系统）。
+     主题写的是根元素上的 `html[data-theme]`，**取值层**（同一 token 名集合的第二组取值）
+     在 alibot-design-system/ 的两个 foundation 与产品扩展层里；「跟随系统」由该包的
+     `@media (prefers-color-scheme: dark)` 裁决——本页不解析媒体查询，两条分支各一个落点。
+     三个档位都**立刻生效并持久化**：写 `PATCH /api/settings`，后端是唯一正本。 -->
 <div class="overlay" id="settingsOverlay" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
     <div class="modal-head">
@@ -528,6 +530,23 @@
           <button class="radio-card" type="button" data-density="compact" data-od-id="density-compact">
             <b data-i18n="settings.densityCompact">紧凑</b>
             <span data-i18n="settings.densityCompactHint">更多消息</span>
+          </button>
+        </div>
+      </div>
+      <div class="field">
+        <label data-i18n="settings.themeLabel">主题</label>
+        <div class="radio-row" id="settingsTheme" role="group" data-od-id="settings-theme">
+          <button class="radio-card" type="button" data-theme="light" data-od-id="theme-light">
+            <b data-i18n="settings.themeLight">浅色</b>
+            <span data-i18n="settings.themeLightHint">始终浅色</span>
+          </button>
+          <button class="radio-card" type="button" data-theme="dark" data-od-id="theme-dark">
+            <b data-i18n="settings.themeDark">深色</b>
+            <span data-i18n="settings.themeDarkHint">始终深色</span>
+          </button>
+          <button class="radio-card" type="button" data-theme="system" data-od-id="theme-system">
+            <b data-i18n="settings.themeSystem">跟随系统</b>
+            <span data-i18n="settings.themeSystemHint">随系统外观切换</span>
           </button>
         </div>
       </div>

@@ -126,7 +126,7 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .avatar {
   width: var(--avatar-md); height: var(--avatar-md); flex: 0 0 var(--avatar-md);
   border-radius: 7px; display: grid; place-items: center;
-  font-size: 11px; font-weight: var(--fw-black); color: var(--fg); overflow: hidden;
+  font-size: 11px; font-weight: var(--fw-black); color: var(--on-accent); overflow: hidden;
 }
 .avatar img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
 .avatar.sm { width: var(--avatar-sm); height: var(--avatar-sm); flex-basis: var(--avatar-sm); font-size: 10px; }
@@ -238,7 +238,7 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .seg button { padding: 0 11px; height: var(--icon-btn); font-size: 12px; font-weight: var(--fw-medium); color: var(--muted); border-right: 1px solid var(--border); }
 .seg button:last-child { border-right: 0; }
 .seg button:hover { background: var(--fg-soft); color: var(--fg); }
-.seg button.is-active { background: var(--fg); color: oklch(98% 0.005 250); }
+.seg button.is-active { background: var(--fg); color: var(--bg); }
 .filter-chip { display: inline-flex; align-items: center; gap: var(--sp-3); height: var(--icon-btn); padding: 0 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--muted); font-size: 12px; }
 .filter-chip:hover { border-color: var(--border-strong); color: var(--fg); }
 .filter-chip.is-on { border-color: var(--selected-graphic); color: var(--selected-deep); background: var(--selected-soft); }
@@ -412,11 +412,22 @@ code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .cmd-item:hover .kbd, .cmd-item.is-active .kbd { color: var(--accent-deep); }
 
 /* ─── toast ──────────────────────────────────────────────────────────────── */
+/* `.toast` / `.seg button.is-active` 两处的底是 `--fg`，墨色原为原型写死的近白色字面量。
+   近白色在**深色档**压不到「浅墨底」上（深色档 `--fg` 是浅色）——字会看不见；这里改成
+   `--bg`（浅色档是纸色，与那两个字面量同族近似；深色档是深色纸色），于是同一件「反相浅片」
+   在两档都成立、且两处都回到按名消费 token。 */
 .toast-wrap { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--sp-4); align-items: center; pointer-events: none; }
-.toast { display: flex; align-items: center; gap: 9px; background: var(--fg); color: oklch(97% 0.006 250); padding: 9px 14px; border-radius: var(--r-md); font-size: 12.5px; box-shadow: var(--shadow-pop); animation: toast-in .18s ease; }
+.toast { display: flex; align-items: center; gap: 9px; background: var(--fg); color: var(--bg); padding: 9px 14px; border-radius: var(--r-md); font-size: 12.5px; box-shadow: var(--shadow-pop); animation: toast-in .18s ease; }
 .toast.err { background: var(--error-fill); color: var(--on-accent); }
 .toast .dot { width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--online); }
 .toast.err .dot { background: var(--on-accent); }
+/* 深色档：toast 的底是 `--fg`（反相浅片），`--online` 这个图形档压在其上只有 2.06:1，
+   低于 `SKILL.md` §5 的 ≥3:1；深色档把它换成 toast 自己的墨色 `--bg`（14.36:1）。 */
+:root[data-theme='dark'] .toast .dot { background: var(--bg); }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .toast .dot,
+  :root:not([data-theme]) .toast .dot { background: var(--bg); }
+}
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ─── mobile topbar ──────────────────────────────────────────────────────── */

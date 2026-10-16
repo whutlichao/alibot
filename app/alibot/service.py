@@ -339,21 +339,27 @@ class WorkspaceService:
 
     # ─── 工作区设置（配置类取值；人类面可写，用量类事实不可写） ─────────────
     def settings(self) -> dict[str, Any]:
-        """工作区设置（**语言偏好** / **消息密度**）。正本是后端库内的那一行。"""
+        """工作区设置（**语言偏好** / **消息密度** / **主题**）。正本是后端库内的那一行。"""
         return self._db.workspace_settings()
 
     def update_settings(
-        self, locale: str | None = None, message_density: str | None = None
+        self,
+        locale: str | None = None,
+        message_density: str | None = None,
+        theme: str | None = None,
     ) -> dict[str, Any]:
         """写工作区设置（人类面动作）。只写配置类取值：
 
         - **不落消息**（设置不是对话事实，不污染 append-only 的取证面）；
         - **不唤醒**任何成员；
         - **不消耗预算**（`target_budget.used` 仍只由开世代与投递跳推进，ADR-0007 的边界）。
+
+        三档的取值校验在 ``db.update_workspace_settings``（非法值整体拒绝，不留一半新一半旧）。
         """
         return self._db.update_workspace_settings(
             locale=None if locale is None else str(locale).strip(),
             message_density=None if message_density is None else str(message_density).strip(),
+            theme=None if theme is None else str(theme).strip(),
         )
 
     # ─── 远端数据流告知 ──────────────────────────────────────────────────

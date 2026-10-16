@@ -3,7 +3,7 @@
 端点（浏览器只经这里读写，业务正本在后端单文件库）：
 
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
-- ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度）
+- ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度 / 主题）
 - ``PATCH /api/settings``                     写工作区设置（配置类取值；不落消息、不唤醒、不消耗预算）
 - ``GET  /api/search``                        工作台搜索（消息 / 任务 / Agent 三类命中，``facet`` 过滤）
 - ``GET  /api/channels``                      频道列表（含未读计数）
@@ -210,19 +210,22 @@ class SettingsUpdate(BaseModel):
 
     未知键由 ``extra="forbid"`` **整体拒绝**（``validation_failed``），不静默忽略：
     把设置面当成通用 key-value 存储正是 `CONTEXT.md` **工作区设置** 的 `_Avoid_`；
-    档位取值由服务层按 ``LOCALES`` / ``MESSAGE_DENSITIES`` 校验，错误体仍是既有的
+    档位取值由服务层按 ``LOCALES`` / ``MESSAGE_DENSITIES`` / ``THEMES`` 校验，错误体仍是既有的
     ``code`` + ``fields`` 形态。字段缺省 = 这一次请求没提到这一档（保持原值）。
 
     **显式 ``null`` 不是「没提到」**：它既不是档位取值、也不是合法档位，因此同样整体拒绝，
-    而不是被当成一次成功的空更新（`null` 与「这一档保持原值」是两件事，后者由**省略字段**表达）。
+    而不是被当成一次成功的空更新（``null`` 与「这一档保持原值」是两件事，后者由**省略字段**表达）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     locale: str | None = None
     message_density: str | None = None
+    # 主题三档（#71）：显式浅色 / 显式深色 / 跟随系统。它是**配置类**取值，与另外两档走同一条
+    # 读写路径；三档的**取值层**（深色 token）在设计系统包里，与本端点无关。
+    theme: str | None = None
 
-    @field_validator("locale", "message_density", mode="before")
+    @field_validator("locale", "message_density", "theme", mode="before")
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
         """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
@@ -332,10 +335,10 @@ def create_app(
     def get_health() -> dict[str, Any]:
         return {"status": "ok", "member_id": OWNER_ID, "data_dir": str(app.state.data_dir)}
 
-    # ─── 工作区设置（配置类取值：语言偏好 / 消息密度） ────────────────────
+    # ─── 工作区设置（配置类取值：语言偏好 / 消息密度 / 主题） ────────────────
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
-        """工作区设置（**语言偏好** / **消息密度**）。正本是库内的那一行。"""
+        """工作区设置（**语言偏好** / **消息密度** / **主题**）。正本是库内的那一行。"""
         return {"settings": service.settings()}
 
     @app.patch("/api/settings")
@@ -347,7 +350,9 @@ def create_app(
         """
         return {
             "settings": service.update_settings(
-                locale=payload.locale, message_density=payload.message_density
+                locale=payload.locale,
+                message_density=payload.message_density,
+                theme=payload.theme,
             )
         }
 

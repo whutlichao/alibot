@@ -44,6 +44,15 @@ Do not move the three families into `colors_and_type.css` or `tokens.css`, and d
 have a slice reach outside this package for them — the package must still render when
 it is copied somewhere else.
 
+**Dark value layer.** Every token has a second value under the same name:
+`:root[data-theme='dark']`, or `@media (prefers-color-scheme: dark)` for the
+`data-theme='system'` tier (both blocks live in the two foundations and, for the
+product families, in each product extension file — change both copies). `fill` tiers
+keep their light values and `--on-accent` stays the deep plum, so a `fill` is still
+only ever paired with `--on-accent`; `deep` and `graphic` tiers flip to light-of-hue.
+Never hand-write a dark colour: build on the tokens and the surface re-themes. See
+`DESIGN.md` §2 "Dark value layer" and `decisions/ADR-0017-dark-value-layer.md`.
+
 Never hard-code a hex, rgb, hsl or named color. Derive everything from tokens with
 `var(--…)` or `color-mix(in oklch, …)`.
 
@@ -170,5 +179,7 @@ boundaries take that family's `graphic` tier.
 - [ ] Responsive collapse at 1080 / 900px implemented.
 - [ ] `prefers-reduced-motion` respected.
 - [ ] Copy in Simplified Chinese; ids/counts mono.
+- [ ] Dark value layer intact: no new token names, no raw colours, and every `fill`
+      tier still pairs only with `--on-accent` (see §1 "Dark value layer").
 - [ ] `data-od-id="…"` on regions, headings, CTAs and repeated cards.
 - [ ] Channel/thread message prose alone follows ADR-0016; other surfaces and global token values retain their defaults.

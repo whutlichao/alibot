@@ -18,8 +18,9 @@
    - 结构化状态词（`success/...` 那类四态状态点、任务状态、轮次结果状态）后端只给**词**，
      这里只把它们**翻译**成界面说法：键名与后端词一一对应，前端不重命名语义。
 
-   本票（#61）只落**语言偏好**与**消息密度**两档设置：**主题**是第三档、由 #71 追加，
-   因此这份文件里既没有主题的键，也没有主题的档位文案。
+   本文件（#61 建立、#71 追加第三档）落**工作区设置**三个档位的界面文案：语言偏好 / 消息密度 /
+   主题。主题的三档取值（`light` / `dark` / `system`）与它们对应的深色取值层都在
+   `alibot-design-system/`，这里只有标签与说明的措辞。
    ========================================================================== */
 'use strict';
 
@@ -335,6 +336,13 @@ const I18N_CATALOGS = {
     'settings.densityComfortableHint': '默认',
     'settings.densityCompact': '紧凑',
     'settings.densityCompactHint': '更多消息',
+    'settings.themeLabel': '主题',
+    'settings.themeLight': '浅色',
+    'settings.themeLightHint': '始终浅色',
+    'settings.themeDark': '深色',
+    'settings.themeDarkHint': '始终深色',
+    'settings.themeSystem': '跟随系统',
+    'settings.themeSystemHint': '随系统外观切换',
     'settings.saveFailed': '设置未保存：{reason}',
     'settings.done': '完成',
 
@@ -685,6 +693,13 @@ const I18N_CATALOGS = {
     'settings.densityComfortableHint': 'Default',
     'settings.densityCompact': 'Compact',
     'settings.densityCompactHint': 'More messages',
+    'settings.themeLabel': 'Theme',
+    'settings.themeLight': 'Light',
+    'settings.themeLightHint': 'Always light',
+    'settings.themeDark': 'Dark',
+    'settings.themeDarkHint': 'Always dark',
+    'settings.themeSystem': 'Follow system',
+    'settings.themeSystemHint': 'Match the system appearance',
     'settings.saveFailed': 'Settings were not saved: {reason}',
     'settings.done': 'Done',
 
