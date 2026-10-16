@@ -11,9 +11,14 @@
 - :func:`migrate_data_dir` —— 「CLI 参数 / 数据目录 / 备份编排」：整目录备份 → 单事务 → 跑链 →
   落审计台账 → 给出报告。
 
-这条缝是**故意留的挂点**：#93 的预演在**库副本**上跑同一条链（复用 :func:`run_chain`），#92 在链
-前插入形态步骤（在 :data:`STEPS` 之前接一个不依赖版本号的步骤，或给 :func:`run_chain` 加一个前置
-钩子）。两者都不需要动 CLI 参数、目录与备份编排。
+这条缝是**故意留的挂点**：#93 的预演在**库副本**上跑同一条链（复用 :func:`run_chain`）；#92 的
+**形态步骤**（:func:`run_shape_step`）已经是 :func:`run_chain` 的前置——它在走 :data:`STEPS` 之前
+先按**形态**（不看版本号）补齐 channel 型作用域数据，因此预演与真实迁移共享同一个入口。
+
+**形态步骤（#92）**：``channel`` 行在、而 channel 型的**影子行 / 成员 / 已读 / 预算**有缺时，按
+:data:`repair.CHANNEL_SCOPE_MOVES` 的同一份列映射一次补齐**四张表**、影子行最先落。它是链的
+**不可省前置**：#37 那类半改名库的 ``schema_version`` 已是新一代，按版本号走链会**跳过** ``3 → 4``，
+只有形态步骤能把它搬回来。
 
 **引擎的两条骨架**（规格 D5 / D6）：
 
@@ -54,7 +59,7 @@ from .db import (
     STAMP_SCHEMA_VERSION_SQL,
     utc_now,
 )
-from .repair import CHANNEL_SCOPE_MOVES
+from .repair import CHANNEL_SCOPE_GAP_CHECKS, CHANNEL_SCOPE_MOVES
 
 # 迁移前整目录备份的落点：数据目录**同级**、命名自带方向与 UTC 时间戳（规格 D8）。
 BACKUP_INFIX = "-backup-"
@@ -594,6 +599,64 @@ def _step_11_to_12(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
+# 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
+SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
+
+
+def channel_scope_gaps(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """只看**形态**：channel 型作用域行有没有缺（有缺就返回缺失项，健康库返回空元组）。
+
+    这是形态步骤的判定，也是它「不依赖版本号」的落点：判据来自
+    :data:`repair.CHANNEL_SCOPE_GAP_CHECKS` 的四条正向探测（旧表 → 新表），因此「号已是新一代、
+    数据还留在旧表名里」的半改名库与「号本来就是旧版」的库得到同一个处置。**只读**——探测全是
+    ``SELECT COUNT(*)``、不写库一个字节，所以调用方可以在决定备份之前安全地先问一句「有没有活」
+    （``__main__._run_migrate`` 对当前版本库正是这么做的：有缺才走迁移编排，无缺就是「无事可做」）。
+
+    来源表不存在 ⇒ 跳过（全新的当前版本库没有 ``channel_*`` 旧表，不该被误判成有缺）；来源表在而
+    目标表不存在 ⇒ 记为有缺（目标表随后由形态步骤按当前 ``SCHEMA`` 建出）。反向 1:1 的检查不在这里：
+    形态步骤只能搬、不能凭空造频道行或成员行。
+    """
+    existing = _table_names(conn)
+    gaps: list[str] = []
+    for label, (source, target), probe in CHANNEL_SCOPE_GAP_CHECKS:
+        if source not in existing:
+            continue
+        if target not in existing:
+            gaps.append(label)
+            continue
+        row = conn.execute(probe).fetchone()
+        if row is not None and int(row[0]) > 0:
+            gaps.append(label)
+    return tuple(gaps)
+
+
+def run_shape_step(conn: sqlite3.Connection, source_version: int) -> StepReport | None:
+    """链前的**形态步骤**：有缺才搬，无缺不动（幂等：修好的库改动 0 行）。
+
+    「四条搬迁共享既有列映射、影子行先落、四张表一起补齐」由 :func:`_step_3_to_4` 承担——它与逐版链
+    的 ``3 → 4`` 是**同一段代码**、同一份 :data:`repair.CHANNEL_SCOPE_MOVES`（不写第二份）。
+    ``run_shape_step`` 只加一层**形态判定**：健康库（数据本就在 ``target_*``）不触发、不产生任何改动。
+
+    跑过形态步骤后随即施一次共享对齐：``--migrate`` 对「号已是本代码版本、只是 channel 型作用域数据
+    还留在旧表名里」的库走的是**空链**（:func:`plan_steps` 为 ``()``），终态对齐只能由这里落。逐版链
+    上的调用方多这一次对齐没有副作用（对齐幂等、只增不减）。
+
+    ``source_version`` 只进报告（形态步骤不推进版本号），因此 :class:`StepReport` 的 ``from`` /
+    ``to`` 都填它。
+    """
+    if not channel_scope_gaps(conn):
+        return None
+    changed = _step_3_to_4(conn)
+    _align_to_current_schema(conn)
+    return StepReport(
+        label=SHAPE_STEP_LABEL,
+        from_version=source_version,
+        to_version=source_version,
+        changed_rows=changed,
+    )
+
+
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(3, 4, "channel 型作用域数据搬迁（影子行 / 成员 / 已读 / 预算）", _step_3_to_4),
     MigrationStep(4, 5, "任务表与任务线程（task + message.task_ref + 触发器）", _step_4_to_5),
@@ -651,13 +714,20 @@ def plan_steps(from_version: int, to_version: int = SCHEMA_VERSION) -> tuple[Mig
 
 # ─── 执行器 ──────────────────────────────────────────────────────────────────
 def run_chain(conn: sqlite3.Connection, from_version: int, to_version: int = SCHEMA_VERSION) -> ChainResult:
-    """对一个**已经打开的库**逐步走链（不跳步），每步之后施一次对齐兜底。
+    """对一个**已经打开的库**先跑形态步骤、再逐步走链（不跳步），每步之后施一次对齐兜底。
+
+    形态步骤是**不可省的前置**（规格 D5 / D11）：它不依赖版本号，处置「号已是新一代、channel 型作用域
+    数据还留在旧表名里」的半改名库——按版本号走链会**跳过** ``3 → 4``，只有它能搬回来。健康库上它是
+    无操作（改动 0 行、不进报告）。
 
     **事务边界不在这里**：调用方负责 ``BEGIN IMMEDIATE`` / ``COMMIT`` / ``ROLLBACK``（单事务收口，
     规格 D8）。它也不管备份与审计——那是 :func:`migrate_data_dir` 的编排。这条缝就是 #93 的挂点：
-    在**库副本**上跑同一条链、拿同一份 :class:`ChainResult`。
+    在**库副本**上跑同一条链、拿同一份 :class:`ChainResult`（含形态步骤那一项）。
     """
     reports: list[StepReport] = []
+    shape = run_shape_step(conn, from_version)
+    if shape is not None:
+        reports.append(shape)
     for step in plan_steps(from_version, to_version):
         changed = step.apply(conn)
         _align_to_current_schema(conn)
