@@ -317,6 +317,8 @@ function createHarness(options) {
     message_density: "comfortable",
     theme: "system",
   };
+  // 提醒的替身存储：与后端同形——写路径返回**最新全表**，`GET` 也返回同一份。
+  const reminders = (config.reminders || []).map((item) => ({ ...item }));
   // 后端事实的两份替身：频道成员表（`GET /api/channels/{id}/members`）与四态状态点
   // （`GET /api/member-statuses`）。名册的内容与状态点必须来自它们——前端不许自己拼一份。
   const channelMembers = config.channelMembers || {};
@@ -354,6 +356,35 @@ function createHarness(options) {
     if (url === "/api/settings" && method === "PATCH") {
       settings = { ...settings, ...body };
     }
+    if (url === "/api/reminders" && method === "GET") {
+      return { ok: true, status: 200, json: async () => ({ reminders: reminders.slice() }) };
+    }
+    if (url === "/api/reminders" && method === "POST") {
+      // 归属频道的可读名由后端随行带出（替身照这个形状给）。
+      const reminder = {
+        id: "rm_" + (reminders.length + 1),
+        text: String(body.text).trim(),
+        time: body.time,
+        channel_id: body.channel_id === undefined ? null : body.channel_id,
+        channel_name: body.channel_id ? "设计系统重构" : "",
+        created_at: "2026-10-16T10:00:00.000Z",
+      };
+      reminders.push(reminder);
+      return { ok: true, status: 201, json: async () => ({ reminder, reminders: reminders.slice() }) };
+    }
+    if (url.startsWith("/api/reminders/") && method === "DELETE") {
+      const id = decodeURIComponent(url.slice("/api/reminders/".length));
+      const index = reminders.findIndex((item) => item.id === id);
+      if (index < 0) {
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({ error: { code: "not_found", message: "提醒不存在" } }),
+        };
+      }
+      const [removed] = reminders.splice(index, 1);
+      return { ok: true, status: 200, json: async () => ({ reminder: removed, reminders: reminders.slice() }) };
+    }
     return { ok: true, status: 200, json: async () => ({ settings }) };
   }
 
@@ -375,6 +406,17 @@ function createHarness(options) {
       group.appendChild(themeCard("dark", "settings.themeDark", "settings.themeDarkHint"));
       group.appendChild(themeCard("system", "settings.themeSystem", "settings.themeSystemHint"));
       return group;
+    }
+    // 提醒：三处替身照 `index.html` 的初始态建（弹窗关着、圆点 `hidden`、时间格默认 09:00）。
+    if (selector === "#remindersOverlay" || selector === "#reminderDot") {
+      const node = new FakeNode(selector === "#reminderDot" ? "span" : "div");
+      node.hidden = true;
+      return node;
+    }
+    if (selector === "#reminderText" || selector === "#reminderTime") {
+      const node = new FakeNode("input");
+      node.value = selector === "#reminderTime" ? "09:00" : "";
+      return node;
     }
     return new FakeNode("div");
   }
@@ -418,6 +460,8 @@ function createHarness(options) {
       startup,
       "\nglobalThis.__i18nTest = { state, applySettings, loadSettings, saveSettings,"
         + " openSettingsModal, renderSettingsModal, setLocale, applyStaticI18n, bindEvents,"
+        + " loadReminders, renderReminderDot, renderRemindersModal, openRemindersModal,"
+        + " closeRemindersModal, submitReminder, deleteReminder,"
         + " openRosterModal, closeRosterModal, renderRoster, renderDock, refreshStatuses,"
         + " refreshChannelMembers };\n",
     ),
@@ -974,7 +1018,226 @@ test("composer 工具行：两个新文案在两份词条里都取到值", () =>
   }
 });
 
-/* ─── 8. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
+/* ─── 8. 提醒（#68）：rail 入口 + 指示点 + 弹窗（列表 / 空态 / 新增 / 删除） ─────
+   验收面：① 入口与指示点照原型 ② 圆点**只在有提醒时**出现 ③ 列表条目字段齐全
+   ④ 删除后回到空态 ⑤ 新增文案在两份词条里都取到值。
+   数据面归属见 ADR-0012：提醒是**库内对象**，这里的每一条断言都只经后端载荷（替身 fetch）。 */
+
+/** 一条有归属频道的提醒（形状与 `GET /api/reminders` 的元素一致）。 */
+const REMINDER_WITH_CHANNEL = {
+  id: "rm_1",
+  text: "检查令牌替换进度",
+  time: "14:30",
+  channel_id: "ch-1",
+  channel_name: "设计系统重构",
+  created_at: "2026-10-16T10:00:00.000Z",
+};
+
+/** 提醒弹窗那一段标记（从 overlay 起到下一个顶层注释为止）。 */
+function remindersMarkup() {
+  const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
+  const start = html.indexOf('id="remindersOverlay"');
+  assert.notEqual(start, -1, "index.html 里应有提醒弹窗");
+  const rest = html.slice(start);
+  const end = rest.indexOf('<div class="toast-wrap"');
+  return rest.slice(0, end > 0 ? end : rest.length);
+}
+
+test("提醒：rail 入口与指示点照原型，圆点的初始标记就是「没有」", () => {
+  const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
+  const rail = html.slice(html.indexOf('class="rail-head"'), html.indexOf("</aside>"));
+
+  assert.equal(rail.includes('id="btnReminders"'), true, "rail head 里应有提醒入口");
+  const dot = /<span class="dot" id="reminderDot"([^>]*)>/.exec(rail);
+  assert.ok(dot, "入口里应有一个 .dot 的指示点");
+  // `hidden` 是标记里的静态事实：JS 还没跑完的那一帧也不能凭空空出一个点（原型 :1886 同一纪律）。
+  assert.match(dot[1], /\bhidden\b/, "指示点的初始状态必须是「没有提醒」");
+  // 入口与设置入口同形：文案不写死，按词条键取。
+  assert.match(rail, /data-i18n-attr="aria-label:rail\.reminders,title:rail\.reminders"/);
+});
+
+test("提醒：弹窗是 wide，新增控件只有文本与时间（没有日期与重复字段）", () => {
+  const markup = remindersMarkup();
+
+  assert.ok(markup.includes('class="modal wide"'), "提醒弹窗照原型走 wide 那一档");
+  assert.ok(markup.includes('id="reminderList"'), "列表容器由 app.js 按后端读数渲染");
+  assert.equal((markup.match(/type="time"/g) || []).length, 1, "时间格恰好一个");
+  assert.ok(markup.includes('id="reminderText"'), "文本格");
+  // 本票不扩张：日期与重复字段是规格未授权的东西，标记里也不许先落一个。
+  assert.equal(markup.includes('type="date"'), false, "没有日期字段");
+  assert.equal(/id="reminder(Day|Date|Repeat)"/.test(markup), false, "没有日期 / 重复字段");
+  // 时间格的默认取值照原型 `#rmTime`（`value="09:00"`）。
+  assert.match(markup, /id="reminderTime"[\s\S]{0,160}value="09:00"/);
+  // 可访问名与占位符都走词条（`type="time"` 的控件自己没有可读标签）。
+  assert.match(markup, /data-i18n-attr="aria-label:reminder\.timeLabel"/);
+});
+
+test("提醒：没有提醒时是空态，有提醒时是列表，圆点跟着出现与消失", () => {
+  const harness = createHarness();
+  const list = harness.elementFor("#reminderList");
+  const dot = harness.elementFor("#reminderDot");
+  dot.hidden = false; // 先点亮，证明下面把它收回去的是这条规则本身
+
+  harness.api.state.reminders = [];
+  harness.api.renderRemindersModal();
+  harness.api.renderReminderDot();
+
+  assert.equal(dot.hidden, true, "没有提醒就没有指示点");
+  const empty = list.querySelector(".empty");
+  assert.ok(empty, "没有提醒时列表位置是空态");
+  assert.equal(empty.querySelector("b").textContent, harness.catalogs["zh-CN"]["reminder.emptyTitle"]);
+  assert.equal(empty.querySelector("p").textContent, harness.catalogs["zh-CN"]["reminder.emptyBody"]);
+  assert.equal(list.querySelectorAll(".reminder-row").length, 0);
+
+  harness.api.state.reminders = [{ ...REMINDER_WITH_CHANNEL }];
+  harness.api.renderRemindersModal();
+  harness.api.renderReminderDot();
+
+  assert.equal(dot.hidden, false, "有提醒就有指示点");
+  assert.equal(list.querySelectorAll(".reminder-row").length, 1);
+  assert.equal(list.querySelector(".empty"), null, "有条目时不再是空态");
+});
+
+test("提醒：列表条目字段齐全（时间 / 文本 / 归属频道 / 删除）", async () => {
+  const harness = createHarness({
+    reminders: [{ ...REMINDER_WITH_CHANNEL }, { ...REMINDER_WITH_CHANNEL, id: "rm_2", text: "评审 raft 快照方案", time: "10:00", channel_id: null, channel_name: "" }],
+  });
+  await harness.api.loadReminders(); // 列表来自后端读数（`GET /api/reminders`），不是本地拼的
+
+  const rows = harness.elementFor("#reminderList").querySelectorAll(".reminder-row");
+  assert.equal(rows.length, 2, "列表逐条渲染，不合并");
+  assert.deepEqual(rows.map((row) => row.dataset.reminder), ["rm_1", "rm_2"]);
+
+  const first = rows[0];
+  assert.equal(first.querySelector(".time").textContent, "14:30", "时间");
+  assert.equal(first.querySelector(".grow").textContent, "检查令牌替换进度 · #设计系统重构", "文本 + 归属频道");
+  const remove = first.querySelector("[data-delete-reminder]");
+  assert.equal(remove.dataset.deleteReminder, "rm_1");
+  assert.equal(remove.getAttribute("aria-label"), harness.catalogs["zh-CN"]["reminder.deleteAria"]);
+  assert.equal(first.querySelectorAll("[data-delete-reminder]").length, 1, "一行一个删除控件");
+
+  // 不归属任何频道的提醒：没有 `· #频道名` 那一段（可空列的正本事实）。
+  assert.equal(rows[1].querySelector(".grow").textContent, "评审 raft 快照方案");
+  assert.equal(rows[1].querySelector(".ch"), null);
+});
+
+test("提醒：新增写入后端（文本 + 时间 + 当前频道），并铺上响应里的最新列表", async () => {
+  const harness = createHarness();
+  harness.api.bindEvents();
+  harness.api.state.channels = [{ id: "ch-1", name: "设计系统重构" }];
+  harness.api.state.activeChannelId = "ch-1";
+  harness.elementFor("#reminderText").value = "评审 raft 快照方案";
+  harness.elementFor("#reminderTime").value = "10:00";
+
+  await harness.elementFor("#reminderAddSubmit").dispatchEvent({ type: "click" });
+  await flush();
+
+  const posts = harness.calls.filter((call) => call.method === "POST");
+  assert.deepEqual(
+    posts.map((call) => ({ url: call.url, body: call.body })),
+    [{ url: "/api/reminders", body: { text: "评审 raft 快照方案", time: "10:00", channel_id: "ch-1" } }],
+  );
+  assert.equal(harness.api.state.reminders.length, 1);
+  assert.equal(harness.elementFor("#reminderDot").hidden, false, "新增后指示点出现");
+  assert.equal(
+    harness.elementFor("#reminderList").querySelectorAll(".reminder-row").length,
+    1,
+    "列表按后端返回的那一份渲染",
+  );
+  assert.equal(harness.elementFor("#reminderText").value, "", "提交后清空正文");
+  assert.equal(harness.elementFor("#reminderTime").value, "10:00", "时间格保留当前取值");
+});
+
+test("提醒：删除走 DELETE 端点，删空后回到空态（圆点也跟着消失）", async () => {
+  const harness = createHarness({ reminders: [{ ...REMINDER_WITH_CHANNEL }] });
+  harness.api.bindEvents();
+  harness.api.state.reminders = [{ ...REMINDER_WITH_CHANNEL }];
+  harness.api.renderRemindersModal();
+  harness.api.renderReminderDot();
+  const list = harness.elementFor("#reminderList");
+  const remove = list.querySelectorAll(".reminder-row")[0].querySelector("[data-delete-reminder]");
+
+  await list.dispatchEvent({
+    type: "click",
+    target: { closest: (selector) => (selector === "[data-delete-reminder]" ? remove : null) },
+  });
+  await flush();
+
+  assert.deepEqual(
+    harness.calls.filter((call) => call.method === "DELETE").map((call) => call.url),
+    ["/api/reminders/rm_1"],
+  );
+  assert.deepEqual(harness.api.state.reminders, []);
+  assert.equal(harness.elementFor("#reminderDot").hidden, true, "删空后指示点消失");
+  const empty = list.querySelector(".empty");
+  assert.ok(empty, "删空后回到空态");
+  assert.equal(empty.querySelector("b").textContent, harness.catalogs["zh-CN"]["reminder.emptyTitle"]);
+});
+
+test("提醒：写失败留在弹窗里（不静默、也不改本地列表）", async () => {
+  const harness = createHarness();
+  harness.api.bindEvents();
+  harness.api.state.reminders = [];
+  harness.elementFor("#reminderText").value = "会失败的一条";
+
+  await harness.api.deleteReminder("rm_nope"); // 替身里不存在 ⇒ 404（与后端同形）
+  await flush();
+
+  assert.deepEqual(harness.api.state.reminders, [], "失败不改本地镜像");
+  const box = harness.elementFor("#reminderFormError");
+  assert.equal(box.hidden, false, "失败要留在弹窗里");
+  assert.ok(box.textContent.includes("提醒不存在"), `错误正文应带上后端的话：${box.textContent}`);
+});
+
+test("提醒：打开弹窗按后端重读一次，切语言后文案跟着换", async () => {
+  const harness = createHarness({ reminders: [{ ...REMINDER_WITH_CHANNEL }] });
+  harness.api.bindEvents();
+
+  harness.api.openRemindersModal();
+  await flush();
+
+  assert.equal(harness.elementFor("#remindersOverlay").hidden, false);
+  assert.deepEqual(
+    harness.calls.filter((call) => call.url === "/api/reminders" && call.method === "GET").length,
+    1,
+    "打开时按正本重读一次",
+  );
+
+  harness.api.applySettings({ locale: "en" });
+  const remove = harness.elementFor("#reminderList").querySelector("[data-delete-reminder]");
+  assert.equal(remove.getAttribute("aria-label"), harness.catalogs.en["reminder.deleteAria"]);
+});
+
+test("提醒：新增文案在两份词条里都取到值", () => {
+  const harness = createHarness();
+  const keys = [
+    "rail.reminders",
+    "reminder.modalTitle",
+    "reminder.modalSub",
+    "reminder.closeAria",
+    "reminder.emptyTitle",
+    "reminder.emptyBody",
+    "reminder.newLabel",
+    "reminder.textLabel",
+    "reminder.timeLabel",
+    "reminder.add",
+    "reminder.deleteAria",
+    "reminder.saveFailed",
+    "reminder.deleteFailed",
+    "reminder.loadFailed",
+  ];
+
+  for (const key of keys) {
+    assert.ok(harness.catalogs["zh-CN"][key], `${key} 在源语言里缺失`);
+    assert.ok(harness.catalogs.en[key], `${key} 在第二语言里缺失`);
+    assert.notEqual(
+      harness.catalogs["zh-CN"][key],
+      harness.catalogs.en[key],
+      `${key} 的两份取值不能是同一句话`,
+    );
+  }
+});
+/* ─── 9. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
    名册的判据只有四条：入口能开、内容 = 后端成员表逐条（含 owner）、唯一动作是关闭、
    文案在两份词条里都取到值。窄屏 / 真实页面的那条入口由浏览器实测验，这里用同一套 DOM 替身。 */
 

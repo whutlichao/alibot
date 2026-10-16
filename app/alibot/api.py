@@ -5,6 +5,9 @@
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
 - ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度 / 主题）
 - ``PATCH /api/settings``                     写工作区设置（配置类取值；不落消息、不唤醒、不消耗预算）
+- ``GET  /api/reminders``                     全部提醒（时间 / 文本 / 归属频道）
+- ``POST /api/reminders``                     新建一条提醒（不落消息、不唤醒、不消耗预算）
+- ``DELETE /api/reminders/{id}``              删除一条提醒（同上；不存在的 id ⇒ 404）
 - ``GET  /api/search``                        工作台搜索（消息 / 任务 / Agent 三类命中，``facet`` 过滤）
 - ``GET  /api/channels``                      频道列表（含未读计数）
 - ``POST /api/channels``                      新建频道（名称 + 描述 + 初始成员，原子校验）
@@ -265,6 +268,25 @@ class SettingsUpdate(BaseModel):
         return value
 
 
+class ReminderCreate(BaseModel):
+    """新建一条提醒（`CONTEXT.md` **提醒**：时间 + 文本 + **可归属**一个频道）。
+
+    未知键由 ``extra="forbid"`` 整体拒绝（与设置面同一形态）。**没有日期与重复字段**：原型
+    `#rmTime` 只有 `type="time"`，本票不扩张。
+
+    ``channel_id`` 的显式 ``null`` 在这里**是有含义的取值**——「不归属任何频道」（空工作台或
+    私信视图下也设得成提醒），因此它**不**沿用设置面那条「显式 null 一律拒绝」的规则：
+    那条规则的理由是档位 `null` 既不是档位取值、也不是「没提到」，而这里的 `null` 恰好就是
+    「不归属」这个合法状态。文本与时间的形状由库层按 `REMINDER_TIME_PATTERN` 与上限校验。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = ""
+    time: str = ""
+    channel_id: str | None = None
+
+
 def create_app(
     data_dir: Path | str | None = None,
     db: Database | None = None,
@@ -386,6 +408,32 @@ def create_app(
                 theme=payload.theme,
             )
         }
+
+    # ─── 提醒（库内对象；ADR-0012：后端是唯一正本） ────────────────────────
+    @app.get("/api/reminders")
+    def list_reminders() -> dict[str, Any]:
+        """全部提醒（时间 / 文本 / 归属频道）。正本是库里的 ``reminder`` 表。"""
+        return {"reminders": service.reminders()}
+
+    @app.post("/api/reminders", status_code=201)
+    def create_reminder(payload: ReminderCreate) -> dict[str, Any]:
+        """新建一条提醒。
+
+        增删提醒**不落消息、不唤醒、不消耗预算**（ADR-0012 / D18）：提醒不是对话事实，
+        因此这里既不写 `system` 消息，也不新增 target、不计未读。
+        响应同时带**最新**的完整提醒表，于是前端一次调用就能重绘列表，不必「先写再读」两次往返。
+        """
+        reminder = service.create_reminder(payload.text, payload.time, payload.channel_id)
+        return {"reminder": reminder, "reminders": service.reminders()}
+
+    @app.delete("/api/reminders/{reminder_id}")
+    def delete_reminder(reminder_id: str) -> dict[str, Any]:
+        """删除一条提醒（人类面动作）；同样不落消息、不唤醒、不消耗预算。
+
+        不存在的 id ⇒ 404 ``not_found``（键不存在不是「删掉了一个已经不在的东西」）。
+        """
+        reminder = service.delete_reminder(reminder_id)
+        return {"reminder": reminder, "reminders": service.reminders()}
 
     @app.get("/api/search")
     def search(

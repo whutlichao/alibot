@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -42,7 +43,7 @@ AVATAR_SLOT_COUNT = 5
 
 # schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝启动**、
 # 不做迁移（ADR-0004）。号段由规格 #60 的协调裁定分配，实施票不得自行改号：
-#   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）；9 = #67（附件）；
+#   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）已合并；9 = #67（附件）；
 #   10 = #71（`workspace_settings.theme` 新增一列）已合并；11 = #35 的 #58（结构化沉默）；
 #   12 = **本票 #65**（`agent_config.auto_claim` 与 `task.claimed_at` 各新增一列）。
 SCHEMA_VERSION = 12
@@ -116,6 +117,7 @@ BUSINESS_TABLES = (
     "round_outcome",
     "remote_consent",
     "workspace_settings",
+    "reminder",
 )
 
 # 逐表计数语句：由上面的常量在模块级拼好（与 ``AGENT_SELECT_SQL`` / ``UNREAD_COUNT_SQL`` 同一体例：
@@ -130,6 +132,13 @@ MAX_MEMBER_NAME_LENGTH = 40
 MAX_AGENT_ROLE_LENGTH = 80
 MAX_SYSTEM_PROMPT_LENGTH = 8000
 MAX_MODEL_ID_LENGTH = 120
+
+# 提醒（`CONTEXT.md` **提醒**：本机用户给自己设的一条**时间 + 文本**备忘，可关联频道）。
+# 列的形状由实施票给定（ADR-0012）：**时间 + 文本 + 可归属一个频道**。
+# 时间只有钟点：原型 `#rmTime` 只有 `type="time"`（没有日期、没有重复），因此这里唯一的合法形状
+# 就是 24 小时的 `HH:MM`；日期 / 重复属于未授权的扩张，不在本票。
+MAX_REMINDER_TEXT_LENGTH = 200
+REMINDER_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -271,6 +280,22 @@ CREATE TABLE IF NOT EXISTS workspace_settings (
   theme           TEXT NOT NULL DEFAULT 'system'
                   CHECK (theme IN ('light', 'dark', 'system')),
   updated_at      TEXT NOT NULL
+);
+
+-- 提醒（`CONTEXT.md` **提醒**）：一条**时间 + 文本**备忘，**可归属**一个频道。
+-- **库内对象**（ADR-0012）：后端持有它是唯一正本，前端不持 localStorage 副本——既有的那条边界
+-- 「业务状态的唯一正本是后端」（`CONTEXT.md` **工作台**）在提醒上没有理由例外。
+-- 与消息面的边界（ADR-0012 / D18）：提醒**不是**对话事实。增删提醒**不落消息、不唤醒、
+-- 不消耗预算**；提醒**不新增 target**、不计未读、不参与唤醒——它与频道的关系是**归属**，
+-- 不是 target 作用域（因此这里没有也不能有 `target_id`）。
+-- ``channel_id`` **可空**：空 = 这条提醒不归属任何频道（空工作台 / DM 视图下也设得成提醒）。
+-- ``time`` 的形状由 :data:`REMINDER_TIME_PATTERN` 在写路径上校验（24 小时的 `HH:MM`）。
+CREATE TABLE IF NOT EXISTS reminder (
+  id          TEXT PRIMARY KEY,
+  text        TEXT NOT NULL CHECK (length(trim(text)) > 0),
+  time        TEXT NOT NULL,
+  channel_id  TEXT REFERENCES channel(id),
+  created_at  TEXT NOT NULL
 );
 
 -- 远端数据流告知的一次性确认（spec #1 §8）：按模型提供商记一次，与成员无关。
@@ -440,6 +465,14 @@ DM_SELECT_SQL = (
     " GROUP BY t.id, t.created_at, p.id, p.kind, p.display_name, p.avatar_slot, "
     "          p.created_at, p.deleted_at, r.last_read_seq "
     " ORDER BY t.created_at, t.id"
+)
+
+# 提醒的**唯一一条选取形状**：提醒行 + 归属频道的可读名。
+# 三处共用（列表、新增后读回、删除前读回）——加一列时只改这里，不会只改到其中一两处。
+# 归属是**可空**的（空 = 不归属任何频道），因此是 ``LEFT JOIN``：写成 ``JOIN`` 会把
+# 「不归属」的提醒整条从列表里丢掉。ORDER BY 与 WHERE 由调用点各自拼在后面（起点不同）。
+REMINDER_SELECT_SQL = (
+    "SELECT r.*, c.name AS channel_name FROM reminder r LEFT JOIN channel c ON c.id = r.channel_id "
 )
 
 # 工作台搜索的唯一判定：SQLite CASEFOLD + LIKE 子串匹配，前端只消费后端高亮区间。
@@ -1123,6 +1156,98 @@ class Database:
                 ),
             )
         return self.workspace_settings()
+
+    # ─── 提醒（库内对象；ADR-0012：增删不落消息、不唤醒、不消耗预算） ────────
+    def list_reminders(self) -> list[dict[str, Any]]:
+        """全部提醒，按创建序（``created_at, rowid``）。
+
+        归属频道用 ``LEFT JOIN`` 取名字（见 :data:`REMINDER_SELECT_SQL`）：**空 = 不归属**
+        （可空列的正本事实），因此不能写成 ``JOIN``——那会把「不归属任何频道的提醒」整条丢掉。
+
+        并列的判据必须是 ``rowid``（= **插入序**），不能是 ``id``：``utc_now`` 只有**毫秒**
+        精度，同一毫秒内连着建的几条 ``created_at`` 逐字相同，而 ``id`` 是 ``uuid4`` 的随机段——
+        拿它当并列判据会让「创建序」变成随机序（同一毫秒里建的 3 条，恰好升序的概率只有 1/6）。
+        """
+        with self._lock:
+            rows = self._conn.execute(REMINDER_SELECT_SQL + "ORDER BY r.created_at, r.rowid").fetchall()
+        return [self._reminder_payload(row) for row in rows]
+
+    def _get_reminder(self, reminder_id: str) -> dict[str, Any]:
+        """按 id 取一条提醒的载荷（含归属频道名）；不存在 ⇒ 404 ``not_found``。
+
+        **调用方负责持锁**（新增路径与删除路径都在同一个锁里连着做两件事，不该在中间放锁）。
+        读与删因此共用同一个 404 判据：新增后读回、删除前读回，两处不可能给出不同的说法。
+        """
+        row = self._conn.execute(REMINDER_SELECT_SQL + "WHERE r.id = ?", (reminder_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.reminder_not_found", reminder_id=reminder_id))
+        return self._reminder_payload(row)
+
+    @staticmethod
+    def _reminder_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "text": row["text"],
+            "time": row["time"],
+            "channel_id": row["channel_id"],
+            # 不归属时是空串而不是 null：前端那一行按「有归属才显示频道」分支，空串就是没有。
+            "channel_name": row["channel_name"] or "",
+            "created_at": row["created_at"],
+        }
+
+    def create_reminder(self, text: str, time: str, channel_id: str | None = None) -> dict[str, Any]:
+        """落一条提醒；校验先于写入（任一字段不合法则**不留任何半成品行**）。
+
+        归属频道（若给了）必须存在。``channel_id`` 是**请求体里的引用**，因此与
+        ``create_channel`` 的 ``member_ids`` / ``add_channel_member`` 同口径：
+        ``validation_failed`` + ``fields``（复用 ``error.channel_not_found`` 的取值），
+        而不是把「路径资源不存在」的 404 用在这里。
+
+        这里的自然语言与其它模块一样经 :meth:`_render_copy` 取（后端文案按库内语言偏好渲染，
+        ADR-0009 第二层）：本票新增的文案也是后端可见文案，没有理由绕开那一条路径。
+        """
+        clean_text = (text or "").strip()
+        clean_time = (time or "").strip()
+        fields: dict[str, str] = {}
+        if not clean_text:
+            fields["text"] = self._render_copy("error.reminder_text_empty")
+        elif len(clean_text) > MAX_REMINDER_TEXT_LENGTH:
+            fields["text"] = self._render_copy("error.reminder_text_too_long", limit=MAX_REMINDER_TEXT_LENGTH)
+        if not REMINDER_TIME_PATTERN.match(clean_time):
+            fields["time"] = self._render_copy("error.reminder_time_shape")
+        if fields:
+            raise DomainError("validation_failed", self._render_copy("error.reminder_invalid"), fields=fields)
+        if channel_id is not None:
+            try:
+                self.get_channel(channel_id)
+            except NotFound:
+                raise DomainError(
+                    "validation_failed",
+                    self._render_copy("error.reminder_invalid"),
+                    fields={
+                        "channel_id": self._render_copy("error.channel_not_found", channel_id=channel_id)
+                    },
+                ) from None
+
+        reminder_id = new_id("rm")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO reminder(id, text, time, channel_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                (reminder_id, clean_text, clean_time, channel_id, utc_now()),
+            )
+            reminder = self._get_reminder(reminder_id)
+        return reminder
+
+    def delete_reminder(self, reminder_id: str) -> dict[str, Any]:
+        """删一条提醒，并返回**这次真的删掉的**那一条（不写墓碑、不落消息）。
+
+        不存在的 id ⇒ 404，与 ``get_channel`` / ``get_task``「键不存在就是 404」同口径。
+        读与删在同一个锁里做，因此返回的那条不可能是「读完之后被别人删掉」的那条。
+        """
+        with self._lock:
+            reminder = self._get_reminder(reminder_id)
+            self._conn.execute("DELETE FROM reminder WHERE id = ?", (reminder_id,))
+        return reminder
 
     # ─── 轮次结果（append-only） ────────────────────────────────────────
     def append_round_outcome(
