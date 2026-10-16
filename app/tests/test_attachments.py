@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -305,3 +306,43 @@ def test_attachments_have_no_mutation_endpoint(client: TestClient, method: str) 
         "message": i18n.render("error.attachments_immutable", ZH),
     }
     assert client.get(f"/api/attachments/{attachment_id}").status_code == 200, "内容一个字节没变"
+
+
+def test_attachment_rows_are_immutable_except_the_single_binding(client: TestClient, data_dir: Path) -> None:
+    """库级兜底：ADR-0014 的「上传后不改内容、不改名、不覆盖」不是靠代码路径自觉。
+
+    这条判据只能直接读库（没有 HTTP 路径能观察「触发器拦住了什么」），与 ``test_schema_version_gate``
+    的「库未变」同一体例：**只读断言** + 故意被拒的那几条 UPDATE / DELETE。
+    """
+    channel = create_channel(client).json()["channel"]
+    bound = uploaded_id(client, b"bound bytes", name="bound.txt")
+    draft = uploaded_id(client, b"draft bytes", name="draft.txt")
+    assert send(client, channel["id"], "绑定它", attachment_ids=[bound]).status_code == 201
+
+    conn = sqlite3.connect(data_dir / DATABASE_FILE_NAME)
+    try:
+        # 元数据不可变：改名 / 改路径 / 改大小都被触发器拒绝（草稿也一样）。
+        for statement, params in (
+            ("UPDATE attachment SET original_name = 'hacked.txt' WHERE id = ?", (bound,)),
+            ("UPDATE attachment SET relative_path = 'attachments/other' WHERE id = ?", (draft,)),
+            ("UPDATE attachment SET size_bytes = 0 WHERE id = ?", (draft,)),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(statement, params)
+        # 绑定是单向的一次性动作：已绑定的不能改绑、不能解绑（草稿的 NULL → NULL 是无副作用的空操作，
+        # 不在禁令内；它拦的是「把已经挂上消息的附件摘下来」）。
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE attachment SET message_id = NULL WHERE id = ?", (bound,))
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE attachment SET message_id = 'msg_elsewhere' WHERE id = ?", (bound,))
+        # 没有删除路径。
+        for params in ((bound,), (draft,)):
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute("DELETE FROM attachment WHERE id = ?", params)
+    finally:
+        conn.rollback()
+        conn.close()
+
+    # 绑定本身仍然是那条**允许**的写后修改：库里的读数与 HTTP 面一致。
+    assert client.get(f"/api/attachments/{bound}").status_code == 200
+    assert client.get(f"/api/attachments/{draft}").status_code == 404

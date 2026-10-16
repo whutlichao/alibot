@@ -252,11 +252,25 @@ CREATE TABLE IF NOT EXISTS attachment (
 
 CREATE INDEX IF NOT EXISTS idx_attachment_message ON attachment(message_id);
 
--- 附件的 append-only 兜底（与 ``message`` 同口径，ADR-0014 引 ADR-0001）：草稿 → 某条消息是
--- **唯一一次** UPDATE，此后任何改写（改绑 / 解绑）都被拒绝；删除同样没有路径。
-CREATE TRIGGER IF NOT EXISTS attachment_no_rebind
+-- 附件的 append-only 兜底（与 ``message`` 同口径，ADR-0014 引 ADR-0001）。两条不变量：
+--   1. **元数据不可变**：上传后不改内容、不改名、不覆盖 —— 任何列被改写都拒绝；
+--   2. **绑定是单向的一次性动作**：``message_id`` 只能 NULL → 某条消息，不能改绑、不能解绑。
+-- 于是「草稿 → 随消息绑定」是这张表上**唯一**允许的写后修改，与 ADR-0014 逐字一致。
+CREATE TRIGGER IF NOT EXISTS attachment_metadata_immutable
 BEFORE UPDATE ON attachment
-WHEN OLD.message_id IS NOT NULL
+WHEN OLD.id IS NOT NEW.id
+  OR OLD.original_name IS NOT NEW.original_name
+  OR OLD.size_bytes IS NOT NEW.size_bytes
+  OR OLD.mime_type IS NOT NEW.mime_type
+  OR OLD.relative_path IS NOT NEW.relative_path
+  OR OLD.created_at IS NOT NEW.created_at
+BEGIN
+  SELECT RAISE(ABORT, 'attachment is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS attachment_binding_is_immutable
+BEFORE UPDATE ON attachment
+WHEN OLD.message_id IS NOT NULL AND NEW.message_id IS NOT OLD.message_id
 BEGIN
   SELECT RAISE(ABORT, 'attachment binding is immutable');
 END;
@@ -528,6 +542,25 @@ SEARCH_AGENT_HITS_SQL = """
      ORDER BY m.display_name, m.id
      LIMIT :limit
 """
+
+# 附件（ADR-0014）：一条消息**已绑定**的附件（草稿 —— ``message_id IS NULL`` —— 不在此列）。
+ATTACHMENTS_BY_MESSAGE_SQL = "SELECT * FROM attachment WHERE message_id = ? ORDER BY created_at, id"
+
+# 一个 target 里已绑定的附件（按消息归组在 Python 侧做）：读消息列表时一次补齐，避免 N+1。
+ATTACHMENTS_BY_TARGET_SQL = """
+    SELECT att.* FROM attachment att JOIN message m ON m.id = att.message_id
+     WHERE m.target_id = ? AND m.seq > ?
+     ORDER BY att.created_at, att.id
+"""
+
+# 多条消息的附件（消息命中一次补齐用）。``IN`` 的取值域由 ``json_each`` 从**一个**绑定参数展开：
+# 本仓的既有纪律是「查询文本对静态检查是可见常量，拼接的不是外部输入」，这条常量因此也不需要
+# 在调用点拼占位符——连「几个占位符」这种计数拼接都省掉了。
+ATTACHMENTS_BY_MESSAGES_SQL = (
+    "SELECT * FROM attachment "
+    "WHERE message_id IN (SELECT value FROM json_each(:message_ids)) "
+    "ORDER BY created_at, id"
+)
 
 # 搜索的四档 facet（原型 `.facet-row` 的取值与顺序）。它同时是 HTTP 查询参数的类型，
 # 因此「哪几档」只有这一处定义：FastAPI 的校验与库层的分支读的是同一个 Literal。
@@ -2216,37 +2249,30 @@ class Database:
 
     def _attachments_by_message_locked(self, message_id: str) -> list[dict[str, Any]]:
         """一条消息**已绑定**的附件（调用方需已持锁或正处于同一连接的事务里）。"""
-        rows = self._conn.execute(
-            "SELECT * FROM attachment WHERE message_id = ? ORDER BY created_at, id", (message_id,)
-        ).fetchall()
+        rows = self._conn.execute(ATTACHMENTS_BY_MESSAGE_SQL, (message_id,)).fetchall()
         return [self._attachment_payload(row) for row in rows]
 
     def _attachments_by_target_locked(
         self, target_id: str, after_seq: int = 0
     ) -> dict[str, list[dict[str, Any]]]:
         """该 target 里**已绑定**的附件，按 ``message_id`` 归组（草稿不在此列——读取面不暴露）。"""
-        rows = self._conn.execute(
-            """
-            SELECT att.* FROM attachment att JOIN message m ON m.id = att.message_id
-             WHERE m.target_id = ? AND m.seq > ?
-             ORDER BY att.created_at, att.id
-            """,
-            (target_id, after_seq),
-        ).fetchall()
+        rows = self._conn.execute(ATTACHMENTS_BY_TARGET_SQL, (target_id, after_seq)).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             grouped.setdefault(str(row["message_id"]), []).append(self._attachment_payload(row))
         return grouped
 
     def _attachments_for_messages_locked(self, message_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
-        """多条消息的已绑定附件，按 ``message_id`` 归组（消息命中一次补齐用）。"""
+        """多条消息的已绑定附件，按 ``message_id`` 归组（消息命中一次补齐用）。
+
+        ``IN`` 的取值域由 ``json_each`` 从**一个**绑定参数展开（``ATTACHMENTS_BY_MESSAGES_SQL``），
+        因此这里没有任何东西被拼进 SQL 文本——与上面那些模块级 ``*_SQL`` 常量同一条纪律。
+        """
         if not message_ids:
             return {}
-        # 唯一被拼进 SQL 的只有「几个占位符」这个**计数**（由列表长度算出），值仍全部经 ``?`` 绑定：
-        # 与模块级 ``BUSINESS_COUNT_SQL`` 同一条纪律——拼接的从来不是外部输入。
-        placeholders = ", ".join("?" for _ in message_ids)
-        sql = f"SELECT * FROM attachment WHERE message_id IN ({placeholders}) ORDER BY created_at, id"
-        rows = self._conn.execute(sql, tuple(message_ids)).fetchall()
+        rows = self._conn.execute(
+            ATTACHMENTS_BY_MESSAGES_SQL, {"message_ids": json.dumps(list(message_ids))}
+        ).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             grouped.setdefault(str(row["message_id"]), []).append(self._attachment_payload(row))

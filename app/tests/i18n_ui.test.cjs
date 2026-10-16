@@ -1128,6 +1128,102 @@ test("附件：没有被绑定的草稿不进消息流（正反两向）", () =>
   );
 });
 
+test("附件：还没绑定的草稿在消息里是不可点的元素（不渲染必然 404 的链接）", () => {
+  const harness = createComposerHarness();
+  // 乐观发送中的消息带的是**草稿**（`message_id` 为空）：内容端点对它回 404，
+  // 因此它只能是一块不可点的胶囊，而不是一个点下去必然失败的 `<a download>`。
+  harness.api.state.messages = [
+    {
+      id: "msg_1",
+      target_id: "ch-1",
+      seq: 1,
+      kind: "human",
+      body: "还在发",
+      created_at: "2026-10-16T09:00:00Z",
+      mention_snapshot: [],
+      task_ref: null,
+      attachments: [
+        {
+          id: "att_draft",
+          name: "草稿.txt",
+          size: 12,
+          mime_type: "text/plain",
+          created_at: "2026-10-16T09:00:00Z",
+          message_id: null,
+          url: "/api/attachments/att_draft",
+        },
+      ],
+      author: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
+    },
+  ];
+  harness.api.renderMessages();
+
+  const nodes = harness.elementFor("#messageList").querySelectorAll("[data-attachment]");
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].tagName, "span", "未绑定 ⇒ 不是链接");
+  assert.equal(nodes[0].getAttribute("href"), null);
+  assert.equal(nodes[0].classList.contains("is-link"), false);
+  assert.equal(nodes[0].textContent.includes("草稿.txt"), true, "名字与体积照旧可读");
+});
+
+test("附件：上传还在飞时 Enter 不发消息（不会静默漏掉刚选的文件）", async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const route = attachmentFetch();
+  const harness = createComposerHarness({
+    fetch: (url, init) => (url.startsWith("/api/attachments?") ? gate : route(url, init)),
+  });
+
+  const input = harness.elementFor("#attachInput");
+  input.files = [{ name: "报告.pdf", type: "application/pdf", size: 2048 }];
+  await input.dispatchEvent({ type: "change", target: input });
+  // 不 await `settle()`：上传正卡在 fetch 上，此刻 composer 里**还没有**这个附件。
+  harness.elementFor("#composerInput").value = "这条不该发出去";
+  assert.equal(harness.elementFor("#btnSend").disabled, true, "上传期间发送键禁用");
+  await harness.elementFor("#composerInput").dispatchEvent({
+    type: "keydown",
+    key: "Enter",
+    isComposing: false,
+    preventDefault: () => {},
+  });
+  await flush();
+
+  assert.equal(
+    harness.requests.some((request) => /\/messages$/.test(request.url)),
+    false,
+    "上传未落地时 Enter 不发消息",
+  );
+  assert.ok(
+    harness.elementFor("#toastWrap").textContent.includes("还有 1 个附件在上传"),
+    "拦住的时候要说明为什么（不是静默什么都不发生）",
+  );
+
+  release({
+    ok: true,
+    status: 201,
+    json: async () => ({
+      attachment: {
+        id: "att_1",
+        name: "报告.pdf",
+        size: 2048,
+        mime_type: "application/pdf",
+        created_at: "2026-10-16T09:00:00Z",
+        message_id: null,
+        url: "/api/attachments/att_1",
+      },
+    }),
+  });
+  await settle();
+  assert.equal(
+    harness.elementFor("#composerAttachments").querySelectorAll("[data-attachment]").length,
+    1,
+    "上传落地后草稿照常出现在 composer 里",
+  );
+  assert.equal(harness.elementFor("#btnSend").disabled, false, "落地后发送键恢复");
+});
+
 test("附件：上传被拒时给出后端原因，且 composer 里不留下草稿", async () => {
   const harness = createComposerHarness({ fetch: attachmentFetch({ rejectUpload: true }) });
   await chooseFiles(harness, [{ name: "巨大.bin", type: "application/pdf", size: 11534336 }]);
@@ -1148,6 +1244,7 @@ test("附件：新增文案在两份词条里都取到值", () => {
     "attach.fallbackName",
     "msg.attachmentAria",
     "toast.attachFailed",
+    "toast.attachPending",
   ];
   for (const key of keys) {
     assert.ok(catalogs["zh-CN"][key], `${key} 在源语言里缺失`);
@@ -1179,7 +1276,7 @@ test("附件：新增文案在两份词条里都取到值", () => {
     created_at: "2026-10-16T09:00:00Z",
     mention_snapshot: [],
     task_ref: null,
-    attachments: [{ id: "att_1", name: "report.pdf", size: 10, url: "/api/attachments/att_1" }],
+    attachments: [{ id: "att_1", name: "report.pdf", size: 10, message_id: "msg_1", url: "/api/attachments/att_1" }],
     author: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
   });
   const englishAria = node.querySelector("[data-attachment]").getAttribute("aria-label");

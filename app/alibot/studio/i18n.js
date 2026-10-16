@@ -356,6 +356,7 @@ const I18N_CATALOGS = {
     'toast.sendMessageLost': '后端不可达：这条消息没有送达，也没有留在本地队列里。',
     'toast.sendRejected': '发送被拒绝：{reason}',
     'toast.attachFailed': '附件上传失败：{reason}',
+    'toast.attachPending': '还有 {count} 个附件在上传，等它落地再发送（否则这条消息会漏掉它）。',
     'toast.sessionLoadFailed': '读取会话失败：{reason}',
     'toast.memberFallback': '成员',
     'toast.joinedChannel': '已把 {name} 加入 #{channel}，现在可以在 composer 里用 @ 提到它。',
@@ -714,6 +715,8 @@ const I18N_CATALOGS = {
       'Backend unreachable: this message was not delivered and is not queued locally.',
     'toast.sendRejected': 'Send rejected: {reason}',
     'toast.attachFailed': 'Attachment upload failed: {reason}',
+    'toast.attachPending':
+      '{count} attachment(s) are still uploading — wait for them before sending, or this message will miss them.',
     'toast.sessionLoadFailed': 'Could not read the conversation: {reason}',
     'toast.memberFallback': 'member',
     'toast.joinedChannel': 'Added {name} to #{channel}; you can now @-mention it from the composer.',

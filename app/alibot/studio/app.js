@@ -1153,6 +1153,7 @@ function renderTaskThread() {
       top.appendChild(el('span', 'card-tag', timeLabel(message.created_at)));
       row.appendChild(top);
       row.appendChild(el('div', 'tt-linked-body', message.body));
+      appendAttachmentList(row, message);
       wrap.appendChild(row);
     });
     replaceChildren(linkedBox, [wrap]);
@@ -1178,6 +1179,7 @@ function renderTaskThread() {
         // 正文直接用消息流同一套渲染（`.msg-text`，ADR-0016 的 14px / 68ch）：
         // 提及高亮、换行与量例都与主线一致，不另造一套（也不多套一层壳）。
         body.appendChild(messageText(message));
+        appendAttachmentList(body, message);
         appendTaskRefChip(body, message);
         row.appendChild(body);
         return row;
@@ -1708,6 +1710,13 @@ function sendMessage() {
   if (!body || !target) return;
   if (!state.online) {
     toast(t('toast.sendBlockedOffline'), 'err');
+    return;
+  }
+  // 上传还在飞时**不发**：这条消息会漏掉那个人刚选好、还没拿到标识的文件。
+  // 发送键在 `syncSendButton()` 里也是这个理由被禁用；但 Enter 走的是这条路径，
+  // 所以闸门必须在这里也有一道（否则键盘用户能绕过禁用态，静默漏掉附件）。
+  if (attachingCount > 0) {
+    toast(t('toast.attachPending', { count: attachingCount }), 'err');
     return;
   }
   // 草稿随这条消息一起走：它们既不留在 composer（已经属于这条 pending），也在失败时随 pending
@@ -2802,7 +2811,7 @@ async function attachFiles(files) {
   const list = Array.from(files || []);
   if (!list.length) return;
   attachingCount += list.length;
-  renderComposerAttachments();
+  renderComposerState();
   for (const item of list) {
     try {
       state.composerAttachments.push(await uploadAttachment(item));
@@ -2810,7 +2819,7 @@ async function attachFiles(files) {
       toast(t('toast.attachFailed', { reason: err.message }), 'err');
     } finally {
       attachingCount -= 1;
-      renderComposerAttachments();
+      renderComposerState();
     }
   }
 }
@@ -2818,29 +2827,40 @@ async function attachFiles(files) {
 /** 移除一个还没发送的草稿（只从手上移走；库里的草稿行与字节仍在——没有删除端点）。 */
 function removeComposerAttachment(attachmentId) {
   state.composerAttachments = state.composerAttachments.filter((item) => item.id !== attachmentId);
-  renderComposerAttachments();
+  renderComposerState();
 }
 
 /** 草稿交给某条消息之后清空手上的清单（发送成功与乐观发送都走它）。 */
 function clearComposerAttachments() {
   state.composerAttachments = [];
+  renderComposerState();
+}
+
+/** 附件区与发送键是同一份状态（手上的草稿 + 在飞的上传）的两个出口：一起刷。
+    分成两次调用迟早会漏掉一处，于是发送键会对着「还有草稿没落地」的状态说「可以发」。 */
+function renderComposerState() {
   renderComposerAttachments();
+  syncSendButton();
 }
 
 /**
  * 一块附件元素：草稿态（composer 里，可移除）与已发送态（消息里，可下载）共用同一块形状。
  *
  * 已发送态用**原生 `<a download>`**：内容端点给出 `Content-Disposition` 与 MIME，浏览器据此
- * 落到本地文件；「预览」是同一个端点的 `disposition=inline`，由链接的 `target` 之外的调用点决定，
- * 本票只做消息里的下载入口（富媒体预览是 Out of Scope）。
+ * 落到本地文件；「预览」是同一个端点的 `disposition=inline`，本票只做消息里的下载入口
+ * （富媒体预览是 Out of Scope）。
+ *
+ * **只有已绑定**（`message_id` 非空）的附件才是可点的链接：乐观发送中的消息与失败留下的消息
+ * 带的仍是**草稿**，而内容端点对草稿回 404 —— 渲染成一个点下去必然 404 的链接是骗人的。
  */
 function attachmentNode(attachment, options) {
   const opts = options || {};
   const name = attachment.name || t('attach.fallbackName');
   const size = formatBytes(attachment.size);
-  const node = el(opts.link ? 'a' : 'span', 'attach' + (opts.link ? ' is-link' : ''));
+  const link = Boolean(opts.link) && Boolean(attachment.message_id);
+  const node = el(link ? 'a' : 'span', 'attach' + (link ? ' is-link' : ''));
   node.dataset.attachment = attachment.id;
-  if (opts.link) {
+  if (link) {
     node.setAttribute('href', attachment.url);
     node.setAttribute('download', name);
     node.setAttribute('aria-label', t('msg.attachmentAria', { name, size }));
