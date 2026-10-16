@@ -299,6 +299,25 @@ class WorkspaceService:
         agent = self._db.create_agent(name=name, role=role, model_id=model_id, system_prompt=system_prompt)
         return self._agent_view(agent)
 
+    # ─── 工作区设置（配置类取值；人类面可写，用量类事实不可写） ─────────────
+    def settings(self) -> dict[str, Any]:
+        """工作区设置（**语言偏好** / **消息密度**）。正本是后端库内的那一行。"""
+        return self._db.workspace_settings()
+
+    def update_settings(
+        self, locale: str | None = None, message_density: str | None = None
+    ) -> dict[str, Any]:
+        """写工作区设置（人类面动作）。只写配置类取值：
+
+        - **不落消息**（设置不是对话事实，不污染 append-only 的取证面）；
+        - **不唤醒**任何成员；
+        - **不消耗预算**（`target_budget.used` 仍只由开世代与投递跳推进，ADR-0007 的边界）。
+        """
+        return self._db.update_workspace_settings(
+            locale=None if locale is None else str(locale).strip(),
+            message_density=None if message_density is None else str(message_density).strip(),
+        )
+
     # ─── 远端数据流告知 ──────────────────────────────────────────────────
     def remote_data_flow(self) -> dict[str, Any]:
         """告知文案的数据面：哪些数据会离开本机、发给谁、以及已经确认过哪些提供商。"""
@@ -354,16 +373,12 @@ class WorkspaceService:
         self._db.get_channel(channel_id)  # 频道面入口只认 channel 型 target
         return self._send_target_message(channel_id, body, task_ref)
 
-    def send_task_message(
-        self, task_id: str, body: str, task_ref: str | None = None
-    ) -> dict[str, Any]:
+    def send_task_message(self, task_id: str, body: str, task_ref: str | None = None) -> dict[str, Any]:
         """任务线程消息落在任务自己的 target，并沿用同一落库、事件流与唤醒路径。"""
         task = self._db.get_task(task_id, self._member_id)
         return self._send_target_message(task["target_id"], body, task_ref)
 
-    def _send_target_message(
-        self, target_id: str, body: str, task_ref: str | None = None
-    ) -> dict[str, Any]:
+    def _send_target_message(self, target_id: str, body: str, task_ref: str | None = None) -> dict[str, Any]:
         """人类消息落库 → 推送事件流 → 唤醒成员面的 Agent。
 
         顺序是契约的一部分：``append_message`` 抛错时后面两步都不执行（落库失败不唤醒）。

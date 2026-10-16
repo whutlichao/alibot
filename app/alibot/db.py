@@ -38,7 +38,15 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+
+# 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合。
+# 本轮只有**语言偏好**与**消息密度**两档；**主题**由 #71 追加第三档，本票不得出现它的字段或档位
+# （列集就是「只有这些档位」这条约束的落点：没有通用 key-value 面，因此不可能被当成通用存储）。
+LOCALES = ("zh-CN", "en")
+MESSAGE_DENSITIES = ("comfortable", "compact")
+DEFAULT_LOCALE = "zh-CN"
+DEFAULT_MESSAGE_DENSITY = "comfortable"
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Alibot"
@@ -99,6 +107,7 @@ BUSINESS_TABLES = (
     "target_budget",
     "round_outcome",
     "remote_consent",
+    "workspace_settings",
 )
 
 # 逐表计数语句：由上面的常量在模块级拼好（与 ``AGENT_SELECT_SQL`` / ``UNREAD_COUNT_SQL`` 同一体例：
@@ -228,6 +237,19 @@ CREATE TABLE IF NOT EXISTS agent_config (
   enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
+);
+
+-- 工作区设置（`CONTEXT.md` **工作区设置**）：**单行表**（``id = 1``），列就是明确列出的档位。
+-- 它是**配置类**取值（人类面经 ``GET`` / ``PATCH /api/settings`` 读写），与预算表的边界是**写什么**：
+-- 人类面可以写配置，但**不得**写用量类事实（``target_budget.used`` 仍只由后端推进，ADR-0007）。
+-- 刻意不做成通用 key-value 表：那会让「只有这几档」这条约束失去落点（词条的 `_Avoid_` 明写）。
+-- 改设置**不落消息、不唤醒、不消耗预算**——它不是对话事实。
+CREATE TABLE IF NOT EXISTS workspace_settings (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  locale          TEXT NOT NULL DEFAULT 'zh-CN' CHECK (locale IN ('zh-CN', 'en')),
+  message_density TEXT NOT NULL DEFAULT 'comfortable'
+                  CHECK (message_density IN ('comfortable', 'compact')),
+  updated_at      TEXT NOT NULL
 );
 
 -- 远端数据流告知的一次性确认（spec #1 §8）：按模型提供商记一次，与成员无关。
@@ -619,6 +641,13 @@ class Database:
                 "VALUES (?, 'owner', ?, ?, ?) ON CONFLICT(id) DO NOTHING",
                 (OWNER_ID, OWNER_DISPLAY_NAME, OWNER_AVATAR_SLOT, utc_now()),
             )
+            # 工作区设置的**单行**：缺省值就是源语言与默认密度，与「空库 = 空工作台」同一条纪律
+            # （空库里没有任何用户取值，但设置面必须可读）。
+            self._conn.execute(
+                "INSERT INTO workspace_settings(id, locale, message_density, updated_at) "
+                "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                (DEFAULT_LOCALE, DEFAULT_MESSAGE_DENSITY, utc_now()),
+            )
 
     # ─── 事务助手 ──────────────────────────────────────────────────────────
     def _begin(self) -> None:
@@ -793,6 +822,62 @@ class Database:
                 "SELECT provider, acknowledged_at FROM remote_consent WHERE provider = ?", (clean,)
             ).fetchone()
         return {"provider": row["provider"], "acknowledged_at": row["acknowledged_at"]}
+
+    # ─── 工作区设置（配置类取值：人类面可写，用量类事实不可写） ─────────────
+    def workspace_settings(self) -> dict[str, Any]:
+        """当前工作区设置（**只读**）。行的缺省值在空库初始化时就已写入。
+
+        ``open_without_initializing`` 打开的库可能是「单行不存在」的形态（诊断路径不做 schema
+        变更），因此这里按缺省值回退，而不是在只读路径上补一行——读一个库不该改它。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT locale, message_density, updated_at FROM workspace_settings WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return {
+                "locale": DEFAULT_LOCALE,
+                "message_density": DEFAULT_MESSAGE_DENSITY,
+                "updated_at": "",
+            }
+        return {
+            "locale": row["locale"],
+            "message_density": row["message_density"],
+            "updated_at": row["updated_at"],
+        }
+
+    def update_workspace_settings(
+        self,
+        locale: str | None = None,
+        message_density: str | None = None,
+    ) -> dict[str, Any]:
+        """部分更新工作区设置（``None`` = 这一档没被这次请求提到，保持原值）。
+
+        校验先于写入：任一档位非法则**整体不改**（与 `add_channel_member` / `create_agent`
+        的偏序一致——没有「一半新一半旧」的中间态）。它只写 ``workspace_settings`` 一行：
+        **不落消息、不唤醒、不消耗预算**——设置不是对话事实。
+        """
+        fields: dict[str, str] = {}
+        if locale is not None and locale not in LOCALES:
+            fields["locale"] = f"必须是这些之一：{', '.join(LOCALES)}"
+        if message_density is not None and message_density not in MESSAGE_DENSITIES:
+            fields["message_density"] = f"必须是这些之一：{', '.join(MESSAGE_DENSITIES)}"
+        if fields:
+            raise DomainError("validation_failed", "工作区设置校验未通过，未改动任何档位", fields=fields)
+        with self._lock:
+            current = self.workspace_settings()
+            self._conn.execute(
+                "INSERT INTO workspace_settings(id, locale, message_density, updated_at) "
+                "VALUES (1, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET locale = excluded.locale, "
+                "message_density = excluded.message_density, updated_at = excluded.updated_at",
+                (
+                    current["locale"] if locale is None else locale,
+                    current["message_density"] if message_density is None else message_density,
+                    utc_now(),
+                ),
+            )
+        return self.workspace_settings()
 
     # ─── 轮次结果（append-only） ────────────────────────────────────────
     def append_round_outcome(
@@ -998,7 +1083,9 @@ class Database:
         self, task_id: str, status: str, *, actor_member_id: str = OWNER_ID
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if status not in TASK_STATUSES:
-            raise DomainError("validation_failed", f"未知的任务状态：{status}", fields={"status": "任务状态非法"})
+            raise DomainError(
+                "validation_failed", f"未知的任务状态：{status}", fields={"status": "任务状态非法"}
+            )
         actor = self.get_member(actor_member_id)
         self.get_task(task_id)  # 404 早退
         with self._lock:
@@ -1086,7 +1173,9 @@ class Database:
                 ) from exc
             if assignee["deleted_at"] is not None or assignee["kind"] != "agent":
                 raise DomainError(
-                    "validation_failed", "任务只能指派给未删除的 Agent", fields={"member_id": "指派对象必须是 Agent"}
+                    "validation_failed",
+                    "任务只能指派给未删除的 Agent",
+                    fields={"member_id": "指派对象必须是 Agent"},
                 )
         self.get_task(task_id)  # 404 早退
         with self._lock:
@@ -1101,9 +1190,7 @@ class Database:
                 previous_id = row["assignee_member_id"]
                 if actor["kind"] == "agent":
                     if actor["deleted_at"] is not None or previous_id != actor_member_id:
-                        raise DomainError(
-                            "validation_failed", "只有当前受派 Agent 可以转派这项任务"
-                        )
+                        raise DomainError("validation_failed", "只有当前受派 Agent 可以转派这项任务")
                     if member_id is None:
                         raise DomainError("validation_failed", "Agent 转派必须指定另一位 Agent")
                 elif actor["kind"] != "owner":
