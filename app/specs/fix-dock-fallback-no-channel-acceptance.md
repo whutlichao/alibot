@@ -538,12 +538,34 @@ coordinator 预审不接受该判断，最终按「只在确实关闭时生效�
 
 ## 9. PR
 
-- **PR**：`whutlichao/alibot#<创建后回填>`（base = `main`，head = `fix-dock-fallback-no-channel`，**不带 issue 关联**）
+- **PR**：`whutlichao/alibot#97` — https://github.com/whutlichao/alibot/pull/97
+  （base = `main`，head = `fix-dock-fallback-no-channel`，**不带 issue 关联**）
 - **body 文件**：`app/specs/fix-dock-fallback-no-channel-pr-body.md`
 - **创建命令**：`gh pr create --base main --head fix-dock-fallback-no-channel --title "…" --body-file app/specs/fix-dock-fallback-no-channel-pr-body.md`
 - **head 与本票最终提交一致**：以远端分支与 PR head 读数为准（本文件不写死 SHA，避免自指漂移）；
-  核验命令见下方「PR 回执」。
-- **PR 回执**：见 §9.1
+  核验命令见 §9.1。
+
+### 9.1 PR 回执
+
+```sh
+$ env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
+    gh pr create --base main --head fix-dock-fallback-no-channel \
+    --title "fix(studio): 无频道时关闭详情/任务线程收起 dock，不残留成员面板" \
+    --body-file app/specs/fix-dock-fallback-no-channel-pr-body.md
+https://github.com/whutlichao/alibot/pull/97
+
+$ gh pr view 97 --json number,baseRefName,headRefName,state,mergeable
+{"baseRefName":"main","headRefName":"fix-dock-fallback-no-channel","mergeable":"MERGEABLE","number":97,"state":"OPEN"}
+
+# head 三处一致（不写死 SHA，避免自指漂移）：本地 HEAD = 远端分支 = PR head
+$ git rev-parse HEAD ; git rev-parse origin/fix-dock-fallback-no-channel ; gh pr view 97 --json headRefOid
+3cb1fd97ea33838533f10fc52782d8e30302b7f7     # ← PR 创建时的三处读数（同值）
+3cb1fd97ea33838533f10fc52782d8e30302b7f7
+{"headRefOid":"3cb1fd97ea33838533f10fc52782d8e30302b7f7"}
+```
+
+本文件（本节）随后的 docs-only 提交会让这三处读数**一起**前进到同一个新 SHA；收尾时已再次核对三处同值
+（见 worker_done 回执）。合并动作由 coordinator 执行（G-merge），本票不自行合并。
 
 ---
 
