@@ -8,10 +8,10 @@
 | 项 | 值 |
 | --- | --- |
 | 分支 | `schema-migration-t92` |
-| 提交 | `feat(schema): 链前形态步骤补齐半改名库的四张表（#92）` |
+| 提交 | `e0ae90d` feat（形态步骤）/ `5395117` refactor（review 收敛 + 5–11 用例）/ `096b284` docs（Answer + PR 正文） |
 | 本票 base | `9f3b008`（`main`） |
-| PR | 见 §7（`--body-file` 用 `app/specs/issue-92-pr-body.md`） |
-| PR body | `app/specs/issue-92-pr-body.md` |
+| PR | [#100](https://github.com/whutlichao/alibot/pull/100)（base `main`，head `schema-migration-t92`） |
+| PR body | `app/specs/issue-92-pr-body.md`（`--body-file` 用） |
 | 证据 | `.scratch/red-baseline.txt`、`.scratch/green-fixed.txt`、`.scratch/shape-step-report.txt`、`.scratch/pytest-cleared.txt`、`.scratch/pytest-raw.txt` |
 
 ---
