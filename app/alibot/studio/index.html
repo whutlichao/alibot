@@ -25,6 +25,29 @@
 
 <div class="app" id="shell" data-od-id="app-shell">
 
+  <!-- ─── 移动端壳（≤900px）：顶栏 + 抽屉遮罩 ─────────────────────────────
+       两个类名与 900px 断点照原型 `alibot-app.html:459-495` 与切片
+       `screens/mobile-shell.html:14-18`（规格决策 D11 把它们定为契约）。
+       原型把顶栏摆在 `.app` **外面**；这里放进 `.app` 的第一个子节点，因为本页
+       `body{overflow:hidden}` + `.app{height:100dvh}`，放外面会被裁掉一截。
+       `>900px` 时它 `display:none`（`app.css`），因此完全不参与桌面三栏排布。
+
+       顶栏只有「打开导航」一个控件：搜索在本工作台是**主线视图**，入口是 rail 与 `⌘K`
+       （#63 定的形态），不在顶栏再开第二个入口（原型的 `#mtSearch` 不照抄）。
+       标题（`#mtTitle`）是**当前 target 的名字**，由 `app.js` 按后端事实填，不写死。 -->
+  <div class="mobile-topbar" data-od-id="mobile-topbar">
+    <button class="icon-btn" type="button" id="railToggle" data-od-id="rail-toggle"
+            aria-controls="rail" aria-expanded="false"
+            data-i18n-attr="aria-label:mobile.railToggle,title:mobile.railToggle"
+            aria-label="打开导航" title="打开导航">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <span class="grow" id="mtTitle"></span>
+  </div>
+  <!-- 抽屉遮罩：≤900px 出现，点它收起左抽屉；键盘的等价动作是 ESC（`app.js`）。
+       它是纯呈现件，因此 `aria-hidden` —— 读屏用户不需要听见一层遮罩。 -->
+  <div class="rail-scrim" id="railScrim" data-od-id="rail-scrim" aria-hidden="true" hidden></div>
+
   <!-- ─── 侧栏 ───────────────────────────────────────────────────────── -->
   <aside class="rail" id="rail" data-od-id="workspace-sidebar" data-i18n-attr="aria-label:rail.nav" aria-label="工作区导航">
     <div class="rail-head">
@@ -117,7 +140,7 @@
           <button class="icon-btn" id="btnChannelMembers" type="button" data-od-id="btn-channel-members" data-i18n-attr="title:roster.entryTitle,aria-label:roster.entryTitle" title="频道成员" aria-label="频道成员">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M17 20a5.5 5.5 0 0 0-2.5-4.6"/></svg>
           </button>
-          <button class="icon-btn" id="btnDockToggle" data-i18n-attr="title:dock.toggle,aria-label:dock.toggle" title="切换详情面板" aria-label="切换详情面板">
+          <button class="icon-btn" id="btnDockToggle" data-i18n-attr="title:dock.toggle,aria-label:dock.toggle" title="切换详情面板" aria-label="切换详情面板" aria-controls="dock" aria-expanded="false">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
           </button>
         </div>
@@ -240,6 +263,15 @@
       <div class="dock-head">
         <div class="dock-name" data-i18n="dock.membersTitle">频道成员</div>
         <div class="dock-role" id="dockRole" data-i18n="dock.membersRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
+        <!-- ≤900px 抽屉**自己的**出口（原型 `alibot-app.html:679-681` 的 `[data-dock-close]`）：
+             那时 dock 是盖住主列的右抽屉，频道头里那个 `#btnDockToggle` 正好被抽屉自己挡住，
+             所以抽屉里必须有一个能关掉它的控件。>900px 它是 `display:none`：桌面 dock 头
+             的排布与 Tab 顺序一个字节都不变（组件件在 `app.css` 的响应式一节）。 -->
+        <button class="icon-btn dock-close" type="button" id="dockClose" data-dock-close data-od-id="dock-close"
+                data-i18n-attr="aria-label:dock.closePanel,title:dock.closePanel"
+                aria-label="关闭详情面板" title="关闭详情面板">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
       </div>
       <div class="dock-scroll" id="dockMembers" data-od-id="dock-members"></div>
     </div>
