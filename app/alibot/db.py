@@ -41,8 +41,9 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-# schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝启动**、
-# 不做迁移（ADR-0004）。号段由规格 #60 的协调裁定分配，实施票不得自行改号：
+# schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝**。
+# 迁移**不是**启动路径的一步，而是显式命令 `python -m alibot --migrate`（ADR-0015 取代 ADR-0004
+# 的「不做旧数据迁移」口径）。号段由规格 #60 的协调裁定分配，实施票不得自行改号：
 #   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）已合并；9 = #67（附件）；
 #   10 = #71（`workspace_settings.theme` 新增一列）已合并；11 = #35 的 #58（结构化沉默）；
 #   12 = **本票 #65**（`agent_config.auto_claim` 与 `task.claimed_at` 各新增一列）。
@@ -53,8 +54,15 @@ AVATAR_SLOT_COUNT = 5
 # 该票已随 PR #83 落在 main（b619336），main 当前读数 11。
 # #65 的 12 高于当前 main 的 11，合并后**保持 12**（不回退到 11）。
 # 代价（与既有纪律一致）：合力后 main 的号由 11 升到 12，被 11 及更早代码创建过的库在本版下
-# 会被闸门拒绝——处置：备份该数据目录、换一个目录启动。
+# 会被闸门拒绝——处置由拒绝正文给出：先备份整个数据目录，再用 `python -m alibot --migrate` 推进。
+# 本版（#89）**尚无可用迁移步骤**，因此该命令对旧库暂时仍以退出码 3 拒绝；迁移链由 #90 / #91 补齐。
 SCHEMA_VERSION = 12
+
+# 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
+# 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
+# 可能在旧数据目录 `~/Worksplice`，`app/README.md` 已明写改名不保留兼容。它出现在拒绝正文里，
+# 与 `SCHEMA_VERSION` 一起构成「本版支持的源版本范围」这条可读诊断。
+MIN_SUPPORTED_SOURCE_VERSION = 3
 
 # 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合——
 # **语言偏好** / **消息密度** / **主题**三档。列集就是「只有这些档位」这条约束的落点：
@@ -662,10 +670,12 @@ def _sqlite_casefold(value: str | None) -> str | None:
 
 
 class SchemaVersionMismatch(Exception):
-    """库里的 schema 版本与本代码需要的版本不一致：**拒绝启动**，且不改动旧库一个字节。
+    """库里的 schema 版本与本代码需要的版本不一致：**拒绝**，且不改动旧库一个字节。
 
-    它不是 :class:`DomainError`：这条事实发生在**启动路径**上（进程级的拒绝），不是某个 HTTP
-    请求的领域错误。HTTP 层因此不会把它折成 500——进程根本不会开始监听。
+    **进程级**的拒绝，不是一个 HTTP 领域错误：它由版本闸门（:meth:`Database._assert_schema_compatible`）
+    在任何 schema 变更之前抛出。三条入口——无旗标启动、``--migrate``、``--repair-targets``——都经这
+    同一道闸门，于是同一个库在三条路径上得到**同一个答复与同一个退出码**（``__main__`` 的
+    ``DATA_NOT_ACCEPTED_EXIT_CODE``）。HTTP 层因此不会把它折成 500——启动路径根本不会开始监听。
 
     ``found_version`` 为 ``None`` 表示「版本号缺失」（没有 ``schema_meta`` 表，或没有
     ``schema_version`` 那一行）。缺失时只有库里**已有业务数据**才会抛这个错：真的空库照常初始化
@@ -685,12 +695,15 @@ class SchemaVersionMismatch(Exception):
             else "缺失（schema_meta 里没有 schema_version 这一行）"
         )
         return (
-            "拒绝启动：数据库的 schema 版本与本代码不匹配。\n"
+            "拒绝：数据库的 schema 版本与本代码不匹配。\n"
             f"  库文件：{self.db_path}\n"
             f"  库里的版本：{found}\n"
             f"  本代码需要的版本：{self.expected_version}\n"
-            "  本版不做数据迁移：请先备份该数据目录，再换一个数据目录启动"
-            "（例如 --data-dir <另一个目录>）。"
+            f"  本版支持的源版本范围：{MIN_SUPPORTED_SOURCE_VERSION} .. {self.expected_version}"
+            "（本版尚无可用迁移步骤，实际可迁移范围为空）。\n"
+            "  迁移步骤就绪后可用这条命令推进：\n"
+            f"    python -m alibot --migrate --data-dir {self.db_path.parent}\n"
+            "  在动手之前请先备份整个数据目录（备份 = 复制该数据目录，附件字节也在其中）。\n"
         )
 
 
@@ -813,12 +826,28 @@ class Database:
         row = self._conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
         return None if row is None else str(row[0])
 
-    def _has_business_data(self) -> bool:
-        """库里是否**已有业务数据**（任意业务表有任何一行）。只读；表不存在时按没有数据处理。"""
-        existing = {
-            str(row[0])
-            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-        }
+    def table_names(self) -> set[str]:
+        """库里当前存在的表名（只读）。
+
+        形态判定（``repair.missing_current_required_tables``）与空库判定（:meth:`has_business_data`）
+        **共用这一个查询落点**：三条进程级入口（启动 / ``--migrate`` / ``--repair-targets``）都不该
+        各自去读 ``sqlite_master``。
+        """
+        with self._lock:
+            return {
+                str(row[0])
+                for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+
+    def has_business_data(self) -> bool:
+        """库里是否**已有业务数据**（任意业务表有任何一行）。只读；表不存在时按没有数据处理。
+
+        公开而非私有：它是「这个库算不算空库」这条事实的落点，启动闸门、``--migrate`` 与
+        ``--repair-targets`` 三条入口共读同一个判据（``BUSINESS_TABLES``）。
+        """
+        existing = self.table_names()
         for table in BUSINESS_TABLES:
             if table not in existing:
                 continue
@@ -837,13 +866,15 @@ class Database:
         - 版本号**不等于**本版 ⇒ 抛 :class:`SchemaVersionMismatch`（旧库、未来库、垃圾版本号都算）。
           版本号**缺失但库里有业务数据**同样拒绝——那不是空库，是来源不明的库。
 
-        **不修版本号、不跳过、不猜测**：本版不做迁移（规格决策 8 / ADR-0004），因此唯一正确的
-        处置是让用户拿一个干净的数据目录启动，并把旧库原样留着（它一个字节都没被动过）。
+        **不修版本号、不跳过、不猜测**：闸门在**任何** schema 变更之前收口，旧库原样留着（一个字节
+        都没被动过）。跨版本处置**不是**启动路径的一步，而是显式命令 ``python -m alibot --migrate``
+        （ADR-0015 取代 ADR-0004 的「不做旧数据迁移」口径）；本版尚无可用迁移步骤，因此拒绝正文给出
+        该命令与备份指引，等迁移步骤就绪后由它推进。
         """
         stored = self._stored_schema_version()
         if stored == str(SCHEMA_VERSION):
             return
-        if stored is None and not self._has_business_data():
+        if stored is None and not self.has_business_data():
             return
         raise SchemaVersionMismatch(self.path, found_version=stored, expected_version=SCHEMA_VERSION)
 
