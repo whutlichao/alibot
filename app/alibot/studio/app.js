@@ -139,6 +139,9 @@ const state = {
   taskFilterMine: false,
   // 任务线程现在是右侧 dock 的**第二种形态**（`dockMode`），不再是主线上的一个视图。
   dockMode: 'agent',
+  // 成员名册（频道成员的**只读**全名单）当前锁定的频道 id；`null` = 弹窗关着。
+  // 名册回答「打开它的那个频道里有谁」，因此它在打开时锁定频道，不跟着激活频道跑。
+  rosterChannelId: null,
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -173,8 +176,9 @@ const state = {
   // 提醒（`CONTEXT.md` **提醒**，ADR-0012）：同样是**后端对象的镜像**，正本是 `GET /api/reminders`
   // （`reminder` 表）。增删都以响应里的最新列表覆盖它，本地不造行、不落浏览器存储。
   reminders: [],
-  // 搜索是纯呈现状态：命中、target 信息和高亮区间都来自后端，不在浏览器保存或重算。
-  search: { query: '', targetId: '', hits: [], loading: false, error: '' },
+  // 搜索是纯呈现状态：命中、来源和高亮区间都来自后端，不在浏览器保存或重算。
+  // `facet` 是**后端的过滤参数**（原型的四档），前端只记「选的是哪一档」。
+  search: { query: '', facet: 'all', hits: [], loading: false, error: '' },
 };
 
 let searchRequestVersion = 0;
@@ -330,7 +334,9 @@ function messageText(message) {
   return container;
 }
 
-/* ─── 工作台搜索：只消费后端命中与区间，不在前端重新判定正文 ─────────────── */
+/* ─── 工作台搜索：只消费后端命中与区间，不在前端重新判定正文 ───────────────
+   三类命中（消息 / 任务 / Agent）共用同一套呈现：可呈现文本 + 后端给的区间 + 来源 + 类型。
+   前端既不算命中、也不在文本里找位置（`CONTEXT.md` 搜索命中 / 高亮区间两条硬纪律）。 */
 function searchTargetLabel(target) {
   const name = target && target.display_name ? target.display_name : t('search.unknownTarget');
   if (!target) return name;
@@ -340,64 +346,92 @@ function searchTargetLabel(target) {
   return name;
 }
 
-function searchResultText(hit) {
-  const message = (hit && hit.message) || {};
-  const body = String(message.body == null ? '' : message.body);
-  // 不传 query、不调 indexOf：这个函数唯一的切分依据就是后端的 highlight_ranges。
+/** 结果行 `.r-top` 的「来源」一格：命中所属 target；Agent 不挂 target，因此给它的集合名。 */
+function searchSourceLabel(hit) {
+  return hit.target ? searchTargetLabel(hit.target) : t('search.sourceAgent');
+}
+
+/** 结果行 `.r-top` 的命中类型标签（与四档 facet 同名：`消息` / `任务` / `Agent`）。 */
+function searchHitTypeLabel(hit) {
+  const key = { message: 'search.facetMessage', task: 'search.facetTask', agent: 'search.facetAgent' }[
+    hit.kind
+  ];
+  return key ? t(key) : String(hit.kind || '');
+}
+
+/** `.r-title`：**只**按后端给的区间切分文本，区间缺失时整段呈现（绝不在前端找位置）。 */
+function searchHitText(hit) {
+  const text = String(hit && hit.text == null ? '' : hit.text);
   const ranges = Array.isArray(hit && hit.highlight_ranges) ? hit.highlight_ranges : [];
-  const container = el('div', 'search-hit-text');
+  const container = el('div', 'r-title');
   let cursor = 0;
   ranges.forEach((range) => {
     if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end)) return;
-    if (range.start < cursor || range.end <= range.start || range.end > body.length) return;
-    if (range.start > cursor) container.appendChild(document.createTextNode(body.slice(cursor, range.start)));
-    container.appendChild(el('mark', 'search-mark', body.slice(range.start, range.end)));
+    if (range.start < cursor || range.end <= range.start || range.end > text.length) return;
+    if (range.start > cursor) container.appendChild(document.createTextNode(text.slice(cursor, range.start)));
+    container.appendChild(el('mark', null, text.slice(range.start, range.end)));
     cursor = range.end;
   });
-  if (cursor < body.length) container.appendChild(document.createTextNode(body.slice(cursor)));
+  if (cursor < text.length) container.appendChild(document.createTextNode(text.slice(cursor)));
   return container;
 }
 
-function searchTargetOption(value, label) {
-  const option = el('option', null, label);
-  option.value = value;
-  return option;
+/** `.r-snip`：命中本体之外的**一行**辅助事实（消息给作者、任务给序号与状态、Agent 给状态与模型）。 */
+function searchSnipNode(hit) {
+  const snip = el('div', 'r-snip');
+  if (hit.kind === 'message') {
+    const author = (hit.message && hit.message.author) || {};
+    snip.appendChild(
+      document.createTextNode(
+        t('search.snipAuthor', { name: author.display_name || t('search.unknownAuthor') }),
+      ),
+    );
+    if (author.deleted) snip.appendChild(el('span', 'search-author-deleted', t('search.authorDeleted')));
+    return snip;
+  }
+  if (hit.kind === 'task') {
+    const task = hit.task || {};
+    snip.textContent = t('search.snipTask', {
+      id: String(task.id || '').slice(-6),
+      status: taskStatusLabel(task.status),
+    });
+    return snip;
+  }
+  const agent = hit.agent || {};
+  snip.textContent = t('search.snipAgent', {
+    status: statusLabel(agent.status),
+    model: agent.model_id || '',
+  });
+  return snip;
 }
 
-function renderSearchTargetSelect() {
-  const select = $('#searchTargetSelect');
-  const selected = state.search.targetId;
-  const options = [searchTargetOption('', t('search.targetAll'))];
-  state.channels.forEach((channel) =>
-    options.push(searchTargetOption(channel.id, t('search.targetChannel', { name: channel.name }))),
-  );
-  state.dms.forEach((dm) =>
-    options.push(searchTargetOption(dm.id, t('search.targetDm', { name: dm.peer.display_name }))),
-  );
-  state.tasks.forEach((task) =>
-    options.push(searchTargetOption(task.target_id, t('search.targetTask', { name: task.title }))),
-  );
-  replaceChildren(select, options);
-  select.value = selected;
-}
+/** 一条结果行（`.result` / `.r-top` / `.r-title` / `.r-snip`）。
 
+    今天唯一能落地的命中是**任务**（点开右侧任务线程，原型 `data-opentask` 同构），判据是
+    **载荷里有没有可打开的任务标识**——不按 `kind` 再分派一次；消息命中的滚动定位与 Agent 详情面
+    都还没有交付（Agent 详情是 #64），因此那两类是**非交互**行，不做「点了没反应」的按钮。 */
 function searchResultNode(hit) {
-  const message = hit.message || {};
-  const target = hit.target || {};
-  const author = message.author || {};
-  const article = el('article', 'search-hit');
-  const meta = el('div', 'search-hit-meta');
-  meta.appendChild(el('span', 'search-target', searchTargetLabel(target)));
-  meta.appendChild(el('span', 'search-target-id mono', target.id || ''));
-  article.appendChild(meta);
+  const taskId = hit.task && hit.task.id ? hit.task.id : null;
+  const node = el(taskId ? 'button' : 'div', 'result');
+  if (taskId) {
+    node.type = 'button';
+    node.dataset.opentask = taskId;
+    node.setAttribute('data-od-id', 'search-task');
+  }
+  const top = el('div', 'r-top');
+  top.appendChild(el('span', 'hash', searchSourceLabel(hit)));
+  top.appendChild(el('span', 'card-tag', searchHitTypeLabel(hit)));
+  node.appendChild(top);
+  node.appendChild(searchHitText(hit));
+  node.appendChild(searchSnipNode(hit));
+  return node;
+}
 
-  const head = el('div', 'search-hit-head');
-  head.appendChild(el('span', 'search-author', author.display_name || t('search.unknownAuthor')));
-  if (author.deleted) head.appendChild(el('span', 'search-author-deleted', t('search.authorDeleted')));
-  if (message.created_at) head.appendChild(el('span', 'search-hit-time', timeLabel(message.created_at)));
-  article.appendChild(head);
-  article.appendChild(searchResultText(hit));
-  return article;
+function searchEmptyState(titleKey, bodyKey, params) {
+  const empty = el('div', 'empty');
+  empty.appendChild(el('b', null, t(titleKey, params)));
+  empty.appendChild(el('p', null, t(bodyKey)));
+  return empty;
 }
 
 function renderSearchResults() {
@@ -411,47 +445,82 @@ function renderSearchResults() {
     return;
   }
   if (search.loading) {
-    replaceChildren(results, [el('div', 'search-empty', t('search.searching'))]);
+    replaceChildren(results, [el('div', 'empty', t('search.searching'))]);
     return;
   }
   if (!search.query) {
-    replaceChildren(results, [el('div', 'search-empty', t('search.idle'))]);
+    replaceChildren(results, [searchEmptyState('search.idleTitle', 'search.idleBody')]);
     return;
   }
   if (!search.hits.length) {
-    replaceChildren(results, [el('div', 'search-empty', t('search.noHits'))]);
+    replaceChildren(results, [
+      searchEmptyState('search.emptyTitle', 'search.emptyBody', { query: search.query }),
+    ]);
     return;
   }
   replaceChildren(results, search.hits.map(searchResultNode));
 }
 
-function openSearchModal() {
-  renderSearchTargetSelect();
-  $('#searchQueryInput').value = state.search.query;
-  $('#searchOverlay').hidden = false;
-  renderSearchResults();
-  $('#searchQueryInput').focus();
+/** 四档 facet 的选中态（`.filter-chip.is-on`，原型 `:631-635` 的取值与顺序）。 */
+function renderSearchFacets() {
+  const row = $('#searchFacets');
+  if (!row) return;
+  Array.prototype.forEach.call(row.querySelectorAll('[data-facet]'), (chip) => {
+    const on = chip.dataset.facet === state.search.facet;
+    chip.classList.toggle('is-on', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
 }
 
-function closeSearchModal() {
-  $('#searchOverlay').hidden = true;
+// 输入时每次按键都打后端是浪费：把「落笔之后的一次请求」延后一拍，facet 切换与 Enter 立即执行。
+const SEARCH_DEBOUNCE_MS = 120;
+let searchTimer = null;
+
+function cancelPendingSearch() {
+  if (searchTimer === null) return;
+  clearTimeout(searchTimer);
+  searchTimer = null;
 }
 
-async function submitSearch() {
-  const input = $('#searchQueryInput');
+function scheduleSearch() {
+  cancelPendingSearch();
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    runSearch();
+  }, SEARCH_DEBOUNCE_MS);
+}
+
+/** 「搜索」入口：搜索是**主线视图**（占消息流那块位置），不是盖住界面的弹层。 */
+function showSearchView() {
+  closeTaskStream();
+  closeTaskDock();
+  state.mode = 'search';
+  render();
+  const input = $('#searchInput');
+  input.value = state.search.query;
+  input.focus();
+}
+
+function setSearchFacet(facet) {
+  if (state.search.facet === facet) return;
+  state.search.facet = facet;
+  cancelPendingSearch();
+  renderSearchFacets();
+  if (state.search.query) runSearch();
+  else renderSearchResults();
+}
+
+async function runSearch() {
+  const input = $('#searchInput');
   const search = state.search;
   const requestVersion = ++searchRequestVersion;
   // 空格也是字面子串的一部分，不能像一般表单字段那样静默去掉首尾空白。
   search.query = input.value;
-  search.targetId = $('#searchTargetSelect').value;
   search.error = '';
   search.hits = [];
   search.loading = false;
-  $('#searchSubmit').disabled = false;
   if (!search.query) {
-    search.error = t('search.needQuery');
     renderSearchResults();
-    input.focus();
     return;
   }
   if (!state.online) {
@@ -460,10 +529,9 @@ async function submitSearch() {
     return;
   }
   search.loading = true;
-  $('#searchSubmit').disabled = true;
   renderSearchResults();
-  const params = new URLSearchParams({ q: search.query });
-  if (search.targetId) params.set('target_id', search.targetId);
+  // facet 是**后端的过滤参数**：切换档位就是换一次请求，不在前端过滤结果集。
+  const params = new URLSearchParams({ q: search.query, facet: search.facet });
   try {
     const payload = await api('/api/search?' + params.toString());
     if (requestVersion !== searchRequestVersion) return;
@@ -475,10 +543,79 @@ async function submitSearch() {
   } finally {
     if (requestVersion === searchRequestVersion) {
       search.loading = false;
-      $('#searchSubmit').disabled = false;
       renderSearchResults();
     }
   }
+}
+
+/* ─── ⌘K 命令面板（规格 D10） ──────────────────────────────────────────────
+   命令集 = 跳转（消息视图 / 任务看板）+ 动作（新建频道 / 新建任务 / 切换详情面板）
+   + **动态**频道组（当前工作台的频道，不是原型里写死的种子名）。D10 枚举的命令集里**没有**
+   原型 `CMDS` 的「搜索」一条，`⌘K` 真绑定的是**打开命令面板**本身（不是搜索视图），
+   因此这里也不给它挂 `⌘K` 标签——界面不承诺一个按键做不到的事。
+   面板里只呈现**真绑定**的快捷键：`M` 消息视图、`T` 任务看板（`ESC` 的提示在面板自己的字段上）。
+   原型的 `N` / `⇧N` / `D` 三个 kbd 标签并没有绑定任何按键，因此不出现。 */
+function commandList() {
+  return [
+    { id: 'view-messages', group: 'cmd.groupJump', label: t('cmd.messages'), kbd: 'M', run: showMessagesView },
+    { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', run: showTaskBoard },
+    { id: 'new-channel', group: 'cmd.groupAction', label: t('rail.newChannel'), run: openChannelModal },
+    { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), run: () => openTaskModal() },
+    { id: 'toggle-dock', group: 'cmd.groupAction', label: t('dock.toggle'), run: toggleDock },
+    ...state.channels.map((channel) => ({
+      id: 'channel:' + channel.id,
+      group: 'cmd.groupChannels',
+      label: '#' + channel.name,
+      run: () => selectTarget(channel.id),
+    })),
+  ];
+}
+
+function renderCmd(filter) {
+  const query = String(filter || '').toLowerCase();
+  const commands = commandList().filter((command) => command.label.toLowerCase().includes(query));
+  const list = $('#cmdList');
+  if (!commands.length) {
+    replaceChildren(list, [el('div', 'cmd-group', t('cmd.empty'))]);
+    return;
+  }
+  const nodes = [];
+  let group = null;
+  let first = true;
+  commands.forEach((command) => {
+    if (command.group !== group) {
+      group = command.group;
+      nodes.push(el('div', 'cmd-group', t(group)));
+    }
+    const item = el('button', 'cmd-item' + (first ? ' is-active' : ''));
+    item.type = 'button';
+    // 用**稳定 id** 而不是标签做归属：频道名可能与某条命令同名，标签不是键。
+    item.dataset.cmd = command.id;
+    item.appendChild(el('span', 'grow', command.label));
+    if (command.kbd) item.appendChild(el('span', 'kbd', command.kbd));
+    nodes.push(item);
+    first = false;
+  });
+  replaceChildren(list, nodes);
+}
+
+function openCmd() {
+  $('#cmdOverlay').hidden = false;
+  const input = $('#cmdInput');
+  input.value = '';
+  renderCmd('');
+  input.focus();
+}
+
+function closeCmd() {
+  $('#cmdOverlay').hidden = true;
+}
+
+function runCmd(commandId) {
+  const command = commandList().find((item) => item.id === commandId);
+  if (!command) return;
+  closeCmd();
+  command.run();
 }
 
 /* ─── 工作区设置（语言偏好 / 消息密度）：后端是唯一正本 ──────────────────── */
@@ -501,6 +638,9 @@ function applySettings(settings) {
   // 提醒弹窗的文案（空态、删除键的可访问名）也是词条：切语言时要与其它静态文案一起重铺，
   // 否则它会留在上一个语言。渲染只读 `state.reminders`，不发请求。
   renderRemindersModal();
+  // 名册的动态文案（标题 / 副标题 / 行内角色与状态说法）由 `t()` 渲染，因此切语言时
+  // 要跟设置弹窗一样重铺一遍（静态的关闭按钮由上面那句 `applyStaticI18n` 覆盖）。
+  if (state.rosterChannelId) renderRoster();
   return state.settings;
 }
 
@@ -1300,6 +1440,8 @@ function setViewMode(mode) {
   state.mode = mode;
   syncChromeVisibility(mode);
   $('#viewMessages').hidden = mode !== 'channel';
+  // 搜索是**主线视图**，与消息流 / 看板共用同一块内容区（原型 `renderViews()` 的三选一）。
+  $('#viewSearch').hidden = mode !== 'search';
   // 看板是**唯一**的任务主线视图：任务线程不再占用主线（它搬进了 dock）。
   // dock 的形态与主线视图是两个维度（原型 `renderDock()` 同样独立于 `renderViews()`）：
   // 从频道消息里的任务 chip 打开线程时，主线仍是消息流，dock 里就是那条线程。
@@ -1316,7 +1458,7 @@ function setViewMode(mode) {
     两处调用（`setViewMode` 与 `renderHeader`）共用这一条规则，不各写一遍。 */
 function syncChromeVisibility(mode) {
   const hasTarget = Boolean(activeTarget());
-  $('#chanHead').hidden = !hasTarget;
+  $('#chanHead').hidden = !hasTarget || mode === 'search';
   $('#composer').hidden = !hasTarget || mode !== 'channel';
 }
 
@@ -1334,7 +1476,8 @@ async function showTaskBoard() {
   await refreshTasks();
 }
 
-/** 「消息」页签：消息流 + composer（同一条流的既有渲染，不重取—— SSE 一直在线跟踪）。 */
+/** 「消息」页签：消息流 + composer（同一条流的既有渲染，不重取—— SSE 一直在线跟踪）。
+    它也是搜索视图的退出口（`ESC` 与命令面板的「消息视图」都落到这里）。 */
 function showMessagesView() {
   closeTaskStream();
   closeTaskDock();
@@ -1342,6 +1485,12 @@ function showMessagesView() {
   setViewMode('channel');
   render();
   markCurrentRead();
+}
+
+/** 详情面板的开合（rail 图标与命令面板里的「切换详情面板」共用同一个动作，不各写一遍）。 */
+function toggleDock() {
+  const dock = $('#dock');
+  if (dock) dock.hidden = !dock.hidden;
 }
 
 /** 关闭 dock 的任务线程，回到频道成员形态（卡片与线程都留在看板上）。
@@ -1920,6 +2069,7 @@ function onStreamStatus(targetId, payload) {
   renderMembers();
   renderDms();
   renderDock();
+  renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
   // 已呈现的轮次结果行里的状态描述（「未启用」/「这一轮失败」）必须跟着后端事实走，
   // 不能停在一句已经不成立的话上。没呈现过该成员就不重建消息流。
   if (state.activeChannelId === targetId && previous !== payload.status && outcomeMembers().has(payload.member_id)) {
@@ -1936,6 +2086,7 @@ function onStreamTyping(targetId, payload) {
   }
   renderMembers();
   renderDock();
+  renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
 }
 
 function showTypingFor(targetId, memberId) {
@@ -1961,6 +2112,7 @@ function onStreamOutcome(targetId, payload) {
   }
   renderMembers();
   renderDock();
+  renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
   // 五种结果都要重建消息流：只有 `failed` 会被状态点推导拦住（`ignored` 等三态**不是**失败，
   // 状态点仍空闲），但它们的摘要行同样要在不刷新页面的情况下出现。
   if (state.activeChannelId === targetId && added) renderMessages();
@@ -2008,6 +2160,10 @@ function render() {
   renderHeader();
   setViewMode(state.mode);
   renderMessages();
+  // 搜索面的文案（facet / 结果行 / 空态）都按词条取值，因此它和别的面一样随整体重绘刷新——
+  // 切语言后搜索结果不会留在上一门语言里。
+  renderSearchFacets();
+  renderSearchResults();
   renderConnection();
   renderDock();
   renderTyping();
@@ -2251,6 +2407,101 @@ function memberCard(member, agentsById, canJoin) {
   return card;
 }
 
+/* ─── 成员名册（频道成员的**只读**全名单） ────────────────────────────────
+   `CONTEXT.md` **成员名册**：内容 = 该频道后端成员表**逐条**（`GET /api/channels/{id}/members`，
+   含 owner），每条带**状态点**（`GET /api/member-statuses` 的四态，取值走与**成员面板**同一个
+   `statusOf()` / `presenceNode()`）。它与**成员面板**的分工是「动作」与「范围」两件事：
+   名册**唯一动作是关闭**——加入 / 移除 / 编辑都不是它的面，因此这里没有那些控件，
+   也不列「未加入」一段。 */
+
+/** 该频道的**完整**成员表（含 owner）；`null` = 还没读到 / 读不到——与「真的没有成员」
+    是两件事（与 `channelAgentMembers()` 同一条纪律，读的是同一份缓存，只是不按 kind 过滤）。 */
+function channelMemberRows(channelId) {
+  const members = state.channelMembers[channelId];
+  return members || null;
+}
+
+/** 打开名册（入口 = 频道头部的成员按钮，原型 `#btnChannelMembers`）：锁定当前频道、
+    按需读一次它的成员表，然后渲染。名册只对**频道**存在，DM 下入口隐藏（见 `renderHeader()`）。 */
+function openRosterModal() {
+  const channel = activeChannel();
+  if (!channel) return;
+  state.rosterChannelId = channel.id;
+  $('#rosterOverlay').hidden = false;
+  renderRoster();
+  const close = $('#rosterClose');
+  if (close) close.focus();
+  // 名册的内容是后端成员表的读数：打开时读一次，读回后按**同一个频道**再渲染一遍
+  // （成员在别处长出来后重新打开名册就能看到；弹窗关掉或换过频道就不动它）。
+  refreshChannelMembers(channel.id).then(() => {
+    if (state.rosterChannelId === channel.id) renderRoster();
+  });
+}
+
+function closeRosterModal() {
+  state.rosterChannelId = null;
+  $('#rosterOverlay').hidden = true;
+}
+
+/** 名册的**唯一**渲染落点：打开、成员表读回、切语言三处都走它，于是「后端读到的成员表」
+    与「名册上列出的成员」不可能各说一份（不在这里另写一遍过滤或排序规则）。 */
+function renderRoster() {
+  const channelId = state.rosterChannelId;
+  if (!channelId) return;
+  const channel = state.channels.find((item) => item.id === channelId) || null;
+  const members = channelMemberRows(channelId);
+  const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
+  const title = $('#rosterTitle');
+  if (title) title.textContent = t('roster.title', { name: channel ? channel.name : '' });
+  const sub = $('#rosterSub');
+  // 副标题的数字就是成员表的**条数**；读不到时不写 0（那会把「读不到」说成「一个都没有」）。
+  const loaded = !channelMembersFailed.has(channelId) && Boolean(members);
+  if (sub) sub.textContent = loaded ? t('roster.sub', { count: members.length }) : '';
+  const body = $('#rosterBody');
+  if (!body) return;
+  // 「读不到」先判：读失败时缓存会被置成空表，若不先看这个标记，下面那一步就会把
+  // 「暂时读不到」说成「这个频道还没有成员」（与面板同一条纪律，只是名册连旧表也不列）。
+  if (channelMembersFailed.has(channelId)) {
+    replaceChildren(body, [el('div', 'rail-empty', t('roster.unavailable'))]);
+    return;
+  }
+  if (!members) {
+    replaceChildren(body, [el('div', 'rail-empty', t('roster.loading'))]);
+    return;
+  }
+  if (!members.length) {
+    replaceChildren(body, [el('div', 'rail-empty', t('roster.empty'))]);
+    return;
+  }
+  replaceChildren(body, members.map((member) => rosterRow(member, agentsById)));
+}
+
+/** 名册的一行：头像 + 姓名 / 角色，右侧是状态点。owner 那行右侧是「我」——原型 `:1601-1629`
+    与切片对 owner 的呈现就是「我」；`GET /api/member-statuses` 只覆盖 Agent，
+    给 owner 造一个状态点等于伪造后端没有的事实。 */
+function rosterRow(member, agentsById) {
+  const agent = agentsById.get(member.id) || null;
+  const row = el('div', 'roster-row');
+  row.dataset.member = member.id;
+  row.dataset.kind = member.kind;
+  row.setAttribute('data-od-id', 'roster-member-' + member.id);
+  const who = el('div', 'roster-who');
+  who.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
+  const text = el('div', 'roster-who-text');
+  text.appendChild(el('b', 'roster-name', member.display_name));
+  text.appendChild(el('span', 'roster-role', (agent && agent.role) || t('roster.roleFallback')));
+  who.appendChild(text);
+  row.appendChild(who);
+  if (member.kind === 'owner') {
+    row.appendChild(el('span', 'roster-me', t('identity.me')));
+  } else {
+    // 状态点按成员 id 查（Agent 配置快照里的 `status` 是后端 `member-statuses` 的回写；
+    // 快照里没有这个 Agent 时直接查状态表，而不是凭缺失下一句「未启用」的结论）。
+    row.appendChild(presenceNode(statusOf(agent || { id: member.id })));
+  }
+  return row;
+}
+
 function renderTyping() {
   const target = activeTarget();
   const container = $('#typingLine');
@@ -2271,6 +2522,9 @@ function renderHeader() {
   }
   const isDm = target.kind === 'dm';
   const name = isDm ? target.peer.display_name : target.name;
+  // 名册是**频道**成员的只读全名单（`CONTEXT.md` **成员名册**）：DM 下没有这条面，
+  // 入口随之隐藏——不留一个按下去什么都不发生的按钮。
+  $('#btnChannelMembers').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -2671,7 +2925,11 @@ const mentionPicker = {
 };
 // 频道成员清单的读取状态：每个频道各自一份；失败只记事实，不伪造成员。
 const channelMembersFailed = new Set();
-const channelMembersLoading = new Set();
+// 在飞的读取：**同一个频道复用同一个 promise**，于是调用方 `await` 之后拿到的就是
+// 「这一次读取已经落地」的状态。早退会给调用方一个「读完了」的假信号——名册打开的那一瞬
+// 撞上在飞读取（切频道、composer 获得焦点都会发起）时，它就会用旧缓存渲染，而且再没有
+// 第二次重绘的机会；`openTask` / `selectTarget` 的 `await` 也依赖同一条语义。
+const channelMembersInFlight = new Map();
 // 正在「加入频道」的成员 id（按下到后端答复之间禁用那一个控件，防重复提交）。
 const joining = new Set();
 
@@ -2736,21 +2994,31 @@ function channelAgentMembers(channelId) {
   return members ? members.filter((member) => member.kind === 'agent') : null;
 }
 
+/** 读一次该频道的成员表并落进缓存；**同一频道的在飞读取复用同一个 promise**
+    （`await` 它拿到的就是「这一次读取已落地」的状态，见 `channelMembersInFlight`）。 */
 async function refreshChannelMembers(channelId) {
   const id = channelId || state.activeChannelId;
   const channel = state.channels.find((item) => item.id === id);
-  if (!channel || channelMembersLoading.has(id)) return;
-  channelMembersLoading.add(id);
+  if (!channel) return null;
+  const inFlight = channelMembersInFlight.get(id);
+  if (inFlight) return inFlight;
+  const read = (async () => {
+    try {
+      const payload = await api(channelPath(id, '/members'));
+      state.channelMembers[id] = payload.members || [];
+      channelMembersFailed.delete(id);
+    } catch {
+      // 读不到就如实记下：不静默清空已读到的候选，也不伪造成员。
+      if (!state.channelMembers[id]) state.channelMembers[id] = [];
+      channelMembersFailed.add(id);
+    }
+    return state.channelMembers[id];
+  })();
+  channelMembersInFlight.set(id, read);
   try {
-    const payload = await api(channelPath(id, '/members'));
-    state.channelMembers[id] = payload.members || [];
-    channelMembersFailed.delete(id);
-  } catch {
-    // 读不到就如实记下：不静默清空已读到的候选，也不伪造成员。
-    if (!state.channelMembers[id]) state.channelMembers[id] = [];
-    channelMembersFailed.add(id);
+    return await read;
   } finally {
-    channelMembersLoading.delete(id);
+    channelMembersInFlight.delete(id);
   }
 }
 
@@ -3264,12 +3532,38 @@ async function selectTarget(targetId) {
 }
 
 function bindSearchEvents() {
-  $('#searchSubmit').addEventListener('click', submitSearch);
-  $('#searchQueryInput').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      return submitSearch();
-    }
+  const input = $('#searchInput');
+  // 实时搜索（原型 `$('#searchInput').addEventListener('input', renderSearch)`）：
+  // 落笔延时一拍只发一次请求，Enter 立即发。
+  input.addEventListener('input', scheduleSearch);
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    cancelPendingSearch();
+    return runSearch();
+  });
+  $('#searchFacets').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-facet]');
+    if (chip) setSearchFacet(chip.dataset.facet);
+  });
+}
+
+function bindCmdEvents() {
+  const input = $('#cmdInput');
+  input.addEventListener('input', (event) => renderCmd(event.target.value));
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    // Enter 跑**第一条**（高亮的那一条，原型 `:1839` 同一行为）。
+    const first = $('#cmdList').querySelector('[data-cmd]');
+    if (first) runCmd(first.dataset.cmd);
+  });
+  $('#cmdList').addEventListener('click', (event) => {
+    const item = event.target.closest('[data-cmd]');
+    if (item) runCmd(item.dataset.cmd);
+  });
+  $('#cmdOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'cmdOverlay') closeCmd();
   });
 }
 
@@ -3308,12 +3602,16 @@ function bindEvents() {
     const remove = event.target.closest('[data-delete-reminder]');
     if (remove) deleteReminder(remove.dataset.deleteReminder);
   });
-  $('#btnSearch').addEventListener('click', openSearchModal);
-  $('#searchClose').addEventListener('click', closeSearchModal);
-  $('#searchCancel').addEventListener('click', closeSearchModal);
+  // 搜索现在是**主线视图**：rail 入口与 `⌘K` 面板里的「搜索」都进同一个视图。
+  $('#btnSearch').addEventListener('click', showSearchView);
   bindSearchEvents();
-  $('#searchOverlay').addEventListener('click', (event) => {
-    if (event.target.id === 'searchOverlay') closeSearchModal();
+  bindCmdEvents();
+  // ── 成员名册：频道头部成员入口 + 弹窗（**唯一动作是关闭**）──
+  $('#btnChannelMembers').addEventListener('click', openRosterModal);
+  $('#rosterClose').addEventListener('click', closeRosterModal);
+  $('#rosterDone').addEventListener('click', closeRosterModal);
+  $('#rosterOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'rosterOverlay') closeRosterModal();
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   $('#btnNewDm').addEventListener('click', openDmModal);
@@ -3572,19 +3870,37 @@ function bindEvents() {
     if (discard) discardPending(discard.dataset.discard);
   });
 
-  $('#btnDockToggle').addEventListener('click', () => {
-    $('#dock').hidden = !$('#dock').hidden;
-  });
+  $('#btnDockToggle').addEventListener('click', toggleDock);
   $('#btnReconnect').addEventListener('click', () => loadWorkspace());
 
+  // ── 全局键盘：⌘K / Ctrl+K 打开命令面板、ESC 关闭最上面那一层、M/T 两个单键跳转 ──
+  // 顺序与原型 `:1847-1852` 一致：命令面板 → 弹窗 → 搜索视图；`M` / `T` 只在人不在输入框里时生效。
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    if (!$('#settingsOverlay').hidden) closeSettingsModal();
-    if (!$('#remindersOverlay').hidden) closeRemindersModal();
-    if (!$('#channelOverlay').hidden) closeChannelModal();
-    if (!$('#dmOverlay').hidden) closeDmModal();
-    if (!$('#agentOverlay').hidden) closeAgentModal();
-    if (!$('#taskOverlay').hidden) closeTaskModal();
+    if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'k') {
+      event.preventDefault();
+      openCmd();
+      return;
+    }
+    if (event.key === 'Escape') {
+      if (!$('#cmdOverlay').hidden) {
+        closeCmd();
+        return;
+      }
+      if (!$('#settingsOverlay').hidden) closeSettingsModal();
+      if (!$('#remindersOverlay').hidden) closeRemindersModal();
+      if (!$('#rosterOverlay').hidden) closeRosterModal();
+      if (!$('#channelOverlay').hidden) closeChannelModal();
+      if (!$('#dmOverlay').hidden) closeDmModal();
+      if (!$('#agentOverlay').hidden) closeAgentModal();
+      if (!$('#taskOverlay').hidden) closeTaskModal();
+      if (state.mode === 'search') showMessagesView();
+      return;
+    }
+    const target = event.target;
+    if (target && typeof target.matches === 'function' && target.matches('input,textarea')) return;
+    const key = String(event.key).toLowerCase();
+    if (key === 'm') showMessagesView();
+    if (key === 't') showTaskBoard();
   });
 
   window.addEventListener('online', () => loadWorkspace({ silent: true }));

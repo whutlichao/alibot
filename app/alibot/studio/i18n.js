@@ -116,27 +116,41 @@ const I18N_CATALOGS = {
     'error.badRequestBody': '请求体不合法',
     'error.httpStatus': '后端返回 {status}',
 
-    /* ─── 搜索 ─────────────────────────────────────────────────────── */
-    'search.title': '搜索工作台',
-    'search.sub': '搜索频道、私信与任务线程中的普通消息；可限定一个 target。',
-    'search.closeAria': '关闭搜索',
-    'search.queryLabel': '关键词',
-    'search.queryPlaceholder': '大小写不敏感的子串匹配',
-    'search.targetLabel': '限定 target',
-    'search.submit': '搜索',
-    'search.targetAll': '整个工作台',
+    /* ─── 搜索（主线视图：四档 facet + 三类命中） ──────────────────── */
+    'search.fieldPlaceholder': '搜索消息、任务、成员…',
+    'search.fieldLabel': '搜索工作台',
+    'search.facetsLabel': '搜索范围',
+    'search.facetAll': '全部',
+    'search.facetMessage': '消息',
+    'search.facetTask': '任务',
+    'search.facetAgent': 'Agent',
+    'search.sourceAgent': '成员',
     'search.targetChannel': '频道 · #{name}',
     'search.targetDm': '私信 · {name}',
     'search.targetTask': '任务 · {name}',
     'search.unknownTarget': '未知 target',
     'search.unknownAuthor': '未知作者',
     'search.authorDeleted': '作者已删除',
+    'search.snipAuthor': '来自 {name}',
+    'search.snipTask': '#{id} · {status}',
+    'search.snipAgent': '{status} · {model}',
     'search.searching': '正在搜索…',
-    'search.idle': '输入关键词，搜索频道、私信与任务线程。',
-    'search.noHits': '没有匹配的普通消息。',
-    'search.needQuery': '请输入搜索关键词。',
+    'search.idleTitle': '搜索整个工作区',
+    'search.idleBody': '消息不可编辑、不可删除；搜索覆盖消息、任务与 Agent。',
+    'search.emptyTitle': '没有找到“{query}”',
+    'search.emptyBody': '换个关键词，或检查拼写。',
     'search.offline': '后端不可达：无法执行搜索。',
     'search.failed': '搜索失败：后端不可达或请求未完成（{reason}）。',
+
+    /* ─── ⌘K 命令面板（只呈现**真绑定**的快捷键，见 D10） ───────────── */
+    'cmd.ariaLabel': '命令面板',
+    'cmd.placeholder': '输入命令或搜索…',
+    'cmd.empty': '无匹配命令',
+    'cmd.groupJump': '跳转',
+    'cmd.groupAction': '动作',
+    'cmd.groupChannels': '频道',
+    'cmd.messages': '消息视图',
+    'cmd.board': '任务看板',
 
     /* ─── 连接状态与通道外壳 ───────────────────────────────────────── */
     'conn.banner': '后端不可达：当前显示的是最后一次成功读到的内容，发送已被禁止。',
@@ -316,6 +330,18 @@ const I18N_CATALOGS = {
     'reminder.deleteFailed': '删除提醒失败：{reason}',
     'reminder.loadFailed': '读取提醒失败：{reason}',
 
+    /* ─── 成员名册（频道成员的**只读**全名单，`CONTEXT.md` **成员名册**） ────
+       入口在频道头部；弹窗只回答「这个频道里有谁」，**唯一动作是关闭**——
+       加入 / 未加入的管理动作是 **成员面板** 的面，不在这里出现。 */
+    'roster.entryTitle': '频道成员',
+    'roster.title': '#{name} 成员',
+    'roster.sub': '{count} 位成员',
+    'roster.loading': '正在读取该频道的成员表…',
+    'roster.unavailable': '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开名册即可。',
+    'roster.empty': '这个频道还没有成员。',
+    'roster.roleFallback': '成员',
+    'roster.closeAria': '关闭成员名册',
+
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
     'settings.sub': '工作区偏好',
@@ -446,27 +472,41 @@ const I18N_CATALOGS = {
     'error.badRequestBody': 'Invalid request body',
     'error.httpStatus': 'Backend returned {status}',
 
-    /* ─── Search ───────────────────────────────────────────────────── */
-    'search.title': 'Search the workspace',
-    'search.sub': 'Search ordinary messages in channels, direct messages and task threads; you can limit it to one target.',
-    'search.closeAria': 'Close search',
-    'search.queryLabel': 'Keyword',
-    'search.queryPlaceholder': 'Case-insensitive substring match',
-    'search.targetLabel': 'Limit to target',
-    'search.submit': 'Search',
-    'search.targetAll': 'Entire workspace',
+    /* ─── Search (main-line view: four facets + three hit kinds) ───── */
+    'search.fieldPlaceholder': 'Search messages, tasks, members…',
+    'search.fieldLabel': 'Search the workspace',
+    'search.facetsLabel': 'Search scope',
+    'search.facetAll': 'All',
+    'search.facetMessage': 'Messages',
+    'search.facetTask': 'Tasks',
+    'search.facetAgent': 'Agents',
+    'search.sourceAgent': 'Members',
     'search.targetChannel': 'Channel · #{name}',
     'search.targetDm': 'Direct message · {name}',
     'search.targetTask': 'Task · {name}',
     'search.unknownTarget': 'Unknown target',
     'search.unknownAuthor': 'Unknown author',
     'search.authorDeleted': 'Author deleted',
+    'search.snipAuthor': 'From {name}',
+    'search.snipTask': '#{id} · {status}',
+    'search.snipAgent': '{status} · {model}',
     'search.searching': 'Searching…',
-    'search.idle': 'Type a keyword to search channels, direct messages and task threads.',
-    'search.noHits': 'No matching messages.',
-    'search.needQuery': 'Enter a search keyword.',
+    'search.idleTitle': 'Search the whole workspace',
+    'search.idleBody': 'Messages cannot be edited or deleted; search covers messages, tasks and agents.',
+    'search.emptyTitle': 'Nothing matches “{query}”',
+    'search.emptyBody': 'Try another keyword, or check the spelling.',
     'search.offline': 'Backend unreachable: search cannot run.',
     'search.failed': 'Search failed: the backend is unreachable or the request did not finish ({reason}).',
+
+    /* ─── ⌘K command palette (only genuinely bound shortcuts, see D10) ── */
+    'cmd.ariaLabel': 'Command palette',
+    'cmd.placeholder': 'Type a command or search…',
+    'cmd.empty': 'No matching command',
+    'cmd.groupJump': 'Go to',
+    'cmd.groupAction': 'Actions',
+    'cmd.groupChannels': 'Channels',
+    'cmd.messages': 'Message view',
+    'cmd.board': 'Task board',
 
     /* ─── Connection and channel chrome ────────────────────────────── */
     'conn.banner':
@@ -660,6 +700,17 @@ const I18N_CATALOGS = {
     'reminder.saveFailed': 'Reminder not saved: {reason}',
     'reminder.deleteFailed': 'Could not delete the reminder: {reason}',
     'reminder.loadFailed': 'Could not read reminders: {reason}',
+
+    /* ─── Member roster (the read-only full list of a channel's members) ─── */
+    'roster.entryTitle': 'Channel members',
+    'roster.title': '#{name} members',
+    'roster.sub': '{count} members',
+    'roster.loading': 'Reading the channel member list…',
+    'roster.unavailable':
+      'The channel member list is not readable right now (the backend request failed): reopen the roster once it recovers.',
+    'roster.empty': 'This channel has no members yet.',
+    'roster.roleFallback': 'member',
+    'roster.closeAria': 'Close the member roster',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',

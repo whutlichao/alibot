@@ -8,7 +8,7 @@
 - ``GET  /api/reminders``                     全部提醒（时间 / 文本 / 归属频道）
 - ``POST /api/reminders``                     新建一条提醒（不落消息、不唤醒、不消耗预算）
 - ``DELETE /api/reminders/{id}``              删除一条提醒（同上；不存在的 id ⇒ 404）
-- ``GET  /api/search``                        工作台普通消息搜索（可限定一个 target）
+- ``GET  /api/search``                        工作台搜索（消息 / 任务 / Agent 三类命中，``facet`` 过滤）
 - ``GET  /api/channels``                      频道列表（含未读计数）
 - ``POST /api/channels``                      新建频道（名称 + 描述 + 初始成员，原子校验）
 - ``GET  /api/channels/{id}/messages``        按 seq 升序取消息（``after_seq`` 增量）
@@ -60,9 +60,11 @@ from .db import (
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
+    SearchFacet,
     open_database,
 )
 from .events import EventBus, sse_frame
+from .i18n import locale_of, render
 from .orchestration import ThreadScheduler, WakeOrchestrator
 from .service import WorkspaceService
 
@@ -192,6 +194,20 @@ class MarkRead(BaseModel):
     seq: Annotated[int, Field(strict=True)]
 
 
+class _TierValueError(ValueError):
+    """**档位取值**类校验错误：只带**词条键**，正文由边界按语言偏好渲染。
+
+    pydantic 的字段校验器跑在请求进入人类面之前，那里**没有语言偏好可读**（ADR-0009 第二层的取值
+    来自库内设置）；因此校验器只把「该说哪一句」的键抛出去，由 ``RequestValidationError`` 处理器
+    在能读到偏好的边界处渲染。``ValueError`` 的 ``str()`` 只是这个键本身（pydantic 会把它包进
+    ``msg``，但那条 ``msg`` 不再被序列化给用户，见 ``_validation_error_handler``）。
+    """
+
+    def __init__(self, key: str):
+        self.key = key
+        super().__init__(key)
+
+
 class SettingsUpdate(BaseModel):
     """工作区设置的**部分**更新。
 
@@ -214,7 +230,7 @@ class SettingsUpdate(BaseModel):
     def _reject_explicit_null(cls, value: Any) -> Any:
         """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
         if value is None:
-            raise ValueError("档位取值不能为 null（要保留原值请省略该字段）")
+            raise _TierValueError("error.tier_value_null")
         return value
 
 
@@ -257,7 +273,9 @@ def create_app(
     shutting_down = threading.Event()
     orchestrator = WakeOrchestrator(
         database,
-        seam if seam is not None else AgentScopeAgentSeam(),
+        # 真实适配器按**语言偏好**渲染它自己产出的文案（轮次 reason / 凭证原因）：取值方式由
+        # 装配点注入，适配层自己不依赖库（ADR-0009 第二层）。
+        seam if seam is not None else AgentScopeAgentSeam(locale_of=lambda: locale_of(database)),
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
     )
@@ -283,8 +301,31 @@ def create_app(
     app.state.orchestrator = orchestrator
     app.state.data_dir = database.data_dir
 
-    def _not_found(message: str = "接口不存在") -> JSONResponse:
+    def _not_found(message: str) -> JSONResponse:
+        """统一 404 形状。``message`` 由调用点按**当前语言偏好**渲染（`i18n.render`）。"""
         return JSONResponse({"error": {"code": "not_found", "message": message}}, status_code=404)
+
+    def _render_copy(key: str, **params: Any) -> str:
+        """本模块产出的用户可见文案一律经它取值（语言偏好读库，ADR-0009 第二层）。"""
+        return render(key, locale_of(database), **params)
+
+    def _validation_detail(exc: RequestValidationError) -> str:
+        """``fields.body`` 的那一句话：正文按**语言偏好**渲染，机器可读的标识不译。
+
+        之前这里放的是 pydantic 错误的 ``repr``——它是 Python 结构（``type`` / ``loc`` / ``msg`` /
+        ``input``），前端 `readError` 会把 ``fields`` 的值拼进错误提示，于是用户在中文界面里读到一段
+        英文 repr。现在：句子是我们的（词条表），**出错位置与 pydantic 的错误类型原样保留**（它们是
+        标识符，与 ``code`` 同类）；自定义校验器（``_TierValueError``）带回词条键，在这里才渲染——
+        校验器跑到时还没有语言偏好可读。
+        """
+        error = exc.errors()[0] if exc.errors() else {}
+        context_error = (error.get("ctx") or {}).get("error")
+        if isinstance(context_error, _TierValueError):
+            return _render_copy(context_error.key)
+        location = ".".join(str(part) for part in error.get("loc", ())) or "body"
+        return _render_copy(
+            "error.field.body_invalid", location=location, kind=str(error.get("type") or "invalid")
+        )
 
     # ─── 错误封装：统一 {"error": {"code", "message", "fields?"}} ──────────
     @app.exception_handler(DomainError)
@@ -297,8 +338,8 @@ def create_app(
             {
                 "error": {
                     "code": "validation_failed",
-                    "message": "请求体校验未通过",
-                    "fields": {"body": str(exc.errors()[:1])},
+                    "message": _render_copy("error.request_body_invalid"),
+                    "fields": {"body": _validation_detail(exc)},
                 }
             },
             status_code=400,
@@ -359,13 +400,19 @@ def create_app(
         return {"reminder": reminder, "reminders": service.reminders()}
 
     @app.get("/api/search")
-    def search_messages(
+    def search(
         q: Annotated[str, Query(min_length=1, max_length=MAX_MESSAGE_BODY_LENGTH)],
+        facet: Annotated[SearchFacet, Query()] = "all",
         target_id: str | None = Query(default=None),
         limit: int = Query(default=SEARCH_RESULT_LIMIT, ge=1, le=SEARCH_RESULT_LIMIT),
     ) -> dict[str, Any]:
-        """搜索三个 target kind 的普通消息；高亮判定与区间都由后端产生。"""
-        return {"hits": service.search_messages(q, target_id=target_id, limit=limit)}
+        """搜索三类命中：消息（正文）、任务（标题）、Agent（显示名与角色）。
+
+        ``facet`` 是**后端的过滤参数**（``all`` / ``message`` / ``task`` / ``agent``），
+        非法取值与非法 ``limit`` 一样整体拒绝（400）。命中判定与高亮区间都由后端产生，
+        前端只按区间包标签；``target_id`` 沿用既有语义（只在该 target 作用域内搜消息）。
+        """
+        return {"hits": service.search(q, facet=facet, target_id=target_id, limit=limit)}
 
     # ─── 频道 ─────────────────────────────────────────────────────────────
     @app.get("/api/channels")
@@ -750,7 +797,7 @@ def create_app(
     )
     def no_round_outcome_mutation(channel_id: str) -> JSONResponse:
         """轮次结果 append-only：它是「当时为什么没说话」的事实记录，不接受事后改写。"""
-        return _not_found("轮次结果不可编辑、不可删除：人类面不存在该端点")
+        return _not_found(_render_copy("error.round_outcomes_immutable"))
 
     @app.api_route(
         "/api/channels/{channel_id}/budget",
@@ -759,7 +806,7 @@ def create_app(
     )
     def no_budget_mutation(channel_id: str) -> JSONResponse:
         """预算只由后端在「人类消息重置 / 一次跳投递」时推进：人类面不能直接改它。"""
-        return _not_found("回应预算只读：人类面不存在写入它的端点")
+        return _not_found(_render_copy("error.budget_read_only"))
 
     @app.api_route(
         "/api/channels/{channel_id}/members/{member_id}",
@@ -769,7 +816,7 @@ def create_app(
     def no_channel_member_mutation(channel_id: str, member_id: str) -> JSONResponse:
         """本票没有「移出频道」的端点：离开 / 踢出需要单独的语义裁定（是否写 system 事件消息、
         是否影响历史未读与唤醒面），因此人类面明确回 404 而不是留一个沉默的 405。"""
-        return _not_found("频道成员只能加入、不能移出：人类面不存在该端点")
+        return _not_found(_render_copy("error.channel_members_append_only"))
 
     @app.api_route(
         "/api/channels/{channel_id}/messages/{seq}",
@@ -778,7 +825,7 @@ def create_app(
     )
     def no_message_mutation(channel_id: str, seq: int) -> JSONResponse:
         """消息 append-only：人类 HTTP 面没有编辑或删除消息的端点。"""
-        return _not_found("消息不可编辑、不可删除：人类面不存在该端点")
+        return _not_found(_render_copy("error.messages_immutable"))
 
     @app.api_route(
         "/api/agents/{member_id}",
@@ -787,7 +834,7 @@ def create_app(
     )
     def no_agent_mutation(member_id: str) -> JSONResponse:
         """本票没有改配置 / 删 Agent 的端点：模型与系统提示是配置数据，改配置的方式是新建。"""
-        return _not_found("Agent 配置不可编辑、不可删除：人类面不存在该端点")
+        return _not_found(_render_copy("error.agent_config_immutable"))
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
     app.mount("/studio", StaticFiles(directory=str(studio_dir()), html=True), name="studio")
