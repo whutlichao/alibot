@@ -323,6 +323,30 @@ AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_
 # ``execute`` 的实参：查询文本对静态检查是可见常量，也不是注入面）。
 AGENT_SELECT_SQL = "SELECT " + AGENT_COLUMNS + " "
 
+# Agent 概览读数的三条聚合语句（同样**在模块级拼好**，同上一条体例）。
+# 每条的成员过滤是**同一个形状** ``(:member_id IS NULL OR …)``：``agent_stats()`` 的「全部成员」
+# 与「某一个成员」两条路径共用一条语句，因此不存在第二份只差一个 ``WHERE`` 的拷贝；
+# 参数一律走命名占位符（传 ``{"member_id": …}``），没有标识符注入面。
+AGENT_STATS_CHANNEL_SQL = (
+    "SELECT tm.member_id AS member_id, COUNT(*) AS n FROM target_member tm "
+    "JOIN target t ON t.id = tm.target_id "
+    "WHERE t.kind = 'channel' AND (:member_id IS NULL OR tm.member_id = :member_id) "
+    "GROUP BY tm.member_id"
+)
+AGENT_STATS_ROUND_SQL = (
+    "SELECT member_id, COUNT(*) AS n, "
+    "SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) AS replied, "
+    "SUM(CASE WHEN status IN ('replied', 'ignored', 'failed') THEN 1 ELSE 0 END) AS verdicts "
+    "FROM round_outcome WHERE (:member_id IS NULL OR member_id = :member_id) "
+    "GROUP BY member_id"
+)
+AGENT_STATS_TASK_SQL = (
+    "SELECT assignee_member_id AS member_id, COUNT(*) AS n FROM task "
+    "WHERE status = 'done' AND assignee_member_id IS NOT NULL "
+    "AND (:member_id IS NULL OR assignee_member_id = :member_id) "
+    "GROUP BY assignee_member_id"
+)
+
 # 未读的**唯一一个 WHERE 形状**（ADR-0004 决策 7）：已读位置之后、``kind ∈ {human, agent}``、
 # 作者非本人、**只算顶层**。三种 kind 用同一个形状，**不按 kind 分支**。
 # 它是**单一字面量落点**：下面三个消费点（频道列表、工作台汇总、单 target 计数）都把它原样拼进
@@ -942,7 +966,7 @@ class Database:
     def agent_stats(self, member_id: str | None = None) -> dict[str, dict[str, Any]]:
         """按成员聚合的**只读既有事实**（Agent 概览页每个数字的唯一来源）——不新增数据面。
 
-        - ``channel_count``：它是成员的 **channel 型 target** 数（``target_member`` ⟕ ``target.kind``）；
+        - ``channel_count``：它是成员的 **channel 型 target** 数（``target_member`` 与 ``target.kind``）；
         - ``round_count``：它的 ``round_outcome`` 行数（参与过的轮次），append-only 事实；
         - ``completed_task_count``：指派给它且 ``status='done'`` 的 ``task`` 行数；
         - ``replied_count`` / ``verdict_count``：成功率的两项（``replied`` ÷ 有结论的轮次
@@ -950,39 +974,21 @@ class Database:
           （根本没跑起来）**不计入**分母。
 
         三处读的都是**行级事实**，不读内存、不做推断：后端重启后读数逐字不变。
-        ``member_id`` 为 ``None`` 时一次聚合全部成员（列表面用它，避免 N+1 查询）。
+        ``member_id`` 为 ``None`` 时一次聚合全部成员（列表面用它，避免 N+1 查询）——两条路径共用
+        同一条语句（过滤是 ``AGENT_STATS_*_SQL`` 里的 ``:member_id IS NULL OR …``），因此不存在
+        第二份只差一个 ``WHERE`` 的拷贝。
         """
-        channel_sql = (
-            "SELECT tm.member_id AS member_id, COUNT(*) AS n FROM target_member tm "
-            "JOIN target t ON t.id = tm.target_id WHERE t.kind = 'channel'"
-            + ("" if member_id is None else " AND tm.member_id = ?")
-            + " GROUP BY tm.member_id"
-        )
-        round_sql = (
-            "SELECT member_id, COUNT(*) AS n, "
-            "SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) AS replied, "
-            "SUM(CASE WHEN status IN ('replied', 'ignored', 'failed') THEN 1 ELSE 0 END) AS verdicts "
-            "FROM round_outcome"
-            + ("" if member_id is None else " WHERE member_id = ?")
-            + " GROUP BY member_id"
-        )
-        task_sql = (
-            "SELECT assignee_member_id AS member_id, COUNT(*) AS n FROM task "
-            "WHERE status = 'done' AND assignee_member_id IS NOT NULL"
-            + ("" if member_id is None else " AND assignee_member_id = ?")
-            + " GROUP BY assignee_member_id"
-        )
-        args: tuple[Any, ...] = () if member_id is None else (member_id,)
+        args = {"member_id": member_id}
         stats: dict[str, dict[str, Any]] = {}
         with self._lock:
-            for row in self._conn.execute(channel_sql, args).fetchall():
+            for row in self._conn.execute(AGENT_STATS_CHANNEL_SQL, args).fetchall():
                 stats.setdefault(row["member_id"], {})["channel_count"] = int(row["n"])
-            for row in self._conn.execute(round_sql, args).fetchall():
+            for row in self._conn.execute(AGENT_STATS_ROUND_SQL, args).fetchall():
                 entry = stats.setdefault(row["member_id"], {})
                 entry["round_count"] = int(row["n"])
                 entry["replied_count"] = int(row["replied"] or 0)
                 entry["verdict_count"] = int(row["verdicts"] or 0)
-            for row in self._conn.execute(task_sql, args).fetchall():
+            for row in self._conn.execute(AGENT_STATS_TASK_SQL, args).fetchall():
                 stats.setdefault(row["member_id"], {})["completed_task_count"] = int(row["n"])
         return stats
 

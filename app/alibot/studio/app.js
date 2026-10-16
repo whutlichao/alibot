@@ -2146,12 +2146,20 @@ function statusOf(agent) {
   return state.statuses[agent && agent.id] || 'offline';
 }
 
-function presenceNode(status) {
-  const node = el('span', 'presence ' + status);
+/** 把四态写到一个状态点节点上（class / title / aria-label / dataset 一起），返回同一个节点。
+
+    它是状态点的**唯一**写法：静态列表（`presenceNode`）与详情页头部（会重建的 `#adPresence`）
+    共用它，于是「同一个事实在两处呈现」不会漂移成两套 class 与两套无障碍文案。 */
+function applyPresence(node, status) {
+  node.className = 'presence ' + status;
+  node.dataset.status = status;
   node.setAttribute('title', statusLabel(status));
   node.setAttribute('aria-label', statusLabel(status));
-  node.dataset.status = status;
   return node;
+}
+
+function presenceNode(status) {
+  return applyPresence(el('span', 'presence'), status);
 }
 
 /** 该频道的 Agent 成员（已加入）+ 本工作区里未加入的 Agent。
@@ -2379,16 +2387,20 @@ function renderAgentDetail() {
   const agent = state.activeAgentId ? agentById(state.activeAgentId) : null;
   if (!agent) return;
   const status = statusOf(agent);
-  const presence = $('#adPresence');
-  presence.className = 'presence ' + status;
-  presence.dataset.status = status;
-  presence.setAttribute('title', statusLabel(status));
-  presence.setAttribute('aria-label', statusLabel(status));
+  applyPresence($('#adPresence'), status);
   $('#adStatusText').textContent = statusLabel(status);
   $('#adName').textContent = agent.display_name;
   replaceChildren($('#adOverview'), agentOverviewNodes(agent));
   replaceChildren($('#adRuntime'), agentRuntimeNodes(agent));
   setAgentDetailTab(state.agentDetailTab);
+}
+
+/** 详情面板的分区标题：文案走词条，`data-od-id` 是 `alibot-design-system/SKILL.md` 对
+    「regions / headings」的要求（这类标题是运行时生成的，因此标识也在这里给）。 */
+function sectionTitle(key, odId) {
+  const node = el('div', 'd-sec-title', t(key));
+  if (odId) node.setAttribute('data-od-id', odId);
+  return node;
 }
 
 /** 概览：四个数字（同一个 `stats` 来源）+ 当前状态与未启用原因 + 两个真动作。 */
@@ -2397,7 +2409,7 @@ function agentOverviewNodes(agent) {
   const nodes = [];
 
   const facts = el('section', 'd-sec');
-  facts.appendChild(el('div', 'd-sec-title', t('agentDetail.sectionFacts')));
+  facts.appendChild(sectionTitle('agentDetail.sectionFacts', 'agent-detail-section-facts'));
   const grid = el('div', 'stat-grid');
   [
     ['agentDetail.statChannels', stats.channel_count, 'agentDetail.statChannelsHint', 'agent-stat-channels'],
@@ -2415,11 +2427,15 @@ function agentOverviewNodes(agent) {
   grid.appendChild(statCell(t('agentDetail.statSuccess'), t('agentDetail.statSuccessHint'), rateText,
     'agent-stat-success-rate'));
   facts.appendChild(grid);
+  // 概览也呈现**模型标识**（规格 §2 面 4 与 D20 把它列进「概览呈现有真实来源的事实」；
+  // US17 同样点名它）。它与运行时页签那一行同源同措辞，只是概览把它放在「事实」里一眼可见。
+  facts.appendChild(kvRow(t('agentDetail.kvModel'), agent.model_id || t('dock.noModel'),
+    'agent-overview-model'));
   nodes.push(facts);
 
   const status = statusOf(agent);
   const statusSection = el('section', 'd-sec');
-  statusSection.appendChild(el('div', 'd-sec-title', t('agentDetail.sectionStatus')));
+  statusSection.appendChild(sectionTitle('agentDetail.sectionStatus', 'agent-detail-section-status'));
   statusSection.appendChild(kvRow(t('agentDetail.kvStatus'), statusLabel(status),
     'agent-detail-status-value'));
   if (agent.enabled_reason) {
@@ -2429,7 +2445,7 @@ function agentOverviewNodes(agent) {
   nodes.push(statusSection);
 
   const actions = el('section', 'd-sec');
-  actions.appendChild(el('div', 'd-sec-title', t('agentDetail.sectionActions')));
+  actions.appendChild(sectionTitle('agentDetail.sectionActions', 'agent-detail-section-actions'));
   const row = el('div', 'agent-actions');
   // 「暂停 / 恢复」就是写 `enabled`（ADR-0011）：按钮的说法随**当前落库取值**变，
   // 不另存一个「暂停中」的前端状态。
@@ -2456,7 +2472,7 @@ function agentOverviewNodes(agent) {
 /** 运行时：**只**有 `agent_config` 里真实存在的字段（外加可用性推导出的告知状态）。 */
 function agentRuntimeNodes(agent) {
   const section = el('section', 'd-sec');
-  section.appendChild(el('div', 'd-sec-title', t('agentDetail.sectionRuntime')));
+  section.appendChild(sectionTitle('agentDetail.sectionRuntime', 'agent-detail-section-runtime'));
   section.appendChild(el('div', 'hint', t('agentDetail.runtimeNote')));
   const rows = [
     ['agentDetail.kvModel', agent.model_id || t('dock.noModel'), 'agent-detail-model'],
@@ -2472,7 +2488,7 @@ function agentRuntimeNodes(agent) {
   rows.forEach(([key, value, odId]) => section.appendChild(kvRow(t(key), value, odId)));
 
   const promptSection = el('section', 'd-sec');
-  promptSection.appendChild(el('div', 'd-sec-title', t('agentDetail.kvPrompt')));
+  promptSection.appendChild(sectionTitle('agentDetail.kvPrompt', 'agent-detail-section-prompt'));
   const body = el('div', 'prompt-body', agent.system_prompt || t('agentDetail.emptyField'));
   body.setAttribute('data-od-id', 'agent-detail-prompt');
   promptSection.appendChild(body);

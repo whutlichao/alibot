@@ -491,6 +491,9 @@ test("概览四个数字与后端读数一致，每个数字都写明来源", as
   // 状态点与未启用原因同样是后端读数。
   assert.equal(harness.reportStatus.textContent, catalogText(harness, "zh-CN", "status.online"));
   assert.equal(harness.reportPresence.dataset.status, "online");
+  // 模型标识也在概览的「事实」里（规格 §2 面 4 / D20 点名它）：同一份配置读数的另一处呈现。
+  assert.equal(kvKeys(harness.overview)[0], catalogText(harness, "zh-CN", "agentDetail.kvModel"));
+  assert.equal(kvValues(harness.overview)[0], "ollama:qwen2.5");
 });
 
 test("成功率没有样本时显示「—」，不编一个 0%", async () => {

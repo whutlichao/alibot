@@ -302,7 +302,7 @@
          工具权限 / 温度 / Token 消耗 / 上下文占用一律不出现（本仓没有那些数据面）。
          两页的内容都是后端读数，因此由 `app.js` 渲染；这里只有骨架与两个页签。 -->
     <div class="agent-detail" id="dockDetail" hidden data-od-id="agent-detail">
-      <div class="dock-head">
+      <div class="dock-head" data-od-id="agent-detail-head">
         <div class="dock-id">
           <div class="meta">
             <div class="dock-name"><span id="adName"></span> <span class="dock-tag" data-i18n="agentDetail.tag" data-od-id="agent-detail-tag">Agent</span></div>
@@ -570,18 +570,18 @@
      一个不少：`auto_claim` 属 #65，本票不落它。改到远端 provider 时沿用与「新建 Agent」同形的
      **远端数据流告知**块（同一套「未确认就不发起远端调用」语义；保存后状态点由后端推导为未启用）。
      这里只写配置：不落消息、不唤醒、不消耗预算。 -->
-<div class="overlay" id="agentEditOverlay" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="agentEditTitle">
+<div class="overlay" id="agentEditOverlay" hidden data-od-id="agent-edit-overlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="agentEditTitle" data-od-id="agent-edit-modal">
     <div class="modal-head">
       <div style="flex:1">
-        <h2 id="agentEditTitle" data-i18n="agentDetail.editTitle">编辑配置</h2>
+        <h2 id="agentEditTitle" data-i18n="agentDetail.editTitle" data-od-id="agent-edit-title">编辑配置</h2>
         <div class="sub" data-i18n="agentDetail.editSub">保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。</div>
       </div>
-      <button class="icon-btn" type="button" id="agentEditClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
+      <button class="icon-btn" type="button" id="agentEditClose" data-i18n-attr="aria-label:common.close" aria-label="关闭" data-od-id="agent-edit-close">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
-    <div class="modal-body">
+    <div class="modal-body" data-od-id="agent-edit-body">
       <div class="field">
         <label for="agentEditName" data-i18n="agent.nameLabel">名称</label>
         <input class="input" id="agentEditName" autocomplete="off" data-od-id="agent-edit-name" />
