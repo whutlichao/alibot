@@ -48,10 +48,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.budget_read_only": "回应预算只读：人类面不存在写入它的端点",
         "error.channel_members_append_only": "频道成员只能加入、不能移出：人类面不存在该端点",
         "error.messages_immutable": "消息不可编辑、不可删除：人类面不存在该端点",
-        "error.agent_config_immutable": "Agent 配置不可编辑、不可删除：人类面不存在该端点",
+        "error.agent_delete_unsupported": "Agent 不可删除：人类面不存在该端点",
         "error.request_body_invalid": "请求体校验未通过",
         "error.field.body_invalid": "请求体不合法：{location}（{kind}）",
         "error.tier_value_null": "档位取值不能为 null（要保留原值请省略该字段）",
+        "error.agent_field_null": "该字段不能为 null（要保留原值请省略该字段）",
         "availability.orchestrator_absent": "后端未启用成员面编排",
         "error.agent_transfer_needs_orchestrator": "Agent 转派任务需要启用成员面编排",
         "error.channel_member_join_failed": "加入频道校验未通过，未加入任何成员",
@@ -59,6 +60,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.member_unavailable": "成员不存在或已删除：{member_id}",
         "error.member_not_agent": "初始成员只能是 Agent：{member_id}",
         "error.agent_invalid": "Agent 校验未通过，未创建任何数据",
+        "error.agent_update_invalid": "Agent 配置校验未通过，未改动任何字段",
         "error.model_id_empty": "模型标识不能为空",
         "error.model_id_provider_prefix": "模型标识需要提供商前缀：{model_id}（应为 provider:model，例如 dashscope:qwen-max）",
         "error.model_id_unknown_provider": "未知的模型提供商：{provider}（可用：{providers}）",
@@ -219,12 +221,13 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.messages_immutable": (
             "Messages cannot be edited or deleted: the human surface has no such endpoint"
         ),
-        "error.agent_config_immutable": (
-            "Agent configuration cannot be edited or deleted: the human surface has no such endpoint"
+        "error.agent_delete_unsupported": (
+            "An Agent cannot be deleted: the human surface has no such endpoint"
         ),
         "error.request_body_invalid": "Request body failed validation",
         "error.field.body_invalid": "The request body is not valid: {location} ({kind})",
         "error.tier_value_null": "A tier value cannot be null (omit the field to keep the current value)",
+        "error.agent_field_null": "This field cannot be null (omit it to keep the current value)",
         "availability.orchestrator_absent": "The backend runs without the member-surface orchestrator",
         "error.agent_transfer_needs_orchestrator": (
             "An Agent handing a task to another Agent requires the member-surface orchestrator"
@@ -234,6 +237,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.member_unavailable": "No such member, or it was deleted: {member_id}",
         "error.member_not_agent": "Initial members must be Agents: {member_id}",
         "error.agent_invalid": "Agent validation failed; nothing was created",
+        "error.agent_update_invalid": ("Agent configuration validation failed; no field was changed"),
         "error.model_id_empty": "The model id cannot be empty",
         "error.model_id_provider_prefix": (
             "The model id needs a provider prefix: {model_id} (expected provider:model, "

@@ -94,7 +94,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
 | `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关 | 模型与系统提示是**配置数据**，换模型不改代码 |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证** |
-| `workspace_settings` | id(=1), locale, message_density, updated_at | **工作区设置**：单行表，列就是明确列出的档位（本轮到语言偏好与消息密度；主题由 #71 追加第三档）。人类面可写配置类取值，**不得**写用量类事实 |
+| `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `channel` | id, 名称, 描述 | |
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
 | `channel_read` | member_id, channel_id, last_read_seq | 已读位置（未读的正本）。owner 的行使未读徽标；agent 的行是它自己的消费游标 |
@@ -193,8 +193,8 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
-| `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度**；后端是唯一正本） |
-| `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
+| `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度** / **主题**；后端是唯一正本） |
+| `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?, theme?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
 | `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
 | `POST /api/attachments?name=<原文件名>` | **上传一个未绑定的附件**（请求体是文件原始字节、`Content-Type` 是声明 MIME）；返回标识与可读元数据。大小 / 类型上限在这里拒绝（可读原因，`code` + `fields`） |
 | `GET /api/attachments/{id}` | 已绑定附件的内容（**草稿回 404**）；`Content-Disposition` 是原文件名，`?disposition=inline` 为浏览器内预览 |
@@ -208,9 +208,10 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/channels/{id}/budget` | 有界响应预算 `{epoch_seq, limit, used, remaining}`（只读，后端持久事实） |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
-| `GET /api/agents` | Agent 成员 + 模型配置 + 四态状态点 + 「为什么未启用」 |
+| `GET /api/agents` | Agent 成员 + 模型配置 + 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
 | `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt}`；校验失败**整体不创建** |
-| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`） |
+| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason` 与 `stats`） |
+| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录 |
@@ -238,6 +239,28 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 不改名、不覆盖；与消息同口径，**没有**删除附件的端点（`PUT` / `PATCH` / `DELETE` 都回 404）。
 附件**不进搜索**（命中本体仍是文本），也**不进成员面**（附件内容不喂给 Agent）。
 
+### Agent 详情与配置编辑（`PATCH /api/agents/{id}`，ADR-0011）
+
+右侧 dock 的**第三形态**是 Agent 详情（入口：左栏 Agent 行、成员面板里的名字），含「概览」与「运行时」
+两个页签；**日志页签不做**（用户人定 D24，入口另立 backlog 票 #72）。
+
+- **概览的四个数字全部来自既有事实**，由后端在 `stats` 里聚合，前端不自己算：
+  `channel_count` = 它是成员的 channel 型 target 数；`round_count` = 它的 `round_outcome` 行数；
+  `completed_task_count` = 指派给它且 `status='done'` 的任务行数；`success_rate` =
+  `replied ÷ (replied + ignored + failed)`（`merged` 与 `budget-exhausted` 不计入分母，没有样本时为
+  `null`，界面显示「—」）。原型里的 Token 消耗 / 上下文占用 / 内存 / 延迟在本仓**没有数据面**，
+  因此不呈现。
+- **运行时页签只呈现 `agent_config` 里真实存在的字段**：`model_id`、`provider`、`is_remote`、
+  远端数据流告知状态、`role`、`system_prompt`、`enabled`（外加可用性推导出的当前状态）。
+- **写路径唯一**：`PATCH /api/agents/{id}` 可写 `display_name` / `role` / `model_id` /
+  `system_prompt` / `enabled`，**任一字段不合法则整体不写**（不得部分写入）；`model_id` 沿用与创建
+  同一套校验与**远端数据流告知**语义。`auto_claim` 属 #65，本票的写路径上它仍是未知键（整体拒绝）。
+- **配置变更不是发言**：不落消息、不唤醒、不消耗预算、不开世代（ADR-0011 与 ADR-0007 的边界：
+  人类面可写配置类取值）。
+- **「暂停」= 写 `enabled = 0`**，复用既有可用性判定：状态点为**未启用**、`enabled_reason` 可读；
+  已知代价是它**仍会被唤醒**并落一条可读原因的 `failed` 轮次结果，只是不产出回复——「从唤醒面排除」
+  是唤醒面的另一个决策，本轮不做。
+
 ### 未读口径
 
 未读 = 已读位置之后、`kind ∈ {human, agent}`、**且作者不是本人**的顶层消息条数；`system` 事件
@@ -253,12 +276,14 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 .venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
 node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
 node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
+node --test app/tests/agent_detail_ui.test.cjs # Studio Agent 详情（dock 第三形态）：概览 / 运行时 / 暂停 / 编辑配置
 node --test app/tests/i18n_ui.test.cjs    # 词条机制（同键集 / 无落单键 / 裸中文扫描 / <html lang> / 设置弹窗两档）
 ```
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
-已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 搜索 DOM 行为由
-上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
+已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、
+Agent 详情面）由上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰**
+`~/Alibot`。
 
 **唯一例外**：`app/tests/test_backend_copy.py` 直接读 `app/alibot/i18n.py` 的两份取值——词条表是
 **数据契约**（两份取值必须覆盖同一键集、参数位一致，且后端文案必须取自**当前语言**的那一条），
@@ -300,6 +325,15 @@ token 名、三栏尺寸（rail 252 / 消息流 880 / dock 380）、方形头像
 未读徽标色族（`--unread` / `--unread-soft` / `--unread-deep` / `--unread-graphic`）、
 四态状态点、提及高亮（`--accent-soft` 底 + `--accent-deep` 字）与空态文案都按名字消费。
 色值一律 `oklch()`，界面为简体中文。
+
+**主题三档（#71）**：`workspace_settings.theme ∈ {light, dark, system}`，前端把档位写到
+`<html data-theme>` 上。取值层在 `alibot-design-system/`——两个 foundation 与产品扩展层的
+两个落点各持**同一 token 名集合的第二组取值**（不改名、不新增色相）：显式档位由
+`:root[data-theme='dark']` 命中，「跟随系统」由该包的 `@media (prefers-color-scheme: dark)`
+裁决（本工作台**不**解析媒体查询）。工作台侧的呈现改动只有三处「用错层」：头像块的墨色改用
+`--on-accent`（底是 fill 档）、`.overlay` 的遮罩改用 `--on-accent`（遮罩必须两档都暗）、
+toast 的状态点在深色档改用 `--bg`（深色档 toast 反相成浅片）。`app.css` 里的裸色值纪律
+在深色档下仍然成立。
 
 业务状态的唯一正本是后端；前端不使用 `localStorage` 保存任何业务状态
 （唯一允许的本地记忆是「上次打开的频道 id」）。后端不可达时前端**禁止提交**并给出明确提示，

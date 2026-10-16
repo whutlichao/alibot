@@ -40,19 +40,30 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-# 号段裁定（#60 的 D13 落地口径 + 协调者的跨票分配）：`7` = #61（i18n 地基，已合并）、
-# `8` = #68（提醒）、**本票（#67 附件）用 `9`**、`11` = 本仓 #35 的 #58（`silent`）。
+# schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝启动**、
+# 不做迁移（ADR-0004）。号段由规格 #60 的协调裁定分配，实施票不得自行改号：
+#   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）；**9 = 本票 #67（附件，本票被分配的号）**；
+#   10 = #71（`workspace_settings.theme` 新增一列）已合并；11 = #35 的 #58（结构化沉默）。
 # 号段是**跨在途票的分配**而不是「每次 +1」：两个在途迁移撞号会让两边都以为自己的库是当前版本。
+# 代价（已写进本票 PR 的 Merge Danger）：合入后 main 的号由 10 回到 9，被 v10 代码创建过的库在本版下
+# 会被闸门拒绝——处置与既有纪律一致（备份该数据目录、换一个目录启动）。
 SCHEMA_VERSION = 9
 
-# 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合。
-# 本轮只有**语言偏好**与**消息密度**两档；**主题**由 #71 追加第三档，本票不得出现它的字段或档位
-# （列集就是「只有这些档位」这条约束的落点：没有通用 key-value 面，因此不可能被当成通用存储）。
+# 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合——
+# **语言偏好** / **消息密度** / **主题**三档。列集就是「只有这些档位」这条约束的落点：
+# 没有通用 key-value 面，因此这个设置面不可能被当成通用存储。
 LOCALES = ("zh-CN", "en")
 MESSAGE_DENSITIES = ("comfortable", "compact")
+# 主题三档（#71）：显式浅色 / 显式深色 / 跟随系统外观。
+# `system` 是**缺省**档（空库的取值就是它）：由浏览器的 `prefers-color-scheme` 裁决；
+# 显式两档把标记写在 `<html data-theme>` 上。三档的**取值层**在 `alibot-design-system/`
+# （同一 token 名集合的第二组取值，`decisions/ADR-0017-dark-value-layer.md`）。
+THEMES = ("light", "dark", "system")
+
 # 缺省语言 = 词条表的**源语言**（同一件事不写第二遍：改源语言只改 `i18n.SOURCE_LOCALE`）。
 DEFAULT_LOCALE = SOURCE_LOCALE
 DEFAULT_MESSAGE_DENSITY = "comfortable"
+DEFAULT_THEME = "system"
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Alibot"
@@ -311,9 +322,10 @@ CREATE TABLE IF NOT EXISTS agent_config (
   updated_at    TEXT NOT NULL
 );
 
--- 工作区设置（`CONTEXT.md` **工作区设置**）：**单行表**（``id = 1``），列就是明确列出的档位。
--- 它是**配置类**取值（人类面经 ``GET`` / ``PATCH /api/settings`` 读写），与预算表的边界是**写什么**：
--- 人类面可以写配置，但**不得**写用量类事实（``target_budget.used`` 仍只由后端推进，ADR-0007）。
+-- 工作区设置（`CONTEXT.md` **工作区设置**）：**单行表**（``id = 1``），列就是明确列出的档位
+-- （语言偏好 / 消息密度 / 主题三档）。它是**配置类**取值（人类面经 ``GET`` / ``PATCH /api/settings``
+-- 读写），与预算表的边界是**写什么**：人类面可以写配置，但**不得**写用量类事实
+-- （``target_budget.used`` 仍只由后端推进，ADR-0007）。
 -- 刻意不做成通用 key-value 表：那会让「只有这几档」这条约束失去落点（词条的 `_Avoid_` 明写）。
 -- 改设置**不落消息、不唤醒、不消耗预算**——它不是对话事实。
 CREATE TABLE IF NOT EXISTS workspace_settings (
@@ -321,6 +333,10 @@ CREATE TABLE IF NOT EXISTS workspace_settings (
   locale          TEXT NOT NULL DEFAULT 'zh-CN' CHECK (locale IN ('zh-CN', 'en')),
   message_density TEXT NOT NULL DEFAULT 'comfortable'
                   CHECK (message_density IN ('comfortable', 'compact')),
+  -- 主题三档（#71）：显式浅色 / 显式深色 / 跟随系统外观。缺省是 ``system``
+  -- （空库的取值就是「跟随系统」）；取值层在 alibot-design-system/。
+  theme           TEXT NOT NULL DEFAULT 'system'
+                  CHECK (theme IN ('light', 'dark', 'system')),
   updated_at      TEXT NOT NULL
 );
 
@@ -398,6 +414,30 @@ AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_
 # 由常量 ``AGENT_COLUMNS`` 拼出的 Agent 选取语句（**在模块级拼好**，不把拼接写进
 # ``execute`` 的实参：查询文本对静态检查是可见常量，也不是注入面）。
 AGENT_SELECT_SQL = "SELECT " + AGENT_COLUMNS + " "
+
+# Agent 概览读数的三条聚合语句（同样**在模块级拼好**，同上一条体例）。
+# 每条的成员过滤是**同一个形状** ``(:member_id IS NULL OR …)``：``agent_stats()`` 的「全部成员」
+# 与「某一个成员」两条路径共用一条语句，因此不存在第二份只差一个 ``WHERE`` 的拷贝；
+# 参数一律走命名占位符（传 ``{"member_id": …}``），没有标识符注入面。
+AGENT_STATS_CHANNEL_SQL = (
+    "SELECT tm.member_id AS member_id, COUNT(*) AS n FROM target_member tm "
+    "JOIN target t ON t.id = tm.target_id "
+    "WHERE t.kind = 'channel' AND (:member_id IS NULL OR tm.member_id = :member_id) "
+    "GROUP BY tm.member_id"
+)
+AGENT_STATS_ROUND_SQL = (
+    "SELECT member_id, COUNT(*) AS n, "
+    "SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) AS replied, "
+    "SUM(CASE WHEN status IN ('replied', 'ignored', 'failed') THEN 1 ELSE 0 END) AS verdicts "
+    "FROM round_outcome WHERE (:member_id IS NULL OR member_id = :member_id) "
+    "GROUP BY member_id"
+)
+AGENT_STATS_TASK_SQL = (
+    "SELECT assignee_member_id AS member_id, COUNT(*) AS n FROM task "
+    "WHERE status = 'done' AND assignee_member_id IS NOT NULL "
+    "AND (:member_id IS NULL OR assignee_member_id = :member_id) "
+    "GROUP BY assignee_member_id"
+)
 
 # 未读的**唯一一个 WHERE 形状**（ADR-0004 决策 7）：已读位置之后、``kind ∈ {human, agent}``、
 # 作者非本人、**只算顶层**。三种 kind 用同一个形状，**不按 kind 分支**。
@@ -774,12 +814,12 @@ class Database:
                 "VALUES (?, 'owner', ?, ?, ?) ON CONFLICT(id) DO NOTHING",
                 (OWNER_ID, OWNER_DISPLAY_NAME, OWNER_AVATAR_SLOT, utc_now()),
             )
-            # 工作区设置的**单行**：缺省值就是源语言与默认密度，与「空库 = 空工作台」同一条纪律
-            # （空库里没有任何用户取值，但设置面必须可读）。
+            # 工作区设置的**单行**：缺省值就是源语言、默认密度与「跟随系统」主题，与「空库 = 空工作台」
+            # 同一条纪律（空库里没有任何用户取值，但设置面必须可读）。
             self._conn.execute(
-                "INSERT INTO workspace_settings(id, locale, message_density, updated_at) "
-                "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                (DEFAULT_LOCALE, DEFAULT_MESSAGE_DENSITY, utc_now()),
+                "INSERT INTO workspace_settings(id, locale, message_density, theme, updated_at) "
+                "VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                (DEFAULT_LOCALE, DEFAULT_MESSAGE_DENSITY, DEFAULT_THEME, utc_now()),
             )
 
     # ─── 事务助手 ──────────────────────────────────────────────────────────
@@ -946,6 +986,123 @@ class Database:
                 raise
         return self.get_agent(member_id)
 
+    def update_agent(
+        self,
+        member_id: str,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        model_id: str | None = None,
+        system_prompt: str | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
+
+        校验先于写入：**任一字段不合法则整体不改**（与 ``create_agent`` /
+        ``update_workspace_settings`` 同一偏序——没有「一半新一半旧」的中间态）。``model_id`` 的
+        **形状**校验（provider 白名单）由服务层在进到本层之前完成；本层只判与持久化同构的判据
+        （空值 / 长度）。
+
+        它只写 ``member.display_name`` 与 ``agent_config`` 那一行（后者由 ``create_agent`` 在同一
+        事务里创建，因此本写路径没有「缺行」的中间态）：**不落消息、不唤醒、不消耗任何预算、
+        也不开世代**——配置变更不是一次对话动作（ADR-0011）。
+        """
+        self.get_agent(member_id)  # 存在性 + 「必须是 Agent」：不是就抛 NotFound
+        clean = {
+            "display_name": None if display_name is None else (display_name or "").strip(),
+            "role": None if role is None else (role or "").strip(),
+            "model_id": None if model_id is None else (model_id or "").strip(),
+            "system_prompt": None if system_prompt is None else (system_prompt or "").strip(),
+        }
+
+        fields: dict[str, str] = {}
+        if clean["display_name"] is not None:
+            if not clean["display_name"]:
+                fields["display_name"] = self._render_copy("error.field.agent_name_empty")
+            elif len(clean["display_name"]) > MAX_MEMBER_NAME_LENGTH:
+                fields["display_name"] = self._render_copy(
+                    "error.field.agent_name_too_long", limit=MAX_MEMBER_NAME_LENGTH
+                )
+        if clean["model_id"] is not None:
+            if not clean["model_id"]:
+                fields["model_id"] = self._render_copy("error.model_id_empty")
+            elif len(clean["model_id"]) > MAX_MODEL_ID_LENGTH:
+                fields["model_id"] = self._render_copy(
+                    "error.field.model_id_too_long", limit=MAX_MODEL_ID_LENGTH
+                )
+        if clean["role"] is not None and len(clean["role"]) > MAX_AGENT_ROLE_LENGTH:
+            fields["role"] = self._render_copy("error.field.role_too_long", limit=MAX_AGENT_ROLE_LENGTH)
+        if clean["system_prompt"] is not None and len(clean["system_prompt"]) > MAX_SYSTEM_PROMPT_LENGTH:
+            fields["system_prompt"] = self._render_copy(
+                "error.field.system_prompt_too_long", limit=MAX_SYSTEM_PROMPT_LENGTH
+            )
+        if fields:
+            raise DomainError(
+                "validation_failed", self._render_copy("error.agent_update_invalid"), fields=fields
+            )
+
+        with self._lock:
+            self._begin()
+            try:
+                if clean["display_name"] is not None:
+                    self._conn.execute(
+                        "UPDATE member SET display_name = ? WHERE id = ?",
+                        (clean["display_name"], member_id),
+                    )
+                # `COALESCE` 就是「没提到的字段保持原值」这条部分更新语义的落点：它让「只写该写的」
+                # 与「绝不部分写入」在**同一条语句**里成立，不靠 Python 侧拼 SQL。
+                self._conn.execute(
+                    "UPDATE agent_config SET "
+                    "role = COALESCE(?, role), "
+                    "model_id = COALESCE(?, model_id), "
+                    "system_prompt = COALESCE(?, system_prompt), "
+                    "enabled = COALESCE(?, enabled), "
+                    "updated_at = ? WHERE member_id = ?",
+                    (
+                        clean["role"],
+                        clean["model_id"],
+                        clean["system_prompt"],
+                        None if enabled is None else int(bool(enabled)),
+                        utc_now(),
+                        member_id,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        # 读回落库后的那一份（不是把入参回显出去）：调用方看到的是**持久化事实**。
+        return self.get_agent(member_id)
+
+    def agent_stats(self, member_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """按成员聚合的**只读既有事实**（Agent 概览页每个数字的唯一来源）——不新增数据面。
+
+        - ``channel_count``：它是成员的 **channel 型 target** 数（``target_member`` 与 ``target.kind``）；
+        - ``round_count``：它的 ``round_outcome`` 行数（参与过的轮次），append-only 事实；
+        - ``completed_task_count``：指派给它且 ``status='done'`` 的 ``task`` 行数；
+        - ``replied_count`` / ``verdict_count``：成功率的两项（``replied`` ÷ 有结论的轮次
+          ``replied|ignored|failed``）。``merged``（不是它的决定）与 ``budget-exhausted``
+          （根本没跑起来）**不计入**分母。
+
+        三处读的都是**行级事实**，不读内存、不做推断：后端重启后读数逐字不变。
+        ``member_id`` 为 ``None`` 时一次聚合全部成员（列表面用它，避免 N+1 查询）——两条路径共用
+        同一条语句（过滤是 ``AGENT_STATS_*_SQL`` 里的 ``:member_id IS NULL OR …``），因此不存在
+        第二份只差一个 ``WHERE`` 的拷贝。
+        """
+        args = {"member_id": member_id}
+        stats: dict[str, dict[str, Any]] = {}
+        with self._lock:
+            for row in self._conn.execute(AGENT_STATS_CHANNEL_SQL, args).fetchall():
+                stats.setdefault(row["member_id"], {})["channel_count"] = int(row["n"])
+            for row in self._conn.execute(AGENT_STATS_ROUND_SQL, args).fetchall():
+                entry = stats.setdefault(row["member_id"], {})
+                entry["round_count"] = int(row["n"])
+                entry["replied_count"] = int(row["replied"] or 0)
+                entry["verdict_count"] = int(row["verdicts"] or 0)
+            for row in self._conn.execute(AGENT_STATS_TASK_SQL, args).fetchall():
+                stats.setdefault(row["member_id"], {})["completed_task_count"] = int(row["n"])
+        return stats
+
     # ─── 远端数据流告知（按模型提供商一次性确认） ────────────────────────
     def list_remote_consents(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -991,17 +1148,19 @@ class Database:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT locale, message_density, updated_at FROM workspace_settings WHERE id = 1"
+                "SELECT locale, message_density, theme, updated_at FROM workspace_settings WHERE id = 1"
             ).fetchone()
         if row is None:
             return {
                 "locale": DEFAULT_LOCALE,
                 "message_density": DEFAULT_MESSAGE_DENSITY,
+                "theme": DEFAULT_THEME,
                 "updated_at": "",
             }
         return {
             "locale": row["locale"],
             "message_density": row["message_density"],
+            "theme": row["theme"],
             "updated_at": row["updated_at"],
         }
 
@@ -1009,6 +1168,7 @@ class Database:
         self,
         locale: str | None = None,
         message_density: str | None = None,
+        theme: str | None = None,
     ) -> dict[str, Any]:
         """部分更新工作区设置（``None`` = 这一档没被这次请求提到，保持原值）。
 
@@ -1023,18 +1183,22 @@ class Database:
             fields["message_density"] = self._render_copy(
                 "error.field_choices", values=", ".join(MESSAGE_DENSITIES)
             )
+        if theme is not None and theme not in THEMES:
+            fields["theme"] = self._render_copy("error.field_choices", values=", ".join(THEMES))
         if fields:
             raise DomainError("validation_failed", self._render_copy("error.settings_invalid"), fields=fields)
         with self._lock:
             current = self.workspace_settings()
             self._conn.execute(
-                "INSERT INTO workspace_settings(id, locale, message_density, updated_at) "
-                "VALUES (1, ?, ?, ?) "
+                "INSERT INTO workspace_settings(id, locale, message_density, theme, updated_at) "
+                "VALUES (1, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET locale = excluded.locale, "
-                "message_density = excluded.message_density, updated_at = excluded.updated_at",
+                "message_density = excluded.message_density, theme = excluded.theme, "
+                "updated_at = excluded.updated_at",
                 (
                     current["locale"] if locale is None else locale,
                     current["message_density"] if message_density is None else message_density,
+                    current["theme"] if theme is None else theme,
                     utc_now(),
                 ),
             )

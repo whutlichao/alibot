@@ -120,6 +120,41 @@ mint, peach, lemon, and a lotus grey used for "you". Every tint clears 7.1:1 aga
 the deep plum ink. Avatar tiles are 7px-radius squares, not circles — a deliberate
 differentiator from chat products.
 
+### Dark value layer
+
+The same token names carry a **second value set** for dark mode — no renames, no new
+hues, hue angles unchanged. Read `decisions/ADR-0017-dark-value-layer.md` for the
+decision and the measured readings; the operating rules are:
+
+- **Selection has two branches.** Explicit tiers use the marker on the root element
+  (`<html data-theme="light|dark">`); the *follow system* tier uses the media query:
+
+  ```css
+  :root[data-theme='dark'] { … }
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme='system'], :root:not([data-theme]) { … }
+  }
+  ```
+
+  `color-scheme` follows the same two branches, so native controls (scrollbars,
+  `<select>` popups) match the layer rather than the OS.
+- **`fill` tiers are identical in both tiers.** The macaron pastels (the bare
+  `--accent` / `--selected` / `--unread` / `--warn`, the four presence `-fill`s and
+  `--av-0…--av-4`) keep their light values; dark mode moves the **ink** instead:
+  `--on-accent` is pinned to the deep plum in both tiers, so "a `fill` tier is only
+  ever paired with `--on-accent`" holds unchanged and every such pair keeps its light
+  contrast reading.
+- **Text and graphic tiers flip.** `deep` (text, ≥4.5:1) and `graphic` (ring / dot /
+  boundary, ≥3:1) take light-of-hue values against the dark paper; the bare presence
+  names (`--online` / `--working` / `--error` / `--offline`) are graphic tiers there.
+- **Elevation too.** `tokens.css` carries dark values for the three shadow tokens: a
+  low-alpha plum shadow is invisible on dark paper, so the dark layer raises the
+  alpha and lowers the lightness, keeping layered surfaces legible.
+- **One duplication, by necessity.** CSS cannot hang one declaration block on both an
+  attribute selector and a media query, so each dark set appears twice per file —
+  change both. `decisions/ADR-0017` records this as the decision's only maintenance
+  cost.
+
 ## 3. Typography
 
 One system sans for everything, one monospace for anything numeric or structural.
@@ -301,7 +336,10 @@ Do **not**:
 
 ### Known gaps (honest placeholders)
 
-The source prototype implements no skeletons/spinners for async content, no dark
-theme, and no image binaries (avatars are initial tiles). No logo/icon font files
-exist in the source; the brand mark and icon sprite in `assets/` and `build/` were
-reconstructed as SVG from the inline vector paths found in the source HTML.
+The source prototype implements no skeletons/spinners for async content and no image
+binaries (avatars are initial tiles). Dark mode is **no longer** one of these gaps:
+this package now ships a dark value layer over the same token-name set (see §2 "Dark
+value layer" and `decisions/ADR-0017-dark-value-layer.md`) — something the source
+prototype never had. No logo/icon font files exist in the source; the brand mark and
+icon sprite in `assets/` and `build/` were reconstructed as SVG from the inline vector
+paths found in the source HTML.

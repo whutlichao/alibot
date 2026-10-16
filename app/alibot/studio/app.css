@@ -104,11 +104,14 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .presence.offline { background: var(--offline); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .presence.working { animation: none; } }
-/* 方形头像块（7px 圆角，不是圆形）+ --av-0…--av-4 确定性色位。 */
+/* 方形头像块（7px 圆角，不是圆形）+ --av-0…--av-4 确定性色位。
+   墨色用**填充档的墨** `--on-accent`（不是 `--fg`）：头像块的底是 fill 档（`--av-*`），
+   按档位纪律 fill 只与 `--on-accent` 配对；浅色档两者同值（`--on-accent = var(--fg)`），
+   因此浅色档读数一字不变，深色档才不会出现「浅墨压浅底」。 */
 .avatar {
   width: var(--avatar-md); height: var(--avatar-md); flex: 0 0 var(--avatar-md);
   border-radius: 7px; display: grid; place-items: center;
-  font-size: 11px; font-weight: var(--fw-black); color: var(--fg); overflow: hidden;
+  font-size: 11px; font-weight: var(--fw-black); color: var(--on-accent); overflow: hidden;
 }
 .avatar.sm { width: var(--avatar-sm); height: var(--avatar-sm); flex-basis: var(--avatar-sm); font-size: 10px; }
 .av-0 { background: var(--av-0); } .av-1 { background: var(--av-1); } .av-2 { background: var(--av-2); }
@@ -339,9 +342,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .dock-role { font-size: var(--fs-caption); color: var(--muted); margin-top: var(--sp-1); }
 
 /* ─── 模态 ────────────────────────────────────────────────────────────── */
+/* 遮罩必须**两档都暗**：浅色档 `--on-accent` 与 `--fg` 同值（深梅墨），深色档 `--fg` 是浅墨、
+   用它做遮罩会得到一层发白的雾，所以这里取 `--on-accent`（两档都暗的那支墨）。 */
 .overlay {
   position: fixed; inset: 0; z-index: var(--z-overlay); display: grid; place-items: start center;
-  padding: 12vh var(--sp-7) var(--sp-10); background: color-mix(in oklch, var(--fg) 42%, transparent);
+  padding: 12vh var(--sp-7) var(--sp-10); background: color-mix(in oklch, var(--on-accent) 42%, transparent);
   backdrop-filter: blur(2px);
 }
 .modal {
@@ -354,6 +359,50 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .modal-body { padding: 0 var(--sp-8) var(--sp-2); }
 .modal-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-8) var(--sp-7); }
 .modal-foot .sep { flex: 1; }
+
+/* ─── dock 形态 C：Agent 详情（概览 / 运行时） ────────────────────────────
+   形态与 `.task-thread` 同构（竖直 flex 撑满容器）。`.dock-tabs` / `.kv` / `.stat-grid`
+   的形状照设计系统切片 `screens/agent-detail.html`（:71-73 页签、:86-104 的 `.d-sec` 与四格），
+   但只消费本仓已有的 token 名：零裸色值、不新造色位。 */
+.agent-detail { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.agent-detail .dock-role { display: flex; align-items: center; gap: var(--sp-3); }
+.dock-tabs {
+  display: flex; gap: var(--sp-2); padding: var(--sp-4) var(--sp-6) 0;
+  border-bottom: 1px solid var(--border);
+}
+.dock-tab {
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-sm) var(--r-sm) 0 0;
+  color: var(--muted); font-size: var(--fs-sm); font-weight: var(--fw-semi);
+  border-bottom: 2px solid transparent;
+}
+.dock-tab:hover { color: var(--fg); }
+/* 当前页签用 `--selected` 族（与 `.rail` 的当前位置同一档位语义）。 */
+.dock-tab.is-active { color: var(--fg); border-bottom-color: var(--selected-graphic); }
+
+/* 一行「键 / 值」：键是 mono 小字（与 `.d-sec-title` 同一语汇），值靠左对齐撑满。 */
+.kv { display: flex; align-items: baseline; gap: var(--sp-4); padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.kv:last-child { border-bottom: 0; }
+.kv .k { flex: 0 0 74px; color: var(--faint); font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide); text-transform: uppercase; }
+.kv .v { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
+/* 四个数字（订阅频道数 / 消息处理数 / 完成任务数 / 成功率）：数字等宽、标签小字。 */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+.stat { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5); background: var(--panel); }
+.stat .n { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--fs-body-lg); font-weight: var(--fw-black); color: var(--fg); }
+.stat .l { font-size: var(--fs-caption); color: var(--muted); margin-top: var(--sp-2); }
+/* 系统提示是**多行文本**：保留换行，不让它被折成一段（它是配置数据的原文）。 */
+.prompt-body {
+  font-size: var(--fs-sm); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere;
+  border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5);
+  background: var(--panel); max-height: 220px; overflow-y: auto;
+}
+.agent-actions { display: flex; gap: var(--sp-4); }
+.agent-actions .btn { flex: 1; }
+/* 成员面板里**打开详情**的那个控件：它是名字本身（卡片里已有「加入」按钮，不能嵌套按钮）。 */
+.dock-member-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--fg); text-align: left;
+}
+.dock-member-name:hover { color: var(--accent-deep); text-decoration: underline; }
 
 /* ─── 成员名册（频道成员的只读全名单） ──────────────────────────────────
    弹窗骨架沿用既有 `.overlay` / `.modal`（不新造一套）；这里只有两件事：
@@ -504,6 +553,14 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .toast.err { background: var(--error-fill); color: var(--on-accent); }
 .toast .dot { width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--online); }
 .toast.err .dot { background: var(--on-accent); }
+/* 深色档：toast 的底是 `--fg`（反相浅片），`--online` 这个**图形档**压在其上只有 2.06:1，
+   低于 `SKILL.md` §5 的 ≥3:1（浅色档同一点是 3.32:1）。深色档把点换成 toast 自己声明的墨色
+   `--bg`（与 `.toast { color: var(--bg) }` 同一支墨，14.36:1）；浅色档一字不动。 */
+:root[data-theme='dark'] .toast .dot { background: var(--bg); }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .toast .dot,
+  :root:not([data-theme]) .toast .dot { background: var(--bg); }
+}
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 

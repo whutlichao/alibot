@@ -3,7 +3,7 @@
 端点（浏览器只经这里读写，业务正本在后端单文件库）：
 
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
-- ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度）
+- ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度 / 主题）
 - ``PATCH /api/settings``                     写工作区设置（配置类取值；不落消息、不唤醒、不消耗预算）
 - ``POST /api/attachments``                   上传一个**未绑定**的附件（原始字节；返回标识与元数据）
 - ``GET  /api/attachments/{id}``              已绑定附件的内容（下载 / 预览；草稿 404）
@@ -183,6 +183,33 @@ class AgentCreate(BaseModel):
     system_prompt: str = ""
 
 
+class AgentUpdate(BaseModel):
+    """Agent 配置的**部分**更新（ADR-0011 的唯一写路径）。
+
+    字段缺省 = 这次请求没提到这一项（保持原值）；未知键由 ``extra="forbid"`` **整体拒绝**。
+    **显式 ``null`` 不是「没提到」**：它既不是字段取值也不是合法取值，因此同样整体拒绝，
+    而不是被静默当成一次成功的空更新（与 `SettingsUpdate` 同一条纪律）。
+
+    ``auto_claim`` **不在本票**（它属 #65）：那时只需在这个模型上加一列、在服务层多一个入参。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = None
+    role: str | None = None
+    model_id: str | None = None
+    system_prompt: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("display_name", "role", "model_id", "system_prompt", "enabled", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
+        if value is None:
+            raise _TierValueError("error.agent_field_null")
+        return value
+
+
 class RemoteConsent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -223,19 +250,22 @@ class SettingsUpdate(BaseModel):
 
     未知键由 ``extra="forbid"`` **整体拒绝**（``validation_failed``），不静默忽略：
     把设置面当成通用 key-value 存储正是 `CONTEXT.md` **工作区设置** 的 `_Avoid_`；
-    档位取值由服务层按 ``LOCALES`` / ``MESSAGE_DENSITIES`` 校验，错误体仍是既有的
+    档位取值由服务层按 ``LOCALES`` / ``MESSAGE_DENSITIES`` / ``THEMES`` 校验，错误体仍是既有的
     ``code`` + ``fields`` 形态。字段缺省 = 这一次请求没提到这一档（保持原值）。
 
     **显式 ``null`` 不是「没提到」**：它既不是档位取值、也不是合法档位，因此同样整体拒绝，
-    而不是被当成一次成功的空更新（`null` 与「这一档保持原值」是两件事，后者由**省略字段**表达）。
+    而不是被当成一次成功的空更新（``null`` 与「这一档保持原值」是两件事，后者由**省略字段**表达）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     locale: str | None = None
     message_density: str | None = None
+    # 主题三档（#71）：显式浅色 / 显式深色 / 跟随系统。它是**配置类**取值，与另外两档走同一条
+    # 读写路径；三档的**取值层**（深色 token）在设计系统包里，与本端点无关。
+    theme: str | None = None
 
-    @field_validator("locale", "message_density", mode="before")
+    @field_validator("locale", "message_density", "theme", mode="before")
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
         """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
@@ -390,10 +420,10 @@ def create_app(
     def get_health() -> dict[str, Any]:
         return {"status": "ok", "member_id": OWNER_ID, "data_dir": str(app.state.data_dir)}
 
-    # ─── 工作区设置（配置类取值：语言偏好 / 消息密度） ────────────────────
+    # ─── 工作区设置（配置类取值：语言偏好 / 消息密度 / 主题） ────────────────
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
-        """工作区设置（**语言偏好** / **消息密度**）。正本是库内的那一行。"""
+        """工作区设置（**语言偏好** / **消息密度** / **主题**）。正本是库内的那一行。"""
         return {"settings": service.settings()}
 
     @app.patch("/api/settings")
@@ -405,7 +435,9 @@ def create_app(
         """
         return {
             "settings": service.update_settings(
-                locale=payload.locale, message_density=payload.message_density
+                locale=payload.locale,
+                message_density=payload.message_density,
+                theme=payload.theme,
             )
         }
 
@@ -581,6 +613,28 @@ def create_app(
     @app.get("/api/agents/{member_id}")
     def get_agent(member_id: str) -> dict[str, Any]:
         return {"agent": service.agent(member_id)}
+
+    @app.patch("/api/agents/{member_id}")
+    def update_agent(member_id: str, payload: AgentUpdate) -> dict[str, Any]:
+        """编辑 Agent 配置（人类面唯一写路径，ADR-0011）。
+
+        可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled``；任一字段
+        不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套校验与**远端数据流告知**
+        语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写 `enabled = 0`，不改唤醒面）。
+
+        配置变更**不落消息、不唤醒、不消耗预算、不开世代**——它不是一次「发言」。响应形状与
+        ``POST /api/agents`` 同形（``agent`` + ``agents`` + ``members``），前端一次调用就能刷新
+        详情、左栏与成员面板。
+        """
+        agent = service.update_agent(
+            member_id,
+            display_name=payload.display_name,
+            role=payload.role,
+            model_id=payload.model_id,
+            system_prompt=payload.system_prompt,
+            enabled=payload.enabled,
+        )
+        return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
     @app.get("/api/agents/{member_id}/status")
     def get_agent_status(member_id: str) -> dict[str, Any]:
@@ -852,12 +906,16 @@ def create_app(
 
     @app.api_route(
         "/api/agents/{member_id}",
-        methods=["PUT", "PATCH", "DELETE"],
+        methods=["PUT", "DELETE"],
         include_in_schema=False,
     )
     def no_agent_mutation(member_id: str) -> JSONResponse:
-        """本票没有改配置 / 删 Agent 的端点：模型与系统提示是配置数据，改配置的方式是新建。"""
-        return _not_found(_render_copy("error.agent_config_immutable"))
+        """Agent 是成员行，只能创建与编辑（编辑走上面的 ``PATCH``）：本票没有删除端点。
+
+        ``PUT`` 也不留：整体替换一个配置对象会绕开「部分更新」这条显式的语义（每个字段缺省
+        即保持原值，而整体替换里缺省就是清空），两者混在一个路径上迟早会被读错。
+        """
+        return _not_found(_render_copy("error.agent_delete_unsupported"))
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
     app.mount("/studio", StaticFiles(directory=str(studio_dir()), html=True), name="studio")
