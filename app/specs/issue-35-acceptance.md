@@ -1,6 +1,6 @@
 # Issue #35 定稿与拆票验收取证
 
-规格正本：[#35](https://github.com/whutlichao/alibot/issues/35)。本文件记录本轮可复核事实与真实 tracker 回执；最终 PR / 提交 / Answer 回执在完成后追加。
+规格正本：[#35](https://github.com/whutlichao/alibot/issues/35)。本文件记录本轮可复核事实与真实 tracker 回执；最终分支 head 以 #35 的唯一 `## Answer` 评论所核对的 PR 读数为准。
 
 - 仓库：`whutlichao/alibot`
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-35-silence-spec`
@@ -38,6 +38,18 @@ https://github.com/whutlichao/alibot/issues/58
 ```
 
 #58 已确认 `ready-for-agent`，Parent 为 #35，OPEN；标题修正后的正文仍以 `Part of #35` 开头。
+
+### 新票数量与父子关系复核
+
+开票前 open issue 编号为 `[55, 54, 53, 35, 31, 1]`；开票后新增的只有 #57 与 #58：
+
+```console
+$ gh issue list --state open --json number,title,labels --limit 100 --jq '[.[] | select(.number == 57 or .number == 58) | {number,title,labels:[.labels[].name]}]'
+[{"labels":["ready-for-agent"],"number":58,"title":"实施票：结构化沉默信号 silent + RoundOutcome 互斥校验"},{"labels":["ready-for-agent"],"number":57,"title":"实施票：Agent 旁白 prompt 纪律改写 + 呈现层降档"}]
+
+$ gh api repos/whutlichao/alibot/issues/35/sub_issues --jq '[.[].number]'
+[57,58]
+```
 
 ### GitHub 原生依赖 ① → ②
 
@@ -136,4 +148,23 @@ $ git diff --check
 (no output; exit 0)
 ```
 
-PR 与最终提交信息由后续提交补入本文件；唯一的 `## Answer` issue 评论在 PR head 最终确定后追加。未运行源码测试。
+## Commit、push 与 PR 回执
+
+```console
+$ git commit -m "docs(spec): finalize #35 silence decisions and tickets"
+[issue-35-silence-spec 348472f] docs(spec): finalize #35 silence decisions and tickets
+ 5 files changed, 283 insertions(+), 567 deletions(-)
+ create mode 100644 docs/adr/0008-structured-silence-is-a-distinct-round-outcome.md
+
+$ git push -u origin issue-35-silence-spec
+ * [new branch]      issue-35-silence-spec -> issue-35-silence-spec
+branch 'issue-35-silence-spec' set up to track 'origin/issue-35-silence-spec'.
+
+$ gh pr create --base main --head issue-35-silence-spec --title "docs(spec): #35 finalize silence decisions and split implementation tickets" --body-file app/specs/issue-35-pr-body.md
+https://github.com/whutlichao/alibot/pull/59
+
+$ gh pr view 59 --json number,state,url,baseRefName,headRefName,headRefOid,body,files --jq '{number,state,url,baseRefName,headRefName,headRefOid,files:[.files[].path],bodySections:[.body|split("\n")[]|select(startswith("## "))]}'
+{"baseRefName":"main","bodySections":["## Summary","## Evidence","## Merge Danger"],"files":["CONTEXT.md","app/specs/issue-35-acceptance.md","app/specs/issue-35-pr-body.md","app/specs/issue-35-spec.md","docs/adr/0008-structured-silence-is-a-distinct-round-outcome.md"],"headRefName":"issue-35-silence-spec","headRefOid":"348472f8b886acc4e2fc664cea3baa3f25c68434","number":59,"state":"OPEN","url":"https://github.com/whutlichao/alibot/pull/59"}
+```
+
+PR body 正本：`app/specs/issue-35-pr-body.md`（使用 `--body-file`）。此读数核对的是 PR 创建时的 commit；后续验收文档提交会推进 head，因此不把会自指漂移的最终 SHA 写进本文件，最终 head 由唯一的 #35 `## Answer` 评论记录。未运行源码测试。
