@@ -1322,15 +1322,28 @@ async function refreshTaskDetails(taskId) {
 
 /** 新建任务：弹窗形态（原型 `#btnNewTask` → `openNewTask()`），字段收窄为
     「标题 + 所属频道」——与搬过来的内联表单采集的字段等价，不借机新增输入路径。
-    这里的频道下拉是**所属频道**（任务的归属），不是看板的筛选。 */
-function openTaskModal() {
+    这里的频道下拉是**所属频道**（任务的归属），不是看板的筛选。
+
+    `prefillTitle` 只有「作为任务发送」那条路径会传（规格决策 D6）：它同时充当「任务建成后是否
+    清空 composer」的标记——看板工具栏的 `#btnNewTask` 不带正文，因此不会清空输入框。 */
+function openTaskModal(prefillTitle) {
+  forTaskFromComposer = typeof prefillTitle === 'string';
   $('#taskFormError').hidden = true;
-  $('#taskCreateTitle').value = '';
+  $('#taskCreateTitle').value = forTaskFromComposer ? prefillTitle : '';
   const select = $('#taskCreateChannel');
   fillTaskChannelSelect(select, false, state.activeChannelId || '');
   $('#taskCreateSubmit').disabled = !state.online || state.channels.length === 0;
   $('#taskOverlay').hidden = false;
   $('#taskCreateTitle').focus();
+}
+
+/** 「作为任务发送」（工具行）是否正带着 composer 正文：任务建成后要清空 composer（D6）。 */
+let forTaskFromComposer = false;
+
+/** 工具行「作为任务发送」：打开**既有**新建任务弹窗，把 composer 正文预填为标题、当前频道预选。
+    确认走既有的 `POST /api/channels/{id}/tasks`（`submitTask`），取消则 composer 一字不动。 */
+function openTaskFromComposer() {
+  openTaskModal($('#composerInput').value);
 }
 
 function closeTaskModal() {
@@ -1355,6 +1368,10 @@ async function submitTask() {
   try {
     const payload = await api(channelPath(channelId, '/tasks'), { method: 'POST', body: { title } });
     closeTaskModal();
+    if (forTaskFromComposer) {
+      forTaskFromComposer = false;
+      resetComposerInput(); // D6：正文已变成任务标题，成功后不再留在输入框里。
+    }
     // 新任务要能看见：把筛选放到「能让它可见」的那一档，而不是让它落在一个被筛掉的频道之外。
     if (!state.taskFilterChannelId || state.taskFilterChannelId === channelId) {
       await refreshTasks();
@@ -1550,12 +1567,8 @@ function sendMessage() {
     author: state.member,
   };
   state.pending.push(pending);
-  input.value = '';
-  autosizeComposer();
+  resetComposerInput();
   renderMessages();
-  syncSendButton();
-  // 正文已经清空：清单不能留在屏上（它描述的是刚被送出的那段前缀）。
-  closeMentionPicker();
   scrollToBottom();
   deliver(pending);
 }
@@ -2456,6 +2469,17 @@ function syncSendButton() {
     !$('#composerInput').value.trim() || !state.online || !activeTarget() || state.mode !== 'channel';
 }
 
+/** 清空主 composer 的输入区：正文、自适应高度、发送键、候选清单一起收。
+    两条路径共用同一件事「正文已经不在输入框里了」：消息送出（`sendMessage`）与
+    「作为任务发送」成功把正文变成任务标题（D6）。 */
+function resetComposerInput() {
+  $('#composerInput').value = '';
+  autosizeComposer();
+  syncSendButton();
+  // 清单描述的是刚消失的那段前缀，不能留在屏上。
+  closeMentionPicker();
+}
+
 /* ─── @ 补全：清单只找候选 + 按解析器的引号规则拼字符串（前端不解析提及） ──────
    分工：候选来自后端的频道成员表（`GET /api/channels/{id}/members`），插入的字符串按
    `alibot/mentions.py` 的规则拼；正文到底是不是提及**只由后端**裁决（`mention_snapshot`
@@ -2759,6 +2783,21 @@ function chooseMention(member) {
     return;
   }
   insertMention(name);
+}
+
+/** 工具行「@提及」：与原型 `alibot-app.html:1798` 同构——向输入框**追加** `@`、聚焦、激活发送键。
+    随后弹出的候选仍是**既有**的 `@` 补全（`updateMentionPicker()` → `renderMentionPicker()`），
+    这里不新写第二套候选逻辑，也不改候选集（仍只列当前 target 的 Agent 成员）。 */
+function mentionFromToolbar() {
+  const input = $('#composerInput');
+  if (!input) return;
+  input.value += '@';
+  const caret = input.value.length;
+  input.focus();
+  input.setSelectionRange(caret, caret);
+  autosizeComposer();
+  syncSendButton();
+  updateMentionPicker();
 }
 
 /* ─── 新建频道 ──────────────────────────────────────────────────────── */
@@ -3199,7 +3238,7 @@ function bindEvents() {
   });
 
   // 新建任务：弹窗形态（标题 + 所属频道）。
-  $('#btnNewTask').addEventListener('click', openTaskModal);
+  $('#btnNewTask').addEventListener('click', () => openTaskModal());
   $('#taskCreateCancel').addEventListener('click', closeTaskModal);
   $('#taskModalClose').addEventListener('click', closeTaskModal);
   $('#taskCreateSubmit').addEventListener('click', submitTask);
@@ -3309,6 +3348,9 @@ function bindEvents() {
     chooseMention(member);
   });
   $('#btnSend').addEventListener('click', sendMessage);
+  // composer 工具行：@提及 复用既有补全；作为任务发送 打开既有弹窗并预填正文（D6）。
+  $('#btnMention').addEventListener('click', mentionFromToolbar);
+  $('#btnAsTask').addEventListener('click', openTaskFromComposer);
 
   // 成员面板里的「加入」：一个控件一个成员，点击后把它加入当前频道。
   $('#dockMembers').addEventListener('click', (event) => {
