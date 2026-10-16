@@ -8,10 +8,11 @@
 再用 SQL 把那一个频道的 target 作用域数据**搬回旧表名并删掉新表行**，复现相同的缺行形态。
 历史 v4 事故的版本号事实如上；当前代码仍由 schema 闸门拒绝旧版本，不会把这组测试当作迁移。
 
-**为什么这条入口存在**：ADR-0015 规定迁移是**显式命令**、启动路径不自动迁移（它取代了 ADR-0004 的
-「不做旧数据迁移」口径），但没规定「已被半改名的库怎么办」。本入口**不是**自动迁移：它只在用户显式跑
-``python -m alibot --repair-targets`` 时执行，正常启动路径一行都不会碰它
-（``test_normal_startup_never_repairs_anything`` 钉住这一点）。
+**这条入口的今天**：``--repair-targets`` 自 #94 起是 ``--migrate`` 的**弃用别名**（ADR-0015 §五 /
+规格 D11）——显式触发时先打一句「请改用 ``--migrate``」，随后走同一条「形态步骤 + 逐版链」、同一个
+退出码。本文件仍直接测 ``repair.repair_target_rows`` 这个**补齐原语**（它是链前形态步骤共用的那份
+列映射的独立可调用实现）；别名与迁移入口的**等价性**另见 ``test_repair_targets_alias.py``。任何正常
+启动路径都不会自动迁移、也不会自动补齐（``test_normal_startup_never_repairs_anything`` 钉住这一点）。
 """
 
 from __future__ import annotations
@@ -419,8 +420,10 @@ def test_startup_path_does_not_import_the_repair_module() -> None:
 def test_cli_repair_reports_changes_then_reports_nothing_to_do(tmp_path: Path) -> None:
     """真实进程：``python -m alibot --repair-targets --data-dir <目录>``。
 
-    第一次报出补了哪些行、退出码 0；第二次报「改动 0 行」。``PYTHONPATH`` 指向本 worktree 的
-    ``app/``（本仓 ``.venv`` 是符号链接指向主仓，其 editable 的 ``.pth`` 指回主仓代码）。
+    本入口自 #94 起是 ``--migrate`` 的弃用别名：第一次先打一句弃用提示，随后与 ``--migrate`` 一样跑
+    「形态步骤 + 逐版链」，报出改动的行数、退出码 0；第二次已经是健康库，报「无事可做」。
+    ``PYTHONPATH`` 指向本 worktree 的 ``app/``（本仓 ``.venv`` 是符号链接指向主仓，其 editable 的
+    ``.pth`` 指回主仓代码）。
     """
     data_dir = tmp_path / "data"
     channel_id, _ = _accident(data_dir)
@@ -437,12 +440,13 @@ def test_cli_repair_reports_changes_then_reports_nothing_to_do(tmp_path: Path) -
 
     first = run()
     assert first.returncode == 0, first.stderr
-    assert "本次共补" in first.stdout
+    assert "请改用 --migrate" in first.stdout, "别名必须先打一句弃用提示"
+    assert "本次共改动" in first.stdout
     assert str(_db_path(data_dir)) in first.stdout
 
     second = run()
     assert second.returncode == 0, second.stderr
-    assert "本次改动 0 行" in second.stdout
+    assert "无事可做" in second.stdout
 
     # 真的修好了：频道面四件事都回来了。
     with backend(data_dir) as client:
@@ -450,14 +454,19 @@ def test_cli_repair_reports_changes_then_reports_nothing_to_do(tmp_path: Path) -
         assert client.get(f"/api/channels/{channel_id}/budget").status_code == 200
 
 
-def test_cli_repair_refuses_an_old_database_with_a_non_zero_exit_code(tmp_path: Path) -> None:
-    """旧库上跑修复入口 ⇒ 非 0 退出码 + stderr 说明（与启动路径同一个答复）。"""
+def test_cli_repair_refuses_a_library_below_the_supported_range(tmp_path: Path) -> None:
+    """低于支持范围的旧库（v2）跑别名 ⇒ 退出码 3 + stderr 说明（与启动路径、``--migrate`` 同一答复）。
+
+    别名自 #94 起把版本门放宽为 ``[3, SCHEMA_VERSION]``：``3``…``11`` 由它推进到终态（见
+    ``test_repair_targets_alias.py``），但**下限与方向都没放宽**——低于 3 的库仍由同一道闸门拒绝，
+    库不能被改动一个字节。
+    """
     data_dir = tmp_path / "data"
     with backend(data_dir) as client:
         create_agent(client, name="小明")
     conn = sqlite3.connect(_db_path(data_dir))
     try:
-        conn.execute("UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'")
+        conn.execute("UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'")
         conn.commit()
     finally:
         conn.close()
@@ -472,8 +481,9 @@ def test_cli_repair_refuses_an_old_database_with_a_non_zero_exit_code(tmp_path: 
         cwd=str(APP_DIR),
     )
 
-    assert completed.returncode != 0
+    assert completed.returncode == 3
     assert "拒绝：数据库的 schema 版本与本代码不匹配" in completed.stderr
+    assert "请改用 --migrate" in completed.stdout
     assert _row_counts(data_dir) == before
 
 

@@ -8,9 +8,9 @@
 两个**契约常量**（``DATABASE_FILE_NAME`` / ``SCHEMA_VERSION``）用于造 fixture 与断言。
 
 三条入口（无旗标启动 / ``--migrate`` / ``--repair-targets``）对同一个库必须给**同一个答复**：本文件
-直接断言三者的退出码相同、stderr 逐字相同。prior art：``app/tests/test_target_repair.py:419-474``
-（真实子进程跑 ``--repair-targets``）、``app/tests/test_schema_version_gate.py``（``tmp_path`` 里的
-真实库 fixture + sha256 / 表清单快照）。
+直接断言三者的退出码相同、stderr 逐字相同。prior art：``app/tests/test_target_repair.py`` 的
+``test_cli_repair_reports_changes_then_reports_nothing_to_do``（真实子进程跑 ``--repair-targets``）、
+``app/tests/test_schema_version_gate.py``（``tmp_path`` 里的真实库 fixture + sha256 / 表清单快照）。
 
 fixture 与被测代码**同源**：``tests/conftest.py`` 把本 worktree 的 ``app/`` 插到 ``sys.path`` 最前
 （本仓 ``.venv`` 是指向主仓的符号链接，其 editable ``.pth`` 默认指回主仓），子进程则经
@@ -156,8 +156,9 @@ ENTRY_POINTS: dict[str, Callable[[Path], list[str]]] = {
 # 不被本代码接受的库：版本低于 3 / 版本号缺失但有业务数据 / 认不出的号 / 未来版本。
 #
 # **注意**：``3``..``SCHEMA_VERSION - 1`` 现在由 ``--migrate`` **接受并推进**（迁移链覆盖
-# ``[3, SCHEMA_VERSION]``），因此不再是「拒绝」参数。启动路径与 ``--repair-targets`` 仍会拒绝这段
-# 区间里的库（放宽别名的版本门是 #94），所以「三条入口同一个答复」这条只对**真正不被接受**的库成立。
+# ``[3, SCHEMA_VERSION]``），因此不再是「拒绝」参数。``--repair-targets`` 自 #94 起是 ``--migrate``
+# 的弃用别名，同样接受这段区间（别名等价性见 ``test_repair_targets_alias.py``）；只剩**启动路径**
+# 仍按闸门拒绝它。所以「三条入口同一个答复」这条只对**真正不被接受**的库（本清单）成立。
 REJECTED_VERSIONS = [
     pytest.param("2", id="below-min-supported"),
     pytest.param(str(SCHEMA_VERSION + 1), id="future-version"),
