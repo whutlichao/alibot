@@ -43,17 +43,18 @@ AVATAR_SLOT_COUNT = 5
 
 # schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝启动**、
 # 不做迁移（ADR-0004）。号段由规格 #60 的协调裁定分配，实施票不得自行改号：
-#   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）已合并；**11 = 本票 #67（附件）**；
-#   10 = #71（`workspace_settings.theme` 新增一列）已合并；12 = #65（`auto_claim`）。
+#   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）已合并；9 = #67（附件）；
+#   10 = #71（`workspace_settings.theme` 新增一列）已合并；11 = #35 的 #58（结构化沉默）；
+#   12 = **本票 #65**（`agent_config.auto_claim` 与 `task.claimed_at` 各新增一列）。
 # 号段是**跨在途票的分配**而不是「每次 +1」：两个在途迁移撞号会让两边都以为自己的库是当前版本。
-# 本票的落地口径（补收尾纠正）：原预留的 9 取不到——#71 已把 10 落到 main，带着 9 合入会让
+# #67 的落地口径（补收尾纠正）：原预留的 9 取不到——#71 已把 10 落到 main，带着 9 合入会让
 # 版本号在历史上**不单调**（10 → 9），且被 v10 代码创建过的库在本版下会被闸门判为版本不符。
-# 正确判据是「**必须高于当前 main**」而不是「等于被分配的预留号」，故取 11（12 归 #65）。
-# main 上的旧注释曾把 11 预留给 #35 的 #58（结构化沉默）；该票尚未落地（main 读数 10），
-# 本票按协调者本次裁定的号段落地为 11。
-# 代价（已写进本票 PR 的 Merge Danger）：合入后 main 的号由 10 升到 11，被 9/10 代码创建过的库在本版下
-# 会被闸门拒绝——处置与既有纪律一致（备份该数据目录、换一个目录启动）。
-SCHEMA_VERSION = 11
+# 正确判据是「**必须高于当前 main**」而不是「等于被分配的预留号」，故 #67 取 11（12 归 #65）；
+# 该票已随 PR #83 落在 main（b619336），main 当前读数 11。
+# #65 的 12 高于当前 main 的 11，合并后**保持 12**（不回退到 11）。
+# 代价（与既有纪律一致）：合力后 main 的号由 11 升到 12，被 11 及更早代码创建过的库在本版下
+# 会被闸门拒绝——处置：备份该数据目录、换一个目录启动。
+SCHEMA_VERSION = 12
 
 # 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合——
 # **语言偏好** / **消息密度** / **主题**三档。列集就是「只有这些档位」这条约束的落点：
@@ -226,6 +227,11 @@ CREATE TABLE IF NOT EXISTS task (
   title              TEXT NOT NULL CHECK (length(trim(title)) > 0),
   status             TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'in_review', 'done', 'closed')),
   assignee_member_id TEXT REFERENCES member(id),
+  -- 认领标记（#65 / ADR-0010）：``NULL`` = 这张任务**从未被认领过**，非空 = 首次认领那一刻。
+  -- 它是「**每张任务至多一次**」这条构造性保证的落点：认领只看这个标记（而不是只看
+  -- ``assignee_member_id``），于是即便任务后来被取消指派，也不可能触发第二次世代推进与预算重置。
+  -- 它只记「认领发生过」，不记「认领了多久」：认领者是谁仍以 ``assignee_member_id`` 为准。
+  claimed_at         TEXT,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL,
   UNIQUE (target_id, id)
@@ -326,12 +332,15 @@ CREATE TABLE IF NOT EXISTS target_budget (
 
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
 -- role 是 Agent 的配置数据（用户输入原样落库），不是代码常量、也不折进系统提示。
+-- ``auto_claim``（#65 / ADR-0010）是「频道内新建任务后，编排要不要替它接手这张任务」的配置开关，
+-- **缺省关闭**（认领是显式选择，不是默认行为）；写入路径只有 ``PATCH /api/agents/{id}``。
 CREATE TABLE IF NOT EXISTS agent_config (
   member_id     TEXT PRIMARY KEY REFERENCES member(id),
   role          TEXT NOT NULL DEFAULT '',
   model_id      TEXT NOT NULL DEFAULT '',
   system_prompt TEXT NOT NULL DEFAULT '',
   enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  auto_claim    INTEGER NOT NULL DEFAULT 0 CHECK (auto_claim IN (0, 1)),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -439,7 +448,9 @@ END;
 # Agent 行的列清单（member 行 + agent_config 配置列）。三处查询共用：
 # 加一个配置列时只改这里，不会只改到其中一两处。
 # 三处 FROM/WHERE 各自保留（起点与过滤条件本就不同）—— #3 的双轴 review 已为这个形态裁决过。
-AGENT_COLUMNS = "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.updated_at AS config_updated_at"
+AGENT_COLUMNS = (
+    "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.auto_claim, c.updated_at AS config_updated_at"
+)
 
 # 由常量 ``AGENT_COLUMNS`` 拼出的 Agent 选取语句（**在模块级拼好**，不把拼接写进
 # ``execute`` 的实参：查询文本对静态检查是可见常量，也不是注入面）。
@@ -959,6 +970,7 @@ class Database:
             "model_id": row["model_id"] or "",
             "system_prompt": row["system_prompt"] or "",
             "enabled": bool(row["enabled"]) if row["enabled"] is not None else False,
+            "auto_claim": bool(row["auto_claim"]) if row["auto_claim"] is not None else False,
             "config_updated_at": row["config_updated_at"] if "config_updated_at" in keys else None,
         }
 
@@ -1033,6 +1045,7 @@ class Database:
         model_id: str | None = None,
         system_prompt: str | None = None,
         enabled: bool | None = None,
+        auto_claim: bool | None = None,
     ) -> dict[str, Any]:
         """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
 
@@ -1095,12 +1108,14 @@ class Database:
                     "model_id = COALESCE(?, model_id), "
                     "system_prompt = COALESCE(?, system_prompt), "
                     "enabled = COALESCE(?, enabled), "
+                    "auto_claim = COALESCE(?, auto_claim), "
                     "updated_at = ? WHERE member_id = ?",
                     (
                         clean["role"],
                         clean["model_id"],
                         clean["system_prompt"],
                         None if enabled is None else int(bool(enabled)),
+                        None if auto_claim is None else int(bool(auto_claim)),
                         utc_now(),
                         member_id,
                     ),
@@ -1496,6 +1511,7 @@ class Database:
             "title": row["title"],
             "status": row["status"],
             "assignee_member_id": row["assignee_member_id"],
+            "claimed_at": row["claimed_at"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -1716,6 +1732,80 @@ class Database:
                         "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
                         (target_id, seq),
                     )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_task(task_id), self.get_message(target_id, seq)
+
+    def claim_task(self, task_id: str, member_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """**认领**写路径（`CONTEXT.md` **认领** / ADR-0010）：把一张**尚未指派**的任务指派给认领者自己。
+
+        它与 :meth:`update_task_assignee` 是**两条不同的写路径**，不是同一端点的另一种用法：那条要求
+        ``previous_id == actor_member_id``（Agent 只能转派自己手上的任务），因此**直接拒绝** Agent 认领
+        未指派任务。认领的裁定在**编排**（谁认领、开不开开关、可不可用），这里只落**结构事实**：
+
+        1. 一条可读的 ``system`` 记录（**认领不是跳**：``system`` 记录不是对话回合，不触发通用唤醒）；
+        2. 认领者进入该任务 target 的 **target 成员**（与 owner 指派同一张表、同一个键）；
+        3. **首次认领开一次世代**：``epoch_seq`` = 那条 ``system`` 记录的 seq，``used`` 重置为 0
+           （按当世代生效的**回应预算上界**给回满额）。唤醒认领者是**指派这个动作**的载体效应，
+           由调用方走既有的 ``notify_task_assignment``（那条路径**不消耗跳数**）。
+
+        **每张任务至多一次**由 ``task.claimed_at`` 这条构造性保证封住——不靠界面不给按钮，也不靠
+        「任务恰好还指着某个指派者」：认领只在 ``claimed_at IS NULL`` 时成立，因此任务之后被取消指派
+        也不会再触发第二次世代推进与预算重置（这正是 ADR-0002 三跳上界仍然可执行的前提）。
+
+        不成立时是**幂等无操作**（返回 ``None`` 的消息，不推进世代、不改成员、不写记录），与
+        :meth:`update_task_assignee` 遇到「指派没变」时的收口同形——它会被编排在每次新建任务后调用，
+        「这次没人认领」是正常结果，不是错误。
+        """
+        agent = self.get_agent(member_id)  # 存在 + 「必须是 Agent」：认领者只能是一个活着的 Agent
+        if agent.get("deleted_at") is not None:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.assignee_not_agent"),
+                fields={"member_id": self._render_copy("error.field.assignee_not_agent")},
+            )
+        self.get_task(task_id)  # 404 早退
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT target_id, assignee_member_id, claimed_at FROM task WHERE id = ?", (task_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
+                target_id = str(row["target_id"])
+                if row["claimed_at"] is not None or row["assignee_member_id"] is not None:
+                    self._commit()
+                    return self.get_task(task_id), None
+                now = utc_now()
+                self._conn.execute(
+                    "UPDATE task SET assignee_member_id = ?, claimed_at = ?, updated_at = ? WHERE id = ?",
+                    (member_id, now, now, task_id),
+                )
+                self._conn.execute(
+                    "INSERT INTO target_member(target_id, member_id) VALUES (?, ?) "
+                    "ON CONFLICT(target_id, member_id) DO NOTHING",
+                    (target_id, member_id),
+                )
+                self._conn.execute(
+                    "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0) "
+                    "ON CONFLICT(member_id, target_id) DO NOTHING",
+                    (member_id, target_id),
+                )
+                seq = self._append_task_system_message_locked(
+                    target_id,
+                    self._render_copy("system.task.claimed", name=agent["display_name"]),
+                    now,
+                )
+                # 首次认领 = 该 task target 的一次开世代动作（ADR-0010 三）：世代标识是那条 system
+                # 记录的 seq（与 owner 指派同一个落点），用量按当世代生效的上界重置为满额。
+                self._conn.execute(
+                    "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
+                    "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
+                    (target_id, seq),
+                )
                 self._commit()
             except Exception:
                 self._rollback()

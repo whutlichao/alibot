@@ -242,6 +242,39 @@ class WakeOrchestrator:
         """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。"""
         return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=False)
 
+    def claim_new_task(self, task_id: str, channel_id: str) -> int:
+        """新建任务后由**编排**裁决认领（`CONTEXT.md` **认领** / ADR-0010）；返回是否认领（0 / 1）。
+
+        认领是**配置层的确定性规则，不是模型的判断**：Agent 不会「申请」认领，`auto_claim` 开关决定
+        编排要不要替它接手。候选 = 该**频道**里**可用**（``availability``：模型配置、启用态、凭证、
+        远端告知）且 ``auto_claim`` 开启的 Agent 成员，按创建顺序取**第一个**——一次只认领一个，
+        不抢、不重复指派。判别顺序与「谁会被唤醒」同族：不可用的 Agent 不参与裁决。
+
+        「**每张任务至多一次**」由 ``Database.claim_task`` 的 ``claimed_at`` 标记构造性保证；这里只做
+        「这次要不要动它」的早退，真正的把关在库层（并发下同一个任务不可能被开两次世代）。
+        认领唤醒认领者走既有的 ``notify_task_assignment``：与 owner 指派同一条路径，**不消耗跳数**。
+        """
+        task = self._db.get_task(task_id)
+        if task["assignee_member_id"] is not None or task["claimed_at"] is not None:
+            return 0
+        claimant = next(
+            (
+                agent
+                for agent in self._db.list_target_agent_members(channel_id)
+                if agent.get("auto_claim") and self.availability(agent).ok
+            ),
+            None,
+        )
+        if claimant is None:
+            return 0
+        claimed_task, message = self._db.claim_task(task_id, str(claimant["id"]))
+        if message is None:  # 与上面同一组前置条件；库层再判一次（幂等无操作）
+            return 0
+        target_id = str(claimed_task["target_id"])
+        self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
+        self.notify_task_assignment(target_id, int(message["seq"]), str(claimant["id"]))
+        return 1
+
     def notify_task_reassignment(self, target_id: str, from_seq: int, member_id: str) -> int:
         """Agent 转派按一次有界 agent→agent 跳处理；预算耗尽时保留记录但不唤醒。"""
         return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=True)

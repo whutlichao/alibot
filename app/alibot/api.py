@@ -193,7 +193,8 @@ class AgentUpdate(BaseModel):
     **显式 ``null`` 不是「没提到」**：它既不是字段取值也不是合法取值，因此同样整体拒绝，
     而不是被静默当成一次成功的空更新（与 `SettingsUpdate` 同一条纪律）。
 
-    ``auto_claim`` **不在本票**（它属 #65）：那时只需在这个模型上加一列、在服务层多一个入参。
+    ``auto_claim``（#65 / ADR-0010）是「自动认领任务」开关，与 ``enabled`` 一样是**布尔配置**：
+    ``true`` 打开、``false`` 关闭，缺省 = 这次不提它。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -203,8 +204,11 @@ class AgentUpdate(BaseModel):
     model_id: str | None = None
     system_prompt: str | None = None
     enabled: bool | None = None
+    auto_claim: bool | None = None
 
-    @field_validator("display_name", "role", "model_id", "system_prompt", "enabled", mode="before")
+    @field_validator(
+        "display_name", "role", "model_id", "system_prompt", "enabled", "auto_claim", mode="before"
+    )
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
         """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
@@ -666,9 +670,11 @@ def create_app(
     def update_agent(member_id: str, payload: AgentUpdate) -> dict[str, Any]:
         """编辑 Agent 配置（人类面唯一写路径，ADR-0011）。
 
-        可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled``；任一字段
-        不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套校验与**远端数据流告知**
-        语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写 `enabled = 0`，不改唤醒面）。
+        可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
+        ``auto_claim``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
+        `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
+        新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
 
         配置变更**不落消息、不唤醒、不消耗预算、不开世代**——它不是一次「发言」。响应形状与
         ``POST /api/agents`` 同形（``agent`` + ``agents`` + ``members``），前端一次调用就能刷新
@@ -681,6 +687,7 @@ def create_app(
             model_id=payload.model_id,
             system_prompt=payload.system_prompt,
             enabled=payload.enabled,
+            auto_claim=payload.auto_claim,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 

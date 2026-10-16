@@ -227,7 +227,16 @@ class WorkspaceService:
         return self._db.list_tasks(channel_id=channel_id, member_id=self._member_id)
 
     def create_task(self, channel_id: str, title: str) -> dict[str, Any]:
+        """新建任务；随后由**编排**裁决认领（`CONTEXT.md` **认领** / ADR-0010）。
+
+        认领不是 HTTP 面的一个动作，也不扩大**成员面适配接缝**的输出形状（仍是「零或多条待落库回复
+        + 一个轮次结果」）：裁定与落库都在后端，模型不经手。没人认领（开关关着 / 没有可用 Agent /
+        这张任务已被认领过）时读回的 `task` 与不认领逐字相同。
+        """
         task = self._db.create_task(channel_id=channel_id, title=title)
+        if self._orchestrator is not None:
+            self._orchestrator.claim_new_task(task["id"], channel_id)
+            task = self._db.get_task(task["id"])
         return {"task": task, "target": self._db.get_target(task["target_id"])}
 
     def task(self, task_id: str) -> dict[str, Any]:
@@ -403,6 +412,7 @@ class WorkspaceService:
         model_id: str | None = None,
         system_prompt: str | None = None,
         enabled: bool | None = None,
+        auto_claim: bool | None = None,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -413,6 +423,10 @@ class WorkspaceService:
 
         「暂停」就是本方法上的 ``enabled=False``：它写 `enabled = 0`，**不改唤醒面**（ADR-0011）。
         任一字段不合法则整体不写（校验先于写入）。
+
+        ``auto_claim``（#65 / ADR-0010）就是「**自动认领任务**」开关：它写 `agent_config.auto_claim`，
+        编排在**新建任务之后**读它决定要不要替这个 Agent 接手；与其它配置字段同一条纪律——不落消息、
+        不唤醒、不消耗预算、不开世代。它**只**影响之后新建的任务，不回填、不改已指派的任务。
         """
         locale = self._locale()
         if model_id is not None:
@@ -430,6 +444,7 @@ class WorkspaceService:
             model_id=model_id,
             system_prompt=system_prompt,
             enabled=enabled,
+            auto_claim=auto_claim,
         )
         return self.agent(member_id)
 

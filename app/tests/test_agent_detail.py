@@ -46,6 +46,7 @@ def test_patch_writes_every_writable_field_and_reads_it_back(client: TestClient)
         model_id="ollama:qwen3",
         system_prompt="你只回答一句话。",
         enabled=False,
+        auto_claim=True,
     )
 
     assert response.status_code == 200
@@ -56,9 +57,12 @@ def test_patch_writes_every_writable_field_and_reads_it_back(client: TestClient)
     assert written["model_id"] == "ollama:qwen3"
     assert written["system_prompt"] == "你只回答一句话。"
     assert written["enabled"] is False
+    assert written["auto_claim"] is True
     # 响应与后续两个读面说的是同一件事（读回一致，不是回显入参）。
     assert detail(client, agent["id"])["display_name"] == "新名字"
+    assert detail(client, agent["id"])["auto_claim"] is True
     assert [item["display_name"] for item in agents(client)] == ["新名字"]
+    assert [item["auto_claim"] for item in agents(client)] == [True]
     # 响应形状与 `POST /api/agents` 同形：一次调用就能刷新详情、左栏与成员面板。
     assert body["members"] and body["agents"]
 
@@ -93,19 +97,22 @@ def test_invalid_model_id_rejects_the_whole_request_without_partial_write(client
 def test_unknown_and_null_fields_are_rejected_whole(client: TestClient) -> None:
     agent = create_agent(client, name="原名").json()["agent"]
 
-    # `auto_claim` 属 #65：本票的写路径上它仍然是未知键（连同合法字段一起整体拒绝）。
-    unknown = patch_agent(client, agent["id"], auto_claim=True, display_name="不该生效")
+    # 未知键整体拒绝（连同同一请求里的合法字段一起）——`auto_claim` 从 #65 起是可写字段，
+    # 因此这里举一个本形态不存在的键。
+    unknown = patch_agent(client, agent["id"], dedupe=True, display_name="不该生效")
     assert unknown.status_code == 400
     assert unknown.json()["error"]["code"] == "validation_failed"
 
-    # 显式 `null` 不是「没提到」：它既不是字段取值，也不是合法取值。
-    explicit_null = patch_agent(client, agent["id"], enabled=None)
-    assert explicit_null.status_code == 400
-    assert "body" in explicit_null.json()["error"]["fields"]
+    # 显式 `null` 不是「没提到」：它既不是字段取值，也不是合法取值（`auto_claim` 同样是布尔配置）。
+    for field in ("enabled", "auto_claim"):
+        explicit_null = patch_agent(client, agent["id"], **{field: None})
+        assert explicit_null.status_code == 400
+        assert "body" in explicit_null.json()["error"]["fields"]
 
     current = detail(client, agent["id"])
     assert current["display_name"] == "原名"
     assert current["enabled"] is True
+    assert current["auto_claim"] is False
 
 
 def test_pause_writes_enabled_zero_with_a_readable_reason_and_resume_restores(client: TestClient) -> None:
