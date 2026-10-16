@@ -1668,15 +1668,23 @@ function settleDockFallback() {
 }
 
 /** 关闭 dock 的任务线程，回到**另一个仍打开着**的形态（卡片与线程都留在看板上）。
-    落点判据与关闭 Agent 详情完全共用（`settleDockFallback()`）：有频道才回「频道成员」，
-    否则收起 dock。 */
+
+    落点判据与关闭 Agent 详情共用（`settleDockFallback()`），但**只在这次确实在关一条线程时**才走它：
+    切搜索 / 切看板 / 切消息流（ESC / M / T / 命令面板）也调这个函数，那些调用点只是「顺手确保
+    线程关着」，并没有人在关 dock 里的东西 —— 它们的既有行为是**不碰 dock 的开合**（桌面 dock 是
+    常驻列，ESC 不管它），因此这里原样保留。
+
+    于是「有频道 → 频道成员；否则收起」这条规则只落在两个**真的**在关闭的入口上：
+    `#btnThreadClose`（以及 `openTask()` 的失败回退）与 `#btnAgentDetailClose`。 */
 function closeTaskDock() {
   closeTaskStream();
+  const hadThread = Boolean(state.activeTaskId);
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
   state.taskSeenSeqs = new Set();
-  settleDockFallback();
+  if (hadThread) settleDockFallback();
+  else setDockMode(state.activeAgentId ? 'detail' : 'agent');
 }
 
 function taskMaxSeq() {

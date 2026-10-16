@@ -300,7 +300,7 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__agentDetailTest = { state, bindEvents, renderMembers, renderDock,"
-        + " openAgentDetail, closeAgentDetail, closeTaskDock, toggleDock, setDockMode,"
+        + " openAgentDetail, closeAgentDetail, closeTaskDock, toggleDock, setDockMode, showMessagesView,"
         + " setAgentDetailTab, renderAgentDetail,"
         + " toggleAgentEnabled, openAgentEditModal, closeAgentEditModal, submitAgentEdit, t };\n",
     ),
@@ -850,7 +850,9 @@ test("本票新增的文案在两份词条里都取到值", () => {
    ① 有任务线程打开着 → 任务线程；② 否则当前有打开的频道 → 频道成员；
    ③ 否则（没有任何 target / 只打开着 DM / `activeChannelId` 指向已不存在的频道）→ 收起 dock，
    `#dock.hidden === true` 且不带 `.is-open`，不把成员面板留在右侧。
-   关闭任务线程走同一条规则。显式入口（`toggleDock()`）不受频道影响。 */
+   关闭任务线程走同一条规则，但**只在这次确实在关一条线程时**才生效——切搜索 / 切看板 / 切消息流
+   也调 `closeTaskDock()`，那些调用点不碰 dock 的开合（改前行为保留）。
+   显式入口（`toggleDock()`）不受频道影响。 */
 
 /** 把工作台镜像摆成「没有频道」：`channels` 空、`activeChannelId` 为 `null`。 */
 function withoutChannels(harness) {
@@ -950,6 +952,28 @@ test("切主视图先走 closeTaskDock()：已打开的详情不被顶掉（导�
   assert.equal(harness.dock.hidden, false, "详情还在，dock 不该被导航动作收起");
   assert.equal(harness.dockDetail.hidden, false, "落点仍是详情形态");
   assert.equal(harness.api.state.activeAgentId, "mem-1");
+});
+
+test("切消息流不是「在关 dock 里的东西」：无频道时也不收起人显式打开的面板", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  withoutChannels(harness);
+
+  // 人显式点开「切换详情面板」：没有频道，面板里是空态提示。
+  harness.api.toggleDock();
+  harness.api.renderDock();
+  assert.equal(harness.dock.hidden, false, "显式打开后面板是开着的");
+  assert.equal(harness.dock.classList.contains("is-open"), true);
+
+  // 切消息流（ESC / M / 命令面板的「消息视图」都落到 `showMessagesView()`；它先调 `closeTaskDock()`）。
+  // 选它而不是 `showSearchView()` / `showTaskBoard()`：它是最短的导航路径——不做网络刷新
+  // （看板那条 `await refreshTasks()`）、也不抢焦点（搜索那条要 focus 输入框），因此这条断言只钉
+  // 「导航不碰 dock 开合」这一个变量。
+  await harness.api.showMessagesView();
+
+  assert.equal(harness.dock.hidden, false, "没有东西在被关闭，dock 的开合一个字不动");
+  assert.equal(harness.dock.classList.contains("is-open"), true, "`.is-open` 也原样保留");
+  assert.equal(harness.api.state.activeTaskId, null, "线程仍然是关着的");
 });
 
 test("显式入口不受频道影响：没有频道时点开关仍打开 dock 并显示空态提示", async () => {
