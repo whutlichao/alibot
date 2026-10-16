@@ -19,11 +19,14 @@ def search(
     client: TestClient,
     query: str,
     *,
+    facet: str | None = None,
     target_id: str | None = None,
     limit: int | None = None,
 ) -> dict:
     """通过公开搜索面读取命中；测试不自行扫描正文或重算高亮。"""
     params: dict[str, str | int] = {"q": query}
+    if facet is not None:
+        params["facet"] = facet
     if target_id is not None:
         params["target_id"] = target_id
     if limit is not None:
@@ -52,6 +55,7 @@ def test_workspace_search_covers_channel_dm_and_task_and_can_be_limited_to_one_t
     hits = search(client, "nEeDlE")["hits"]
     by_target = {hit["target"]["id"]: hit for hit in hits}
 
+    assert {hit["kind"] for hit in hits} == {"message"}
     assert set(by_target) == {channel["id"], dm["id"], task["target_id"]}
     assert by_target[channel["id"]]["message"]["id"] == channel_message["id"]
     assert by_target[channel["id"]]["target"] == {
@@ -86,6 +90,8 @@ def test_search_returns_all_backend_highlight_ranges_and_uses_strict_substring_m
     hits = search(client, "aLpHa")["hits"]
     assert hits == [
         {
+            "kind": "message",
+            "text": "Alpha alpha ALPHA",
             "message": {
                 **message,
                 "author": {**message["author"], "deleted": False},
@@ -209,3 +215,120 @@ def test_search_does_not_turn_an_invalid_target_into_zero_hits(client: TestClien
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_search_covers_messages_tasks_and_agents_with_one_hit_shape(client: TestClient) -> None:
+    """三类命中各自可查到（ADR-0013），且返回形状统一：kind / text / 区间 / 来源。"""
+    channel = create_channel(client, name="检索频道").json()["channel"]
+    agent = create_agent(client, name="检索助手", role="检索工程师").json()["agent"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "检索三类命中"}).json()["task"]
+    message = send(client, channel["id"], "检索：一条消息").json()["message"]
+
+    hits = search(client, "检索")["hits"]
+    by_kind = {hit["kind"]: hit for hit in hits}
+
+    assert set(by_kind) == {"message", "task", "agent"}
+    # 统一形状：四件共有事实在三条命中里一一对应。
+    for hit in hits:
+        assert set(hit) >= {"kind", "text", "highlight_ranges", "target"}
+        assert isinstance(hit["highlight_ranges"], list)
+    assert by_kind["message"]["message"]["id"] == message["id"]
+    assert by_kind["message"]["target"] == {
+        "id": channel["id"],
+        "kind": "channel",
+        "display_name": "检索频道",
+    }
+    assert by_kind["task"]["task"]["id"] == task["id"]
+    assert by_kind["task"]["task"]["status"] == "todo"
+    # 任务命中的来源是它所属的频道（不是任务 target）。
+    assert by_kind["task"]["target"] == {
+        "id": channel["id"],
+        "kind": "channel",
+        "display_name": "检索频道",
+    }
+    assert by_kind["agent"]["agent"]["id"] == agent["id"]
+    assert by_kind["agent"]["agent"]["role"] == "检索工程师"
+    # Agent 不挂任何 target：来源是 ``null``，对象标识在 ``agent`` 里。
+    assert by_kind["agent"]["target"] is None
+
+
+def test_search_facet_filters_each_hit_kind_alone(client: TestClient) -> None:
+    """facets 是**后端**过滤参数：每一档只返回该类，`all` 才返回三类。"""
+    channel = create_channel(client, name="筛选频道").json()["channel"]
+    create_agent(client, name="筛选助手", role="筛选工程师")
+    client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "筛选任务标题"})
+    send(client, channel["id"], "筛选消息正文")
+
+    for facet, expected in (
+        ("message", ["message"]),
+        ("task", ["task"]),
+        ("agent", ["agent"]),
+    ):
+        hits = search(client, "筛选", facet=facet)["hits"]
+        assert [hit["kind"] for hit in hits] == expected
+    assert {hit["kind"] for hit in search(client, "筛选", facet="all")["hits"]} == {
+        "message",
+        "task",
+        "agent",
+    }
+
+
+def test_search_rejects_an_unknown_facet(client: TestClient) -> None:
+    response = client.get("/api/search", params={"q": "needle", "facet": "members"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_failed"
+
+
+def test_search_task_and_agent_hits_carry_backend_ranges_for_every_match(
+    client: TestClient,
+) -> None:
+    """任务 / Agent 命中的可呈现文本与区间同样由后端给出（前端不自行找位置）。"""
+    channel = create_channel(client).json()["channel"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "令牌 banana 令牌"}).json()[
+        "task"
+    ]
+    agent = create_agent(client, name="令牌助手", role="令牌工程师").json()["agent"]
+
+    hits = search(client, "令牌")["hits"]
+    task_hit = next(hit for hit in hits if hit["kind"] == "task")
+    agent_hit = next(hit for hit in hits if hit["kind"] == "agent")
+
+    assert task_hit["text"] == "令牌 banana 令牌"
+    assert task_hit["task"]["id"] == task["id"]
+    assert task_hit["highlight_ranges"] == [{"start": 0, "end": 2}, {"start": 10, "end": 12}]
+    # Agent 命中的可呈现文本是「显示名 · 角色」；角色命中时区间落在角色那一段上。
+    assert agent_hit["text"] == "令牌助手 · 令牌工程师"
+    assert agent_hit["highlight_ranges"] == [{"start": 0, "end": 2}, {"start": 7, "end": 9}]
+    assert agent_hit["agent"]["id"] == agent["id"]
+    assert agent_hit["agent"]["status"] in {"online", "working", "error", "offline"}
+
+
+def test_search_target_scope_returns_message_hits_only(client: TestClient) -> None:
+    """限定一个 target 时只搜该 target 的消息面：任务 / Agent 命中不适用于「这一个 target」。"""
+    channel = create_channel(client).json()["channel"]
+    create_agent(client, name="范围助手", role="范围工程师")
+    client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "范围任务"})
+    message = send(client, channel["id"], "范围消息").json()["message"]
+
+    hits = search(client, "范围", target_id=channel["id"])["hits"]
+
+    assert [(hit["kind"], hit["message"]["id"]) for hit in hits] == [("message", message["id"])]
+    assert search(client, "范围", facet="task", target_id=channel["id"])["hits"] == []
+    assert search(client, "范围", facet="agent", target_id=channel["id"])["hits"] == []
+
+
+def test_search_reports_a_range_for_every_message_hit_occurrence(client: TestClient) -> None:
+    """消息命中的**全部**位置都有区间：命中数与区间数逐条对齐（判据读数）。"""
+    channel = create_channel(client).json()["channel"]
+    single = send(client, channel["id"], "needle").json()["message"]
+    triple = send(client, channel["id"], "Needle needle NEEDLE").json()["message"]
+
+    hits = search(client, "needle")["hits"]
+
+    assert [hit["message"]["id"] for hit in hits] == [single["id"], triple["id"]]
+    assert [hit["highlight_ranges"] for hit in hits] == [
+        [{"start": 0, "end": 6}],
+        [{"start": 0, "end": 6}, {"start": 7, "end": 13}, {"start": 14, "end": 20}],
+    ]
+    assert sum(len(hit["highlight_ranges"]) for hit in hits) == 4
