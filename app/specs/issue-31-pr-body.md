@@ -1,92 +1,29 @@
 ## Summary
 
-规格票 ㉛：把「回应预算为什么是 3、能不能改」收敛成一张可实施的规格。**零源码改动**：产物是一张 issue
-（规格正本）+ 两份离线留档。
+定稿 issue #31 的回应预算规格，并将决定落盘为 glossary / ADR 与三张有依赖的实施票。
 
 ```text
-issue #31（Part of #1）        规格正本，标 ready-for-agent；正文 7 节 + 事实基线 F1–F6
-  ├─ 五条诉求  ① 预算可配置      → §2 落点候选 L1 env / L2 库内逐频道 / L3 工作区·成员级，逐条附代价
-  │            ② 页面上交给用户  → §3 显式待决 ①：W1 频道设置写端点 / W2 仅创建期 / W3 工作区 / W4 发言承载
-  │            ③ 重新定档位      → §4 显式待决 ②：T1 固定 / T2 按成员数 / T3 按成本 / T4 按用途；本票立场=默认值不改
-  │            ④ 补齐 ADR 依据    → §5 + Testing Decisions：token(`Msg.usage`) / 时延(round_outcome) / 金额，≥2 模型
-  │            ⑤ 调查结论        → 3 是 #1 拍板的策略参数，仓库无任何成本模型或对比实验
-  ├─ 六条事实   F1 db.py:48 `BUDGET_LIMIT = 3`（三面皆不可配置）
-  │            F2 口径是 agent→agent 跳；正本 channel_budget.used；唯一写点 _spend_jump
-  │            F3 人类世代 = 最近一条人类消息 seq；落库即重置满额
-  │            F4 耗尽零投递 + 每个被压制成员各一条 budget-exhausted
-  │            F5 把 3 当硬断言的用例在 test_bounded_relay.py（6 处行号 + 2 个测试名）
-  │            F6 来源 = `gh issue view 1` 边界第 2 条 + ADR-0002 + CONTEXT.md:138-167 五条词条
-  └─ 两个待决   写入口落在哪 / 新默认值怎么定 —— 各 4 候选带代价，规格不自行拍板
-
-app/specs/issue-31-spec.md        issue 正文逐字留档（tracker 仍是正本）
-app/specs/issue-31-acceptance.md  Answer 支撑材料：建票回执 / 读过文件清单 / 「改数必须新 ADR」判据
+CONTEXT.md（五条词条处置：四条泛化、跳口径不变） + ADR-0007（人类面只写上界）
+                         ↓
+issue #31 + app/specs/issue-31-spec.md（逐字一致的正本镜像）
+  ├─ #53 配置落点 + 只读呈现
+  ├─ #54 人类面写入口 + ADR            blocked by #53
+  └─ #55 ADR 实测依据 + 默认档位复核    blocked by #54
 ```
 
-**未动**：`app/alibot/**`、`app/tests/**`、`alibot-design-system/**`、`CONTEXT.md`、`docs/adr/**` ——
-本票的结论是「没有决议需要落盘」（默认值不改、不新增 ADR），五条词条与 ADR-0002 的处置**方式**写进规格的
-§6，交给真正改数的那一票执行。
+裁定为 W1 + L2（频道设置 `PATCH /api/channels/{id}/budget`、库内逐频道配置、缺省内置值）、固定档位 3 / 5 / 10 且默认仍 3；修改在下一人类世代生效。ADR-0002 保留原文，ADR-0007 只记录写入边界收窄。
 
-一处结构性未决项经 `orca orchestration ask` 取得 coordinator 裁定后执行：新票以
-`gh issue create --parent 1` 挂为 **#1 的 sub-issue**（与 #2/#3/#4/#8/#9/#12/#13/#14 同形态），
-且**不授权**对 #1 / #23 做任何写操作 —— #23 决策 G2 的「逐字不变（≤3）」措辞只在 #31 正文的 Further Notes
-里记为待同步项。
+**文件**：`CONTEXT.md`、`docs/adr/0007-human-face-writes-budget-limit-only.md`、`app/specs/issue-31-spec.md`、`app/specs/issue-31-acceptance.md`、本 PR body 文件。零生产代码与测试改动。
 
 ## Evidence
 
-**Before**（开工前的取证：三个面都是硬的）
-
-```console
-$ grep -rn "BUDGET_LIMIT" app/alibot/                                  # 结论：源码常量 + 唯一 import 点
-app/alibot/db.py:48:BUDGET_LIMIT = 3
-app/alibot/orchestration.py:50:from .db import BUDGET_LIMIT, Database, utc_now
-app/alibot/orchestration.py:250:            if state["used"] >= BUDGET_LIMIT:
-$ grep -rn "budget" app/alibot/studio/index.html                        # 结论：0 命中
-$ grep -rn "budget\|预算" alibot-design-system/                          # 结论：0 命中（原型无该控件）
-$ sed -n '397,404p' app/alibot/api.py                                   # 结论：写端点一律 404
-    @app.api_route("/api/channels/{channel_id}/budget",
-        methods=["PUT", "PATCH", "DELETE", "POST"], include_in_schema=False)
-    def no_budget_mutation(channel_id: str) -> JSONResponse:
-        """预算只由后端在「人类消息重置 / 一次跳投递」时推进：人类面不能直接改它。"""
-        return _not_found("回应预算只读：人类面不存在写入它的端点")
-```
-
-**After**（建票回执与正文读数，逐条可复核）
-
-```console
-$ gh issue create --parent 1 --title "规格票：回应预算为什么是 3、能不能改——…" \
-    --body-file /tmp/issue-budget-spec-body.md --label ready-for-agent
-https://github.com/whutlichao/alibot/issues/31
-
-$ gh issue view 31 --json number,labels,state --jq '{number,state,labels:[.labels[].name]}'
-{"labels":["ready-for-agent"],"number":31,"state":"OPEN"}
-
-$ gh issue view 1 --json subIssuesSummary --jq .subIssuesSummary
-{"completed":8,"percentCompleted":88,"total":9}          # 8 → 9：挂上 #1
-
-$ gh issue view 31 --json body --jq .body | grep -n '^## '   # 七节，顺序同 to-spec 模板
-9:## Problem Statement / 37:## Solution / 55:## User Stories / 129:## Implementation Decisions
-294:## Testing Decisions / 339:## Out of Scope / 355:## Further Notes
-
-$ tail -n +6 app/specs/issue-31-spec.md > /tmp/a.md
-$ gh issue view 31 --json body --jq .body > /tmp/b.md
-$ diff -q /tmp/a.md /tmp/b.md && echo "SPEC COPY == ISSUE BODY"
-SPEC COPY == ISSUE BODY ✅                                # 375 行 / 375 行逐字一致
-
-$ git status --short
-?? app/specs/issue-31-acceptance.md                      # 仅两份新增文档，无任何 .py/.js/.css/.html 改动
-?? app/specs/issue-31-spec.md
-```
-
-**门禁**：票型为规格票、门禁 **G-spec**。按票面「本票不跑源码测试（无源码改动）、不跑双轴 code-review
-（改的是票据与文档，不是 diff）、不跑 G-impl」执行 —— 因此证据是上面的只读取证读数、建票回执、正文结构与
-逐字留档核对，而不是测试输出。`to-spec` 的四步流程已按其原文走完（README/取证：`issue-31-acceptance.md` §0）。
+- **Before:** 上界是 `BUDGET_LIMIT = 3`；频道只有只读预算 GET，没有设置 UI 或人类面写入口。
+- **After:** `gh issue edit 31 --repo whutlichao/alibot --body-file ...` → `https://github.com/whutlichao/alibot/issues/31`；`diff -q` 验证 GitHub body 与离线规格正文逐字一致（stdout 为空，exit 0）。
+- **Tickets:** #53 / #54 / #55 均为 #31 sub-issue 且 `ready-for-agent`；`gh api .../issues/54 --jq .issue_dependencies_summary` → `{"blocked_by":1,"blocking":1,"total_blocked_by":1,"total_blocking":1}`；#55 → `{"blocked_by":1,"blocking":0,"total_blocked_by":1,"total_blocking":0}`。
+- **Gate:** `git diff --check` 通过；按任务限制未运行 `pytest`、`node --test`、双轴 code-review、G-impl 或任何实施动作。
 
 ## Merge Danger
 
-**Door:** two-way —— 合并的是两份 `app/specs/` 文档；规格正本在 issue #31（合并前已存在，不依赖本 PR）。
-回滚只需 revert 这两个文件，不影响 issue、不影响任何运行时行为。
+**Door:** two-way — 仅规格、词汇与决策记录；若需要调整，可通过新规格 / ADR 提交修订。ADR-0002 保持不变。
 
-**Blast Radius:** minimal —— 零生产代码、零测试、零设计系统、零 `CONTEXT.md` / `docs/adr/` 改动。
-唯一的外部副作用是 issue #31 的创建与它对 #1 的 sub-issue 归属，这两件事都不由本 PR 引入。
-唯一需要注意的下游影响：`app/specs/issue-31-spec.md` 是 issue 正文的**副本**，若日后修改 issue 正文
-而不同步该文件会形成分叉 —— 已在文件头写明「以 tracker 为准」。
+**Blast Radius:** documentation-only — 不改变运行时行为；三个实施 issue 在后续独立执行并按原生依赖排队。
