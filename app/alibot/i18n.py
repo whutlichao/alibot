@@ -24,10 +24,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Literal, cast
+
+# 已归一化的**语言偏好**取值：只有这两种能进入渲染（渲染取词条、缺取值会回落源语言）。
+# 外部入口是 `str | None`（库里的列、HTTP 载荷），归一化在 :func:`normalize_locale` 一处完成——
+# 于是「随便一个字符串当语言用」在类型层就被挡住，而不是靠约定。
+Locale = Literal["zh-CN", "en"]
 
 # 源语言：整张表的正本语言，也是「库内没有设置行 / 取值不认识」时的取值。
-SOURCE_LOCALE = "zh-CN"
+SOURCE_LOCALE: Locale = "zh-CN"
 
 # 两份取值。键的数量与名字由上面的纪律约束：两边必须逐一对应（测试逐个比对）。
 # 分组只是读数方便：``error.*`` 是 HTTP 错误面，``system.*`` 是落库的系统事件消息，
@@ -45,6 +50,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.messages_immutable": "消息不可编辑、不可删除：人类面不存在该端点",
         "error.agent_config_immutable": "Agent 配置不可编辑、不可删除：人类面不存在该端点",
         "error.request_body_invalid": "请求体校验未通过",
+        "error.field.body_invalid": "请求体不合法：{location}（{kind}）",
+        "error.tier_value_null": "档位取值不能为 null（要保留原值请省略该字段）",
         "availability.orchestrator_absent": "后端未启用成员面编排",
         "error.agent_transfer_needs_orchestrator": "Agent 转派任务需要启用成员面编排",
         "error.channel_member_join_failed": "加入频道校验未通过，未加入任何成员",
@@ -203,6 +210,8 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Agent configuration cannot be edited or deleted: the human surface has no such endpoint"
         ),
         "error.request_body_invalid": "Request body failed validation",
+        "error.field.body_invalid": "The request body is not valid: {location} ({kind})",
+        "error.tier_value_null": "A tier value cannot be null (omit the field to keep the current value)",
         "availability.orchestrator_absent": "The backend runs without the member-surface orchestrator",
         "error.agent_transfer_needs_orchestrator": (
             "An Agent handing a task to another Agent requires the member-surface orchestrator"
@@ -377,9 +386,9 @@ CATALOGS: dict[str, dict[str, str]] = {
 }
 
 
-def normalize_locale(locale: str | None) -> str:
+def normalize_locale(locale: str | None) -> Locale:
     """把任意取值收窄到一份已知取值：不认识（含 ``None`` / 空串）时取**源语言**。"""
-    return locale if locale in CATALOGS else SOURCE_LOCALE
+    return cast(Locale, locale) if locale in CATALOGS else SOURCE_LOCALE
 
 
 def render(key: str, locale: str | None, /, **params: Any) -> str:
@@ -394,7 +403,7 @@ def join_list(items: Iterable[str], locale: str | None, /) -> str:
     return render("common.list_sep", locale).join(items)
 
 
-def locale_of(db: Any) -> str:
+def locale_of(db: Any) -> Locale:
     """当前**语言偏好**：读库内的工作区设置（ADR-0009 第二层），不读请求头 / 环境变量。
 
     读库是决定性的：写 ``system`` 消息与 ``reason`` 的是唤醒编排，它跑在 HTTP 请求之外，

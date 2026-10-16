@@ -23,7 +23,7 @@ from .agent_seam import (
 )
 from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError
 from .events import EventBus
-from .i18n import join_list, locale_of, render
+from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
 
 if TYPE_CHECKING:
@@ -42,12 +42,12 @@ REMOTE_DATA_FACE_KEYS: tuple[str, ...] = (
 )
 
 
-def remote_data_faces(locale: str) -> tuple[str, ...]:
+def remote_data_faces(locale: Locale) -> tuple[str, ...]:
     """会离开本机的数据面（按**语言偏好**渲染；编排的可用性原因也读它，避免两处措辞漂移）。"""
     return tuple(render(key, locale) for key in REMOTE_DATA_FACE_KEYS)
 
 
-def model_id_error(model_id: str, locale: str) -> str | None:
+def model_id_error(model_id: str, locale: Locale) -> str | None:
     """模型标识的形状校验（``provider:model``）。返回错误文案（按语言偏好），通过则返回 None。"""
     clean = (model_id or "").strip()
     if not clean:
@@ -80,7 +80,7 @@ class WorkspaceService:
         self._events = events
 
     # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
-    def _locale(self) -> str:
+    def _locale(self) -> Locale:
         """当前**语言偏好**（库内的工作区设置）；本模块产出的自然语言一律经它渲染。"""
         return locale_of(self._db)
 

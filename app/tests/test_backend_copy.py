@@ -113,6 +113,41 @@ def test_http_error_message_and_field_values_follow_the_locale_while_keys_do_not
     )
 
 
+def test_request_body_validation_detail_follows_the_locale(client: TestClient) -> None:
+    """请求体校验失败时 ``fields.body`` 也是按偏好渲染的正文，不是 pydantic 的原始 repr。
+
+    前端 `readError` 会把 ``fields`` 的值拼进错误提示，因此这里放一段英文 repr 就等于在中文界面里
+    露出英文；而机器可读的**标识**（出错位置、pydantic 的错误类型）保持原样不译。
+    """
+    channel = create_channel(client).json()["channel"]["id"]
+
+    def readings(locale: str) -> tuple[dict, dict]:
+        use_locale(client, locale)
+        wrong_type = client.post(f"/api/channels/{channel}/messages", json={"body": 5}).json()["error"]
+        null_tier = client.patch("/api/settings", json={"locale": None}).json()["error"]
+        return wrong_type, null_tier
+
+    zh_wrong, zh_null = readings(ZH)
+    en_wrong, en_null = readings(EN)
+
+    for zh_error, en_error in ((zh_wrong, en_wrong), (zh_null, en_null)):
+        assert zh_error["code"] == en_error["code"] == "validation_failed"
+        assert set(zh_error["fields"]) == set(en_error["fields"])  # 键不译
+        assert zh_error["message"] != en_error["message"]
+        assert zh_error["fields"] != en_error["fields"]
+        # 正文是句子，不是 Python 结构：repr 里的那些键不再出现。
+        assert "msg" not in zh_error["fields"]["body"]
+        assert "loc" not in zh_error["fields"]["body"]
+        assert "input" not in zh_error["fields"]["body"]
+
+    # 出错位置与错误类型是**标识**：两种语言里逐字相同。
+    for body in (zh_wrong["fields"]["body"], en_wrong["fields"]["body"]):
+        assert "body.body" in body and "string_type" in body
+    # 自定义校验器（显式 null）带回词条键，由边界按偏好渲染成整句。
+    assert zh_null["fields"]["body"] == i18n.render("error.tier_value_null", ZH)
+    assert en_null["fields"]["body"] == i18n.render("error.tier_value_null", EN)
+
+
 def test_task_system_message_body_follows_the_locale_at_write_time(client: TestClient) -> None:
     """落库的 ``system`` 正文按**写入时**的语言偏好取值（两语言各产一条读回来比对）。"""
     channel = create_channel(client).json()["channel"]["id"]

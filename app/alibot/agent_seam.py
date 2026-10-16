@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 
-from .i18n import SOURCE_LOCALE, render
+from .i18n import SOURCE_LOCALE, Locale, render
 
 # provider 客户端上「可关闭入口」的候选方法名（协程）。顺序即探测顺序。
 _CLOSE_METHOD_NAMES = ("aclose", "close")
@@ -257,7 +257,7 @@ class AgentScopeAgentSeam:
         *,
         timeout_seconds: float = 120.0,
         environ: dict[str, str] | None = None,
-        locale_of: Callable[[], str] | None = None,
+        locale_of: Callable[[], Locale] | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
@@ -266,7 +266,7 @@ class AgentScopeAgentSeam:
         # 于是适配层自己不依赖库、也不读任何请求头（ADR-0009）。不注入时取源语言。
         self._locale_of = locale_of if locale_of is not None else (lambda: SOURCE_LOCALE)
 
-    def _locale(self) -> str:
+    def _locale(self) -> Locale:
         """当前**语言偏好**（由装配点注入的取值方式给出；默认源语言）。"""
         return self._locale_of()
 

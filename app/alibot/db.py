@@ -664,7 +664,7 @@ class Database:
             self._conn.execute("ROLLBACK")
 
     # ─── 可见文案（ADR-0009 第二层：按**库内**语言偏好渲染） ───────────────
-    def _copy(self, key: str, /, **params: Any) -> str:
+    def _render_copy(self, key: str, /, **params: Any) -> str:
         """本层产出的**用户可见**自然语言一律经它取值：HTTP 错误的 ``message`` / ``fields`` 的
         自然语言，以及落库的 ``system`` 消息正文。
 
@@ -684,8 +684,8 @@ class Database:
         if kind not in (None, "owner", "agent"):
             raise DomainError(
                 "validation_failed",
-                self._copy("error.unknown_member_kind", kind=kind),
-                fields={"kind": self._copy("error.field.member_kind_invalid")},
+                self._render_copy("error.unknown_member_kind", kind=kind),
+                fields={"kind": self._render_copy("error.field.member_kind_invalid")},
             )
         with self._lock:
             rows = self._conn.execute(
@@ -701,7 +701,7 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT * FROM member WHERE id = ?", (member_id,)).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.member_not_found", member_id=member_id))
+            raise NotFound(self._render_copy("error.member_not_found", member_id=member_id))
         return self._member_payload(row)
 
     @staticmethod
@@ -734,7 +734,7 @@ class Database:
                 (member_id,),
             ).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.agent_not_found", member_id=member_id))
+            raise NotFound(self._render_copy("error.agent_not_found", member_id=member_id))
         return self._agent_payload(row)
 
     @staticmethod
@@ -774,21 +774,23 @@ class Database:
 
         fields: dict[str, str] = {}
         if not clean_name:
-            fields["name"] = self._copy("error.field.agent_name_empty")
+            fields["name"] = self._render_copy("error.field.agent_name_empty")
         elif len(clean_name) > MAX_MEMBER_NAME_LENGTH:
-            fields["name"] = self._copy("error.field.agent_name_too_long", limit=MAX_MEMBER_NAME_LENGTH)
+            fields["name"] = self._render_copy(
+                "error.field.agent_name_too_long", limit=MAX_MEMBER_NAME_LENGTH
+            )
         if not clean_model:
-            fields["model_id"] = self._copy("error.model_id_empty")
+            fields["model_id"] = self._render_copy("error.model_id_empty")
         elif len(clean_model) > MAX_MODEL_ID_LENGTH:
-            fields["model_id"] = self._copy("error.field.model_id_too_long", limit=MAX_MODEL_ID_LENGTH)
+            fields["model_id"] = self._render_copy("error.field.model_id_too_long", limit=MAX_MODEL_ID_LENGTH)
         if len(clean_role) > MAX_AGENT_ROLE_LENGTH:
-            fields["role"] = self._copy("error.field.role_too_long", limit=MAX_AGENT_ROLE_LENGTH)
+            fields["role"] = self._render_copy("error.field.role_too_long", limit=MAX_AGENT_ROLE_LENGTH)
         if len(clean_prompt) > MAX_SYSTEM_PROMPT_LENGTH:
-            fields["system_prompt"] = self._copy(
+            fields["system_prompt"] = self._render_copy(
                 "error.field.system_prompt_too_long", limit=MAX_SYSTEM_PROMPT_LENGTH
             )
         if fields:
-            raise DomainError("validation_failed", self._copy("error.agent_invalid"), fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.agent_invalid"), fields=fields)
 
         with self._lock:
             if avatar_slot is None:
@@ -835,8 +837,8 @@ class Database:
         if not clean:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.field.provider_empty"),
-                fields={"provider": self._copy("error.field.provider_empty")},
+                self._render_copy("error.field.provider_empty"),
+                fields={"provider": self._render_copy("error.field.provider_empty")},
             )
         now = utc_now()
         with self._lock:
@@ -886,11 +888,13 @@ class Database:
         """
         fields: dict[str, str] = {}
         if locale is not None and locale not in LOCALES:
-            fields["locale"] = self._copy("error.field_choices", values=", ".join(LOCALES))
+            fields["locale"] = self._render_copy("error.field_choices", values=", ".join(LOCALES))
         if message_density is not None and message_density not in MESSAGE_DENSITIES:
-            fields["message_density"] = self._copy("error.field_choices", values=", ".join(MESSAGE_DENSITIES))
+            fields["message_density"] = self._render_copy(
+                "error.field_choices", values=", ".join(MESSAGE_DENSITIES)
+            )
         if fields:
-            raise DomainError("validation_failed", self._copy("error.settings_invalid"), fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.settings_invalid"), fields=fields)
         with self._lock:
             current = self.workspace_settings()
             self._conn.execute(
@@ -931,8 +935,8 @@ class Database:
         if status not in ROUND_STATUSES:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.unknown_round_status", status=status),
-                fields={"status": self._copy("error.field.round_status_invalid")},
+                self._render_copy("error.unknown_round_status", status=status),
+                fields={"status": self._render_copy("error.field.round_status_invalid")},
             )
         now = utc_now()
         outcome_id = new_id("round")
@@ -1005,7 +1009,7 @@ class Database:
                 "SELECT id, kind, created_at FROM target WHERE id = ?", (target_id,)
             ).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.target_not_found", target_id=target_id))
+            raise NotFound(self._render_copy("error.target_not_found", target_id=target_id))
         return {"id": row["id"], "kind": row["kind"], "created_at": row["created_at"]}
 
     # ─── 任务 ─────────────────────────────────────────────────────────────
@@ -1014,8 +1018,8 @@ class Database:
         if not clean_title:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.task_title_empty"),
-                fields={"title": self._copy("error.task_title_empty")},
+                self._render_copy("error.task_title_empty"),
+                fields={"title": self._render_copy("error.task_title_empty")},
             )
         self.get_channel(channel_id)  # 必须恰属于一个存在的 channel 型 target
 
@@ -1043,7 +1047,7 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
                     "mention_snapshot) VALUES (?, ?, 1, ?, 'system', ?, ?, '[]')",
-                    (new_id("msg"), target_id, OWNER_ID, self._copy("system.task.created"), now),
+                    (new_id("msg"), target_id, OWNER_ID, self._render_copy("system.task.created"), now),
                 )
                 self._commit()
             except Exception:
@@ -1059,7 +1063,7 @@ class Database:
                 (task_id,),
             ).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.task_not_found", task_id=task_id))
+            raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
         task = {
             "id": row["id"],
             "target_id": row["target_id"],
@@ -1093,7 +1097,7 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT id FROM task WHERE target_id = ?", (target_id,)).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.task_missing_for_target", target_id=target_id))
+            raise NotFound(self._render_copy("error.task_missing_for_target", target_id=target_id))
         return self.get_task(str(row["id"]))
 
     def list_task_messages(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
@@ -1118,8 +1122,8 @@ class Database:
         if status not in TASK_STATUSES:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.unknown_task_status", status=status),
-                fields={"status": self._copy("error.field.task_status_invalid")},
+                self._render_copy("error.unknown_task_status", status=status),
+                fields={"status": self._render_copy("error.field.task_status_invalid")},
             )
         actor = self.get_member(actor_member_id)
         self.get_task(task_id)  # 404 早退
@@ -1130,7 +1134,7 @@ class Database:
                     "SELECT target_id, status, assignee_member_id FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
-                    raise NotFound(self._copy("error.task_not_found", task_id=task_id))
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
                 current = str(row["status"])
                 target_id = str(row["target_id"])
                 if status == current:
@@ -1139,9 +1143,9 @@ class Database:
                 if status not in TASK_STATUS_TRANSITIONS[current]:
                     raise DomainError(
                         "validation_failed",
-                        self._copy("error.task_transition_invalid", current=current, target=status),
+                        self._render_copy("error.task_transition_invalid", current=current, target=status),
                         fields={
-                            "status": self._copy(
+                            "status": self._render_copy(
                                 "error.field.task_transition_invalid", current=current, target=status
                             )
                         },
@@ -1154,8 +1158,8 @@ class Database:
                 ):
                     raise DomainError(
                         "validation_failed",
-                        self._copy("error.task_self_approve"),
-                        fields={"status": self._copy("error.field.task_self_approve")},
+                        self._render_copy("error.task_self_approve"),
+                        fields={"status": self._render_copy("error.field.task_self_approve")},
                     )
                 now = utc_now()
                 self._conn.execute(
@@ -1163,7 +1167,9 @@ class Database:
                 )
                 seq = self._append_task_system_message_locked(
                     target_id,
-                    self._copy("system.task.status", status=self._copy(f"status.task.{status}")),
+                    self._render_copy(
+                        "system.task.status", status=self._render_copy(f"status.task.{status}")
+                    ),
                     now,
                 )
                 self._commit()
@@ -1177,8 +1183,8 @@ class Database:
         if not clean_title:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.task_title_empty"),
-                fields={"title": self._copy("error.task_title_empty")},
+                self._render_copy("error.task_title_empty"),
+                fields={"title": self._render_copy("error.task_title_empty")},
             )
         self.get_task(task_id)  # 404 早退
         with self._lock:
@@ -1188,7 +1194,7 @@ class Database:
                     "SELECT target_id, title FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
-                    raise NotFound(self._copy("error.task_not_found", task_id=task_id))
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
                 target_id = str(row["target_id"])
                 if clean_title == row["title"]:
                     self._commit()
@@ -1198,7 +1204,7 @@ class Database:
                     "UPDATE task SET title = ?, updated_at = ? WHERE id = ?", (clean_title, now, task_id)
                 )
                 seq = self._append_task_system_message_locked(
-                    target_id, self._copy("system.task.title", title=clean_title), now
+                    target_id, self._render_copy("system.task.title", title=clean_title), now
                 )
                 self._commit()
             except Exception:
@@ -1217,14 +1223,14 @@ class Database:
             except NotFound as exc:
                 raise DomainError(
                     "validation_failed",
-                    self._copy("error.assignee_missing"),
-                    fields={"member_id": self._copy("error.field.assignee_missing")},
+                    self._render_copy("error.assignee_missing"),
+                    fields={"member_id": self._render_copy("error.field.assignee_missing")},
                 ) from exc
             if assignee["deleted_at"] is not None or assignee["kind"] != "agent":
                 raise DomainError(
                     "validation_failed",
-                    self._copy("error.assignee_not_agent"),
-                    fields={"member_id": self._copy("error.field.assignee_not_agent")},
+                    self._render_copy("error.assignee_not_agent"),
+                    fields={"member_id": self._render_copy("error.field.assignee_not_agent")},
                 )
         self.get_task(task_id)  # 404 早退
         with self._lock:
@@ -1234,16 +1240,20 @@ class Database:
                     "SELECT target_id, assignee_member_id FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
-                    raise NotFound(self._copy("error.task_not_found", task_id=task_id))
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
                 target_id = str(row["target_id"])
                 previous_id = row["assignee_member_id"]
                 if actor["kind"] == "agent":
                     if actor["deleted_at"] is not None or previous_id != actor_member_id:
-                        raise DomainError("validation_failed", self._copy("error.transfer_not_assignee"))
+                        raise DomainError(
+                            "validation_failed", self._render_copy("error.transfer_not_assignee")
+                        )
                     if member_id is None:
-                        raise DomainError("validation_failed", self._copy("error.transfer_needs_target"))
+                        raise DomainError(
+                            "validation_failed", self._render_copy("error.transfer_needs_target")
+                        )
                 elif actor["kind"] != "owner":
-                    raise DomainError("validation_failed", self._copy("error.reassign_not_allowed"))
+                    raise DomainError("validation_failed", self._render_copy("error.reassign_not_allowed"))
                 if member_id == previous_id:
                     self._commit()
                     return self.get_task(task_id), None
@@ -1271,9 +1281,9 @@ class Database:
                         (member_id, target_id),
                     )
                 label = (
-                    self._copy("system.task.assignee", name=assignee["display_name"])
+                    self._render_copy("system.task.assignee", name=assignee["display_name"])
                     if assignee is not None
-                    else self._copy("system.task.unassigned")
+                    else self._render_copy("system.task.unassigned")
                 )
                 seq = self._append_task_system_message_locked(target_id, label, now)
                 if member_id is not None and actor["kind"] == "owner":
@@ -1301,14 +1311,14 @@ class Database:
         if kind not in TARGET_KINDS:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.unknown_target_kind", kind=kind),
-                fields={"kind": self._copy("error.field.target_kind_invalid")},
+                self._render_copy("error.unknown_target_kind", kind=kind),
+                fields={"kind": self._render_copy("error.field.target_kind_invalid")},
             )
         if kind == "channel":
             raise DomainError(
                 "validation_failed",
-                self._copy("error.channel_target_explicit"),
-                fields={"kind": self._copy("error.field.channel_target_explicit")},
+                self._render_copy("error.channel_target_explicit"),
+                fields={"kind": self._render_copy("error.field.channel_target_explicit")},
             )
         new_target_id = target_id or new_id("tgt")
         with self._lock:
@@ -1343,7 +1353,7 @@ class Database:
                 CHANNEL_SELECT_SQL, {"member_id": member_id, "channel_id": channel_id}
             ).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.channel_not_found", channel_id=channel_id))
+            raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
         return self._channel_payload(row)
 
     def create_dm(self, agent_id: str, owner_id: str = OWNER_ID) -> tuple[dict[str, Any], bool]:
@@ -1354,12 +1364,14 @@ class Database:
         if row is None or row["deleted_at"] is not None or row["kind"] != "agent":
             raise DomainError(
                 "validation_failed",
-                self._copy("error.dm_peer_invalid"),
-                fields={"agent_id": self._copy("error.field.dm_peer_invalid", member_id=clean_agent_id)},
+                self._render_copy("error.dm_peer_invalid"),
+                fields={
+                    "agent_id": self._render_copy("error.field.dm_peer_invalid", member_id=clean_agent_id)
+                },
             )
         owner = self.get_member(owner_id)
         if owner["kind"] != "owner":
-            raise DomainError("validation_failed", self._copy("error.dm_creator_not_owner"))
+            raise DomainError("validation_failed", self._render_copy("error.dm_creator_not_owner"))
 
         target_id: str
         created = False
@@ -1404,7 +1416,7 @@ class Database:
         with self._lock:
             row = self._conn.execute(DM_SELECT_SQL, {"member_id": member_id, "dm_id": dm_id}).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.dm_not_found", dm_id=dm_id))
+            raise NotFound(self._render_copy("error.dm_not_found", dm_id=dm_id))
         return self._dm_payload(row)
 
     @staticmethod
@@ -1477,15 +1489,17 @@ class Database:
 
         fields: dict[str, str] = {}
         if not clean_name:
-            fields["name"] = self._copy("error.field.channel_name_empty")
+            fields["name"] = self._render_copy("error.field.channel_name_empty")
         elif len(clean_name) > MAX_CHANNEL_NAME_LENGTH:
-            fields["name"] = self._copy("error.field.channel_name_too_long", limit=MAX_CHANNEL_NAME_LENGTH)
+            fields["name"] = self._render_copy(
+                "error.field.channel_name_too_long", limit=MAX_CHANNEL_NAME_LENGTH
+            )
         if len(clean_description) > MAX_CHANNEL_DESCRIPTION_LENGTH:
-            fields["description"] = self._copy(
+            fields["description"] = self._render_copy(
                 "error.field.channel_description_too_long", limit=MAX_CHANNEL_DESCRIPTION_LENGTH
             )
         if fields:
-            raise DomainError("validation_failed", self._copy("error.channel_invalid"), fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.channel_invalid"), fields=fields)
 
         self.get_member(creator_id)
         selected: list[dict[str, Any]] = []
@@ -1495,14 +1509,14 @@ class Database:
             if row is None or row["deleted_at"] is not None:
                 raise DomainError(
                     "validation_failed",
-                    self._copy("error.channel_invalid"),
-                    fields={"member_ids": self._copy("error.member_unavailable", member_id=member_id)},
+                    self._render_copy("error.channel_invalid"),
+                    fields={"member_ids": self._render_copy("error.member_unavailable", member_id=member_id)},
                 )
             if row["kind"] != "agent":
                 raise DomainError(
                     "validation_failed",
-                    self._copy("error.channel_invalid"),
-                    fields={"member_ids": self._copy("error.member_not_agent", member_id=member_id)},
+                    self._render_copy("error.channel_invalid"),
+                    fields={"member_ids": self._render_copy("error.member_not_agent", member_id=member_id)},
                 )
             selected.append(self._member_payload(row))
 
@@ -1589,21 +1603,23 @@ class Database:
         if kind not in MESSAGE_KINDS:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.unknown_message_kind", kind=kind),
-                fields={"kind": self._copy("error.field.message_kind_invalid")},
+                self._render_copy("error.unknown_message_kind", kind=kind),
+                fields={"kind": self._render_copy("error.field.message_kind_invalid")},
             )
         clean_body = (body or "").strip()
         if not clean_body:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.message_body_empty"),
-                fields={"body": self._copy("error.message_body_empty")},
+                self._render_copy("error.message_body_empty"),
+                fields={"body": self._render_copy("error.message_body_empty")},
             )
         if len(clean_body) > MAX_MESSAGE_BODY_LENGTH:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.message_body_too_long", limit=MAX_MESSAGE_BODY_LENGTH),
-                fields={"body": self._copy("error.message_body_too_long", limit=MAX_MESSAGE_BODY_LENGTH)},
+                self._render_copy("error.message_body_too_long", limit=MAX_MESSAGE_BODY_LENGTH),
+                fields={
+                    "body": self._render_copy("error.message_body_too_long", limit=MAX_MESSAGE_BODY_LENGTH)
+                },
             )
         self.get_target(target_id)  # 404 早退
         self.get_member(author_member_id)
@@ -1613,14 +1629,14 @@ class Database:
             except NotFound as exc:
                 raise DomainError(
                     "validation_failed",
-                    self._copy("error.task_ref_missing"),
-                    fields={"task_ref": self._copy("error.field.task_ref_missing")},
+                    self._render_copy("error.task_ref_missing"),
+                    fields={"task_ref": self._render_copy("error.field.task_ref_missing")},
                 ) from exc
             if referenced_task["target_id"] != target_id:
                 raise DomainError(
                     "validation_failed",
-                    self._copy("error.task_ref_other_target"),
-                    fields={"task_ref": self._copy("error.field.task_ref_other_target")},
+                    self._render_copy("error.task_ref_other_target"),
+                    fields={"task_ref": self._render_copy("error.field.task_ref_other_target")},
                 )
 
         message_id = new_id("msg")
@@ -1676,7 +1692,7 @@ class Database:
                 (target_id, seq),
             ).fetchone()
         if row is None:
-            raise NotFound(self._copy("error.message_not_found", target_id=target_id, seq=seq))
+            raise NotFound(self._render_copy("error.message_not_found", target_id=target_id, seq=seq))
         return self._message_payload(row)
 
     @staticmethod
@@ -1904,8 +1920,8 @@ class Database:
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             raise DomainError(
                 "validation_failed",
-                self._copy("error.seq_invalid"),
-                fields={"seq": self._copy("error.seq_invalid")},
+                self._render_copy("error.seq_invalid"),
+                fields={"seq": self._render_copy("error.seq_invalid")},
             )
         self.get_target(target_id)  # 404 早退
         self.get_member(member_id)

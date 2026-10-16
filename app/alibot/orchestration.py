@@ -53,7 +53,7 @@ from .agent_seam import (
 )
 from .db import BUDGET_LIMIT, Database, DomainError, utc_now
 from .events import EventBus
-from .i18n import join_list, locale_of, render
+from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
 from .service import WorkspaceService, remote_data_faces
 
@@ -171,7 +171,7 @@ class WakeOrchestrator:
         self._lock = threading.RLock()
 
     # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
-    def _locale(self) -> str:
+    def _locale(self) -> Locale:
         """当前**语言偏好**（库内的工作区设置）。
 
         编排跑在 HTTP 请求之外（后台线程 / 测试的手动调度器），**没有请求头可读**，因此这里的
