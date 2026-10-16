@@ -223,7 +223,6 @@ def test_dm_event_stream_subscribes_before_snapshot_and_deduplicates_boundary(
     import json
 
     import httpx
-
     from alibot.service import WorkspaceService
 
     http = live["http"]

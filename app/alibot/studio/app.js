@@ -43,20 +43,33 @@
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 
-const STATUS_LABEL = {
-  online: '空闲',
-  working: '正在回复',
-  error: '出错',
-  offline: '未启用',
-};
+/* ─── 界面文案一律按**词条**取值（`i18n.js` 的 `t(key, params)`） ────────────
+   本文件里不再有裸中文文案：结构化状态词（四态状态点 / 任务状态 / 轮次结果状态）后端只给**词**，
+   这里只把词翻译成界面说法；措辞全部住在词条表的两份取值里。
 
-const TASK_STATUS_LABEL = {
-  todo: '待认领',
-  in_progress: '进行中',
-  in_review: '待审',
-  done: '完成',
-  closed: '已关闭',
-};
+   `hasKey` 的分支是「有词条就用词条、没有就回退到后端原词」：回退不是为了兜住漏网文案，
+   而是因为状态词是**后端给的集合**（例如未来的新状态），前端不该伪造一个说法给它。 */
+
+/** 四态状态点的界面说法（键名与后端 `status_of` 的四态同名）。 */
+function statusLabel(status) {
+  const key = 'status.' + status;
+  return hasKey(key) ? t(key) : status;
+}
+
+/** 任务状态的界面说法（键名与 `TASK_STATUSES` 同名）。 */
+function taskStatusLabel(status) {
+  const key = 'task.status.' + status;
+  return hasKey(key) ? t(key) : status;
+}
+
+/** 状态迁移 chip 上的**动词**文案（原型 `THREAD_TRANSITION_LABEL`）。
+    按钮一律动宾式（`SKILL.md` §6）；`closed` 是终态，因此它没有目标描述符，
+    那张表里也不会有 `closed → *` 的条目（不是「漏了一格」，是这一格不存在）。 */
+function taskTransitionLabel(target) {
+  const key = 'task.transition.' + target;
+  return hasKey(key) ? t(key) : taskStatusLabel(target);
+}
+
 const TASK_STATUS_ORDER = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
 const TASK_STATUS_TRANSITIONS = {
   todo: ['in_progress', 'closed'],
@@ -66,16 +79,11 @@ const TASK_STATUS_TRANSITIONS = {
   closed: [],
 };
 
-/** 状态迁移 chip 上的**动词**文案（原型 `THREAD_TRANSITION_LABEL`）。
-    按钮一律动宾式（`SKILL.md` §6）；`closed` 是终态，因此它没有目标描述符，
-    那张表里也不会有 `closed → *` 的条目（不是「漏了一格」，是这一格不存在）。 */
-const TASK_TRANSITION_LABEL = {
-  in_progress: '推进至进行中',
-  in_review: '提交待审',
-  done: '标记完成',
-  todo: '退回待认领',
-  closed: '关闭任务',
-};
+/** 模型提供商的界面说法（远端 / 本机是**事实**，不是档位）。 */
+function providerLabel(provider) {
+  const key = 'provider.' + provider;
+  return hasKey(key) ? t(key) : provider;
+}
 
 /* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
    （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
@@ -89,43 +97,19 @@ const TASK_TRANSITION_LABEL = {
    不给它们留查不到的死词条。
 
    `note` 是折叠态那一句「为什么」——三态各自的后端事实不同，说法就应当不同。 */
-const OUTCOME_SUMMARY = {
-  ignored: {
-    label: '自判忽略',
-    note: '自判忽略（正常的协议选择，不是失败）',
-  },
-  'budget-exhausted': {
-    label: '预算耗尽',
-    note: '预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）',
-  },
-  merged: {
-    label: '被合并',
-    note: '重复唤醒被合并进正在进行的那一轮（不是失败）',
-  },
-};
-
-/** 摘要行一行里要列出的三种状态（`OUTCOME_SUMMARY` 的键集，顺序就是行内的排列顺序）。 */
-const SUMMARY_STATUSES = Object.keys(OUTCOME_SUMMARY);
+const SUMMARY_STATUSES = ['ignored', 'budget-exhausted', 'merged'];
 
 /** 取一个 status 的中文说法；不在摘要词表里就原样回退（不伪造一个说法）。 */
 function outcomeLabel(status) {
-  const entry = OUTCOME_SUMMARY[status];
-  return entry ? entry.label : status;
+  const key = 'outcome.' + status + '.label';
+  return hasKey(key) ? t(key) : status;
 }
 
-const PROVIDER_LABEL = {
-  dashscope: 'DashScope（远端）',
-  openai: 'OpenAI（远端）',
-  'openai-response': 'OpenAI Responses（远端）',
-  anthropic: 'Anthropic（远端）',
-  gemini: 'Gemini（远端）',
-  deepseek: 'DeepSeek（远端）',
-  moonshot: 'Moonshot（远端）',
-  minimax: 'MiniMax（远端）',
-  volcengine: '火山引擎（远端）',
-  xai: 'xAI（远端）',
-  ollama: 'Ollama（本机）',
-};
+/** 折叠行那一句「为什么」（三态各自的后端事实说法；与 `label` 一样只在词条表里）。 */
+function outcomeNote(status) {
+  const key = 'outcome.' + status + '.note';
+  return hasKey(key) ? t(key) : status;
+}
 
 // 工作台快照到齐之前的占位视图。它**不是** provider 清单的正本（正本只有后端 `/api/workspace`
 // 的 `model_providers`），只为了刷新后马上点「Agent」时不至于给一个空选择器。
@@ -175,6 +159,9 @@ const state = {
   streams: new Map(),
   seenSeqs: new Map(),
   typing: {},
+  // 工作区设置（**语言偏好** / **消息密度**）：正本是后端 `GET /api/settings`，
+  // 前端只镜像它；切换时写回后端，不落浏览器存储。
+  settings: { locale: I18N_SOURCE_LOCALE, message_density: 'comfortable' },
   // 搜索是纯呈现状态：命中、target 信息和高亮区间都来自后端，不在浏览器保存或重算。
   search: { query: '', targetId: '', hits: [], loading: false, error: '' },
 };
@@ -271,7 +258,7 @@ async function api(path, options) {
 function readError(payload, response) {
   if (payload && payload.detail && typeof payload.detail === 'string') return payload.detail;
   if (payload && payload.detail && Array.isArray(payload.detail)) {
-    return payload.detail.map((item) => item.msg || '请求体不合法').join('；');
+    return payload.detail.map((item) => item.msg || t('error.badRequestBody')).join(t('common.clauseSep'));
   }
   if (payload && payload.error) {
     const fields = payload.error.fields || {};
@@ -279,9 +266,11 @@ function readError(payload, response) {
       .map((key) => String(fields[key]))
       // 字段级文案常与总文案重合，别把同一句说两遍。
       .filter((detail) => detail && !String(payload.error.message).includes(detail));
-    return details.length ? payload.error.message + '：' + details.join('；') : payload.error.message;
+    return details.length
+      ? payload.error.message + t('common.colonSep') + details.join(t('common.clauseSep'))
+      : payload.error.message;
   }
-  return '后端返回 ' + response.status;
+  return t('error.httpStatus', { status: response.status });
 }
 
 function channelPath(channelId, suffix) {
@@ -332,11 +321,11 @@ function messageText(message) {
 
 /* ─── 工作台搜索：只消费后端命中与区间，不在前端重新判定正文 ─────────────── */
 function searchTargetLabel(target) {
-  const name = target && target.display_name ? target.display_name : '未知 target';
+  const name = target && target.display_name ? target.display_name : t('search.unknownTarget');
   if (!target) return name;
-  if (target.kind === 'channel') return '频道 · #' + name;
-  if (target.kind === 'dm') return '私信 · ' + name;
-  if (target.kind === 'task') return '任务 · ' + name;
+  if (target.kind === 'channel') return t('search.targetChannel', { name });
+  if (target.kind === 'dm') return t('search.targetDm', { name });
+  if (target.kind === 'task') return t('search.targetTask', { name });
   return name;
 }
 
@@ -367,10 +356,16 @@ function searchTargetOption(value, label) {
 function renderSearchTargetSelect() {
   const select = $('#searchTargetSelect');
   const selected = state.search.targetId;
-  const options = [searchTargetOption('', '整个工作台')];
-  state.channels.forEach((channel) => options.push(searchTargetOption(channel.id, '频道 · #' + channel.name)));
-  state.dms.forEach((dm) => options.push(searchTargetOption(dm.id, '私信 · ' + dm.peer.display_name)));
-  state.tasks.forEach((task) => options.push(searchTargetOption(task.target_id, '任务 · ' + task.title)));
+  const options = [searchTargetOption('', t('search.targetAll'))];
+  state.channels.forEach((channel) =>
+    options.push(searchTargetOption(channel.id, t('search.targetChannel', { name: channel.name }))),
+  );
+  state.dms.forEach((dm) =>
+    options.push(searchTargetOption(dm.id, t('search.targetDm', { name: dm.peer.display_name }))),
+  );
+  state.tasks.forEach((task) =>
+    options.push(searchTargetOption(task.target_id, t('search.targetTask', { name: task.title }))),
+  );
   replaceChildren(select, options);
   select.value = selected;
 }
@@ -386,8 +381,8 @@ function searchResultNode(hit) {
   article.appendChild(meta);
 
   const head = el('div', 'search-hit-head');
-  head.appendChild(el('span', 'search-author', author.display_name || '未知作者'));
-  if (author.deleted) head.appendChild(el('span', 'search-author-deleted', '作者已删除'));
+  head.appendChild(el('span', 'search-author', author.display_name || t('search.unknownAuthor')));
+  if (author.deleted) head.appendChild(el('span', 'search-author-deleted', t('search.authorDeleted')));
   if (message.created_at) head.appendChild(el('span', 'search-hit-time', timeLabel(message.created_at)));
   article.appendChild(head);
   article.appendChild(searchResultText(hit));
@@ -405,15 +400,15 @@ function renderSearchResults() {
     return;
   }
   if (search.loading) {
-    replaceChildren(results, [el('div', 'search-empty', '正在搜索…')]);
+    replaceChildren(results, [el('div', 'search-empty', t('search.searching'))]);
     return;
   }
   if (!search.query) {
-    replaceChildren(results, [el('div', 'search-empty', '输入关键词，搜索频道、私信与任务线程。')]);
+    replaceChildren(results, [el('div', 'search-empty', t('search.idle'))]);
     return;
   }
   if (!search.hits.length) {
-    replaceChildren(results, [el('div', 'search-empty', '没有匹配的普通消息。')]);
+    replaceChildren(results, [el('div', 'search-empty', t('search.noHits'))]);
     return;
   }
   replaceChildren(results, search.hits.map(searchResultNode));
@@ -443,13 +438,13 @@ async function submitSearch() {
   search.loading = false;
   $('#searchSubmit').disabled = false;
   if (!search.query) {
-    search.error = '请输入搜索关键词。';
+    search.error = t('search.needQuery');
     renderSearchResults();
     input.focus();
     return;
   }
   if (!state.online) {
-    search.error = '后端不可达：无法执行搜索。';
+    search.error = t('search.offline');
     renderSearchResults();
     return;
   }
@@ -465,7 +460,7 @@ async function submitSearch() {
   } catch (err) {
     if (requestVersion !== searchRequestVersion) return;
     // 搜索失败与零命中是两种事实：错误必须留在结果面里，不能只清空列表。
-    search.error = '搜索失败：后端不可达或请求未完成（' + err.message + '）。';
+    search.error = t('search.failed', { reason: err.message });
   } finally {
     if (requestVersion === searchRequestVersion) {
       search.loading = false;
@@ -475,10 +470,97 @@ async function submitSearch() {
   }
 }
 
+/* ─── 工作区设置（语言偏好 / 消息密度）：后端是唯一正本 ──────────────────── */
+
+/** 把一份设置铺到界面上：`<html lang>` 与语言同一个取值、密度档位写到根元素、静态文案重铺。
+
+    它是「读回」与「写回」两条路径的**唯一**落点：启动读回、切档位写回后都走它，
+    因此不存在「内存里变了但界面没变」的中间态。 */
+function applySettings(settings) {
+  const next = settings || {};
+  state.settings = {
+    locale: I18N_LOCALES.includes(next.locale) ? next.locale : I18N_SOURCE_LOCALE,
+    message_density: next.message_density === 'compact' ? 'compact' : 'comfortable',
+  };
+  setLocale(state.settings.locale);
+  // 密度档位挂在根元素上（CSS 只认 `html[data-density]` 两个取值）。
+  document.documentElement.dataset.density = state.settings.message_density;
+  applyStaticI18n(document);
+  renderSettingsModal();
+  return state.settings;
+}
+
+async function loadSettings() {
+  const payload = await api('/api/settings');
+  return applySettings(payload.settings);
+}
+
+/** 写一个档位：先写后端（正本），成功后按返回的设置重铺界面。
+
+    失败时**不**改本地镜像——界面不能声称一个没落库的取值（改设置不落消息、不唤醒、
+    不消耗预算，但「已保存」仍必须是后端说的）。 */
+async function saveSettings(patch) {
+  const box = $('#settingsFormError');
+  try {
+    const payload = await api('/api/settings', { method: 'PATCH', body: patch });
+    if (box) box.hidden = true;
+    applySettings(payload.settings);
+    render();
+  } catch (err) {
+    if (box) {
+      box.textContent = t('settings.saveFailed', { reason: err.message });
+      box.hidden = false;
+    }
+    renderSettingsModal();
+  }
+}
+
+function openSettingsModal() {
+  const box = $('#settingsFormError');
+  if (box) box.hidden = true;
+  renderSettingsModal();
+  $('#settingsOverlay').hidden = false;
+  const select = $('#settingsLocaleSelect');
+  if (select) select.focus();
+}
+
+function closeSettingsModal() {
+  $('#settingsOverlay').hidden = true;
+}
+
+/** 两个档位的选中态与 `<select>` 的当前值都从这里同步（打开与写回后都走它，不各写一份）。 */
+function renderSettingsModal() {
+  const select = $('#settingsLocaleSelect');
+  if (select) {
+    const options = I18N_LOCALES.map((locale) => {
+      const option = el('option', null, t(locale === 'en' ? 'settings.languageEn' : 'settings.languageZh'));
+      option.value = locale;
+      return option;
+    });
+    replaceChildren(select, options);
+    select.value = state.settings.locale;
+  }
+  const group = $('#settingsDensity');
+  if (group) {
+    Array.prototype.forEach.call(group.querySelectorAll('[data-density]'), (card) => {
+      const on = card.dataset.density === state.settings.message_density;
+      card.classList.toggle('is-on', on);
+      card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+}
+
 /* ─── 后端状态 → 前端 ───────────────────────────────────────────────── */
 async function loadWorkspace(options) {
   const settings = options || {};
   try {
+    // 设置面先读：语言偏好与密度档位要在第一帧就是用户选的那一档。
+    try {
+      await loadSettings();
+    } catch {
+      // 设置读不到不影响工作台：保留当前镜像（源语言 + 舒适）并照常渲染主流程——
+      // 「后端是否可达」由下面那条快照请求判定，不在这里抢先下结论。
+    }
     const snapshot = await api('/api/workspace');
     state.member = snapshot.member;
     state.members = snapshot.members;
@@ -518,7 +600,7 @@ async function loadWorkspace(options) {
     state.ready = true;
     state.outcomes = {};
     state.expandedOutcomes = {};
-    if (!settings.silent) toast('读取后端失败：' + err.message, 'err');
+    if (!settings.silent) toast(t('load.workspaceFailed', { reason: err.message }), 'err');
     // 后端不可达不是终点：自动重试，于是「重连后恢复」不需要人点按钮。
     // 这是唯一的本地重试定时器，且它只重读后端状态，不排队任何业务消息。
     scheduleReconnect();
@@ -685,11 +767,11 @@ function channelTaskCount() {
 function fillTaskChannelSelect(select, includeAll, selected) {
   const options = [];
   if (includeAll) {
-    const all = el('option', null, '全部频道');
+    const all = el('option', null, t('board.allChannels'));
     all.value = '';
     options.push(all);
   } else {
-    const prompt = el('option', null, state.channels.length ? '选择所属频道' : '请先创建频道');
+    const prompt = el('option', null, state.channels.length ? t('task.selectChannel') : t('task.createChannelFirst'));
     prompt.value = '';
     options.push(prompt);
   }
@@ -718,9 +800,9 @@ function renderBoardToolbar() {
   if (!filters) return;
   const nodes = [
     // 「我的任务」= 指派给我或未认领（任务不记录创建者归属，所以这不是「我建的」）。
-    filterChip('我的任务', state.taskFilterMine, { boardMine: '1', odId: 'filter-mine' }),
+    filterChip(t('board.mine'), state.taskFilterMine, { boardMine: '1', odId: 'filter-mine' }),
     el('span', 'filter-sep'),
-    filterChip('全部频道', state.taskFilterChannelId === '', { boardChannel: '', odId: 'filter-channel-all' }),
+    filterChip(t('board.allChannels'), state.taskFilterChannelId === '', { boardChannel: '', odId: 'filter-channel-all' }),
   ];
   state.channels.forEach((channel) => {
     nodes.push(
@@ -742,7 +824,7 @@ function taskCardNode(task) {
   card.dataset.task = task.id;
   card.dataset.status = task.status;
   card.setAttribute('data-od-id', 'task-card-' + task.id);
-  card.setAttribute('aria-label', task.title + '，' + TASK_STATUS_LABEL[task.status] + '，打开任务线程');
+  card.setAttribute('aria-label', t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) }));
   card.appendChild(el('div', 'card-title', task.title));
   const meta = el('div', 'card-meta');
   meta.appendChild(el('span', 'card-num', '#' + String(task.id).slice(-6)));
@@ -753,12 +835,12 @@ function taskCardNode(task) {
     owner.appendChild(document.createTextNode(taskMemberName(task.assignee_member_id)));
     meta.appendChild(owner);
   } else {
-    meta.appendChild(el('span', 'card-owner unassigned', '未认领'));
+    meta.appendChild(el('span', 'card-owner unassigned', t('task.unassigned')));
   }
   card.appendChild(meta);
   if (task.unread_count > 0) {
     const unread = el('span', 'card-unread', task.unread_count > 99 ? '99+' : task.unread_count);
-    unread.setAttribute('aria-label', task.unread_count + ' 条未读任务消息');
+    unread.setAttribute('aria-label', t('board.unreadAria', { count: task.unread_count }));
     meta.appendChild(unread);
   }
   return card;
@@ -774,14 +856,14 @@ function boardColumns() {
     column.setAttribute('data-od-id', 'task-column-' + status);
     const head = el('div', 'col-head');
     head.appendChild(el('span', 'st-dot'));
-    head.appendChild(el('b', null, TASK_STATUS_LABEL[status]));
+    head.appendChild(el('b', null, taskStatusLabel(status)));
     head.appendChild(el('span', 'col-count', String(items.length)));
     column.appendChild(head);
     const body = el('div', 'col-body');
     if (items.length) items.forEach((task) => body.appendChild(taskCardNode(task)));
     // 空态只陈述事实。「拖拽任务到此」是原型文案，但拖拽属 #26、现在拖不动，
     // 写上去就是一句假话（`SKILL.md` §7 的「不实现就不摆样子」同一条纪律）。
-    else body.appendChild(el('div', 'drop-hint', '这一列还没有任务'));
+    else body.appendChild(el('div', 'drop-hint', t('board.emptyColumn')));
     column.appendChild(body);
     return column;
   });
@@ -792,8 +874,8 @@ function boardList() {
   const tasks = visibleBoardTasks();
   if (!tasks.length) {
     const empty = el('div', 'empty');
-    empty.appendChild(el('b', null, '没有匹配的任务'));
-    empty.appendChild(el('p', null, '试试关掉筛选，或新建一个任务。'));
+    empty.appendChild(el('b', null, t('board.noMatchTitle')));
+    empty.appendChild(el('p', null, t('board.noMatchBody')));
     return empty;
   }
   const wrap = el('div');
@@ -802,13 +884,13 @@ function boardList() {
     row.type = 'button';
     row.dataset.task = task.id;
     row.setAttribute('data-od-id', 'task-row-' + task.id);
-    row.setAttribute('aria-label', task.title + '，' + TASK_STATUS_LABEL[task.status] + '，打开任务线程');
+    row.setAttribute('aria-label', t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) }));
     const top = el('div', 'r-top');
     top.appendChild(el('span', 'st-dot'));
-    top.appendChild(el('span', null, TASK_STATUS_LABEL[task.status]));
+    top.appendChild(el('span', null, taskStatusLabel(task.status)));
     top.appendChild(el('span', 'hash', '#' + String(task.id).slice(-6)));
     top.appendChild(el('span', 'card-tag', '#' + task.channel_name));
-    top.appendChild(el('span', 'r-open', '打开线程 →'));
+    top.appendChild(el('span', 'r-open', t('board.openThread')));
     row.appendChild(top);
     row.appendChild(el('div', 'r-title', task.title));
     const snip = el('div', 'r-snip');
@@ -816,11 +898,11 @@ function boardList() {
       snip.appendChild(avatarNode(taskMemberName(task.assignee_member_id), memberSlotOf(task.assignee_member_id), 'sm'));
       snip.appendChild(document.createTextNode(taskMemberName(task.assignee_member_id)));
     } else {
-      snip.appendChild(el('span', 'card-owner unassigned', '未认领'));
+      snip.appendChild(el('span', 'card-owner unassigned', t('task.unassigned')));
     }
     if (task.unread_count > 0) {
       const unread = el('span', 'card-unread', task.unread_count);
-      unread.setAttribute('aria-label', task.unread_count + ' 条未读任务消息');
+      unread.setAttribute('aria-label', t('board.unreadAria', { count: task.unread_count }));
       snip.appendChild(unread);
     }
     row.appendChild(snip);
@@ -883,8 +965,8 @@ function renderTaskThread() {
   // ── dock 头部：「任务线程」tag + mono #id + 「#频道名 · 关联消息 N 条」──
   $('#ttHeadId').textContent = '#' + String(task.id).slice(-6);
   const unread = Number(task.unread_count) || 0;
-  $('#ttHeadSub').textContent = '#' + channelName + ' · 关联消息 ' + linked.length + ' 条'
-    + (unread ? ' · ' + unread + ' 条未读' : '');
+  $('#ttHeadSub').textContent = t('task.threadHeadSub', { channel: channelName, count: linked.length })
+    + (unread ? t('task.threadUnread', { count: unread }) : '');
 
   // ── 摘要：标题（就地可编辑）+ 状态 pill + 指派 pill ──
   const titleInput = $('#ttTitleInput');
@@ -893,7 +975,7 @@ function renderTaskThread() {
   // 状态色位由 CSS 的 `.tt-status[data-status=…]` 表驱动（与 `.col` / `.card` 共用同一张表），
   // 这里只声明状态，不内联色位：同一个映射存在两份就会漂移。
   status.dataset.status = task.status;
-  $('#ttStatusText').textContent = TASK_STATUS_LABEL[task.status];
+  $('#ttStatusText').textContent = taskStatusLabel(task.status);
   renderAssigneePill(task);
 
   // ── 推进 chips：**只**出现迁移集合里的目标（`closed` 是终态 ⇒ 一个都不出）──
@@ -901,7 +983,7 @@ function renderTaskThread() {
   if (transitions.length) {
     replaceChildren($('#ttTransitions'), transitions.map((target) => {
       const chip = filterChip(
-        TASK_TRANSITION_LABEL[target] || TASK_STATUS_LABEL[target],
+        taskTransitionLabel(target),
         false,
         { ttMove: target, odId: 'thread-move-' + target },
       );
@@ -910,7 +992,7 @@ function renderTaskThread() {
     }));
   } else {
     // 原型那句「已关闭，无可用推进」在这里是**真话**（`closed` 确实是终态）。
-    replaceChildren($('#ttTransitions'), [el('span', 'tt-note', '已关闭，无可用推进')]);
+    replaceChildren($('#ttTransitions'), [el('span', 'tt-note', t('task.noTransitions'))]);
   }
 
   // ── 指派 chips：该频道成员里的 Agent（见 `renderAssignChips` 的候选来源）──
@@ -924,7 +1006,7 @@ function renderTaskThread() {
       const row = el('div', 'tt-linked-row');
       const top = el('div', 'tt-linked-top');
       top.appendChild(el('span', 'hash', '#' + channelName));
-      top.appendChild(el('span', null, message.author ? message.author.display_name : '未知作者'));
+      top.appendChild(el('span', null, message.author ? message.author.display_name : t('search.unknownAuthor')));
       top.appendChild(el('span', 'card-tag', timeLabel(message.created_at)));
       row.appendChild(top);
       row.appendChild(el('div', 'tt-linked-body', message.body));
@@ -932,11 +1014,11 @@ function renderTaskThread() {
     });
     replaceChildren(linkedBox, [wrap]);
   } else {
-    replaceChildren(linkedBox, [el('div', 'tt-empty', '该任务还没有关联消息')]);
+    replaceChildren(linkedBox, [el('div', 'tt-empty', t('task.linkedEmpty'))]);
   }
 
   // ── 讨论 · N 条 ──
-  $('#ttReplyCount').textContent = String(replies.length);
+  $('#ttReplyTitle').textContent = t('task.discussionCount', { count: replies.length });
   replaceChildren(
     $('#ttReplies'),
     replies.length
@@ -957,7 +1039,7 @@ function renderTaskThread() {
         row.appendChild(body);
         return row;
       })
-      : [el('div', 'tt-empty', '还没有讨论，来写第一条回复')],
+      : [el('div', 'tt-empty', t('task.repliesEmpty'))],
   );
 
   // ── 状态变更记录：该流的 `system` 行（不另行伪造历史）──
@@ -971,7 +1053,7 @@ function renderTaskThread() {
         li.appendChild(el('span', 'ts', timeLabel(message.created_at)));
         return li;
       })
-      : [el('div', 'tt-empty', '暂无变更记录')],
+      : [el('div', 'tt-empty', t('task.historyEmpty'))],
   );
   // 最近一次变更用 graphic 档的点标出来（原型 `.is-now`；不是新色位）。
   const last = log.lastElementChild;
@@ -997,14 +1079,14 @@ function renderAssigneePill(task) {
   const assigned = task.assignee_member_id;
   if (!assigned) {
     pill.className = 'assignee unassigned';
-    pill.textContent = '未认领 · 点击指派';
+    pill.textContent = t('task.unassignedPill');
     return;
   }
   pill.className = 'assignee';
   replaceChildren(pill, []);
   pill.appendChild(avatarNode(taskMemberName(assigned), memberSlotOf(assigned), 'sm'));
   pill.appendChild(document.createTextNode(taskMemberName(assigned)));
-  pill.appendChild(el('span', 'assignee-hint', '· 改派'));
+  pill.appendChild(el('span', 'assignee-hint', t('task.reassignHint')));
 }
 
 /** 指派 chips：**该任务所属频道的 Agent 成员**。
@@ -1020,14 +1102,14 @@ function renderAssignChips(task) {
   if (channelAgents === null) {
     replaceChildren(box, [
       el('span', 'tt-note', channelMembersFailed.has(task.channel_id)
-        ? '暂时读不到该频道的成员表：指派候选不可用。'
-        : '正在读取该频道的成员…'),
+        ? t('task.assignUnavailable')
+        : t('task.assignLoading')),
     ]);
     return;
   }
   if (!channelAgents.length) {
     replaceChildren(box, [
-      el('span', 'tt-note', '该频道还没有 Agent 成员：先在右侧「频道成员」面板把 Agent 加入这个频道。'),
+      el('span', 'tt-note', t('task.assignNoAgents')),
     ]);
     return;
   }
@@ -1041,7 +1123,7 @@ function renderAssignChips(task) {
     return chip;
   });
   if (task.assignee_member_id) {
-    const clear = filterChip('取消指派', false, { ttAssign: '', odId: 'thread-unassign' });
+    const clear = filterChip(t('task.clearAssign'), false, { ttAssign: '', odId: 'thread-unassign' });
     clear.disabled = !state.online;
     chips.push(clear);
   }
@@ -1159,7 +1241,7 @@ async function openTask(taskId) {
     closeTaskDock();
     setDockMode('agent');
     renderTaskBoard();
-    toast('打开任务失败：' + err.message, 'err');
+    toast(t('toast.openTaskFailed', { reason: err.message }), 'err');
   }
 }
 
@@ -1173,7 +1255,7 @@ async function markTaskRead(taskId, seq) {
     renderTaskThread();
     renderTaskBoard();
   } catch (err) {
-    toast('任务标读失败：' + err.message, 'err');
+    toast(t('toast.taskReadFailed', { reason: err.message }), 'err');
   }
 }
 
@@ -1262,7 +1344,7 @@ async function submitTask() {
   if (!title) {
     // 弹窗不再是 `<form>`（按钮是 type=button），因此没有浏览器自带的 required 提示：
     // 空标题要自己说出来，不能默默什么都不发生。
-    box.textContent = state.channels.length ? '任务标题不能为空。' : '还没有频道：先新建一个频道再建任务。';
+    box.textContent = state.channels.length ? t('task.titleRequired') : t('task.noChannel');
     box.hidden = false;
     $('#taskCreateTitle').focus();
     return;
@@ -1281,7 +1363,7 @@ async function submitTask() {
       await refreshTasks();
     }
     renderTaskBoard();
-    toast('已创建任务「' + payload.task.title + '」。');
+    toast(t('toast.taskCreated', { title: payload.task.title }));
   } catch (err) {
     box.textContent = err.message;
     box.hidden = false;
@@ -1309,7 +1391,7 @@ async function saveTaskTitle() {
     await refreshTasks();
     renderTaskThread();
   } catch (err) {
-    toast('更新标题失败：' + err.message, 'err');
+    toast(t('toast.titleUpdateFailed', { reason: err.message }), 'err');
     renderTaskThread();
   }
 }
@@ -1327,7 +1409,7 @@ async function changeTaskStatus(status) {
     await refreshTasks();
     renderTaskThread();
   } catch (err) {
-    toast('更新状态失败：' + err.message, 'err');
+    toast(t('toast.statusUpdateFailed', { reason: err.message }), 'err');
     renderTaskThread();
   }
 }
@@ -1346,7 +1428,7 @@ async function changeTaskAssignee(memberId) {
     await refreshTasks();
     renderTaskThread();
   } catch (err) {
-    toast('更新指派失败：' + err.message, 'err');
+    toast(t('toast.assigneeUpdateFailed', { reason: err.message }), 'err');
     renderTaskThread();
   }
 }
@@ -1367,7 +1449,7 @@ async function sendTaskMessage() {
     await markTaskRead(task.id, payload.message.seq);
     await refreshTasks();
   } catch (err) {
-    toast('任务消息未发送：' + err.message, 'err');
+    toast(t('toast.taskMessageFailed', { reason: err.message }), 'err');
   } finally {
     $('#taskSend').disabled = !state.online || !input.value.trim();
   }
@@ -1434,7 +1516,7 @@ function scheduleRead(targetId, seq) {
         syncUnreadTotal();
         render();
       } catch (err) {
-        toast('标读失败：' + err.message, 'err');
+        toast(t('toast.readFailed', { reason: err.message }), 'err');
       }
     }, 120),
   );
@@ -1456,7 +1538,7 @@ function sendMessage() {
   const target = activeTarget();
   if (!body || !target) return;
   if (!state.online) {
-    toast('后端不可达，发送已禁止；消息没有被送出。', 'err');
+    toast(t('toast.sendBlockedOffline'), 'err');
     return;
   }
   const pending = {
@@ -1497,9 +1579,9 @@ async function deliver(pending) {
     failPending(pending.clientId, err.message);
     if (!err.status) {
       state.online = false;
-      toast('后端不可达：这条消息没有送达，也没有留在本地队列里。', 'err');
+      toast(t('toast.sendMessageLost'), 'err');
     } else {
-      toast('发送被拒绝：' + err.message, 'err');
+      toast(t('toast.sendRejected', { reason: err.message }), 'err');
     }
     render();
   }
@@ -1769,7 +1851,7 @@ function render() {
 function renderIdentity() {
   const member = state.member || OWNER_FALLBACK;
   $('#meName').textContent = member.display_name;
-  $('#meSub').textContent = member.kind === 'owner' ? '人类 · 本机' : member.kind;
+  $('#meSub').textContent = member.kind === 'owner' ? t('identity.human') : member.kind;
   const avatar = $('#meAvatar');
   avatar.className = 'avatar ' + avatarClass(member.avatar_slot);
   avatar.textContent = initial(member.display_name);
@@ -1789,7 +1871,7 @@ function renderUnreadSummary() {
   const total = Number(state.unreadTotal) || 0;
   summary.hidden = total === 0;
   badge.textContent = total;
-  summary.setAttribute('aria-label', '工作区未读 ' + total + ' 条');
+  summary.setAttribute('aria-label', t('rail.unreadCount', { count: total }));
 }
 
 function replaceChildren(container, nodes) {
@@ -1864,8 +1946,8 @@ function statusOf(agent) {
 
 function presenceNode(status) {
   const node = el('span', 'presence ' + status);
-  node.setAttribute('title', STATUS_LABEL[status] || status);
-  node.setAttribute('aria-label', STATUS_LABEL[status] || status);
+  node.setAttribute('title', statusLabel(status));
+  node.setAttribute('aria-label', statusLabel(status));
   node.dataset.status = status;
   return node;
 }
@@ -1897,8 +1979,8 @@ function renderDock() {
     replaceChildren(
       container,
       [el('div', 'rail-empty', target && target.kind === 'dm'
-        ? '私信固定只有 owner 与对方 Agent，不提供加入或离开操作。'
-        : '先打开一个频道。')],
+        ? t('dock.dmNoJoin')
+        : t('dock.openChannelFirst'))],
     );
     return;
   }
@@ -1909,7 +1991,7 @@ function renderDock() {
   // ── 已加入：本频道的 Agent 成员 ──────────────────────────────────────
   const joinedSection = el('section', 'dock-group');
   joinedSection.dataset.odId = 'dock-joined';
-  const joinedLabel = el('div', 'dock-group-label', '已加入（' + groups.joined.length + '）');
+  const joinedLabel = el('div', 'dock-group-label', t('dock.joined', { count: groups.joined.length }));
   joinedSection.appendChild(joinedLabel);
   if (!groups.loaded) {
     // 「读不到 / 还没读到」与「真的没有成员」是两件事：不把前者说成后者（与 `@` 清单的
@@ -1920,13 +2002,13 @@ function renderDock() {
         'div',
         'rail-empty',
         channelMembersFailed.has(channel.id)
-          ? '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开面板即可。'
-          : '正在读取该频道的成员表…',
+          ? t('dock.membersUnavailable')
+          : t('dock.membersLoading'),
       ),
     );
   } else if (!groups.joined.length) {
     joinedSection.appendChild(
-      el('div', 'rail-empty', '这个频道还没有 Agent 成员：从下面「未加入」里点「加入」即可。'),
+      el('div', 'rail-empty', t('dock.noJoinedAgents')),
     );
   } else {
     groups.joined.forEach((member) => joinedSection.appendChild(memberCard(member, agentsById)));
@@ -1937,7 +2019,7 @@ function renderDock() {
   const outsideSection = el('section', 'dock-group');
   outsideSection.dataset.odId = 'dock-not-joined';
   outsideSection.appendChild(
-    el('div', 'dock-group-label', '未加入本频道（' + groups.outsiders.length + '）'),
+    el('div', 'dock-group-label', t('dock.notJoined', { count: groups.outsiders.length })),
   );
   if (!groups.loaded) {
     outsideSection.appendChild(
@@ -1945,8 +2027,8 @@ function renderDock() {
         'div',
         'rail-empty',
         channelMembersFailed.has(channel.id)
-          ? '成员表读不到时暂不列「未加入」：否则会把已在频道里的 Agent 误导为未加入。'
-          : '正在读取该频道的成员表…',
+          ? t('dock.notJoinedUnavailable')
+          : t('dock.membersLoading'),
       ),
     );
   } else if (!groups.outsiders.length) {
@@ -1955,8 +2037,8 @@ function renderDock() {
         'div',
         'rail-empty',
         state.members.some((member) => member.kind === 'agent')
-          ? '本工作区的 Agent 都已在这个频道里。'
-          : '还没有 Agent：用左上角「Agent」按钮创建一个，再回到这里点「加入」。',
+          ? t('dock.allJoined')
+          : t('dock.noAgents'),
       ),
     );
   } else {
@@ -1978,10 +2060,10 @@ function memberCard(member, agentsById, canJoin) {
   if (agent.role) head.appendChild(el('span', 'msg-tag', agent.role));
   head.appendChild(presenceNode(statusOf(agent)));
   card.appendChild(head);
-  const meta = el('div', 'dock-member-meta mono', agent.model_id || '未配置模型');
+  const meta = el('div', 'dock-member-meta mono', agent.model_id || t('dock.noModel'));
   card.appendChild(meta);
   const status = statusOf(agent);
-  const line = el('div', 'dock-member-status', STATUS_LABEL[status] || status);
+  const line = el('div', 'dock-member-status', statusLabel(status));
   line.dataset.status = status;
   card.appendChild(line);
   if (agent.enabled_reason) {
@@ -1991,11 +2073,11 @@ function memberCard(member, agentsById, canJoin) {
   }
   if (canJoin) {
     const foot = el('div', 'dock-member-foot');
-    const button = el('button', 'btn btn-sm', joining.has(member.id) ? '加入中…' : '加入');
+    const button = el('button', 'btn btn-sm', joining.has(member.id) ? t('dock.joining') : t('dock.join'));
     button.type = 'button';
     button.dataset.join = member.id;
     button.setAttribute('data-od-id', 'dock-join-' + member.id);
-    button.setAttribute('aria-label', '把 ' + member.display_name + ' 加入当前频道');
+    button.setAttribute('aria-label', t('dock.joinAria', { name: member.display_name }));
     button.disabled = joining.has(member.id);
     foot.appendChild(button);
     card.appendChild(foot);
@@ -2009,7 +2091,7 @@ function renderTyping() {
   const memberId = target ? state.typing[target.id] : null;
   const agent = state.agents.find((item) => item.id === memberId);
   container.hidden = !agent;
-  container.textContent = agent ? agent.display_name + ' 正在回复…' : '';
+  container.textContent = agent ? t('typing.working', { name: agent.display_name }) : '';
 }
 
 
@@ -2028,10 +2110,10 @@ function renderHeader() {
   $('#chanTitle').textContent = isDm ? '@' + name : name;
   // desc 保持现状的写法：原型那句「懒创建会话」与 `CONTEXT.md` **私信**词条的
   // `_Avoid_`（明确否定「懒创建」）冲突，是原型的过时文案，不照抄。
-  $('#chanDesc').textContent = isDm ? '与 ' + name + ' 的两方私信' : target.description || '';
+  $('#chanDesc').textContent = isDm ? t('header.dmDesc', { name }) : target.description || '';
   $('#composerInput').placeholder = isDm
-    ? '发消息给 @' + name + ' —— 可手动 @ 送达其他 Agent'
-    : '发消息到 #' + name + ' —— 输入 @ 提及 Agent';
+    ? t('header.dmPlaceholder', { name })
+    : t('header.channelPlaceholder', { name });
 }
 
 function renderConnection() {
@@ -2041,7 +2123,7 @@ function renderConnection() {
   if (stream) {
     const reconnecting = state.online && state.streamState !== 'open';
     stream.hidden = !reconnecting;
-    stream.textContent = reconnecting ? '事件流正在重连：恢复后会自动补拉错过的消息。' : '';
+    stream.textContent = reconnecting ? t('conn.reconnecting') : '';
   }
   const taskInput = $('#taskComposerInput');
   const taskSend = $('#taskSend');
@@ -2110,7 +2192,7 @@ function roundOutcomeSummaryNode(records) {
   row.dataset.baseSeq = baseSeq;
   // 与失败行同一个理由：这一行不是一条消息，不能被数进「几条消息」。
   row.setAttribute('role', 'status');
-  row.setAttribute('aria-label', summarizeNames(items) + ' 没有回应：' + items.length + ' 条轮次结果');
+  row.setAttribute('aria-label', t('outcome.summaryAria', { names: summarizeNames(items), count: items.length }));
 
   const body = el('div', 'msg-body');
   const head = el('div', 'msg-head');
@@ -2124,7 +2206,7 @@ function roundOutcomeSummaryNode(records) {
   toggle.setAttribute('aria-controls', 'outcome-summary-' + baseSeq);
   toggle.appendChild(el('span', 'msg-outcome-summary-mark', expanded ? '\u25be' : '\u25b8'));
   toggle.appendChild(el('span', 'msg-outcome-summary-names', summarizeNames(items)));
-  toggle.appendChild(el('span', 'msg-outcome-summary-text', expanded ? '收起原因' : '没有回应 · 展开看原因'));
+  toggle.appendChild(el('span', 'msg-outcome-summary-text', expanded ? t('outcome.collapse') : t('outcome.expand')));
   head.appendChild(toggle);
   head.appendChild(el('span', 'msg-time', timeLabel(items[0].finished_at)));
   body.appendChild(head);
@@ -2154,8 +2236,9 @@ function summarizeNames(items) {
 
 /** 名单的**唯一**拼法：≤2 个逐个列出，>2 个写「甲、乙 等 N 人」（摘要行与折叠说明共用）。 */
 function joinNames(names) {
-  if (names.length <= 2) return names.join('、');
-  return names[0] + '、' + names[1] + ' 等 ' + names.length + ' 人';
+  if (names.length <= 2) return names.join(t('common.nameListSep'));
+  const head = names[0] + t('common.nameListSep') + names[1];
+  return t('common.nameListMore', { names: head, count: names.length });
 }
 
 /**
@@ -2177,13 +2260,12 @@ function summarizeWhy(items) {
   const mixed = order.length > 1;
   return order
     .map((status) => {
-      const entry = OUTCOME_SUMMARY[status];
-      const text = entry ? entry.note : status;
+      const text = outcomeNote(status);
       // 单一状态：名单已在折叠控件上，这里只陈述「为什么」（不重复一遍名字）。
       if (!mixed) return text;
-      return joinNames(groups.get(status)) + '：' + text;
+      return joinNames(groups.get(status)) + t('common.colonSep') + text;
     })
-    .join('；');
+    .join(t('common.clauseSep'));
 }
 
 /**
@@ -2202,7 +2284,7 @@ function roundOutcomeSummaryLine(record) {
   head.appendChild(el('span', 'msg-outcome-line-state', outcomeLabel(record.status)));
   head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
   line.appendChild(head);
-  const reason = el('div', 'msg-outcome-line-reason', record.reason || '后端没有留下原因。');
+  const reason = el('div', 'msg-outcome-line-reason', record.reason || t('outcome.lineReasonEmpty'));
   // 与失败行的取证 id 同一前缀（`round-reason-<id>`）：同一字段两个前缀只会让取证混淆。
   reason.dataset.odId = 'round-reason-' + record.id;
   line.appendChild(reason);
@@ -2241,18 +2323,18 @@ function roundOutcomeNode(record) {
   // 这一行不是消息（不占 seq、不是作者说的话），因此标记成 status 而不是 message：
   // 屏幕阅读器与自动化取证都不该把它当成「又一条消息」。
   row.setAttribute('role', 'status');
-  row.setAttribute('aria-label', name + ' 未回应：' + (record.reason || '后端没有留下原因。'));
+  row.setAttribute('aria-label', t('outcome.failedAria', { name, reason: record.reason || t('outcome.lineReasonEmpty') }));
 
   const body = el('div', 'msg-body');
   const head = el('div', 'msg-head');
   // 作者名用**自己的**类名而不是 `is-agent`：这一行不是一条 Agent 消息，
   // 任何「数几条 Agent 消息」的统计都不该把它数进去。
   head.appendChild(el('span', 'msg-author msg-outcome-author', name));
-  head.appendChild(el('span', 'msg-tag', '未回应'));
-  if (status) head.appendChild(el('span', 'msg-outcome-state', disabled ? '没启用' : '这一轮失败'));
+  head.appendChild(el('span', 'msg-tag', t('outcome.tag')));
+  if (status) head.appendChild(el('span', 'msg-outcome-state', disabled ? t('outcome.stateDisabled') : t('outcome.stateFailed')));
   if (!disabled && agent) {
     // 从失败现场直接打开成员详情，不用人先找到右上角那个图标。
-    const inspect = el('button', 'msg-outcome-act', '看成员状态');
+    const inspect = el('button', 'msg-outcome-act', t('outcome.inspect'));
     inspect.dataset.dockToggle = '1';
     head.appendChild(inspect);
   }
@@ -2262,11 +2344,9 @@ function roundOutcomeNode(record) {
   // 「未启用」是成员**此刻**的状态，「这一轮失败」是**库里那一次**轮次的结论。
   // 两者会同时为真，因此分开陈述，而不是把后者说成前者、也不把前者冒充后者。
   if (disabled) {
-    body.appendChild(
-      el('div', 'msg-outcome-note', name + ' 现在是「未启用」，所以这一轮没有回复。后端给出的原因：'),
-    );
+    body.appendChild(el('div', 'msg-outcome-note', t('outcome.disabledNote', { name })));
   }
-  const reason = el('div', 'msg-outcome-reason', record.reason || '后端没有留下原因。');
+  const reason = el('div', 'msg-outcome-reason', record.reason || t('outcome.lineReasonEmpty'));
   reason.dataset.odId = 'round-reason-' + record.id;
   body.appendChild(reason);
 
@@ -2285,8 +2365,8 @@ function messageNode(message) {
     article.appendChild(avatarNode(author.display_name, author.avatar_slot, 'sm'));
     const body = el('div', 'msg-body');
     const head = el('div', 'msg-head');
-    head.appendChild(el('span', 'msg-author', author.display_name || '系统'));
-    head.appendChild(el('span', 'msg-tag', '事件'));
+    head.appendChild(el('span', 'msg-author', author.display_name || t('msg.systemAuthor')));
+    head.appendChild(el('span', 'msg-tag', t('msg.tagEvent')));
     head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
     body.appendChild(head);
     body.appendChild(el('div', 'msg-text', message.body));
@@ -2307,18 +2387,22 @@ function messageNode(message) {
   const body = el('div', 'msg-body');
   const head = el('div', 'msg-head');
   head.appendChild(el('span', 'msg-author' + (author.kind === 'agent' ? ' is-agent' : ''), author.display_name));
-  if (author.kind === 'agent') head.appendChild(el('span', 'msg-tag', 'Agent'));
+  if (author.kind === 'agent') head.appendChild(el('span', 'msg-tag', t('msg.tagAgent')));
   head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
+  // 两个 capsule 的字面量走 CSS 的 `content: attr(data-state-label)`：语言取值只在这一处，
+  // CSS 里不放任何语言文案（否则切语言后它们会留在上一个语言）。
+  if (pending) head.dataset.stateLabel = t('msg.pendingTag');
+  if (failed) head.dataset.stateLabel = t('msg.failedTag');
   body.appendChild(head);
   body.appendChild(messageText(message));
   appendTaskRefChip(body, message);
 
   if (failed) {
     const retry = el('div', 'msg-retry');
-    retry.appendChild(el('span', null, '未送达：' + (message.reason || '发送失败')));
-    const retryBtn = el('button', 'btn btn-sm', '重试发送');
+    retry.appendChild(el('span', null, t('msg.notDelivered', { reason: message.reason || t('msg.sendFailed') })));
+    const retryBtn = el('button', 'btn btn-sm', t('msg.retry'));
     retryBtn.dataset.retry = message.clientId;
-    const discardBtn = el('button', 'btn btn-sm', '移除');
+    const discardBtn = el('button', 'btn btn-sm', t('msg.discard'));
     discardBtn.dataset.discard = message.clientId;
     retry.appendChild(retryBtn);
     retry.appendChild(discardBtn);
@@ -2333,18 +2417,18 @@ function appendTaskRefChip(body, message) {
   if (!message.task_ref) return;
   const referencedTask = taskById(message.task_ref);
   const title = referencedTask ? referencedTask.title : message.task_ref;
-  const chip = el('button', 'task-ref-chip', '任务 · ' + title);
+  const chip = el('button', 'task-ref-chip', t('msg.taskRef', { title }));
   chip.type = 'button';
   chip.dataset.openTask = message.task_ref;
-  chip.setAttribute('aria-label', '打开任务 ' + title);
+  chip.setAttribute('aria-label', t('msg.taskRefAria', { title }));
   body.appendChild(chip);
 }
 
 function dayLabel(iso) {
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '时间未知';
+  if (Number.isNaN(date.getTime())) return t('time.unknown');
   const today = new Date();
-  if (date.toDateString() === today.toDateString()) return '今天';
+  if (date.toDateString() === today.toDateString()) return t('time.today');
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return date.getFullYear() + '-' + month + '-' + day;
@@ -2511,15 +2595,15 @@ async function joinChannelMember(memberId) {
     state.channelMembers[channel.id] = payload.members || state.channelMembers[channel.id];
     channelMembersFailed.delete(channel.id);
     if (payload.channel) replaceChannel(payload.channel);
-    const name = (payload.member && payload.member.display_name) || '成员';
+    const name = (payload.member && payload.member.display_name) || t('toast.memberFallback');
     toast(
       payload.joined
-        ? '已把 ' + name + ' 加入 #' + channel.name + '，现在可以在 composer 里用 @ 提到它。'
-        : name + ' 本来就在 #' + channel.name + ' 里。',
+        ? t('toast.joinedChannel', { name, channel: channel.name })
+        : t('toast.alreadyMember', { name, channel: channel.name }),
     );
     updateMentionPicker();
   } catch (err) {
-    toast('加入失败：' + err.message, 'err');
+    toast(t('toast.joinFailed', { reason: err.message }), 'err');
   } finally {
     joining.delete(memberId);
     renderDock();
@@ -2530,12 +2614,12 @@ function syncMentionHint() {
   const hint = $('#composerHint');
   if (!hint) return;
   if (!mentionPicker.open) {
-    hint.textContent = 'Enter 发送 · Shift+Enter 换行';
+    hint.textContent = t('composer.hint');
   } else if (mentionPicker.items.length) {
-    hint.textContent = '↑↓ 选择 · Enter 选中 · Esc 关闭';
+    hint.textContent = t('mention.hintPick');
   } else {
     // 空态没有可选项：Enter 仍是发送（键盘契约不变），只说明怎么关掉它。
-    hint.textContent = 'Enter 发送 · Esc 关闭清单';
+    hint.textContent = t('mention.hintDismiss');
   }
 }
 
@@ -2549,10 +2633,7 @@ function renderMentionPicker() {
   }
   panel.hidden = false;
   if (mentionPicker.empty) {
-    const text =
-      mentionPicker.empty === 'unavailable'
-        ? '暂时读不到该频道的成员清单（后端请求失败）：恢复后按 @ 会重新给出候选。'
-        : '该频道还没有 Agent 成员：在右侧「频道成员」面板的「未加入」一段点「加入」，或在新建 Agent 后到那里加入。';
+    const text = mentionPicker.empty === 'unavailable' ? t('mention.unavailable') : t('mention.empty');
     const empty = el('div', 'member-pick-empty mention-empty', text);
     empty.setAttribute('data-od-id', 'mention-picker-empty');
     replaceChildren(panel, [empty]);
@@ -2570,7 +2651,7 @@ function renderMentionPicker() {
     row.appendChild(el('span', 'mention-name', member.display_name));
     if (!mentionInsertable(member.display_name)) {
       // 不静默：它在清单里，但明说这个名字无法被 @ 到。
-      row.appendChild(el('span', 'mention-note', '无法 @'));
+      row.appendChild(el('span', 'mention-note', t('mention.cannotMention')));
     }
     return row;
   });
@@ -2674,10 +2755,7 @@ function chooseMention(member) {
   const name = String(member.display_name || '');
   if (!mentionInsertable(name)) {
     // 不静默、也不插入无效文本：这个名字没有能被解析器识别的插入形态。
-    toast(
-      '「' + name + '」同时含 " 、” 、’ 三类闭引号，提及解析器没有能表达这种名字的引号形式，因此没有插入任何文本。',
-      'err',
-    );
+    toast(t('mention.quoteUnsupported', { name }), 'err');
     return;
   }
   insertMention(name);
@@ -2714,7 +2792,7 @@ function renderDmAgentPicker() {
   const agents = state.members.filter((member) => member.kind === 'agent');
   const picker = $('#dmAgentPicker');
   if (!agents.length) {
-    const empty = el('div', 'member-pick-empty', '还没有 Agent：先用左上角「Agent」按钮创建一个。');
+    const empty = el('div', 'member-pick-empty', t('dm.noAgents'));
     empty.setAttribute('data-od-id', 'dm-agent-picker-empty');
     replaceChildren(picker, [empty]);
     return;
@@ -2749,8 +2827,8 @@ async function submitDm() {
     scrollToBottom();
     $('#composerInput').focus();
     toast(payload.created
-      ? '已创建与 ' + payload.dm.peer.display_name + ' 的私信。'
-      : '已打开与 ' + payload.dm.peer.display_name + ' 的现有私信。');
+      ? t('toast.dmCreated', { name: payload.dm.peer.display_name })
+      : t('toast.dmOpened', { name: payload.dm.peer.display_name }));
   } catch (err) {
     const box = $('#dmFormError');
     box.textContent = err.message;
@@ -2765,7 +2843,7 @@ function renderMemberPicker() {
   const picker = $('#memberPicker');
   if (!agents.length) {
     // 无 Agent 时成员清单是空态，但控件（勾选容器）按规格存在。
-    const empty = el('div', 'member-pick-empty', '还没有可勾选的 Agent：用左上角「Agent」按钮创建一个，回到这里勾选即可加入频道。');
+    const empty = el('div', 'member-pick-empty', t('channel.pickEmpty'));
     empty.setAttribute('data-od-id', 'member-picker-empty');
     replaceChildren(picker, [empty]);
     return;
@@ -2800,7 +2878,7 @@ async function submitChannel() {
     await loadWorkspace({ silent: true, keepActive: true });
     scrollToBottom();
     $('#composerInput').focus();
-    toast('已创建频道 #' + payload.channel.name + '，可以直接发送第一条消息。');
+    toast(t('toast.channelCreated', { name: payload.channel.name }));
   } catch (err) {
     const box = $('#channelFormError');
     box.textContent = err.message;
@@ -2842,7 +2920,7 @@ function renderProviderSelect(preserveUserPick) {
   const previous = preserveUserPick ? select.value : '';
   const providers = state.providers.length ? state.providers : PROVIDER_PLACEHOLDER;
   const optionNodes = providers.map((provider) => {
-    const option = el('option', null, PROVIDER_LABEL[provider] || provider);
+    const option = el('option', null, providerLabel(provider));
     option.value = provider;
     return option;
   });
@@ -2873,8 +2951,8 @@ function updateProviderHint() {
   const provider = currentProvider();
   const hint = $('#agentProviderHint');
   hint.textContent = isLocalProvider(provider)
-    ? '本机模型：不离开本机，不需要数据流确认。'
-    : '远端模型：启用前需要先确认数据会离开本机（见下方告知）。';
+    ? t('agent.providerLocalHint')
+    : t('agent.providerRemoteHint');
 }
 
 function acknowledged(provider) {
@@ -2889,14 +2967,10 @@ function renderRemoteNotice() {
     return;
   }
   box.hidden = false;
-  const faces = (state.dataFaces.length ? state.dataFaces : remoteFlow.data_faces).join('、');
-  $('#agentRemoteTitle').textContent = '启用 ' + (PROVIDER_LABEL[provider] || provider) + ' 前需要你确认一次';
-  $('#agentRemoteBody').textContent =
-    '启用后，以下数据会离开本机并发送给该模型提供商：' +
-    faces +
-    '。接收方是远端服务，不在你的机器上。';
-  $('#agentRemoteHint').textContent =
-    '本机存储不做应用层端到端加密，也不会声称端到端加密；后端默认只监听 loopback。';
+  const faces = (state.dataFaces.length ? state.dataFaces : remoteFlow.data_faces).join(t('common.nameListSep'));
+  $('#agentRemoteTitle').textContent = t('agent.remoteTitle', { provider: providerLabel(provider) });
+  $('#agentRemoteBody').textContent = t('agent.remoteBody', { faces });
+  $('#agentRemoteHint').textContent = t('agent.remoteHint');
 }
 
 async function confirmRemoteFlow() {
@@ -2910,9 +2984,9 @@ async function confirmRemoteFlow() {
     renderRemoteNotice();
     // 确认会改变成员的启用态：状态点必须从后端重取，不靠本地推断。
     await loadWorkspace({ silent: true, keepActive: true });
-    toast('已记录数据流告知确认：' + (PROVIDER_LABEL[provider] || provider) + '。');
+    toast(t('toast.remoteAck', { provider: providerLabel(provider) }));
   } catch (err) {
-    toast('确认失败：' + err.message, 'err');
+    toast(t('toast.remoteAckFailed', { reason: err.message }), 'err');
   } finally {
     button.disabled = false;
   }
@@ -2937,7 +3011,7 @@ async function submitAgent() {
     state.members = result.members || state.members;
     closeAgentModal();
     await loadWorkspace({ silent: true, keepActive: true });
-    toast('已创建 Agent ' + result.agent.display_name + '，在右侧「频道成员」面板的「未加入」一段点「加入」即可让它进入当前频道。');
+    toast(t('toast.agentCreated', { name: result.agent.display_name }));
   } catch (err) {
     box.textContent = err.message;
     box.hidden = false;
@@ -2990,7 +3064,7 @@ async function selectTarget(targetId) {
     state.online = true;
   } catch (err) {
     state.online = false;
-    toast('读取会话失败：' + err.message, 'err');
+    toast(t('toast.sessionLoadFailed', { reason: err.message }), 'err');
   }
   render();
   markCurrentRead();
@@ -3008,6 +3082,23 @@ function bindSearchEvents() {
 }
 
 function bindEvents() {
+  // ── 工作区设置：rail 底部入口 + 弹窗（语言 / 消息密度两档）──
+  $('#btnSettings').addEventListener('click', openSettingsModal);
+  $('#settingsModalClose').addEventListener('click', closeSettingsModal);
+  $('#settingsDone').addEventListener('click', closeSettingsModal);
+  $('#settingsOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'settingsOverlay') closeSettingsModal();
+  });
+  // 语言：`change` 一次写一档（后端是正本），渲染由 `applySettings` 统一铺。
+  $('#settingsLocaleSelect').addEventListener('change', (event) => {
+    saveSettings({ locale: event.target.value });
+  });
+  // 消息密度：两个 `.radio-card`（原型形态），点哪个写哪个。
+  $('#settingsDensity').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-density]');
+    if (!card) return;
+    saveSettings({ message_density: card.dataset.density });
+  });
   $('#btnSearch').addEventListener('click', openSearchModal);
   $('#searchClose').addEventListener('click', closeSearchModal);
   $('#searchCancel').addEventListener('click', closeSearchModal);
@@ -3276,6 +3367,7 @@ function bindEvents() {
 
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (!$('#settingsOverlay').hidden) closeSettingsModal();
     if (!$('#channelOverlay').hidden) closeChannelModal();
     if (!$('#dmOverlay').hidden) closeDmModal();
     if (!$('#agentOverlay').hidden) closeAgentModal();
@@ -3287,5 +3379,8 @@ function bindEvents() {
 }
 
 /* ─── 启动 ──────────────────────────────────────────────────────────── */
+// 静态文案先按**当前语言**铺一遍（此刻是源语言；`loadWorkspace` 读到后端偏好后会再铺一次），
+// 于是「JS 还没跑完」的那一帧也不会有半份译文。
+applyStaticI18n(document);
 bindEvents();
 loadWorkspace();

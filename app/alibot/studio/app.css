@@ -164,12 +164,15 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   max-width: 68ch; overflow-wrap: anywhere; white-space: pre-wrap;
 }
 .msg.pending .msg-text { color: var(--muted); }
+/* 两个标签的字面量来自**词条表**（`i18n.js` 的 `msg.pendingTag` / `msg.failedTag`），由
+   `app.js` 写在 `.msg-head` 的 `data-state-label` 上——CSS 里不放任何语言文案，
+   否则切语言时这两个 capsule 会留在中文（裸中文扫描也会把它算成漏网文案）。 */
 .msg.pending .msg-head::after {
-  content: "待确认"; font-family: var(--mono); font-size: var(--fs-mono-micro);
+  content: attr(data-state-label); font-family: var(--mono); font-size: var(--fs-mono-micro);
   color: var(--working-text); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px;
 }
 .msg.failed .msg-head::after {
-  content: "发送失败"; font-family: var(--mono); font-size: var(--fs-mono-micro);
+  content: attr(data-state-label); font-family: var(--mono); font-size: var(--fs-mono-micro);
   color: var(--error); border: 1px solid var(--error); border-radius: 4px; padding: 0 4px;
 }
 .msg.failed .msg-text { color: var(--error); text-decoration: line-through; }
@@ -354,6 +357,30 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   margin-bottom: var(--sp-5); padding: var(--sp-4) var(--sp-5); border-radius: var(--r-md);
   background: var(--error-soft); color: var(--error); font-size: var(--fs-sm);
 }
+
+/* ─── 设置弹窗的档位控件（原型 `#btnSettings` → `openSettings()` 的 `radio-row`） ────
+   两个取值分别是 `comfortable` / `compact`（工作区设置的第二档）；选中态只用 `--selected*`
+   族，不新造色位。尺寸与设计系统 `ui_kits/app/app.css` 的 `.radio-card` 同形。 */
+.radio-row { display: flex; gap: var(--sp-4); flex-wrap: wrap; }
+.radio-card {
+  flex: 1; min-width: 130px; border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 10px 11px; text-align: left; background: var(--surface);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.radio-card:hover { border-color: var(--border-strong); }
+.radio-card.is-on { border-color: var(--selected-graphic); background: var(--selected-soft); }
+.radio-card b { font-size: 12.5px; display: block; }
+.radio-card span { font-size: 11.5px; color: var(--muted); }
+
+/* ─── 消息密度（工作区设置的第一档以外的第二档；取值 `comfortable` / `compact`） ────
+   档位挂在 `<html data-density>` 上（由 `app.js` 按工作区设置写），而不是挂在某个容器上：
+   密度是**工作区级**取值，挂在根元素上就不可能出现「两个容器各带一档」的中间态。
+   `compact` 的三处读数（舒适 → 紧凑）：`.msg` 上下内边距 5px → 2px、
+   `.msg-text` 行高 1.65 → 1.5、`.day-sep` 上下外边距 var(--sp-8)/var(--sp-7) → var(--sp-4)/var(--sp-3)。
+   它**只**作用于频道消息流：任务线程的回复行另有 ADR-0016 钉死的行距档，不随它变。 */
+html[data-density='compact'] .msg { padding: 2px var(--sp-4); }
+html[data-density='compact'] .msg-text { line-height: 1.5; }
+html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 
 /* ─── 工作台搜索 ───────────────────────────────────────────────────────── */
 .search-modal { max-width: 680px; }

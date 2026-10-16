@@ -3,8 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>alibot · 协作工作区</title>
+<title data-i18n="app.title">alibot · 协作工作区</title>
 <!--
+  文案一律按**词条**取值（`i18n.js`）：静态节点的初始值是**源语言**（简体中文）的兜底，
+  真正的取值由 `i18n.js` 的 `applyStaticI18n()` 在启动与切语言时铺上；`<html lang>` 与当前语言
+  同一个取值。这里的 `data-i18n` 就是「这个节点属于哪条词条」的唯一声明，不另写一份译文。
+
   视觉与布局契约只读参照 alibot-design-system/（本票不改动该目录）：
   token 名、三栏尺寸（rail 252 / stream 880 / dock 380）、方形头像块、未读徽标色族、
   四态状态点与空态文案都按名字消费。业务状态的唯一正本是后端 HTTP 面。
@@ -22,7 +26,7 @@
 <div class="app" id="shell" data-od-id="app-shell">
 
   <!-- ─── 侧栏 ───────────────────────────────────────────────────────── -->
-  <aside class="rail" id="rail" data-od-id="workspace-sidebar" aria-label="工作区导航">
+  <aside class="rail" id="rail" data-od-id="workspace-sidebar" data-i18n-attr="aria-label:rail.nav" aria-label="工作区导航">
     <div class="rail-head">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
@@ -30,7 +34,7 @@
         </div>
         <div style="min-width:0">
           <div class="brand-name">alibot</div>
-          <div class="brand-sub" id="brandSub">LOCAL · 本机工作台</div>
+          <div class="brand-sub" id="brandSub" data-i18n="app.brandSub">LOCAL · 本机工作台</div>
         </div>
       </div>
     </div>
@@ -38,54 +42,60 @@
     <div class="rail-actions">
       <button class="btn btn-primary" style="flex:1" id="btnNewChannel" data-od-id="btn-new-channel">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
-        新建频道
+        <span data-i18n="rail.newChannel">新建频道</span>
       </button>
-      <button class="btn" id="btnSearch" type="button" data-od-id="btn-workspace-search" title="搜索工作台">搜索</button>
-      <button class="btn" id="btnNewDm" data-od-id="btn-new-dm" title="新建私信">私信</button>
-      <button class="btn" id="btnNewAgent" data-od-id="btn-new-agent" title="新建 Agent">
+      <button class="btn" id="btnSearch" type="button" data-od-id="btn-workspace-search" data-i18n-attr="title:rail.searchTitle" title="搜索工作台"><span data-i18n="rail.search">搜索</span></button>
+      <button class="btn" id="btnNewDm" data-od-id="btn-new-dm" data-i18n-attr="title:rail.newDmTitle" title="新建私信"><span data-i18n="rail.newDm">私信</span></button>
+      <button class="btn" id="btnNewAgent" data-od-id="btn-new-agent" data-i18n-attr="title:rail.newAgentTitle" title="新建 Agent">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 13h.01M15 13h.01"/></svg>
-        Agent
+        <span data-i18n="rail.newAgent">Agent</span>
       </button>
     </div>
 
     <div class="rail-unread" id="unreadSummary" hidden data-od-id="workspace-unread" aria-live="polite">
-      <span>工作区未读</span>
+      <span data-i18n="rail.unread">工作区未读</span>
       <span class="badge" id="unreadTotal">0</span>
     </div>
 
     <nav class="rail-scroll" data-od-id="nav-lists">
       <div class="group">
-        <div class="group-label">频道</div>
+        <div class="group-label" data-i18n="rail.groupChannels">频道</div>
         <div id="channelList"></div>
-        <div class="rail-empty" id="channelListEmpty" hidden>还没有频道。新建一个频道就能开始记录。</div>
+        <div class="rail-empty" id="channelListEmpty" hidden data-i18n="rail.emptyChannels">还没有频道。新建一个频道就能开始记录。</div>
       </div>
       <div class="group" data-od-id="dm-section">
-        <div class="group-label">私信</div>
+        <div class="group-label" data-i18n="rail.groupDms">私信</div>
         <div id="dmList"></div>
-        <div class="rail-empty" id="dmListEmpty">还没有私信。新建私信后会在这里显示。</div>
+        <div class="rail-empty" id="dmListEmpty" data-i18n="rail.emptyDms">还没有私信。新建私信后会在这里显示。</div>
       </div>
       <div class="group">
-        <div class="group-label">本机 Agent</div>
+        <div class="group-label" data-i18n="rail.groupAgents">本机 Agent</div>
         <div id="memberList"></div>
-        <div class="rail-empty" id="memberListEmpty" hidden>还没有 Agent。</div>
+        <div class="rail-empty" id="memberListEmpty" hidden data-i18n="rail.emptyAgents">还没有 Agent。</div>
       </div>
     </nav>
 
+    <!-- rail 底部的**设置入口**（票面：「rail 底部设置入口」）。原型 :515 把它放在 rail head 的
+         icon-btn 行里；本工作台按票面字面放在底部「我」那一行，控件形态沿用原型的 icon-btn
+         （齿轮图标 + `aria-label` / `title`），因为 #68 的提醒入口才占 head 那一行。 -->
     <div class="rail-foot">
-      <div class="avatar av-4" id="meAvatar" aria-hidden="true">我</div>
+      <div class="avatar av-4" id="meAvatar" aria-hidden="true" data-i18n="identity.me">我</div>
       <div style="flex:1; min-width:0">
         <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="meName">owner</div>
-        <div class="brand-sub" style="letter-spacing:0" id="meSub">人类 · 本机</div>
+        <div class="brand-sub" style="letter-spacing:0" id="meSub" data-i18n="identity.human">人类 · 本机</div>
       </div>
-      <span class="presence online" title="在线"></span>
+      <span class="presence online" data-i18n-attr="title:status.online" title="在线"></span>
+      <button class="icon-btn" id="btnSettings" type="button" data-od-id="btn-settings" data-i18n-attr="aria-label:settings.open,title:settings.open" aria-label="设置" title="设置">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+      </button>
     </div>
   </aside>
 
   <!-- ─── 主列 ───────────────────────────────────────────────────────── -->
   <main class="main" id="mainColumn" data-od-id="main-column">
     <div class="conn-banner" id="connBanner" hidden role="alert">
-      <span>后端不可达：当前显示的是最后一次成功读到的内容，发送已被禁止。</span>
-      <button class="btn btn-sm" id="btnReconnect">重试连接</button>
+      <span data-i18n="conn.banner">后端不可达：当前显示的是最后一次成功读到的内容，发送已被禁止。</span>
+      <button class="btn btn-sm" id="btnReconnect" data-i18n="conn.retry">重试连接</button>
     </div>
     <div class="conn-banner" id="streamState" hidden role="status"></div>
 
@@ -93,7 +103,7 @@
       <div class="chan-top">
       <h1 class="chan-title"><span class="hash" id="chanHash">#</span><span id="chanTitle"></span></h1>
         <div class="chan-tools">
-          <button class="icon-btn" id="btnDockToggle" title="切换详情面板" aria-label="切换详情面板">
+          <button class="icon-btn" id="btnDockToggle" data-i18n-attr="title:dock.toggle,aria-label:dock.toggle" title="切换详情面板" aria-label="切换详情面板">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
           </button>
         </div>
@@ -101,9 +111,9 @@
       <div class="chan-desc" id="chanDesc"></div>
       <!-- 页签与消息流在**同一内容区**切换（原型形态）：任务的入口只有这里，左栏没有「任务」段。
            DM 目标下「任务」页签由 app.js 隐藏（任务恰好属于一个频道，DM 里没有任务板这个概念）。 -->
-      <div class="tabs" id="channelTabs" role="tablist" aria-label="频道视图" data-od-id="channel-tabs">
-        <button class="tab is-active" type="button" role="tab" id="tabMessages" data-tab="messages" aria-controls="viewMessages" aria-selected="true" data-od-id="tab-messages">消息 <span class="count" id="msgCount">0</span></button>
-        <button class="tab" type="button" role="tab" id="tabTasks" data-tab="tasks" aria-controls="taskBoard" aria-selected="false" data-od-id="tab-tasks">任务 <span class="count" id="taskCount">0</span></button>
+      <div class="tabs" id="channelTabs" role="tablist" data-i18n-attr="aria-label:tabs.viewLabel" aria-label="频道视图" data-od-id="channel-tabs">
+        <button class="tab is-active" type="button" role="tab" id="tabMessages" data-tab="messages" aria-controls="viewMessages" aria-selected="true" data-od-id="tab-messages"><span data-i18n="tabs.messages">消息</span> <span class="count" id="msgCount">0</span></button>
+        <button class="tab" type="button" role="tab" id="tabTasks" data-tab="tasks" aria-controls="taskBoard" aria-selected="false" data-od-id="tab-tasks"><span data-i18n="tabs.tasks">任务</span> <span class="count" id="taskCount">0</span></button>
       </div>
     </header>
 
@@ -113,17 +123,17 @@
          列表视图是 `.seg` 的另一半，与看板同一份 `GET /api/tasks` 数据。 -->
     <section class="board-wrap" id="taskBoard" hidden data-od-id="tasks-view">
       <div class="board-toolbar">
-        <div class="seg" role="tablist" aria-label="任务视图" data-od-id="task-view-seg">
-          <button class="is-active" type="button" role="tab" data-taskview="board" aria-selected="true" aria-controls="taskColumns" data-od-id="taskview-board">看板</button>
-          <button type="button" role="tab" data-taskview="list" aria-selected="false" aria-controls="taskListWrap" data-od-id="taskview-list">列表</button>
+        <div class="seg" role="tablist" data-i18n-attr="aria-label:board.viewLabel" aria-label="任务视图" data-od-id="task-view-seg">
+          <button class="is-active" type="button" role="tab" data-taskview="board" aria-selected="true" aria-controls="taskColumns" data-od-id="taskview-board" data-i18n="board.board">看板</button>
+          <button type="button" role="tab" data-taskview="list" aria-selected="false" aria-controls="taskListWrap" data-od-id="taskview-list" data-i18n="board.list">列表</button>
         </div>
         <!-- 筛选是 `.filter-chip` 形态（原型 `#filterMine` 是先例）：
              「我的任务」+ 频道筛选。看板是**全工作区视图**（`CONTEXT.md` **任务看板**），
              因此「全部频道」是一个显式选项，不是缺失状态；从频道「任务」页签进来时默认选当前频道。 -->
-        <div class="board-filters" id="boardFilters" role="group" aria-label="任务筛选" data-od-id="board-filters"></div>
+        <div class="board-filters" id="boardFilters" role="group" data-i18n-attr="aria-label:board.filtersLabel" aria-label="任务筛选" data-od-id="board-filters"></div>
         <button class="btn btn-sm" id="btnNewTask" type="button" data-od-id="btn-new-task">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
-          新建任务
+          <span data-i18n="board.newTask">新建任务</span>
         </button>
       </div>
       <div class="board" id="boardScroll">
@@ -135,12 +145,12 @@
     <section class="stream" id="viewMessages" data-od-id="messages-view">
       <div class="stream-inner" id="streamInner">
         <div class="empty" id="emptyNoChannel">
-          <b>还没有频道</b>
-          <p>新建一个频道，就能发出第一条永久记录。</p>
+          <b data-i18n="empty.noChannelTitle">还没有频道</b>
+          <p data-i18n="empty.noChannelBody">新建一个频道，就能发出第一条永久记录。</p>
         </div>
         <div class="empty" id="emptyNoMessage" hidden>
-          <b>该频道还没有消息</b>
-          <p>这里的消息不可编辑、不可删除，是永久记录。</p>
+          <b data-i18n="empty.noMessageTitle">该频道还没有消息</b>
+          <p data-i18n="empty.noMessageBody">这里的消息不可编辑、不可删除，是永久记录。</p>
         </div>
         <div id="messageList"></div>
         <div class="typing-line" id="typingLine" hidden data-od-id="typing-line"></div>
@@ -152,17 +162,17 @@
         <div class="composer-box">
           <!-- @ 补全弹层：挂在 .composer-box 内、输入区之上，于是它跟着 composer 一起在文档流里
                （不会被祖先裁剪，也不会被消息流盖住），且不需要新 z-index 档位。 -->
-          <div class="composer-mention" id="composerMention" role="listbox" aria-label="可提及的当前频道 Agent 成员" hidden data-od-id="mention-picker"></div>
-          <textarea class="composer-input" id="composerInput" rows="1" placeholder="发消息到 #频道名" data-od-id="composer-input" aria-label="消息正文"></textarea>
+          <div class="composer-mention" id="composerMention" role="listbox" data-i18n-attr="aria-label:composer.mentionLabel" aria-label="可提及的当前频道 Agent 成员" hidden data-od-id="mention-picker"></div>
+          <textarea class="composer-input" id="composerInput" rows="1" data-i18n-attr="placeholder:composer.placeholder,aria-label:composer.inputLabel" placeholder="发消息到 #频道名" data-od-id="composer-input" aria-label="消息正文"></textarea>
           <div class="composer-bar">
-            <span class="composer-hint" id="composerHint">Enter 发送 · Shift+Enter 换行</span>
+            <span class="composer-hint" id="composerHint" data-i18n="composer.hint">Enter 发送 · Shift+Enter 换行</span>
             <span class="sep"></span>
-            <button class="composer-send" id="btnSend" disabled aria-label="发送" data-od-id="btn-send">
+            <button class="composer-send" id="btnSend" disabled data-i18n-attr="aria-label:composer.send" aria-label="发送" data-od-id="btn-send">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
             </button>
           </div>
         </div>
-        <div class="composer-note">消息不可编辑、不可删除，是永久记录 · 本机单用户，后端只监听 loopback · 启用远端模型前会先告知出境数据面</div>
+        <div class="composer-note" data-i18n="composer.note">消息不可编辑、不可删除，是永久记录 · 本机单用户，后端只监听 loopback · 启用远端模型前会先告知出境数据面</div>
       </div>
     </footer>
   </main>
@@ -170,11 +180,11 @@
   <!-- ─── 右侧详情面板：**双形态**容器（原型 `.dock` 的做法）：
        `#dockAgent` 频道成员（默认）与 `#dockTask` 任务线程，由 app.js 按当前形态切换显示。
        任务线程的入口是看板卡片，不是页签——「点卡片 → dock 出线程」是同一组交互。 ─── -->
-  <aside class="dock" id="dock" hidden data-od-id="detail-dock" aria-label="详情面板">
+  <aside class="dock" id="dock" hidden data-od-id="detail-dock" data-i18n-attr="aria-label:dock.label" aria-label="详情面板">
     <div class="dock-agent" id="dockAgent">
       <div class="dock-head">
-        <div class="dock-name">频道成员</div>
-        <div class="dock-role" id="dockRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
+        <div class="dock-name" data-i18n="dock.membersTitle">频道成员</div>
+        <div class="dock-role" id="dockRole" data-i18n="dock.membersRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
       </div>
       <div class="dock-scroll" id="dockMembers" data-od-id="dock-members"></div>
     </div>
@@ -182,10 +192,10 @@
       <div class="dock-head">
         <div class="dock-id">
           <div class="meta">
-            <div class="dock-name"><span class="dock-tag">任务线程</span> <span class="dock-task-id" id="ttHeadId"></span></div>
+            <div class="dock-name"><span class="dock-tag" data-i18n="task.threadTag">任务线程</span> <span class="dock-task-id" id="ttHeadId"></span></div>
             <div class="dock-role"><span id="ttHeadSub"></span></div>
           </div>
-          <button class="icon-btn" type="button" id="btnThreadClose" aria-label="关闭任务线程" data-od-id="btn-thread-close">
+          <button class="icon-btn" type="button" id="btnThreadClose" data-i18n-attr="aria-label:dock.threadClose" aria-label="关闭任务线程" data-od-id="btn-thread-close">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
           </button>
         </div>
@@ -196,7 +206,7 @@
            外壳不能再套在它上面。 -->
       <div class="tt-summary">
         <h2 class="tt-title">
-          <label class="sr-only" for="ttTitleInput">任务标题</label>
+          <label class="sr-only" for="ttTitleInput" data-i18n="task.titleLabel">任务标题</label>
           <input class="tt-title-input" id="ttTitleInput" data-od-id="thread-title-input" />
         </h2>
         <div class="tt-meta">
@@ -210,35 +220,35 @@
       </div>
       <div class="tt-actions">
         <div class="tt-actions-row">
-          <span class="tt-label">推进</span>
+          <span class="tt-label" data-i18n="dock.move">推进</span>
           <div class="tt-chips" id="ttTransitions" data-od-id="thread-transitions"></div>
         </div>
         <div class="tt-actions-row">
-          <span class="tt-label">指派</span>
+          <span class="tt-label" data-i18n="dock.assign">指派</span>
           <div class="tt-chips" id="ttAssign" data-od-id="thread-assign"></div>
         </div>
       </div>
       <div class="tt-scroll" id="ttScroll">
         <div class="d-sec">
-          <div class="d-sec-title">关联消息</div>
+          <div class="d-sec-title" data-i18n="dock.linked">关联消息</div>
           <div id="ttLinked"></div>
         </div>
         <div class="d-sec">
-          <div class="d-sec-title">讨论 · <span id="ttReplyCount">0</span> 条</div>
+          <div class="d-sec-title" id="ttReplyTitle"></div>
           <div id="ttReplies"></div>
         </div>
         <div class="d-sec">
-          <div class="d-sec-title">状态变更记录</div>
+          <div class="d-sec-title" data-i18n="dock.history">状态变更记录</div>
           <ul class="tt-log" id="ttHistory"></ul>
         </div>
       </div>
       <div class="tt-reply">
         <div class="composer-box">
-          <textarea class="composer-input" id="taskComposerInput" rows="1" placeholder="回复该任务线程…" aria-label="任务消息正文" data-od-id="thread-reply-input"></textarea>
+          <textarea class="composer-input" id="taskComposerInput" rows="1" data-i18n-attr="placeholder:dock.replyPlaceholder,aria-label:dock.replyInputLabel" placeholder="回复该任务线程…" aria-label="任务消息正文" data-od-id="thread-reply-input"></textarea>
           <div class="composer-bar">
-            <span class="composer-hint">Enter 回复 · Shift+Enter 换行</span>
+            <span class="composer-hint" data-i18n="dock.replyHint">Enter 回复 · Shift+Enter 换行</span>
             <span class="sep"></span>
-            <button class="composer-send" type="button" id="taskSend" disabled aria-label="回复" data-od-id="thread-reply-send">
+            <button class="composer-send" type="button" id="taskSend" disabled data-i18n-attr="aria-label:dock.replySend" aria-label="回复" data-od-id="thread-reply-send">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
             </button>
           </div>
@@ -253,29 +263,29 @@
   <div class="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="searchModalTitle">
     <div class="modal-head">
       <div style="flex:1">
-        <h2 id="searchModalTitle">搜索工作台</h2>
-        <div class="sub">搜索频道、私信与任务线程中的普通消息；可限定一个 target。</div>
+        <h2 id="searchModalTitle" data-i18n="search.title">搜索工作台</h2>
+        <div class="sub" data-i18n="search.sub">搜索频道、私信与任务线程中的普通消息；可限定一个 target。</div>
       </div>
-      <button class="icon-btn" type="button" id="searchClose" aria-label="关闭搜索">
+      <button class="icon-btn" type="button" id="searchClose" data-i18n-attr="aria-label:search.closeAria" aria-label="关闭搜索">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="field">
-        <label for="searchQueryInput">关键词</label>
-        <input class="input" id="searchQueryInput" placeholder="大小写不敏感的子串匹配" autocomplete="off" data-od-id="search-query" />
+        <label for="searchQueryInput" data-i18n="search.queryLabel">关键词</label>
+        <input class="input" id="searchQueryInput" data-i18n-attr="placeholder:search.queryPlaceholder" placeholder="大小写不敏感的子串匹配" autocomplete="off" data-od-id="search-query" />
       </div>
       <div class="field">
-        <label for="searchTargetSelect">限定 target</label>
+        <label for="searchTargetSelect" data-i18n="search.targetLabel">限定 target</label>
         <select class="input" id="searchTargetSelect" data-od-id="search-target"></select>
       </div>
       <div class="form-error" id="searchError" hidden role="alert"></div>
       <div class="search-results" id="searchResults" role="status" aria-live="polite" data-od-id="search-results"></div>
     </div>
     <div class="modal-foot">
-      <button class="btn" type="button" id="searchCancel">关闭</button>
+      <button class="btn" type="button" id="searchCancel" data-i18n="common.close">关闭</button>
       <span class="sep"></span>
-      <button class="btn btn-primary" type="button" id="searchSubmit" data-od-id="search-submit">搜索</button>
+      <button class="btn btn-primary" type="button" id="searchSubmit" data-i18n="search.submit" data-od-id="search-submit">搜索</button>
     </div>
   </div>
 </div>
@@ -285,29 +295,29 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
     <div class="modal-head">
       <div style="flex:1">
-        <h2 id="taskModalTitle">新建任务</h2>
-        <div class="sub">任务创建后拥有独立线程；状态变化会记录在它的变更记录里。</div>
+        <h2 id="taskModalTitle" data-i18n="task.modalTitle">新建任务</h2>
+        <div class="sub" data-i18n="task.modalSub">任务创建后拥有独立线程；状态变化会记录在它的变更记录里。</div>
       </div>
-      <button class="icon-btn" type="button" id="taskModalClose" aria-label="关闭">
+      <button class="icon-btn" type="button" id="taskModalClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="field">
-        <label for="taskCreateTitle">任务标题</label>
-        <input class="input" id="taskCreateTitle" placeholder="写下一个新任务…" autocomplete="off" data-od-id="task-create-title" />
+        <label for="taskCreateTitle" data-i18n="task.titleLabel">任务标题</label>
+        <input class="input" id="taskCreateTitle" data-i18n-attr="placeholder:task.titlePlaceholder" placeholder="写下一个新任务…" autocomplete="off" data-od-id="task-create-title" />
       </div>
       <div class="field">
-        <label for="taskCreateChannel">所属频道</label>
+        <label for="taskCreateChannel" data-i18n="task.channelLabel">所属频道</label>
         <select class="input" id="taskCreateChannel" data-od-id="task-create-channel"></select>
-        <div class="hint">任务恰好属于一个频道；指派在任务线程里用「指派」chip 完成。</div>
+        <div class="hint" data-i18n="task.channelHint">任务恰好属于一个频道；指派在任务线程里用「指派」chip 完成。</div>
       </div>
       <div class="form-error" id="taskFormError" hidden role="alert"></div>
     </div>
     <div class="modal-foot">
       <span class="sep"></span>
-      <button class="btn" type="button" id="taskCreateCancel">取消</button>
-      <button class="btn btn-primary" type="button" id="taskCreateSubmit" data-od-id="task-create-submit">新建任务</button>
+      <button class="btn" type="button" id="taskCreateCancel" data-i18n="common.cancel">取消</button>
+      <button class="btn btn-primary" type="button" id="taskCreateSubmit" data-i18n="task.create" data-od-id="task-create-submit">新建任务</button>
     </div>
   </div>
 </div>
@@ -317,33 +327,33 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="channelModalTitle">
     <div class="modal-head">
       <div style="flex:1">
-        <h2 id="channelModalTitle">新建频道</h2>
-        <div class="sub">频道创建后即可向它发送消息，无需刷新或重启。</div>
+        <h2 id="channelModalTitle" data-i18n="channel.modalTitle">新建频道</h2>
+        <div class="sub" data-i18n="channel.modalSub">频道创建后即可向它发送消息，无需刷新或重启。</div>
       </div>
-      <button class="icon-btn" id="channelModalClose" aria-label="关闭">
+      <button class="icon-btn" id="channelModalClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="field">
-        <label for="channelNameInput">频道名称</label>
-        <input class="input" id="channelNameInput" placeholder="例如：移动端体验" autocomplete="off" />
+        <label for="channelNameInput" data-i18n="channel.nameLabel">频道名称</label>
+        <input class="input" id="channelNameInput" data-i18n-attr="placeholder:channel.namePlaceholder" placeholder="例如：移动端体验" autocomplete="off" />
       </div>
       <div class="field">
-        <label for="channelDescInput">描述</label>
-        <textarea class="textarea" id="channelDescInput" placeholder="这个频道讨论什么？"></textarea>
+        <label for="channelDescInput" data-i18n="channel.descLabel">描述</label>
+        <textarea class="textarea" id="channelDescInput" data-i18n-attr="placeholder:channel.descPlaceholder" placeholder="这个频道讨论什么？"></textarea>
       </div>
       <div class="field">
-        <label>初始成员</label>
+        <label data-i18n="channel.membersLabel">初始成员</label>
         <div class="member-pick" id="memberPicker" data-od-id="member-picker"></div>
-        <div class="hint" id="memberPickerHint">勾选的 Agent 会成为该频道的显式成员。还没有可勾选的对象时，用左上角「Agent」按钮创建一个。</div>
+        <div class="hint" id="memberPickerHint" data-i18n="channel.membersHint">勾选的 Agent 会成为该频道的显式成员。还没有可勾选的对象时，用左上角「Agent」按钮创建一个。</div>
       </div>
       <div class="form-error" id="channelFormError" hidden role="alert"></div>
     </div>
     <div class="modal-foot">
       <span class="sep"></span>
-      <button class="btn" id="channelCancel">取消</button>
-      <button class="btn btn-primary" id="channelCreateSubmit" data-od-id="btn-create-channel">创建频道</button>
+      <button class="btn" id="channelCancel" data-i18n="common.cancel">取消</button>
+      <button class="btn btn-primary" id="channelCreateSubmit" data-i18n="channel.create" data-od-id="btn-create-channel">创建频道</button>
     </div>
   </div>
 </div>
@@ -355,25 +365,25 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dmModalTitle">
     <div class="modal-head">
       <div style="flex:1">
-        <h2 id="dmModalTitle">新建私信</h2>
-        <div class="sub">选择一个 Agent；每个 Agent 只有一条私信，重复创建会复用。</div>
+        <h2 id="dmModalTitle" data-i18n="dm.modalTitle">新建私信</h2>
+        <div class="sub" data-i18n="dm.modalSub">选择一个 Agent；每个 Agent 只有一条私信，重复创建会复用。</div>
       </div>
-      <button class="icon-btn" id="dmModalClose" aria-label="关闭">
+      <button class="icon-btn" id="dmModalClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="field">
-        <label>私信对象</label>
+        <label data-i18n="dm.peerLabel">私信对象</label>
         <div class="member-pick" id="dmAgentPicker" data-od-id="dm-agent-picker"></div>
-        <div class="hint">私信始终只有 owner 与所选 Agent；不能加入或离开。</div>
+        <div class="hint" data-i18n="dm.hint">私信始终只有 owner 与所选 Agent；不能加入或离开。</div>
       </div>
       <div class="form-error" id="dmFormError" hidden role="alert"></div>
     </div>
     <div class="modal-foot">
       <span class="sep"></span>
-      <button class="btn" id="dmCancel">取消</button>
-      <button class="btn btn-primary" id="dmCreateSubmit" data-od-id="btn-create-dm" disabled>创建私信</button>
+      <button class="btn" id="dmCancel" data-i18n="common.cancel">取消</button>
+      <button class="btn btn-primary" id="dmCreateSubmit" data-i18n="dm.create" data-od-id="btn-create-dm" disabled>创建私信</button>
     </div>
   </div>
 </div>
@@ -383,57 +393,107 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="agentModalTitle">
     <div class="modal-head">
       <div style="flex:1">
-        <h2 id="agentModalTitle">新建 Agent</h2>
-        <div class="sub">模型与系统提示保存为配置数据；换模型不需要改协作域代码。</div>
+        <h2 id="agentModalTitle" data-i18n="agent.modalTitle">新建 Agent</h2>
+        <div class="sub" data-i18n="agent.modalSub">模型与系统提示保存为配置数据；换模型不需要改协作域代码。</div>
       </div>
-      <button class="icon-btn" id="agentModalClose" aria-label="关闭">
+      <button class="icon-btn" id="agentModalClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="field">
-        <label for="agentNameInput">名称</label>
-        <input class="input" id="agentNameInput" placeholder="例如：小明" autocomplete="off" />
+        <label for="agentNameInput" data-i18n="agent.nameLabel">名称</label>
+        <input class="input" id="agentNameInput" data-i18n-attr="placeholder:agent.namePlaceholder" placeholder="例如：小明" autocomplete="off" />
       </div>
       <div class="field">
-        <label for="agentRoleInput">角色</label>
-        <input class="input" id="agentRoleInput" placeholder="例如：前端工程师" autocomplete="off" />
+        <label for="agentRoleInput" data-i18n="agent.roleLabel">角色</label>
+        <input class="input" id="agentRoleInput" data-i18n-attr="placeholder:agent.rolePlaceholder" placeholder="例如：前端工程师" autocomplete="off" />
       </div>
       <div class="field">
-        <label for="agentProviderSelect">模型提供商</label>
+        <label for="agentProviderSelect" data-i18n="agent.providerLabel">模型提供商</label>
         <select class="input" id="agentProviderSelect" data-od-id="agent-provider"></select>
         <div class="hint" id="agentProviderHint"></div>
       </div>
       <div class="field">
-        <label for="agentModelInput">模型名</label>
-        <input class="input" id="agentModelInput" placeholder="例如：qwen-max / gpt-4.1 / qwen2.5" autocomplete="off" />
-        <div class="hint">保存为 <span class="mono">provider:model</span> 形式的模型标识。</div>
+        <label for="agentModelInput" data-i18n="agent.modelLabel">模型名</label>
+        <input class="input" id="agentModelInput" data-i18n-attr="placeholder:agent.modelPlaceholder" placeholder="例如：qwen-max / gpt-4.1 / qwen2.5" autocomplete="off" />
+        <!-- 提示被拆成「前缀 + `provider:model` + 后缀」三段：中间那个 `mono` 是标识符本身，
+             不是文案，因此它不进词条表（词条只覆盖它两侧的自然语言）。 -->
+        <div class="hint"><span data-i18n="agent.modelHintPrefix">保存为 </span><span class="mono">provider:model</span><span data-i18n="agent.modelHintSuffix"> 形式的模型标识。</span></div>
       </div>
       <div class="field">
-        <label for="agentPromptInput">系统提示</label>
-        <textarea class="textarea" id="agentPromptInput" placeholder="这个 Agent 应该怎么工作？"></textarea>
+        <label for="agentPromptInput" data-i18n="agent.promptLabel">系统提示</label>
+        <textarea class="textarea" id="agentPromptInput" data-i18n-attr="placeholder:agent.promptPlaceholder" placeholder="这个 Agent 应该怎么工作？"></textarea>
       </div>
       <div class="remote-notice" id="agentRemoteNotice" hidden data-od-id="remote-notice">
         <div class="remote-notice-head">
           <span class="dot"></span>
-          <b id="agentRemoteTitle">启用远端模型前需要你确认一次</b>
+          <b id="agentRemoteTitle" data-i18n="agent.remoteTitleStatic">启用远端模型前需要你确认一次</b>
         </div>
         <p class="remote-notice-body" id="agentRemoteBody"></p>
         <div class="remote-notice-foot">
           <span class="hint" id="agentRemoteHint"></span>
-          <button class="btn btn-sm btn-primary" id="agentRemoteConfirm" type="button" data-od-id="remote-ack">我已了解，确认发送</button>
+          <button class="btn btn-sm btn-primary" id="agentRemoteConfirm" type="button" data-i18n="agent.remoteConfirm" data-od-id="remote-ack">我已了解，确认发送</button>
         </div>
       </div>
       <div class="form-error" id="agentFormError" hidden role="alert"></div>
     </div>
     <div class="modal-foot">
       <span class="sep"></span>
-      <button class="btn" id="agentCancel">取消</button>
-      <button class="btn btn-primary" id="agentCreateSubmit" data-od-id="btn-create-agent">创建 Agent</button>
+      <button class="btn" id="agentCancel" data-i18n="common.cancel">取消</button>
+      <button class="btn btn-primary" id="agentCreateSubmit" data-i18n="agent.create" data-od-id="btn-create-agent">创建 Agent</button>
     </div>
   </div>
 </div>
 
+<!-- ─── 工作区设置（本轮：语言偏好 + 消息密度两个真档位） ─────────────────
+     形态照原型 `alibot-app.html:1586-1597` 的设置弹窗：`.field` + `radio-row`/`.radio-card`
+     两个控件族。**没有主题档位**——主题由 #71 追加第三档（它要先有深色 token 族），
+     本票不得出现它的字段或档位（票面 Change 3 与 Constraints）。
+     两个档位都**立刻生效并持久化**：写 `PATCH /api/settings`，后端是唯一正本。 -->
+<div class="overlay" id="settingsOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="settingsModalTitle" data-i18n="settings.title">设置</h2>
+        <div class="sub" data-i18n="settings.sub">工作区偏好</div>
+      </div>
+      <button class="icon-btn" type="button" id="settingsModalClose" data-i18n-attr="aria-label:settings.closeAria" aria-label="关闭设置">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="settingsLocaleSelect" data-i18n="settings.languageLabel">语言</label>
+        <select class="input" id="settingsLocaleSelect" data-od-id="settings-locale">
+          <option value="zh-CN" data-i18n="settings.languageZh">简体中文</option>
+          <option value="en" data-i18n="settings.languageEn">English</option>
+        </select>
+      </div>
+      <div class="field">
+        <label data-i18n="settings.densityLabel">消息密度</label>
+        <div class="radio-row" id="settingsDensity" role="group" data-od-id="settings-density">
+          <button class="radio-card" type="button" data-density="comfortable" data-od-id="density-comfortable">
+            <b data-i18n="settings.densityComfortable">舒适</b>
+            <span data-i18n="settings.densityComfortableHint">默认</span>
+          </button>
+          <button class="radio-card" type="button" data-density="compact" data-od-id="density-compact">
+            <b data-i18n="settings.densityCompact">紧凑</b>
+            <span data-i18n="settings.densityCompactHint">更多消息</span>
+          </button>
+        </div>
+      </div>
+      <div class="form-error" id="settingsFormError" hidden role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn btn-primary" type="button" id="settingsDone" data-i18n="settings.done" data-od-id="settings-done">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 词条表先于 app.js：前者提供 `t()` / `setLocale()` / `applyStaticI18n()`，后者只消费。 -->
+<script src="./i18n.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

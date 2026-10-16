@@ -91,6 +91,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
 | `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关 | 模型与系统提示是**配置数据**，换模型不改代码 |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证** |
+| `workspace_settings` | id(=1), locale, message_density, updated_at | **工作区设置**：单行表，列就是明确列出的档位（本轮到语言偏好与消息密度；主题由 #71 追加第三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `channel` | id, 名称, 描述 | |
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
 | `channel_read` | member_id, channel_id, last_read_seq | 已读位置（未读的正本）。owner 的行使未读徽标；agent 的行是它自己的消费游标 |
@@ -187,6 +188,8 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
+| `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度**；后端是唯一正本） |
+| `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
 | `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
 | `GET /api/channels` | 频道列表（含 `last_seq` / `last_read_seq` / `unread_count`） |
 | `POST /api/channels` | 新建频道 `{name, description, member_ids}`；校验失败**整体不创建** |
@@ -224,6 +227,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 .venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
 node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
 node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
+node --test app/tests/i18n_ui.test.cjs    # 词条机制（同键集 / 无落单键 / 裸中文扫描 / <html lang> / 设置弹窗两档）
 ```
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、

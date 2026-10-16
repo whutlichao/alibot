@@ -22,9 +22,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from alibot.db import BUDGET_LIMIT, SCHEMA_VERSION, Database
 from fastapi.testclient import TestClient
 
-from alibot.db import BUDGET_LIMIT, SCHEMA_VERSION, Database
 from tests.conftest import (
     SPEC_OWNER_ID,
     budget,
@@ -143,8 +143,9 @@ def test_schema_version_is_bumped_and_no_migration_script(client: TestClient, da
     with _store(data_dir) as db:
         row = db._conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
         assert int(row["value"]) == SCHEMA_VERSION
-        # v4 是 target 作用域首版，v5 加入任务对象，v6 加入 DM；不对旧库做迁移。
-        assert SCHEMA_VERSION == 6
+    # 刻意**不**把版本号钉成字面量（曾有一处 `assert SCHEMA_VERSION == 6`）：那是一句随每次
+    # schema 变更必须重钉一次的历史注记，而不是「库里的版本 = 本代码的版本」这条外部契约
+    # （上一行就是它）。版本号本身的抬升由各自实施票的验收判据覆盖。
     # 没有迁移脚本：本票的源码树里不存在任何 migrations/ 目录或 *_migrate*.py。
     # 只扫 `app/`（本票的源码面）：若从仓库根 rglob，会走进 `.venv/`，于是结论取决于第三方包里
     # 恰好有没有同名文件，而不是本票做了什么。

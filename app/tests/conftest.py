@@ -26,6 +26,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from alibot.api import create_app  # noqa: E402
+
 from tests.scripted import ManualScheduler, ScriptedAgentSeam  # noqa: E402
 
 # 规格固定的唯一成员行 id（issue #2 正文写明的对外身份，不是实现内部结构）。

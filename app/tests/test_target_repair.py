@@ -21,9 +21,9 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from alibot.db import DATABASE_FILE_NAME, SCHEMA_VERSION, Database, SchemaVersionMismatch
 from alibot.repair import RepairError, render_outcome, repair_target_rows
+
 from tests.conftest import backend, channel_with_agent, create_agent, messages, send
 
 APP_DIR = Path(__file__).resolve().parents[1]

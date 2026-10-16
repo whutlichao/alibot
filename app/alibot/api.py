@@ -3,6 +3,8 @@
 端点（浏览器只经这里读写，业务正本在后端单文件库）：
 
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
+- ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度）
+- ``PATCH /api/settings``                     写工作区设置（配置类取值；不落消息、不唤醒、不消耗预算）
 - ``GET  /api/search``                        工作台普通消息搜索（可限定一个 target）
 - ``GET  /api/channels``                      频道列表（含未读计数）
 - ``POST /api/channels``                      新建频道（名称 + 描述 + 初始成员，原子校验）
@@ -45,7 +47,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.background import BackgroundTask
 
 from .agent_seam import AgentScopeAgentSeam
@@ -187,6 +189,32 @@ class MarkRead(BaseModel):
     seq: Annotated[int, Field(strict=True)]
 
 
+class SettingsUpdate(BaseModel):
+    """工作区设置的**部分**更新。
+
+    未知键由 ``extra="forbid"`` **整体拒绝**（``validation_failed``），不静默忽略：
+    把设置面当成通用 key-value 存储正是 `CONTEXT.md` **工作区设置** 的 `_Avoid_`；
+    档位取值由服务层按 ``LOCALES`` / ``MESSAGE_DENSITIES`` 校验，错误体仍是既有的
+    ``code`` + ``fields`` 形态。字段缺省 = 这一次请求没提到这一档（保持原值）。
+
+    **显式 ``null`` 不是「没提到」**：它既不是档位取值、也不是合法档位，因此同样整体拒绝，
+    而不是被当成一次成功的空更新（`null` 与「这一档保持原值」是两件事，后者由**省略字段**表达）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    locale: str | None = None
+    message_density: str | None = None
+
+    @field_validator("locale", "message_density", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
+        if value is None:
+            raise ValueError("档位取值不能为 null（要保留原值请省略该字段）")
+        return value
+
+
 def create_app(
     data_dir: Path | str | None = None,
     db: Database | None = None,
@@ -262,6 +290,25 @@ def create_app(
     @app.get("/api/health")
     def get_health() -> dict[str, Any]:
         return {"status": "ok", "member_id": OWNER_ID, "data_dir": str(app.state.data_dir)}
+
+    # ─── 工作区设置（配置类取值：语言偏好 / 消息密度） ────────────────────
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        """工作区设置（**语言偏好** / **消息密度**）。正本是库内的那一行。"""
+        return {"settings": service.settings()}
+
+    @app.patch("/api/settings")
+    def update_settings(payload: SettingsUpdate) -> dict[str, Any]:
+        """部分更新工作区设置。
+
+        只写**配置类**取值：改设置**不落消息、不唤醒、不消耗预算**（ADR-0007 的边界：
+        人类面可以写配置，不得写用量类事实）。未知键与非法档位整体拒绝，不留一半新一半旧。
+        """
+        return {
+            "settings": service.update_settings(
+                locale=payload.locale, message_density=payload.message_density
+            )
+        }
 
     @app.get("/api/search")
     def search_messages(
