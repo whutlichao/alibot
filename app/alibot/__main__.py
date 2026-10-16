@@ -125,17 +125,22 @@ def _run_migrate(data_dir: Path) -> int:
       审计台账 → 报告；成功 ``0``、备份失败或链上失败（已回滚）⇒ ``5``。
     - 版本闸门拒绝且不是可迁移源版本（低于 3 / 版本号缺失但有业务数据 / 认不出的号 / **未来版本**）
       ⇒ :data:`DATA_NOT_ACCEPTED_EXIT_CODE`，正文与启动路径、``--repair-targets`` **逐字相同**。
-    - 版本已是本代码版本、当前形态完好 ⇒ ``0``，无事可做、**不建备份**。
+    - 版本已是本代码版本、当前形态完好、且 channel 型作用域数据没有缺 ⇒ ``0``，无事可做、
+      **不建备份**。
+    - 版本已是本代码版本、表都在、但 channel 型作用域行还留在旧表名里（形态步骤有活）⇒ 走同一条
+      迁移编排（备份 + 单事务 + 审计 + 报告），链本身可能是空的；成功 ``0``。
     - 版本已是本代码版本、但缺当前形态必须存在的表、**且**库里有业务数据 ⇒
       :data:`REPAIR_FAILED_EXIT_CODE`（复用 ``repair`` 的判据），发生在**任何写入之前**。
     - 版本已是本代码版本、缺表但**没有**业务数据 ⇒ ``0``（空库口径不变）。
 
     ``3`` / ``4`` 两条分支都发生在任何写入之前：闸门只读，形态判定只读——因此库文件 sha256 在这
-    两条路径上都不变、也不出现新备份。
+    两条路径上都不变、也不出现新备份。「形态步骤有活」这条也先经**只读**探测（``repair`` 的
+    :func:`channel_scope_gaps_of`）判出来，然后才进入会写库的迁移编排。
     """
     # 复用既有判据（票面 Constraints）：形态清单与「有业务数据」都取自 ``repair`` / ``Database``
-    # 已有的那一份，本入口不新增第二套判定，自己只做「事实 → 退出码」的映射。
-    from .repair import missing_current_required_tables
+    # 已有的那一份，本入口不新增第二套判定，自己只做「事实 → 退出码」的映射。形态步骤的「有缺」探测
+    # 与链共用 ``repair.channel_scope_gaps``——同一份判据，不是第二套。
+    from .repair import channel_scope_gaps_of, missing_current_required_tables
 
     db_path = data_dir / DATABASE_FILE_NAME
     if not db_path.exists():
@@ -154,10 +159,16 @@ def _run_migrate(data_dir: Path) -> int:
 
     try:
         missing = missing_current_required_tables(database.table_names())
-        if not missing:
-            print(f"迁移：{db_path} 已是本代码的 schema 形态（版本 {SCHEMA_VERSION}），无事可做；不建备份。")
-            return 0
-        if database.has_business_data():
+        # 缺表时不去问形态步骤（那正是「4 不被形态步骤当成可补齐对象」这条边界的落点）；只有形态完好
+        # 才探测 channel 型作用域行有没有缺——那是「号已是本代码版本、数据还留在旧表名里」的判据。
+        # 探测与「有没有业务数据」都只读，因此都发生在决定备份之前。
+        gaps = () if missing else channel_scope_gaps_of(database)
+        has_business_data = bool(missing) and database.has_business_data()
+    finally:
+        database.close()
+
+    if missing:
+        if has_business_data:
             # 「4 不是迁移失败」：它说这个库不被本入口处置。不做任何写入、不建备份。
             print(
                 f"不执行迁移：{db_path} 的版本已是 {SCHEMA_VERSION}，但缺当前形态必须存在的表"
@@ -167,8 +178,14 @@ def _run_migrate(data_dir: Path) -> int:
             return REPAIR_FAILED_EXIT_CODE
         print(f"迁移：{db_path} 缺当前形态的表但没有业务数据，无事可做；不建备份、不凭空初始化库。")
         return 0
-    finally:
-        database.close()
+
+    if gaps:
+        # 形态步骤有活：版本号已经是目标版本，但 channel 型作用域数据还留在旧表名里（#37 那类半改名
+        # 库的「号已到位、数据没搬」形态）。它**不是**「无事可做」——走同一条迁移编排去补，链为空。
+        return _perform_migration(data_dir, SCHEMA_VERSION)
+
+    print(f"迁移：{db_path} 已是本代码的 schema 形态（版本 {SCHEMA_VERSION}），无事可做；不建备份。")
+    return 0
 
 
 def _run_repair(data_dir: Path) -> int:

@@ -11,9 +11,14 @@
 - :func:`migrate_data_dir` —— 「CLI 参数 / 数据目录 / 备份编排」：整目录备份 → 单事务 → 跑链 →
   落审计台账 → 给出报告。
 
-这条缝是**故意留的挂点**：#93 的预演在**库副本**上跑同一条链（复用 :func:`run_chain`），#92 在链
-前插入形态步骤（在 :data:`STEPS` 之前接一个不依赖版本号的步骤，或给 :func:`run_chain` 加一个前置
-钩子）。两者都不需要动 CLI 参数、目录与备份编排。
+这条缝是**故意留的挂点**：#93 的预演在**库副本**上跑同一条链（复用 :func:`run_chain`）；#92 的
+**形态步骤**（:func:`run_shape_step`）已经是 :func:`run_chain` 的前置——它在走 :data:`STEPS` 之前
+先按**形态**（不看版本号）补齐 channel 型作用域数据，因此预演与真实迁移共享同一个入口。
+
+**形态步骤（#92）**：``channel`` 行在、而 channel 型的**影子行 / 成员 / 已读 / 预算**有缺时，按
+:data:`repair.CHANNEL_SCOPE_MOVES` 的同一份列映射一次补齐**四张表**、影子行最先落。它是链的
+**不可省前置**：#37 那类半改名库的 ``schema_version`` 已是新一代，按版本号走链会**跳过** ``3 → 4``，
+只有形态步骤能把它搬回来。
 
 **引擎的两条骨架**（规格 D5 / D6）：
 
@@ -54,7 +59,7 @@ from .db import (
     STAMP_SCHEMA_VERSION_SQL,
     utc_now,
 )
-from .repair import CHANNEL_SCOPE_MOVES
+from .repair import CHANNEL_SCOPE_MOVES, channel_scope_gaps
 
 # 迁移前整目录备份的落点：数据目录**同级**、命名自带方向与 UTC 时间戳（规格 D8）。
 BACKUP_INFIX = "-backup-"
@@ -594,6 +599,38 @@ def _step_11_to_12(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
+# 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
+SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
+
+
+def run_shape_step(conn: sqlite3.Connection, source_version: int) -> StepReport | None:
+    """链前的**形态步骤**：有缺才搬，无缺不动（幂等：修好的库改动 0 行）。
+
+    「四条搬迁共享既有列映射、影子行先落、四张表一起补齐」由 :func:`_step_3_to_4` 承担——它与逐版链
+    的 ``3 → 4`` 是**同一段代码**、同一份 :data:`repair.CHANNEL_SCOPE_MOVES`（不写第二份）。
+    ``run_shape_step`` 只加一层**形态判定**（:func:`repair.channel_scope_gaps`，只读）：健康库
+    （数据本就在 ``target_*``）不触发、不产生任何改动。
+
+    跑过形态步骤后随即施一次共享对齐：``--migrate`` 对「号已是本代码版本、只是 channel 型作用域数据
+    还留在旧表名里」的库走的是**空链**（:func:`plan_steps` 为 ``()``），终态对齐只能由这里落。逐版链
+    上的调用方多这一次对齐没有副作用（对齐幂等、只增不减）。
+
+    ``source_version`` 只进报告（形态步骤不推进版本号），因此 :class:`StepReport` 的 ``from`` /
+    ``to`` 都填它。
+    """
+    if not channel_scope_gaps(conn, _table_names(conn)):
+        return None
+    changed = _step_3_to_4(conn)
+    _align_to_current_schema(conn)
+    return StepReport(
+        label=SHAPE_STEP_LABEL,
+        from_version=source_version,
+        to_version=source_version,
+        changed_rows=changed,
+    )
+
+
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(3, 4, "channel 型作用域数据搬迁（影子行 / 成员 / 已读 / 预算）", _step_3_to_4),
     MigrationStep(4, 5, "任务表与任务线程（task + message.task_ref + 触发器）", _step_4_to_5),
@@ -651,13 +688,20 @@ def plan_steps(from_version: int, to_version: int = SCHEMA_VERSION) -> tuple[Mig
 
 # ─── 执行器 ──────────────────────────────────────────────────────────────────
 def run_chain(conn: sqlite3.Connection, from_version: int, to_version: int = SCHEMA_VERSION) -> ChainResult:
-    """对一个**已经打开的库**逐步走链（不跳步），每步之后施一次对齐兜底。
+    """对一个**已经打开的库**先跑形态步骤、再逐步走链（不跳步），每步之后施一次对齐兜底。
+
+    形态步骤是**不可省的前置**（规格 D5 / D11）：它不依赖版本号，处置「号已是新一代、channel 型作用域
+    数据还留在旧表名里」的半改名库——按版本号走链会**跳过** ``3 → 4``，只有它能搬回来。健康库上它是
+    无操作（改动 0 行、不进报告）。
 
     **事务边界不在这里**：调用方负责 ``BEGIN IMMEDIATE`` / ``COMMIT`` / ``ROLLBACK``（单事务收口，
     规格 D8）。它也不管备份与审计——那是 :func:`migrate_data_dir` 的编排。这条缝就是 #93 的挂点：
-    在**库副本**上跑同一条链、拿同一份 :class:`ChainResult`。
+    在**库副本**上跑同一条链、拿同一份 :class:`ChainResult`（含形态步骤那一项）。
     """
     reports: list[StepReport] = []
+    shape = run_shape_step(conn, from_version)
+    if shape is not None:
+        reports.append(shape)
     for step in plan_steps(from_version, to_version):
         changed = step.apply(conn)
         _align_to_current_schema(conn)
@@ -782,7 +826,15 @@ def render_report(report: MigrationReport) -> str:
         "实际执行的步骤（每步改动的数据行数）：",
     ]
     for step in report.chain.steps:
-        lines.append(f"  {step.from_version} → {step.to_version}  {step.label}  改动 {step.changed_rows} 行")
+        if step.from_version == step.to_version:
+            # 形态步骤（#92）：它**不推进版本号**，``from`` / ``to`` 只是源版本的回声。链上的逐版步骤
+            # 一律 ``from + 1 == to``（:func:`_assert_chain_is_continuous` 守着），所以这个分支不会
+            # 落到版本步上；打出一个「4 → 4」会把不推进说成推进。
+            lines.append(f"  {step.label}（不推进版本号）  改动 {step.changed_rows} 行")
+        else:
+            lines.append(
+                f"  {step.from_version} → {step.to_version}  {step.label}  改动 {step.changed_rows} 行"
+            )
     lines.extend(
         [
             "",
