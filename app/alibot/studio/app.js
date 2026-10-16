@@ -1346,16 +1346,6 @@ function openTaskFromComposer() {
   openTaskModal($('#composerInput').value);
 }
 
-/** 清空主 composer（任务建成后调用）：正文已经变成任务标题，不该再留在输入框里。
-    `updateMentionPicker()` 顺带把还开着的候选清单收掉（值清空后触发点也就不存在了）。 */
-function clearComposer() {
-  const input = $('#composerInput');
-  input.value = '';
-  autosizeComposer();
-  syncSendButton();
-  updateMentionPicker();
-}
-
 function closeTaskModal() {
   $('#taskOverlay').hidden = true;
 }
@@ -1380,7 +1370,7 @@ async function submitTask() {
     closeTaskModal();
     if (forTaskFromComposer) {
       forTaskFromComposer = false;
-      clearComposer(); // D6：正文已变成任务标题，成功后不再留在输入框里。
+      resetComposerInput(); // D6：正文已变成任务标题，成功后不再留在输入框里。
     }
     // 新任务要能看见：把筛选放到「能让它可见」的那一档，而不是让它落在一个被筛掉的频道之外。
     if (!state.taskFilterChannelId || state.taskFilterChannelId === channelId) {
@@ -1577,12 +1567,8 @@ function sendMessage() {
     author: state.member,
   };
   state.pending.push(pending);
-  input.value = '';
-  autosizeComposer();
+  resetComposerInput();
   renderMessages();
-  syncSendButton();
-  // 正文已经清空：清单不能留在屏上（它描述的是刚被送出的那段前缀）。
-  closeMentionPicker();
   scrollToBottom();
   deliver(pending);
 }
@@ -2481,6 +2467,17 @@ function autosizeComposer() {
 function syncSendButton() {
   $('#btnSend').disabled =
     !$('#composerInput').value.trim() || !state.online || !activeTarget() || state.mode !== 'channel';
+}
+
+/** 清空主 composer 的输入区：正文、自适应高度、发送键、候选清单一起收。
+    两条路径共用同一件事「正文已经不在输入框里了」：消息送出（`sendMessage`）与
+    「作为任务发送」成功把正文变成任务标题（D6）。 */
+function resetComposerInput() {
+  $('#composerInput').value = '';
+  autosizeComposer();
+  syncSendButton();
+  // 清单描述的是刚消失的那段前缀，不能留在屏上。
+  closeMentionPicker();
 }
 
 /* ─── @ 补全：清单只找候选 + 按解析器的引号规则拼字符串（前端不解析提及） ──────
