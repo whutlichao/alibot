@@ -86,7 +86,8 @@ function createHarness(fetch) {
     },
   };
   const context = vm.createContext({ document, fetch, URLSearchParams });
-  const appPath = path.join(__dirname, "../alibot/studio/app.js");
+  const studioDir = path.join(__dirname, "../alibot/studio");
+  const appPath = path.join(studioDir, "app.js");
   const source = fs.readFileSync(appPath, "utf8");
   const startup = /\n\s*bindEvents\(\);\s*loadWorkspace\(\);\s*$/;
   assert.match(source, startup, "app startup calls should remain at the end of app.js");
@@ -94,6 +95,11 @@ function createHarness(fetch) {
     startup,
     "\nglobalThis.__searchUiTest = { bindSearchEvents, state };\n",
   );
+  // 词条表先装载：`app.js` 的界面文案一律按 `t(key)` 取值，词条表是它的**唯一**来源
+  // （`I18N_SOURCE_LOCALE` 这类顶层常量也在 `app.js` 装载时求值）。
+  vm.runInContext(fs.readFileSync(path.join(studioDir, "i18n.js"), "utf8"), context, {
+    filename: path.join(studioDir, "i18n.js"),
+  });
   vm.runInContext(testSource, context, { filename: appPath });
   context.__searchUiTest.bindSearchEvents();
   return {
