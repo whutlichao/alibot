@@ -1761,6 +1761,7 @@ function onStreamStatus(targetId, payload) {
   renderMembers();
   renderDms();
   renderDock();
+  renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
   // 已呈现的轮次结果行里的状态描述（「未启用」/「这一轮失败」）必须跟着后端事实走，
   // 不能停在一句已经不成立的话上。没呈现过该成员就不重建消息流。
   if (state.activeChannelId === targetId && previous !== payload.status && outcomeMembers().has(payload.member_id)) {
@@ -1777,6 +1778,7 @@ function onStreamTyping(targetId, payload) {
   }
   renderMembers();
   renderDock();
+  renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
 }
 
 function showTypingFor(targetId, memberId) {
@@ -1802,6 +1804,7 @@ function onStreamOutcome(targetId, payload) {
   }
   renderMembers();
   renderDock();
+  renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
   // 五种结果都要重建消息流：只有 `failed` 会被状态点推导拦住（`ignored` 等三态**不是**失败，
   // 状态点仍空闲），但它们的摘要行同样要在不刷新页面的情况下出现。
   if (state.activeChannelId === targetId && added) renderMessages();
@@ -2102,7 +2105,7 @@ function memberCard(member, agentsById, canJoin) {
     是两件事（与 `channelAgentMembers()` 同一条纪律，读的是同一份缓存，只是不按 kind 过滤）。 */
 function channelMemberRows(channelId) {
   const members = state.channelMembers[channelId];
-  return members ? members.slice() : null;
+  return members || null;
 }
 
 /** 打开名册（入口 = 频道头部的成员按钮，原型 `#btnChannelMembers`）：锁定当前频道、
@@ -2139,17 +2142,18 @@ function renderRoster() {
   if (title) title.textContent = t('roster.title', { name: channel ? channel.name : '' });
   const sub = $('#rosterSub');
   // 副标题的数字就是成员表的**条数**；读不到时不写 0（那会把「读不到」说成「一个都没有」）。
-  if (sub) sub.textContent = members ? t('roster.sub', { count: members.length }) : '';
+  const loaded = !channelMembersFailed.has(channelId) && Boolean(members);
+  if (sub) sub.textContent = loaded ? t('roster.sub', { count: members.length }) : '';
   const body = $('#rosterBody');
   if (!body) return;
+  // 「读不到」先判：读失败时缓存会被置成空表，若不先看这个标记，下面那一步就会把
+  // 「暂时读不到」说成「这个频道还没有成员」（与面板同一条纪律，只是名册连旧表也不列）。
+  if (channelMembersFailed.has(channelId)) {
+    replaceChildren(body, [el('div', 'rail-empty', t('roster.unavailable'))]);
+    return;
+  }
   if (!members) {
-    replaceChildren(body, [
-      el(
-        'div',
-        'rail-empty',
-        channelMembersFailed.has(channelId) ? t('roster.unavailable') : t('roster.loading'),
-      ),
-    ]);
+    replaceChildren(body, [el('div', 'rail-empty', t('roster.loading'))]);
     return;
   }
   if (!members.length) {
@@ -2597,7 +2601,11 @@ const mentionPicker = {
 };
 // 频道成员清单的读取状态：每个频道各自一份；失败只记事实，不伪造成员。
 const channelMembersFailed = new Set();
-const channelMembersLoading = new Set();
+// 在飞的读取：**同一个频道复用同一个 promise**，于是调用方 `await` 之后拿到的就是
+// 「这一次读取已经落地」的状态。早退会给调用方一个「读完了」的假信号——名册打开的那一瞬
+// 撞上在飞读取（切频道、composer 获得焦点都会发起）时，它就会用旧缓存渲染，而且再没有
+// 第二次重绘的机会；`openTask` / `selectTarget` 的 `await` 也依赖同一条语义。
+const channelMembersInFlight = new Map();
 // 正在「加入频道」的成员 id（按下到后端答复之间禁用那一个控件，防重复提交）。
 const joining = new Set();
 
@@ -2662,21 +2670,31 @@ function channelAgentMembers(channelId) {
   return members ? members.filter((member) => member.kind === 'agent') : null;
 }
 
+/** 读一次该频道的成员表并落进缓存；**同一频道的在飞读取复用同一个 promise**
+    （`await` 它拿到的就是「这一次读取已落地」的状态，见 `channelMembersInFlight`）。 */
 async function refreshChannelMembers(channelId) {
   const id = channelId || state.activeChannelId;
   const channel = state.channels.find((item) => item.id === id);
-  if (!channel || channelMembersLoading.has(id)) return;
-  channelMembersLoading.add(id);
+  if (!channel) return null;
+  const inFlight = channelMembersInFlight.get(id);
+  if (inFlight) return inFlight;
+  const read = (async () => {
+    try {
+      const payload = await api(channelPath(id, '/members'));
+      state.channelMembers[id] = payload.members || [];
+      channelMembersFailed.delete(id);
+    } catch {
+      // 读不到就如实记下：不静默清空已读到的候选，也不伪造成员。
+      if (!state.channelMembers[id]) state.channelMembers[id] = [];
+      channelMembersFailed.add(id);
+    }
+    return state.channelMembers[id];
+  })();
+  channelMembersInFlight.set(id, read);
   try {
-    const payload = await api(channelPath(id, '/members'));
-    state.channelMembers[id] = payload.members || [];
-    channelMembersFailed.delete(id);
-  } catch {
-    // 读不到就如实记下：不静默清空已读到的候选，也不伪造成员。
-    if (!state.channelMembers[id]) state.channelMembers[id] = [];
-    channelMembersFailed.add(id);
+    return await read;
   } finally {
-    channelMembersLoading.delete(id);
+    channelMembersInFlight.delete(id);
   }
 }
 

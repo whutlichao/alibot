@@ -312,6 +312,13 @@ function createHarness(options) {
     calls.push({ url, method, body });
     const membersMatch = /^\/api\/channels\/([^/]+)\/members$/.exec(url);
     if (membersMatch && method === "GET") {
+      if (config.membersError) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: "internal_error", message: "后端不可达" } }),
+        };
+      }
       const channelId = decodeURIComponent(membersMatch[1]);
       const members = channelMembers[channelId] || [];
       sentMembers[channelId] = members;
@@ -387,7 +394,8 @@ function createHarness(options) {
       startup,
       "\nglobalThis.__i18nTest = { state, applySettings, loadSettings, saveSettings,"
         + " openSettingsModal, renderSettingsModal, setLocale, applyStaticI18n, bindEvents,"
-        + " openRosterModal, closeRosterModal, renderRoster, renderDock, refreshStatuses };\n",
+        + " openRosterModal, closeRosterModal, renderRoster, renderDock, refreshStatuses,"
+        + " refreshChannelMembers };\n",
     ),
     context,
     { filename: appPath },
@@ -798,22 +806,17 @@ test("the roster copy is taken from the string catalogs in both languages", asyn
   await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
   await flush();
 
-  const keys = [
-    "roster.entryTitle",
-    "roster.title",
-    "roster.sub",
-    "roster.loading",
-    "roster.unavailable",
-    "roster.empty",
-    "roster.roleFallback",
-    "roster.closeAria",
-  ];
+  // 本票新增的文案（票面 ④）：按键取**两套**取值比对——两份都在、都不是空串、且第二语言
+  // 不是源语言逐字复制。键名从词条表按前缀取（不在这里另抄一份清单，「键集都有值」已由上面
+  // 的键集比对盯着，这一条盯的是「名册的每条文案真的翻过」）。
+  const keys = Object.keys(harness.catalogs["zh-CN"]).filter((key) => key.startsWith("roster."));
+  assert.ok(keys.length >= 8, `名册的词条看起来太少：${keys.length}`);
   for (const key of keys) {
-    for (const locale of harness.locales) {
-      const value = harness.catalogs[locale][key];
-      assert.equal(typeof value, "string", `${key} 在 ${locale} 里必须有取值`);
-      assert.ok(value.length > 0, `${key} 在 ${locale} 里不能是空串`);
-    }
+    const zh = harness.catalogs["zh-CN"][key];
+    const en = harness.catalogs.en[key];
+    assert.equal(typeof en, "string", `${key} 在第二语言里必须有取值`);
+    assert.ok(zh.length > 0 && en.length > 0, `${key} 在两份取值里都不能是空串`);
+    assert.notEqual(en, zh, `${key} 的第二语言取值不能与源语言逐字相同`);
   }
 
   const name = harness.api.state.channels[0].name;
@@ -843,5 +846,52 @@ test("the roster copy is taken from the string catalogs in both languages", asyn
     harness.elementFor("#rosterTitle").textContent,
     catalogText(harness, "zh-CN", "roster.title", { name }),
   );
+});
+
+test("the roster waits for an in-flight member read instead of staying on the loading line", async () => {
+  const harness = rosterHarness();
+  // 名册打开的那一刻正好有一次该频道的成员表读取在飞（切频道 / composer 获得焦点都会发起）：
+  // 名册必须等这一趟落地后再渲染，而不是渲染成旧缓存（或永远停在「正在读取…」）。
+  const pending = harness.api.refreshChannelMembers("ch_1");
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  assert.equal(
+    harness.elementFor("#rosterBody").textContent,
+    catalogText(harness, "zh-CN", "roster.loading"),
+    "读取还没落地时是「正在读取」，不是空名单",
+  );
+
+  await pending;
+  await flush();
+
+  assert.deepEqual(
+    rosterRowNodes(harness).map((row) => row.dataset.member),
+    ["own_1", "ag_1"],
+    "在飞的那次读取落地后，名册要按它渲染出成员",
+  );
+});
+
+test("a failed member read is reported as unavailable, never as an empty roster", async () => {
+  const harness = createHarness({ membersError: true });
+  const state = harness.api.state;
+  state.channels = [{ id: "ch_1", name: "设计系统重构" }];
+  state.activeChannelId = "ch_1";
+  state.members = [{ id: "own_1", kind: "owner", display_name: "林舟", avatar_slot: 4 }];
+  state.agents = [];
+  harness.api.bindEvents();
+
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  await flush();
+
+  // 「读不到」不是「一个都没有」：后端那次 GET 失败时，名册说的是不可用，不是空名单，
+  // 副标题也不写「0 位成员」（那会把失败说成一个成立的读数）。
+  assert.equal(
+    harness.elementFor("#rosterBody").textContent,
+    catalogText(harness, "zh-CN", "roster.unavailable"),
+  );
+  assert.notEqual(
+    harness.elementFor("#rosterBody").textContent,
+    catalogText(harness, "zh-CN", "roster.empty"),
+  );
+  assert.equal(harness.elementFor("#rosterSub").textContent, "");
 });
 
