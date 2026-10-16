@@ -1,8 +1,10 @@
 """当前 schema 库的**作用域数据补齐入口**（issue #37 追加范围）。
 
-**这不是自动迁移。** 规格决策 8 与 ADR-0004 明确「不做迁移、新库从空数据开始」，本模块**不改变**
-那条纪律：它只在用户**显式**执行 ``python -m alibot --repair-targets`` 时运行，任何正常启动路径
-都**不会**调用它（``__main__`` 里它是与「起服务」并列的另一条分支，不是启动流程的一步）。
+**这不是自动迁移。** 跨版本迁移改由**显式命令** ``python -m alibot --migrate`` 执行，任何启动路径都
+不自动迁移（ADR-0015 取代了 ADR-0004 / 规格决策 8 的「不做旧数据迁移」口径）。本模块只在用户**显式**
+执行 ``python -m alibot --repair-targets`` 时运行，任何正常启动路径都**不会**调用它（``__main__`` 里
+它是与「起服务」并列的另一条分支，不是启动流程的一步）。**本入口的版本门放宽见实施票 ⑤（#94）**：
+本票（#89）只落地 ``--migrate`` 旗标与答复矩阵、并复用本模块的形态判据。
 
 它处置的是**一个具体的历史事故**：#24 把消息作用域升为 ``target`` 并把 ``SCHEMA_VERSION`` 3 → 4，
 而 v4 的 ``_initialize`` 曾经会静默接受 v3 库（那是 #37 主修修掉的那半）。被那样打开过的库会停在
@@ -229,10 +231,15 @@ class RepairOutcome:
         return self.changed_rows == 0
 
 
-def _existing_tables(conn: sqlite3.Connection) -> set[str]:
-    return {
-        str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    }
+def missing_current_required_tables(existing: set[str]) -> tuple[str, ...]:
+    """当前 schema 形态**必须存在、但库里缺失**的表（空元组 = 形态完好）。
+
+    这是「库形态对不对」这条判据的**唯一落点**：``--migrate`` 与 ``--repair-targets`` 两条显式入口
+    共用它（票面要求复用既有判据，不新增第二套）。缺表时算不算「本入口不处置」还取决于库里有不有
+    业务数据（:meth:`Database.has_business_data`）——那由调用方按自己的答复语义决定：修复入口报错、
+    迁移入口返回退出码 ``4``，而没有业务数据时两者都是空操作（``0``）。
+    """
+    return tuple(sorted(set(_CURRENT_REQUIRED_TABLES) - existing))
 
 
 def _counts(conn: sqlite3.Connection, existing: set[str]) -> dict[str, int]:
@@ -303,13 +310,13 @@ def repair_target_rows(data_dir: Path | str) -> RepairOutcome:
     database = Database.open_without_initializing(data_dir)  # 闸门 + **不建表**
     try:
         conn = database._conn
-        existing = _existing_tables(conn)
-        missing = sorted(set(_CURRENT_REQUIRED_TABLES) - existing)
+        existing = database.table_names()
+        missing = missing_current_required_tables(existing)
         if missing:
             # 库形态不对：但「压根没有业务数据」（空库 / 刚建还没初始化的库）不是错误——
             # 没有数据就没什么可补的，报错反而把「空目录上跑一次」变成一个失败。
             # 只有「**有**业务数据但不是当前 schema 形态」才是本入口不处置的那种库。
-            if database._has_business_data():
+            if database.has_business_data():
                 raise RepairError(
                     f"这个库不是当前 schema 形态（缺表：{', '.join(missing)}），本入口只处置「当前库里 "
                     f"channel 型 target 缺失」这一种情形。"

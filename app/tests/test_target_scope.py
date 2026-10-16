@@ -137,7 +137,8 @@ def test_append_only_triggers_still_reject_update_and_delete(client: TestClient,
 
 
 def test_schema_version_is_bumped_and_no_migration_script(client: TestClient, data_dir: Path) -> None:
-    """``SCHEMA_VERSION`` 已 bump（决策 8：第二版从空库开始，不写迁移脚本）。"""
+    """``SCHEMA_VERSION`` 已 bump，且源码树里没有迁移脚本（ADR-0015：迁移是显式入口 ``--migrate``
+    的事，号段随票携带 ``from → to`` 步骤；本票不改号、不建 ``migrations/``）。"""
     create_channel(client, name="版本")
 
     with _store(data_dir) as db:

@@ -8,9 +8,10 @@
 再用 SQL 把那一个频道的 target 作用域数据**搬回旧表名并删掉新表行**，复现相同的缺行形态。
 历史 v4 事故的版本号事实如上；当前代码仍由 schema 闸门拒绝旧版本，不会把这组测试当作迁移。
 
-**为什么这条入口存在**：规格决策 8 / ADR-0004 只规定「不做自动迁移」，没规定「已被半改名的库怎么办」。
-本入口**不是**自动迁移：它只在用户显式跑 ``python -m alibot --repair-targets`` 时执行，
-正常启动路径一行都不会碰它（``test_normal_startup_never_repairs_anything`` 钉住这一点）。
+**为什么这条入口存在**：ADR-0015 规定迁移是**显式命令**、启动路径不自动迁移（它取代了 ADR-0004 的
+「不做旧数据迁移」口径），但没规定「已被半改名的库怎么办」。本入口**不是**自动迁移：它只在用户显式跑
+``python -m alibot --repair-targets`` 时执行，正常启动路径一行都不会碰它
+（``test_normal_startup_never_repairs_anything`` 钉住这一点）。
 """
 
 from __future__ import annotations
@@ -472,7 +473,7 @@ def test_cli_repair_refuses_an_old_database_with_a_non_zero_exit_code(tmp_path: 
     )
 
     assert completed.returncode != 0
-    assert "拒绝启动" in completed.stderr
+    assert "拒绝：数据库的 schema 版本与本代码不匹配" in completed.stderr
     assert _row_counts(data_dir) == before
 
 
