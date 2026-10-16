@@ -675,6 +675,19 @@ test("≤900px：dock 是右抽屉，开合同步 hidden 与 .is-open", async ()
   await harness.key("Escape");
   assert.equal(dock.classList.contains("is-open"), false, "ESC 也收起右抽屉");
   assert.equal(dock.hidden, true);
+
+  // 「收起来了」必须压得住下一次整体重绘：`render()` 每次都按内容形态调 `setDockMode()`，
+  // 若它无条件显示，收起就只是一帧的假动作（打开着一条任务线程时按 ESC 会立刻弹回来）。
+  harness.api.state.activeTaskId = "t1";
+  harness.api.setDockMode("task", true);
+  assert.equal(dock.classList.contains("is-open"), true, "有内容 + 显式打开 → 显示");
+  harness.api.setDockOpen(false);
+  harness.api.setDockMode("task");
+  assert.equal(dock.classList.contains("is-open"), false, "整体重绘不得把人按过的收起推翻");
+  assert.equal(dock.hidden, true);
+  // 但显式打开（点卡片 / 点左栏 Agent 行，`reveal`）要能重新打开它。
+  harness.api.setDockMode("task", true);
+  assert.equal(dock.classList.contains("is-open"), true, "显式打开清掉「人收起来了」这一位");
 });
 
 test(">900px：抽屉的焦点行为一个字不动（桌面不回归）", async () => {

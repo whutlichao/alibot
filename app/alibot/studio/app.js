@@ -139,6 +139,10 @@ const state = {
   taskFilterMine: false,
   // 任务线程现在是右侧 dock 的**第二种形态**（`dockMode`），不再是主线上的一个视图。
   dockMode: 'agent',
+  // 「人把 dock 收起来了」——与「dock 里有没有内容」是两件事。`setDockOpen(false)` 置位，
+  // 显式打开（卡片 / Agent 行 / 频道头的开关）清位；`setDockMode()` 只在没有这一位时才
+  // 自动显示，否则下一次整体重绘会把「人刚按下的收起」推翻（收起会变成一次性的假动作）。
+  dockDismissed: false,
   // Agent 详情（dock **第三形态**）：`activeAgentId` 是被打开的那一个成员，
   // `agentDetailTab` 是它当前显示的页签（只有「概览」「运行时」两个，日志页签不做）。
   activeAgentId: null,
@@ -1310,9 +1314,14 @@ function renderAssignChips(task) {
     「同时显示两件东西」在构造上不可能发生（一次只有一种为可见）。
 
     形态本身**不单独存一份**：它由「现在打开着哪一个对象」推导（`activeTaskId` 优先于
-    `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类漂移没有落脚点。 */
-function setDockMode(mode) {
+    `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类漂移没有落脚点。
+
+    `reveal` = 这一次是**人显式的打开**（点看板卡片 / 点左栏 Agent 行）：它清掉
+    `dockDismissed`。整体重绘（`render()`）走默认的 `false`，于是人按过的收起不会被下一次
+    重绘推翻 —— 「看起来收起了、下一帧又回来」等于没有出口。 */
+function setDockMode(mode, reveal) {
   state.dockMode = mode;
+  if (reveal) state.dockDismissed = false;
   const isTask = mode === 'task' && state.activeTaskId;
   const isDetail = mode === 'detail' && state.activeAgentId;
   $('#dockAgent').hidden = Boolean(isTask || isDetail);
@@ -1320,7 +1329,7 @@ function setDockMode(mode) {
   $('#dockDetail').hidden = !isDetail;
   // 滑入放在**形态定下来之后**：≤900px 打开抽屉要把焦点送进第一个可聚焦控件，
   // 而那一步要跳过 `hidden` 子树 —— 先开抽屉会把焦点送给一个还在 `hidden` 里的控件。
-  if (isTask || isDetail) setDockOpen(true);
+  if ((isTask || isDetail) && !state.dockDismissed) setDockOpen(true);
 }
 
 function setViewMode(mode) {
@@ -1450,13 +1459,15 @@ function closeRail() {
 }
 
 /** dock 的开合：`hidden` 与 `.is-open` 必须同进同出（票面：状态与类名同步），
-    因此所有写 `dock.hidden` 的地方都走这里，不各写一遍。 */
+    因此所有写 `dock.hidden` 的地方都走这里，不各写一遍。
+    「人收起来了」这一位也在这里落 —— 它是 `setDockMode()` 自动显示时要看的那一位。 */
 function setDockOpen(open) {
   const dock = $('#dock');
   if (!dock) return;
   const wasOpen = !dock.hidden;
   dock.hidden = !open;
   dock.classList.toggle('is-open', open);
+  state.dockDismissed = !open;
   const toggle = $('#btnDockToggle');
   if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
   if (!mobileShell()) return;
@@ -1497,7 +1508,8 @@ async function openTask(taskId) {
   state.activeTask = taskById(taskId);
   state.taskMessages = [];
   state.taskSeenSeqs = new Set();
-  setDockMode('task');
+  // `reveal`：点卡片是**人显式的打开**，于是它压过「上一次人把 dock 收起来了」这一位。
+  setDockMode('task', true);
   renderTaskThread();
   try {
     // 任务线程成员表（`GET /api/tasks/{id}/members`）**不取**：指派 chip 的候选是**频道**的
@@ -2460,7 +2472,8 @@ async function openAgentDetail(memberId) {
   state.taskSeenSeqs = new Set();
   state.activeAgentId = memberId;
   state.agentDetailTab = 'overview';
-  setDockMode('detail');
+  // 同上：点 Agent 行是显式打开，`reveal` 压过「人把 dock 收起来过」这一位。
+  setDockMode('detail', true);
   renderMembers();
   renderAgentDetail();
   await refreshAgentDetail(memberId);
