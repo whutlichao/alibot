@@ -25,6 +25,29 @@
 
 <div class="app" id="shell" data-od-id="app-shell">
 
+  <!-- ─── 移动端壳（≤900px）：顶栏 + 抽屉遮罩 ─────────────────────────────
+       两个类名与 900px 断点照原型 `alibot-app.html:459-495` 与切片
+       `screens/mobile-shell.html:14-18`（规格决策 D11 把它们定为契约）。
+       原型把顶栏摆在 `.app` **外面**；这里放进 `.app` 的第一个子节点，因为本页
+       `body{overflow:hidden}` + `.app{height:100dvh}`，放外面会被裁掉一截。
+       `>900px` 时它 `display:none`（`app.css`），因此完全不参与桌面三栏排布。
+
+       顶栏只有「打开导航」一个控件：搜索在本工作台是**主线视图**，入口是 rail 与 `⌘K`
+       （#63 定的形态），不在顶栏再开第二个入口（原型的 `#mtSearch` 不照抄）。
+       标题（`#mtTitle`）是**当前 target 的名字**，由 `app.js` 按后端事实填，不写死。 -->
+  <div class="mobile-topbar" data-od-id="mobile-topbar">
+    <button class="icon-btn" type="button" id="railToggle" data-od-id="rail-toggle"
+            aria-controls="rail" aria-expanded="false"
+            data-i18n-attr="aria-label:mobile.railToggle,title:mobile.railToggle"
+            aria-label="打开导航" title="打开导航">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <span class="grow" id="mtTitle"></span>
+  </div>
+  <!-- 抽屉遮罩：≤900px 出现，点它收起左抽屉；键盘的等价动作是 ESC（`app.js`）。
+       它是纯呈现件，因此 `aria-hidden` —— 读屏用户不需要听见一层遮罩。 -->
+  <div class="rail-scrim" id="railScrim" data-od-id="rail-scrim" aria-hidden="true" hidden></div>
+
   <!-- ─── 侧栏 ───────────────────────────────────────────────────────── -->
   <aside class="rail" id="rail" data-od-id="workspace-sidebar" data-i18n-attr="aria-label:rail.nav" aria-label="工作区导航">
     <div class="rail-head">
@@ -117,7 +140,7 @@
           <button class="icon-btn" id="btnChannelMembers" type="button" data-od-id="btn-channel-members" data-i18n-attr="title:roster.entryTitle,aria-label:roster.entryTitle" title="频道成员" aria-label="频道成员">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M17 20a5.5 5.5 0 0 0-2.5-4.6"/></svg>
           </button>
-          <button class="icon-btn" id="btnDockToggle" data-i18n-attr="title:dock.toggle,aria-label:dock.toggle" title="切换详情面板" aria-label="切换详情面板">
+          <button class="icon-btn" id="btnDockToggle" data-i18n-attr="title:dock.toggle,aria-label:dock.toggle" title="切换详情面板" aria-label="切换详情面板" aria-controls="dock" aria-expanded="false">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
           </button>
         </div>
@@ -201,12 +224,19 @@
                （不会被祖先裁剪，也不会被消息流盖住），且不需要新 z-index 档位。 -->
           <div class="composer-mention" id="composerMention" role="listbox" data-i18n-attr="aria-label:composer.mentionLabel" aria-label="可提及的当前频道 Agent 成员" hidden data-od-id="mention-picker"></div>
           <textarea class="composer-input" id="composerInput" rows="1" data-i18n-attr="placeholder:composer.placeholder,aria-label:composer.inputLabel" placeholder="发消息到 #频道名" data-od-id="composer-input" aria-label="消息正文"></textarea>
+          <!-- 待发送的附件草稿（#67）：上传成功后显示在这里，随下一条消息一起绑定。
+               空的时候整块 `hidden`：没有附件就不占版面。 -->
+          <div class="composer-attachments" id="composerAttachments" hidden></div>
           <div class="composer-bar">
             <!-- 工具行按原型 `alibot-app.html:647-660` 落位：附件 → @提及 → 作为任务发送 → 分隔 → 提示 → 发送。
-                 本票只落 @提及 与 作为任务发送 两个**有行为**的图标按钮；原型的首槽（附件）由 #67 接线，
-                 这里**不**落一个没有行为的图标按钮——它对键盘与读屏用户是一个按下去什么都不发生的停站
-                 （与「指派 pill 用 span 而不是 button」同一条纪律）。#67 把 `#btnAttach` 插在 `#btnMention`
-                 之前即可补回首槽。 -->
+                 附件（#67）落在原型那个**首槽**上：它接的是两步上传（选文件 → 上传成草稿 → 随消息绑定），
+                 不是一个按下去什么都不发生的占位图标。 -->
+            <button class="icon-btn" type="button" id="btnAttach" data-i18n-attr="title:composer.attachAction,aria-label:composer.attachAction" title="附件" aria-label="附件" data-od-id="btn-attach">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 11.5 12.5 20a5 5 0 1 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L10 17.7a1.6 1.6 0 0 1-2.3-2.3l7.8-7.8"/></svg>
+            </button>
+            <!-- 原生文件选择器（**隐藏**），由 `#btnAttach` 触发：不新造一套选择器 UI，
+                 `multiple` 让一次能选多个（多附件并发上限之外的**配额**策略才是 Out of Scope）。 -->
+            <input class="sr-only" type="file" id="attachInput" multiple data-i18n-attr="aria-label:composer.attachAction" aria-label="附件" data-od-id="attach-input" />
             <button class="icon-btn" type="button" id="btnMention" data-i18n-attr="title:composer.mentionAction,aria-label:composer.mentionAction" title="提及 Agent" aria-label="提及 Agent" data-od-id="btn-mention">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
             </button>
@@ -233,6 +263,15 @@
       <div class="dock-head">
         <div class="dock-name" data-i18n="dock.membersTitle">频道成员</div>
         <div class="dock-role" id="dockRole" data-i18n="dock.membersRole">本频道已加入的 Agent 与未加入者可加入的 Agent；状态点由后端事实推导：空闲 / 正在回复 / 出错 / 未启用</div>
+        <!-- ≤900px 抽屉**自己的**出口（原型 `alibot-app.html:679-681` 的 `[data-dock-close]`）：
+             那时 dock 是盖住主列的右抽屉，频道头里那个 `#btnDockToggle` 正好被抽屉自己挡住，
+             所以抽屉里必须有一个能关掉它的控件。>900px 它是 `display:none`：桌面 dock 头
+             的排布与 Tab 顺序一个字节都不变（组件件在 `app.css` 的响应式一节）。 -->
+        <button class="icon-btn dock-close" type="button" id="dockClose" data-dock-close data-od-id="dock-close"
+                data-i18n-attr="aria-label:dock.closePanel,title:dock.closePanel"
+                aria-label="关闭详情面板" title="关闭详情面板">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
       </div>
       <div class="dock-scroll" id="dockMembers" data-od-id="dock-members"></div>
     </div>

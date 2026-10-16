@@ -298,6 +298,28 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .composer-send:disabled { background: var(--panel-2); color: var(--faint); cursor: not-allowed; }
 .composer-note { margin-top: var(--sp-3); text-align: center; font-size: var(--fs-caption); color: var(--faint); }
 
+/* ─── 附件（#67）：待发送的草稿（composer 内）+ 消息里的可下载元素 ──────────
+   同一块 `.attach` 形状服务两处，差别只有一个 `is-link` 档：消息里它是原生 `<a download>`，
+   composer 里它是不可点的胶囊 + 一个移除键。色值只消费既有 token（--panel / --border /
+   --accent* / --faint），不新造色位。 */
+.composer-attachments { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4) 0; }
+.msg-attachments { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.attach {
+  display: inline-flex; align-items: center; gap: var(--sp-2); max-width: 100%;
+  padding: 3px var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--panel); color: var(--fg); font-size: var(--fs-caption);
+}
+.attach.is-link { text-decoration: none; color: var(--accent-deep); background: var(--accent-soft); }
+.attach.is-link:hover { border-color: var(--accent-graphic); }
+.attach.is-pending { color: var(--muted); border-style: dashed; }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch; }
+.attach-size { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
+.attach-remove {
+  width: 14px; height: 14px; border: 0; border-radius: var(--r-pill); background: none;
+  color: var(--faint); font-size: var(--fs-sm); line-height: 1; cursor: pointer;
+}
+.attach-remove:hover { color: var(--error); }
+
 /* ─── @ 补全弹层（成员清单） ─────────────────────────────────────────────
    形态与新建频道弹窗的成员勾选控件同族（.member-opt 圆角胶囊 + 方形头像块 + 名字），
    但它是**列**而不是换行排布，且挂在 .composer-box 内部：于是它跟着 composer 一起在文档流里，
@@ -325,6 +347,8 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   background: var(--surface); display: flex; flex-direction: column; min-height: 0;
 }
 .dock-head { padding: 13px var(--sp-7); border-bottom: 1px solid var(--border); }
+/* dock 头的「关闭详情面板」：只在 ≤900px 的右抽屉里出现（组件在响应式一节里长出来）。 */
+.dock-close { display: none; }
 .dock-name { font-size: var(--fs-title); font-weight: var(--fw-heavy); letter-spacing: var(--ls-snug); }
 .dock-role { font-size: var(--fs-caption); color: var(--muted); margin-top: var(--sp-1); }
 
@@ -574,16 +598,75 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 
-/* ─── 响应式 ──────────────────────────────────────────────────────────── */
+/* ─── 响应式：移动端抽屉壳（≤900px） ─────────────────────────────────────
+   类名与断点照原型 `alibot-app.html:459-495` 与切片 `screens/mobile-shell.html:14-18`：
+   `.mobile-topbar` / `.rail-scrim` / `.is-open` 三个名字是规格决策 D11 定下的契约，不自创。
+
+   一个正本：抽屉开没开只看 `.is-open`（`app.js` 与它同步 `hidden` / `aria-expanded`）。
+   离屏位就是静止位 —— `.rail` 的起点在 `translateX(-100%)`、`.dock` 在 `translateX(100%)`，
+   `.is-open` 把它们滑到位（`--dur-drawer`）。
+
+   关闭态是 `visibility: hidden`（不只是位移）：离屏件若还能被 Tab 命中，焦点就会停在
+   一个屏幕外、看不见的控件上 —— 那正是票面禁止的键盘可达性缺陷。 */
+.mobile-topbar { display: none; }
 @media (max-width: 1080px) {
   .dock { width: var(--dock-w-md); flex-basis: var(--dock-w-md); }
 }
 @media (max-width: 900px) {
   .app { flex-direction: column; }
-  .rail { width: 100%; flex-basis: auto; max-height: 42dvh; border-right: 0; border-bottom: 1px solid var(--border); }
+  /* 顶栏只在 ≤900px 出现（sticky，`--z-topbar`）：它显示当前 target 标题，
+     并给出左抽屉的开关。它是 `.app` 的第一个子节点（原型放在 `.app` 外面 —— 本页
+     `body{overflow:hidden}` + `.app{height:100dvh}`，放外面会被裁掉一截）。 */
+  .mobile-topbar {
+    display: flex; align-items: center; gap: var(--sp-4); padding: 9px 12px;
+    position: sticky; top: 0; z-index: var(--z-topbar);
+    background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  .mobile-topbar .grow { flex: 1; min-width: 0; font-weight: var(--fw-bold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 两条抽屉**共用**的一半：定位体裁、离屏/可见、过渡与浮起。方向、宽度与 z 档位在
+     下面各自的一条规则里给（rail 向左、dock 向右），于是「抽屉怎么滑」只有一份声明，
+     改一处两条一起变。
+     过渡分两个方向写，别把它合并成一条：
+       关：先滑出去，滑完（`--dur-drawer` 的延迟）才 `visibility: hidden`；
+       开：`.is-open` 把那条 transition 换成**零时长**的 —— `visibility` 立刻变 `visible`，
+           于是同一 tick 里的 `focus()` 落得进去（`app.js` 打开抽屉就把焦点送进去；
+           若它此刻还算「不可见」，那次 focus 会被浏览器丢掉）。 */
+  .rail, .dock {
+    position: fixed; visibility: hidden;
+    transition: transform var(--dur-drawer) var(--ease), visibility 0s linear var(--dur-drawer);
+    box-shadow: var(--shadow-pop);
+  }
+  .rail.is-open, .dock.is-open {
+    transform: none; visibility: visible;
+    transition: transform var(--dur-drawer) var(--ease), visibility 0s;
+  }
+  .rail { inset: 0 auto 0 0; z-index: var(--z-rail); max-height: none; transform: translateX(-100%); }
+  /* 遮罩的色与 `.overlay` 同一条：`--on-accent` 是两档都暗的那支墨（深色档用 `--fg`
+     会得到一层发白的雾），这里同样按名取 token，不写裸色值/不新造 --scrim 档位。 */
+  .rail-scrim { position: fixed; inset: 0; z-index: var(--z-scrim); background: color-mix(in oklch, var(--on-accent) 42%, transparent); }
+  .rail-scrim[hidden] { display: none; }
+  .dock {
+    inset: 0 0 0 auto; z-index: var(--z-dock);
+    width: min(var(--dock-w), 92vw); flex-basis: auto; transform: translateX(100%);
+  }
+  /* 本文件顶部那条 `[hidden] { display: none !important }` 在桌面表达「没有内容就不占位」；
+     ≤900px 的抽屉必须**始终在渲染树里**：关着的抽屉要有可测量的静止位，滑入也才有起点。
+     于是这一层把 `hidden` 的呈现改写成「离屏 + 不可见」（`visibility` 由共用规则给）。 */
+  .dock[hidden] { display: flex !important; }
+  /* 抽屉自己的出口贴在抽屉右上角（`#dock` 在 ≤900px 是 fixed，就是它的定位祖先）；
+     成员那一栏的头部让出这段宽度，文案不会钻到按钮底下。 */
+  .dock-close { display: grid; position: absolute; top: 10px; right: var(--sp-5); }
+  .dock-agent .dock-head { padding-right: 56px; }
   .main { flex: 1; min-height: 0; }
-  .dock { width: 100%; flex-basis: auto; border-left: 0; border-top: 1px solid var(--border); }
   .stream, .chan-head, .composer { padding-left: var(--sp-6); padding-right: var(--sp-6); }
+}
+/* >900px：遮罩在桌面不存在（即使某个状态类残留下来，也不该在桌面挡出一层）。 */
+@media (min-width: 901px) { .rail-scrim { display: none !important; } }
+/* 「收起动效」也要盖住 `.is-open`：两条抽屉的过渡声明在 `.rail` / `.rail.is-open` 上
+   各写了一份，只列 `.rail, .dock` 会把打开态漏掉（打开仍是 200ms 的滑入，
+   而打开那一刻正是要立刻把焦点送进去的那一刻）。 */
+@media (prefers-reduced-motion: reduce) {
+  .rail, .rail.is-open, .dock, .dock.is-open { transition: none; }
 }
 /* ─── 「正在回复」指示（进程内事实：该成员有一轮 in-flight） ─────────────── */
 .typing-line {

@@ -46,6 +46,14 @@ AVATAR_SLOT_COUNT = 5
 #   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）已合并；9 = #67（附件）；
 #   10 = #71（`workspace_settings.theme` 新增一列）已合并；11 = #35 的 #58（结构化沉默）；
 #   12 = **本票 #65**（`agent_config.auto_claim` 与 `task.claimed_at` 各新增一列）。
+# 号段是**跨在途票的分配**而不是「每次 +1」：两个在途迁移撞号会让两边都以为自己的库是当前版本。
+# #67 的落地口径（补收尾纠正）：原预留的 9 取不到——#71 已把 10 落到 main，带着 9 合入会让
+# 版本号在历史上**不单调**（10 → 9），且被 v10 代码创建过的库在本版下会被闸门判为版本不符。
+# 正确判据是「**必须高于当前 main**」而不是「等于被分配的预留号」，故 #67 取 11（12 归 #65）；
+# 该票已随 PR #83 落在 main（b619336），main 当前读数 11。
+# #65 的 12 高于当前 main 的 11，合并后**保持 12**（不回退到 11）。
+# 代价（与既有纪律一致）：合力后 main 的号由 11 升到 12，被 11 及更早代码创建过的库在本版下
+# 会被闸门拒绝——处置：备份该数据目录、换一个目录启动。
 SCHEMA_VERSION = 12
 
 # 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合——
@@ -110,6 +118,7 @@ BUSINESS_TABLES = (
     "target_member",
     "task",
     "message",
+    "attachment",
     "channel_read",
     "target_read",
     "channel_budget",
@@ -132,6 +141,31 @@ MAX_MEMBER_NAME_LENGTH = 40
 MAX_AGENT_ROLE_LENGTH = 80
 MAX_SYSTEM_PROMPT_LENGTH = 8000
 MAX_MODEL_ID_LENGTH = 120
+
+# 附件的**人类面**闸门（ADR-0014）：大小与类型都在这里被拒绝并给可读原因。
+# 单文件上限取 10 MiB——它是「一眼看出传错了东西」的闸门，不是配额策略（多附件并发上限之外的
+# 配额策略是规格明写的 Out of Scope）。
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+# 附件**原文件名**的长度上限：它是元数据（也只作元数据），但过长会让错误提示与下载名失控。
+MAX_ATTACHMENT_NAME_LENGTH = 200
+
+# 允许的 MIME 类型**窄清单**：按**声明类型**判定（本机单用户、无鉴权，不做内容嗅探）。
+# 只收「本机用户会真的挂到消息上」的那几类；其余一律拒绝，拒绝文案走词条表。
+ALLOWED_ATTACHMENT_MIME_TYPES = (
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/json",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+)
+
+# 附件字节落数据目录下的这个子目录（库里只存**相对路径**，于是整个数据目录可整体搬迁）。
+ATTACHMENTS_DIR_NAME = "attachments"
 
 # 提醒（`CONTEXT.md` **提醒**：本机用户给自己设的一条**时间 + 文本**备忘，可关联频道）。
 # 列的形状由实施票给定（ADR-0012）：**时间 + 文本 + 可归属一个频道**。
@@ -230,6 +264,53 @@ CREATE TABLE IF NOT EXISTS message (
   FOREIGN KEY (target_id, task_ref) REFERENCES task(target_id, id),
   UNIQUE (target_id, seq)
 );
+
+-- 附件（ADR-0014）：**元数据落库、字节落数据目录**。
+-- ``relative_path`` 是相对**数据目录**的路径（不是绝对路径），于是整个数据目录可整体搬迁；
+-- 字节**不进** SQLite：单文件库是这个仓的业务正本与备份单位，把二进制塞进去会让库体积、
+-- 备份与损坏半径一起失控。
+-- ``message_id`` 可空：``NULL`` = **未绑定的草稿**（读取面不暴露），随消息创建时在同一事务内绑定。
+-- 不变量：绑定一次即不可变（见下面的 ``attachment_no_rebind``），且没有删除路径（``attachment_no_delete``）。
+CREATE TABLE IF NOT EXISTS attachment (
+  id            TEXT PRIMARY KEY,
+  original_name TEXT NOT NULL,
+  size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+  mime_type     TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  message_id    TEXT REFERENCES message(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachment_message ON attachment(message_id);
+
+-- 附件的 append-only 兜底（与 ``message`` 同口径，ADR-0014 引 ADR-0001）。两条不变量：
+--   1. **元数据不可变**：上传后不改内容、不改名、不覆盖 —— 任何列被改写都拒绝；
+--   2. **绑定是单向的一次性动作**：``message_id`` 只能 NULL → 某条消息，不能改绑、不能解绑。
+-- 于是「草稿 → 随消息绑定」是这张表上**唯一**允许的写后修改，与 ADR-0014 逐字一致。
+CREATE TRIGGER IF NOT EXISTS attachment_metadata_immutable
+BEFORE UPDATE ON attachment
+WHEN OLD.id IS NOT NEW.id
+  OR OLD.original_name IS NOT NEW.original_name
+  OR OLD.size_bytes IS NOT NEW.size_bytes
+  OR OLD.mime_type IS NOT NEW.mime_type
+  OR OLD.relative_path IS NOT NEW.relative_path
+  OR OLD.created_at IS NOT NEW.created_at
+BEGIN
+  SELECT RAISE(ABORT, 'attachment is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS attachment_binding_is_immutable
+BEFORE UPDATE ON attachment
+WHEN OLD.message_id IS NOT NULL AND NEW.message_id IS NOT OLD.message_id
+BEGIN
+  SELECT RAISE(ABORT, 'attachment binding is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS attachment_no_delete
+BEFORE DELETE ON attachment
+BEGIN
+  SELECT RAISE(ABORT, 'attachment is append-only');
+END;
 
 CREATE TABLE IF NOT EXISTS target_read (
   member_id     TEXT NOT NULL REFERENCES member(id),
@@ -550,6 +631,25 @@ SEARCH_AGENT_HITS_SQL = """
      ORDER BY m.display_name, m.id
      LIMIT :limit
 """
+
+# 附件（ADR-0014）：一条消息**已绑定**的附件（草稿 —— ``message_id IS NULL`` —— 不在此列）。
+ATTACHMENTS_BY_MESSAGE_SQL = "SELECT * FROM attachment WHERE message_id = ? ORDER BY created_at, id"
+
+# 一个 target 里已绑定的附件（按消息归组在 Python 侧做）：读消息列表时一次补齐，避免 N+1。
+ATTACHMENTS_BY_TARGET_SQL = """
+    SELECT att.* FROM attachment att JOIN message m ON m.id = att.message_id
+     WHERE m.target_id = ? AND m.seq > ?
+     ORDER BY att.created_at, att.id
+"""
+
+# 多条消息的附件（消息命中一次补齐用）。``IN`` 的取值域由 ``json_each`` 从**一个**绑定参数展开：
+# 本仓的既有纪律是「查询文本对静态检查是可见常量，拼接的不是外部输入」，这条常量因此也不需要
+# 在调用点拼占位符——连「几个占位符」这种计数拼接都省掉了。
+ATTACHMENTS_BY_MESSAGES_SQL = (
+    "SELECT * FROM attachment "
+    "WHERE message_id IN (SELECT value FROM json_each(:message_ids)) "
+    "ORDER BY created_at, id"
+)
 
 # 搜索的四档 facet（原型 `.facet-row` 的取值与顺序）。它同时是 HTTP 查询参数的类型，
 # 因此「哪几档」只有这一处定义：FastAPI 的校验与库层的分支读的是同一个 Literal。
@@ -1981,7 +2081,8 @@ class Database:
                 """,
                 (target_id, after_seq),
             ).fetchall()
-        return [self._message_payload(row) for row in rows]
+            attached = self._attachments_by_target_locked(target_id, after_seq)
+        return [self._message_payload(row, attached.get(row["id"], [])) for row in rows]
 
     def search(
         self,
@@ -2017,6 +2118,9 @@ class Database:
             if facet in ("all", "message"):
                 sql = SEARCH_TARGET_HITS_SQL if target_id is not None else SEARCH_ALL_HITS_SQL
                 hits.extend(self._message_hit_payload(row, query) for row in self._conn.execute(sql, params))
+                # 附件不是命中来源（ADR-0014：附件不进搜索），但消息命中里嵌的是**完整消息形状**：
+                # 让它的 ``attachments`` 说实话（一次查询补齐，不是每条命中各查一次）。
+                self._fill_message_hit_attachments_locked(hits)
             if target_id is not None:
                 return hits
             if facet in ("all", "task"):
@@ -2039,8 +2143,14 @@ class Database:
         kind: str = "human",
         mention_snapshot: Iterable[Mapping[str, Any]] | None = None,
         task_ref: str | None = None,
+        attachment_ids: Sequence[str] = (),
     ) -> dict[str, Any]:
-        """在同一事务内分配 **target 内**单调 seq 并落库。失败则不落任何行。"""
+        """在同一事务内分配 **target 内**单调 seq 并落库。失败则不落任何行。
+
+        ``attachment_ids`` 是**先上传拿到标识、随消息提交时绑定**的那一步（ADR-0014）：绑定与消息
+        落库**同一事务**——任一步失败都整体回滚，于是不会留下「绑了一半的草稿」或「有消息没附件」。
+        绑定成功后，附件不再是草稿；未绑定的上传在读取面里不存在。
+        """
         if kind not in MESSAGE_KINDS:
             raise DomainError(
                 "validation_failed",
@@ -2105,6 +2215,9 @@ class Database:
                         task_ref,
                     ),
                 )
+                # 绑定与消息落库**同一事务**（ADR-0014）：任何一条绑定失败都整体回滚，
+                # 于是既不留绑定、也不留消息——没有「绑了一半」的中间态。
+                self._bind_attachments_locked(attachment_ids, message_id)
                 if kind == "human":
                     # 人类消息落库**即**开启新世代并把回应预算重置为满额（spec #1 §5）。
                     # 写在这里而不是等到下一次扣款时惰性重置：「人类消息随后落库即重置」
@@ -2132,12 +2245,13 @@ class Database:
                 """,
                 (target_id, seq),
             ).fetchone()
+            attached = self._attachments_by_message_locked(str(row["id"])) if row is not None else []
         if row is None:
             raise NotFound(self._render_copy("error.message_not_found", target_id=target_id, seq=seq))
-        return self._message_payload(row)
+        return self._message_payload(row, attached)
 
     @staticmethod
-    def _message_payload(row: sqlite3.Row) -> dict[str, Any]:
+    def _message_payload(row: sqlite3.Row, attachments: Sequence[dict[str, Any]] = ()) -> dict[str, Any]:
         try:
             mentions = json.loads(row["mention_snapshot"])
         except (ValueError, TypeError):
@@ -2151,6 +2265,7 @@ class Database:
             "created_at": row["created_at"],
             "mention_snapshot": mentions,
             "task_ref": row["task_ref"],
+            "attachments": list(attachments),
             "author": {
                 "id": row["author_member_id"],
                 "kind": row["author_kind"],
@@ -2448,6 +2563,140 @@ class Database:
                 UNREAD_COUNT_SQL, {"member_id": member_id, "target_id": target_id}
             ).fetchone()
         return int(row[0]) if row is not None else 0
+
+    # ─── 附件（ADR-0014：元数据落库、字节落数据目录） ─────────────────────
+    def attachments_dir(self) -> Path:
+        """附件的字节目录：**数据目录下的独立子目录**（库里只存相对路径）。"""
+        return self.data_dir / ATTACHMENTS_DIR_NAME
+
+    @staticmethod
+    def _attachment_payload(row: sqlite3.Row) -> dict[str, Any]:
+        """附件的外部形状。``url`` 是内容端点：**草稿取它会 404**（读取面不暴露未发送的上传）。"""
+        return {
+            "id": row["id"],
+            "name": row["original_name"],
+            "size": row["size_bytes"],
+            "mime_type": row["mime_type"],
+            "created_at": row["created_at"],
+            "message_id": row["message_id"],
+            "url": f"/api/attachments/{row['id']}",
+        }
+
+    def store_attachment(self, original_name: str, mime_type: str, data: bytes) -> dict[str, Any]:
+        """落一个**未绑定**的附件（草稿）：字节写数据目录、元数据落库，返回标识与可读元数据。
+
+        半成品纪律（票面硬要求：被拒的请求与失败的事务都不留库内行、不留孤儿字节）：
+
+        - 大小 / 类型 / 文件名由**人类面**在调到这里之前拒绝（那里才有可读原因与词条）；
+        - 库内行与字节写在**同一事务**里，任一步失败 ⇒ 回滚（不留行）**并**删掉刚写的字节
+          （不留孤儿）。两条清理缺一不可：只回滚会留一个无人知晓的字节文件，
+          只删字节会留一条指向不存在文件的元数据行。
+        """
+        attachment_id = new_id("att")
+        relative_path = f"{ATTACHMENTS_DIR_NAME}/{attachment_id}"
+        destination = self.data_dir / relative_path
+        with self._lock:
+            self.attachments_dir().mkdir(parents=True, exist_ok=True)
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO attachment(id, original_name, size_bytes, mime_type, relative_path, "
+                    "created_at, message_id) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                    (attachment_id, original_name, len(data), mime_type, relative_path, utc_now()),
+                )
+                destination.write_bytes(data)
+                self._commit()
+            except BaseException:
+                # 取消（KeyboardInterrupt）同样要清干净字节：磁盘上的半成品不属于任何一条记录。
+                self._rollback()
+                with suppress(OSError):
+                    destination.unlink()
+                raise
+            row = self._conn.execute("SELECT * FROM attachment WHERE id = ?", (attachment_id,)).fetchone()
+        if row is None:  # pragma: no cover - 同一事务里刚提交的行
+            raise NotFound(self._render_copy("error.attachment_not_found", attachment_id=attachment_id))
+        return self._attachment_payload(row)
+
+    def attachment_for_download(self, attachment_id: str) -> tuple[dict[str, Any], Path]:
+        """取一个**已绑定**附件的内容描述：``(元数据, 字节路径)``。
+
+        草稿（``message_id IS NULL``）在这里就拿不到：它是**未发送的上传**，读取面一律不暴露——
+        因此内容端点对草稿回 404，而不是先给出一个「还没发出去」的中间态。
+        """
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM attachment WHERE id = ?", (attachment_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.attachment_not_found", attachment_id=attachment_id))
+        if row["message_id"] is None:
+            raise NotFound(self._render_copy("error.attachment_unbound"))
+        return self._attachment_payload(row), self.data_dir / str(row["relative_path"])
+
+    def _attachments_by_message_locked(self, message_id: str) -> list[dict[str, Any]]:
+        """一条消息**已绑定**的附件（调用方需已持锁或正处于同一连接的事务里）。"""
+        rows = self._conn.execute(ATTACHMENTS_BY_MESSAGE_SQL, (message_id,)).fetchall()
+        return [self._attachment_payload(row) for row in rows]
+
+    def _attachments_by_target_locked(
+        self, target_id: str, after_seq: int = 0
+    ) -> dict[str, list[dict[str, Any]]]:
+        """该 target 里**已绑定**的附件，按 ``message_id`` 归组（草稿不在此列——读取面不暴露）。"""
+        rows = self._conn.execute(ATTACHMENTS_BY_TARGET_SQL, (target_id, after_seq)).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["message_id"]), []).append(self._attachment_payload(row))
+        return grouped
+
+    def _attachments_for_messages_locked(self, message_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+        """多条消息的已绑定附件，按 ``message_id`` 归组（消息命中一次补齐用）。
+
+        ``IN`` 的取值域由 ``json_each`` 从**一个**绑定参数展开（``ATTACHMENTS_BY_MESSAGES_SQL``），
+        因此这里没有任何东西被拼进 SQL 文本——与上面那些模块级 ``*_SQL`` 常量同一条纪律。
+        """
+        if not message_ids:
+            return {}
+        rows = self._conn.execute(
+            ATTACHMENTS_BY_MESSAGES_SQL, {"message_ids": json.dumps(list(message_ids))}
+        ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["message_id"]), []).append(self._attachment_payload(row))
+        return grouped
+
+    def _fill_message_hit_attachments_locked(self, hits: list[dict[str, Any]]) -> None:
+        """给消息命中补上它**真实**的附件表：附件不是命中来源（附件不进搜索），但消息命中里嵌的
+        是完整消息形状，标题里说「附件」的那个字段就不该对已挂附件的消息撒谎。"""
+        message_ids = [str(hit["message"]["id"]) for hit in hits if hit["kind"] == "message"]
+        attached = self._attachments_for_messages_locked(message_ids)
+        for hit in hits:
+            if hit["kind"] == "message":
+                hit["message"]["attachments"] = attached.get(str(hit["message"]["id"]), [])
+
+    def _bind_attachments_locked(self, attachment_ids: Sequence[str], message_id: str) -> None:
+        """在**已有事务内**把草稿逐个绑定到刚落的这条消息。
+
+        校验（存在 + 尚未绑定）与写入都在同一事务内，因此「验证通过」与「绑定落地」之间没有窗口，
+        也不存在「A 绑定成功、B 失败」的半成品：B 一失败，整个事务连 A 一起回滚
+        （由 :meth:`append_message` 的 ``except`` 负责）。
+        """
+        for attachment_id in attachment_ids:
+            row = self._conn.execute(
+                "SELECT message_id FROM attachment WHERE id = ?", (attachment_id,)
+            ).fetchone()
+            if row is None:
+                raise DomainError(
+                    "validation_failed",
+                    self._render_copy("error.attachment_not_found", attachment_id=attachment_id),
+                    fields={"attachment_ids": self._render_copy("error.field.attachment_unusable")},
+                )
+            if row["message_id"] is not None:
+                raise DomainError(
+                    "validation_failed",
+                    self._render_copy("error.attachment_already_bound", attachment_id=attachment_id),
+                    fields={"attachment_ids": self._render_copy("error.field.attachment_unusable")},
+                )
+            self._conn.execute(
+                "UPDATE attachment SET message_id = ? WHERE id = ?", (message_id, attachment_id)
+            )
 
 
 def open_database(data_dir: Path | str | None = None) -> Database:
