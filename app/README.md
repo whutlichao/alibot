@@ -246,6 +246,22 @@ ALIBOT_SMOKE_MODEL=dashscope:qwen-max ALIBOT_SMOKE_ALLOW_REMOTE=1 \
   DASHSCOPE_API_KEY=... .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 ```
 
+## 文案双语（后端）
+
+后端**生成的自然语言**按**语言偏好**取值：HTTP 错误的 `message` 与 `fields` 的值、落库的
+`system` 消息正文、`round_outcome.reason`、Agent 的 `enabled_reason`、远端数据流告知文案。
+词条表是 `app/alibot/i18n.py`（源语言**简体中文** + `en` 两份取值，键集必须一致、参数位必须一致，
+由 `app/tests/test_backend_copy.py` 当着机器判据）；语言偏好读 `workspace_settings` 那一行
+（`GET` / `PATCH /api/settings`），**不读请求头 / `Accept-Language` / 环境变量**——写 `system`
+消息与 `reason` 的是**唤醒编排**，它跑在 HTTP 请求之外，那里根本没有请求头可读（ADR-0009）。
+库内没有**用户选过**的偏好时取源语言。
+
+机器可读的东西**一律不译**：错误的 `code`、`fields` 的**键**、`round_outcome.status` 的词、
+任务状态词、`provider` / `model_id` / 环境变量名。**历史不回填**：已落库的正文保持**写入时**的
+语言（append-only，ADR-0001）——切换语言后此前的 `system` 消息仍是原语言，这是**已知代价**，
+不是缺陷。前端界面文案是**另一层**，见 `app/alibot/studio/i18n.js`（#61）；CLI 诊断文案
+（`__main__.py` / `repair.py`）不在双语范围内。
+
 ## 视觉契约
 
 工作台只**只读**参照 `alibot-design-system/`（原型 `alibot-app.html` 保持原样，不被修改）：

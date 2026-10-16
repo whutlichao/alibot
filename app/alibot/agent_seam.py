@@ -20,8 +20,11 @@ from __future__ import annotations
 import inspect
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
+
+from .i18n import SOURCE_LOCALE, render
 
 # provider 客户端上「可关闭入口」的候选方法名（协程）。顺序即探测顺序。
 _CLOSE_METHOD_NAMES = ("aclose", "close")
@@ -90,13 +93,18 @@ def is_remote_provider(provider: str) -> bool:
 
 
 class CredentialUnavailable(Exception):
-    """该 provider 需要的凭证在进程环境里不存在（因此这个成员「未启用」）。"""
+    """该 provider 需要的凭证在进程环境里不存在（因此这个成员「未启用」）。
 
-    def __init__(self, provider: str, env_names: tuple[str, ...]):
+    文案按 ``locale`` 取（ADR-0009 第二层）：这条消息会经 ``enabled_reason`` / ``/status`` 的
+    ``reason`` 露给用户，因此它跟着**语言偏好**走，而不是钉在源语言上。
+    """
+
+    def __init__(self, provider: str, env_names: tuple[str, ...], *, locale: str | None = None):
         self.provider = provider
         self.env_names = env_names
-        joined = " / ".join(env_names) if env_names else "（该提供商无需凭证）"
-        super().__init__(f"模型提供商 {provider} 缺少凭证：请先设置环境变量 {joined}")
+        # 多个候选环境变量名之间用 " / " 连接：它们是**标识符**，不是自然语言列举，不随语言变。
+        joined = " / ".join(env_names) if env_names else render("availability.credential_none", locale)
+        super().__init__(render("availability.credential_missing", locale, provider=provider, env=joined))
 
 
 @dataclass
@@ -208,8 +216,13 @@ class AgentSeam(Protocol):
         ...
 
 
-def read_api_key(provider: str, environ: dict[str, str] | None = None) -> str | None:
+def read_api_key(
+    provider: str, environ: dict[str, str] | None = None, *, locale: str | None = None
+) -> str | None:
     """凭证窄 seam：只从**进程环境变量**读，应用库不存任何密钥。
+
+    ``locale`` 只决定**异常消息**的语言（ADR-0009 第二层）：消息会经 ``enabled_reason`` 露给用户，
+    因此调用点把当前**语言偏好**传下来；不传则用源语言。
 
     Returns:
         命中的第一个环境变量值；该 provider 无需凭证时返回 ``None``（表示可以用）；
@@ -218,14 +231,14 @@ def read_api_key(provider: str, environ: dict[str, str] | None = None) -> str | 
     env = os.environ if environ is None else environ
     names = PROVIDER_KEY_ENV.get(provider)
     if names is None:
-        raise CredentialUnavailable(provider, ())
+        raise CredentialUnavailable(provider, (), locale=locale)
     if not names:
         return None
     for name in names:
         value = (env.get(name) or "").strip()
         if value:
             return value
-    raise CredentialUnavailable(provider, names)
+    raise CredentialUnavailable(provider, names, locale=locale)
 
 
 class AgentScopeAgentSeam:
@@ -239,9 +252,23 @@ class AgentScopeAgentSeam:
     ``usage`` / ``error`` 只影响本轮的结论，不构成任何消息正本。
     """
 
-    def __init__(self, *, timeout_seconds: float = 120.0, environ: dict[str, str] | None = None):
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 120.0,
+        environ: dict[str, str] | None = None,
+        locale_of: Callable[[], str] | None = None,
+    ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
+        # 这一层产出的文案（轮次 reason、凭证原因）按**语言偏好**渲染，而偏好落在库里：
+        # 取值方式由**装配点**注入（``api.create_app`` 传 ``i18n.locale_of(database)``），
+        # 于是适配层自己不依赖库、也不读任何请求头（ADR-0009）。不注入时取源语言。
+        self._locale_of = locale_of if locale_of is not None else (lambda: SOURCE_LOCALE)
+
+    def _locale(self) -> str:
+        """当前**语言偏好**（由装配点注入的取值方式给出；默认源语言）。"""
+        return self._locale_of()
 
     # ─── 模型构造 ─────────────────────────────────────────────────────────
     def _build_model(self, provider: str, model_name: str) -> Any:
@@ -253,7 +280,7 @@ class AgentScopeAgentSeam:
 
             return OllamaChatModel(credential=ollama, model=model_name, stream=False)
 
-        api_key = read_api_key(provider, self._environ)
+        api_key = read_api_key(provider, self._environ, locale=self._locale())
         credential_type = PROVIDER_CREDENTIAL_TYPE[provider]
         credential_class = cred.CredentialFactory.get_credential_class(credential_type)
         if credential_class is None:
@@ -319,13 +346,27 @@ class AgentScopeAgentSeam:
         try:
             reply = asyncio.run(_round())
         except TimeoutError:
-            return RoundOutcome(status="failed", reason=f"模型调用超时（{self.timeout_seconds:.0f} 秒）")
+            return RoundOutcome(
+                status="failed",
+                reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
+            )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
-            return RoundOutcome(status="failed", reason=f"模型调用失败：{type(error).__name__}: {error}")
+            return RoundOutcome(
+                status="failed",
+                reason=render(
+                    "seam.call_failed",
+                    self._locale(),
+                    type=type(error).__name__,
+                    error=error,
+                ),
+            )
 
         reply_error = getattr(reply, "error", None)
         if reply_error:
-            return RoundOutcome(status="failed", reason=f"模型返回错误：{reply_error}")
+            return RoundOutcome(
+                status="failed",
+                reason=render("seam.reply_error", self._locale(), error=reply_error),
+            )
 
         task_action = task_actions[0] if task_actions else None
         text = _msg_text(reply)
@@ -333,13 +374,13 @@ class AgentScopeAgentSeam:
             if task_action is not None:
                 return RoundOutcome(
                     status="replied",
-                    reason="模型通过任务工具提交了结构化动作",
+                    reason=render("seam.task_action_only", self._locale()),
                     task_action=task_action,
                 )
-            return RoundOutcome(status="ignored", reason="模型没有产出可落库的正文（本轮自判不回应）")
+            return RoundOutcome(status="ignored", reason=render("seam.no_body", self._locale()))
         return RoundOutcome(
             status="replied",
-            reason="模型自主判断需要回应",
+            reason=render("seam.replied", self._locale()),
             messages=[RoundMessage(body=text)],
             task_action=task_action,
         )

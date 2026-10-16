@@ -53,8 +53,9 @@ from .agent_seam import (
 )
 from .db import BUDGET_LIMIT, Database, DomainError, utc_now
 from .events import EventBus
+from .i18n import join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
-from .service import WorkspaceService
+from .service import WorkspaceService, remote_data_faces
 
 # 状态点四态（spec #1 §3）：只表达后端事实，不从任何会话存活推导。
 STATUS_ONLINE = "online"
@@ -168,6 +169,15 @@ class WakeOrchestrator:
         # 「最近一轮失败」不在这里 —— 它读库（见 ``status_of``），因为它是一个持久事实。
         self._in_flight: dict[str, _Turn] = {}
         self._lock = threading.RLock()
+
+    # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
+    def _locale(self) -> str:
+        """当前**语言偏好**（库内的工作区设置）。
+
+        编排跑在 HTTP 请求之外（后台线程 / 测试的手动调度器），**没有请求头可读**，因此这里的
+        取值只能来自库——这正是 ADR-0009 把语言偏好落库的决定性理由。
+        """
+        return locale_of(self._db)
 
     # ─── 唤醒面 ───────────────────────────────────────────────────────────
     def notify(self, target_id: str, from_seq: int, reason: str = WAKE_REASON_CHANNEL_MESSAGE) -> int:
@@ -330,10 +340,7 @@ class WakeOrchestrator:
         既不是「它坏了」也不是「它不想说」，它是「这个人类世代已经用过 3 次往返了」这条后端事实。
         """
         epoch_seq = self._db.budget_state(target_id)["epoch_seq"]
-        reason = (
-            f"本 target 人类世代（epoch_seq={epoch_seq}）的"
-            f"agent→agent 预算已用尽（≤{BUDGET_LIMIT}）：本条 Agent 消息照常落库，但没有投递任何唤醒"
-        )
+        reason = render("reason.budget_exhausted", self._locale(), epoch=epoch_seq, limit=BUDGET_LIMIT)
         for member in targets:
             record = self._db.append_round_outcome(
                 member_id=member["id"],
@@ -439,10 +446,7 @@ class WakeOrchestrator:
                 if mentioned and outcome.status == "ignored":
                     outcome = RoundOutcome(
                         status="failed",
-                        reason=(
-                            "被个人提及是确定信号，必须回应；本轮自判忽略，按失败处理"
-                            f"（原因为：{outcome.reason}）"
-                        ),
+                        reason=render("reason.mention_ignored", self._locale(), reason=outcome.reason),
                     )
                 # 被点名却不产出正文同理：不是「不想说」，是没做到。
                 elif (
@@ -453,7 +457,7 @@ class WakeOrchestrator:
                 ):
                     outcome = RoundOutcome(
                         status="failed",
-                        reason="被个人提及是确定信号，但本轮没有产出可落库的正文，按失败处理",
+                        reason=render("reason.mention_no_body", self._locale()),
                     )
 
             finished_at = utc_now()
@@ -470,9 +474,11 @@ class WakeOrchestrator:
                 if committed.joined:
                     outcome = RoundOutcome(
                         status="replied",
-                        reason=(
-                            f"{outcome.reason}；本轮是被点名的**穿透**唤醒（它原本不在该频道），"
-                            f"回复时顺带加入，system 事件消息 seq={committed.system_seq}"
+                        reason=render(
+                            "reason.pierced_suffix",
+                            self._locale(),
+                            reason=outcome.reason,
+                            seq=committed.system_seq,
                         ),
                         task_action=outcome.task_action,
                     )
@@ -521,7 +527,12 @@ class WakeOrchestrator:
                     target_id=target_id,
                     base_seq=base_seq,
                     status="failed",
-                    reason=f"轮次内部异常：{type(error).__name__}: {error}",
+                    reason=render(
+                        "reason.round_exception",
+                        self._locale(),
+                        type=type(error).__name__,
+                        error=error,
+                    ),
                     started_at=started_at,
                     consumed_budget=consumed_budget,
                 )
@@ -551,11 +562,13 @@ class WakeOrchestrator:
         try:
             task = self._db.get_task(action.task_id)
             if task["target_id"] != target_id:
-                raise DomainError("validation_failed", "Agent 任务动作只能操作当前任务线程")
+                raise DomainError(
+                    "validation_failed", render("error.task_action_wrong_target", self._locale())
+                )
             if isinstance(action, SetTaskStatusAction) and not self._db.is_target_member(
                 target_id, str(agent["id"])
             ):
-                raise DomainError("validation_failed", "只有任务成员可以更新任务状态")
+                raise DomainError("validation_failed", render("error.task_action_not_member", self._locale()))
             service = WorkspaceService(
                 self._db,
                 member_id=str(agent["id"]),
@@ -567,7 +580,7 @@ class WakeOrchestrator:
             else:
                 service.update_task_status(action.task_id, action.status)
         except DomainError as error:
-            return f"Agent 任务动作被拒绝：{error.message}"
+            return render("error.task_action_rejected", self._locale(), message=error.message)
         return None
 
     def _record_merged(
@@ -586,16 +599,14 @@ class WakeOrchestrator:
         if not merged_bases:
             return
         largest = max(merged_bases)
-        reasons = "、".join(f"#{seq}" for seq in sorted(set(merged_bases)))
+        locale = self._locale()
+        reasons = join_list(sorted({f"#{seq}" for seq in merged_bases}), locale)
         record = self._db.append_round_outcome(
             member_id=member_id,
             target_id=target_id,
             base_seq=largest,
             status="merged",
-            reason=(
-                f"该成员已有一轮在进行中：{len(merged_bases)} 次重复唤醒（{reasons}）合并进那一轮，"
-                f"以最大 seq #{largest} 为准；不排队、不重放"
-            ),
+            reason=render("reason.merged", locale, count=len(merged_bases), bases=reasons, largest=largest),
             started_at=started_at,
             consumed_budget=False,
             merged=True,
@@ -635,7 +646,15 @@ class WakeOrchestrator:
                 task_context=task_context,
             )
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
-            return RoundOutcome(status="failed", reason=f"Agent 适配层异常：{type(error).__name__}: {error}")
+            return RoundOutcome(
+                status="failed",
+                reason=render(
+                    "reason.seam_exception",
+                    self._locale(),
+                    type=type(error).__name__,
+                    error=error,
+                ),
+            )
 
     def _commit_reply(
         self,
@@ -656,10 +675,7 @@ class WakeOrchestrator:
             self._db.add_target_member(target_id, agent["id"])
             system_message = self._db.append_message(
                 target_id=target_id,
-                body=(
-                    f"{agent['display_name']} 加入了频道：它被点名时并不在此频道，"
-                    f"回复时顺带加入（成员变化只随真实回复发生）"
-                ),
+                body=render("system.member.pierced_join", self._locale(), name=agent["display_name"]),
                 author_member_id=agent["id"],
                 kind="system",
                 mention_snapshot=[],
@@ -688,30 +704,44 @@ class WakeOrchestrator:
 
     # ─── 可用性（「未启用」判定的唯一落点） ────────────────────────────────
     def availability(self, agent: dict[str, Any]) -> Availability:
+        locale = self._locale()
         model_id = str(agent.get("model_id") or "").strip()
         if not model_id:
-            return Availability(False, "未配置模型：请先在 Agent 配置里填写模型标识（provider:model）")
+            return Availability(False, render("availability.no_model", locale))
         if not agent.get("enabled", True):
-            return Availability(False, "该 Agent 的模型配置已停用")
+            return Availability(False, render("availability.disabled", locale))
         provider = provider_of(model_id)
         if not provider:
             return Availability(
-                False, f"模型标识缺少提供商前缀：{model_id}（应为 provider:model，例如 dashscope:qwen-max）"
+                False, render("availability.model_provider_prefix", locale, model_id=model_id)
             )
         if not model_name_of(model_id):
-            return Availability(False, f"模型标识缺少模型名：{model_id}（应为 provider:model）")
+            return Availability(False, render("availability.model_name_missing", locale, model_id=model_id))
         if is_remote_provider(provider) and not self._db.has_remote_consent(provider):
             return Availability(
                 False,
-                f"尚未确认远端数据流告知：{provider} 会把消息正文、发送者显示名、频道名称与描述、"
-                f"被点名成员显示名发送到本机之外。确认后该 Agent 才会启用",
+                render(
+                    "availability.remote_consent",
+                    locale,
+                    provider=provider,
+                    faces=join_list(remote_data_faces(locale), locale),
+                ),
             )
         try:
-            read_api_key(provider)
+            read_api_key(provider, locale=locale)
         except CredentialUnavailable as error:
             return Availability(False, str(error))
         except Exception as error:  # 未知 provider 等：同样给可读原因而不是静默
-            return Availability(False, f"无法解析 {provider} 的凭证：{type(error).__name__}: {error}")
+            return Availability(
+                False,
+                render(
+                    "availability.credential_unreadable",
+                    locale,
+                    provider=provider,
+                    type=type(error).__name__,
+                    error=error,
+                ),
+            )
         return Availability(True)
 
     # ─── 状态点（只表达后端事实） ─────────────────────────────────────────

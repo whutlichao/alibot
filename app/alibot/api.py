@@ -60,6 +60,7 @@ from .db import (
     open_database,
 )
 from .events import EventBus, sse_frame
+from .i18n import locale_of, render
 from .orchestration import ThreadScheduler, WakeOrchestrator
 from .service import WorkspaceService
 
@@ -235,7 +236,9 @@ def create_app(
     shutting_down = threading.Event()
     orchestrator = WakeOrchestrator(
         database,
-        seam if seam is not None else AgentScopeAgentSeam(),
+        # 真实适配器按**语言偏好**渲染它自己产出的文案（轮次 reason / 凭证原因）：取值方式由
+        # 装配点注入，适配层自己不依赖库（ADR-0009 第二层）。
+        seam if seam is not None else AgentScopeAgentSeam(locale_of=lambda: locale_of(database)),
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
     )
@@ -261,8 +264,13 @@ def create_app(
     app.state.orchestrator = orchestrator
     app.state.data_dir = database.data_dir
 
-    def _not_found(message: str = "接口不存在") -> JSONResponse:
+    def _not_found(message: str) -> JSONResponse:
+        """统一 404 形状。``message`` 由调用点按**当前语言偏好**渲染（`i18n.render`）。"""
         return JSONResponse({"error": {"code": "not_found", "message": message}}, status_code=404)
+
+    def _copy(key: str, **params: Any) -> str:
+        """本模块产出的用户可见文案一律经它取值（语言偏好读库，ADR-0009 第二层）。"""
+        return render(key, locale_of(database), **params)
 
     # ─── 错误封装：统一 {"error": {"code", "message", "fields?"}} ──────────
     @app.exception_handler(DomainError)
@@ -275,7 +283,7 @@ def create_app(
             {
                 "error": {
                     "code": "validation_failed",
-                    "message": "请求体校验未通过",
+                    "message": _copy("error.request_body_invalid"),
                     "fields": {"body": str(exc.errors()[:1])},
                 }
             },
@@ -702,7 +710,7 @@ def create_app(
     )
     def no_round_outcome_mutation(channel_id: str) -> JSONResponse:
         """轮次结果 append-only：它是「当时为什么没说话」的事实记录，不接受事后改写。"""
-        return _not_found("轮次结果不可编辑、不可删除：人类面不存在该端点")
+        return _not_found(_copy("error.round_outcomes_immutable"))
 
     @app.api_route(
         "/api/channels/{channel_id}/budget",
@@ -711,7 +719,7 @@ def create_app(
     )
     def no_budget_mutation(channel_id: str) -> JSONResponse:
         """预算只由后端在「人类消息重置 / 一次跳投递」时推进：人类面不能直接改它。"""
-        return _not_found("回应预算只读：人类面不存在写入它的端点")
+        return _not_found(_copy("error.budget_read_only"))
 
     @app.api_route(
         "/api/channels/{channel_id}/members/{member_id}",
@@ -721,7 +729,7 @@ def create_app(
     def no_channel_member_mutation(channel_id: str, member_id: str) -> JSONResponse:
         """本票没有「移出频道」的端点：离开 / 踢出需要单独的语义裁定（是否写 system 事件消息、
         是否影响历史未读与唤醒面），因此人类面明确回 404 而不是留一个沉默的 405。"""
-        return _not_found("频道成员只能加入、不能移出：人类面不存在该端点")
+        return _not_found(_copy("error.channel_members_append_only"))
 
     @app.api_route(
         "/api/channels/{channel_id}/messages/{seq}",
@@ -730,7 +738,7 @@ def create_app(
     )
     def no_message_mutation(channel_id: str, seq: int) -> JSONResponse:
         """消息 append-only：人类 HTTP 面没有编辑或删除消息的端点。"""
-        return _not_found("消息不可编辑、不可删除：人类面不存在该端点")
+        return _not_found(_copy("error.messages_immutable"))
 
     @app.api_route(
         "/api/agents/{member_id}",
@@ -739,7 +747,7 @@ def create_app(
     )
     def no_agent_mutation(member_id: str) -> JSONResponse:
         """本票没有改配置 / 删 Agent 的端点：模型与系统提示是配置数据，改配置的方式是新建。"""
-        return _not_found("Agent 配置不可编辑、不可删除：人类面不存在该端点")
+        return _not_found(_copy("error.agent_config_immutable"))
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
     app.mount("/studio", StaticFiles(directory=str(studio_dir()), html=True), name="studio")
