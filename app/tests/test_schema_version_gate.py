@@ -178,13 +178,14 @@ def test_older_or_unknown_version_is_refused_and_the_file_is_untouched(
     assert "target_member" not in after["tables"]
 
     # 报错可读且可操作：库文件路径、库里的版本、本代码需要的版本、`--migrate` 命令、备份指引，
-    # 以及本版支持的源版本范围（S3 / S16）。旧句「本版不做数据迁移」已随 #89 的契约变更消失。
+    # 以及本版支持的源版本范围与可用的迁移入口（S3 / S16）。旧句「本版不做数据迁移」已随 #89 的
+    # 契约变更消失；「本版尚无可用迁移步骤」也随 #90 / #91 的整条链落地改成终态口径。
     message = str(caught.value)
     assert str(db_path) in message
     assert str(SCHEMA_VERSION) in message and stored_version in message
     assert "--migrate" in message and "--data-dir" in message
     assert "备份" in message and "数据目录" in message
-    assert "源版本范围" in message and "本版尚无可用迁移步骤" in message
+    assert "源版本范围" in message and "可用迁移入口" in message
     assert "不做数据迁移" not in message
 
 

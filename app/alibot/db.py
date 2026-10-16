@@ -54,8 +54,8 @@ AVATAR_SLOT_COUNT = 5
 # 该票已随 PR #83 落在 main（b619336），main 当前读数 11。
 # #65 的 12 高于当前 main 的 11，合并后**保持 12**（不回退到 11）。
 # 代价（与既有纪律一致）：合力后 main 的号由 11 升到 12，被 11 及更早代码创建过的库在本版下
-# 会被闸门拒绝——处置由拒绝正文给出：先备份整个数据目录，再用 `python -m alibot --migrate` 推进。
-# 本版（#89）**尚无可用迁移步骤**，因此该命令对旧库暂时仍以退出码 3 拒绝；迁移链由 #90 / #91 补齐。
+# 会被闸门拒绝——处置由拒绝正文给出：先备份整个数据目录，再用 `python -m alibot --migrate` 逐版
+# 推进（迁移链覆盖 3..12，见 `app/alibot/migrate.py`）。
 SCHEMA_VERSION = 12
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
@@ -669,6 +669,21 @@ def _sqlite_casefold(value: str | None) -> str | None:
     return value.casefold() if value is not None else None
 
 
+# 把 ``schema_meta.schema_version`` 钉到本代码版本。``_initialize`` 与迁移引擎共用**同一份**
+# 语句：版本号只有一个落点，初始化与迁移不会各写各的 UPSERT。
+STAMP_SCHEMA_VERSION_SQL = (
+    "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) "
+    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+)
+
+# 工作区设置的单行缺省行（``id = 1``）。取值来自本模块的 Python 常量（语言 / 密度 / 主题），
+# 不另抄字面量：``_initialize`` 与迁移引擎共用**同一份**语句与同一组绑定值。
+INSERT_WORKSPACE_SETTINGS_SQL = (
+    "INSERT INTO workspace_settings(id, locale, message_density, theme, updated_at) "
+    "VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING"
+)
+
+
 class SchemaVersionMismatch(Exception):
     """库里的 schema 版本与本代码需要的版本不一致：**拒绝**，且不改动旧库一个字节。
 
@@ -700,10 +715,12 @@ class SchemaVersionMismatch(Exception):
             f"  库里的版本：{found}\n"
             f"  本代码需要的版本：{self.expected_version}\n"
             f"  本版支持的源版本范围：{MIN_SUPPORTED_SOURCE_VERSION} .. {self.expected_version}"
-            "（本版尚无可用迁移步骤，实际可迁移范围为空）。\n"
-            "  迁移步骤就绪后可用这条命令推进：\n"
+            "（可用迁移入口 python -m alibot --migrate 从 3 逐版推进到本版；"
+            "启动路径与 --repair-targets 仍按本规则拒绝）。\n"
+            "  可用这条命令推进：\n"
             f"    python -m alibot --migrate --data-dir {self.db_path.parent}\n"
-            "  在动手之前请先备份整个数据目录（备份 = 复制该数据目录，附件字节也在其中）。\n"
+            "  在动手之前请先备份整个数据目录（备份 = 复制该数据目录，附件字节也在其中）；\n"
+            "  迁移前也会自动整目录备份，备份失败即拒绝迁移。\n"
         )
 
 
@@ -868,8 +885,8 @@ class Database:
 
         **不修版本号、不跳过、不猜测**：闸门在**任何** schema 变更之前收口，旧库原样留着（一个字节
         都没被动过）。跨版本处置**不是**启动路径的一步，而是显式命令 ``python -m alibot --migrate``
-        （ADR-0015 取代 ADR-0004 的「不做旧数据迁移」口径）；本版尚无可用迁移步骤，因此拒绝正文给出
-        该命令与备份指引，等迁移步骤就绪后由它推进。
+        （ADR-0015 取代 ADR-0004 的「不做旧数据迁移」口径）；迁移链覆盖
+        ``MIN_SUPPORTED_SOURCE_VERSION .. SCHEMA_VERSION``，拒绝正文给出该命令与备份指引。
         """
         stored = self._stored_schema_version()
         if stored == str(SCHEMA_VERSION):
@@ -884,21 +901,16 @@ class Database:
             self._assert_schema_compatible()
             self._apply_write_pragmas()
             self._conn.executescript(SCHEMA)
-            self._conn.execute(
-                "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (str(SCHEMA_VERSION),),
-            )
+            self._conn.execute(STAMP_SCHEMA_VERSION_SQL, (str(SCHEMA_VERSION),))
             self._conn.execute(
                 "INSERT INTO member(id, kind, display_name, avatar_slot, created_at) "
                 "VALUES (?, 'owner', ?, ?, ?) ON CONFLICT(id) DO NOTHING",
                 (OWNER_ID, OWNER_DISPLAY_NAME, OWNER_AVATAR_SLOT, utc_now()),
             )
             # 工作区设置的**单行**：缺省值就是源语言、默认密度与「跟随系统」主题，与「空库 = 空工作台」
-            # 同一条纪律（空库里没有任何用户取值，但设置面必须可读）。
+            # 同一条纪律（空库里没有任何用户取值，但设置面必须可读）。语句与迁移引擎共用同一份常量。
             self._conn.execute(
-                "INSERT INTO workspace_settings(id, locale, message_density, theme, updated_at) "
-                "VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                INSERT_WORKSPACE_SETTINGS_SQL,
                 (DEFAULT_LOCALE, DEFAULT_MESSAGE_DENSITY, DEFAULT_THEME, utc_now()),
             )
 

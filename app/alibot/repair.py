@@ -1,10 +1,13 @@
 """当前 schema 库的**作用域数据补齐入口**（issue #37 追加范围）。
 
-**这不是自动迁移。** 跨版本迁移改由**显式命令** ``python -m alibot --migrate`` 执行，任何启动路径都
-不自动迁移（ADR-0015 取代了 ADR-0004 / 规格决策 8 的「不做旧数据迁移」口径）。本模块只在用户**显式**
-执行 ``python -m alibot --repair-targets`` 时运行，任何正常启动路径都**不会**调用它（``__main__`` 里
-它是与「起服务」并列的另一条分支，不是启动流程的一步）。**本入口的版本门放宽见实施票 ⑤（#94）**：
-本票（#89）只落地 ``--migrate`` 旗标与答复矩阵、并复用本模块的形态判据。
+**这不是自动迁移。** 跨版本迁移是**显式命令** ``python -m alibot --migrate``（逐版链在
+``alibot/migrate.py``），任何启动路径都不自动迁移（ADR-0015 取代了 ADR-0004 / 规格决策 8 的
+「不做旧数据迁移」口径）。本模块只在用户**显式**执行 ``python -m alibot --repair-targets`` 时运行，
+任何正常启动路径都**不会**调用它（``__main__`` 里它是与「起服务」并列的另一条分支，不是启动流程的
+一步）。它同时是迁移链 ``3 → 4`` 那一步的**共用列映射**来源（同一个「channel 型作用域数据补齐」
+语义只有一份 SQL）。**把本入口降为 ``--migrate`` 的弃用别名、并放宽它的版本门，见实施票 ④（#94）**：
+本票（#90 / #91）不改本入口的版本门——它仍严格要求库版本等于当前 ``SCHEMA_VERSION``，旧 v4 库会由
+版本闸门拒绝，不会被本入口升级。
 
 它处置的是**一个具体的历史事故**：#24 把消息作用域升为 ``target`` 并把 ``SCHEMA_VERSION`` 3 → 4，
 而 v4 的 ``_initialize`` 曾经会静默接受 v3 库（那是 #37 主修修掉的那半）。被那样打开过的库会停在
@@ -72,27 +75,27 @@ REPAIR_TARGET_BUDGET_SQL = (
     "SELECT channel_id, epoch_seq, used FROM channel_budget"
 )
 
-# 「目标表 ← 可选来源表」的配对与执行顺序。
+# 「目标表 ← 可选来源表 ← 语句」的配对与执行顺序。**这是这段列映射的唯一落点**：
+# ``--repair-targets`` 的补齐循环与迁移链 ``3 → 4`` 那一步都从这里取（ADR-0015 §三「两个地方都在
+# 搬同一批行」的告诫因此落在一份常量上，而不是两份彼此长得像的 SQL）。
 #
 # 来源表是**可选**的：当前 ``SCHEMA`` 只 CREATE IF NOT EXISTS 新表、**不建** ``channel_*`` 旧表，
 # 所以一个**全新**的当前版本库根本没有它们——那种库本来就不需要补，跳过对应语句即可（否则会对一个
-# 健康的库报错）。历史事故现场（「v4 打开过 v3 库」）里旧表**在**、带着数据；当前版本的补齐
-# 路径只对通过当前 schema 版本闸门的库执行，不为旧版数据开后门。
+# 健康的库报错）。历史事故现场（「v4 打开过 v3 库」）里旧表**在**、带着数据。
 #
-# ``target`` 必须最先：另外三张表的引用约束都指向它。语句本体在 ``_REPAIR_SQL`` 里按目标表索引。
-_REPAIR_ORDER: tuple[tuple[str, str | None], ...] = (
-    ("target", "channel"),
-    ("target_member", "channel_member"),
-    ("target_read", "channel_read"),
-    ("target_budget", "channel_budget"),
+# ``target`` 必须最先：另外三张表的引用约束都指向它。
+CHANNEL_SCOPE_MOVES: tuple[tuple[str, str, str], ...] = (
+    ("target", "channel", REPAIR_TARGET_SQL),
+    ("target_member", "channel_member", REPAIR_TARGET_MEMBER_SQL),
+    ("target_read", "channel_read", REPAIR_TARGET_READ_SQL),
+    ("target_budget", "channel_budget", REPAIR_TARGET_BUDGET_SQL),
 )
 
-_REPAIR_SQL: dict[str, str] = {
-    "target": REPAIR_TARGET_SQL,
-    "target_member": REPAIR_TARGET_MEMBER_SQL,
-    "target_read": REPAIR_TARGET_READ_SQL,
-    "target_budget": REPAIR_TARGET_BUDGET_SQL,
-}
+# 补齐循环按目标表取语句（下标取常量，与 ``db.py`` 的 ``BUSINESS_COUNT_SQL[table]`` 同体例）。
+_REPAIR_ORDER: tuple[tuple[str, str], ...] = tuple(
+    (table, source) for table, source, _ in CHANNEL_SCOPE_MOVES
+)
+_REPAIR_SQL: dict[str, str] = {table: sql for table, _, sql in CHANNEL_SCOPE_MOVES}
 
 # 当前 schema 形态必须存在的表：``channel`` 是来源，四张 ``target*`` 是修复目标；``task`` 是
 # v5 新增的业务表。缺任何一张都不是「当前库里 channel 型 target 行缺失」，本入口不处置。
