@@ -569,39 +569,36 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
     background: var(--surface); border-bottom: 1px solid var(--border);
   }
   .mobile-topbar .grow { flex: 1; min-width: 0; font-weight: var(--fw-bold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rail {
-    position: fixed; inset: 0 auto 0 0; z-index: var(--z-rail);
-    max-height: none; transform: translateX(-100%); visibility: hidden;
-    /* 关：先滑出去，滑完（`--dur-drawer` 的延迟）才 `visibility: hidden`。
-       开：`.is-open` 把那条 transition 换成**零时长**的 —— `visibility` 立刻变
-       `visible`，于是同一 tick 里的 `focus()` 落得进去（`app.js` 打开抽屉就把焦点
-       送进去；若它此刻还算「不可见」，那次 focus 会被浏览器丢掉）。 */
+  /* 两条抽屉**共用**的一半：定位体裁、离屏/可见、过渡与浮起。方向、宽度与 z 档位在
+     下面各自的一条规则里给（rail 向左、dock 向右），于是「抽屉怎么滑」只有一份声明，
+     改一处两条一起变。
+     过渡分两个方向写，别把它合并成一条：
+       关：先滑出去，滑完（`--dur-drawer` 的延迟）才 `visibility: hidden`；
+       开：`.is-open` 把那条 transition 换成**零时长**的 —— `visibility` 立刻变 `visible`，
+           于是同一 tick 里的 `focus()` 落得进去（`app.js` 打开抽屉就把焦点送进去；
+           若它此刻还算「不可见」，那次 focus 会被浏览器丢掉）。 */
+  .rail, .dock {
+    position: fixed; visibility: hidden;
     transition: transform var(--dur-drawer) var(--ease), visibility 0s linear var(--dur-drawer);
     box-shadow: var(--shadow-pop);
   }
-  .rail.is-open {
+  .rail.is-open, .dock.is-open {
     transform: none; visibility: visible;
     transition: transform var(--dur-drawer) var(--ease), visibility 0s;
   }
+  .rail { inset: 0 auto 0 0; z-index: var(--z-rail); max-height: none; transform: translateX(-100%); }
   /* 遮罩的色与 `.overlay` 同一条：`--on-accent` 是两档都暗的那支墨（深色档用 `--fg`
      会得到一层发白的雾），这里同样按名取 token，不写裸色值/不新造 --scrim 档位。 */
   .rail-scrim { position: fixed; inset: 0; z-index: var(--z-scrim); background: color-mix(in oklch, var(--on-accent) 42%, transparent); }
   .rail-scrim[hidden] { display: none; }
   .dock {
-    position: fixed; inset: 0 0 0 auto; z-index: var(--z-dock);
-    width: min(var(--dock-w), 92vw); flex-basis: auto;
-    transform: translateX(100%); visibility: hidden;
-    transition: transform var(--dur-drawer) var(--ease), visibility 0s linear var(--dur-drawer);
-    box-shadow: var(--shadow-pop);
+    inset: 0 0 0 auto; z-index: var(--z-dock);
+    width: min(var(--dock-w), 92vw); flex-basis: auto; transform: translateX(100%);
   }
   /* 本文件顶部那条 `[hidden] { display: none !important }` 在桌面表达「没有内容就不占位」；
      ≤900px 的抽屉必须**始终在渲染树里**：关着的抽屉要有可测量的静止位，滑入也才有起点。
-     于是这一层把 `hidden` 的呈现改写成「离屏 + 不可见」（`visibility` 由上面的规则给）。 */
+     于是这一层把 `hidden` 的呈现改写成「离屏 + 不可见」（`visibility` 由共用规则给）。 */
   .dock[hidden] { display: flex !important; }
-  .dock.is-open {
-    transform: none; visibility: visible;
-    transition: transform var(--dur-drawer) var(--ease), visibility 0s;
-  }
   /* 抽屉自己的出口贴在抽屉右上角（`#dock` 在 ≤900px 是 fixed，就是它的定位祖先）；
      成员那一栏的头部让出这段宽度，文案不会钻到按钮底下。 */
   .dock-close { display: grid; position: absolute; top: 10px; right: var(--sp-5); }
