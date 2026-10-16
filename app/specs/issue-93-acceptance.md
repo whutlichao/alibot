@@ -9,7 +9,7 @@
 | 项 | 值 |
 | --- | --- |
 | 分支 | `schema-migration-t93` |
-| 提交 | `48cfdd1` feat（预演编排 + CLI）/ `2104689` test（13 条验收）/ `7cc8077` refactor（双轴 review 收敛）/ `df773ce` docs（PR 正文）/ 本文件 docs（Answer） |
+| 提交 | `48cfdd1` feat（预演编排 + CLI）/ `2104689` test（13 条验收）/ `7cc8077` refactor（双轴 review 收敛）/ `df773ce` + `5367a4e` docs（PR 正文）/ `e502b9d` docs（本文件） |
 | 本票 base | `82a6ffb`（`main`，即 #95 合并后的读数） |
 | PR | [#101](https://github.com/whutlichao/alibot/pull/101)（base `main`，head `schema-migration-t93`） |
 | PR body | `app/specs/issue-93-pr-body.md`（`--body-file` 用） |
