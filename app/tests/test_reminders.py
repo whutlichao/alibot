@@ -238,3 +238,57 @@ def test_reminder_writes_add_no_target_and_no_unread(launched: dict) -> None:
 
     assert workspace_snapshot(client) == snapshot_before
     assert channel_reading(client, channel["id"])["unread_count"] == unread_before
+
+
+def test_reminder_copy_follows_the_stored_locale(client: TestClient) -> None:
+    """新增的提醒文案按**库内语言偏好**渲染（#62 / ADR-0009 第二层的口径；本票不另开一条路径）。
+
+    断言方式与 `test_backend_copy.py` 同款：比对的不是某一句具体译文，而是**两种语言的读数不同**
+    且各自取自该语言的词条（`alibot.i18n.render`）；机器可读的 `code` 与 `fields` 的**键**在两种
+    语言下逐字相同。这里直接读词条表的原因与那份文件一样——它是**数据契约**，不经 HTTP 面暴露。
+    """
+    from alibot import i18n
+
+    def error(payload: dict) -> dict:
+        return client.post("/api/reminders", json=payload).json()["error"]
+
+    zh_invalid = error({"text": "   ", "time": "9:00"})
+    zh_missing = client.delete("/api/reminders/rm_nope").json()["error"]
+
+    client.patch("/api/settings", json={"locale": "en"})
+
+    en_invalid = error({"text": "   ", "time": "9:00"})
+    en_missing = client.delete("/api/reminders/rm_nope").json()["error"]
+
+    # code 与 fields 的键是机器可读的：两种语言下逐字相同。
+    assert en_invalid["code"] == zh_invalid["code"] == "validation_failed"
+    assert sorted(en_invalid["fields"]) == sorted(zh_invalid["fields"]) == ["text", "time"]
+    assert en_missing["code"] == zh_missing["code"] == "not_found"
+
+    # 自然语言按各自的语言取值（措辞可变，契约是「取自那一份词条」）。
+    assert zh_invalid["message"] == i18n.render("error.reminder_invalid", "zh-CN")
+    assert en_invalid["message"] == i18n.render("error.reminder_invalid", "en")
+    assert zh_invalid["message"] != en_invalid["message"]
+    assert zh_invalid["fields"]["text"] == i18n.render("error.reminder_text_empty", "zh-CN")
+    assert en_invalid["fields"]["text"] == i18n.render("error.reminder_text_empty", "en")
+    assert zh_invalid["fields"]["time"] == i18n.render("error.reminder_time_shape", "zh-CN")
+    assert en_invalid["fields"]["time"] == i18n.render("error.reminder_time_shape", "en")
+    assert zh_missing["message"] == i18n.render("error.reminder_not_found", "zh-CN", reminder_id="rm_nope")
+    assert en_missing["message"] == i18n.render("error.reminder_not_found", "en", reminder_id="rm_nope")
+
+    # 归属频道的字段文案复用既有的 `error.channel_not_found`，不另立一条。
+    en_channel = error({"text": "x", "time": "09:00", "channel_id": "ch_nope"})
+    assert en_channel["fields"]["channel_id"] == i18n.render(
+        "error.channel_not_found", "en", channel_id="ch_nope"
+    )
+
+
+def test_reminder_text_too_long_message_carries_the_limit(client: TestClient) -> None:
+    """上限那一句把**上限本身**作为参数带出来（两种语言同一参数位）。"""
+    from alibot import i18n
+
+    for locale in ("zh-CN", "en"):
+        client.patch("/api/settings", json={"locale": locale})
+        error = client.post("/api/reminders", json={"text": "x" * 201, "time": "09:00"}).json()["error"]
+
+        assert error["fields"]["text"] == i18n.render("error.reminder_text_too_long", locale, limit=200)

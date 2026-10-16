@@ -41,9 +41,13 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-# schema 版本。号段分配是**协调事实**（规格 D13），实施票落地时取**当时的下一号**，号段如下：
-#   7 = #61 的工作区设置（`workspace_settings`，已合并）→ 8 = **本票（#68）的提醒表**。
-#   后续再建表的单据必须复核这一行：本版**不做旧库迁移**（README 的既定纪律），版本不等就拒绝启动。
+# schema 版本。号段分配是**协调事实**（规格 D13：实施票落地时取**当时的下一号**，并在票面写明；
+# 本票的可写面不含 `app/specs/issue-60-spec.md` 与 `docs/adr/`，因此那两处的口径同步不在本票内，
+# 这里登记的是**已落地与已裁定**的号段）：
+#   7 = #61 的工作区设置（`workspace_settings`，已合并）
+#   8 = **本票（#68）的提醒表**
+#   9 = #67（附件，建表）；10 = #35 的 #58（结构化沉默，顺延）
+# 后续再建表的单据必须复核这一行：本版**不做旧库迁移**（README 的既定纪律），版本不等就拒绝启动。
 SCHEMA_VERSION = 8
 
 # 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合。
@@ -417,6 +421,14 @@ DM_SELECT_SQL = (
     " GROUP BY t.id, t.created_at, p.id, p.kind, p.display_name, p.avatar_slot, "
     "          p.created_at, p.deleted_at, r.last_read_seq "
     " ORDER BY t.created_at, t.id"
+)
+
+# 提醒的**唯一一条选取形状**：提醒行 + 归属频道的可读名。
+# 三处共用（列表、新增后读回、删除前读回）——加一列时只改这里，不会只改到其中一两处。
+# 归属是**可空**的（空 = 不归属任何频道），因此是 ``LEFT JOIN``：写成 ``JOIN`` 会把
+# 「不归属」的提醒整条从列表里丢掉。ORDER BY 与 WHERE 由调用点各自拼在后面（起点不同）。
+REMINDER_SELECT_SQL = (
+    "SELECT r.*, c.name AS channel_name FROM reminder r LEFT JOIN channel c ON c.id = r.channel_id "
 )
 
 # 工作台搜索的唯一判定：SQLite CASEFOLD + LIKE 子串匹配，前端只消费后端高亮区间。
@@ -977,16 +989,23 @@ class Database:
     def list_reminders(self) -> list[dict[str, Any]]:
         """全部提醒，按创建序（``created_at, id``）。
 
-        归属频道用 ``LEFT JOIN`` 取名字：**空 = 不归属**（可空列的正本事实），因此不能写成
-        ``JOIN``——那会把「不归属任何频道的提醒」整条从列表里丢掉。
+        归属频道用 ``LEFT JOIN`` 取名字（见 :data:`REMINDER_SELECT_SQL`）：**空 = 不归属**
+        （可空列的正本事实），因此不能写成 ``JOIN``——那会把「不归属任何频道的提醒」整条丢掉。
         """
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT r.*, c.name AS channel_name FROM reminder r "
-                "LEFT JOIN channel c ON c.id = r.channel_id "
-                "ORDER BY r.created_at, r.id"
-            ).fetchall()
+            rows = self._conn.execute(REMINDER_SELECT_SQL + "ORDER BY r.created_at, r.id").fetchall()
         return [self._reminder_payload(row) for row in rows]
+
+    def _get_reminder(self, reminder_id: str) -> dict[str, Any]:
+        """按 id 取一条提醒的载荷（含归属频道名）；不存在 ⇒ 404 ``not_found``。
+
+        **调用方负责持锁**（新增路径与删除路径都在同一个锁里连着做两件事，不该在中间放锁）。
+        读与删因此共用同一个 404 判据：新增后读回、删除前读回，两处不可能给出不同的说法。
+        """
+        row = self._conn.execute(REMINDER_SELECT_SQL + "WHERE r.id = ?", (reminder_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.reminder_not_found", reminder_id=reminder_id))
+        return self._reminder_payload(row)
 
     @staticmethod
     def _reminder_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -1005,27 +1024,33 @@ class Database:
 
         归属频道（若给了）必须存在。``channel_id`` 是**请求体里的引用**，因此与
         ``create_channel`` 的 ``member_ids`` / ``add_channel_member`` 同口径：
-        ``validation_failed`` + ``fields``，而不是把「路径资源不存在」的 404 用在这里。
+        ``validation_failed`` + ``fields``（复用 ``error.channel_not_found`` 的取值），
+        而不是把「路径资源不存在」的 404 用在这里。
+
+        这里的自然语言与其它模块一样经 :meth:`_render_copy` 取（后端文案按库内语言偏好渲染，
+        ADR-0009 第二层）：本票新增的文案也是后端可见文案，没有理由绕开那一条路径。
         """
         clean_text = (text or "").strip()
         clean_time = (time or "").strip()
         fields: dict[str, str] = {}
         if not clean_text:
-            fields["text"] = "提醒内容不能为空"
+            fields["text"] = self._render_copy("error.reminder_text_empty")
         elif len(clean_text) > MAX_REMINDER_TEXT_LENGTH:
-            fields["text"] = f"提醒内容最多 {MAX_REMINDER_TEXT_LENGTH} 个字符"
+            fields["text"] = self._render_copy("error.reminder_text_too_long", limit=MAX_REMINDER_TEXT_LENGTH)
         if not REMINDER_TIME_PATTERN.match(clean_time):
-            fields["time"] = "提醒时间需要是 HH:MM（例如 09:00）"
+            fields["time"] = self._render_copy("error.reminder_time_shape")
         if fields:
-            raise DomainError("validation_failed", "提醒校验未通过，未创建任何数据", fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.reminder_invalid"), fields=fields)
         if channel_id is not None:
             try:
                 self.get_channel(channel_id)
             except NotFound:
                 raise DomainError(
                     "validation_failed",
-                    "提醒校验未通过，未创建任何数据",
-                    fields={"channel_id": f"频道不存在：{channel_id}"},
+                    self._render_copy("error.reminder_invalid"),
+                    fields={
+                        "channel_id": self._render_copy("error.channel_not_found", channel_id=channel_id)
+                    },
                 ) from None
 
         reminder_id = new_id("rm")
@@ -1034,12 +1059,8 @@ class Database:
                 "INSERT INTO reminder(id, text, time, channel_id, created_at) VALUES (?, ?, ?, ?, ?)",
                 (reminder_id, clean_text, clean_time, channel_id, utc_now()),
             )
-            row = self._conn.execute(
-                "SELECT r.*, c.name AS channel_name FROM reminder r "
-                "LEFT JOIN channel c ON c.id = r.channel_id WHERE r.id = ?",
-                (reminder_id,),
-            ).fetchone()
-        return self._reminder_payload(row)
+            reminder = self._get_reminder(reminder_id)
+        return reminder
 
     def delete_reminder(self, reminder_id: str) -> dict[str, Any]:
         """删一条提醒，并返回**这次真的删掉的**那一条（不写墓碑、不落消息）。
@@ -1048,15 +1069,9 @@ class Database:
         读与删在同一个锁里做，因此返回的那条不可能是「读完之后被别人删掉」的那条。
         """
         with self._lock:
-            row = self._conn.execute(
-                "SELECT r.*, c.name AS channel_name FROM reminder r "
-                "LEFT JOIN channel c ON c.id = r.channel_id WHERE r.id = ?",
-                (reminder_id,),
-            ).fetchone()
-            if row is None:
-                raise NotFound(f"提醒不存在：{reminder_id}")
+            reminder = self._get_reminder(reminder_id)
             self._conn.execute("DELETE FROM reminder WHERE id = ?", (reminder_id,))
-        return self._reminder_payload(row)
+        return reminder
 
     # ─── 轮次结果（append-only） ────────────────────────────────────────
     def append_round_outcome(

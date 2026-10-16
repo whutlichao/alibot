@@ -714,16 +714,16 @@ function renderSettingsModal() {
       会让图标/读屏用户读到相反的动作，因此这里按本仓的关闭控件形状用 `×`；
       本仓已有先例：指派 pill 用 `<span>` 而不是原型的 `<button>`（那也是一个按下去不发生的站）。 */
 
-/** 读提醒（正本在后端）：刷新本地镜像、圆点与弹窗列表。 */
+/** 读提醒（正本在后端）：刷新本地镜像、圆点与弹窗列表。
+
+    落点与写路径共用 `applyReminderPayload`——「拿到一份提醒表之后怎么铺界面」只有一处实现，
+    读与写不会各自演化（读成功同样要把上一次的错误话收回去：那份状态已经不成立了）。 */
 async function loadReminders() {
-  const payload = await api('/api/reminders');
-  state.reminders = payload.reminders || [];
-  renderReminderDot();
-  renderRemindersModal();
+  applyReminderPayload(await api('/api/reminders'));
   return state.reminders;
 }
 
-/** 写路径（新增 / 删除）的唯一落点：用响应里的**最新**提醒表覆盖镜像，再重绘圆点与列表。
+/** 写路径（新增 / 删除）与读路径的**唯一落点**：用响应里的**最新**提醒表覆盖镜像，再重绘圆点与列表。
 
     不在本地拼一条「看起来成功了」的行：界面只能显示后端说过的那一份。 */
 function applyReminderPayload(payload) {
