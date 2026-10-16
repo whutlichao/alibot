@@ -904,10 +904,16 @@ def sha256_file(path: Path) -> str:
 
 @dataclass(frozen=True)
 class DryRunReport:
-    """一次只读预演的全部可观察读数（stdout 报告的数据源）。"""
+    """一次只读预演的全部可观察读数（stdout 报告的数据源）。
+
+    副本有三种状态，报告必须**如实**区分（D10 的「数据目录里不留临时副本」是可观察事实，不能在
+    报告里说成已经做到）：``copy_path is None`` = 连副本都没建起来；``copy_removed`` = 已经删掉；
+    路径在而 ``copy_removed`` 为假 = 没能删掉（调用方另有 stderr 正文说明）。
+    """
 
     db_path: Path
-    copy_path: Path
+    copy_path: Path | None
+    copy_removed: bool
     digest_before: str
     digest_after: str
     chain: ChainResult | None
@@ -926,8 +932,8 @@ class StagedLibraryCopy:
     - 副本落在数据目录内的隐藏临时子目录里，因此数据目录里不会出现「落在别处的副本」；
     - 只用 :func:`shutil.copy2` 复制**库文件与它的边文件**（附件字节在 ``attachments/`` 下、不进单
       文件库，预演也不碰它们）；
-    - :meth:`__exit__` **无条件**删除它——预演成功、失败、抛异常都删；删不干净就明确报错，不静默
-      留垃圾；
+    - :meth:`__exit__` **无条件**删除它——预演成功、失败、抛异常都删；删不干净就明确报错，**并且
+      不让报告说「已删除」**（:attr:`copy_removed` 保持为假）；
     - 进入时与退出时各取一次**原库文件**的 sha256，供报告打出前后两个读数。
 
     预演**从不用 SQLite 打开原库**：版本闸门、形态判定与整条链全部施在副本上（原库只被读字节），
@@ -938,6 +944,7 @@ class StagedLibraryCopy:
         self.source_dir = Path(data_dir)
         self.source_db_path = self.source_dir / DATABASE_FILE_NAME
         self.copy_dir: Path | None = None
+        self.copy_removed = False
         self.digest_before = ""
         self.digest_after = ""
 
@@ -947,6 +954,7 @@ class StagedLibraryCopy:
         try:
             self.copy_dir = Path(tempfile.mkdtemp(dir=self.source_dir, prefix=DRY_RUN_COPY_PREFIX))
         except OSError as exc:
+            self._measure_after()
             raise DryRunError(f"预演没法在数据目录内建临时副本：{exc}。原库文件一个字节都没动。") from exc
         try:
             for suffix in LIBRARY_SIDECAR_SUFFIXES:
@@ -957,6 +965,7 @@ class StagedLibraryCopy:
             # ``__exit__`` 不会被调用（`__enter__` 就失败了），所以在这里把半份副本清掉。
             shutil.rmtree(self.copy_dir, ignore_errors=True)
             self.copy_dir = None
+            self._measure_after()
             raise DryRunError(
                 f"预演没法把库文件（含 ``-wal`` / ``-shm``）复制进数据目录内的临时副本：{exc}。"
                 f"原库文件一个字节都没动，数据目录里也不留半个副本。"
@@ -967,26 +976,41 @@ class StagedLibraryCopy:
         try:
             self.cleanup()
         finally:
-            self.digest_after = sha256_file(self.source_db_path)
+            self._measure_after()
 
     def cleanup(self) -> None:
-        """删除临时副本（成功与失败都删）；删不干净就报错，让「数据目录里不留副本」不被静默破坏。"""
+        """删除临时副本（成功与失败都删）；删不干净就报错，且**不**把「已删除」写进报告。
+
+        ``copy_removed`` 只在真的删掉之后才置真——报告里那句「已删除」是给用户看的证据，不能是一条
+        与 stderr 自相矛盾的空话。
+        """
         if self.copy_dir is None:
             return
         shutil.rmtree(self.copy_dir, ignore_errors=True)
         if self.copy_dir.exists():
-            raise DryRunError(f"预演结束但数据目录里的临时副本没删干净：{self.copy_dir}；请手动删除该目录。")
+            self.copy_removed = False
+            raise DryRunError(
+                f"预演结束但数据目录里的临时副本没删干净：{self.copy_dir}（请手动删除该目录）。"
+                f"原库文件一个字节都没动。"
+            )
+        self.copy_removed = True
+
+    @property
+    def has_readings(self) -> bool:
+        """原库 sha256 的前后两个读数是否都在（``False`` = 连库文件都没量成）。"""
+        return bool(self.digest_before and self.digest_after)
 
     def report(self, chain: ChainResult | None = None) -> DryRunReport | None:
-        """预演的可观察读数；``None`` = 连副本都没建起来，**没有**前后读数可打。
+        """预演的可观察读数；``None`` = 连前后读数都没有（库文件都量不成），没有证据可打。
 
-        **必须在 with 块之外调用**（那时副本已删、前后读数都已取到）。
+        **必须在 with 块之外调用**（那时副本的去向与原库的前后读数都已落定）。
         """
-        if self.copy_dir is None or not self.digest_after:
+        if not self.has_readings:
             return None
         return DryRunReport(
             db_path=self.source_db_path,
             copy_path=self.copy_dir,
+            copy_removed=self.copy_removed,
             digest_before=self.digest_before,
             digest_after=self.digest_after,
             chain=chain,
@@ -994,10 +1018,16 @@ class StagedLibraryCopy:
 
     def untouched_note(self) -> str:
         """一行「原库一个字节都没动」的正文（预演跑不通时打给 stderr 的那句）。"""
+        if not self.has_readings:
+            return f"预演未改动原库：{self.source_db_path}（预演没有对它做任何写操作）。"
         return (
             f"预演未改动原库：{self.source_db_path} 的 sha256 前后一致"
             f"（{self.digest_before} → {self.digest_after}）；原库一个字节都没动。"
         )
+
+    def _measure_after(self) -> None:
+        """取原库文件 sha256 的「后」读数（副本没建起来时也要取：那是真实测得的读数，不是推断）。"""
+        self.digest_after = sha256_file(self.source_db_path)
 
 
 def dry_run_chain(copy_dir: Path | str, from_version: int) -> ChainResult:
@@ -1011,9 +1041,10 @@ def dry_run_chain(copy_dir: Path | str, from_version: int) -> ChainResult:
     所以这里不沿用真跑那句「迁移失败并已回滚」，也不用「已回滚」这种会误导的措辞。调用方把它映射为
     ``5``。
     """
-    conn = connect(Path(copy_dir) / DATABASE_FILE_NAME)
+    conn: sqlite3.Connection | None = None
     try:
         try:
+            conn = connect(Path(copy_dir) / DATABASE_FILE_NAME)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 return run_chain(conn, from_version)
@@ -1021,24 +1052,35 @@ def dry_run_chain(copy_dir: Path | str, from_version: int) -> ChainResult:
                 with suppress(sqlite3.Error):
                     conn.execute("ROLLBACK")
         except Exception as exc:
+            # ``connect`` 也在里面：副本打不开同样是「这条链在副本上跑不通」，一样给 5，不逃逸成堆栈。
             raise MigrationFailed(
                 f"预演发现这条链在副本上跑不通；原库未改动（预演没有可回滚之物，写操作只落在副本上）。"
                 f"原因：{exc}"
             ) from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+
+
+def _dry_run_copy_line(report: DryRunReport) -> str:
+    """副本那一行的正文：副本的三种去向各说各的，**不把「没做」说成「做到了」**。"""
+    safety = "不建备份、不写审计台账、不改库里的 Schema 版本"
+    if report.copy_path is None:
+        return f"临时副本：没能建起来（预演没跑）；{safety}，原库未改动。"
+    if report.copy_removed:
+        return f"临时副本：{report.copy_path} 已删除；数据目录内不留副本、{safety}。"
+    return f"临时副本：{report.copy_path} 没能删掉（数据目录里还留着它，见 stderr）；{safety}。"
 
 
 def _dry_run_proof_lines(report: DryRunReport) -> list[str]:
-    """预演报告的共同尾部：原库 sha256 的前后两个读数 + 副本已删除 + 无任何写副作用。"""
+    """预演报告的共同尾部：原库 sha256 的前后两个读数 + 副本去向 + 无任何写副作用。"""
     consistency = "前后读数一致" if report.unchanged else "前后读数不一致（这是缺陷，请上报）"
     return [
         "",
         f"原库文件 sha256（预演前）：{report.digest_before}",
         f"原库文件 sha256（预演后）：{report.digest_after}",
         f"原库零字节改动：{consistency}。",
-        f"临时副本：{report.copy_path} 已删除；数据目录内不留副本、不建备份、不写审计台账、"
-        f"不改库里的 Schema 版本。",
+        _dry_run_copy_line(report),
     ]
 
 

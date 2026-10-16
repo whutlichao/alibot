@@ -12,6 +12,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .db import (
     DATA_DIR_ENV,
@@ -125,6 +126,11 @@ def _perform_migration(data_dir: Path, from_version: int) -> int:
     return 0
 
 
+# 只读裁决的五个档位（``_LibraryVerdict.kind``）。写成 ``Literal`` 而不是裸 ``str``：这五个词是域概念，
+# 拼错一个应当被类型检查器当场拦下，而不是在运行时悄悄落进最后那个 ``else``。
+_LibraryVerdictKind = Literal["accepted", "shape-only", "nothing", "not-accepted", "shape-missing"]
+
+
 @dataclass(frozen=True)
 class _LibraryVerdict:
     """对一个**已存在**的库的只读裁决（规格 D2）：真实迁移与只读预演**共用同一份判定**。
@@ -138,9 +144,28 @@ class _LibraryVerdict:
     - ``shape-missing``：版本匹配、但现在缺当前形态必须存在的表且有业务数据 ⇒ ``4``（还没动手）。
     """
 
-    kind: str
+    kind: _LibraryVerdictKind
     source_version: int = SCHEMA_VERSION
     message: str = ""
+
+
+def _report_verdict(verdict: _LibraryVerdict) -> int | None:
+    """把「不进迁移编排」的三档裁决打出来并给出退出码；``None`` = 这一档要走迁移编排。
+
+    三档的落点与真跑、预演**同一个来源**：预演不在别处再抄一遍这条级联，于是「同一个库、同一个
+    答复」不会因为两条路径各写一份而漂移。
+    """
+    if verdict.kind == "not-accepted":
+        print(verdict.message, file=sys.stderr)
+        return DATA_NOT_ACCEPTED_EXIT_CODE
+    if verdict.kind == "shape-missing":
+        # 「4 不是迁移失败」：它说这个库不被本入口处置。不做任何写入、不建备份。
+        print(verdict.message, file=sys.stderr)
+        return REPAIR_FAILED_EXIT_CODE
+    if verdict.kind == "nothing":
+        print(verdict.message)
+        return 0
+    return None
 
 
 def _inspect_library(data_dir: Path, reported_db_path: Path | None = None) -> _LibraryVerdict:
@@ -237,16 +262,9 @@ def _run_migrate(data_dir: Path) -> int:
         return 0
 
     verdict = _inspect_library(data_dir)
-    if verdict.kind == "not-accepted":
-        print(verdict.message, file=sys.stderr)
-        return DATA_NOT_ACCEPTED_EXIT_CODE
-    if verdict.kind == "shape-missing":
-        # 「4 不是迁移失败」：它说这个库不被本入口处置。不做任何写入、不建备份。
-        print(verdict.message, file=sys.stderr)
-        return REPAIR_FAILED_EXIT_CODE
-    if verdict.kind == "nothing":
-        print(verdict.message)
-        return 0
+    code = _report_verdict(verdict)
+    if code is not None:
+        return code
     return _perform_migration(data_dir, verdict.source_version)
 
 
@@ -278,29 +296,24 @@ def _run_dry_run(data_dir: Path) -> int:
     try:
         with staged as copy_dir:
             verdict = _inspect_library(copy_dir, db_path)
-            if verdict.kind == "not-accepted":
-                print(verdict.message, file=sys.stderr)
-                status = DATA_NOT_ACCEPTED_EXIT_CODE
-            elif verdict.kind == "shape-missing":
-                print(verdict.message, file=sys.stderr)
-                status = REPAIR_FAILED_EXIT_CODE
-            elif verdict.kind == "nothing":
-                print(verdict.message)
-            else:
+            code = _report_verdict(verdict)
+            if code is None:
                 chain = migrate.dry_run_chain(copy_dir, verdict.source_version)
+            else:
+                status = code
     except migrate.MigrationError as exc:
         # 预演跑不通（副本建不出来 / 计划断链 / 链在副本上失败）：给「预演没能跑通」的答复 5。
         # 人定裁定：正文（stderr）与报告（stdout，render_dry_run_untouched）**都**要写明原库未改动，
         # 且不得出现「已回滚」这种属于真跑（动手之后）的措辞。
         print(str(exc), file=sys.stderr)
-        if staged.report() is not None:
+        if staged.has_readings:
             print(staged.untouched_note(), file=sys.stderr)
         chain = None
         status = MIGRATION_FAILED_EXIT_CODE
 
     report = staged.report(chain)
     if report is None:
-        # 连副本都没建起来：原库同样一个字节没动，但没有「前后两个读数」这份证据可打。
+        # 连前后读数都没有（库文件都量不成）：原库同样一个字节没动，但没有这份证据可打。
         return status
     print(
         migrate.render_dry_run_report(report)
