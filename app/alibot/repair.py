@@ -149,8 +149,9 @@ CHECK_CHANNEL_TARGETS_WITHOUT_MEMBERS_SQL = (
 #   行在、而影子行 / 成员 / 已读 / 预算有缺」时，形态步骤据此决定要不要搬（规格 D5）。判定只看
 #   形态、不看 ``schema_version``，所以它同样能认出「号已是新一代、数据还留在旧表名里」的半改名库。
 #
-# 每项是「标签 + （来源表, 目标表）+ 探测语句」。语句本体在下面按标签索引的字典里（**下标取常量**的
-# 形态，与 ``db.py`` 的 ``BUSINESS_COUNT_SQL[table]`` 一致：不把裸变量直接喂给 ``execute``）。
+# 每项是「标签 + （来源表, 目标表）+ 探测语句」，语句本体**内联在元组里**（探测语句只有这几个调用方，
+# 再抽一层常量反而要来回跳）。调用方按元组顺序取用，与 ``db.py`` 的 ``BUSINESS_COUNT_SQL[table]``
+# 同一体例：喂给 ``execute`` 的 SQL 一律来自模块级常量，不是裸变量。
 CHANNEL_SCOPE_GAP_CHECKS: tuple[tuple[str, tuple[str, str], str], ...] = (
     ("每个频道都有 channel 型影子行", ("channel", "target"), CHECK_SHADOW_ROWS_SQL),
     (
@@ -177,16 +178,19 @@ _REVERSE_CONSISTENCY_CHECKS: tuple[tuple[str, tuple[str, str], str], ...] = (
     ),
 )
 
-# 每条检查的「标签 + 它用到的表」；语句本体在下面按标签索引的字典里。表名显式写出来，是因为
-# ``_REPAIR_ORDER`` 里的表清单已经穷举了本模块认得的八张表，没有需要从 SQL 文本里猜的余地。
-# 前四条是**补齐方向**、后两条是**反向 1:1**，两个方向合起来才是规格要求的「target<->channel 1:1」。
-_CONSISTENCY_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
-    (label, tables) for label, tables, _ in (*CHANNEL_SCOPE_GAP_CHECKS, *_REVERSE_CONSISTENCY_CHECKS)
+# 两个方向合起来才是规格要求的「target<->channel 1:1」（正向 = 有缺判据，反向 = 补齐后的自校验）。
+_ALL_CONSISTENCY_CHECKS: tuple[tuple[str, tuple[str, str], str], ...] = (
+    *CHANNEL_SCOPE_GAP_CHECKS,
+    *_REVERSE_CONSISTENCY_CHECKS,
 )
 
-_CHECK_SQL: dict[str, str] = {
-    label: sql for label, _, sql in (*CHANNEL_SCOPE_GAP_CHECKS, *_REVERSE_CONSISTENCY_CHECKS)
-}
+# 每条检查的「标签 + 它用到的表」；语句本体在按标签索引的 ``_CHECK_SQL`` 里。表名显式写出来，是因为
+# ``_REPAIR_ORDER`` 里的表清单已经穷举了本模块认得的八张表，没有需要从 SQL 文本里猜的余地。
+_CONSISTENCY_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+    (label, tables) for label, tables, _ in _ALL_CONSISTENCY_CHECKS
+)
+
+_CHECK_SQL: dict[str, str] = {label: sql for label, _, sql in _ALL_CONSISTENCY_CHECKS}
 
 # 报「改动前后」行数用的表清单：四张补齐目标表 + 四张来源表。
 REPORTED_TABLES = (
@@ -266,6 +270,47 @@ def missing_current_required_tables(existing: set[str]) -> tuple[str, ...]:
     迁移入口返回退出码 ``4``，而没有业务数据时两者都是空操作（``0``）。
     """
     return tuple(sorted(set(_CURRENT_REQUIRED_TABLES) - existing))
+
+
+def channel_scope_gaps(conn: sqlite3.Connection, existing: set[str]) -> tuple[str, ...]:
+    """只看**形态**：channel 型作用域行有没有缺（有缺返回缺失项，健康库返回空元组）。
+
+    这是链前**形态步骤**（``alibot/migrate.py`` 的 :func:`~alibot.migrate.run_shape_step`）的判定，
+    也是它「不依赖版本号」的落点：判据就是 :data:`CHANNEL_SCOPE_GAP_CHECKS` 的四条正向探测，
+    因此「号已是新一代、数据还留在旧表名里」的半改名库与「号本来就是旧版」的库得到同一个处置。
+    **只读**——探测全是 ``SELECT COUNT(*)``、不写库一个字节，所以调用方可以在决定备份之前安全地
+    先问一句「有没有活」（``__main__._run_migrate`` 对当前版本库正是这么做的：有缺才走迁移编排，
+    无缺就是「无事可做」）。
+
+    来源表不存在 ⇒ 跳过（全新的当前版本库没有 ``channel_*`` 旧表，不该被误判成有缺）；来源表在而
+    目标表不存在 ⇒ 记为有缺（目标表随后由形态步骤按当前 ``SCHEMA`` 建出）。反向 1:1 的检查不在这里：
+    形态步骤只能搬、不能凭空造频道行或成员行。
+
+    ``existing`` 由调用方给（``Database.table_names()`` 或迁移侧的同一查询），本函数**不**自己去读
+    ``sqlite_master``——「库里有哪些表」只有那几个既有落点。
+    """
+    gaps: list[str] = []
+    for label, (source, target), probe in CHANNEL_SCOPE_GAP_CHECKS:
+        if source not in existing:
+            continue
+        if target not in existing:
+            gaps.append(label)
+            continue
+        row = conn.execute(probe).fetchone()
+        if row is not None and int(row[0]) > 0:
+            gaps.append(label)
+    return tuple(gaps)
+
+
+def channel_scope_gaps_of(database: Database) -> tuple[str, ...]:
+    """在**已经打开**的 :class:`Database` 上做只读形态探测（连接访问留在本模块）。
+
+    存在的唯一理由：``--migrate`` 需要在一个原样的库上先问一句「形态有没有缺」，而它此刻只持有
+    :class:`Database`。这里把 ``_conn`` 访问收在本模块（与 :func:`repair_target_rows` 同一先例，
+    见 ``db.Database`` 的类文档：本模块是它的写路径之一），于是 CLI 层不必伸手进 ``Database`` 的
+    私有连接，也不必为一个只读探测再开第二条连接。
+    """
+    return channel_scope_gaps(database._conn, database.table_names())
 
 
 def _counts(conn: sqlite3.Connection, existing: set[str]) -> dict[str, int]:

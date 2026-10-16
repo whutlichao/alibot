@@ -22,6 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from alibot.db import BUDGET_LIMIT, DATABASE_FILE_NAME, SCHEMA_VERSION, Database
 
 from tests._migration_history import OBJECTS, VERSION_OBJECTS
@@ -32,28 +33,21 @@ APP_DIR = Path(__file__).resolve().parents[1]
 MIGRATION_SUCCEEDED = 0
 SHAPE_NOT_HANDLED = 4
 
-# 迁移后**原样保留**的三张旧表（规格 D12：回退面，唯一例外）。
+# 迁移后**原样保留**的三张旧表（规格 D12：回退面，唯一例外）；当前 ``SCHEMA`` 不再建它们，因此造
+# 「当前版本形态 + 旧表数据」的库时由测试自己用 ``OBJECTS`` 的 DDL 加上去。
 LEGACY_TABLES = ("channel_member", "channel_read", "channel_budget")
 
-# 三张旧表加进「当前版本形态」的库时用的对象名（当前 ``SCHEMA`` 不再建它们）。
-LEGACY_OBJECTS = ("channel_member", "channel_read", "channel_budget")
+# 每张旧表的行数语句：一句一个模块级常量（与 ``test_schema_migration.py`` 的 ``_ROW_COUNT_SQL`` 同体例，
+# 不把表名插进 ``execute`` 的实参）。
+_LEGACY_COUNT_SQL: dict[str, str] = {
+    "channel_member": 'SELECT COUNT(*) FROM "channel_member"',
+    "channel_read": 'SELECT COUNT(*) FROM "channel_read"',
+    "channel_budget": 'SELECT COUNT(*) FROM "channel_budget"',
+}
 
-# 历史各版新增、但 SQLite 无法用 ``CREATE`` 表达的列（用带约束的 ``ADD COLUMN`` 补）。
-_COLUMN_DDL: dict[str, str] = {
-    "task_ref": 'ALTER TABLE "message" ADD COLUMN task_ref TEXT',
-    "dm_peer_member_id": 'ALTER TABLE "target" ADD COLUMN dm_peer_member_id TEXT REFERENCES member(id)',
-    "theme": "ALTER TABLE \"workspace_settings\" ADD COLUMN theme TEXT NOT NULL DEFAULT 'system' "
-    "CHECK (theme IN ('light', 'dark', 'system'))",
-    "claimed_at": 'ALTER TABLE "task" ADD COLUMN claimed_at TEXT',
-    "auto_claim": 'ALTER TABLE "agent_config" ADD COLUMN auto_claim INTEGER NOT NULL DEFAULT 0 '
-    "CHECK (auto_claim IN (0, 1))",
-}
-_COLUMN_ADDITIONS: dict[int, tuple[str, ...]] = {
-    5: ("task_ref",),
-    6: ("dm_peer_member_id",),
-    10: ("theme",),
-    12: ("claimed_at", "auto_claim"),
-}
+# ``target.dm_peer_member_id`` 是 v6 加入的列：它同时是 ``idx_target_dm_peer_unique`` 的基列，所以造
+# 带该索引的当前版本形态时必须先补上（SQLite 没有 ``CREATE`` 级的表达）。
+ADD_DM_PEER_COLUMN_SQL = 'ALTER TABLE "target" ADD COLUMN dm_peer_member_id TEXT REFERENCES member(id)'
 
 STAMP_VERSION_SQL = "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'"
 
@@ -103,14 +97,18 @@ def _row(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) ->
 
 # ─── 造库：历史逐版 DDL 留档 + 手工钉版本号 ──────────────────────────────────
 def _create_shape(conn: sqlite3.Connection, version: int, extra: tuple[str, ...] = ()) -> None:
-    """按 ``version`` 版的对象集建库（表 → 该版新增的列 → 索引 / 触发器）。"""
+    """按 ``version`` 版的对象集建库（表 → ``dm_peer_member_id`` → 索引 / 触发器）。
+
+    本文件只需要 ``dm_peer_member_id`` 这一列出场（它是 ``idx_target_dm_peer_unique`` 的基列，缺了
+    索引建不出来）。其余新版列（``task_ref`` / ``theme`` / ``claimed_at`` / ``auto_claim``）交给被测
+    的迁移对齐去补——那正是终态判据要覆盖的面，测试不必替它铺好。
+    """
     objects = (*VERSION_OBJECTS[version], *extra)
     for name in objects:
         if OBJECTS[name].startswith("CREATE TABLE"):
             conn.execute(OBJECTS[name])
-    for introduced in range(3, version + 1):
-        for column in _COLUMN_ADDITIONS.get(introduced, ()):
-            conn.execute(_COLUMN_DDL[column])
+    if version >= 6:
+        conn.execute(ADD_DM_PEER_COLUMN_SQL)
     for name in objects:
         if "INDEX" in OBJECTS[name].splitlines()[0]:
             conn.execute(OBJECTS[name])
@@ -138,6 +136,11 @@ def _seed_legacy_scope_rows(conn: sqlite3.Connection) -> None:
         "VALUES ('msg_1', 'ch_dev', 1, 'owner', 'human', '第一条', ?)",
         ("2026-10-14T09:00:03Z",),
     )
+    conn.execute(
+        "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at) "
+        "VALUES ('msg_2', 'ch_dev', 2, 'mem_x', 'agent', '第二条', ?)",
+        ("2026-10-14T09:00:04Z",),
+    )
     conn.execute("INSERT INTO channel_member(channel_id, member_id) VALUES ('ch_dev', 'owner')")
     conn.execute("INSERT INTO channel_member(channel_id, member_id) VALUES ('ch_dev', 'mem_x')")
     conn.execute(
@@ -156,8 +159,10 @@ def _seed_legacy_scope_rows(conn: sqlite3.Connection) -> None:
 def _build_half_renamed_library(data_dir: Path, *, stored_version: int) -> Path:
     """造「旧表名里有数据、``schema_version`` 已是 ``stored_version``」的半改名库。
 
-    ``stored_version == 4`` 时目标表**整片不在**（v3 形态 + 钉 4）；``stored_version == SCHEMA_VERSION``
-    时目标表在但**全空**（当前形态 + 旧表数据），用来取证「判定只看形态、不看版本号」。
+    ``stored_version`` 取该版的**对象集**（于是 ``target*`` 表在、但**一行都没有**——这正是 #37
+    「新表建出来但全空、旧表数据还在」的形态），再把版本号钉成 ``stored_version``：取 ``4`` 是
+    「号已到 v4、数据还停在 v3 表名」；取 ``SCHEMA_VERSION`` 是「号已是本版本、数据仍没搬」，用来
+    取证「判定只看形态、不看版本号」。
     """
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "attachments").mkdir(exist_ok=True)
@@ -167,9 +172,9 @@ def _build_half_renamed_library(data_dir: Path, *, stored_version: int) -> Path:
         conn.execute("PRAGMA foreign_keys = ON")
         if stored_version == SCHEMA_VERSION:
             # 当前版本形态 + 三张旧表（旧表是回退面，当前 ``SCHEMA`` 不建它们）。
-            _create_shape(conn, SCHEMA_VERSION, extra=LEGACY_OBJECTS)
+            _create_shape(conn, SCHEMA_VERSION, extra=LEGACY_TABLES)
         else:
-            _create_shape(conn, stored_version, extra=LEGACY_OBJECTS)
+            _create_shape(conn, stored_version, extra=LEGACY_TABLES)
         _seed_legacy_scope_rows(conn)
         conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) "
@@ -193,7 +198,7 @@ def _build_healthy_current_library(data_dir: Path) -> Path:
     db_path = data_dir / DATABASE_FILE_NAME
     conn = _connect(db_path)
     try:
-        for name in LEGACY_OBJECTS:
+        for name in LEGACY_TABLES:
             conn.execute(OBJECTS[name])
         conn.execute(
             "INSERT INTO channel_member(channel_id, member_id) SELECT target_id, member_id FROM target_member"
@@ -271,7 +276,7 @@ def test_half_renamed_library_at_stored_four_is_completed_and_the_app_can_open_i
         }
         # 三张旧表是回退面：原样保留、行数与内容不变。
         for table in LEGACY_TABLES:
-            assert _row(conn, f'SELECT COUNT(*) FROM "{table}"')[0] > 0
+            assert _row(conn, _LEGACY_COUNT_SQL[table])[0] > 0
     finally:
         conn.close()
 
@@ -289,6 +294,44 @@ def test_half_renamed_library_at_stored_four_is_completed_and_the_app_can_open_i
         response = client.get("/api/channels/ch_dev/budget")
         assert response.status_code == 200, response.text
         assert response.json()["budget"]["used"] == BUDGET_LIMIT
+        # 消息面也恢复：旧表时代的消息按 channel_id → target_id 仍可读出（不是只有成员 / 预算面）。
+        messages = client.get("/api/channels/ch_dev/messages")
+        assert messages.status_code == 200, messages.text
+        assert [message["id"] for message in messages.json()["messages"]] == ["msg_1", "msg_2"]
+
+
+# ─── 验收：版本区间 5…11 同样被形态步骤处置 ─────────────────────────────────
+@pytest.mark.parametrize("stored_version", range(5, SCHEMA_VERSION))
+def test_half_renamed_library_at_every_middle_version_is_completed(
+    tmp_path: Path, stored_version: int
+) -> None:
+    """``stored`` 落在 ``5..11`` 时同样被处置：判定只看形态、与版本号无关。
+
+    ``4`` 与 ``SCHEMA_VERSION`` 是票面点名的两端；中间每一版的库也都可能是「号已到位、数据没搬」，
+    因此这里逐版取证：数据搬进 ``target_*``、版本推进到 ``SCHEMA_VERSION``、退出 ``0``。
+    """
+    data_dir = tmp_path / f"data-v{stored_version}"
+    db_path = _build_half_renamed_library(data_dir, stored_version=stored_version)
+
+    completed = _run(*_migrate_argv(data_dir))
+
+    assert completed.returncode == MIGRATION_SUCCEEDED, (
+        f"v{stored_version}：实际 {completed.returncode}"
+        f"（stdout={completed.stdout!r} stderr={completed.stderr!r}）"
+    )
+    conn = _connect(db_path)
+    try:
+        assert _row(conn, "SELECT value FROM schema_meta WHERE key = 'schema_version'") == (
+            str(SCHEMA_VERSION),
+        )
+        assert _channel_scope_rows(conn) == {
+            "target": [("ch_dev", "channel")],
+            "target_member": [("ch_dev", "mem_x"), ("ch_dev", "owner")],
+            "target_read": [("mem_x", "ch_dev", 2), ("owner", "ch_dev", 1)],
+            "target_budget": [("ch_dev", 1, BUDGET_LIMIT)],
+        }
+    finally:
+        conn.close()
 
 
 def test_intact_shadow_row_but_missing_scope_rows_is_completed_without_zeroing_the_budget(

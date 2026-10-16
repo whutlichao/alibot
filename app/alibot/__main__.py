@@ -134,14 +134,13 @@ def _run_migrate(data_dir: Path) -> int:
     - 版本已是本代码版本、缺表但**没有**业务数据 ⇒ ``0``（空库口径不变）。
 
     ``3`` / ``4`` 两条分支都发生在任何写入之前：闸门只读，形态判定只读——因此库文件 sha256 在这
-    两条路径上都不变、也不出现新备份。「形态步骤有活」这条也先经**只读**探测（``migrate`` 的
-    :func:`channel_scope_gaps`）判出来，然后才进入会写库的迁移编排。
+    两条路径上都不变、也不出现新备份。「形态步骤有活」这条也先经**只读**探测（``repair`` 的
+    :func:`channel_scope_gaps_of`）判出来，然后才进入会写库的迁移编排。
     """
     # 复用既有判据（票面 Constraints）：形态清单与「有业务数据」都取自 ``repair`` / ``Database``
     # 已有的那一份，本入口不新增第二套判定，自己只做「事实 → 退出码」的映射。形态步骤的「有缺」探测
-    # 与链共用 ``migrate.channel_scope_gaps``——同一份判据，不是第二套。
-    from . import migrate
-    from .repair import missing_current_required_tables
+    # 与链共用 ``repair.channel_scope_gaps``——同一份判据，不是第二套。
+    from .repair import channel_scope_gaps_of, missing_current_required_tables
 
     db_path = data_dir / DATABASE_FILE_NAME
     if not db_path.exists():
@@ -159,12 +158,12 @@ def _run_migrate(data_dir: Path) -> int:
         return DATA_NOT_ACCEPTED_EXIT_CODE
 
     try:
-        existing = database.table_names()
-        missing = missing_current_required_tables(existing)
+        missing = missing_current_required_tables(database.table_names())
         # 缺表时不去问形态步骤（那正是「4 不被形态步骤当成可补齐对象」这条边界的落点）；只有形态完好
         # 才探测 channel 型作用域行有没有缺——那是「号已是本代码版本、数据还留在旧表名里」的判据。
-        gaps = () if missing else migrate.channel_scope_gaps(database._conn)
-        has_business_data = database.has_business_data() if missing else False
+        # 探测与「有没有业务数据」都只读，因此都发生在决定备份之前。
+        gaps = () if missing else channel_scope_gaps_of(database)
+        has_business_data = bool(missing) and database.has_business_data()
     finally:
         database.close()
 

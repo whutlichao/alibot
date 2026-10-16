@@ -59,7 +59,7 @@ from .db import (
     STAMP_SCHEMA_VERSION_SQL,
     utc_now,
 )
-from .repair import CHANNEL_SCOPE_GAP_CHECKS, CHANNEL_SCOPE_MOVES
+from .repair import CHANNEL_SCOPE_MOVES, channel_scope_gaps
 
 # 迁移前整目录备份的落点：数据目录**同级**、命名自带方向与 UTC 时间戳（规格 D8）。
 BACKUP_INFIX = "-backup-"
@@ -604,39 +604,13 @@ def _step_11_to_12(conn: sqlite3.Connection) -> int:
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
 
 
-def channel_scope_gaps(conn: sqlite3.Connection) -> tuple[str, ...]:
-    """只看**形态**：channel 型作用域行有没有缺（有缺就返回缺失项，健康库返回空元组）。
-
-    这是形态步骤的判定，也是它「不依赖版本号」的落点：判据来自
-    :data:`repair.CHANNEL_SCOPE_GAP_CHECKS` 的四条正向探测（旧表 → 新表），因此「号已是新一代、
-    数据还留在旧表名里」的半改名库与「号本来就是旧版」的库得到同一个处置。**只读**——探测全是
-    ``SELECT COUNT(*)``、不写库一个字节，所以调用方可以在决定备份之前安全地先问一句「有没有活」
-    （``__main__._run_migrate`` 对当前版本库正是这么做的：有缺才走迁移编排，无缺就是「无事可做」）。
-
-    来源表不存在 ⇒ 跳过（全新的当前版本库没有 ``channel_*`` 旧表，不该被误判成有缺）；来源表在而
-    目标表不存在 ⇒ 记为有缺（目标表随后由形态步骤按当前 ``SCHEMA`` 建出）。反向 1:1 的检查不在这里：
-    形态步骤只能搬、不能凭空造频道行或成员行。
-    """
-    existing = _table_names(conn)
-    gaps: list[str] = []
-    for label, (source, target), probe in CHANNEL_SCOPE_GAP_CHECKS:
-        if source not in existing:
-            continue
-        if target not in existing:
-            gaps.append(label)
-            continue
-        row = conn.execute(probe).fetchone()
-        if row is not None and int(row[0]) > 0:
-            gaps.append(label)
-    return tuple(gaps)
-
-
 def run_shape_step(conn: sqlite3.Connection, source_version: int) -> StepReport | None:
     """链前的**形态步骤**：有缺才搬，无缺不动（幂等：修好的库改动 0 行）。
 
     「四条搬迁共享既有列映射、影子行先落、四张表一起补齐」由 :func:`_step_3_to_4` 承担——它与逐版链
     的 ``3 → 4`` 是**同一段代码**、同一份 :data:`repair.CHANNEL_SCOPE_MOVES`（不写第二份）。
-    ``run_shape_step`` 只加一层**形态判定**：健康库（数据本就在 ``target_*``）不触发、不产生任何改动。
+    ``run_shape_step`` 只加一层**形态判定**（:func:`repair.channel_scope_gaps`，只读）：健康库
+    （数据本就在 ``target_*``）不触发、不产生任何改动。
 
     跑过形态步骤后随即施一次共享对齐：``--migrate`` 对「号已是本代码版本、只是 channel 型作用域数据
     还留在旧表名里」的库走的是**空链**（:func:`plan_steps` 为 ``()``），终态对齐只能由这里落。逐版链
@@ -645,7 +619,7 @@ def run_shape_step(conn: sqlite3.Connection, source_version: int) -> StepReport 
     ``source_version`` 只进报告（形态步骤不推进版本号），因此 :class:`StepReport` 的 ``from`` /
     ``to`` 都填它。
     """
-    if not channel_scope_gaps(conn):
+    if not channel_scope_gaps(conn, _table_names(conn)):
         return None
     changed = _step_3_to_4(conn)
     _align_to_current_schema(conn)
@@ -852,7 +826,15 @@ def render_report(report: MigrationReport) -> str:
         "实际执行的步骤（每步改动的数据行数）：",
     ]
     for step in report.chain.steps:
-        lines.append(f"  {step.from_version} → {step.to_version}  {step.label}  改动 {step.changed_rows} 行")
+        if step.from_version == step.to_version:
+            # 形态步骤（#92）：它**不推进版本号**，``from`` / ``to`` 只是源版本的回声。链上的逐版步骤
+            # 一律 ``from + 1 == to``（:func:`_assert_chain_is_continuous` 守着），所以这个分支不会
+            # 落到版本步上；打出一个「4 → 4」会把不推进说成推进。
+            lines.append(f"  {step.label}（不推进版本号）  改动 {step.changed_rows} 行")
+        else:
+            lines.append(
+                f"  {step.from_version} → {step.to_version}  {step.label}  改动 {step.changed_rows} 行"
+            )
     lines.extend(
         [
             "",
