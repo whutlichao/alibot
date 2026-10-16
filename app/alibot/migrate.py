@@ -11,9 +11,15 @@
 - :func:`migrate_data_dir` —— 「CLI 参数 / 数据目录 / 备份编排」：整目录备份 → 单事务 → 跑链 →
   落审计台账 → 给出报告。
 
-这条缝是**故意留的挂点**：#93 的预演在**库副本**上跑同一条链（复用 :func:`run_chain`）；#92 的
-**形态步骤**（:func:`run_shape_step`）已经是 :func:`run_chain` 的前置——它在走 :data:`STEPS` 之前
-先按**形态**（不看版本号）补齐 channel 型作用域数据，因此预演与真实迁移共享同一个入口。
+这条缝是**故意留的挂点**：#93 的预演（:class:`StagedLibraryCopy` + :func:`dry_run_chain`）在
+**库副本**上跑同一条链（复用 :func:`run_chain`）；#92 的**形态步骤**（:func:`run_shape_step`）已经是
+:func:`run_chain` 的前置——它在走 :data:`STEPS` 之前先按**形态**（不看版本号）补齐 channel 型作用域
+数据，因此预演与真实迁移共享同一个入口。
+
+**只读预演（#93）**：`--migrate --dry-run` 把 ``alibot.db`` **连同旁边的** ``-wal`` / ``-shm`` 复制成
+**数据目录内**的临时副本（只复制主文件会读到不完整状态——已提交但未 checkpoint 的行还在 WAL 里），
+在副本上跑完整路径，报告步骤清单与每步将改动的行数，并打出**原库文件 sha256 的前后两个读数**，
+随后无条件删除副本。它**从不**用 SQLite 打开原库，因此「原库零字节改动」是构造性的。
 
 **形态步骤（#92）**：``channel`` 行在、而 channel 型的**影子行 / 成员 / 已读 / 预算**有缺时，按
 :data:`repair.CHANNEL_SCOPE_MOVES` 的同一份列映射一次补齐**四张表**、影子行最先落。它是链的
@@ -37,10 +43,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import sqlite3
+import tempfile
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -140,6 +148,15 @@ class StepError(MigrationError):
 
 class MigrationFailed(MigrationError):
     """链跑到一半失败，已 ``ROLLBACK``，库停在与动手前一致的版本。"""
+
+
+class DryRunError(MigrationError):
+    """预演**没能跑成**：副本建不出来，或者跑完删不干净（#93）。
+
+    它与「库不被本代码接受」（``3``）、「库不被本入口处置」（``4``）都不同，与链上失败同族：CLI 层
+    把它映射为 ``5``（「预演没能跑通」）。不论哪一种，原库都**一个字节都没动**——预演从不拿 SQLite
+    打开原库，副本删不干净也只在数据目录内留下那一个临时子目录。
+    """
 
 
 @dataclass(frozen=True)
@@ -666,9 +683,16 @@ _assert_chain_is_continuous()
 
 
 def plan_steps(from_version: int, to_version: int = SCHEMA_VERSION) -> tuple[MigrationStep, ...]:
-    """从 ``from_version`` 到 ``to_version`` 的**连续**步骤序列（不跳步）。
+    """从 ``from_version`` 到 ``to_version`` 的**连续**步骤序列（不跳步、每步严格 +1）。
 
-    纯函数、不碰库：它是 #93 预演报告里「将执行的步骤清单」与执行器的共同来源。
+    纯函数、不碰库：它是 #93 预演报告里「将执行的步骤清单」与执行器的共同来源。两条不变量在这里
+    也**再判一次**（注册表的不变量由 :func:`_assert_chain_is_continuous` 在导入时守）：
+
+    - 每一步的 ``from`` 必须**接上**上一个 ``to``（防「某步 ``from`` 落后号」，历史的 ``9 → 11``）；
+    - 每一步必须**严格 +1**（防一个从 ``9`` 直接跳到 ``11`` 的步骤把 10 那一代悄悄略过）。
+
+    后者是导入期不变量与这里的分工差异：导入期检查只在模块加载时跑一遍，而预演 / 真跑是在**运行时**
+    规划，因此「链断了」必须在这里也能被暴露成 ``5``，而不是被「大概齐」地执行过去。
     """
     if from_version == to_version:
         return ()
@@ -679,6 +703,11 @@ def plan_steps(from_version: int, to_version: int = SCHEMA_VERSION) -> tuple[Mig
             raise MigrationError(
                 f"迁移链不连续：从 {from_version} 走到 {to_version} 时，期望 {expected} 的下一步，"
                 f"注册表给的是 {step.from_version} → {step.to_version}"
+            )
+        if step.to_version != step.from_version + 1:
+            raise MigrationError(
+                f"迁移链不连续：注册表里的 {step.from_version} → {step.to_version} 不是严格 +1 的一步"
+                f"（它跳过了 {step.from_version + 1}）。迁移链要求每步严格 +1（规格 D5）。"
             )
         expected = step.to_version
     if expected != to_version:
@@ -816,6 +845,24 @@ def migrate_data_dir(data_dir: Path | str, from_version: int) -> MigrationReport
     )
 
 
+def _render_step_lines(chain: ChainResult) -> list[str]:
+    """步骤表的渲染：真跑（:func:`render_report`）与预演**共用同一份**，于是两份报告同形。
+
+    形态步骤（#92）**不推进版本号**，``from`` / ``to`` 只是源版本的回声；链上的逐版步骤一律
+    ``from + 1 == to``（:func:`_assert_chain_is_continuous` 与 :func:`plan_steps` 守着），所以那个
+    分支不会落到版本步上——打出一个「4 → 4」会把不推进说成推进。
+    """
+    lines: list[str] = []
+    for step in chain.steps:
+        if step.from_version == step.to_version:
+            lines.append(f"  {step.label}（不推进版本号）  改动 {step.changed_rows} 行")
+        else:
+            lines.append(
+                f"  {step.from_version} → {step.to_version}  {step.label}  改动 {step.changed_rows} 行"
+            )
+    return lines
+
+
 def render_report(report: MigrationReport) -> str:
     """把一次迁移写成人类 / 脚本都读得懂的报告（stdout 用；D8）。"""
     lines = [
@@ -825,16 +872,7 @@ def render_report(report: MigrationReport) -> str:
         "",
         "实际执行的步骤（每步改动的数据行数）：",
     ]
-    for step in report.chain.steps:
-        if step.from_version == step.to_version:
-            # 形态步骤（#92）：它**不推进版本号**，``from`` / ``to`` 只是源版本的回声。链上的逐版步骤
-            # 一律 ``from + 1 == to``（:func:`_assert_chain_is_continuous` 守着），所以这个分支不会
-            # 落到版本步上；打出一个「4 → 4」会把不推进说成推进。
-            lines.append(f"  {step.label}（不推进版本号）  改动 {step.changed_rows} 行")
-        else:
-            lines.append(
-                f"  {step.from_version} → {step.to_version}  {step.label}  改动 {step.changed_rows} 行"
-            )
+    lines.extend(_render_step_lines(report.chain))
     lines.extend(
         [
             "",
@@ -842,4 +880,190 @@ def render_report(report: MigrationReport) -> str:
             f"审计记录：{report.ledger_path}",
         ]
     )
+    return "\n".join(lines)
+
+
+# ─── 只读预演（#93） ─────────────────────────────────────────────────────────
+# 预演副本落在**数据目录内**的隐藏临时子目录里（规格 D10）：副本 = ``alibot.db`` **连同旁边的**
+# ``-wal`` / ``-shm``。只复制主文件会读到不完整状态——已提交但还没 checkpoint 的行都在 WAL 里，
+# 于是报告会把「完整状态」少算几行。
+DRY_RUN_COPY_PREFIX = ".alibot-dry-run-"
+
+# 库的边文件后缀（顺序固定：主文件 → 预写日志 → 共享内存索引）。
+LIBRARY_SIDECAR_SUFFIXES: tuple[str, ...] = ("", "-wal", "-shm")
+
+
+def sha256_file(path: Path) -> str:
+    """文件的 sha256（分块读：库可能是几百 MB，不整份进内存）。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class DryRunReport:
+    """一次只读预演的全部可观察读数（stdout 报告的数据源）。"""
+
+    db_path: Path
+    copy_path: Path
+    digest_before: str
+    digest_after: str
+    chain: ChainResult | None
+
+    @property
+    def unchanged(self) -> bool:
+        """原库文件 sha256 的前后两个读数是否一致（预演的举证责任）。"""
+        return self.digest_before == self.digest_after
+
+
+class StagedLibraryCopy:
+    """数据目录**内**的库临时副本（``alibot.db`` 连同 ``-wal`` / ``-shm``），用完即删。
+
+    预演的隔离面（规格 D10 / S5）：
+
+    - 副本落在数据目录内的隐藏临时子目录里，因此数据目录里不会出现「落在别处的副本」；
+    - 只用 :func:`shutil.copy2` 复制**库文件与它的边文件**（附件字节在 ``attachments/`` 下、不进单
+      文件库，预演也不碰它们）；
+    - :meth:`__exit__` **无条件**删除它——预演成功、失败、抛异常都删；删不干净就明确报错，不静默
+      留垃圾；
+    - 进入时与退出时各取一次**原库文件**的 sha256，供报告打出前后两个读数。
+
+    预演**从不用 SQLite 打开原库**：版本闸门、形态判定与整条链全部施在副本上（原库只被读字节），
+    因此「原库零字节改动」是构造性的，而不是「打开之后希望它没写」。
+    """
+
+    def __init__(self, data_dir: Path | str) -> None:
+        self.source_dir = Path(data_dir)
+        self.source_db_path = self.source_dir / DATABASE_FILE_NAME
+        self.copy_dir: Path | None = None
+        self.digest_before = ""
+        self.digest_after = ""
+
+    def __enter__(self) -> Path:
+        """建副本；返回副本目录（里面就是 ``alibot.db`` 与它的边文件）。"""
+        self.digest_before = sha256_file(self.source_db_path)
+        try:
+            self.copy_dir = Path(tempfile.mkdtemp(dir=self.source_dir, prefix=DRY_RUN_COPY_PREFIX))
+        except OSError as exc:
+            raise DryRunError(f"预演没法在数据目录内建临时副本：{exc}。原库文件一个字节都没动。") from exc
+        try:
+            for suffix in LIBRARY_SIDECAR_SUFFIXES:
+                source = self.source_db_path.with_name(self.source_db_path.name + suffix)
+                if source.exists():
+                    shutil.copy2(source, self.copy_dir / source.name)
+        except OSError as exc:
+            # ``__exit__`` 不会被调用（`__enter__` 就失败了），所以在这里把半份副本清掉。
+            shutil.rmtree(self.copy_dir, ignore_errors=True)
+            self.copy_dir = None
+            raise DryRunError(
+                f"预演没法把库文件（含 ``-wal`` / ``-shm``）复制进数据目录内的临时副本：{exc}。"
+                f"原库文件一个字节都没动，数据目录里也不留半个副本。"
+            ) from exc
+        return self.copy_dir
+
+    def __exit__(self, *_exc_info: object) -> None:
+        try:
+            self.cleanup()
+        finally:
+            self.digest_after = sha256_file(self.source_db_path)
+
+    def cleanup(self) -> None:
+        """删除临时副本（成功与失败都删）；删不干净就报错，让「数据目录里不留副本」不被静默破坏。"""
+        if self.copy_dir is None:
+            return
+        shutil.rmtree(self.copy_dir, ignore_errors=True)
+        if self.copy_dir.exists():
+            raise DryRunError(f"预演结束但数据目录里的临时副本没删干净：{self.copy_dir}；请手动删除该目录。")
+
+    def report(self, chain: ChainResult | None = None) -> DryRunReport | None:
+        """预演的可观察读数；``None`` = 连副本都没建起来，**没有**前后读数可打。
+
+        **必须在 with 块之外调用**（那时副本已删、前后读数都已取到）。
+        """
+        if self.copy_dir is None or not self.digest_after:
+            return None
+        return DryRunReport(
+            db_path=self.source_db_path,
+            copy_path=self.copy_dir,
+            digest_before=self.digest_before,
+            digest_after=self.digest_after,
+            chain=chain,
+        )
+
+    def untouched_note(self) -> str:
+        """一行「原库一个字节都没动」的正文（预演跑不通时打给 stderr 的那句）。"""
+        return (
+            f"预演未改动原库：{self.source_db_path} 的 sha256 前后一致"
+            f"（{self.digest_before} → {self.digest_after}）；原库一个字节都没动。"
+        )
+
+
+def dry_run_chain(copy_dir: Path | str, from_version: int) -> ChainResult:
+    """在**副本**上跑与真跑同一条链（形态步骤 + 逐版链），随后 ``ROLLBACK``。
+
+    副本用完即删，因此这里既不钉版本号、也不落审计：预演的全部产出就是这份 :class:`ChainResult`
+    （步骤清单 + 每步将改动的行数）。
+
+    链跑不通（含计划断链）⇒ 抛 :class:`MigrationFailed`，正文按 **#93 的人定裁定**写明「预演发现这条
+    链在副本上跑不通；原库未改动」——预演**没有可回滚之物**（它连原库都没打开，写操作只落在副本上），
+    所以这里不沿用真跑那句「迁移失败并已回滚」，也不用「已回滚」这种会误导的措辞。调用方把它映射为
+    ``5``。
+    """
+    conn = connect(Path(copy_dir) / DATABASE_FILE_NAME)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                return run_chain(conn, from_version)
+            finally:
+                with suppress(sqlite3.Error):
+                    conn.execute("ROLLBACK")
+        except Exception as exc:
+            raise MigrationFailed(
+                f"预演发现这条链在副本上跑不通；原库未改动（预演没有可回滚之物，写操作只落在副本上）。"
+                f"原因：{exc}"
+            ) from exc
+    finally:
+        conn.close()
+
+
+def _dry_run_proof_lines(report: DryRunReport) -> list[str]:
+    """预演报告的共同尾部：原库 sha256 的前后两个读数 + 副本已删除 + 无任何写副作用。"""
+    consistency = "前后读数一致" if report.unchanged else "前后读数不一致（这是缺陷，请上报）"
+    return [
+        "",
+        f"原库文件 sha256（预演前）：{report.digest_before}",
+        f"原库文件 sha256（预演后）：{report.digest_after}",
+        f"原库零字节改动：{consistency}。",
+        f"临时副本：{report.copy_path} 已删除；数据目录内不留副本、不建备份、不写审计台账、"
+        f"不改库里的 Schema 版本。",
+    ]
+
+
+def render_dry_run_report(report: DryRunReport) -> str:
+    """把一次跑通的预演写成与真跑**同形**的报告（步骤清单 + 每步将改动的行数 + sha256 前后读数）。"""
+    chain = report.chain
+    if chain is None:
+        raise ValueError("预演报告要有一次跑通的链结果；没跑完时用 render_dry_run_untouched")
+    lines = [
+        f"预演（只读，在数据目录内的临时副本上跑完整迁移路径）：{report.db_path}",
+        f"源版本：{chain.from_version} → 目标版本：{chain.to_version}",
+        "",
+        "将执行的步骤（每步将改动的数据行数）：",
+    ]
+    lines.extend(_render_step_lines(chain))
+    lines.extend(_dry_run_proof_lines(report))
+    lines.append(f"预演结论：这条链在副本上跑通了；本次共将改动 {chain.changed_rows} 行。")
+    return "\n".join(lines)
+
+
+def render_dry_run_untouched(report: DryRunReport) -> str:
+    """预演**没**跑成（库不被接受 / 形态不对 / 链在副本上跑不通 / 无事可做）时的正文。
+
+    全部内容就是「原库一个字节都没动」这份读数：预演什么都没做，这本身就是要给用户看的事实。
+    """
+    lines = [f"预演未改动原库：{report.db_path}"]
+    lines.extend(_dry_run_proof_lines(report))
     return "\n".join(lines)
