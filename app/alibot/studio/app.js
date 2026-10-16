@@ -2759,8 +2759,8 @@ function openAgentEditModal(memberId) {
   $('#agentEditModelInput').value = cut >= 0 ? modelId.slice(cut + 1) : modelId;
   const preferred = cut >= 0 ? modelId.slice(0, cut) : (agent.provider || '');
   renderAgentEditProviderSelect(preferred);
-  renderAgentEditEnabled(agent.enabled !== false);
-  renderAgentEditAutoClaim(agent.auto_claim === true);
+  renderEditTier('#agentEditEnabled', 'enabled', agent.enabled !== false);
+  renderEditTier('#agentEditAutoClaim', 'autoClaim', agent.auto_claim === true);
   renderAgentEditNotice();
   $('#agentEditOverlay').hidden = false;
   $('#agentEditName').focus();
@@ -2781,46 +2781,30 @@ function renderAgentEditProviderSelect(preferred) {
   return select.value;
 }
 
-/** 启用态的两个档位（与「消息密度」同一套 `.radio-card` 控件族，不新造控件）。 */
-function renderAgentEditEnabled(enabled) {
-  Array.prototype.forEach.call($('#agentEditEnabled').querySelectorAll('[data-enabled]'), (card) => {
-    const on = (card.dataset.enabled === 'on') === Boolean(enabled);
-    card.classList.toggle('is-on', on);
-    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+/** 一个布尔档位组里的卡片集合：`selector` 是组元素，`key` 是组内卡片的 `dataset` 键。
+    「启用状态」与「自动认领任务」两组共用**同一套** `.radio-card` 控件族与同一份判定，
+    各自只换 selector 与 key（渲染与取值因此不可能两组各说一份）。
+    遍历「档位卡片」而不是用 `[data-enabled="on"]` 这类**带值**的属性选择器：判定只认卡片自己的状态。 */
+function editTierCards(selector, key) {
+  const attribute = 'data-' + key.replace(/[A-Z]/g, (letter) => '-' + letter.toLowerCase());
+  return Array.prototype.slice.call($(selector).querySelectorAll('[' + attribute + ']'));
+}
+
+/** 写一个布尔档位组的选中态（档位卡片自己带状态，应用里不另存一个布尔）。 */
+function renderEditTier(selector, key, on) {
+  editTierCards(selector, key).forEach((card) => {
+    const selected = (card.dataset[key] === 'on') === Boolean(on);
+    card.classList.toggle('is-on', selected);
+    card.setAttribute('aria-pressed', selected ? 'true' : 'false');
   });
 }
 
-function agentEditEnabledValue() {
-  // 遍历「档位卡片」而不是用 `[data-enabled="on"]` 这类**带值**的属性选择器：判定只认卡片自己的
-  // 状态（`renderAgentEditEnabled` 用的也是同一份 `[data-enabled]` 集合）。
+/** 读一个布尔档位组的当前取值：判定只认卡片自己的状态（与 `renderEditTier` 同一份卡片集合）。 */
+function editTierValue(selector, key) {
   let on = false;
-  Array.prototype.forEach.call($('#agentEditEnabled').querySelectorAll('[data-enabled]'), (card) => {
-    if (card.dataset.enabled === 'on') on = card.classList.contains('is-on');
+  editTierCards(selector, key).forEach((card) => {
+    if (card.dataset[key] === 'on') on = card.classList.contains('is-on');
   });
-  return on;
-}
-
-/** 「自动认领任务」的两个档位（与上面的启用态**同一套** `.radio-card` 控件族，不新造控件）。
-    它的取值直接来自后端读数 `agent.auto_claim`：界面不另存一个「开关状态」。 */
-function renderAgentEditAutoClaim(autoClaim) {
-  Array.prototype.forEach.call(
-    $('#agentEditAutoClaim').querySelectorAll('[data-auto-claim]'),
-    (card) => {
-      const on = (card.dataset.autoClaim === 'on') === Boolean(autoClaim);
-      card.classList.toggle('is-on', on);
-      card.setAttribute('aria-pressed', on ? 'true' : 'false');
-    },
-  );
-}
-
-function agentEditAutoClaimValue() {
-  let on = false;
-  Array.prototype.forEach.call(
-    $('#agentEditAutoClaim').querySelectorAll('[data-auto-claim]'),
-    (card) => {
-      if (card.dataset.autoClaim === 'on') on = card.classList.contains('is-on');
-    },
-  );
   return on;
 }
 
@@ -2839,8 +2823,8 @@ async function submitAgentEdit() {
     role: $('#agentEditRole').value.trim(),
     model_id: provider + ':' + $('#agentEditModelInput').value.trim(),
     system_prompt: $('#agentEditPromptInput').value.trim(),
-    enabled: agentEditEnabledValue(),
-    auto_claim: agentEditAutoClaimValue(),
+    enabled: editTierValue('#agentEditEnabled', 'enabled'),
+    auto_claim: editTierValue('#agentEditAutoClaim', 'autoClaim'),
   };
   const box = $('#agentEditFormError');
   const submit = $('#agentEditSubmit');
@@ -4160,11 +4144,11 @@ function bindEvents() {
   });
   $('#agentEditEnabled').addEventListener('click', (event) => {
     const card = event.target.closest('[data-enabled]');
-    if (card) renderAgentEditEnabled(card.dataset.enabled === 'on');
+    if (card) renderEditTier('#agentEditEnabled', 'enabled', card.dataset.enabled === 'on');
   });
   $('#agentEditAutoClaim').addEventListener('click', (event) => {
     const card = event.target.closest('[data-auto-claim]');
-    if (card) renderAgentEditAutoClaim(card.dataset.autoClaim === 'on');
+    if (card) renderEditTier('#agentEditAutoClaim', 'autoClaim', card.dataset.autoClaim === 'on');
   });
   $('#agentEditOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'agentEditOverlay') closeAgentEditModal();

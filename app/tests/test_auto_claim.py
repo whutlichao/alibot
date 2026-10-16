@@ -320,38 +320,60 @@ def test_a_task_is_claimed_at_most_once_so_the_epoch_never_advances_again(
 ) -> None:
     """**每张任务至多一次**（本票最关键的读数）：再触发认领路径，`epoch_seq` 不前进、`used` 不重置。
 
-    两次触发给读数：一次在**取消指派之前**（认领者已经拿着任务），一次在**取消指派之后**
-    （任务又回到未指派）——后者证明这条保证不是「任务恰好还指派着某人」，而是库内
-    `claimed_at` 这条构造性事实（ADR-0002 的三跳上界靠它仍然可执行）。
+    读数一律来自 HTTP 面（`GET /api/tasks/{id}/budget`、`/messages`、`/api/tasks/{id}`）。两半各看一件事：
+
+    1. **全程 HTTP**：取消指派之后在同一个频道再建一张新任务——认领路径确实又跑了一次，
+       而那张**已被认领过**的任务纹丝不动（`claimed_at`、`epoch_seq`、`used`、线程记录都不变）。
+    2. **同一张任务的第二次触发**：认领路径的扳机是「频道内新建任务」，对一张**已存在**的任务没有
+       第二条 HTTP 扳机，因此这里调**服务层调用的同一个入口**（`WorkspaceService.create_task` 里
+       那一次 `claim_new_task`）——与 `test_tasks.py` 用 `app.state.db` 取证同一体例：断言读的是
+       外部事实，只有扳机走接缝。这一半证明的是**库内 `claimed_at` 这条构造性事实**（而不是
+       「任务恰好还指派着某人」）：任务回到未指派后仍然不可能被认领第二次。
     """
     channel, _ = channel_with_agent_and_auto_claim(client)
     task = new_task(client, channel["id"])
     drain(harness)
-    # 先把用量推上去，才能看出「重置」：那一轮回复之后再让 owner 在任务线程里说话（开世代 + 清零），
-    # 然后手动把 used 记满，最后再触发一次认领——`used` 必须原样保留。
+    # 把用量推上去，才看得出「不被重置」（`_db` 是 `test_tasks.py` 登记过的取证接缝，这里只用来摆读数）。
     first_epoch = task_budget(client, task["id"])["epoch_seq"]
     _db(client).consume_budget(task["target_id"], first_epoch, amount=2)
     before = task_budget(client, task["id"])
-    assert before["used"] == 2
+    assert before == {
+        "channel_id": task["target_id"],
+        "epoch_seq": first_epoch,
+        "limit": 3,
+        "used": 2,
+        "remaining": 1,
+    }
     records_before = [(message["kind"], message["body"]) for message in thread(client, task["id"])]
     claimed_at_before = client.get(f"/api/tasks/{task['id']}").json()["task"]["claimed_at"]
 
-    assert _orchestrator(client).claim_new_task(task["id"], channel["id"]) == 0
-    assert task_budget(client, task["id"]) == before
-    assert [(m["kind"], m["body"]) for m in thread(client, task["id"])] == records_before
-
-    # 取消指派之后仍不成立：任务回到「未认领」，但不是「从未被认领过」。
+    # ① 取消指派（HTTP）→ 同一频道再建一张新任务（HTTP）：认领路径又跑了一次，且认领的是新任务。
     client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": None})
-    after_unassign = task_budget(client, task["id"])
-    assert _orchestrator(client).claim_new_task(task["id"], channel["id"]) == 0
-    assert task_budget(client, task["id"]) == after_unassign
+    fresh = new_task(client, channel["id"], title="同一频道的新任务")
+    assert fresh["assignee_member_id"] is not None, "认领路径确实又跑了一次"
+    after_unassign = [*records_before, ("system", "指派已取消")]
+    assert [(m["kind"], m["body"]) for m in thread(client, task["id"])] == after_unassign
+    assert task_budget(client, task["id"])["epoch_seq"] == first_epoch
+    assert task_budget(client, task["id"])["used"] == 2, "已被认领过的任务：用量不被重置"
     assert client.get(f"/api/tasks/{task['id']}").json()["task"]["claimed_at"] == claimed_at_before
-    # 认证的是同一件事的另一面：认领路径整体没动过这张任务（没有第二条 `system` 记录、没有唤醒）。
-    assert harness["scheduler"].pending_count() == 0
+    assert client.get(f"/api/tasks/{task['id']}").json()["task"]["assignee_member_id"] is None
+
+    # ② 对同一张任务再触发一次认领路径：不推进世代、不重置用量、不写第二条记录、不新增唤醒。
+    already_claimed = task_budget(client, task["id"])
+    records = [(message["kind"], message["body"]) for message in thread(client, task["id"])]
+    pending_before = harness["scheduler"].pending_count()  # ① 的那一轮（新任务的认领唤醒）还排着
+    assert _orchestrator(client).claim_new_task(task["id"], channel["id"]) == 0
+    assert task_budget(client, task["id"]) == already_claimed
+    assert [(m["kind"], m["body"]) for m in thread(client, task["id"])] == records
+    assert client.get(f"/api/tasks/{task['id']}").json()["task"]["claimed_at"] == claimed_at_before
+    assert harness["scheduler"].pending_count() == pending_before
 
 
 def test_the_claim_marker_survives_a_backend_restart(launched: dict) -> None:
-    """`claimed_at` 是**落库的事实**：后端重启后同一张任务不可能再被认领一次。"""
+    """`claimed_at` 是**落库的事实**：后端重启后同一张任务不可能再被认领一次。
+
+    重启后没有 HTTP 扳机能指向这张已存在的任务（见上一条用例的说明），因此这里同样经那个入口取证。
+    """
     client = launched["client"]
     channel, _ = channel_with_agent_and_auto_claim(client)
     task = new_task(client, channel["id"])

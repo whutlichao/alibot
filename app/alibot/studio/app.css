@@ -335,6 +335,9 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   position: fixed; inset: 0; z-index: var(--z-overlay); display: grid; place-items: start center;
   padding: 12vh var(--sp-7) var(--sp-10); background: color-mix(in oklch, var(--on-accent) 42%, transparent);
   backdrop-filter: blur(2px);
+  /* 弹窗高于视口时遮罩自己滚起来：遮罩是 fixed 的，若不滚，超出部分（含 `.modal-foot` 的保存键）
+     在矮视口下既看不到也点不到。表单长的弹窗（如 Agent 编辑）本来就贴着这条边。 */
+  overflow: auto;
 }
 .modal {
   width: 100%; max-width: var(--modal-max); background: var(--surface); border: 1px solid var(--border);
