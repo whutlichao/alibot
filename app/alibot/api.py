@@ -170,6 +170,33 @@ class AgentCreate(BaseModel):
     system_prompt: str = ""
 
 
+class AgentUpdate(BaseModel):
+    """Agent 配置的**部分**更新（ADR-0011 的唯一写路径）。
+
+    字段缺省 = 这次请求没提到这一项（保持原值）；未知键由 ``extra="forbid"`` **整体拒绝**。
+    **显式 ``null`` 不是「没提到」**：它既不是字段取值也不是合法取值，因此同样整体拒绝，
+    而不是被静默当成一次成功的空更新（与 `SettingsUpdate` 同一条纪律）。
+
+    ``auto_claim`` **不在本票**（它属 #65）：那时只需在这个模型上加一列、在服务层多一个入参。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = None
+    role: str | None = None
+    model_id: str | None = None
+    system_prompt: str | None = None
+    enabled: bool | None = None
+
+    @field_validator("display_name", "role", "model_id", "system_prompt", "enabled", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
+        if value is None:
+            raise _TierValueError("error.agent_field_null")
+        return value
+
+
 class RemoteConsent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -525,6 +552,28 @@ def create_app(
     def get_agent(member_id: str) -> dict[str, Any]:
         return {"agent": service.agent(member_id)}
 
+    @app.patch("/api/agents/{member_id}")
+    def update_agent(member_id: str, payload: AgentUpdate) -> dict[str, Any]:
+        """编辑 Agent 配置（人类面唯一写路径，ADR-0011）。
+
+        可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled``；任一字段
+        不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套校验与**远端数据流告知**
+        语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写 `enabled = 0`，不改唤醒面）。
+
+        配置变更**不落消息、不唤醒、不消耗预算、不开世代**——它不是一次「发言」。响应形状与
+        ``POST /api/agents`` 同形（``agent`` + ``agents`` + ``members``），前端一次调用就能刷新
+        详情、左栏与成员面板。
+        """
+        agent = service.update_agent(
+            member_id,
+            display_name=payload.display_name,
+            role=payload.role,
+            model_id=payload.model_id,
+            system_prompt=payload.system_prompt,
+            enabled=payload.enabled,
+        )
+        return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
+
     @app.get("/api/agents/{member_id}/status")
     def get_agent_status(member_id: str) -> dict[str, Any]:
         return service.member_status(member_id)
@@ -786,12 +835,16 @@ def create_app(
 
     @app.api_route(
         "/api/agents/{member_id}",
-        methods=["PUT", "PATCH", "DELETE"],
+        methods=["PUT", "DELETE"],
         include_in_schema=False,
     )
     def no_agent_mutation(member_id: str) -> JSONResponse:
-        """本票没有改配置 / 删 Agent 的端点：模型与系统提示是配置数据，改配置的方式是新建。"""
-        return _not_found(_render_copy("error.agent_config_immutable"))
+        """Agent 是成员行，只能创建与编辑（编辑走上面的 ``PATCH``）：本票没有删除端点。
+
+        ``PUT`` 也不留：整体替换一个配置对象会绕开「部分更新」这条显式的语义（每个字段缺省
+        即保持原值，而整体替换里缺省就是清空），两者混在一个路径上迟早会被读错。
+        """
+        return _not_found(_render_copy("error.agent_delete_unsupported"))
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
     app.mount("/studio", StaticFiles(directory=str(studio_dir()), html=True), name="studio")
