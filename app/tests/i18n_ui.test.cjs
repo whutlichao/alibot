@@ -659,7 +659,257 @@ test("a rejected write leaves the local mirror and the language untouched", asyn
   assert.equal(harness.elementFor("#settingsFormError").hidden, false, "失败要留在弹窗里，不静默");
 });
 
-/* ─── 7. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
+/* ─── 7. composer 工具行（#66）：@提及 / 作为任务发送 / 任务线程回复框 ─────────
+   验收面：① 工具行按钮位与顺序 ② @提及 追加 `@` + 聚焦 + 激活发送键 + 复用既有补全
+   ③ 作为任务发送 预填正文 + 当前频道预选 + 取消不动 composer ④ 任务线程回复框没有工具行
+   ⑤ 新增文案在两份词条里都取到值。 */
+
+/** 带选区、焦点与行内样式的输入替身：`@提及` 与 `@` 补全都按**光标**判位置，
+    因此替身不能只会存 `value`（`autosizeComposer()` 还要写 `style.height`）。 */
+class FieldNode extends FakeNode {
+  constructor(tagName) {
+    super(tagName);
+    this.style = {};
+    this.selectionStart = 0;
+    this.selectionEnd = 0;
+    this.scrollIntoView = () => {};
+    this.remove = () => {};
+  }
+
+  setSelectionRange(start, end) {
+    this.selectionStart = start;
+    this.selectionEnd = end;
+  }
+}
+
+/** 只装载 composer 工具行所需的那几个元素：其余选择器给一个惰性替身（`bindEvents` 会挂到它们上）。 */
+function createComposerHarness() {
+  const nodes = new Map();
+
+  function newNode(tagName) {
+    const node = new FakeNode(tagName);
+    node.style = {};
+    node.scrollIntoView = () => {};
+    node.remove = () => {};
+    return node;
+  }
+
+  const document = {
+    documentElement: new FakeNode("html"),
+    activeElement: null,
+    querySelector: (selector) => elementFor(selector),
+    querySelectorAll: () => [],
+    createElement: (tagName) => newNode(tagName),
+    createTextNode: (text) => {
+      const node = new FakeNode("#text");
+      node.textContent = text;
+      return node;
+    },
+    addEventListener: () => {},
+  };
+
+  function buildNode(selector) {
+    if (selector === "#composerInput") {
+      const input = new FieldNode("textarea");
+      input.focus = () => { document.activeElement = input; };
+      return input;
+    }
+    if (selector === "#taskCreateTitle") return new FieldNode("input");
+    if (selector === "#taskCreateChannel" || selector === "#settingsLocaleSelect") {
+      return new FakeNode("select");
+    }
+    // 这三处替身照 index.html 的初始态建：`hidden` / `disabled` 是标记里的静态事实。
+    if (selector === "#btnSend") {
+      const button = newNode("button");
+      button.disabled = true;
+      return button;
+    }
+    if (selector === "#taskOverlay" || selector === "#composerMention") {
+      const node = newNode("div");
+      node.hidden = true;
+      return node;
+    }
+    return newNode("div");
+  }
+
+  function elementFor(selector) {
+    if (!nodes.has(selector)) nodes.set(selector, buildNode(selector));
+    return nodes.get(selector);
+  }
+
+  const context = vm.createContext({
+    document,
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    URLSearchParams,
+    window: { addEventListener: () => {} },
+    console,
+    setTimeout,
+    clearTimeout,
+  });
+  vm.runInContext(readStudio("i18n.js"), context, { filename: "i18n.js" });
+  const appPath = path.join(STUDIO_DIR, "app.js");
+  const source = fs.readFileSync(appPath, "utf8");
+  const startup = /\napplyStaticI18n\(document\);\nbindEvents\(\);\nloadWorkspace\(\);\s*$/;
+  assert.match(source, startup, "app startup calls should remain at the end of app.js");
+  vm.runInContext(
+    source.replace(startup, "\nglobalThis.__composerTest = { state, bindEvents };\n"),
+    context,
+    { filename: appPath },
+  );
+
+  const api = context.__composerTest;
+  api.bindEvents();
+  // 频道 + 一名已加入的 Agent：@提及 的候选正是这份成员表。
+  api.state.channels = [{ id: "ch-1", name: "design" }];
+  api.state.activeChannelId = "ch-1";
+  api.state.online = true;
+  api.state.mode = "channel";
+  api.state.channelMembers = {
+    "ch-1": [{ id: "m-1", kind: "agent", display_name: "Ada", avatar_slot: 0 }],
+  };
+
+  return {
+    api,
+    document,
+    elementFor,
+    catalogs: context.AlibotI18n.catalogs,
+    i18n: context.AlibotI18n,
+  };
+}
+
+/** 主 composer 的 `.composer-bar` 片段：任务线程回复框也有一个 `.composer-bar`，必须按 `#composer` 定位。 */
+function composerBarAt(scope) {
+  const bar = /<div class="composer-bar">([\s\S]*?)<\/div>/.exec(scope);
+  assert.ok(bar, "该 scope 里应有 .composer-bar");
+  return bar[1];
+}
+
+function indexOf(source, marker) {
+  const at = source.indexOf(marker);
+  assert.notEqual(at, -1, `片段里缺少 ${marker}`);
+  return at;
+}
+
+test("composer 工具行：按钮位与顺序照原型，且 #67 的附件位在本票不落", () => {
+  const html = readStudio("index.html");
+  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
+  const composerBar = composerBarAt(withoutComments);
+
+  // 顺序：@提及 → 作为任务发送 → 分隔 → 提示 → 发送（附件位在原型的首槽，本票留空给 #67）。
+  const order = [
+    'id="btnMention"',
+    'id="btnAsTask"',
+    'class="sep"',
+    'id="composerHint"',
+    'id="btnSend"',
+  ].map((marker) => indexOf(composerBar, marker));
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+    "工具行元素的先后顺序必须与原型一致（附件 → @提及 → 作为任务发送 → 分隔 → 提示 → 发送）",
+  );
+
+  // 附件位：本票**不**落一个没有行为的图标按钮（#67 接线后插在 `#btnMention` 之前）。
+  assert.equal(
+    withoutComments.includes('id="btnAttach"'),
+    false,
+    "附件按钮属于 #67；一个按下去什么都不发生的按钮不进这个工具行",
+  );
+  // 两个交付的按钮都挂词条键（文案不写死）且各只有一份。
+  for (const marker of ["btn-mention", "btn-as-task"]) {
+    assert.equal(
+      withoutComments.split(`data-od-id="${marker}"`).length - 1,
+      1,
+      `${marker} 在主 composer 里恰好一份`,
+    );
+  }
+});
+
+test("composer 工具行：@提及 追加 `@`、聚焦输入框、激活发送键并复用既有补全", async () => {
+  const harness = createComposerHarness();
+  const input = harness.elementFor("#composerInput");
+  const send = harness.elementFor("#btnSend");
+  const panel = harness.elementFor("#composerMention");
+
+  assert.equal(input.value, "");
+  assert.equal(send.disabled, true, "空正文时发送键是 disabled");
+
+  await harness.elementFor("#btnMention").dispatchEvent({ type: "click" });
+
+  assert.equal(input.value, "@", "点击后输入框正文追加一个 `@`");
+  assert.equal(harness.document.activeElement, input, "焦点落在输入框上");
+  assert.equal(send.disabled, false, "发送键被激活");
+
+  // 候选来自**既有**补全：条目与当前 target 的 Agent 成员逐条一致。
+  assert.equal(panel.hidden, false, "候选清单打开");
+  const rows = panel.querySelectorAll("[data-mention]");
+  assert.deepEqual(rows.map((row) => row.dataset.mention), ["m-1"]);
+  assert.equal(rows[0].textContent.includes("Ada"), true);
+});
+
+test("composer 工具行：作为任务发送 预填正文与当前频道，取消不动 composer", async () => {
+  const harness = createComposerHarness();
+  const input = harness.elementFor("#composerInput");
+  const overlay = harness.elementFor("#taskOverlay");
+  input.value = "把评审结论写成任务";
+  assert.equal(overlay.hidden, true);
+
+  await harness.elementFor("#btnAsTask").dispatchEvent({ type: "click" });
+
+  assert.equal(overlay.hidden, false, "既有新建任务弹窗被打开");
+  assert.equal(harness.elementFor("#taskCreateTitle").value, "把评审结论写成任务", "正文预填为标题");
+  assert.equal(harness.elementFor("#taskCreateChannel").value, "ch-1", "当前频道预选");
+
+  await harness.elementFor("#taskCreateCancel").dispatchEvent({ type: "click" });
+
+  assert.equal(overlay.hidden, true, "取消关闭弹窗");
+  assert.equal(input.value, "把评审结论写成任务", "取消路径不碰 composer 内容");
+});
+
+test("composer 工具行：任务线程的回复框没有工具行", () => {
+  const html = readStudio("index.html");
+  const thread = html.slice(html.indexOf('id="dockTask"'));
+  const replyBar = composerBarAt(thread.slice(0, thread.indexOf("</aside>")));
+
+  assert.equal(replyBar.includes("btn-mention"), false);
+  assert.equal(replyBar.includes("btn-as-task"), false);
+  assert.equal(replyBar.includes("icon-btn"), false, "回复框只有提示与发送键（原型 :775-780）");
+  assert.equal(replyBar.includes('id="taskSend"'), true);
+});
+
+test("composer 工具行：两个新文案在两份词条里都取到值", () => {
+  const harness = createComposerHarness();
+  const catalogs = harness.catalogs;
+  const keys = ["composer.mentionAction", "composer.asTaskAction"];
+
+  for (const key of keys) {
+    assert.ok(catalogs["zh-CN"][key], `${key} 在源语言里缺失`);
+    assert.ok(catalogs.en[key], `${key} 在第二语言里缺失`);
+    assert.notEqual(catalogs["zh-CN"][key], catalogs.en[key], `${key} 的两份取值不能是同一句话`);
+  }
+
+  // 按键取两套值比对（不写死措辞）：同一个绑定在两套语言下各自取到本语言的值。
+  const root = new FakeNode("body");
+  const button = new FakeNode("button");
+  button.setAttribute(
+    "data-i18n-attr",
+    "title:composer.mentionAction,aria-label:composer.mentionAction",
+  );
+  root.appendChild(button);
+  const taskButton = new FakeNode("button");
+  taskButton.setAttribute("data-i18n-attr", "aria-label:composer.asTaskAction");
+  root.appendChild(taskButton);
+
+  for (const locale of ["zh-CN", "en"]) {
+    harness.i18n.setLocale(locale);
+    harness.i18n.applyStaticI18n(root);
+    assert.equal(button.getAttribute("aria-label"), catalogs[locale]["composer.mentionAction"]);
+    assert.equal(button.getAttribute("title"), catalogs[locale]["composer.mentionAction"]);
+    assert.equal(taskButton.getAttribute("aria-label"), catalogs[locale]["composer.asTaskAction"]);
+  }
+});
+
+/* ─── 8. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
    名册的判据只有四条：入口能开、内容 = 后端成员表逐条（含 owner）、唯一动作是关闭、
    文案在两份词条里都取到值。窄屏 / 真实页面的那条入口由浏览器实测验，这里用同一套 DOM 替身。 */
 

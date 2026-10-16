@@ -171,8 +171,19 @@
           <div class="composer-mention" id="composerMention" role="listbox" data-i18n-attr="aria-label:composer.mentionLabel" aria-label="可提及的当前频道 Agent 成员" hidden data-od-id="mention-picker"></div>
           <textarea class="composer-input" id="composerInput" rows="1" data-i18n-attr="placeholder:composer.placeholder,aria-label:composer.inputLabel" placeholder="发消息到 #频道名" data-od-id="composer-input" aria-label="消息正文"></textarea>
           <div class="composer-bar">
-            <span class="composer-hint" id="composerHint" data-i18n="composer.hint">Enter 发送 · Shift+Enter 换行</span>
+            <!-- 工具行按原型 `alibot-app.html:647-660` 落位：附件 → @提及 → 作为任务发送 → 分隔 → 提示 → 发送。
+                 本票只落 @提及 与 作为任务发送 两个**有行为**的图标按钮；原型的首槽（附件）由 #67 接线，
+                 这里**不**落一个没有行为的图标按钮——它对键盘与读屏用户是一个按下去什么都不发生的停站
+                 （与「指派 pill 用 span 而不是 button」同一条纪律）。#67 把 `#btnAttach` 插在 `#btnMention`
+                 之前即可补回首槽。 -->
+            <button class="icon-btn" type="button" id="btnMention" data-i18n-attr="title:composer.mentionAction,aria-label:composer.mentionAction" title="提及 Agent" aria-label="提及 Agent" data-od-id="btn-mention">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+            </button>
+            <button class="icon-btn" type="button" id="btnAsTask" data-i18n-attr="title:composer.asTaskAction,aria-label:composer.asTaskAction" title="作为任务发送" aria-label="作为任务发送" data-od-id="btn-as-task">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 5-5"/></svg>
+            </button>
             <span class="sep"></span>
+            <span class="composer-hint" id="composerHint" data-i18n="composer.hint">Enter 发送 · Shift+Enter 换行</span>
             <button class="composer-send" id="btnSend" disabled data-i18n-attr="aria-label:composer.send" aria-label="发送" data-od-id="btn-send">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12 20 4l-6 16-3-7-7-1Z"/></svg>
             </button>

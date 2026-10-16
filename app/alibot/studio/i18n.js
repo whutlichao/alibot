@@ -158,6 +158,8 @@ const I18N_CATALOGS = {
     'composer.mentionLabel': '可提及的当前频道 Agent 成员',
     'composer.placeholder': '发消息到 #频道名',
     'composer.inputLabel': '消息正文',
+    'composer.mentionAction': '提及 Agent',
+    'composer.asTaskAction': '作为任务发送',
     'composer.hint': 'Enter 发送 · Shift+Enter 换行',
     'composer.send': '发送',
     'composer.note':
@@ -482,6 +484,8 @@ const I18N_CATALOGS = {
     'composer.mentionLabel': 'Agent members of this channel that can be mentioned',
     'composer.placeholder': 'Message #channel-name',
     'composer.inputLabel': 'Message body',
+    'composer.mentionAction': 'Mention an agent',
+    'composer.asTaskAction': 'Send as task',
     'composer.hint': 'Enter to send · Shift+Enter for a new line',
     'composer.send': 'Send',
     'composer.note':
