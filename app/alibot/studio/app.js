@@ -139,6 +139,12 @@ const state = {
   taskFilterMine: false,
   // 任务线程现在是右侧 dock 的**第二种形态**（`dockMode`），不再是主线上的一个视图。
   dockMode: 'agent',
+  // Agent 详情（dock **第三形态**）：`activeAgentId` 是被打开的那一个成员，
+  // `agentDetailTab` 是它当前显示的页签（只有「概览」「运行时」两个，日志页签不做）。
+  activeAgentId: null,
+  agentDetailTab: 'overview',
+  // 编辑配置弹窗当前编辑的成员（`null` = 弹窗关着）。
+  agentEditId: null,
   // 成员名册（频道成员的**只读**全名单）当前锁定的频道 id；`null` = 弹窗关着。
   // 名册回答「打开它的那个频道里有谁」，因此它在打开时锁定频道，不跟着激活频道跑。
   rosterChannelId: null,
@@ -1297,18 +1303,24 @@ function renderAssignChips(task) {
   replaceChildren(box, chips);
 }
 
-/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）。
+/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）↔ Agent 详情（`detail`）。
 
     与消息流不在同一个维度：看板仍在主线（`state.mode === 'board'`），
-    而任务线程只是 dock 里显示什么。两者组合出「看板 + 右侧线程」这个原型交互。 */
+    而任务线程 / Agent 详情只是 dock 里显示什么。三种形态共用同一个 380px 容器，因此
+    「同时显示两件东西」在构造上不可能发生（一次只有一种为可见）。
+
+    形态本身**不单独存一份**：它由「现在打开着哪一个对象」推导（`activeTaskId` 优先于
+    `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类漂移没有落脚点。 */
 function setDockMode(mode) {
   state.dockMode = mode;
   const isTask = mode === 'task' && state.activeTaskId;
-  $('#dockAgent').hidden = Boolean(isTask);
+  const isDetail = mode === 'detail' && state.activeAgentId;
+  $('#dockAgent').hidden = Boolean(isTask || isDetail);
   $('#dockTask').hidden = !isTask;
+  $('#dockDetail').hidden = !isDetail;
   // 滑入放在**形态定下来之后**：≤900px 打开抽屉要把焦点送进第一个可聚焦控件，
   // 而那一步要跳过 `hidden` 子树 —— 先开抽屉会把焦点送给一个还在 `hidden` 里的控件。
-  if (isTask) setDockOpen(true);
+  if (isTask || isDetail) setDockOpen(true);
 }
 
 function setViewMode(mode) {
@@ -1458,25 +1470,29 @@ function toggleDock() {
   if (dock) setDockOpen(dock.hidden);
 }
 
-/** 关闭 dock 的任务线程，回到频道成员形态（卡片与线程都留在看板上）。
-    形态的切换写在这一处（而不是等某次整体重绘顺手改掉）：所有关闭路径（关闭按钮、切到
-    消息页、看板重入）共用它，于是「关闭了但 dock 还停在任务形态」不可能发生。 */
+/** 关闭 dock 的任务线程，回到**另一个仍打开着**的形态（卡片与线程都留在看板上）。
+    形态的推导写在这一处（`activeTaskId` 优先于 `activeAgentId`）：所有关闭路径（关闭按钮、
+    切到消息页、看板重入）共用它，于是「关闭了但 dock 还停在任务形态」不可能发生。 */
 function closeTaskDock() {
   closeTaskStream();
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
   state.taskSeenSeqs = new Set();
-  setDockMode('agent');
+  setDockMode(state.activeAgentId ? 'detail' : 'agent');
 }
 
 function taskMaxSeq() {
   return state.taskMessages.reduce((max, message) => Math.max(max, Number(message.seq) || 0), 0);
 }
 
-/** 点看板卡片：在**右侧 dock** 开任务线程（主线仍留在看板上）。 */
+/** 点看板卡片：在**右侧 dock** 开任务线程（主线仍留在看板上）。
+
+    打开线程会**关掉** Agent 详情：dock 一次只显示一种形态，两者同时「打开着」会让关闭时的
+    落点变成猜谜。 */
 async function openTask(taskId) {
   closeTaskStream();
+  state.activeAgentId = null;
   state.activeTaskId = taskId;
   state.activeTask = taskById(taskId);
   state.taskMessages = [];
@@ -2035,6 +2051,8 @@ function onStreamStatus(targetId, payload) {
   renderDms();
   renderDock();
   renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
+  // 详情面板开着时它的状态点同样只能来自后端事实（关着时是空操作）。
+  if (state.activeAgentId) renderAgentDetail();
   // 已呈现的轮次结果行里的状态描述（「未启用」/「这一轮失败」）必须跟着后端事实走，
   // 不能停在一句已经不成立的话上。没呈现过该成员就不重建消息流。
   if (state.activeChannelId === targetId && previous !== payload.status && outcomeMembers().has(payload.member_id)) {
@@ -2052,6 +2070,7 @@ function onStreamTyping(targetId, payload) {
   renderMembers();
   renderDock();
   renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
+  if (state.activeAgentId) renderAgentDetail();
 }
 
 function showTypingFor(targetId, memberId) {
@@ -2078,6 +2097,10 @@ function onStreamOutcome(targetId, payload) {
   renderMembers();
   renderDock();
   renderRoster(); // 名册若开着，它的状态点也必须跟着后端事实走（关着时是空操作）
+  // 详情面板开着时：这个成员自己刚落了一条轮次结果 ⇒ 概览的四个数字（库里聚合而来）要重读一次；
+  // 别人的轮次结果只可能改变状态点，重绘即可。
+  if (state.activeAgentId === outcome.member_id) refreshAgentDetail(outcome.member_id);
+  else if (state.activeAgentId) renderAgentDetail();
   // 五种结果都要重建消息流：只有 `failed` 会被状态点推导拦住（`ignored` 等三态**不是**失败，
   // 状态点仍空闲），但它们的摘要行同样要在不刷新页面的情况下出现。
   if (state.activeChannelId === targetId && added) renderMessages();
@@ -2116,9 +2139,9 @@ function render() {
   renderDms();
   renderMembers();
   renderTaskBoard();
-  // dock 的两种形态共用同一个 380px 容器：每次整体重绘都把两者的可见性重新同步一遍，
-  // 否则某次局部重建会把「现在是哪种形态」留在上一帧。
-  setDockMode(state.activeTaskId ? 'task' : 'agent');
+  // dock 的三种形态共用同一个 380px 容器：每次整体重绘都把形态重新同步一遍（形态由
+  // 「现在打开着哪一个对象」推导，见 `setDockMode()`），否则某次局部重建会把形态留在上一帧。
+  setDockMode(state.activeTaskId ? 'task' : (state.activeAgentId ? 'detail' : 'agent'));
   if (state.activeTask) renderTaskThread();
   syncTaskViewSeg();
   renderHeader();
@@ -2132,6 +2155,9 @@ function render() {
   renderSearchResults();
   renderConnection();
   renderDock();
+  // Agent 详情开着时它的读数（状态点 / 跑动的数字）也要跟着整体重绘刷新：它的每个数字都是
+  // 后端事实的镜像，因此重建它和重建消息流是同一件事。
+  if (state.activeAgentId) renderAgentDetail();
   renderTyping();
   syncSendButton();
 }
@@ -2215,8 +2241,15 @@ function renderMembers() {
   const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
   const agents = state.members.filter((member) => member.kind === 'agent');
   const rows = agents.map((member) => {
-    const row = el('div', 'nav-row');
+    // 左栏每一行都是**打开 Agent 详情**的入口：与频道 / 私信两段同形（`<button class="nav-row">`），
+    // 因此键盘可达、可聚焦，不是「看着能点、按下去什么都不发生」的装饰行。
+    const open = member.id === state.activeAgentId;
+    const row = el('button', 'nav-row' + (open ? ' is-active' : ''));
+    row.type = 'button';
     row.dataset.member = member.id;
+    row.setAttribute('data-od-id', 'agent-row-' + member.id);
+    row.setAttribute('aria-current', open ? 'true' : 'false');
+    row.setAttribute('aria-label', t('agentDetail.openAria', { name: member.display_name }));
     row.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
     row.appendChild(el('span', 'grow', member.display_name));
     // 状态点：四态只表达后端事实（空闲 / 正在回复 / 出错 / 未启用），不从会话存活推导。
@@ -2232,12 +2265,20 @@ function statusOf(agent) {
   return state.statuses[agent && agent.id] || 'offline';
 }
 
-function presenceNode(status) {
-  const node = el('span', 'presence ' + status);
+/** 把四态写到一个状态点节点上（class / title / aria-label / dataset 一起），返回同一个节点。
+
+    它是状态点的**唯一**写法：静态列表（`presenceNode`）与详情页头部（会重建的 `#adPresence`）
+    共用它，于是「同一个事实在两处呈现」不会漂移成两套 class 与两套无障碍文案。 */
+function applyPresence(node, status) {
+  node.className = 'presence ' + status;
+  node.dataset.status = status;
   node.setAttribute('title', statusLabel(status));
   node.setAttribute('aria-label', statusLabel(status));
-  node.dataset.status = status;
   return node;
+}
+
+function presenceNode(status) {
+  return applyPresence(el('span', 'presence'), status);
 }
 
 /** 该频道的 Agent 成员（已加入）+ 本工作区里未加入的 Agent。
@@ -2344,7 +2385,14 @@ function memberCard(member, agentsById, canJoin) {
   card.setAttribute('data-od-id', (canJoin ? 'dock-outside-' : 'dock-member-') + member.id);
   const head = el('div', 'dock-member-head');
   head.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
-  head.appendChild(el('strong', null, member.display_name));
+  // 名字本身是**打开 Agent 详情**的控件：卡片里已经有「加入」按钮（未加入那一段），
+  // 嵌套按钮在 HTML 里是无效结构，因此入口落在名字上，而不是把整张卡片做成按钮。
+  const nameButton = el('button', 'dock-member-name', member.display_name);
+  nameButton.type = 'button';
+  nameButton.dataset.agentOpen = member.id;
+  nameButton.setAttribute('data-od-id', 'dock-open-' + member.id);
+  nameButton.setAttribute('aria-label', t('agentDetail.openAria', { name: member.display_name }));
+  head.appendChild(nameButton);
   if (agent.role) head.appendChild(el('span', 'msg-tag', agent.role));
   head.appendChild(presenceNode(statusOf(agent)));
   card.appendChild(head);
@@ -2371,6 +2419,365 @@ function memberCard(member, agentsById, canJoin) {
     card.appendChild(foot);
   }
   return card;
+}
+
+/* ─── Agent 详情（dock 第三形态）：概览 + 运行时 ─────────────────────────
+   `CONTEXT.md` **Agent** 与 ADR-0011：详情页是**人类面**的只读呈现 + 两个真动作（暂停 / 编辑配置），
+   两个动作都落在同一个写路径 `PATCH /api/agents/{id}` 上。
+
+   两条纪律（票面 Constraints）：
+
+   - **概览只呈现有真实来源的事实**：四个数字全部来自后端 `GET /api/agents/{id}` 的 `stats`
+     （`round_outcome` 聚合 + 任务行 + 频道成员表）。前端**不**自己算，也不为填满界面编数值。
+   - **运行时只呈现 `agent_config` 里真实存在的字段**：原型的内存 / 延迟 / 工具权限 / 温度 /
+     Token 消耗 / 上下文占用在本仓没有数据面，因此这里既不渲染也不留占位。
+   日志页签**不做**（用户人定 D24，入口另立 backlog 票 #72）。 */
+
+/** 取一个成员在 `state` 里的**最新**读数：`state.agents`（含配置与 stats）优先，
+    回退到 `state.members`（只有身份行）。两者都是后端读数的镜像，不在这里合成新事实。 */
+function agentById(memberId) {
+  return state.agents.find((agent) => agent.id === memberId)
+    || state.members.find((member) => member.id === memberId)
+    || null;
+}
+
+/** 用后端刚返回的那一份覆盖本地镜像（新增与覆盖一条路径，不写两份）。 */
+function upsertAgent(agent) {
+  if (!agent || !agent.id) return;
+  const index = state.agents.findIndex((item) => item.id === agent.id);
+  if (index >= 0) state.agents[index] = agent;
+  else state.agents.push(agent);
+}
+
+/** 打开 Agent 详情（入口：左栏 Agent 行 / 成员面板里的名字）。 */
+async function openAgentDetail(memberId) {
+  if (!memberId) return;
+  // dock 一次只显示一种形态：打开详情就关掉任务线程（反之亦然，见 `openTask`）。
+  closeTaskStream();
+  state.activeTaskId = null;
+  state.activeTask = null;
+  state.taskMessages = [];
+  state.taskSeenSeqs = new Set();
+  state.activeAgentId = memberId;
+  state.agentDetailTab = 'overview';
+  setDockMode('detail');
+  renderMembers();
+  renderAgentDetail();
+  await refreshAgentDetail(memberId);
+}
+
+/** 关闭详情：回到另一个仍打开着的形态（没有就回到频道成员面板）。 */
+function closeAgentDetail() {
+  state.activeAgentId = null;
+  setDockMode(state.activeTaskId ? 'task' : 'agent');
+  renderMembers();
+}
+
+/** 从后端读**这一个**成员的最新读数（配置 + 状态点 + 概览数字）。
+    工作台快照里的那份可能已经旧了（消息处理数与完成任务数会变），因此打开时读一次正本。 */
+async function refreshAgentDetail(memberId) {
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId));
+    if (state.activeAgentId !== memberId) return; // 已经切到别人：不把旧读数铺到新面板上
+    upsertAgent(payload.agent);
+    renderMembers();
+    renderDock();
+    renderAgentDetail();
+  } catch (err) {
+    toast(t('toast.agentDetailFailed', { reason: err.message }), 'err');
+  }
+}
+
+/** 两个页签的选中态与两块内容的可见性（唯一的落点：打开、切页签、整帧重绘都走它）。 */
+function setAgentDetailTab(tab) {
+  state.agentDetailTab = tab === 'runtime' ? 'runtime' : 'overview';
+  const overview = state.agentDetailTab === 'overview';
+  $('#adOverview').hidden = !overview;
+  $('#adRuntime').hidden = overview;
+  [['overview', $('#adTabOverview')], ['runtime', $('#adTabRuntime')]].forEach(([name, button]) => {
+    const on = name === state.agentDetailTab;
+    button.classList.toggle('is-active', on);
+    button.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+}
+
+/** 详情面板的**唯一**渲染落点（打开、状态流推送、配置保存后都走它）。 */
+function renderAgentDetail() {
+  const agent = state.activeAgentId ? agentById(state.activeAgentId) : null;
+  if (!agent) return;
+  const status = statusOf(agent);
+  applyPresence($('#adPresence'), status);
+  $('#adStatusText').textContent = statusLabel(status);
+  $('#adName').textContent = agent.display_name;
+  replaceChildren($('#adOverview'), agentOverviewNodes(agent));
+  replaceChildren($('#adRuntime'), agentRuntimeNodes(agent));
+  setAgentDetailTab(state.agentDetailTab);
+}
+
+/** 详情面板的分区标题：文案走词条，`data-od-id` 是 `alibot-design-system/SKILL.md` 对
+    「regions / headings」的要求（这类标题是运行时生成的，因此标识也在这里给）。 */
+function sectionTitle(key, odId) {
+  const node = el('div', 'd-sec-title', t(key));
+  if (odId) node.setAttribute('data-od-id', odId);
+  return node;
+}
+
+/** 概览：四个数字（同一个 `stats` 来源）+ 当前状态与未启用原因 + 两个真动作。 */
+function agentOverviewNodes(agent) {
+  const stats = agent.stats || {};
+  const nodes = [];
+
+  const facts = el('section', 'd-sec');
+  facts.appendChild(sectionTitle('agentDetail.sectionFacts', 'agent-detail-section-facts'));
+  const grid = el('div', 'stat-grid');
+  [
+    ['agentDetail.statChannels', stats.channel_count, 'agentDetail.statChannelsHint', 'agent-stat-channels'],
+    ['agentDetail.statRounds', stats.round_count, 'agentDetail.statRoundsHint', 'agent-stat-rounds'],
+    ['agentDetail.statTasksDone', stats.completed_task_count, 'agentDetail.statTasksDoneHint',
+      'agent-stat-completed-tasks'],
+  ].forEach(([labelKey, value, hintKey, odId]) => {
+    grid.appendChild(statCell(t(labelKey), t(hintKey), String(Number(value) || 0), odId));
+  });
+  // 成功率：没有样本时**不编** 0%——「一条都没有」与「全部失败」是两件事。
+  const rate = stats.success_rate;
+  const rateText = rate === null || rate === undefined
+    ? t('agentDetail.noSamples')
+    : Math.round(Number(rate) * 100) + '%';
+  grid.appendChild(statCell(t('agentDetail.statSuccess'), t('agentDetail.statSuccessHint'), rateText,
+    'agent-stat-success-rate'));
+  facts.appendChild(grid);
+  // 概览也呈现**模型标识**（规格 §2 面 4 与 D20 把它列进「概览呈现有真实来源的事实」；
+  // US17 同样点名它）。它与运行时页签那一行同源同措辞，只是概览把它放在「事实」里一眼可见。
+  facts.appendChild(kvRow(t('agentDetail.kvModel'), agent.model_id || t('dock.noModel'),
+    'agent-overview-model'));
+  nodes.push(facts);
+
+  const status = statusOf(agent);
+  const statusSection = el('section', 'd-sec');
+  statusSection.appendChild(sectionTitle('agentDetail.sectionStatus', 'agent-detail-section-status'));
+  statusSection.appendChild(kvRow(t('agentDetail.kvStatus'), statusLabel(status),
+    'agent-detail-status-value'));
+  if (agent.enabled_reason) {
+    statusSection.appendChild(kvRow(t('agentDetail.kvReason'), agent.enabled_reason,
+      'agent-detail-enabled-reason'));
+  }
+  nodes.push(statusSection);
+
+  const actions = el('section', 'd-sec');
+  actions.appendChild(sectionTitle('agentDetail.sectionActions', 'agent-detail-section-actions'));
+  const row = el('div', 'agent-actions');
+  // 「暂停 / 恢复」就是写 `enabled`（ADR-0011）：按钮的说法随**当前落库取值**变，
+  // 不另存一个「暂停中」的前端状态。
+  const toggle = el('button', 'btn btn-sm',
+    agent.enabled ? t('agentDetail.pause') : t('agentDetail.resume'));
+  toggle.type = 'button';
+  toggle.dataset.agentToggle = agent.id;
+  toggle.setAttribute('data-od-id', 'agent-toggle-enabled');
+  toggle.disabled = !state.online;
+  row.appendChild(toggle);
+  const edit = el('button', 'btn btn-sm', t('agentDetail.edit'));
+  edit.type = 'button';
+  edit.dataset.agentEdit = agent.id;
+  edit.setAttribute('data-od-id', 'agent-open-edit');
+  edit.disabled = !state.online;
+  row.appendChild(edit);
+  actions.appendChild(row);
+  // 暂停的**已知代价**写在界面上（不是只写在 ADR 里）：人点之前就该知道它会留下一条失败轮次结果。
+  actions.appendChild(el('div', 'hint', t('agentDetail.pauseNote')));
+  nodes.push(actions);
+  return nodes;
+}
+
+/** 运行时：**只**有 `agent_config` 里真实存在的字段（外加可用性推导出的告知状态）。 */
+function agentRuntimeNodes(agent) {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('agentDetail.sectionRuntime', 'agent-detail-section-runtime'));
+  section.appendChild(el('div', 'hint', t('agentDetail.runtimeNote')));
+  const rows = [
+    ['agentDetail.kvModel', agent.model_id || t('dock.noModel'), 'agent-detail-model'],
+    ['agentDetail.kvProvider', agent.provider ? providerLabel(agent.provider) : t('agentDetail.emptyField'),
+      'agent-detail-provider'],
+    ['agentDetail.kvRemote', agent.is_remote ? t('agentDetail.remoteYes') : t('agentDetail.remoteNo'),
+      'agent-detail-remote'],
+    ['agentDetail.kvConsent', agentConsentLabel(agent), 'agent-detail-consent'],
+    ['agentDetail.kvRole', agent.role || t('agentDetail.emptyField'), 'agent-detail-role'],
+    ['agentDetail.kvEnabled', agent.enabled ? t('agentDetail.enabledOn') : t('agentDetail.enabledOff'),
+      'agent-detail-enabled'],
+  ];
+  rows.forEach(([key, value, odId]) => section.appendChild(kvRow(t(key), value, odId)));
+
+  const promptSection = el('section', 'd-sec');
+  promptSection.appendChild(sectionTitle('agentDetail.kvPrompt', 'agent-detail-section-prompt'));
+  const body = el('div', 'prompt-body', agent.system_prompt || t('agentDetail.emptyField'));
+  body.setAttribute('data-od-id', 'agent-detail-prompt');
+  promptSection.appendChild(body);
+  return [section, promptSection];
+}
+
+/** 远端数据流告知的**状态**（不是文案本身）：本机 provider 不需要确认，远端 provider 看库里的记录。 */
+function agentConsentLabel(agent) {
+  if (!agent.provider) return t('agentDetail.emptyField');
+  if (!agent.is_remote) return t('agentDetail.consentNotNeeded');
+  return agent.remote_consent ? t('agentDetail.consentAck') : t('agentDetail.consentPending');
+}
+
+/** 一个概览数字：`title` 与 `aria-label` 都写明**来源**（数字本身不带来源就是不可核对的读数）。 */
+function statCell(label, hint, value, odId) {
+  const cell = el('div', 'stat');
+  cell.title = hint;
+  cell.setAttribute('aria-label', label + t('common.colonSep') + value + t('common.clauseSep') + hint);
+  const number = el('div', 'n', value);
+  number.setAttribute('data-od-id', odId);
+  cell.appendChild(number);
+  cell.appendChild(el('div', 'l', label));
+  return cell;
+}
+
+/** 一行「键 : 值」。值用 `<span>` 装：`.kv` 的排版靠它。 */
+function kvRow(key, value, odId) {
+  const row = el('div', 'kv');
+  row.appendChild(el('span', 'k', key));
+  const cell = el('span', 'v', value);
+  if (odId) cell.setAttribute('data-od-id', odId);
+  row.appendChild(cell);
+  return row;
+}
+
+/** 「暂停 / 恢复」：写 `enabled`（ADR-0011）。它**不落消息、不唤醒、不消耗预算**；
+    响应里的成员清单是本地的**新**镜像（配置变更不会经事件流广播，因此必须吃这一份响应）。 */
+async function toggleAgentEnabled(memberId) {
+  const agent = agentById(memberId);
+  if (!agent) return;
+  const next = !agent.enabled;
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId), {
+      method: 'PATCH',
+      body: { enabled: next },
+    });
+    applyAgentUpdate(payload);
+    toast(t(next ? 'toast.agentResumed' : 'toast.agentPaused', { name: payload.agent.display_name }));
+  } catch (err) {
+    toast(t(next ? 'agentDetail.resumeFailed' : 'agentDetail.pauseFailed', { reason: err.message }), 'err');
+  }
+}
+
+/** 把一次写路径的响应铺回界面：成员行、左栏、成员面板与详情页读的是同一份后端读数。 */
+function applyAgentUpdate(payload) {
+  if (payload.agents) state.agents = payload.agents;
+  if (payload.members) state.members = payload.members;
+  upsertAgent(payload.agent);
+  renderMembers();
+  renderDock();
+  renderAgentDetail();
+}
+
+/* ─── 编辑配置（`PATCH /api/agents/{id}` 的人类面表单） ────────────────── */
+
+// 编辑弹窗里的 provider 选择是否出自人的手（与新建弹窗的 `agentProviderTouched` 同一个理由：
+// hydration 之前的占位默认值不是用户选择）。
+let agentEditProviderTouched = false;
+
+function openAgentEditModal(memberId) {
+  const agent = agentById(memberId);
+  if (!agent) return;
+  state.agentEditId = memberId;
+  agentEditProviderTouched = false;
+  const box = $('#agentEditFormError');
+  if (box) box.hidden = true;
+  $('#agentEditName').value = agent.display_name || '';
+  $('#agentEditRole').value = agent.role || '';
+  $('#agentEditPromptInput').value = agent.system_prompt || '';
+  // `model_id` 是 `provider:model`：界面把它拆成两个控件（与新建同形），保存时再拼回去。
+  const modelId = String(agent.model_id || '');
+  const cut = modelId.indexOf(':');
+  $('#agentEditModelInput').value = cut >= 0 ? modelId.slice(cut + 1) : modelId;
+  const preferred = cut >= 0 ? modelId.slice(0, cut) : (agent.provider || '');
+  renderAgentEditProviderSelect(preferred);
+  renderAgentEditEnabled(agent.enabled !== false);
+  renderAgentEditNotice();
+  $('#agentEditOverlay').hidden = false;
+  $('#agentEditName').focus();
+}
+
+function closeAgentEditModal() {
+  state.agentEditId = null;
+  $('#agentEditOverlay').hidden = true;
+}
+
+function renderAgentEditProviderSelect(preferred) {
+  const select = $('#agentEditProviderSelect');
+  fillProviderSelect(select, agentEditProviderTouched);
+  if (!agentEditProviderTouched && preferred && state.providers.includes(preferred)) {
+    select.value = preferred;
+  }
+  $('#agentEditProviderHint').textContent = providerHintText(select.value);
+  return select.value;
+}
+
+/** 启用态的两个档位（与「消息密度」同一套 `.radio-card` 控件族，不新造控件）。 */
+function renderAgentEditEnabled(enabled) {
+  Array.prototype.forEach.call($('#agentEditEnabled').querySelectorAll('[data-enabled]'), (card) => {
+    const on = (card.dataset.enabled === 'on') === Boolean(enabled);
+    card.classList.toggle('is-on', on);
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function agentEditEnabledValue() {
+  // 遍历「档位卡片」而不是用 `[data-enabled="on"]` 这类**带值**的属性选择器：判定只认卡片自己的
+  // 状态（`renderAgentEditEnabled` 用的也是同一份 `[data-enabled]` 集合）。
+  let on = false;
+  Array.prototype.forEach.call($('#agentEditEnabled').querySelectorAll('[data-enabled]'), (card) => {
+    if (card.dataset.enabled === 'on') on = card.classList.contains('is-on');
+  });
+  return on;
+}
+
+function renderAgentEditNotice() {
+  renderRemoteNoticeBlock(AGENT_EDIT_NOTICE_IDS, $('#agentEditProviderSelect').value);
+}
+
+/** 保存：**整份字段一起提交**（部分更新的语义在后端，前端不做「哪些改过」的差量）——
+    任一字段不合法时后端整体不写，错误原文照后端给的那句话显示。 */
+async function submitAgentEdit() {
+  const memberId = state.agentEditId;
+  if (!memberId) return;
+  const provider = $('#agentEditProviderSelect').value;
+  const payload = {
+    display_name: $('#agentEditName').value.trim(),
+    role: $('#agentEditRole').value.trim(),
+    model_id: provider + ':' + $('#agentEditModelInput').value.trim(),
+    system_prompt: $('#agentEditPromptInput').value.trim(),
+    enabled: agentEditEnabledValue(),
+  };
+  const box = $('#agentEditFormError');
+  const submit = $('#agentEditSubmit');
+  submit.disabled = true;
+  try {
+    const result = await api('/api/agents/' + encodeURIComponent(memberId), {
+      method: 'PATCH',
+      body: payload,
+    });
+    applyAgentUpdate(result);
+    closeAgentEditModal();
+    toast(t('toast.agentUpdated', { name: result.agent.display_name }));
+  } catch (err) {
+    if (box) {
+      box.textContent = err.message;
+      box.hidden = false;
+    }
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+/** 编辑弹窗里的告知确认：与新建走**同一个**端点与同一套镜像更新（不写第二套）。 */
+async function confirmAgentEditRemoteFlow() {
+  await confirmRemoteFlow(
+    $('#agentEditProviderSelect').value,
+    $('#agentEditRemoteConfirm'),
+    renderAgentEditNotice,
+  );
 }
 
 /* ─── 成员名册（频道成员的**只读**全名单） ────────────────────────────────
@@ -3356,19 +3763,37 @@ function closeAgentModal() {
   $('#agentOverlay').hidden = true;
 }
 
-// 重建选项会清掉当前选择。`preserveUserPick` 为真时保留它：只有确实出自人的手（agentProviderTouched）、
-// 且仍然在这份清单里的那一项才保留；其余一律回到清单首项。
-function renderProviderSelect(preserveUserPick) {
-  const select = $('#agentProviderSelect');
-  const previous = preserveUserPick ? select.value : '';
+/* 两个弹窗（新建 / 编辑）各自的远端告知块节点。**判定与文案只有一份实现**
+   （`renderRemoteNoticeBlock()`），这里只是「哪几个节点属于哪个弹窗」的接线表。 */
+const AGENT_CREATE_NOTICE_IDS = {
+  box: '#agentRemoteNotice',
+  title: '#agentRemoteTitle',
+  body: '#agentRemoteBody',
+  hint: '#agentRemoteHint',
+};
+const AGENT_EDIT_NOTICE_IDS = {
+  box: '#agentEditRemoteNotice',
+  title: '#agentEditRemoteTitle',
+  body: '#agentEditRemoteBody',
+  hint: '#agentEditRemoteHint',
+};
+
+// 重建选项会清掉当前选择。`keep` 为真时保留它：只有确实出自人的手、且仍然在这份清单里的那一项
+// 才保留；其余一律回到清单首项（provider 清单的正本只有后端 `/api/workspace` 一处）。
+function fillProviderSelect(select, keep) {
+  const previous = keep ? select.value : '';
   const providers = state.providers.length ? state.providers : PROVIDER_PLACEHOLDER;
-  const optionNodes = providers.map((provider) => {
+  replaceChildren(select, providers.map((provider) => {
     const option = el('option', null, providerLabel(provider));
     option.value = provider;
     return option;
-  });
-  replaceChildren(select, optionNodes);
+  }));
   select.value = providers.includes(previous) ? previous : providers[0];
+  return select.value;
+}
+
+function renderProviderSelect(preserveUserPick) {
+  fillProviderSelect($('#agentProviderSelect'), Boolean(preserveUserPick));
   updateProviderHint();
 }
 
@@ -3390,41 +3815,49 @@ function isLocalProvider(provider) {
   return state.localProviders.indexOf(provider) >= 0;
 }
 
+function providerHintText(provider) {
+  return isLocalProvider(provider) ? t('agent.providerLocalHint') : t('agent.providerRemoteHint');
+}
+
 function updateProviderHint() {
-  const provider = currentProvider();
-  const hint = $('#agentProviderHint');
-  hint.textContent = isLocalProvider(provider)
-    ? t('agent.providerLocalHint')
-    : t('agent.providerRemoteHint');
+  $('#agentProviderHint').textContent = providerHintText(currentProvider());
 }
 
 function acknowledged(provider) {
   return state.consents.some((record) => record.provider === provider);
 }
 
-function renderRemoteNotice() {
-  const provider = currentProvider();
-  const box = $('#agentRemoteNotice');
+/** 远端数据流告知块的**唯一**渲染实现（新建与编辑两个弹窗共用）。
+
+    返回真 = 这一块**可见**（当前 provider 是远端且还没确认过）。判定读的是库内 `remote_consent`
+    的镜像（`state.consents`），因此「未确认」在界面上与后端的可用性判定说的是同一件事。 */
+function renderRemoteNoticeBlock(ids, provider) {
+  const box = $(ids.box);
   if (isLocalProvider(provider) || acknowledged(provider)) {
     box.hidden = true;
-    return;
+    return false;
   }
   box.hidden = false;
   const faces = (state.dataFaces.length ? state.dataFaces : remoteFlow.data_faces).join(t('common.nameListSep'));
-  $('#agentRemoteTitle').textContent = t('agent.remoteTitle', { provider: providerLabel(provider) });
-  $('#agentRemoteBody').textContent = t('agent.remoteBody', { faces });
-  $('#agentRemoteHint').textContent = t('agent.remoteHint');
+  $(ids.title).textContent = t('agent.remoteTitle', { provider: providerLabel(provider) });
+  $(ids.body).textContent = t('agent.remoteBody', { faces });
+  $(ids.hint).textContent = t('agent.remoteHint');
+  return true;
 }
 
-async function confirmRemoteFlow() {
-  const provider = currentProvider();
-  const button = $('#agentRemoteConfirm');
+function renderRemoteNotice() {
+  renderRemoteNoticeBlock(AGENT_CREATE_NOTICE_IDS, currentProvider());
+}
+
+/** 确认一次告知（幂等）。`provider` / `button` / `refreshNotice` 由调用点给：新建与编辑
+    两个弹窗共用这一条路径与同一份本地镜像更新，不各写一套。 */
+async function confirmRemoteFlow(provider, button, refreshNotice) {
   button.disabled = true;
   try {
     const payload = await api('/api/remote-data-flow/ack', { method: 'POST', body: { provider } });
     state.consents = payload.consents || [];
     state.agents = payload.agents || state.agents;
-    renderRemoteNotice();
+    refreshNotice();
     // 确认会改变成员的启用态：状态点必须从后端重取，不靠本地推断。
     await loadWorkspace({ silent: true, keepActive: true });
     toast(t('toast.remoteAck', { provider: providerLabel(provider) }));
@@ -3604,7 +4037,9 @@ function bindEvents() {
   $('#agentCancel').addEventListener('click', closeAgentModal);
   $('#agentModalClose').addEventListener('click', closeAgentModal);
   $('#agentCreateSubmit').addEventListener('click', submitAgent);
-  $('#agentRemoteConfirm').addEventListener('click', confirmRemoteFlow);
+  $('#agentRemoteConfirm').addEventListener('click', () => {
+    confirmRemoteFlow(currentProvider(), $('#agentRemoteConfirm'), renderRemoteNotice);
+  });
   // 只监听 change 不够：重新点选「已经选中的那一项」不派发 change，而 hydration 期间那一项还只是
   // 占位默认值，清单到齐后的重建正好会把它换成完整清单首项 —— 静默把本机模型换成远端模型。
   // 因此指针按下与键盘操作也记为「选择出自人的手」。
@@ -3617,6 +4052,26 @@ function bindEvents() {
   });
   $('#agentOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'agentOverlay') closeAgentModal();
+  });
+
+  // ── 编辑 Agent 配置（PATCH /api/agents/{id}）：与新建同形的选择器 / 告知语义 ──
+  $('#agentEditCancel').addEventListener('click', closeAgentEditModal);
+  $('#agentEditClose').addEventListener('click', closeAgentEditModal);
+  $('#agentEditSubmit').addEventListener('click', submitAgentEdit);
+  $('#agentEditRemoteConfirm').addEventListener('click', () => { confirmAgentEditRemoteFlow(); });
+  $('#agentEditProviderSelect').addEventListener('pointerdown', () => { agentEditProviderTouched = true; });
+  $('#agentEditProviderSelect').addEventListener('keydown', () => { agentEditProviderTouched = true; });
+  $('#agentEditProviderSelect').addEventListener('change', () => {
+    agentEditProviderTouched = true;
+    $('#agentEditProviderHint').textContent = providerHintText($('#agentEditProviderSelect').value);
+    renderAgentEditNotice();
+  });
+  $('#agentEditEnabled').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-enabled]');
+    if (card) renderAgentEditEnabled(card.dataset.enabled === 'on');
+  });
+  $('#agentEditOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'agentEditOverlay') closeAgentEditModal();
   });
   $('#channelCancel').addEventListener('click', closeChannelModal);
   $('#channelModalClose').addEventListener('click', closeChannelModal);
@@ -3647,6 +4102,26 @@ function bindEvents() {
     if (!row) return;
     selectTarget(row.dataset.dm);
     closeRail();
+  });
+  // 左栏 Agent 行：打开 dock 的**第三形态**（Agent 详情）。行是 `<button>`，因此键盘也走同一条路径。
+  $('#memberList').addEventListener('click', (event) => {
+    const row = event.target.closest('[data-member]');
+    if (row) openAgentDetail(row.dataset.member);
+  });
+
+  // Agent 详情：两个页签、关闭、以及「暂停 / 恢复」与「编辑配置」两个真动作。
+  // 「暂停」的控件由 `renderAgentDetail()` 每次重建，因此这里用**委派**而不是逐个绑事件。
+  $('#adTabOverview').addEventListener('click', () => setAgentDetailTab('overview'));
+  $('#adTabRuntime').addEventListener('click', () => setAgentDetailTab('runtime'));
+  $('#btnAgentDetailClose').addEventListener('click', closeAgentDetail);
+  $('#adOverview').addEventListener('click', (event) => {
+    const toggle = event.target.closest('[data-agent-toggle]');
+    if (toggle) {
+      toggleAgentEnabled(toggle.dataset.agentToggle);
+      return;
+    }
+    const edit = event.target.closest('[data-agent-edit]');
+    if (edit) openAgentEditModal(edit.dataset.agentEdit);
   });
 
   // 页签：两个页签在同一内容区切换（任务的唯一入口）。
@@ -3801,7 +4276,14 @@ function bindEvents() {
   // 成员面板里的「加入」：一个控件一个成员，点击后把它加入当前频道。
   $('#dockMembers').addEventListener('click', (event) => {
     const button = event.target.closest('[data-join]');
-    if (button) joinChannelMember(button.dataset.join);
+    if (button) {
+      joinChannelMember(button.dataset.join);
+      return;
+    }
+    // 成员面板里的 Agent 也是打开详情的入口（名字是控件；点卡片其余部分同样打开，
+    // 但「加入」按钮先判——它自己的动作不能被详情吞掉）。
+    const open = event.target.closest('[data-agent-open]') || event.target.closest('[data-member]');
+    if (open) openAgentDetail(open.dataset.agentOpen || open.dataset.member);
   });
   // ≤900px 抽屉自己的出口（`>900px` 时那个控件 `display:none`，所以这里在桌面是空转）。
   $('#dock').addEventListener('click', (event) => {
@@ -3876,6 +4358,7 @@ function bindEvents() {
       }
       if (!$('#settingsOverlay').hidden) closeSettingsModal();
       if (!$('#rosterOverlay').hidden) closeRosterModal();
+      if (!$('#agentEditOverlay').hidden) closeAgentEditModal();
       if (!$('#channelOverlay').hidden) closeChannelModal();
       if (!$('#dmOverlay').hidden) closeDmModal();
       if (!$('#agentOverlay').hidden) closeAgentModal();

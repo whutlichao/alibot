@@ -201,9 +201,10 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/channels/{id}/budget` | 有界响应预算 `{epoch_seq, limit, used, remaining}`（只读，后端持久事实） |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
-| `GET /api/agents` | Agent 成员 + 模型配置 + 四态状态点 + 「为什么未启用」 |
+| `GET /api/agents` | Agent 成员 + 模型配置 + 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
 | `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt}`；校验失败**整体不创建** |
-| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`） |
+| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason` 与 `stats`） |
+| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录 |
@@ -211,6 +212,28 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/health` | 存活与数据目录 |
 
 错误统一为 `{"error": {"code", "message", "fields"?}}`。
+
+### Agent 详情与配置编辑（`PATCH /api/agents/{id}`，ADR-0011）
+
+右侧 dock 的**第三形态**是 Agent 详情（入口：左栏 Agent 行、成员面板里的名字），含「概览」与「运行时」
+两个页签；**日志页签不做**（用户人定 D24，入口另立 backlog 票 #72）。
+
+- **概览的四个数字全部来自既有事实**，由后端在 `stats` 里聚合，前端不自己算：
+  `channel_count` = 它是成员的 channel 型 target 数；`round_count` = 它的 `round_outcome` 行数；
+  `completed_task_count` = 指派给它且 `status='done'` 的任务行数；`success_rate` =
+  `replied ÷ (replied + ignored + failed)`（`merged` 与 `budget-exhausted` 不计入分母，没有样本时为
+  `null`，界面显示「—」）。原型里的 Token 消耗 / 上下文占用 / 内存 / 延迟在本仓**没有数据面**，
+  因此不呈现。
+- **运行时页签只呈现 `agent_config` 里真实存在的字段**：`model_id`、`provider`、`is_remote`、
+  远端数据流告知状态、`role`、`system_prompt`、`enabled`（外加可用性推导出的当前状态）。
+- **写路径唯一**：`PATCH /api/agents/{id}` 可写 `display_name` / `role` / `model_id` /
+  `system_prompt` / `enabled`，**任一字段不合法则整体不写**（不得部分写入）；`model_id` 沿用与创建
+  同一套校验与**远端数据流告知**语义。`auto_claim` 属 #65，本票的写路径上它仍是未知键（整体拒绝）。
+- **配置变更不是发言**：不落消息、不唤醒、不消耗预算、不开世代（ADR-0011 与 ADR-0007 的边界：
+  人类面可写配置类取值）。
+- **「暂停」= 写 `enabled = 0`**，复用既有可用性判定：状态点为**未启用**、`enabled_reason` 可读；
+  已知代价是它**仍会被唤醒**并落一条可读原因的 `failed` 轮次结果，只是不产出回复——「从唤醒面排除」
+  是唤醒面的另一个决策，本轮不做。
 
 ### 未读口径
 
@@ -227,12 +250,14 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 .venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
 node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
 node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
+node --test app/tests/agent_detail_ui.test.cjs # Studio Agent 详情（dock 第三形态）：概览 / 运行时 / 暂停 / 编辑配置
 node --test app/tests/i18n_ui.test.cjs    # 词条机制（同键集 / 无落单键 / 裸中文扫描 / <html lang> / 设置弹窗两档）
 ```
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
-已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 搜索 DOM 行为由
-上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
+已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、
+Agent 详情面）由上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰**
+`~/Alibot`。
 
 **唯一例外**：`app/tests/test_backend_copy.py` 直接读 `app/alibot/i18n.py` 的两份取值——词条表是
 **数据契约**（两份取值必须覆盖同一键集、参数位一致，且后端文案必须取自**当前语言**的那一条），
