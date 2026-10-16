@@ -297,6 +297,18 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': '本机模型：不离开本机，不需要数据流确认。',
     'agent.providerRemoteHint': '远端模型：启用前需要先确认数据会离开本机（见下方告知）。',
 
+    /* ─── 成员名册（频道成员的**只读**全名单，`CONTEXT.md` **成员名册**） ────
+       入口在频道头部；弹窗只回答「这个频道里有谁」，**唯一动作是关闭**——
+       加入 / 未加入的管理动作是 **成员面板** 的面，不在这里出现。 */
+    'roster.entryTitle': '频道成员',
+    'roster.title': '#{name} 成员',
+    'roster.sub': '{count} 位成员',
+    'roster.loading': '正在读取该频道的成员表…',
+    'roster.unavailable': '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开名册即可。',
+    'roster.empty': '这个频道还没有成员。',
+    'roster.roleFallback': '成员',
+    'roster.closeAria': '关闭成员名册',
+
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
     'settings.sub': '工作区偏好',
@@ -621,6 +633,17 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': 'Local model: it never leaves this machine and needs no data-flow consent.',
     'agent.providerRemoteHint':
       'Remote model: enabling it first requires confirming that data leaves this machine (see the notice below).',
+
+    /* ─── Member roster (the read-only full list of a channel's members) ─── */
+    'roster.entryTitle': 'Channel members',
+    'roster.title': '#{name} members',
+    'roster.sub': '{count} members',
+    'roster.loading': 'Reading the channel member list…',
+    'roster.unavailable':
+      'The channel member list is not readable right now (the backend request failed): reopen the roster once it recovers.',
+    'roster.empty': 'This channel has no members yet.',
+    'roster.roleFallback': 'member',
+    'roster.closeAria': 'Close the member roster',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',
