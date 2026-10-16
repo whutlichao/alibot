@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from itertools import pairwise
+from typing import Any, cast
 
 from alibot.agent_seam import SetTaskStatusAction, TransferTaskAction
 from alibot.db import BUDGET_LIMIT
@@ -8,6 +9,16 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import create_agent, create_channel, drain, messages
 from tests.scripted import ACTION_ONLY, REPLY
+
+
+def _db(client: TestClient) -> Any:
+    """测试用的库句柄（``app.state.db``）。
+
+    ``TestClient.app`` 在 Starlette 的类型里是 ASGI 包装器，真正的 app 对象仍是我们传给
+    ``create_app`` 的那一个——``app.state.db`` 是它的公开接缝。因此这里只把类型放宽，
+    不另开一条读库路径（生产代码没有额外暴露面）。
+    """
+    return cast(Any, client.app).state.db
 
 
 def test_creating_a_task_creates_its_own_thread_without_a_channel_message(client: TestClient) -> None:
@@ -49,9 +60,9 @@ def test_invalid_task_creation_is_rejected_without_creating_a_task_or_channel_me
 def test_workspace_board_can_be_filtered_to_one_channel(client: TestClient) -> None:
     first_channel = create_channel(client, name="甲").json()["channel"]
     second_channel = create_channel(client, name="乙").json()["channel"]
-    first_task = client.post(
-        f"/api/channels/{first_channel['id']}/tasks", json={"title": "甲的任务"}
-    ).json()["task"]
+    first_task = client.post(f"/api/channels/{first_channel['id']}/tasks", json={"title": "甲的任务"}).json()[
+        "task"
+    ]
     client.post(f"/api/channels/{second_channel['id']}/tasks", json={"title": "乙的任务"})
 
     filtered = client.get("/api/tasks", params={"channel_id": first_channel["id"]})
@@ -62,9 +73,7 @@ def test_workspace_board_can_be_filtered_to_one_channel(client: TestClient) -> N
 
 def test_task_statuses_follow_the_five_state_machine_and_closed_is_terminal(client: TestClient) -> None:
     channel = create_channel(client).json()["channel"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "验证状态迁移"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "验证状态迁移"}).json()["task"]
     path = f"/api/tasks/{task['id']}/status"
 
     for status in ("in_progress", "in_review", "done", "in_progress", "closed"):
@@ -84,9 +93,7 @@ def test_task_reference_is_renderable_in_its_own_target_and_rejected_across_targ
     client: TestClient,
 ) -> None:
     channel = create_channel(client).json()["channel"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "指针消息"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "指针消息"}).json()["task"]
 
     same_target = client.post(
         f"/api/tasks/{task['id']}/messages",
@@ -103,7 +110,9 @@ def test_task_reference_is_renderable_in_its_own_target_and_rejected_across_targ
     assert cross_target.status_code == 400
     assert cross_target.json()["error"]["code"] == "validation_failed"
     assert messages(client, channel["id"]) == []
-    assert [message["task_ref"] for message in client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]] == [
+    assert [
+        message["task_ref"] for message in client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
+    ] == [
         None,
         task["id"],
     ]
@@ -111,9 +120,7 @@ def test_task_reference_is_renderable_in_its_own_target_and_rejected_across_targ
 
 def test_task_event_stream_replays_thread_messages_and_rejects_missing_tasks(client: TestClient) -> None:
     channel = create_channel(client).json()["channel"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "事件流"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "事件流"}).json()["task"]
 
     with client.stream("GET", f"/api/tasks/{task['id']}/events", params={"after_seq": 0}) as response:
         assert response.status_code == 200
@@ -136,9 +143,7 @@ def test_assignment_wakes_only_the_assignee_and_reassignment_moves_the_task_memb
     channel = create_channel(client).json()["channel"]
     first = create_agent(client, name="甲").json()["agent"]
     second = create_agent(client, name="乙").json()["agent"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "需要认领"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "需要认领"}).json()["task"]
     path = f"/api/tasks/{task['id']}/assignee"
 
     assigned = client.patch(path, json={"member_id": first["id"]})
@@ -175,14 +180,10 @@ def test_task_unread_is_separate_and_ordinary_system_events_do_not_wake_or_spend
     agent = create_agent(client, name="小明").json()["agent"]
     harness["seam"].behaviors = {agent["id"]: REPLY}
     harness["seam"].replies = {agent["id"]: "我已接手"}
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "检查未读边界"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "检查未读边界"}).json()["task"]
     assert harness["scheduler"].pending_count() == 0
 
-    assignment = client.patch(
-        f"/api/tasks/{task['id']}/assignee", json={"member_id": agent["id"]}
-    ).json()
+    assignment = client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": agent["id"]}).json()
     assignment_seq = assignment["message"]["seq"]
     assert harness["scheduler"].pending_count() == 1
     drain(harness)
@@ -201,12 +202,8 @@ def test_task_unread_is_separate_and_ordinary_system_events_do_not_wake_or_spend
     assert before["epoch_seq"] == assignment_seq
     assert before["used"] == 0
 
-    status_change = client.patch(
-        f"/api/tasks/{task['id']}/status", json={"status": "in_progress"}
-    )
-    title_change = client.patch(
-        f"/api/tasks/{task['id']}/title", json={"title": "核对完成"}
-    )
+    status_change = client.patch(f"/api/tasks/{task['id']}/status", json={"status": "in_progress"})
+    title_change = client.patch(f"/api/tasks/{task['id']}/title", json={"title": "核对完成"})
 
     assert status_change.status_code == 200
     assert title_change.status_code == 200
@@ -242,9 +239,7 @@ def test_agent_reassignment_spends_one_jump_and_obeys_the_budget_limit(
 ) -> None:
     channel = create_channel(client).json()["channel"]
     agents = [create_agent(client, name=name).json()["agent"] for name in ("甲", "乙", "丙", "丁", "戊")]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "逐次转派"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "逐次转派"}).json()["task"]
     assignee_path = f"/api/tasks/{task['id']}/assignee"
     harness["seam"].task_actions = {
         agent["id"]: TransferTaskAction(task["id"], agents[index + 1]["id"])
@@ -294,9 +289,7 @@ def test_mentioned_agent_can_complete_a_task_action_without_chat_text(
     channel = create_channel(client).json()["channel"]
     first = create_agent(client, name="甲").json()["agent"]
     second = create_agent(client, name="乙").json()["agent"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "点名后转派"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "点名后转派"}).json()["task"]
     assignee_path = f"/api/tasks/{task['id']}/assignee"
     assert client.patch(assignee_path, json={"member_id": first["id"]}).status_code == 200
     drain(harness)
@@ -317,7 +310,7 @@ def test_mentioned_agent_can_complete_a_task_action_without_chat_text(
     assert harness["seam"].calls_for(second["id"]) == []
     agent_outcome = next(
         outcome
-        for outcome in reversed(client.app.state.db.list_round_outcomes(task["target_id"]))
+        for outcome in reversed(_db(client).list_round_outcomes(task["target_id"]))
         if outcome["member_id"] == first["id"]
     )
     assert agent_outcome["status"] == "replied"
@@ -327,9 +320,7 @@ def test_mentioned_agent_can_complete_a_task_action_without_chat_text(
 def test_assigned_agent_cannot_approve_own_task_but_owner_can(client: TestClient, harness: dict) -> None:
     channel = create_channel(client).json()["channel"]
     agent = create_agent(client, name="审阅者").json()["agent"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "待审任务"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "待审任务"}).json()["task"]
 
     status_path = f"/api/tasks/{task['id']}/status"
     assert client.patch(status_path, json={"status": "in_progress"}).status_code == 200
@@ -344,7 +335,7 @@ def test_assigned_agent_cannot_approve_own_task_but_owner_can(client: TestClient
     assert len(harness["seam"].calls_for(agent["id"])) == 1
     agent_outcome = next(
         outcome
-        for outcome in client.app.state.db.list_round_outcomes(task["target_id"])
+        for outcome in _db(client).list_round_outcomes(task["target_id"])
         if outcome["member_id"] == agent["id"]
     )
     assert "不能批准" in agent_outcome["reason"]
@@ -358,15 +349,14 @@ def test_other_task_member_can_review_assignee_output(client: TestClient, harnes
     channel = create_channel(client).json()["channel"]
     assignee = create_agent(client, name="实现者").json()["agent"]
     reviewer = create_agent(client, name="复核者").json()["agent"]
-    task = client.post(
-        f"/api/channels/{channel['id']}/tasks", json={"title": "独立复核"}
-    ).json()["task"]
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "独立复核"}).json()["task"]
     status_path = f"/api/tasks/{task['id']}/status"
     assert client.patch(status_path, json={"status": "in_progress"}).status_code == 200
     assert client.patch(status_path, json={"status": "in_review"}).status_code == 200
-    assert client.patch(
-        f"/api/tasks/{task['id']}/assignee", json={"member_id": assignee["id"]}
-    ).status_code == 200
+    assert (
+        client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": assignee["id"]}).status_code
+        == 200
+    )
     drain(harness)
 
     harness["seam"].task_actions[reviewer["id"]] = SetTaskStatusAction(task["id"], "done")

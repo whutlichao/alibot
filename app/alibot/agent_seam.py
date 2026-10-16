@@ -418,9 +418,7 @@ def _system_prompt(
     return "\n\n".join(parts)
 
 
-def _task_action_toolkit(
-    context: TaskActionContext, actor_id: str, actions: list[AgentTaskAction]
-) -> Any:
+def _task_action_toolkit(context: TaskActionContext, actor_id: str, actions: list[AgentTaskAction]) -> Any:
     """仅在任务轮次提供两种类型化动作工具；工具只收集意图，写入仍由编排器授权。"""
     from agentscope.permission import PermissionBehavior, PermissionDecision
     from agentscope.tool import FunctionTool, ToolBase, Toolkit

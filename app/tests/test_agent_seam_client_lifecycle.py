@@ -87,6 +87,9 @@ class _StubProviderHandler(BaseHTTPRequestHandler):
         if type(self).tool_call is not None and not type(self).tool_call_sent:
             type(self).tool_call_sent = True
             tool_call = type(self).tool_call
+            # 类属性经过 `type(self)` 取值时两台类型检查器都不会沿用上一行的窄化：显式再钉一次
+            # （不是新增行为，上面那条 `is not None` 就是它成立的理由）。
+            assert tool_call is not None
             self._send_json(
                 {
                     "id": "chatcmpl-issue-26-tool-stub",

@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from alibot.db import DATABASE_FILE_NAME, SCHEMA_VERSION, Database, SchemaVersionMismatch
 from fastapi.testclient import TestClient
 
-from alibot.db import DATABASE_FILE_NAME, SCHEMA_VERSION, Database, SchemaVersionMismatch
 from tests.conftest import backend
 
 APP_DIR = Path(__file__).resolve().parents[1]
