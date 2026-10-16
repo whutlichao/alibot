@@ -252,8 +252,18 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 | `schema-migration-design` |
-| 本票 PR | 见下（PR 号在创建后回填） |
+| 分支 | `schema-migration-design`（已推送，`-u origin`） |
+| 本票 PR | [#85](https://github.com/whutlichao/alibot/pull/85)（base `main`，head `schema-migration-design`，4 个文件） |
 | PR 正文 | `/tmp/schema-migration-design-pr-body.md`（按 `pr` skill 的 Summary / Evidence / Merge Danger 体例；**放在仓库外**，因为本票的 ownership 只覆盖 ADR / `CONTEXT.md` / 本文件 / `README` 两段，`--body-file` 不需要它进被跟踪的树） |
 
 **为什么不新开 issue**：本票的正本就是本 worktree 内的设计文档 + PR（票面 Constraints 明写"不要新开 GitHub issue"）。
+
+### 5.5 回填读数（本会话实测）
+
+| 项 | 读数 |
+| --- | --- |
+| 提交 | `8409f89`（docs(schema): 数据迁移与升级兼容设计落盘） |
+| 分支推送 | `origin/schema-migration-design`（新分支） |
+| PR | `#85`，`state=OPEN`，`head=schema-migration-design`，`base=main`，`headRefOid=8409f89`（= 本地 HEAD） |
+| PR 改动文件 | `CONTEXT.md` / `app/README.md` / `app/specs/schema-migration-design-notes.md` / `docs/adr/0015-schema-migration-is-explicit-and-forward-only.md` |
+| 源码改动 | 0（`git status` 只列上述 4 个文档路径） |
