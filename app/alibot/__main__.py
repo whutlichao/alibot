@@ -348,7 +348,9 @@ def main(argv: list[str] | None = None) -> int:
         # 只读预演是**迁移**这条路径的修饰旗标（规格 D10 的 ``--migrate --dry-run``），单独给它是
         # 用法错误：走 argparse 既有的「用法错误 ⇒ 2」那条路，而不是落进迁移入口的 ``{0, 3, 4, 5}``
         # 裁决集合——它不是对这个库的答复，是对这次调用的答复。（#93 人定裁定 (A)。）
-        parser.error("--dry-run 只能与 --migrate 同用：预演的就是迁移这条路径。")
+        parser.error(
+            "--dry-run 只能与 --migrate（或它的别名 --repair-targets）同用：预演的就是迁移这条路径。"
+        )
 
     if is_migration:
         # 显式迁移入口（及其弃用别名）：**唯一**的迁移入口，且只有显式触发才会跑到这里（任何启动

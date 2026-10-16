@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 from alibot.db import BUDGET_LIMIT, DATABASE_FILE_NAME, MIN_SUPPORTED_SOURCE_VERSION, SCHEMA_VERSION, Database
 
+from tests.conftest import backend
 from tests.test_migrate_cli import (
     _build_current_library_with_data,
     _drop_required_table,
@@ -215,12 +216,15 @@ def test_half_renamed_library_at_stored_four_reaches_the_terminal_state_via_the_
         conn.close()
     assert used == BUDGET_LIMIT, "已耗尽的预算不得被归零（D5 / User Story 19）"
 
-    # 本代码的 app 能打开它——这才是「到终态」的可观察判据。
+    # 本代码的 app 能打开它——这才是「到终态」的可观察判据（HTTP 面与本代码的库入口各取一次）。
     database = Database(data_dir)
     try:
         assert [channel["id"] for channel in database.list_channels()] == ["ch_dev"]
     finally:
         database.close()
+    with backend(data_dir) as client:
+        assert client.get("/api/health").json()["status"] == "ok"
+        assert client.get("/api/channels").json()["channels"][0]["id"] == "ch_dev"
 
 
 # ─── 验收 3：接受范围 = [3, SCHEMA_VERSION]（S13 / E1） ──────────────────────
