@@ -115,6 +115,14 @@ function outcomeNote(status) {
 // 的 `model_providers`），只为了刷新后马上点「Agent」时不至于给一个空选择器。
 const PROVIDER_PLACEHOLDER = ['ollama', 'dashscope', 'openai'];
 
+/* ─── 主题三档（#71）：取值与后端 `THEMES` 同名同序 ──────────────────────────
+   `system` 是**缺省**档：它不在这里解析媒体查询——「跟随系统」由 CSS 的
+   `@media (prefers-color-scheme: dark)` 裁决，前端只把档位本身写到 `<html data-theme>` 上，
+   于是显式两档走属性选择器、跟随系统走媒体查询，两条分支各有一个落点。
+   标签文案住在词条表（`settings.themeLight` / `settings.themeDark` / `settings.themeSystem`）。 */
+const THEMES = ['light', 'dark', 'system'];
+const DEFAULT_THEME = 'system';
+
 const state = {
   ready: false,
   mode: 'channel',
@@ -162,9 +170,13 @@ const state = {
   streams: new Map(),
   seenSeqs: new Map(),
   typing: {},
-  // 工作区设置（**语言偏好** / **消息密度**）：正本是后端 `GET /api/settings`，
+  // 工作区设置（**语言偏好** / **消息密度** / **主题**）：正本是后端 `GET /api/settings`，
   // 前端只镜像它；切换时写回后端，不落浏览器存储。
-  settings: { locale: I18N_SOURCE_LOCALE, message_density: 'comfortable' },
+  settings: {
+    locale: I18N_SOURCE_LOCALE,
+    message_density: 'comfortable',
+    theme: DEFAULT_THEME,
+  },
   // 搜索是纯呈现状态：命中、target 信息和高亮区间都来自后端，不在浏览器保存或重算。
   search: { query: '', targetId: '', hits: [], loading: false, error: '' },
 };
@@ -473,9 +485,10 @@ async function submitSearch() {
   }
 }
 
-/* ─── 工作区设置（语言偏好 / 消息密度）：后端是唯一正本 ──────────────────── */
+/* ─── 工作区设置（语言偏好 / 消息密度 / 主题）：后端是唯一正本 ───────────── */
 
-/** 把一份设置铺到界面上：`<html lang>` 与语言同一个取值、密度档位写到根元素、静态文案重铺。
+/** 把一份设置铺到界面上：`<html lang>` 与语言同一个取值、密度与主题两个档位写到根元素、
+    静态文案重铺。
 
     它是「读回」与「写回」两条路径的**唯一**落点：启动读回、切档位写回后都走它，
     因此不存在「内存里变了但界面没变」的中间态。 */
@@ -484,10 +497,15 @@ function applySettings(settings) {
   state.settings = {
     locale: I18N_LOCALES.includes(next.locale) ? next.locale : I18N_SOURCE_LOCALE,
     message_density: next.message_density === 'compact' ? 'compact' : 'comfortable',
+    theme: THEMES.includes(next.theme) ? next.theme : DEFAULT_THEME,
   };
   setLocale(state.settings.locale);
   // 密度档位挂在根元素上（CSS 只认 `html[data-density]` 两个取值）。
   document.documentElement.dataset.density = state.settings.message_density;
+  // 主题档位同样挂在根元素上，且**三档都写**：显式 `light` / `dark` 由
+  // `:root[data-theme='dark']` 命中，`system` 交给设计系统包里的
+  // `@media (prefers-color-scheme: dark)`——这里不解析媒体查询，两条分支各一个落点。
+  document.documentElement.dataset.theme = state.settings.theme;
   applyStaticI18n(document);
   renderSettingsModal();
   // 名册的动态文案（标题 / 副标题 / 行内角色与状态说法）由 `t()` 渲染，因此切语言时
@@ -534,7 +552,7 @@ function closeSettingsModal() {
   $('#settingsOverlay').hidden = true;
 }
 
-/** 两个档位的选中态与 `<select>` 的当前值都从这里同步（打开与写回后都走它，不各写一份）。 */
+/** 三个档位的选中态与 `<select>` 的当前值都从这里同步（打开与写回后都走它，不各写一份）。 */
 function renderSettingsModal() {
   const select = $('#settingsLocaleSelect');
   if (select) {
@@ -550,6 +568,15 @@ function renderSettingsModal() {
   if (group) {
     Array.prototype.forEach.call(group.querySelectorAll('[data-density]'), (card) => {
       const on = card.dataset.density === state.settings.message_density;
+      card.classList.toggle('is-on', on);
+      card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  // 主题三档（浅色 / 深色 / 跟随系统）：与密度同一套 `.radio-card` 选中态。
+  const themes = $('#settingsTheme');
+  if (themes) {
+    Array.prototype.forEach.call(themes.querySelectorAll('[data-theme]'), (card) => {
+      const on = card.dataset.theme === state.settings.theme;
       card.classList.toggle('is-on', on);
       card.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
@@ -3242,7 +3269,7 @@ function bindSearchEvents() {
 }
 
 function bindEvents() {
-  // ── 工作区设置：rail 底部入口 + 弹窗（语言 / 消息密度两档）──
+  // ── 工作区设置：rail 底部入口 + 弹窗（语言 / 消息密度 / 主题三档）──
   $('#btnSettings').addEventListener('click', openSettingsModal);
   $('#settingsModalClose').addEventListener('click', closeSettingsModal);
   $('#settingsDone').addEventListener('click', closeSettingsModal);
@@ -3258,6 +3285,12 @@ function bindEvents() {
     const card = event.target.closest('[data-density]');
     if (!card) return;
     saveSettings({ message_density: card.dataset.density });
+  });
+  // 主题：三个 `.radio-card`（浅色 / 深色 / 跟随系统），点哪个写哪个。
+  $('#settingsTheme').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-theme]');
+    if (!card) return;
+    saveSettings({ theme: card.dataset.theme });
   });
   $('#btnSearch').addEventListener('click', openSearchModal);
   $('#searchClose').addEventListener('click', closeSearchModal);
