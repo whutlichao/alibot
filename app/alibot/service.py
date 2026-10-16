@@ -21,34 +21,46 @@ from .agent_seam import (
     model_name_of,
     provider_of,
 )
-from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError
+from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError, SearchFacet
 from .events import EventBus
+from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
 
 # 会离开本机的数据面（spec #1 §8）：告知文案与接口载荷共用这一份，避免两处漂移。
-REMOTE_DATA_FACES: tuple[str, ...] = (
-    "消息正文",
-    "发送者显示名",
-    "频道名称与描述",
-    "被点名成员的显示名",
+#
+# 这里是**词条键**而不是成品句子：同一组数据面既要出现在告知文案里，也要出现在编排的
+# 「为什么这个 Agent 未启用」里（ADR-0009 的第二层要求两者都按**当前语言偏好**渲染），
+# 因此取值在调用点按语言取，落点仍然只有这一处。
+REMOTE_DATA_FACE_KEYS: tuple[str, ...] = (
+    "remote.face.body",
+    "remote.face.author",
+    "remote.face.channel",
+    "remote.face.mention",
 )
 
 
-def model_id_error(model_id: str) -> str | None:
-    """模型标识的形状校验（``provider:model``）。返回错误文案，通过则返回 None。"""
+def remote_data_faces(locale: Locale) -> tuple[str, ...]:
+    """会离开本机的数据面（按**语言偏好**渲染；编排的可用性原因也读它，避免两处措辞漂移）。"""
+    return tuple(render(key, locale) for key in REMOTE_DATA_FACE_KEYS)
+
+
+def model_id_error(model_id: str, locale: Locale) -> str | None:
+    """模型标识的形状校验（``provider:model``）。返回错误文案（按语言偏好），通过则返回 None。"""
     clean = (model_id or "").strip()
     if not clean:
-        return "模型标识不能为空"
+        return render("error.model_id_empty", locale)
     provider = provider_of(clean)
     if not provider:
-        return f"模型标识需要提供商前缀：{clean}（应为 provider:model，例如 dashscope:qwen-max）"
+        return render("error.model_id_provider_prefix", locale, model_id=clean)
     if provider not in PROVIDERS:
-        return f"未知的模型提供商：{provider}（可用：{', '.join(PROVIDERS)}）"
+        return render(
+            "error.model_id_unknown_provider", locale, provider=provider, providers=", ".join(PROVIDERS)
+        )
     if not model_name_of(clean):
-        return f"模型标识缺少模型名：{clean}（应为 provider:model）"
+        return render("error.model_id_missing_name", locale, model_id=clean)
     return None
 
 
@@ -66,6 +78,11 @@ class WorkspaceService:
         self._member_id = member_id
         self._orchestrator = orchestrator
         self._events = events
+
+    # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
+    def _locale(self) -> Locale:
+        """当前**语言偏好**（库内的工作区设置）；本模块产出的自然语言一律经它渲染。"""
+        return locale_of(self._db)
 
     # ─── 空态快照 ─────────────────────────────────────────────────────────
     def bootstrap(self) -> dict[str, Any]:
@@ -102,11 +119,26 @@ class WorkspaceService:
         return dms
 
     # ─── 工作台搜索 ───────────────────────────────────────────────────────
-    def search_messages(
-        self, query: str, *, target_id: str | None = None, limit: int = SEARCH_RESULT_LIMIT
+    def search(
+        self,
+        query: str,
+        *,
+        facet: SearchFacet = "all",
+        target_id: str | None = None,
+        limit: int = SEARCH_RESULT_LIMIT,
     ) -> list[dict[str, Any]]:
-        """跨 channel / DM / task target 搜索普通消息；可显式收窄到一个 target。"""
-        return self._db.search_messages(query, target_id=target_id, limit=limit)
+        """跨 channel / DM / task target 搜三类命中（消息 / 任务 / Agent，ADR-0013）。
+
+        命中判定与高亮区间都由库层产生，这里只补一件库层拿不到的事实：Agent 命中的**状态点**——
+        它由**编排**按后端事实推导（`_agent_view` 与成员面同一条口径），库层不重复推导。
+        """
+        hits = self._db.search(query, facet=facet, target_id=target_id, limit=limit)
+        agent_hits = [hit for hit in hits if hit["kind"] == "agent"]
+        if agent_hits:
+            statuses = {agent["id"]: self._agent_view(agent)["status"] for agent in self._db.agent_members()}
+            for hit in agent_hits:
+                hit["agent"]["status"] = statuses[hit["agent"]["id"]]
+        return hits
 
     def create_dm(self, agent_id: str) -> tuple[dict[str, Any], bool]:
         dm, created = self._db.create_dm(agent_id, owner_id=self._member_id)
@@ -188,7 +220,9 @@ class WorkspaceService:
     def update_task_assignee(self, task_id: str, member_id: str | None) -> dict[str, Any]:
         actor = self._db.get_member(self._member_id)
         if actor["kind"] == "agent" and self._orchestrator is None:
-            raise DomainError("validation_failed", "Agent 转派任务需要启用成员面编排")
+            raise DomainError(
+                "validation_failed", render("error.agent_transfer_needs_orchestrator", self._locale())
+            )
         task, message = self._db.update_task_assignee(task_id, member_id, actor_member_id=self._member_id)
         if message is not None and self._events is not None:
             self._events.publish(
@@ -226,21 +260,24 @@ class WorkspaceService:
           agent 自己不会解释的变化」动机不同（裁定 1）。
         """
         self._db.get_channel(channel_id)  # 404 早退
+        locale = self._locale()
         fields: dict[str, str] = {}
         if not (member_id or "").strip():
-            fields["member_id"] = "成员标识不能为空"
+            fields["member_id"] = render("error.member_id_empty", locale)
         else:
             try:
                 member = self._db.get_member(member_id)
             except DomainError:
-                fields["member_id"] = f"成员不存在或已删除：{member_id}"
+                fields["member_id"] = render("error.member_unavailable", locale, member_id=member_id)
             else:
                 if member.get("deleted_at"):
-                    fields["member_id"] = f"成员不存在或已删除：{member_id}"
+                    fields["member_id"] = render("error.member_unavailable", locale, member_id=member_id)
                 elif member["kind"] != "agent":
-                    fields["member_id"] = f"初始成员只能是 Agent：{member_id}"
+                    fields["member_id"] = render("error.member_not_agent", locale, member_id=member_id)
         if fields:
-            raise DomainError("validation_failed", "加入频道校验未通过，未加入任何成员", fields=fields)
+            raise DomainError(
+                "validation_failed", render("error.channel_member_join_failed", locale), fields=fields
+            )
 
         joined = self._db.add_target_member(channel_id, member_id)
         return {
@@ -285,16 +322,17 @@ class WorkspaceService:
             view["enabled_reason"] = "" if availability.ok else availability.reason
         else:  # pragma: no cover - 服务在没有编排器时也应给出四态里最保守的那一态
             view["status"] = "offline"
-            view["enabled_reason"] = "后端未启用成员面编排"
+            view["enabled_reason"] = render("availability.orchestrator_absent", self._locale())
         # 系统提示是配置数据，不随列表返回全量正文以外的东西；这里原样带出以证明「落库即用户输入」。
         return view
 
     def create_agent(self, name: str, role: str, model_id: str, system_prompt: str) -> dict[str, Any]:
         """新建 Agent。任一字段不合法则整体不创建，不留半成品成员行。"""
-        error = model_id_error(model_id)
+        locale = self._locale()
+        error = model_id_error(model_id, locale)
         if error is not None:
             raise DomainError(
-                "validation_failed", "Agent 校验未通过，未创建任何数据", fields={"model_id": error}
+                "validation_failed", render("error.agent_invalid", locale), fields={"model_id": error}
             )
         agent = self._db.create_agent(name=name, role=role, model_id=model_id, system_prompt=system_prompt)
         return self._agent_view(agent)
@@ -327,6 +365,8 @@ class WorkspaceService:
     # ─── 远端数据流告知 ──────────────────────────────────────────────────
     def remote_data_flow(self) -> dict[str, Any]:
         """告知文案的数据面：哪些数据会离开本机、发给谁、以及已经确认过哪些提供商。"""
+        locale = self._locale()
+        faces = remote_data_faces(locale)
         agents = self._db.agent_members()
         destinations: list[str] = []
         for agent in agents:
@@ -336,35 +376,31 @@ class WorkspaceService:
         if not destinations:
             destinations = [p for p in PROVIDERS if is_remote_provider(p)][:1]
         return {
-            "data_faces": list(REMOTE_DATA_FACES),
+            "data_faces": list(faces),
             "destinations": destinations,
             "consents": self._db.list_remote_consents(),
             "local_providers": list(LOCAL_PROVIDERS),
             # 本机存储不做应用层加密：这条字段是「不得声称 E2EE」的事实来源。
             "end_to_end_encrypted": False,
             "loopback_only": True,
-            "statement": (
-                "启用远端模型后，以下数据会离开本机并发送给所配置的模型提供商："
-                + "、".join(REMOTE_DATA_FACES)
-                + "。接收方可能是远端服务。本机存储不做应用层端到端加密，"
-                "磁盘上的数据库按操作系统文件权限保护；后端默认只监听 loopback。"
-            ),
+            "statement": render("remote.statement", locale, faces=join_list(faces, locale)),
         }
 
     def acknowledge_remote_flow(self, provider: str) -> dict[str, Any]:
         """确认一次数据面告知。幂等；不记录也不接收任何凭证。"""
+        locale = self._locale()
         clean = (provider or "").strip()
         if clean not in PROVIDERS:
             raise DomainError(
                 "validation_failed",
-                "未知的模型提供商",
-                fields={"provider": f"必须是这些之一：{', '.join(PROVIDERS)}"},
+                render("error.unknown_provider", locale),
+                fields={"provider": render("error.field_choices", locale, values=", ".join(PROVIDERS))},
             )
         if not is_remote_provider(clean):
             raise DomainError(
                 "validation_failed",
-                f"{clean} 是本机模型提供商，不需要远端数据流告知",
-                fields={"provider": "本机提供商不需要确认"},
+                render("error.provider_not_remote", locale, provider=clean),
+                fields={"provider": render("error.provider_consent_not_needed", locale)},
             )
         record = self._db.record_remote_consent(clean)
         return {
@@ -415,7 +451,11 @@ class WorkspaceService:
     def member_status(self, member_id: str) -> dict[str, Any]:
         agent = self._db.get_agent(member_id)
         if self._orchestrator is None:
-            return {"member_id": member_id, "status": "offline", "reason": "后端未启用成员面编排"}
+            return {
+                "member_id": member_id,
+                "status": "offline",
+                "reason": render("availability.orchestrator_absent", self._locale()),
+            }
         availability = self._orchestrator.availability(agent)
         return {
             "member_id": member_id,
