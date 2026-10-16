@@ -198,6 +198,18 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.task_ref_other_target": "不能引用其他 target 的任务",
         "error.message_not_found": "消息不存在：{target_id}#{seq}",
         "error.seq_invalid": "seq 必须是非负整数",
+        # ─── 附件（ADR-0014；#67）────────────────────────────────────────
+        "error.attachment_rejected": "附件校验未通过，未保存任何数据",
+        "error.attachment_name_empty": "附件文件名不能为空",
+        "error.attachment_name_too_long": "附件文件名最多 {limit} 个字符",
+        "error.attachment_empty": "附件内容为空",
+        "error.attachment_too_large": "附件超过单文件上限（{limit} 字节）",
+        "error.attachment_type_not_allowed": "不支持的附件类型：{mime}（可用：{types}）",
+        "error.attachment_not_found": "附件不存在：{attachment_id}",
+        "error.attachment_unbound": "该附件尚未随消息发送：未绑定的上传不暴露",
+        "error.attachment_already_bound": "该附件已绑定到一条消息，不能重复绑定：{attachment_id}",
+        "error.attachments_immutable": "附件不可编辑、不可删除：人类面不存在该端点",
+        "error.field.attachment_unusable": "附件不存在或已被绑定",
     },
     "en": {
         # ─── 通用 ────────────────────────────────────────────────────────
@@ -400,6 +412,24 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.task_ref_other_target": "Cannot reference a task from another target",
         "error.message_not_found": "No such message: {target_id}#{seq}",
         "error.seq_invalid": "seq must be a non-negative integer",
+        # ─── 附件（ADR-0014；#67）────────────────────────────────────────
+        "error.attachment_rejected": "Attachment validation failed; nothing was saved",
+        "error.attachment_name_empty": "The attachment file name cannot be empty",
+        "error.attachment_name_too_long": "The attachment file name is limited to {limit} characters",
+        "error.attachment_empty": "The attachment content is empty",
+        "error.attachment_too_large": "The attachment exceeds the per-file limit ({limit} bytes)",
+        "error.attachment_type_not_allowed": "Unsupported attachment type: {mime} (allowed: {types})",
+        "error.attachment_not_found": "No such attachment: {attachment_id}",
+        "error.attachment_unbound": (
+            "This attachment has not been sent with a message: unbound uploads are not exposed"
+        ),
+        "error.attachment_already_bound": (
+            "This attachment is already bound to a message and cannot be bound again: {attachment_id}"
+        ),
+        "error.attachments_immutable": (
+            "Attachments cannot be edited or deleted: the human surface has no such endpoint"
+        ),
+        "error.field.attachment_unusable": "No such attachment, or it is already bound",
     },
 }
 

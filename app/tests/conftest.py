@@ -203,8 +203,9 @@ def create_channel(client: TestClient, name: str = "设计系统重构", descrip
     return client.post("/api/channels", json={"name": name, "description": description, **kwargs})
 
 
-def send(client: TestClient, channel_id: str, body: str):
-    return client.post(f"/api/channels/{channel_id}/messages", json={"body": body})
+def send(client: TestClient, channel_id: str, body: str, **payload):
+    """发送一条人类消息；``payload`` 可带既有契约的其它字段（``task_ref`` / ``attachment_ids``）。"""
+    return client.post(f"/api/channels/{channel_id}/messages", json={"body": body, **payload})
 
 
 def mark_read(client: TestClient, channel_id: str, seq: int):

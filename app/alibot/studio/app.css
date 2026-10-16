@@ -298,6 +298,28 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .composer-send:disabled { background: var(--panel-2); color: var(--faint); cursor: not-allowed; }
 .composer-note { margin-top: var(--sp-3); text-align: center; font-size: var(--fs-caption); color: var(--faint); }
 
+/* ─── 附件（#67）：待发送的草稿（composer 内）+ 消息里的可下载元素 ──────────
+   同一块 `.attach` 形状服务两处，差别只有一个 `is-link` 档：消息里它是原生 `<a download>`，
+   composer 里它是不可点的胶囊 + 一个移除键。色值只消费既有 token（--panel / --border /
+   --accent* / --faint），不新造色位。 */
+.composer-attachments { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4) 0; }
+.msg-attachments { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.attach {
+  display: inline-flex; align-items: center; gap: var(--sp-2); max-width: 100%;
+  padding: 3px var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--panel); color: var(--fg); font-size: var(--fs-caption);
+}
+.attach.is-link { text-decoration: none; color: var(--accent-deep); background: var(--accent-soft); }
+.attach.is-link:hover { border-color: var(--accent-graphic); }
+.attach.is-pending { color: var(--muted); border-style: dashed; }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch; }
+.attach-size { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
+.attach-remove {
+  width: 14px; height: 14px; border: 0; border-radius: var(--r-pill); background: none;
+  color: var(--faint); font-size: var(--fs-sm); line-height: 1; cursor: pointer;
+}
+.attach-remove:hover { color: var(--error); }
+
 /* ─── @ 补全弹层（成员清单） ─────────────────────────────────────────────
    形态与新建频道弹窗的成员勾选控件同族（.member-opt 圆角胶囊 + 方形头像块 + 名字），
    但它是**列**而不是换行排布，且挂在 .composer-box 内部：于是它跟着 composer 一起在文档流里，

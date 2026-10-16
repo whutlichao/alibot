@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .agent_seam import (
@@ -21,7 +23,16 @@ from .agent_seam import (
     model_name_of,
     provider_of,
 )
-from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError, SearchFacet
+from .db import (
+    ALLOWED_ATTACHMENT_MIME_TYPES,
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_NAME_LENGTH,
+    OWNER_ID,
+    SEARCH_RESULT_LIMIT,
+    Database,
+    DomainError,
+    SearchFacet,
+)
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
@@ -150,10 +161,53 @@ class WorkspaceService:
         self._db.get_dm(dm_id, self._member_id)
         return self._db.list_messages(dm_id, after_seq=after_seq)
 
-    def send_dm_message(self, dm_id: str, body: str) -> dict[str, Any]:
+    def send_dm_message(self, dm_id: str, body: str, attachment_ids: Sequence[str] = ()) -> dict[str, Any]:
         """owner 在私信发言：消息成功 append 后唤醒私信成员面与被点名的穿透 Agent。"""
         self._db.get_dm(dm_id, self._member_id)
-        return self._send_target_message(dm_id, body)
+        return self._send_target_message(dm_id, body, None, attachment_ids)
+
+    # ─── 附件（两步上传：先拿标识、随消息绑定；ADR-0014）──────────────────
+    def upload_attachment(self, name: str, mime_type: str, data: bytes) -> dict[str, Any]:
+        """人类面第一步：把字节与元数据落成一个**未绑定的草稿**，返回标识与可读元数据。
+
+        大小与类型在**这里**拒绝（人类面才有可读原因与词条），错误体沿用既有的
+        ``code`` + ``fields`` 形状。校验**先于**任何写入：被拒的请求既不留库内行、也不留孤儿字节。
+        未绑定的草稿允许存在（它是**未发送的上传**），但读取面一律不暴露它。
+        """
+        locale = self._locale()
+        # 文件名只作**元数据**与下载时的建议名：剥掉任何目录成分。字节路径由附件标识拼出，
+        # 永不使用这个名字，因此这里不是安全闸门——但它保证下载名与显示名不会带上一段路径。
+        clean_name = (name or "").strip().replace("\\", "/").rsplit("/", 1)[-1].strip()
+        # 声明类型可能带参数（`text/plain; charset=utf-8`）：只按 MIME 本体判定，不按参数。
+        clean_mime = (mime_type or "").split(";")[0].strip().lower()
+        fields: dict[str, str] = {}
+        if not clean_name:
+            fields["name"] = render("error.attachment_name_empty", locale)
+        elif len(clean_name) > MAX_ATTACHMENT_NAME_LENGTH:
+            fields["name"] = render(
+                "error.attachment_name_too_long", locale, limit=MAX_ATTACHMENT_NAME_LENGTH
+            )
+        if not data:
+            fields["file"] = render("error.attachment_empty", locale)
+        elif len(data) > MAX_ATTACHMENT_BYTES:
+            fields["file"] = render("error.attachment_too_large", locale, limit=MAX_ATTACHMENT_BYTES)
+        elif clean_mime not in ALLOWED_ATTACHMENT_MIME_TYPES:
+            fields["file"] = render(
+                "error.attachment_type_not_allowed",
+                locale,
+                mime=clean_mime or "application/octet-stream",
+                types=join_list(ALLOWED_ATTACHMENT_MIME_TYPES, locale),
+            )
+        if fields:
+            raise DomainError("validation_failed", render("error.attachment_rejected", locale), fields=fields)
+        return self._db.store_attachment(original_name=clean_name, mime_type=clean_mime, data=data)
+
+    def attachment_for_download(self, attachment_id: str) -> tuple[dict[str, Any], Path]:
+        """人类面第三步的读取：已绑定附件的内容描述（元数据 + 字节路径）。
+
+        草稿（还没随消息发送的上传）在这里就拿不到：读取面不暴露它，内容端点回 404。
+        """
+        return self._db.attachment_for_download(attachment_id)
 
     def mark_dm_read(self, dm_id: str, seq: int) -> dict[str, Any]:
         self._db.get_dm(dm_id, self._member_id)
@@ -486,17 +540,43 @@ class WorkspaceService:
         }
 
     # ─── 消息 ─────────────────────────────────────────────────────────────
-    def send_message(self, channel_id: str, body: str, task_ref: str | None = None) -> dict[str, Any]:
-        """频道中的人类消息；task_ref 若存在，数据库要求其与频道 target 同域。"""
+    def send_message(
+        self,
+        channel_id: str,
+        body: str,
+        task_ref: str | None = None,
+        attachment_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """频道中的人类消息；task_ref 若存在，数据库要求其与频道 target 同域。
+
+        ``attachment_ids`` 是**先上传拿标识、随消息提交时绑定**的那一步（ADR-0014）；
+        绑定与消息落库在 ``db`` 层的**同一事务**里完成。
+        """
         self._db.get_channel(channel_id)  # 频道面入口只认 channel 型 target
-        return self._send_target_message(channel_id, body, task_ref)
+        return self._send_target_message(channel_id, body, task_ref, attachment_ids)
 
-    def send_task_message(self, task_id: str, body: str, task_ref: str | None = None) -> dict[str, Any]:
-        """任务线程消息落在任务自己的 target，并沿用同一落库、事件流与唤醒路径。"""
+    def send_task_message(
+        self,
+        task_id: str,
+        body: str,
+        task_ref: str | None = None,
+        attachment_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """任务线程消息落在任务自己的 target，并沿用同一落库、事件流与唤醒路径。
+
+        任务线程的回复框**没有**工具行（规格 D15：附件按钮随主 composer），但消息契约是同一条：
+        附件一旦随消息提交，绑定与落库同样在同一事务里。
+        """
         task = self._db.get_task(task_id, self._member_id)
-        return self._send_target_message(task["target_id"], body, task_ref)
+        return self._send_target_message(task["target_id"], body, task_ref, attachment_ids)
 
-    def _send_target_message(self, target_id: str, body: str, task_ref: str | None = None) -> dict[str, Any]:
+    def _send_target_message(
+        self,
+        target_id: str,
+        body: str,
+        task_ref: str | None = None,
+        attachment_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """人类消息落库 → 推送事件流 → 唤醒成员面的 Agent。
 
         顺序是契约的一部分：``append_message`` 抛错时后面两步都不执行（落库失败不唤醒）。
@@ -511,6 +591,7 @@ class WorkspaceService:
             kind="human",
             mention_snapshot=snapshot,
             task_ref=task_ref,
+            attachment_ids=attachment_ids,
         )
         if self._events is not None:
             self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})

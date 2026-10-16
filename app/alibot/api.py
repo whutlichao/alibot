@@ -5,6 +5,8 @@
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
 - ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度 / 主题）
 - ``PATCH /api/settings``                     写工作区设置（配置类取值；不落消息、不唤醒、不消耗预算）
+- ``POST /api/attachments``                   上传一个**未绑定**的附件（原始字节；返回标识与元数据）
+- ``GET  /api/attachments/{id}``              已绑定附件的内容（下载 / 预览；草稿 404）
 - ``GET  /api/reminders``                     全部提醒（时间 / 文本 / 归属频道）
 - ``POST /api/reminders``                     新建一条提醒（不落消息、不唤醒、不消耗预算）
 - ``DELETE /api/reminders/{id}``              删除一条提醒（同上；不存在的 id ⇒ 404）
@@ -33,6 +35,11 @@
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
 
 消息是 append-only：**没有**编辑或删除消息的端点。轮次结果同样 append-only。
+
+附件（ADR-0014）是**两步上传**：先 ``POST /api/attachments`` 拿标识，再随消息提交时绑定
+（``attachment_ids``），绑定与消息落库在同一个事务里。未绑定的上传是**未发送的草稿**：它不出现
+在任何读取面里（内容端点对草稿也回 404）。附件字节落数据目录、库里只有元数据；与消息同口径，
+**没有**删除附件的端点。
 """
 
 from __future__ import annotations
@@ -44,17 +51,19 @@ import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.background import BackgroundTask
 
 from .agent_seam import AgentScopeAgentSeam
 from .db import (
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_NAME_LENGTH,
     MAX_MESSAGE_BODY_LENGTH,
     OWNER_ID,
     SEARCH_RESULT_LIMIT,
@@ -155,6 +164,8 @@ class DmMessageCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     body: str = ""
+    # 先上传拿标识、随消息提交时绑定（ADR-0014）：绑定与消息落库在同一事务里。
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class MessageCreate(BaseModel):
@@ -162,6 +173,8 @@ class MessageCreate(BaseModel):
 
     body: str = ""
     task_ref: str | None = None
+    # 先上传拿标识、随消息提交时绑定（ADR-0014）：绑定与消息落库在同一事务里。
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class AgentCreate(BaseModel):
@@ -375,6 +388,51 @@ def create_app(
             status_code=400,
         )
 
+    # ─── 附件（两步上传：先拿标识、随消息提交时绑定；ADR-0014） ────────────
+    @app.post("/api/attachments", status_code=201)
+    async def upload_attachment(
+        request: Request,
+        name: Annotated[str, Query(max_length=MAX_ATTACHMENT_NAME_LENGTH)] = "",
+    ) -> dict[str, Any]:
+        """人类面第一步：上传一个**未绑定**的附件，返回标识与可读元数据。
+
+        请求体是文件的**原始字节**（不是 multipart）：``Content-Type`` 是声明的 MIME，文件名
+        在 query 的 ``name`` 上。于是后端不需要 multipart 解析依赖，而「类型上限」判的本来就是
+        声明类型（本机单用户、无鉴权，不做内容嗅探）。
+
+        读取时按上限**截断累积**（最多多读一个 chunk）：超限的请求不会先把整个大文件吃进内存，
+        真正的拒绝与可读原因在服务层一处给出，因此错误体仍是既有的 ``code`` + ``fields`` 形状。
+        """
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) <= MAX_ATTACHMENT_BYTES:
+                data.extend(chunk)
+        return {
+            "attachment": service.upload_attachment(
+                name=name,
+                mime_type=request.headers.get("content-type", ""),
+                data=bytes(data),
+            )
+        }
+
+    @app.get("/api/attachments/{attachment_id}")
+    def download_attachment(
+        attachment_id: str,
+        disposition: Annotated[Literal["attachment", "inline"], Query()] = "attachment",
+    ) -> FileResponse:
+        """已绑定附件的内容：按原文件名下载（``disposition=inline`` 则浏览器内预览）。
+
+        草稿（还没随消息发送的上传）回 404——读取面不暴露未发送的上传。响应带
+        ``Content-Disposition``（原文件名）与库里记录的那个 MIME。
+        """
+        attachment, path = service.attachment_for_download(attachment_id)
+        return FileResponse(
+            path,
+            media_type=attachment["mime_type"],
+            filename=attachment["name"],
+            content_disposition_type=disposition,
+        )
+
     # ─── 工作台 ────────────────────────────────────────────────────────────
     @app.get("/api/workspace")
     def get_workspace() -> dict[str, Any]:
@@ -500,7 +558,11 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/messages", status_code=201)
     def create_task_message(task_id: str, payload: MessageCreate) -> dict[str, Any]:
-        return {"message": service.send_task_message(task_id, payload.body, payload.task_ref)}
+        return {
+            "message": service.send_task_message(
+                task_id, payload.body, payload.task_ref, payload.attachment_ids
+            )
+        }
 
     # ─── 私信（显式创建；重复请求复用同一 target） ─────────────────────────
     @app.get("/api/dms")
@@ -523,7 +585,7 @@ def create_app(
 
     @app.post("/api/dms/{dm_id}/messages", status_code=201)
     def create_dm_message(dm_id: str, payload: DmMessageCreate) -> dict[str, Any]:
-        return {"message": service.send_dm_message(dm_id, payload.body)}
+        return {"message": service.send_dm_message(dm_id, payload.body, payload.attachment_ids)}
 
     @app.post("/api/dms/{dm_id}/read")
     def mark_dm_read(dm_id: str, payload: MarkRead) -> dict[str, Any]:
@@ -538,7 +600,7 @@ def create_app(
 
     @app.post("/api/channels/{channel_id}/messages", status_code=201)
     def create_message(channel_id: str, payload: MessageCreate) -> dict[str, Any]:
-        message = service.send_message(channel_id, payload.body, payload.task_ref)
+        message = service.send_message(channel_id, payload.body, payload.task_ref, payload.attachment_ids)
         return {"message": message}
 
     @app.get("/api/channels/{channel_id}/members")
@@ -880,6 +942,15 @@ def create_app(
     def no_message_mutation(channel_id: str, seq: int) -> JSONResponse:
         """消息 append-only：人类 HTTP 面没有编辑或删除消息的端点。"""
         return _not_found(_render_copy("error.messages_immutable"))
+
+    @app.api_route(
+        "/api/attachments/{attachment_id}",
+        methods=["PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    def no_attachment_mutation(attachment_id: str) -> JSONResponse:
+        """附件与消息同口径：上传后不改内容、不改名、不覆盖，也没有删除路径（ADR-0014）。"""
+        return _not_found(_render_copy("error.attachments_immutable"))
 
     @app.api_route(
         "/api/agents/{member_id}",
