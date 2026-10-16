@@ -10,7 +10,9 @@
  * 3. 概览四个数字与后端读数一致，且**每个数字都写明来源**；
  * 4. 运行时页签**只**呈现真字段（温度 / 内存 / 延迟 / token / 上下文一律不出现）；
  * 5. 「暂停」发出的请求体与结果状态点（`enabled: false` → 未启用 + 可读原因 + 按钮变「恢复」）；
- * 6. 「编辑配置」提交全部可写字段并读回（左栏名字跟着后端事实走）。
+ * 6. 「编辑配置」提交全部可写字段并读回（左栏名字跟着后端事实走）；
+ * 7. 新增文案在两份词条里都取到值；
+ * 8. 关闭详情的**落点**：有任务线程 / 有频道才退回对应形态，否则收起 dock（不残留成员面板）。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -195,6 +197,16 @@ function agentDetail(overrides) {
   );
 }
 
+/** 一个最小频道行（形状与工作台快照的 `channels` 项一致）。 */
+function channel(id, name) {
+  return { id, name, last_seq: 0, last_read_seq: 0, unread_count: 0 };
+}
+
+/** 一个私信 target（`state.dms` 的项；`kind: 'dm'` 是它与频道的唯一区别）。 */
+function dm(id, name) {
+  return { id, kind: "dm", peer: { display_name: name } };
+}
+
 function createHarness(options) {
   const config = options || {};
   const calls = [];
@@ -288,7 +300,8 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__agentDetailTest = { state, bindEvents, renderMembers, renderDock,"
-        + " openAgentDetail, closeAgentDetail, setAgentDetailTab, renderAgentDetail,"
+        + " openAgentDetail, closeAgentDetail, closeTaskDock, toggleDock, setDockMode, showMessagesView,"
+        + " setAgentDetailTab, renderAgentDetail,"
         + " toggleAgentEnabled, openAgentEditModal, closeAgentEditModal, submitAgentEdit, t };\n",
     ),
     context,
@@ -428,7 +441,7 @@ test("点左栏 Agent 行打开 dock 第三形态，标题与两个页签的文�
 test("成员面板里的 Agent 名字也打开详情（「加入」按钮自己的动作不被吞掉）", async () => {
   const harness = createHarness();
   const agent = agentDetail();
-  harness.api.state.channels = [{ id: "ch-1", name: "频道", last_seq: 0, last_read_seq: 0, unread_count: 0 }];
+  harness.api.state.channels = [channel("ch-1", "频道")];
   harness.api.state.activeChannelId = "ch-1";
   // 已加入名单的正本是 `state.channelMembers`（与成员面板、@ 补全同一个来源）。
   harness.api.state.channelMembers = {
@@ -830,4 +843,155 @@ test("本票新增的文案在两份词条里都取到值", () => {
       assert.ok(typeof value === "string" && value.length > 0, locale + " 缺词条：" + key);
     }
   }
+});
+
+/* ─── 8. 关闭详情的落点：没有频道就收起 dock ──────────────────────────────
+   行为规则（用户 2026-10-16 裁定）：关闭 Agent 详情的落点按序判——
+   ① 有任务线程打开着 → 任务线程；② 否则当前有打开的频道 → 频道成员；
+   ③ 否则（没有任何 target / 只打开着 DM / `activeChannelId` 指向已不存在的频道）→ 收起 dock，
+   `#dock.hidden === true` 且不带 `.is-open`，不把成员面板留在右侧。
+   关闭任务线程走同一条规则，但**只在这次确实在关一条线程时**才生效——切搜索 / 切看板 / 切消息流
+   也调 `closeTaskDock()`，那些调用点不碰 dock 的开合（改前行为保留）。
+   显式入口（`toggleDock()`）不受频道影响。 */
+
+/** 把工作台镜像摆成「没有频道」：`channels` 空、`activeChannelId` 为 `null`。 */
+function withoutChannels(harness) {
+  harness.api.state.channels = [];
+  harness.api.state.dms = [];
+  harness.api.state.activeChannelId = null;
+}
+
+test("无频道时关闭 Agent 详情：dock 收起，不残留成员面板", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  withoutChannels(harness);
+
+  await harness.clickRow("mem-1");
+  assert.equal(harness.dock.hidden, false, "点左栏 Agent 行时 dock 是开着的");
+
+  harness.api.closeAgentDetail();
+
+  assert.equal(harness.dock.hidden, true, "没有可回退的 target 时收起 dock");
+  assert.equal(harness.dock.classList.contains("is-open"), false, "`hidden` 与 `.is-open` 同进同出");
+  assert.equal(harness.api.state.activeAgentId, null, "详情已经关掉");
+  assert.equal(harness.dockDetail.hidden, true, "详情不再是可见形态");
+});
+
+test("只打开着 DM 时关闭 Agent 详情：DM 不算频道，同样收起 dock", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  harness.api.state.channels = [];
+  harness.api.state.dms = [dm("d-1", "小明")];
+  harness.api.state.activeChannelId = "d-1";
+
+  await harness.clickRow("mem-1");
+  assert.equal(harness.dock.hidden, false);
+
+  harness.api.closeAgentDetail();
+
+  assert.equal(harness.dock.hidden, true, "只打开着 DM 时没有「频道成员」可回退");
+  assert.equal(harness.dock.classList.contains("is-open"), false);
+});
+
+test("有频道打开时关闭 Agent 详情：仍回退到「频道成员」形态（成员面板）", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  harness.api.state.channels = [channel("ch-1", "设计")];
+  harness.api.state.dms = [];
+  harness.api.state.activeChannelId = "ch-1";
+
+  await harness.clickRow("mem-1");
+  harness.api.closeAgentDetail();
+
+  assert.equal(harness.dock.hidden, false, "有频道时 dock 仍然开着");
+  assert.equal(harness.dock.classList.contains("is-open"), true);
+  assert.equal(harness.dockAgent.hidden, false, "回退到「频道成员」形态");
+  assert.equal(harness.dockDetail.hidden, true, "详情让位");
+});
+
+test("`activeChannelId` 指向已不存在的频道：等同于没有频道，收起 dock", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  harness.api.state.channels = [channel("ch-1", "设计")];
+  harness.api.state.dms = [];
+  harness.api.state.activeChannelId = "ch-gone";
+
+  await harness.clickRow("mem-1");
+  harness.api.closeAgentDetail();
+
+  assert.equal(harness.dock.hidden, true, "`activeChannel()` 为 null 就没有可回退的频道");
+  assert.equal(harness.dock.classList.contains("is-open"), false);
+});
+
+test("无频道时关闭任务线程：与关闭详情共用同一份落点判据（同样收起 dock）", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  withoutChannels(harness);
+
+  harness.api.state.activeTaskId = "t-1";
+  harness.api.setDockMode("task", true);
+  assert.equal(harness.dock.hidden, false, "打开任务线程时 dock 是开着的");
+
+  harness.api.closeTaskDock();
+
+  assert.equal(harness.dock.hidden, true, "没有频道可回退时同样收起");
+  assert.equal(harness.dock.classList.contains("is-open"), false);
+  assert.equal(harness.dockTask.hidden, true, "任务线程已经关掉");
+});
+
+test("切主视图先走 closeTaskDock()：已打开的详情不被顶掉（导航路径的既有落点保留）", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  withoutChannels(harness);
+
+  await harness.clickRow("mem-1");
+  // 导航路径（切到搜索 / 消息 / 看板）都先调 `closeTaskDock()`：此刻并没有任务线程在开，
+  // 因此落点判据必须让**仍打开着的详情**留在原位，而不是换成频道成员或收起。
+  harness.api.closeTaskDock();
+
+  assert.equal(harness.dock.hidden, false, "详情还在，dock 不该被导航动作收起");
+  assert.equal(harness.dockDetail.hidden, false, "落点仍是详情形态");
+  assert.equal(harness.api.state.activeAgentId, "mem-1");
+});
+
+test("切消息流不是「在关 dock 里的东西」：无频道时也不收起人显式打开的面板", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  withoutChannels(harness);
+
+  // 人显式点开「切换详情面板」：没有频道，面板里是空态提示。
+  harness.api.toggleDock();
+  harness.api.renderDock();
+  assert.equal(harness.dock.hidden, false, "显式打开后面板是开着的");
+  assert.equal(harness.dock.classList.contains("is-open"), true);
+
+  // 切消息流（ESC / M / 命令面板的「消息视图」都落到 `showMessagesView()`；它先调 `closeTaskDock()`）。
+  // 选它而不是 `showSearchView()` / `showTaskBoard()`：它是最短的导航路径——不做网络刷新
+  // （看板那条 `await refreshTasks()`）、也不抢焦点（搜索那条要 focus 输入框），因此这条断言只钉
+  // 「导航不碰 dock 开合」这一个变量。
+  await harness.api.showMessagesView();
+
+  assert.equal(harness.dock.hidden, false, "没有东西在被关闭，dock 的开合一个字不动");
+  assert.equal(harness.dock.classList.contains("is-open"), true, "`.is-open` 也原样保留");
+  assert.equal(harness.api.state.activeTaskId, null, "线程仍然是关着的");
+});
+
+test("显式入口不受频道影响：没有频道时点开关仍打开 dock 并显示空态提示", async () => {
+  const harness = createHarness();
+  harness.load([agentDetail()]);
+  withoutChannels(harness);
+  harness.api.renderDock();
+
+  assert.equal(harness.dock.hidden, true, "起始没有内容");
+
+  harness.api.toggleDock();
+
+  assert.equal(harness.dock.hidden, false, "没有频道时显式打开仍然打开（R3 保持现状）");
+  assert.equal(harness.dock.classList.contains("is-open"), true);
+  assert.ok(
+    harness
+      .elementFor("#dockMembers")
+      .textContent.includes(catalogText(harness, "zh-CN", "dock.openChannelFirst")),
+    "空态提示仍是「先打开一个频道。」",
+  );
 });

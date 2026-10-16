@@ -1638,16 +1638,53 @@ function toggleDock() {
   if (dock) setDockOpen(dock.hidden);
 }
 
+/** 关闭 dock 里的某一个形态之后**落到哪里**——两条关闭路径（`closeAgentDetail()` /
+    `closeTaskDock()`）共用这一份判据，不各写一份。
+
+    顺序：仍打开着任务线程 → 任务线程形态；仍打开着 Agent 详情 → 详情形态；
+    当前有打开的频道 → 频道成员形态；否则 → `null`（收起 dock）。
+
+    「当前有打开的频道」的唯一判据是既有的 `activeChannel()`：`state.channels` 里 id 等于
+    `state.activeChannelId` 的那一项。于是「没有任何 target」「只打开着 DM」「`activeChannelId`
+    指向一个已经不存在的频道」这三种情况**同样**落到 `null` —— 没有频道就没有「频道成员」形态，
+    不把成员面板留在右侧（用户 2026-10-16 的裁定）。
+
+    调用方先把「正在关闭的那一个对象」清掉再问这里，因此「关闭详情」永远看不到 `activeAgentId`、
+    「关闭线程」永远看不到 `activeTaskId`：每个入口只会落到**另一个**仍打开着的形态或收起。 */
+function dockFallbackMode() {
+  if (state.activeTaskId) return 'task';
+  if (state.activeAgentId) return 'detail';
+  if (activeChannel()) return 'agent';
+  return null;
+}
+
+/** 两条关闭路径共用的收尾：有落点就切到那个形态，没有落点就收起 dock。
+    收起时**形态仍落回「频道成员」**，于是人下一次显式点开开关（`toggleDock()`）看到的是
+    `renderDock()` 的空态提示，而不是一帧过期的 Agent 详情。 */
+function settleDockFallback() {
+  const mode = dockFallbackMode();
+  setDockMode(mode || 'agent');
+  if (!mode) setDockOpen(false);
+}
+
 /** 关闭 dock 的任务线程，回到**另一个仍打开着**的形态（卡片与线程都留在看板上）。
-    形态的推导写在这一处（`activeTaskId` 优先于 `activeAgentId`）：所有关闭路径（关闭按钮、
-    切到消息页、看板重入）共用它，于是「关闭了但 dock 还停在任务形态」不可能发生。 */
+
+    落点判据与关闭 Agent 详情共用（`settleDockFallback()`），但**只在这次确实在关一条线程时**才走它：
+    切搜索 / 切看板 / 切消息流（ESC / M / T / 命令面板）也调这个函数，那些调用点只是「顺手确保
+    线程关着」，并没有人在关 dock 里的东西 —— 它们的既有行为是**不碰 dock 的开合**（桌面 dock 是
+    常驻列，ESC 不管它），因此这里原样保留。
+
+    于是「有频道 → 频道成员；否则收起」这条规则只落在两个**真的**在关闭的入口上：
+    `#btnThreadClose`（以及 `openTask()` 的失败回退）与 `#btnAgentDetailClose`。 */
 function closeTaskDock() {
   closeTaskStream();
+  const hadThread = Boolean(state.activeTaskId);
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
   state.taskSeenSeqs = new Set();
-  setDockMode(state.activeAgentId ? 'detail' : 'agent');
+  if (hadThread) settleDockFallback();
+  else setDockMode(state.activeAgentId ? 'detail' : 'agent');
 }
 
 function taskMaxSeq() {
@@ -1689,8 +1726,9 @@ async function openTask(taskId) {
     await markTaskRead(taskId, taskMaxSeq());
     $('#ttScroll').scrollTop = $('#ttScroll').scrollHeight;
   } catch (err) {
+    // 落点交给 `closeTaskDock()` 的共用判据（有频道 → 成员面板；否则收起 dock），
+    // 这里不再另写一份 `setDockMode('agent')`——那会把「没有频道就没有成员面板」又推翻一次。
     closeTaskDock();
-    setDockMode('agent');
     renderTaskBoard();
     toast(t('toast.openTaskFailed', { reason: err.message }), 'err');
   }
@@ -2652,10 +2690,11 @@ async function openAgentDetail(memberId) {
   await refreshAgentDetail(memberId);
 }
 
-/** 关闭详情：回到另一个仍打开着的形态（没有就回到频道成员面板）。 */
+/** 关闭详情：回到另一个仍打开着的形态；没有可回退的 target 时**收起 dock**
+    （落点判据与关闭任务线程共用，见 `dockFallbackMode()`）。 */
 function closeAgentDetail() {
   state.activeAgentId = null;
-  setDockMode(state.activeTaskId ? 'task' : 'agent');
+  settleDockFallback();
   renderMembers();
 }
 
