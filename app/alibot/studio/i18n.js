@@ -12,6 +12,9 @@
    - **参数是 `{name}` 形式**，值一律按字符串拼进去；缺参时保留原样的占位符（不静默吞掉）。
    - 这里的文案是**界面文案**，与后端生成的自然语言（`system` 消息、HTTP 错误 message、
    轮次 reason）**不是一层**：后者由后端按**语言偏好**渲染（#62），前端不代它措辞。
+   - 语言选项名（`settings.languageZh` / `settings.languageEn`）按**当前语言**给出：
+     `en` 里是 `Chinese (Simplified)` / `English`，`zh-CN` 里是 `简体中文` / `English`。
+     不把源语言的**自称**原样搬进第二语言——切到 English 后设置弹窗属于「全部英文」的验收面。
    - 结构化状态词（`success/...` 那类四态状态点、任务状态、轮次结果状态）后端只给**词**，
      这里只把它们**翻译**成界面说法：键名与后端词一一对应，前端不重命名语义。
 
@@ -23,7 +26,7 @@
 /** 源语言：词条表的正本语言（设计系统包声明 UI locale 为简体中文，这里读作「源文案语言」）。 */
 const I18N_SOURCE_LOCALE = 'zh-CN';
 
-/** 支持的界面语言。顺序就是设置弹窗里选项的顺序。 */
+/** 支持的语言偏好取值（`CONTEXT.md` **语言偏好**）。顺序就是设置弹窗里选项的顺序。 */
 const I18N_LOCALES = ['zh-CN', 'en'];
 
 const I18N_CATALOGS = {
@@ -620,7 +623,7 @@ const I18N_CATALOGS = {
     'settings.sub': 'Workspace preferences',
     'settings.closeAria': 'Close settings',
     'settings.languageLabel': 'Language',
-    'settings.languageZh': '简体中文',
+    'settings.languageZh': 'Chinese (Simplified)',
     'settings.languageEn': 'English',
     'settings.densityLabel': 'Message density',
     'settings.densityComfortable': 'Comfortable',
@@ -659,7 +662,8 @@ const I18N_CATALOGS = {
   },
 };
 
-/** 当前界面语言（内存态；**正本**是后端的工作区设置，启动时读回、切换时写回）。 */
+/** 当前**语言偏好**（内存态）——它是「工作台当前的语言」也是「后端产出文案的语言」这**同一个**
+    取值；**正本**是后端的工作区设置，启动时读回、切换时写回。 */
 let i18nLocale = I18N_SOURCE_LOCALE;
 
 function i18nRaw(locale, key) {

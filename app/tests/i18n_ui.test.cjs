@@ -423,6 +423,27 @@ test("parameter placeholders match between the two catalogs of every key", () =>
   }
 });
 
+test("every string-catalog key used by app.js exists in both catalogs", () => {
+  const { catalogs } = createHarness();
+  const source = readStudio("app.js");
+  const used = new Set();
+  const pattern = /\b(?:t|hasKey)\(\s*'([a-zA-Z0-9._-]+)'/g;
+  let match = pattern.exec(source);
+  while (match) {
+    used.add(match[1]);
+    match = pattern.exec(source);
+  }
+
+  assert.ok(used.size > 100, `app.js 用到的词条键看起来太少：${used.size}`);
+  for (const key of used) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(catalogs["zh-CN"], key),
+      `app.js 用了词条表里没有的键：${key}`,
+    );
+    assert.ok(Object.prototype.hasOwnProperty.call(catalogs.en, key), `app.js 的键在第二语言里缺失：${key}`);
+  }
+});
+
 /* ─── 2. index.html 的绑定指向真实存在的键 ───────────────────────────────── */
 test("every key declared in index.html exists in both catalogs", () => {
   const { catalogs } = createHarness();
@@ -605,7 +626,7 @@ test("a rejected write leaves the local mirror and the language untouched", asyn
   await select.dispatchEvent({ type: "change", target: select });
   await flush();
 
-  // 写失败不改本地镜像，也不改界面语言（界面不能声称一个没落库的取值）。
+  // 写失败不改本地镜像，也不改语言偏好（界面不能声称一个没落库的取值）。
   assert.equal(harness.api.state.settings.locale, "zh-CN");
   assert.equal(harness.document.documentElement.lang, "zh-CN");
   assert.equal(select.value, "zh-CN", "选择器回到后端说的那一档");

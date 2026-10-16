@@ -120,6 +120,18 @@ def test_settings_change_leaves_production_facts_untouched(launched: dict) -> No
     assert snapshot() == before
 
 
+def test_explicit_null_is_rejected_not_ignored(client: TestClient) -> None:
+    """`null` 不是「没提到」：它既不是档位取值，也不是合法档位，因此整体拒绝。"""
+    client.patch("/api/settings", json={"locale": "en"})
+
+    response = client.patch("/api/settings", json={"locale": None})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_failed"
+    # 拒绝后取值不动（既不回到缺省，也不被静默当成一次空更新）。
+    assert settings(client)["locale"] == "en"
+
+
 def test_settings_do_not_expose_theme_tier(client: TestClient) -> None:
     """主题是**第三档**、由 #71 追加：本票的设置面只有语言与消息密度。"""
     assert sorted(settings(client).keys()) == ["locale", "message_density", "updated_at"]

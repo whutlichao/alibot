@@ -47,7 +47,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.background import BackgroundTask
 
 from .agent_seam import AgentScopeAgentSeam
@@ -196,12 +196,23 @@ class SettingsUpdate(BaseModel):
     把设置面当成通用 key-value 存储正是 `CONTEXT.md` **工作区设置** 的 `_Avoid_`；
     档位取值由服务层按 ``LOCALES`` / ``MESSAGE_DENSITIES`` 校验，错误体仍是既有的
     ``code`` + ``fields`` 形态。字段缺省 = 这一次请求没提到这一档（保持原值）。
+
+    **显式 ``null`` 不是「没提到」**：它既不是档位取值、也不是合法档位，因此同样整体拒绝，
+    而不是被当成一次成功的空更新（`null` 与「这一档保持原值」是两件事，后者由**省略字段**表达）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     locale: str | None = None
     message_density: str | None = None
+
+    @field_validator("locale", "message_density", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦显式 ``null``。"""
+        if value is None:
+            raise ValueError("档位取值不能为 null（要保留原值请省略该字段）")
+        return value
 
 
 def create_app(
