@@ -182,6 +182,26 @@ $ git diff --check
 - `SCHEMA_VERSION` 基线 6；本轮库内改动落地取 **7**，**#35 的 `silent`（#58）顺延到 8**。已写进规格决策账 D13 与 ADR 口径，并要求 #58 落地前复核。
 - 本票不修改 #1 / #22 / #23 / #31 / #35 的票面，也不动 #53/#54/#55/#57/#58 的实施范围。
 
+## Commit、push 与 PR 回执
+
+```console
+$ git add -A && git diff --cached --check && git commit -m "docs(spec): converge #60 ui-parity scope, glossary, ADRs and tickets"
+staged check ok
+[ui-parity-spec ed84f8e] docs(spec): converge #60 ui-parity scope, glossary, ADRs and tickets
+ 10 files changed, 755 insertions(+), 3 deletions(-)
+
+$ git push -u origin ui-parity-spec
+ * [new branch]      ui-parity-spec -> ui-parity-spec
+
+$ gh pr create --base main --head ui-parity-spec --title "docs(spec): #60 converge UI parity scope, glossary, ADRs and split 12 tickets" --body-file app/specs/issue-60-pr-body.md
+https://github.com/whutlichao/alibot/pull/73
+
+$ gh pr view 73 --json number,state,url,baseRefName,headRefName,headRefOid,body,files --jq '{number,state,url,baseRefName,headRefName,headRefOid,files:[.files[].path],bodySections:[.body|split("\n")[]|select(startswith("## "))]}'
+{"baseRefName":"main","bodySections":["## Summary","## Evidence","## Merge Danger"],"files":["CONTEXT.md","app/specs/issue-60-acceptance.md","app/specs/issue-60-pr-body.md","app/specs/issue-60-spec.md","docs/adr/0009-i18n-is-two-layers-with-a-stored-locale.md","docs/adr/0010-claiming-a-task-opens-one-epoch-per-task.md","docs/adr/0011-agent-config-write-path-is-a-patch-endpoint.md","docs/adr/0012-reminders-are-backend-objects.md","docs/adr/0013-search-hits-extend-to-three-types.md","docs/adr/0014-attachments-are-separate-objects-in-the-data-directory.md"],"headRefName":"ui-parity-spec","headRefOid":"ed84f8e09eee98aa1f70ce5f8acc62a04ed4c165","number":73,"state":"OPEN","url":"https://github.com/whutlichao/alibot/pull/73"}
+```
+
+PR body 正本：`app/specs/issue-60-pr-body.md`（用 `--body-file` 提交，章节 = Summary / Evidence / Merge Danger）。上面的 `headRefOid` 是**建 PR 那一刻**的读数；本文件在其后还有一次提交（把这份回执写进来），因此最终 head 由 #60 唯一的 `## Answer` 评论记录，不在这里自指漂移。
+
 ## 未运行项（如实登记）
 
 本票不运行源码测试、lint/typecheck、双轴 code-review 与 G-impl：diff 全为文档与 tracker 写操作，没有源码行为改动，验收面是模板结构、术语格式、ADR 体例、tracker 原生依赖与正文占位扫描。
