@@ -1646,8 +1646,8 @@ function toggleDock() {
 
     「当前有打开的频道」的唯一判据是既有的 `activeChannel()`：`state.channels` 里 id 等于
     `state.activeChannelId` 的那一项。于是「没有任何 target」「只打开着 DM」「`activeChannelId`
-    指向一个已经不存在的频道」这三种情况**同样**落到 `null` —— 没有频道就没有「频道成员」面板，
-    不把那个面板留在右侧（用户 2026-10-16 的裁定）。
+    指向一个已经不存在的频道」这三种情况**同样**落到 `null` —— 没有频道就没有「频道成员」形态，
+    不把成员面板留在右侧（用户 2026-10-16 的裁定）。
 
     调用方先把「正在关闭的那一个对象」清掉再问这里，因此「关闭详情」永远看不到 `activeAgentId`、
     「关闭线程」永远看不到 `activeTaskId`：每个入口只会落到**另一个**仍打开着的形态或收起。 */
@@ -1718,8 +1718,9 @@ async function openTask(taskId) {
     await markTaskRead(taskId, taskMaxSeq());
     $('#ttScroll').scrollTop = $('#ttScroll').scrollHeight;
   } catch (err) {
+    // 落点交给 `closeTaskDock()` 的共用判据（有频道 → 成员面板；否则收起 dock），
+    // 这里不再另写一份 `setDockMode('agent')`——那会把「没有频道就没有成员面板」又推翻一次。
     closeTaskDock();
-    setDockMode('agent');
     renderTaskBoard();
     toast(t('toast.openTaskFailed', { reason: err.message }), 'err');
   }
