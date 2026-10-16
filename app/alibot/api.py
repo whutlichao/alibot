@@ -5,7 +5,7 @@
 - ``GET  /api/workspace``                     工作台快照（空库 = 空工作台）
 - ``GET  /api/settings``                      工作区设置（语言偏好 / 消息密度）
 - ``PATCH /api/settings``                     写工作区设置（配置类取值；不落消息、不唤醒、不消耗预算）
-- ``GET  /api/search``                        工作台普通消息搜索（可限定一个 target）
+- ``GET  /api/search``                        工作台搜索（消息 / 任务 / Agent 三类命中，``facet`` 过滤）
 - ``GET  /api/channels``                      频道列表（含未读计数）
 - ``POST /api/channels``                      新建频道（名称 + 描述 + 初始成员，原子校验）
 - ``GET  /api/channels/{id}/messages``        按 seq 升序取消息（``after_seq`` 增量）
@@ -57,6 +57,7 @@ from .db import (
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
+    SearchFacet,
     open_database,
 )
 from .events import EventBus, sse_frame
@@ -351,13 +352,19 @@ def create_app(
         }
 
     @app.get("/api/search")
-    def search_messages(
+    def search(
         q: Annotated[str, Query(min_length=1, max_length=MAX_MESSAGE_BODY_LENGTH)],
+        facet: Annotated[SearchFacet, Query()] = "all",
         target_id: str | None = Query(default=None),
         limit: int = Query(default=SEARCH_RESULT_LIMIT, ge=1, le=SEARCH_RESULT_LIMIT),
     ) -> dict[str, Any]:
-        """搜索三个 target kind 的普通消息；高亮判定与区间都由后端产生。"""
-        return {"hits": service.search_messages(q, target_id=target_id, limit=limit)}
+        """搜索三类命中：消息（正文）、任务（标题）、Agent（显示名与角色）。
+
+        ``facet`` 是**后端的过滤参数**（``all`` / ``message`` / ``task`` / ``agent``），
+        非法取值与非法 ``limit`` 一样整体拒绝（400）。命中判定与高亮区间都由后端产生，
+        前端只按区间包标签；``target_id`` 沿用既有语义（只在该 target 作用域内搜消息）。
+        """
+        return {"hits": service.search(q, facet=facet, target_id=target_id, limit=limit)}
 
     # ─── 频道 ─────────────────────────────────────────────────────────────
     @app.get("/api/channels")

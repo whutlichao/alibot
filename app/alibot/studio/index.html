@@ -163,6 +163,29 @@
       </div>
     </section>
 
+    <!-- 工作台搜索是**主线视图**（原型 `:1636` 的 `search || tasks` 语义）：它占消息流那块位置，
+         不是盖住界面的弹层。命中判定与高亮区间一律由后端给出（`CONTEXT.md` 搜索命中 / 高亮区间），
+         前端只按区间包 `<mark>`，不自己找命中位置。四档 facet 的取值与顺序照原型 `:631-635`。 -->
+    <section class="search-view" id="viewSearch" hidden data-od-id="search-view">
+      <div class="search-scroll">
+        <div class="search-inner">
+          <div class="search-field">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="searchInput" data-i18n-attr="placeholder:search.fieldPlaceholder,aria-label:search.fieldLabel" placeholder="搜索消息、任务、成员…" aria-label="搜索" autocomplete="off" data-od-id="search-input" />
+            <kbd>ESC</kbd>
+          </div>
+          <div class="facet-row" id="searchFacets" role="group" data-i18n-attr="aria-label:search.facetsLabel" aria-label="搜索范围" data-od-id="search-facets">
+            <button class="filter-chip is-on" type="button" data-facet="all" aria-pressed="true" data-i18n="search.facetAll">全部</button>
+            <button class="filter-chip" type="button" data-facet="message" aria-pressed="false" data-i18n="search.facetMessage">消息</button>
+            <button class="filter-chip" type="button" data-facet="task" aria-pressed="false" data-i18n="search.facetTask">任务</button>
+            <button class="filter-chip" type="button" data-facet="agent" aria-pressed="false" data-i18n="search.facetAgent">Agent</button>
+          </div>
+          <div class="form-error" id="searchError" hidden role="alert"></div>
+          <div class="search-results" id="searchResults" role="status" aria-live="polite" data-od-id="search-results"></div>
+        </div>
+      </div>
+    </section>
+
     <footer class="composer" id="composer" hidden data-od-id="composer">
       <div class="composer-inner">
         <div class="composer-box">
@@ -275,35 +298,18 @@
   </aside>
 </div>
 
-<!-- ─── 工作台搜索：命中判定和高亮区间由后端给出，前端只做呈现 ─────────── -->
-<div class="overlay" id="searchOverlay" hidden>
-  <div class="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="searchModalTitle">
-    <div class="modal-head">
-      <div style="flex:1">
-        <h2 id="searchModalTitle" data-i18n="search.title">搜索工作台</h2>
-        <div class="sub" data-i18n="search.sub">搜索频道、私信与任务线程中的普通消息；可限定一个 target。</div>
-      </div>
-      <button class="icon-btn" type="button" id="searchClose" data-i18n-attr="aria-label:search.closeAria" aria-label="关闭搜索">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
-      </button>
+<!-- ─── ⌘K 命令面板（原型 `#cmdOverlay`）：命令集是**真实存在的能力**（规格 D10） ───
+     只呈现真绑定的快捷键：`⌘K`/`Ctrl+K` 打开、`ESC` 关闭、`M` 消息视图、`T` 任务看板；
+     原型 `CMDS` 里 `N` / `⇧N` / `D` 的 `kbd` 标签并未绑定任何按键，因此这里不出现它们。
+     频道组由 `app.js` 按**当前工作台频道**动态填充，不是原型里写死的种子名。 -->
+<div class="overlay" id="cmdOverlay" hidden>
+  <div class="cmd" role="dialog" aria-modal="true" data-i18n-attr="aria-label:cmd.ariaLabel" aria-label="命令面板">
+    <div class="cmd-field">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--faint)" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="cmdInput" data-i18n-attr="placeholder:cmd.placeholder,aria-label:cmd.placeholder" placeholder="输入命令或搜索…" autocomplete="off" data-od-id="cmd-input" />
+      <kbd class="kbd">ESC</kbd>
     </div>
-    <div class="modal-body">
-      <div class="field">
-        <label for="searchQueryInput" data-i18n="search.queryLabel">关键词</label>
-        <input class="input" id="searchQueryInput" data-i18n-attr="placeholder:search.queryPlaceholder" placeholder="大小写不敏感的子串匹配" autocomplete="off" data-od-id="search-query" />
-      </div>
-      <div class="field">
-        <label for="searchTargetSelect" data-i18n="search.targetLabel">限定 target</label>
-        <select class="input" id="searchTargetSelect" data-od-id="search-target"></select>
-      </div>
-      <div class="form-error" id="searchError" hidden role="alert"></div>
-      <div class="search-results" id="searchResults" role="status" aria-live="polite" data-od-id="search-results"></div>
-    </div>
-    <div class="modal-foot">
-      <button class="btn" type="button" id="searchCancel" data-i18n="common.close">关闭</button>
-      <span class="sep"></span>
-      <button class="btn btn-primary" type="button" id="searchSubmit" data-i18n="search.submit" data-od-id="search-submit">搜索</button>
-    </div>
+    <div class="cmd-list" id="cmdList" data-od-id="cmd-list"></div>
   </div>
 </div>
 

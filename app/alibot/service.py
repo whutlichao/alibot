@@ -21,7 +21,7 @@ from .agent_seam import (
     model_name_of,
     provider_of,
 )
-from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError
+from .db import OWNER_ID, SEARCH_RESULT_LIMIT, Database, DomainError, SearchFacet
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
@@ -119,11 +119,26 @@ class WorkspaceService:
         return dms
 
     # ─── 工作台搜索 ───────────────────────────────────────────────────────
-    def search_messages(
-        self, query: str, *, target_id: str | None = None, limit: int = SEARCH_RESULT_LIMIT
+    def search(
+        self,
+        query: str,
+        *,
+        facet: SearchFacet = "all",
+        target_id: str | None = None,
+        limit: int = SEARCH_RESULT_LIMIT,
     ) -> list[dict[str, Any]]:
-        """跨 channel / DM / task target 搜索普通消息；可显式收窄到一个 target。"""
-        return self._db.search_messages(query, target_id=target_id, limit=limit)
+        """跨 channel / DM / task target 搜三类命中（消息 / 任务 / Agent，ADR-0013）。
+
+        命中判定与高亮区间都由库层产生，这里只补一件库层拿不到的事实：Agent 命中的**状态点**——
+        它由**编排**按后端事实推导（`_agent_view` 与成员面同一条口径），库层不重复推导。
+        """
+        hits = self._db.search(query, facet=facet, target_id=target_id, limit=limit)
+        agent_hits = [hit for hit in hits if hit["kind"] == "agent"]
+        if agent_hits:
+            statuses = {agent["id"]: self._agent_view(agent)["status"] for agent in self._db.agent_members()}
+            for hit in agent_hits:
+                hit["agent"]["status"] = statuses[hit["agent"]["id"]]
+        return hits
 
     def create_dm(self, agent_id: str) -> tuple[dict[str, Any], bool]:
         dm, created = self._db.create_dm(agent_id, owner_id=self._member_id)

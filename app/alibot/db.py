@@ -28,7 +28,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .i18n import SOURCE_LOCALE, locale_of, render
 
@@ -396,6 +396,10 @@ DM_SELECT_SQL = (
 # ``LIKE`` 的模式由 ``_search_like_pattern`` 绑定为 ``%关键词%``，并转义用户输入里的通配符，
 # 所以它仍是严格的子串匹配。全工作区版本由 target 驱动，经 message 上既有的
 # ``UNIQUE(target_id, seq)`` 索引读取各 target 消息；不新增 schema / FTS5。
+#
+# 命中来源有**三类**（ADR-0013）：消息（正文）、任务（标题）、Agent（显示名与角色）。
+# ``facet`` 是**后端的过滤参数**（不是前端过滤）：选中哪一类就只查哪一条 SQL，
+# 三类共用上面这一条判定纪律（大小写不敏感的子串匹配），因此不存在第二个判定落点。
 SEARCH_HIT_SELECT_SQL = """
     SELECT m.*, a.kind AS author_kind, a.display_name AS author_name,
            a.avatar_slot AS author_avatar_slot, a.deleted_at AS author_deleted_at,
@@ -435,6 +439,37 @@ SEARCH_TARGET_HITS_SQL = (
      LIMIT :limit
 """
 )
+
+# 任务命中：命中本体是**任务标题**；``channel`` 是它的来源（``.r-top`` 里显示的那个「#频道」）。
+SEARCH_TASK_HITS_SQL = """
+    SELECT t.id AS id, t.target_id AS target_id, t.title AS title, t.status AS status,
+           c.id AS channel_id, c.name AS channel_name
+      FROM task t
+      JOIN channel c ON c.id = t.channel_id
+     WHERE CASEFOLD(t.title) LIKE :pattern ESCAPE '\\'
+     ORDER BY t.created_at, t.id
+     LIMIT :limit
+"""
+
+# Agent 命中：命中本体是**显示名与角色**（两个字段各自是子串匹配的候选）。
+# soft-delete 的成员不是可呈现的 Agent，因此排除；没有 ``agent_config`` 行的成员仍可被显示名命中，
+# 因此是 LEFT JOIN（与 ``agent_members()`` 同一口径，两处不能分叉）。
+SEARCH_AGENT_HITS_SQL = """
+    SELECT m.id AS id, m.display_name AS display_name, m.avatar_slot AS avatar_slot,
+           COALESCE(c.role, '') AS role, COALESCE(c.model_id, '') AS model_id
+      FROM member m
+ LEFT JOIN agent_config c ON c.member_id = m.id
+     WHERE m.kind = 'agent'
+       AND m.deleted_at IS NULL
+       AND (CASEFOLD(m.display_name) LIKE :pattern ESCAPE '\\'
+            OR CASEFOLD(COALESCE(c.role, '')) LIKE :pattern ESCAPE '\\')
+     ORDER BY m.display_name, m.id
+     LIMIT :limit
+"""
+
+# 搜索的四档 facet（原型 `.facet-row` 的取值与顺序）。它同时是 HTTP 查询参数的类型，
+# 因此「哪几档」只有这一处定义：FastAPI 的校验与库层的分支读的是同一个 Literal。
+SearchFacet = Literal["all", "message", "task", "agent"]
 
 
 def _sqlite_casefold(value: str | None) -> str | None:
@@ -1569,26 +1604,53 @@ class Database:
             ).fetchall()
         return [self._message_payload(row) for row in rows]
 
-    def search_messages(
-        self, query: str, *, target_id: str | None = None, limit: int = SEARCH_RESULT_LIMIT
+    def search(
+        self,
+        query: str,
+        *,
+        facet: SearchFacet = "all",
+        target_id: str | None = None,
+        limit: int = SEARCH_RESULT_LIMIT,
     ) -> list[dict[str, Any]]:
-        """搜索全工作台普通消息；给定 target 时只在该作用域内查。
+        """搜索三类命中；``facet`` 决定查哪几类，``target_id`` 收窄到单个 target 的消息面。
 
         本仓是单用户工作台，target_member 表表达唤醒与未读的成员面，不是可见性 ACL；所以这里
         **不**附加 target_member 过滤。target 仅在调用方显式限定时校验存在，避免把错误 target
         伪装成零命中。
+
+        给定 ``target_id`` 时**只有消息命中适用**（沿用既有语义：只在该作用域内搜消息）——
+        任务命中挂它所属的频道、Agent 命中不挂任何 target，两者都不属于「这一个 target」。
+        ``limit`` 是**每类**命中的条数上限（``facet='all'`` 时三类各自最多 ``limit`` 条）。
+
+        每条命中的形状统一（ADR-0013）：``kind`` / ``text`` / ``highlight_ranges`` / ``target``
+        （所属 target，Agent 命中为 ``null``），外加该类的对象标识（``message`` / ``task`` / ``agent``）。
+        区间缺失时（空表）前端整段呈现，**不得**自行在文本里找位置。
         """
         if target_id is not None:
             self.get_target(target_id)
-        sql = SEARCH_TARGET_HITS_SQL if target_id is not None else SEARCH_ALL_HITS_SQL
         params = {
             "pattern": self._search_like_pattern(query),
             "target_id": target_id,
             "limit": limit,
         }
+        hits: list[dict[str, Any]] = []
         with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
-        return [self._search_hit_payload(row, query) for row in rows]
+            if facet in ("all", "message"):
+                sql = SEARCH_TARGET_HITS_SQL if target_id is not None else SEARCH_ALL_HITS_SQL
+                hits.extend(self._message_hit_payload(row, query) for row in self._conn.execute(sql, params))
+            if target_id is not None:
+                return hits
+            if facet in ("all", "task"):
+                hits.extend(
+                    self._task_hit_payload(row, query)
+                    for row in self._conn.execute(SEARCH_TASK_HITS_SQL, params)
+                )
+            if facet in ("all", "agent"):
+                hits.extend(
+                    self._agent_hit_payload(row, query)
+                    for row in self._conn.execute(SEARCH_AGENT_HITS_SQL, params)
+                )
+        return hits
 
     def append_message(
         self,
@@ -1770,17 +1832,68 @@ class Database:
         return ranges
 
     @classmethod
-    def _search_hit_payload(cls, row: sqlite3.Row, query: str) -> dict[str, Any]:
+    def _message_hit_payload(cls, row: sqlite3.Row, query: str) -> dict[str, Any]:
+        """消息命中：可呈现文本是消息正文，区间由后端给出（``kind='system'`` 已被 SQL 排除）。"""
         message = cls._message_payload(row)
         message["author"]["deleted"] = row["author_deleted_at"] is not None
         return {
-            "message": message,
+            "kind": "message",
+            "text": message["body"],
+            "highlight_ranges": cls._search_highlight_ranges(message["body"], query),
             "target": {
                 "id": row["target_id"],
                 "kind": row["target_kind"],
                 "display_name": row["target_display_name"],
             },
-            "highlight_ranges": cls._search_highlight_ranges(message["body"], query),
+            "message": message,
+        }
+
+    @classmethod
+    def _task_hit_payload(cls, row: sqlite3.Row, query: str) -> dict[str, Any]:
+        """任务命中：可呈现文本是**任务标题**，``target`` 是它所属的频道（点击落到任务线程）。"""
+        title = row["title"]
+        return {
+            "kind": "task",
+            "text": title,
+            "highlight_ranges": cls._search_highlight_ranges(title, query),
+            "target": {
+                "id": row["channel_id"],
+                "kind": "channel",
+                "display_name": row["channel_name"],
+            },
+            "task": {
+                "id": row["id"],
+                "target_id": row["target_id"],
+                "channel_id": row["channel_id"],
+                "channel_name": row["channel_name"],
+                "title": title,
+                "status": row["status"],
+            },
+        }
+
+    @classmethod
+    def _agent_hit_payload(cls, row: sqlite3.Row, query: str) -> dict[str, Any]:
+        """Agent 命中：命中本体是显示名与角色，因此可呈现文本是「显示名 · 角色」。
+
+        两个候选字段（显示名 / 角色）里哪一个命中的位置由后端的区间给出——前端只按区间包标签。
+        Agent 不挂任何 target，所以 ``target`` 是 ``null``（对象标识在 ``agent`` 里）。
+        ``status`` 是**编排**给出的事实，由服务层补齐（与 ``list_dms`` 补 ``peer.status`` 同一体例）。
+        """
+        display_name = row["display_name"]
+        role = row["role"]
+        text = f"{display_name} · {role}" if role else display_name
+        return {
+            "kind": "agent",
+            "text": text,
+            "highlight_ranges": cls._search_highlight_ranges(text, query),
+            "target": None,
+            "agent": {
+                "id": row["id"],
+                "display_name": display_name,
+                "avatar_slot": row["avatar_slot"],
+                "role": role,
+                "model_id": row["model_id"],
+            },
         }
 
     # ─── 有界响应预算（策略 B 的正本，落库） ──────────────────────────────
