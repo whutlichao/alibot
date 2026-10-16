@@ -332,6 +332,32 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .modal-body { padding: 0 var(--sp-8) var(--sp-2); }
 .modal-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-8) var(--sp-7); }
 .modal-foot .sep { flex: 1; }
+
+/* ─── 成员名册（频道成员的只读全名单） ──────────────────────────────────
+   弹窗骨架沿用既有 `.overlay` / `.modal`（不新造一套）；这里只有两件事：
+   （a）`.modal.wide` 的宽度档——设计系统 `ui_kits/app/app.css:373` 就是这么写的，
+   但 studio 只加载 `colors_and_type.css` / `tokens.css`，因此这条规则按 token 名落在本文件；
+   （b）一行的排版：头像 + 姓名 / 角色 + 右侧的状态点。零裸色值。 */
+.modal.wide { max-width: var(--modal-wide-max); }
+/* 成员数是**计数**（`SKILL.md` §6「Counts and ids are explicit and mono」）：整行按等宽族，
+   与面板的 `.dock-group-label`（「已加入（1）」）同一处理；中文由等宽栈回退到系统 CJK 字体，
+   因此只有数字是等宽。 */
+.roster-sub { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* 行数由后端成员表决定（不是写死的几条）：正文自带高度上限与滚动，与搜索弹窗的
+   `.search-results` 同一做法——长名单不会把页脚那个唯一的「关闭」挤出视口。 */
+.roster-body { max-height: min(48dvh, 440px); overflow-y: auto; }
+.roster-row {
+  display: flex; align-items: center; gap: var(--sp-4);
+  padding: var(--sp-4) 0; border-bottom: 1px dashed var(--border);
+}
+.roster-row:last-child { border-bottom: 0; }
+.roster-who { display: flex; align-items: center; gap: var(--sp-4); flex: 1; min-width: 0; }
+.roster-who-text { display: flex; flex-direction: column; min-width: 0; }
+.roster-name { font-size: var(--fs-body); font-weight: var(--fw-semi); }
+.roster-role { font-size: var(--fs-caption); color: var(--faint); }
+/* owner 那一行右侧是「我」（原型与切片对 owner 的呈现），因此它用文字档而不是状态点。 */
+.roster-me { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
+
 .field { margin-bottom: 13px; }
 .field label { display: block; font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--fg); margin-bottom: 5px; }
 .field .hint { font-size: var(--fs-caption); color: var(--faint); margin-top: 5px; }
