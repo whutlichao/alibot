@@ -14,7 +14,8 @@
      两个落点的分工：
        app/ 侧  app/alibot/studio/product-tokens.css   产品工作台自己加载的那一份
        包内     ui_kits/app/product-ext.css            本包切片与装配入口加载的那一份
-     两份文件的四个块**逐字一致**（值来自原型 `alibot-app.html` 的 `:root`）。
+     两份文件的四个块**逐字一致**（值来自原型 `alibot-app.html` 的 `:root`），
+     深色取值层那块（文件末尾）也逐字一致 —— 一共五个块。
      改色时两处同改；`CONTEXT.md` 把消费面定为「按名」，所以名字与档位语义不可改。
 
    为什么包内需要自己的一份：
@@ -65,4 +66,41 @@
      ui_kits/app/app.css 头部把 --online-text 登记成同一形态的既有先例。 */
   --online-text:  oklch(50.6% 0.107 159.9);
   --working-text: oklch(52.3% 0.110 75.2);
+}
+
+/* ─── 深色取值层（同一 token 名集合的第二组取值；ISSUE-71） ─────────────────────
+   只换 deep / graphic 两档的值，名字与色相角一字不动；`--selected` / `--unread` /
+   `--warn` 三个 base 档是**马卡龙亮档**（fill 档），两档同值——深色档不把它们压暗，
+   压其上的墨色由 foundation 的 `--on-accent` 固定为深梅墨（见 colors_and_type.css）。
+
+   选择机制与两个 foundation 的深色取值层完全相同：显式档位 `:root[data-theme='dark']`
+   与「跟随系统」`@media (prefers-color-scheme: dark)` 各一次。CSS 没有把同一条声明块同时
+   挂到属性选择器与媒体查询下的办法，因此同一组取值出现两次，**两处必须同改**；
+   理由与实测读数见包内 `decisions/ADR-0017-dark-value-layer.md`。
+
+   **孪生文件同改**：`ui_kits/app/product-ext.css` 与 `app/alibot/studio/product-tokens.css`
+   是同一份产品角色族的两个落点，本块也必须逐字一致。 */
+:root[data-theme='dark'] {
+  --selected-deep:    oklch(80% 0.081 299.8);
+  --selected-graphic: oklch(70% 0.081 300.5);
+  --unread-deep:      oklch(85% 0.100 94.5);
+  --unread-graphic:   oklch(75% 0.099 94.7);
+  --warn-deep:        oklch(80% 0.084 51.9);
+  --warn-graphic:     oklch(70% 0.083 51.6);
+  --online-text:      oklch(80% 0.107 159.9);
+  --working-text:     oklch(80% 0.110 75.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'],
+  :root:not([data-theme]) {
+    --selected-deep:    oklch(80% 0.081 299.8);
+    --selected-graphic: oklch(70% 0.081 300.5);
+    --unread-deep:      oklch(85% 0.100 94.5);
+    --unread-graphic:   oklch(75% 0.099 94.7);
+    --warn-deep:        oklch(80% 0.084 51.9);
+    --warn-graphic:     oklch(70% 0.083 51.6);
+    --online-text:      oklch(80% 0.107 159.9);
+    --working-text:     oklch(80% 0.110 75.2);
+  }
 }

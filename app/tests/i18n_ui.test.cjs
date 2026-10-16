@@ -11,7 +11,7 @@
  * 3. **裸中文扫描**：三件套（`index.html` / `app.js` / `app.css`）里不再有不经词条的中文
  *    （HTML 的中文必须挂在 `data-i18n` / `data-i18n-attr` 上，JS/CSS 里一个字都不许有）；
  * 4. `<html lang>` 与当前语言同一个取值；
- * 5. 设置弹窗的两个档位（语言 / 消息密度）读写：写走后端、界面立刻生效、选中态跟着走。
+ * 5. 设置弹窗的三个档位（语言 / 消息密度 / 主题）读写：写走后端、界面立刻生效、选中态跟着走。
  */
 
 const assert = require("node:assert/strict");
@@ -294,12 +294,29 @@ function densityCard(value, titleKey, hintKey) {
   return card;
 }
 
+/** 与 `index.html` 同形的三个主题档位卡片（浅色 / 深色 / 跟随系统，含各自的词条声明）。 */
+function themeCard(value, titleKey, hintKey) {
+  const card = new FakeNode("button");
+  card.dataset.theme = value;
+  const title = new FakeNode("b");
+  title.setAttribute("data-i18n", titleKey);
+  const hint = new FakeNode("span");
+  hint.setAttribute("data-i18n", hintKey);
+  card.appendChild(title);
+  card.appendChild(hint);
+  return card;
+}
+
 function createHarness(options) {
   const config = options || {};
   const mode = { rejectPatch: Boolean(config.rejectPatch) };
   const elements = new Map();
   const calls = [];
-  let settings = config.settings || { locale: "zh-CN", message_density: "comfortable" };
+  let settings = config.settings || {
+    locale: "zh-CN",
+    message_density: "comfortable",
+    theme: "system",
+  };
   // 提醒的替身存储：与后端同形——写路径返回**最新全表**，`GET` 也返回同一份。
   const reminders = (config.reminders || []).map((item) => ({ ...item }));
   // 后端事实的两份替身：频道成员表（`GET /api/channels/{id}/members`）与四态状态点
@@ -381,6 +398,13 @@ function createHarness(options) {
       group.appendChild(
         densityCard("compact", "settings.densityCompact", "settings.densityCompactHint"),
       );
+      return group;
+    }
+    if (selector === "#settingsTheme") {
+      const group = new FakeNode("div");
+      group.appendChild(themeCard("light", "settings.themeLight", "settings.themeLightHint"));
+      group.appendChild(themeCard("dark", "settings.themeDark", "settings.themeDarkHint"));
+      group.appendChild(themeCard("system", "settings.themeSystem", "settings.themeSystemHint"));
       return group;
     }
     // 提醒：三处替身照 `index.html` 的初始态建（弹窗关着、圆点 `hidden`、时间格默认 09:00）。
@@ -575,24 +599,28 @@ test("html lang follows the locale switch", () => {
   assert.equal(harness.document.documentElement.lang, "zh-CN");
 });
 
-test("applySettings drives lang and the message-density tier together", () => {
+test("applySettings drives lang, the message-density tier and the theme tier together", () => {
   const harness = createHarness();
 
-  harness.api.applySettings({ locale: "en", message_density: "compact" });
+  harness.api.applySettings({ locale: "en", message_density: "compact", theme: "dark" });
 
   assert.equal(harness.document.documentElement.lang, "en");
   assert.equal(harness.document.documentElement.dataset.density, "compact");
+  assert.equal(harness.document.documentElement.dataset.theme, "dark");
   assert.equal(harness.api.state.settings.locale, "en");
   assert.equal(harness.api.state.settings.message_density, "compact");
+  assert.equal(harness.api.state.settings.theme, "dark");
 });
 
-test("unknown locale or density values fall back to the source tier", () => {
+test("unknown locale, density or theme values fall back to the source tier", () => {
   const harness = createHarness();
 
-  harness.api.applySettings({ locale: "fr", message_density: "spacious" });
+  harness.api.applySettings({ locale: "fr", message_density: "spacious", theme: "sepia" });
 
   assert.equal(harness.document.documentElement.lang, "zh-CN");
   assert.equal(harness.document.documentElement.dataset.density, "comfortable");
+  // 主题的缺省档是「跟随系统」，不是「浅色」：坏值一律回落到它。
+  assert.equal(harness.document.documentElement.dataset.theme, "system");
 });
 
 /* ─── 5. 静态文案的铺法（文本 + 属性） ───────────────────────────────────── */
@@ -619,32 +647,44 @@ test("applyStaticI18n fills text nodes and localizable attributes from the catal
   assert.equal(button.getAttribute("title"), catalogs["zh-CN"]["rail.searchTitle"]);
 });
 
-/* ─── 6. 设置弹窗两个档位的读写 ─────────────────────────────────────────── */
-test("the settings modal shows both tiers and no third tier", async () => {
+/* ─── 6. 设置弹窗三个档位的读写 ─────────────────────────────────────────── */
+test("the settings modal shows all three tiers", async () => {
   const harness = createHarness();
   harness.api.bindEvents();
   harness.api.renderSettingsModal();
 
   const select = harness.elementFor("#settingsLocaleSelect");
   const density = harness.elementFor("#settingsDensity");
+  const theme = harness.elementFor("#settingsTheme");
   const cards = density.querySelectorAll("[data-density]");
+  const themeCards = theme.querySelectorAll("[data-theme]");
 
   // 语言：两档，取值就是后端档位（`zh-CN` / `en`）。
   assert.deepEqual(
     select.children.map((option) => option.value),
     ["zh-CN", "en"],
   );
-  // 消息密度：两档（`comfortable` / `compact`），**没有**主题这一档。
+  // 消息密度：两档（`comfortable` / `compact`）。
   assert.deepEqual(
     cards.map((card) => card.dataset.density),
     ["comfortable", "compact"],
   );
+  // 主题（#71 的第三档）：三档（`light` / `dark` / `system`），取值与后端 `THEMES` 同名。
+  assert.deepEqual(
+    themeCards.map((card) => card.dataset.theme),
+    ["light", "dark", "system"],
+  );
   assert.deepEqual(
     Object.keys(harness.api.state.settings).sort(),
-    ["locale", "message_density"],
-    "本票的设置面只有语言与消息密度两档（主题是 #71 的第三档）",
+    ["locale", "message_density", "theme"],
+    "设置面就是语言 / 消息密度 / 主题这三档",
   );
   assert.equal(cards[0].classList.contains("is-on"), true, "缺省密度档要标出来");
+  assert.equal(
+    themeCards[2].classList.contains("is-on"),
+    true,
+    "缺省主题档是「跟随系统」，要标出来",
+  );
 });
 
 test("choosing English writes the backend and switches the interface immediately", async () => {
@@ -684,6 +724,31 @@ test("choosing the compact density writes the backend and applies the tier", asy
     density.querySelectorAll("[data-density]")[0].classList.contains("is-on"),
     false,
     "同一时刻只有一档是选中态",
+  );
+});
+
+test("choosing the dark theme writes the backend and applies the tier", async () => {
+  const harness = createHarness();
+  harness.api.bindEvents();
+  const theme = harness.elementFor("#settingsTheme");
+  const dark = theme.querySelectorAll("[data-theme]")[1];
+
+  await theme.dispatchEvent({
+    type: "click",
+    target: { closest: (selector) => (selector === "[data-theme]" ? dark : null) },
+  });
+  await flush();
+
+  const patch = harness.calls.filter((call) => call.method === "PATCH");
+  assert.deepEqual(patch.map((call) => call.body), [{ theme: "dark" }]);
+  assert.equal(harness.api.state.settings.theme, "dark");
+  // 生效标记写在根元素上：显式档位由 `:root[data-theme='dark']` 命中。
+  assert.equal(harness.document.documentElement.dataset.theme, "dark");
+  assert.equal(dark.classList.contains("is-on"), true);
+  assert.equal(
+    theme.querySelectorAll("[data-theme]")[2].classList.contains("is-on"),
+    false,
+    "同一时刻只有一档是选中态（缺省的「跟随系统」要让位）",
   );
 });
 

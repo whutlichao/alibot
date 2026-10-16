@@ -91,7 +91,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
 | `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关 | 模型与系统提示是**配置数据**，换模型不改代码 |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证** |
-| `workspace_settings` | id(=1), locale, message_density, updated_at | **工作区设置**：单行表，列就是明确列出的档位（本轮到语言偏好与消息密度；主题由 #71 追加第三档）。人类面可写配置类取值，**不得**写用量类事实 |
+| `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `reminder` | id, text, time(`HH:MM`), channel_id(可空 = 不归属), created_at | **提醒**（ADR-0012）：库内对象，后端是唯一正本（不放 localStorage）。它与频道的关系是**归属**，不是 target 作用域——**不**新增 target、不计未读、不参与唤醒；增删**不落消息、不唤醒、不消耗预算** |
 | `channel` | id, 名称, 描述 | |
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
@@ -189,8 +189,8 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
-| `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度**；后端是唯一正本） |
-| `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
+| `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度** / **主题**；后端是唯一正本） |
+| `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?, theme?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
 | `GET /api/reminders` | 全部提醒（`id` / `text` / `time`（`HH:MM`）/ `channel_id` + `channel_name`（可空 = 不归属）/ `created_at`）。正本是库里的 `reminder` 表（ADR-0012） |
 | `POST /api/reminders` | 新建一条提醒 `{text, time, channel_id?}`（`channel_id` 省略或 `null` = 不归属任何频道）。校验失败**整体不创建**；**不落消息、不唤醒、不消耗预算**、不新增 target、不计未读 |
 | `DELETE /api/reminders/{id}` | 删除一条提醒；返回被删掉的那条与最新列表。不存在的 id ⇒ 404 |
@@ -278,6 +278,15 @@ token 名、三栏尺寸（rail 252 / 消息流 880 / dock 380）、方形头像
 未读徽标色族（`--unread` / `--unread-soft` / `--unread-deep` / `--unread-graphic`）、
 四态状态点、提及高亮（`--accent-soft` 底 + `--accent-deep` 字）与空态文案都按名字消费。
 色值一律 `oklch()`，界面为简体中文。
+
+**主题三档（#71）**：`workspace_settings.theme ∈ {light, dark, system}`，前端把档位写到
+`<html data-theme>` 上。取值层在 `alibot-design-system/`——两个 foundation 与产品扩展层的
+两个落点各持**同一 token 名集合的第二组取值**（不改名、不新增色相）：显式档位由
+`:root[data-theme='dark']` 命中，「跟随系统」由该包的 `@media (prefers-color-scheme: dark)`
+裁决（本工作台**不**解析媒体查询）。工作台侧的呈现改动只有三处「用错层」：头像块的墨色改用
+`--on-accent`（底是 fill 档）、`.overlay` 的遮罩改用 `--on-accent`（遮罩必须两档都暗）、
+toast 的状态点在深色档改用 `--bg`（深色档 toast 反相成浅片）。`app.css` 里的裸色值纪律
+在深色档下仍然成立。
 
 业务状态的唯一正本是后端；前端不使用 `localStorage` 保存任何业务状态
 （唯一允许的本地记忆是「上次打开的频道 id」）。后端不可达时前端**禁止提交**并给出明确提示，

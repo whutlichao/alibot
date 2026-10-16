@@ -41,23 +41,29 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-# schema 版本。号段分配是**协调事实**（规格 D13：实施票落地时取**当时的下一号**，并在票面写明；
-# 本票的可写面不含 `app/specs/issue-60-spec.md` 与 `docs/adr/`，因此那两处的口径同步不在本票内，
-# 这里登记的是**已落地与已裁定**的号段）：
-#   7 = #61 的工作区设置（`workspace_settings`，已合并）
-#   8 = **本票（#68）的提醒表**
-#   9 = #67（附件，建表）；10 = #35 的 #58（结构化沉默，顺延）
-# 后续再建表的单据必须复核这一行：本版**不做旧库迁移**（README 的既定纪律），版本不等就拒绝启动。
-SCHEMA_VERSION = 8
+# schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝启动**、
+# 不做迁移（ADR-0004）。号段由规格 #60 的协调裁定分配，实施票不得自行改号：
+#   7 = #61（工作区设置面）已合并；8 = #68（reminder 表）已合并；9 = #67（附件）；
+#   10 = #71（`workspace_settings.theme` 新增一列）已合并；11 = #35 的 #58（结构化沉默）。
+# 本票（#68）原预留在 8：在 #71 已把 10 落到 main 之后，这一行**以实际 main 为准**保持 10——
+# 号段是协调事实，同一号不能在共享库里指两件事（`_assert_schema_compatible` 只看相等）。
+SCHEMA_VERSION = 10
 
-# 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合。
-# 本轮只有**语言偏好**与**消息密度**两档；**主题**由 #71 追加第三档，本票不得出现它的字段或档位
-# （列集就是「只有这些档位」这条约束的落点：没有通用 key-value 面，因此不可能被当成通用存储）。
+# 工作区设置（`CONTEXT.md` **工作区设置**）：本机单用户工作台的**配置类**取值集合——
+# **语言偏好** / **消息密度** / **主题**三档。列集就是「只有这些档位」这条约束的落点：
+# 没有通用 key-value 面，因此这个设置面不可能被当成通用存储。
 LOCALES = ("zh-CN", "en")
 MESSAGE_DENSITIES = ("comfortable", "compact")
+# 主题三档（#71）：显式浅色 / 显式深色 / 跟随系统外观。
+# `system` 是**缺省**档（空库的取值就是它）：由浏览器的 `prefers-color-scheme` 裁决；
+# 显式两档把标记写在 `<html data-theme>` 上。三档的**取值层**在 `alibot-design-system/`
+# （同一 token 名集合的第二组取值，`decisions/ADR-0017-dark-value-layer.md`）。
+THEMES = ("light", "dark", "system")
+
 # 缺省语言 = 词条表的**源语言**（同一件事不写第二遍：改源语言只改 `i18n.SOURCE_LOCALE`）。
 DEFAULT_LOCALE = SOURCE_LOCALE
 DEFAULT_MESSAGE_DENSITY = "comfortable"
+DEFAULT_THEME = "system"
 
 DEFAULT_PORT = 8788
 DEFAULT_DATA_DIR_NAME = "Alibot"
@@ -251,9 +257,10 @@ CREATE TABLE IF NOT EXISTS agent_config (
   updated_at    TEXT NOT NULL
 );
 
--- 工作区设置（`CONTEXT.md` **工作区设置**）：**单行表**（``id = 1``），列就是明确列出的档位。
--- 它是**配置类**取值（人类面经 ``GET`` / ``PATCH /api/settings`` 读写），与预算表的边界是**写什么**：
--- 人类面可以写配置，但**不得**写用量类事实（``target_budget.used`` 仍只由后端推进，ADR-0007）。
+-- 工作区设置（`CONTEXT.md` **工作区设置**）：**单行表**（``id = 1``），列就是明确列出的档位
+-- （语言偏好 / 消息密度 / 主题三档）。它是**配置类**取值（人类面经 ``GET`` / ``PATCH /api/settings``
+-- 读写），与预算表的边界是**写什么**：人类面可以写配置，但**不得**写用量类事实
+-- （``target_budget.used`` 仍只由后端推进，ADR-0007）。
 -- 刻意不做成通用 key-value 表：那会让「只有这几档」这条约束失去落点（词条的 `_Avoid_` 明写）。
 -- 改设置**不落消息、不唤醒、不消耗预算**——它不是对话事实。
 CREATE TABLE IF NOT EXISTS workspace_settings (
@@ -261,6 +268,10 @@ CREATE TABLE IF NOT EXISTS workspace_settings (
   locale          TEXT NOT NULL DEFAULT 'zh-CN' CHECK (locale IN ('zh-CN', 'en')),
   message_density TEXT NOT NULL DEFAULT 'comfortable'
                   CHECK (message_density IN ('comfortable', 'compact')),
+  -- 主题三档（#71）：显式浅色 / 显式深色 / 跟随系统外观。缺省是 ``system``
+  -- （空库的取值就是「跟随系统」）；取值层在 alibot-design-system/。
+  theme           TEXT NOT NULL DEFAULT 'system'
+                  CHECK (theme IN ('light', 'dark', 'system')),
   updated_at      TEXT NOT NULL
 );
 
@@ -719,12 +730,12 @@ class Database:
                 "VALUES (?, 'owner', ?, ?, ?) ON CONFLICT(id) DO NOTHING",
                 (OWNER_ID, OWNER_DISPLAY_NAME, OWNER_AVATAR_SLOT, utc_now()),
             )
-            # 工作区设置的**单行**：缺省值就是源语言与默认密度，与「空库 = 空工作台」同一条纪律
-            # （空库里没有任何用户取值，但设置面必须可读）。
+            # 工作区设置的**单行**：缺省值就是源语言、默认密度与「跟随系统」主题，与「空库 = 空工作台」
+            # 同一条纪律（空库里没有任何用户取值，但设置面必须可读）。
             self._conn.execute(
-                "INSERT INTO workspace_settings(id, locale, message_density, updated_at) "
-                "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                (DEFAULT_LOCALE, DEFAULT_MESSAGE_DENSITY, utc_now()),
+                "INSERT INTO workspace_settings(id, locale, message_density, theme, updated_at) "
+                "VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                (DEFAULT_LOCALE, DEFAULT_MESSAGE_DENSITY, DEFAULT_THEME, utc_now()),
             )
 
     # ─── 事务助手 ──────────────────────────────────────────────────────────
@@ -936,17 +947,19 @@ class Database:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT locale, message_density, updated_at FROM workspace_settings WHERE id = 1"
+                "SELECT locale, message_density, theme, updated_at FROM workspace_settings WHERE id = 1"
             ).fetchone()
         if row is None:
             return {
                 "locale": DEFAULT_LOCALE,
                 "message_density": DEFAULT_MESSAGE_DENSITY,
+                "theme": DEFAULT_THEME,
                 "updated_at": "",
             }
         return {
             "locale": row["locale"],
             "message_density": row["message_density"],
+            "theme": row["theme"],
             "updated_at": row["updated_at"],
         }
 
@@ -954,6 +967,7 @@ class Database:
         self,
         locale: str | None = None,
         message_density: str | None = None,
+        theme: str | None = None,
     ) -> dict[str, Any]:
         """部分更新工作区设置（``None`` = 这一档没被这次请求提到，保持原值）。
 
@@ -968,18 +982,22 @@ class Database:
             fields["message_density"] = self._render_copy(
                 "error.field_choices", values=", ".join(MESSAGE_DENSITIES)
             )
+        if theme is not None and theme not in THEMES:
+            fields["theme"] = self._render_copy("error.field_choices", values=", ".join(THEMES))
         if fields:
             raise DomainError("validation_failed", self._render_copy("error.settings_invalid"), fields=fields)
         with self._lock:
             current = self.workspace_settings()
             self._conn.execute(
-                "INSERT INTO workspace_settings(id, locale, message_density, updated_at) "
-                "VALUES (1, ?, ?, ?) "
+                "INSERT INTO workspace_settings(id, locale, message_density, theme, updated_at) "
+                "VALUES (1, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET locale = excluded.locale, "
-                "message_density = excluded.message_density, updated_at = excluded.updated_at",
+                "message_density = excluded.message_density, theme = excluded.theme, "
+                "updated_at = excluded.updated_at",
                 (
                     current["locale"] if locale is None else locale,
                     current["message_density"] if message_density is None else message_density,
+                    current["theme"] if theme is None else theme,
                     utc_now(),
                 ),
             )
@@ -987,13 +1005,17 @@ class Database:
 
     # ─── 提醒（库内对象；ADR-0012：增删不落消息、不唤醒、不消耗预算） ────────
     def list_reminders(self) -> list[dict[str, Any]]:
-        """全部提醒，按创建序（``created_at, id``）。
+        """全部提醒，按创建序（``created_at, rowid``）。
 
         归属频道用 ``LEFT JOIN`` 取名字（见 :data:`REMINDER_SELECT_SQL`）：**空 = 不归属**
         （可空列的正本事实），因此不能写成 ``JOIN``——那会把「不归属任何频道的提醒」整条丢掉。
+
+        并列的判据必须是 ``rowid``（= **插入序**），不能是 ``id``：``utc_now`` 只有**毫秒**
+        精度，同一毫秒内连着建的几条 ``created_at`` 逐字相同，而 ``id`` 是 ``uuid4`` 的随机段——
+        拿它当并列判据会让「创建序」变成随机序（同一毫秒里建的 3 条，恰好升序的概率只有 1/6）。
         """
         with self._lock:
-            rows = self._conn.execute(REMINDER_SELECT_SQL + "ORDER BY r.created_at, r.id").fetchall()
+            rows = self._conn.execute(REMINDER_SELECT_SQL + "ORDER BY r.created_at, r.rowid").fetchall()
         return [self._reminder_payload(row) for row in rows]
 
     def _get_reminder(self, reminder_id: str) -> dict[str, Any]:

@@ -15,9 +15,18 @@
      graphic = 环·点档：同色相中档，≥3:1 可作焦点环 / 状态点 / 边界
    A family's bare base name holds the tier that was its main use before the
    change (see the per-block notes); every other tier carries a suffix.
+
+   Dark value layer (ISSUE-71): the file ends with the same token-name set's
+   second value set — same names, same hue angles, no new hue. Selected by
+   `html[data-theme='dark']` or, for the "follow system" tier, by
+   `@media (prefers-color-scheme: dark)`. See decisions/ADR-0017.
    ========================================================================== */
 
 :root {
+  /* 原生控件（滚动条 / select 弹出层）跟**本层**的明暗走，不跟操作系统走：
+     浅色档显式声明 light，深色档在文件末尾的深色取值层里声明 dark。 */
+  color-scheme: light;
+
   /* ─── surface & text（暖奶霜纸族 + 深梅墨族） ─────────────────────────── */
   --bg:            oklch(98% 0.011 85);    /* page canvas (warm cream)   */
   --surface:       oklch(99.4% 0.006 85);  /* cards, panels, chrome      */
@@ -118,4 +127,93 @@
   --control-h: 32px;      /* default button / input height          */
   --control-h-sm: 27px;   /* compact button                         */
   --tap-min: 44px;        /* minimum touch target                   */
+}
+
+/* ============================================================================
+   深色取值层（dark value layer）— «同一 token 名集合的第二组取值»
+   ============================================================================
+
+   纪律（ISSUE-71 / 本仓 `CONTEXT.md` **视觉契约**）：
+     **不改 token 名，不新增色相，只加取值。** 下面是上面 `:root` 里同一批名字的
+     深色取值：色相角一字不动（该家族是哪个角色就还是哪个角色），只换 L / C。
+     `fill` 档（`--accent` / `--accent-hover` / `--selected` / `--unread` / `--warn` /
+     四个 presence `-fill` / `--av-0…--av-4`）**两档同值**：马卡龙亮档是这一族的本色，
+     深色档不把它压暗，而是把压在其上的墨色 `--on-accent` 固定为深梅墨（见下），
+     于是「fill 只与 --on-accent 配对」这条纪律在两档都成立、且对比度读数与浅色档一致。
+     `-soft` 档都是 `color-mix(…, transparent)` 派生值，随各自的族色自动成立，不在此重复声明。
+
+   选择机制（本仓只允许这两条，ISSUE-71 票面）：
+     · **显式档位** → `:root[data-theme='dark']`（`html` 上的显式标记）；
+     · **跟随系统** → `@media (prefers-color-scheme: dark)`（`data-theme='system'` 或未标记时）。
+   CSS 没有把同一条声明块同时挂到「属性选择器」与「媒体查询」下的办法，所以同一组取值
+   在下面**出现两次**——这是本文件唯一的重复块，**两处必须同改**。理由、备选与代价记在
+   `decisions/ADR-0017-dark-value-layer.md`。
+
+   对比度（本包 `SKILL.md` §5：文字 ≥4.5:1、图形 ≥3:1）的**实测读数**见
+   `decisions/ADR-0017-dark-value-layer.md`：深色档下文字档 ≥5.04:1、图形档 ≥5.66:1、
+   fill×--on-accent 与浅色档同值（≥5.19:1）。
+   ========================================================================== */
+
+:root[data-theme='dark'] {
+  color-scheme: dark;  /* 原生控件（滚动条 / select 弹出层）跟着深色档走 */
+
+  /* ─── surface & text：暖奶霜纸族 → 暖褐墨族（同色相角 85/84），深梅墨族 → 浅梅墨族（300） */
+  --bg:            oklch(21% 0.012 85);    /* page canvas               */
+  --surface:       oklch(25.5% 0.012 85);  /* cards, panels, chrome     */
+  --panel:         oklch(18% 0.014 85);    /* rails, columns, wells     */
+  --panel-2:       oklch(15% 0.016 84);    /* nested wells, chips       */
+  --fg:            oklch(93% 0.018 300);   /* primary text              */
+  --muted:         oklch(78% 0.020 300);   /* secondary text            */
+  --faint:         oklch(66% 0.018 300);   /* tertiary / meta text      */
+  --border:        oklch(32% 0.012 86);    /* hairline separators       */
+  --border-strong: oklch(45% 0.014 86);    /* inputs, focus containers  */
+
+  /* 墨色**不随** `--fg` 翻白：fill 档两档同值，压其上的墨仍是深梅墨（与浅色档逐字同值），
+     于是按钮 / 徽标 / 头像块 / err toast 的对比度在两档一致。 */
+  --on-accent:     oklch(33% 0.045 300);
+
+  /* ─── accent（同色相 356）───────────────────────────────────────────── */
+  /* base / hover 是 fill 档（两档同值），这里只放文字档与图形档（深色纸族上要往亮了走）。 */
+  --accent-deep:    oklch(80% 0.086 356.3);
+  --accent-graphic: oklch(70% 0.086 356.7);
+
+  /* ─── semantic status（同色相 159 / 74 / 26 / 304）──────────────────── */
+  --online:  oklch(70% 0.108 159.4);
+  --working: oklch(72% 0.110 74.2);
+  --error:   oklch(72% 0.128 25.9);   /* deep 档：文字 / 描边 / 点同值 */
+  --offline: oklch(70% 0.026 304.2);
+
+  --offline-deep: oklch(78% 0.026 302.5);
+  /* `--online-fill` / `--working-fill` / `--error-fill` / `--offline-fill` 与四个 `-soft`
+     都不在此列：前者是 fill 档（两档同值），后者是派生值。 */
+}
+
+@media (prefers-color-scheme: dark) {
+  /* 「跟随系统」档：系统外观是深色时用上面同一组取值。
+     显式 `light` / `dark` 两档各自屏蔽这一分支（`dark` 走上面的块，读数相同）。 */
+  :root[data-theme='system'],
+  :root:not([data-theme]) {
+    color-scheme: dark;
+
+    --bg:            oklch(21% 0.012 85);
+    --surface:       oklch(25.5% 0.012 85);
+    --panel:         oklch(18% 0.014 85);
+    --panel-2:       oklch(15% 0.016 84);
+    --fg:            oklch(93% 0.018 300);
+    --muted:         oklch(78% 0.020 300);
+    --faint:         oklch(66% 0.018 300);
+    --border:        oklch(32% 0.012 86);
+    --border-strong: oklch(45% 0.014 86);
+    --on-accent:     oklch(33% 0.045 300);
+
+    --accent-deep:    oklch(80% 0.086 356.3);
+    --accent-graphic: oklch(70% 0.086 356.7);
+
+    --online:  oklch(70% 0.108 159.4);
+    --working: oklch(72% 0.110 74.2);
+    --error:   oklch(72% 0.128 25.9);
+    --offline: oklch(70% 0.026 304.2);
+
+    --offline-deep: oklch(78% 0.026 302.5);
+  }
 }
