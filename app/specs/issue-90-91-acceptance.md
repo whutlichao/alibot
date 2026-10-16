@@ -11,7 +11,7 @@
 | 分支 | `schema-migration-t90t91` |
 | 提交 | `d24029a feat(schema): 迁移引擎与 3 → 12 整条逐版链（#90 #91）` |
 | 本票 base | `a7d12f3`（`main`） |
-| PR | 见文末「交付物回填」 |
+| PR | [#98](https://github.com/whutlichao/alibot/pull/98)（base `main`，head `schema-migration-t90t91`） |
 | PR body | `app/specs/issue-90-91-pr-body.md` |
 | 证据 | `.scratch/evidence/`（原始输出）、`.scratch/readings.py`（读数脚本） |
 
@@ -242,9 +242,9 @@ stderr 逐字相同，库 sha256 不变。
 
 | 项 | 值 |
 | --- | --- |
-| 分支推送 | `origin/schema-migration-t90t91` |
-| PR | 见下方 |
-| `gh issue edit 90 --add-assignee @me` / `91` | 已执行 |
-| Answer 摘要 comment | 已 comment 到 #90 与 #91 |
+| 分支推送 | `origin/schema-migration-t90t91`（`9343e9f` + 本表回填提交） |
+| PR | [#98](https://github.com/whutlichao/alibot/pull/98) —— title `feat(schema): 迁移引擎与 3 → 12 整条逐版链（#90 #91）`，body = `app/specs/issue-90-91-pr-body.md`，base `main` |
+| `gh issue edit 90 --add-assignee @me` / `91` | 已执行（两张票 assignee 已加） |
+| Answer 摘要 comment | 已 comment 到 [#90](https://github.com/whutlichao/alibot/issues/90) 与 [#91](https://github.com/whutlichao/alibot/issues/91) |
 
-（PR 号与 URL 在 PR 创建后回填于本表；本节即 Answer 的收尾记录。）
+（本节即 Answer 的收尾记录；PR 号与正文路径已回填，两张票在 tracker 上保持原样。）
