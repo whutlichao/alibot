@@ -393,14 +393,15 @@ function searchSnipNode(hit) {
 
 /** 一条结果行（`.result` / `.r-top` / `.r-title` / `.r-snip`）。
 
-    只有**任务命中**今天有落地处（点开右侧任务线程）；消息命中的滚动定位与 Agent 详情面都还没有
-    交付（Agent 详情是 #64），因此那两类是**非交互**行——不做「点了没反应」的按钮。 */
+    今天唯一能落地的命中是**任务**（点开右侧任务线程，原型 `data-opentask` 同构），判据是
+    **载荷里有没有可打开的任务标识**——不按 `kind` 再分派一次；消息命中的滚动定位与 Agent 详情面
+    都还没有交付（Agent 详情是 #64），因此那两类是**非交互**行，不做「点了没反应」的按钮。 */
 function searchResultNode(hit) {
-  const interactive = hit.kind === 'task' && Boolean(hit.task && hit.task.id);
-  const node = el(interactive ? 'button' : 'div', 'result');
-  if (interactive) {
+  const taskId = hit.task && hit.task.id ? hit.task.id : null;
+  const node = el(taskId ? 'button' : 'div', 'result');
+  if (taskId) {
     node.type = 'button';
-    node.dataset.opentask = hit.task.id;
+    node.dataset.opentask = taskId;
     node.setAttribute('data-od-id', 'search-task');
   }
   const top = el('div', 'r-top');
@@ -534,15 +535,16 @@ async function runSearch() {
 }
 
 /* ─── ⌘K 命令面板（规格 D10） ──────────────────────────────────────────────
-   命令集 = 跳转（消息视图 / 任务看板 / 搜索）+ 动作（新建频道 / 新建任务 / 切换详情面板）
-   + **动态**频道组（当前工作台的频道，不是原型里写死的种子名）。
-   只呈现**真绑定**的快捷键：`⌘K`/`Ctrl+K` 打开、`ESC` 关闭、`M` 消息视图、`T` 任务看板；
-   原型的 `N` / `⇧N` / `D` 三个 kbd 标签并没有绑定任何按键，因此不出现（界面不承诺不存在的能力）。 */
+   命令集 = 跳转（消息视图 / 任务看板）+ 动作（新建频道 / 新建任务 / 切换详情面板）
+   + **动态**频道组（当前工作台的频道，不是原型里写死的种子名）。D10 枚举的命令集里**没有**
+   原型 `CMDS` 的「搜索」一条，`⌘K` 真绑定的是**打开命令面板**本身（不是搜索视图），
+   因此这里也不给它挂 `⌘K` 标签——界面不承诺一个按键做不到的事。
+   面板里只呈现**真绑定**的快捷键：`M` 消息视图、`T` 任务看板（`ESC` 的提示在面板自己的字段上）。
+   原型的 `N` / `⇧N` / `D` 三个 kbd 标签并没有绑定任何按键，因此不出现。 */
 function commandList() {
   return [
     { id: 'view-messages', group: 'cmd.groupJump', label: t('cmd.messages'), kbd: 'M', run: showMessagesView },
     { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', run: showTaskBoard },
-    { id: 'view-search', group: 'cmd.groupJump', label: t('rail.search'), kbd: '⌘K', run: showSearchView },
     { id: 'new-channel', group: 'cmd.groupAction', label: t('rail.newChannel'), run: openChannelModal },
     { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), run: () => openTaskModal() },
     { id: 'toggle-dock', group: 'cmd.groupAction', label: t('dock.toggle'), run: toggleDock },

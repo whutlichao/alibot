@@ -555,7 +555,7 @@ test("命令面板的频道组取自当前工作台频道，不是原型里的�
   );
 });
 
-test("命令面板只呈现真绑定的快捷键（M / T / ⌘K），不出现原型未绑定的 N / ⇧N / D", async () => {
+test("命令面板只呈现真绑定的快捷键（M / T），不出现原型未绑定的 N / ⇧N / D / ⌘K", async () => {
   const harness = createHarness({ state: { channels: [channel("c1", "检索频道")], activeChannelId: "c1" } });
 
   await harness.key("k", { metaKey: true });
@@ -566,7 +566,8 @@ test("命令面板只呈现真绑定的快捷键（M / T / ⌘K），不出现�
     .filter(Boolean)
     .map((node) => node.textContent);
 
-  assert.deepEqual(kbds, ["M", "T", "⌘K"]);
+  // `⌘K` 真绑定的是**打开命令面板本身**，不是面板里某条命令，因此它不出现在这里。
+  assert.deepEqual(kbds, ["M", "T"]);
 });
 
 test("命令面板里的「消息视图」真的跳回消息流", async () => {
