@@ -60,8 +60,17 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .icon-btn {
   width: var(--icon-btn); height: var(--icon-btn); flex: 0 0 var(--icon-btn); display: grid; place-items: center;
   border-radius: var(--r-sm); color: var(--muted); border: 1px solid transparent;
+  /* 有提醒时的指示点要能相对按钮定位（原型 `.icon-btn` 也带 `position:relative`）。 */
+  position: relative;
 }
 .icon-btn:hover { background: var(--surface); border-color: var(--border); color: var(--fg); }
+/* 提醒指示点：照原型 `alibot-app.html:101` 的形态（--error 底 + --panel 描边，右上角 6px 圆点）。
+   圆点的**存在性**是后端事实（有提醒才出现），由 app.js 设 `hidden`，CSS 只管长相；
+   `[hidden]` 那条全局规则负责让它消失。 */
+.icon-btn .dot {
+  position: absolute; top: 6px; right: 6px; width: 6px; height: 6px;
+  border-radius: var(--r-pill); background: var(--error); border: 1.5px solid var(--panel);
+}
 
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-2) var(--sp-4) var(--sp-7); }
 .group { margin-top: var(--sp-5); }
@@ -326,6 +335,9 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   width: 100%; max-width: var(--modal-max); background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--r-xl); box-shadow: var(--shadow-pop); overflow: hidden;
 }
+/* 宽弹窗：原型 `alibot-app.html:410` 的 `.modal.wide` = 560px（提醒弹窗用这一档）。
+   两个 foundation 里没有「宽弹窗」这个 token（原型也是写死 560px），因此按原型的字面值写。 */
+.modal.wide { max-width: 560px; }
 .modal-head { display: flex; align-items: center; gap: var(--sp-5); padding: var(--sp-6) var(--sp-8) var(--sp-5); }
 .modal-head h2 { font-size: var(--fs-title); font-weight: var(--fw-heavy); flex: 1; }
 .modal-head .sub { font-size: var(--fs-sm); color: var(--muted); margin-top: var(--sp-1); }
@@ -357,6 +369,23 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   margin-bottom: var(--sp-5); padding: var(--sp-4) var(--sp-5); border-radius: var(--r-md);
   background: var(--error-soft); color: var(--error); font-size: var(--fs-sm);
 }
+
+/* ─── 提醒弹窗（原型 `alibot-app.html:433-436` 的 `.reminder-row` 一族） ──────────
+   一行三件：时间（mono，`--accent-deep` 文字档）/ 文本 + `· #归属频道`（`--faint`）/ 删除键。
+   行间用 hairline 分隔，最后一行不收尾（原型 `:434`）；新增控件与列表之间用一条分隔线（`:1578`）。 */
+.reminder-row {
+  display: flex; align-items: center; gap: var(--sp-5);
+  padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.reminder-row:last-child { border-bottom: 0; }
+.reminder-row .time { font-family: var(--mono); font-size: var(--fs-caption); color: var(--accent-deep); }
+.reminder-row .grow { flex: 1; min-width: 0; }
+.reminder-row .ch { color: var(--faint); }
+.reminder-add { margin: var(--sp-5) 0 0; padding-top: var(--sp-5); border-top: 1px solid var(--border); }
+.reminder-add-row { display: flex; gap: var(--sp-4); }
+.reminder-add-row .input:first-child { flex: 1; }
+/* 时间格照原型 `:1580` 的固定 110px，不随弹窗宽度拉伸。 */
+.reminder-time { width: 110px; flex: 0 0 110px; }
 
 /* ─── 设置弹窗的档位控件（原型 `#btnSettings` → `openSettings()` 的 `radio-row`） ────
    两个取值分别是 `comfortable` / `compact`（工作区设置的第二档）；选中态只用 `--selected*`

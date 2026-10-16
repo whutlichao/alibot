@@ -37,6 +37,14 @@
           <div class="brand-sub" id="brandSub" data-i18n="app.brandSub">LOCAL · 本机工作台</div>
         </div>
       </div>
+
+      <!-- rail 的**提醒入口**（原型 `alibot-app.html:511-514`：`.icon-btn` + 铃铛图标 + `#reminderDot`）。
+           圆点**只在有提醒时**出现（原型 `:1886` = `hidden = 没有`），初始标记里就带 `hidden`，
+           于是「JS 还没跑完」的那一帧也不会凭空空出一个点。 -->
+      <button class="icon-btn" id="btnReminders" type="button" data-od-id="btn-reminders" data-i18n-attr="aria-label:rail.reminders,title:rail.reminders" aria-label="提醒" title="提醒">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+        <span class="dot" id="reminderDot" hidden></span>
+      </button>
     </div>
 
     <div class="rail-actions">
@@ -499,6 +507,47 @@
     <div class="modal-foot">
       <span class="sep"></span>
       <button class="btn btn-primary" type="button" id="settingsDone" data-i18n="settings.done" data-od-id="settings-done">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 提醒（ADR-0012：库内对象，后端是唯一正本） ─────────────────────────
+     形态照原型 `alibot-app.html:1566-1584` 与切片 `alibot-design-system/screens/modals.html`
+     （`modal wide`）：列表 `.reminder-row`（时间 / 文本 / 归属频道 / 删除）+ 空态「还没有提醒」
+     + 新增控件（文本 + 时间）。新增控件只有 `type="time"`、**没有**日期与重复字段（原型没有，
+     本票不扩张）。列表与空态都由 app.js 按后端读数渲染：正本不是这份标记。
+
+     副标题与空态正文**不**照抄原型那句「到点后 ⏰ 系统消息会直接出现在对应频道的消息流中」：
+     「到期触发的唤醒」不在本票授权范围内（规格未授权、原型也没有实现），照抄会让界面声称一个
+     不存在的行为。这里写的是这条边界的真话——提醒存在后端，跨刷新与重启都还在。 -->
+<div class="overlay" id="remindersOverlay" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="remindersModalTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="remindersModalTitle" data-i18n="reminder.modalTitle">提醒</h2>
+        <div class="sub" data-i18n="reminder.modalSub">提醒保存在本机后端，刷新或重启后仍在。</div>
+      </div>
+      <button class="icon-btn" type="button" id="remindersModalClose" data-i18n-attr="aria-label:reminder.closeAria" aria-label="关闭提醒">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div id="reminderList" data-od-id="reminder-list"></div>
+      <div class="field reminder-add">
+        <label for="reminderText" data-i18n="reminder.newLabel">新提醒</label>
+        <div class="reminder-add-row">
+          <!-- 文本：占位与可访问名同一个词条（原型 `#rmText` 只有占位符）。 -->
+          <input class="input" id="reminderText" type="text" autocomplete="off" data-i18n-attr="placeholder:reminder.textLabel,aria-label:reminder.textLabel" placeholder="提醒内容" data-od-id="reminder-text" />
+          <!-- 时间：`type="time"` 的控件自己没有可读标签，因此给它一个 `aria-label`（原型那一格没有标签）。 -->
+          <input class="input reminder-time" id="reminderTime" type="time" value="09:00" data-i18n-attr="aria-label:reminder.timeLabel" aria-label="提醒时间" data-od-id="reminder-time" />
+        </div>
+      </div>
+      <div class="form-error" id="reminderFormError" hidden role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn" type="button" id="remindersCancel" data-i18n="common.cancel">取消</button>
+      <button class="btn btn-primary" type="button" id="reminderAddSubmit" data-i18n="reminder.add" data-od-id="reminder-add">添加提醒</button>
     </div>
   </div>
 </div>

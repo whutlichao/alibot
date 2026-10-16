@@ -55,6 +55,7 @@ const I18N_CATALOGS = {
     'rail.emptyDms': '还没有私信。新建私信后会在这里显示。',
     'rail.emptyAgents': '还没有 Agent。',
     'settings.open': '设置',
+    'rail.reminders': '提醒',
 
     /* ─── 状态点与任务状态（后端只给词，这里只给说法） ──────────────── */
     'status.online': '空闲',
@@ -297,6 +298,24 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': '本机模型：不离开本机，不需要数据流确认。',
     'agent.providerRemoteHint': '远端模型：启用前需要先确认数据会离开本机（见下方告知）。',
 
+    /* ─── 提醒（ADR-0012：库内对象） ─────────────────────────────────
+       两句话都只说**这条交付里真成立的事**：提醒存在后端、跨刷新与重启仍在。
+       **不**写「到点会发一条 ⏰ 系统消息」——到期触发的唤醒不在本票授权范围内
+       （规格未授权、原型也没有实现），写上去就是界面在声称一个不存在的行为。 */
+    'reminder.modalTitle': '提醒',
+    'reminder.modalSub': '提醒保存在本机后端，刷新或重启后仍在。',
+    'reminder.closeAria': '关闭提醒',
+    'reminder.emptyTitle': '还没有提醒',
+    'reminder.emptyBody': '提醒保存在后端，不依赖这台浏览器。',
+    'reminder.newLabel': '新提醒',
+    'reminder.textLabel': '提醒内容',
+    'reminder.timeLabel': '提醒时间',
+    'reminder.add': '添加提醒',
+    'reminder.deleteAria': '删除提醒',
+    'reminder.saveFailed': '提醒未保存：{reason}',
+    'reminder.deleteFailed': '删除提醒失败：{reason}',
+    'reminder.loadFailed': '读取提醒失败：{reason}',
+
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
     'settings.sub': '工作区偏好',
@@ -363,6 +382,7 @@ const I18N_CATALOGS = {
     'rail.emptyDms': 'No direct messages yet. New ones show up here.',
     'rail.emptyAgents': 'No agents yet.',
     'settings.open': 'Settings',
+    'rail.reminders': 'Reminders',
 
     /* ─── Status dots and task statuses ────────────────────────────── */
     'status.online': 'Idle',
@@ -621,6 +641,25 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': 'Local model: it never leaves this machine and needs no data-flow consent.',
     'agent.providerRemoteHint':
       'Remote model: enabling it first requires confirming that data leaves this machine (see the notice below).',
+
+    /* ─── Reminders (ADR-0012: backend objects) ──────────────────────
+       Both sentences claim only what this delivery actually does: reminders live in the
+       backend and survive a refresh or a restart. No "a ⏰ system message will appear when
+       it is due" — due-time wake-up is outside this ticket, so that copy would be a lie. */
+    'reminder.modalTitle': 'Reminders',
+    'reminder.modalSub':
+      'Reminders are stored in the local backend; they survive a refresh or a restart.',
+    'reminder.closeAria': 'Close reminders',
+    'reminder.emptyTitle': 'No reminders yet',
+    'reminder.emptyBody': 'Reminders live in the backend, not in this browser.',
+    'reminder.newLabel': 'New reminder',
+    'reminder.textLabel': 'Reminder text',
+    'reminder.timeLabel': 'Reminder time',
+    'reminder.add': 'Add reminder',
+    'reminder.deleteAria': 'Delete reminder',
+    'reminder.saveFailed': 'Reminder not saved: {reason}',
+    'reminder.deleteFailed': 'Could not delete the reminder: {reason}',
+    'reminder.loadFailed': 'Could not read reminders: {reason}',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',
