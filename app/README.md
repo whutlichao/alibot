@@ -72,6 +72,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | 默认数据目录 | `~/Alibot/`（可见、可直接复制） |
 | 覆盖方式 | `--data-dir <路径>` 或环境变量 `ALIBOT_DATA_DIR` |
 | 库文件 | `<数据目录>/alibot.db`（单文件 SQLite，WAL 模式） |
+| 附件字节 | `<数据目录>/attachments/<附件标识>`（**不进 SQLite**；库里只存相对路径，因此整个数据目录可整体搬迁） |
 | 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾、浏览器带 `last_seq` 重连） |
 
 改名不保留兼容：只有 `ALIBOT_*` 环境变量生效，旧前缀 `WORKSPLICE_*` 与旧数据目录 `~/Worksplice`
@@ -79,6 +80,8 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 
 备份：`cp -R ~/Alibot ~/Alibot-backup-$(date +%F)`。恢复：反向复制回去。
 库文件旁边可能有 `-wal` / `-shm` 两个伴随文件，一起复制即可。
+**附件字节在 `<数据目录>/attachments/` 里**（#67）：只备份 `alibot.db` 的备份**不再是完整备份**，
+它会是「有元数据、没字节」的半份——备份单位是**整个数据目录**。
 
 从首版升级：本版不做自动迁移，启动时若库的 schema 版本不是本版会**拒绝启动**；若你的库已被旧版代码
 半改名（列表页正常但点进频道全 404），可用 `python -m alibot --repair-targets --data-dir <数据目录>`
@@ -96,10 +99,12 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
 | `channel_read` | member_id, channel_id, last_read_seq | 已读位置（未读的正本）。owner 的行使未读徽标；agent 的行是它自己的消费游标 |
 | `message` | id, target_id, seq, author_member_id, kind, 正文, **提及快照** | **append-only**，`UNIQUE(target_id, seq)` |
+| `attachment` | id, 原文件名, 大小, MIME, **相对路径**, 创建时间, **可空的 message_id** | 附件的元数据；**字节在数据目录**、不进 SQLite。`message_id` 为空 = 未发送的草稿（读取面不暴露）。绑定一次即不可变，**没有**删除路径 |
 | `round_outcome` | member_id, target_id, base_seq, status, reason, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `channel_budget.used` |
 
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
-  HTTP 面也没有编辑或删除端点。
+  `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /
+  删除这些对象的端点。
 - **频道内单调 seq**：由后端在同一事务内分配，同时充当渲染顺序、重连补拉游标。
 - **提及快照随消息落库**：唤醒与前端高亮都消费同一份快照，不事后按当前成员名表重新解析。
 - **未读计数** = `last_read_seq` 之后、`kind ∈ {human, agent}` 的顶层消息条数（不计 `system`）。
@@ -191,10 +196,12 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度**；后端是唯一正本） |
 | `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
 | `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
+| `POST /api/attachments?name=<原文件名>` | **上传一个未绑定的附件**（请求体是文件原始字节、`Content-Type` 是声明 MIME）；返回标识与可读元数据。大小 / 类型上限在这里拒绝（可读原因，`code` + `fields`） |
+| `GET /api/attachments/{id}` | 已绑定附件的内容（**草稿回 404**）；`Content-Disposition` 是原文件名，`?disposition=inline` 为浏览器内预览 |
 | `GET /api/channels` | 频道列表（含 `last_seq` / `last_read_seq` / `unread_count`） |
 | `POST /api/channels` | 新建频道 `{name, description, member_ids}`；校验失败**整体不创建** |
 | `GET /api/channels/{id}/messages` | 按 seq 升序取消息（`?after_seq=n` 取增量） |
-| `POST /api/channels/{id}/messages` | 发送人类消息 `{body}`（同事务分配 seq，随后唤醒成员面） |
+| `POST /api/channels/{id}/messages` | 发送人类消息 `{body, attachment_ids?}`（同事务分配 seq 并绑定附件，随后唤醒成员面） |
 | `GET /api/channels/{id}/members` | 频道成员 |
 | `POST /api/channels/{id}/members` | 把 Agent 加入频道 `{member_id}`；幂等（`joined` 区分新增与本来就在），只接受 Agent，校验失败**整体不加入** |
 | `GET /api/channels/{id}/round-outcomes` | 轮次结果（只读；首版**没有**可观测页面） |
@@ -211,6 +218,25 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/health` | 存活与数据目录 |
 
 错误统一为 `{"error": {"code", "message", "fields"?}}`。
+
+### 附件：两步上传（先拿标识，随消息提交时绑定；ADR-0014）
+
+附件是**独立对象**：元数据（原文件名 / 大小 / MIME / **相对路径** / 创建时间 / 可空的
+`message_id`）落库，**字节落数据目录**的独立子目录（`<数据目录>/attachments/<附件标识>`）——
+单文件库是业务正本与备份单位，把二进制塞进去会让库体积、备份与损坏半径一起失控。
+
+1. `POST /api/attachments?name=<原文件名>`，请求体是文件原始字节、`Content-Type` 是声明 MIME
+   （因此后端不需要 multipart 解析依赖）。上限：单文件 **10 MiB**、类型取一份窄白名单
+   （文本 / JSON / CSV / PDF / PNG / JPEG / GIF / WebP），声明类型不在其中即拒。
+   被拒的请求**不留**库内行、也不留孤儿字节。
+2. 发送消息时带上 `attachment_ids: [...]`：**绑定与消息落库在同一事务里**——任一条绑定失败
+   （不存在 / 已被绑定）都整体回滚，于是不会留下「绑了一半的草稿」或「有消息没附件」。
+3. `GET /api/attachments/{id}` 取内容（草稿回 404）。
+
+**未绑定的上传 = 未发送的草稿**：它不出现**任何**消息读取面（消息流 / 任务线程 / 私信 / 搜索
+命中的消息形状里只有已绑定的附件），因此不需要后台清理器。附件**不可变**：上传后不改内容、
+不改名、不覆盖；与消息同口径，**没有**删除附件的端点（`PUT` / `PATCH` / `DELETE` 都回 404）。
+附件**不进搜索**（命中本体仍是文本），也**不进成员面**（附件内容不喂给 Agent）。
 
 ### 未读口径
 
