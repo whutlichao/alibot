@@ -35,6 +35,9 @@ _run_dry_run(data_dir)
 `plan_steps` 另补一条**运行时**「每步严格 +1」校验：注册表在导入后被改坏（历史那次 `9 → 11` 的形状）
 时，预演与真跑都会在**规划**这一步明确失败并指出断点，而不是把跳号那一步静默执行过去。
 
+> Answer（逐条可复现读数 + 双轴 code-review 的 findings 与处理）：`app/specs/issue-93-acceptance.md`；
+> tracker 上的摘要见 #93 的 comment。
+
 ## Evidence
 
 - **Before**（本票 base `main @ 82a6ffb`，隔离副本）：新增验收文件 **13 红 / 0 绿**
