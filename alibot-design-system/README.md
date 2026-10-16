@@ -15,6 +15,8 @@ colors_and_type.css    canonical color + typography tokens (the --bg/--surface/-
 tokens.css             spacing, radius, elevation, layout, motion, z-index
 SKILL.md               agent-facing: how to compose new surfaces with this system
 README.md              this file
+decisions/             this package's own ADR space (numbering is independent of the
+                       repo's docs/adr); ADR-0017 records the dark value layer
 alibot-app.html        the source monolith (1,890 lines) — kept for exact comparison
                        (`alibot-app.html.artifact.json` is its artifact manifest)
 context/
@@ -90,6 +92,13 @@ spacing token values remain unchanged. Colour is authored once in
 in-package `ui_kits/app/product-ext.css` and the app's
 `app/alibot/studio/product-tokens.css`); every value
 is `oklch()` and every family carries the four tiers.
+
+**Dark value layer.** The same token-name set carries a second value set for dark
+mode, selected by `:root[data-theme='dark']` or — for the follow-system tier — by
+`@media (prefers-color-scheme: dark)`. Hue angles never change and no name is added;
+`fill` tiers keep their light values while `--on-accent` stays the deep plum, so every
+`fill` still pairs only with `--on-accent`. See `DESIGN.md` §2 and
+`decisions/ADR-0017-dark-value-layer.md`.
 
 ## Fidelity
 
