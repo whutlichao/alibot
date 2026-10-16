@@ -136,9 +136,15 @@ def test_append_only_triggers_still_reject_update_and_delete(client: TestClient,
         db._conn.execute("DELETE FROM round_outcome")
 
 
-def test_schema_version_is_bumped_and_no_migration_script(client: TestClient, data_dir: Path) -> None:
-    """``SCHEMA_VERSION`` 已 bump，且源码树里没有迁移脚本（ADR-0015：迁移是显式入口 ``--migrate``
-    的事，号段随票携带 ``from → to`` 步骤；本票不改号、不建 ``migrations/``）。"""
+def test_schema_version_is_bumped_and_the_chain_lives_in_code_not_sql_scripts(
+    client: TestClient, data_dir: Path
+) -> None:
+    """``SCHEMA_VERSION`` 与本代码常量一致，且迁移链由**代码里的注册表**携带，不是 SQL 脚本目录。
+
+    ADR-0015：迁移是显式入口 ``--migrate`` 的事，号段随票携带 ``from → to`` 步骤。本票（#90 / #91）
+    落地了 ``3 → 4`` … ``11 → 12`` 整条链，落点是 ``app/alibot/migrate.py`` 的逐版注册表；源码树里
+    仍然**没有** ``migrations/`` 目录（链不是一堆待执行的 SQL 文件），链的连续性由 #95 的守卫测试守住。
+    """
     create_channel(client, name="版本")
 
     with _store(data_dir) as db:
@@ -147,12 +153,11 @@ def test_schema_version_is_bumped_and_no_migration_script(client: TestClient, da
     # 刻意**不**把版本号钉成字面量（曾有一处 `assert SCHEMA_VERSION == 6`）：那是一句随每次
     # schema 变更必须重钉一次的历史注记，而不是「库里的版本 = 本代码的版本」这条外部契约
     # （上一行就是它）。版本号本身的抬升由各自实施票的验收判据覆盖。
-    # 没有迁移脚本：本票的源码树里不存在任何 migrations/ 目录或 *_migrate*.py。
+    # 没有 SQL 迁移脚本目录：链在代码里（``alibot/migrate.py`` 的注册表）。
     # 只扫 `app/`（本票的源码面）：若从仓库根 rglob，会走进 `.venv/`，于是结论取决于第三方包里
-    # 恰好有没有同名文件，而不是本票做了什么。
+    # 恰好有没有同名目录，而不是本票做了什么。
     app_root = Path(__file__).resolve().parents[1]
     assert not (app_root / "migrations").exists()
-    assert not list(app_root.rglob("migrate*.py"))
 
 
 # ─── 三种 kind 各自独立计数 seq ─────────────────────────────────────────────

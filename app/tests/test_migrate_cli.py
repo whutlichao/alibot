@@ -153,12 +153,13 @@ ENTRY_POINTS: dict[str, Callable[[Path], list[str]]] = {
     "repair-targets": _repair_argv,
 }
 
-# 不被本代码接受的库：版本低于 3 / 版本号缺失但有业务数据 / 认不出的号 / 未来版本
-# （以及 ① 阶段尚无迁移步骤、覆盖范围为空时的 ``3``..``SCHEMA_VERSION - 1``）。
+# 不被本代码接受的库：版本低于 3 / 版本号缺失但有业务数据 / 认不出的号 / 未来版本。
+#
+# **注意**：``3``..``SCHEMA_VERSION - 1`` 现在由 ``--migrate`` **接受并推进**（迁移链覆盖
+# ``[3, SCHEMA_VERSION]``），因此不再是「拒绝」参数。启动路径与 ``--repair-targets`` 仍会拒绝这段
+# 区间里的库（放宽别名的版本门是 #94），所以「三条入口同一个答复」这条只对**真正不被接受**的库成立。
 REJECTED_VERSIONS = [
     pytest.param("2", id="below-min-supported"),
-    pytest.param("3", id="lowest-supported-source"),
-    pytest.param(str(SCHEMA_VERSION - 1), id="one-below-code-version"),
     pytest.param(str(SCHEMA_VERSION + 1), id="future-version"),
     pytest.param("not-a-number", id="unrecognised-version"),
     pytest.param(None, id="version-missing-with-business-data"),
@@ -203,8 +204,8 @@ def test_every_entry_point_refuses_the_same_library_with_the_same_verdict(
 ) -> None:
     """版本不被接受 ⇒ 退出码 3 + 新拒绝正文，且库文件 sha256 前后一致。
 
-    正文必须含库路径、库里的版本、本代码需要的版本、``--migrate`` 命令、备份指引，并说明本版尚无
-    可用迁移步骤；**不得**再出现「本版不做数据迁移」（S3、S4、S14、S16）。
+    正文必须含库路径、库里的版本、本代码需要的版本、``--migrate`` 命令、备份指引，并说明可用的迁移
+    入口与源版本范围；**不得**再出现「本版不做数据迁移」（S3、S4、S14、S16）。
     """
     data_dir = tmp_path / "data"
     db_path = _build_current_library_with_data(data_dir)
@@ -225,7 +226,7 @@ def test_every_entry_point_refuses_the_same_library_with_the_same_verdict(
     assert "--migrate" in stderr and "--data-dir" in stderr
     assert "备份" in stderr
     assert "源版本范围" in stderr
-    assert "本版尚无可用迁移步骤" in stderr
+    assert "可用迁移入口" in stderr
     assert "不做数据迁移" not in stderr
     if stored_version is None:
         assert "缺失" in stderr
@@ -269,14 +270,14 @@ def test_non_loopback_address_still_exits_with_two(tmp_path: Path) -> None:
 
 
 def test_migrate_never_exits_with_two_even_on_a_non_loopback_host(tmp_path: Path) -> None:
-    """``--migrate`` 不监听 ⇒ ``--host`` 对它无意义：答复集合是 ``{0, 3, 4}``，不含 2（规格 D2）。
+    """``--migrate`` 不监听 ⇒ ``--host`` 对它无意义：答复集合是 ``{0, 3, 4, 5}``，不含 2（规格 D2）。
 
     实测路径：非 loopback 主机 + 一本不被接受的库 ⇒ 仍然给出**版本闸门**的答复（3），而不是启动路径
     的「非 loopback ⇒ 2」。
     """
     data_dir = tmp_path / "data"
     db_path = _build_current_library_with_data(data_dir)
-    _stamp_version(db_path, str(SCHEMA_VERSION - 1))
+    _stamp_version(db_path, str(SCHEMA_VERSION + 1))
 
     completed = _run("--migrate", "--host", "0.0.0.0", "--data-dir", str(data_dir))
 

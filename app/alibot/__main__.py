@@ -16,6 +16,7 @@ from .db import (
     DATA_DIR_ENV,
     DATABASE_FILE_NAME,
     DEFAULT_PORT,
+    MIN_SUPPORTED_SOURCE_VERSION,
     SCHEMA_VERSION,
     Database,
     SchemaVersionMismatch,
@@ -34,9 +35,13 @@ DATA_NOT_ACCEPTED_EXIT_CODE = 3
 # （``repair.missing_current_required_tables`` 的那份清单）**且**库里有业务数据。``--migrate`` 与
 # ``--repair-targets`` 共用它，且都发生在**任何写入之前**（库文件 sha256 不变、数据目录里不出现新备份）。
 #
-# 它与「迁移失败、已回滚」是两回事：前者是「还没动手」，后者是「动手了、失败并回滚」。本版尚无迁移
-# 步骤，因此还不会产生后者（那是 #90 / #91 的范围）；到那时它会另占一个码，不复用本常量。
+# 它与「迁移失败、已回滚」是两回事：前者是「还没动手」，后者是「动手了、失败并回滚」。
 REPAIR_FAILED_EXIT_CODE = 4
+
+# 「迁移失败，**已回滚**」时的退出码（规格 D2 / ADR-0015）：备份失败、或迁移链跑到一半失败并已
+# ``ROLLBACK``。它一定发生在**动手之后**——库 sha256 可能已被回滚到原状，但绝不留下「新表建了、
+# 数据没搬」的中间态。与上面那个 ``4`` 的区分是「动手之前 vs 动手之后」。
+MIGRATION_FAILED_EXIT_CODE = 5
 
 
 def _is_loopback(host: str) -> bool:
@@ -69,30 +74,64 @@ def build_parser() -> argparse.ArgumentParser:
         "--migrate",
         action="store_true",
         help=(
-            "【显式迁移入口】把数据目录里的库推进到本代码的 schema 版本；跑完直接退出、不起监听。"
-            "本版尚未携带迁移步骤，旧版本库仍按退出码 3 拒绝并给出备份指引"
+            "【显式迁移入口】把数据目录里的旧库逐版推进到本代码的 schema 版本"
+            f"（接受源版本 {MIN_SUPPORTED_SOURCE_VERSION}..{SCHEMA_VERSION}）；迁移前自动整目录备份、"
+            "单事务收口、幂等。跑完直接退出、不起监听。"
         ),
     )
     return parser
 
 
+def _migratable_source_version(found_version: str | None) -> int | None:
+    """闸门拒收的读数里，哪些是**可迁移的源版本**（规格 D4：``[MIN, SCHEMA_VERSION)``）。
+
+    闸门（``db.Database._assert_schema_compatible``）只在版本**恰好等于**本代码常量时放行，因此
+    版本在 ``3 .. SCHEMA_VERSION - 1`` 的旧库会在这里被拒。``--migrate`` 是唯一把这段区间接回来的
+    入口：读数是可解析的整数且落在区间内 ⇒ 交给迁移引擎；其余（低于 3 / 认不出的号 / **未来版本**）
+    一律给闸门的原答复（退出码 ``3``）。
+    """
+    if found_version is None:
+        return None
+    try:
+        version = int(found_version)
+    except ValueError:
+        return None
+    if MIN_SUPPORTED_SOURCE_VERSION <= version < SCHEMA_VERSION:
+        return version
+    return None
+
+
+def _perform_migration(data_dir: Path, from_version: int) -> int:
+    """跑一次真正执行的迁移：备份 + 单事务 + 审计 + 报告（规格 D8 / D2 的 ``0`` 与 ``5``）。"""
+    from . import migrate
+
+    try:
+        report = migrate.migrate_data_dir(data_dir, from_version)
+    except migrate.MigrationError as exc:
+        print(str(exc), file=sys.stderr)
+        return MIGRATION_FAILED_EXIT_CODE
+    print(migrate.render_report(report))
+    return 0
+
+
 def _run_migrate(data_dir: Path) -> int:
     """显式迁移入口：跑完直接退出（不起监听、不跑 uvicorn），并给出答复矩阵里的那个答复。
 
-    本版（#89）**尚无任何迁移步骤**，因此接受范围为空：迁移链覆盖不到任何旧版本。矩阵如下
-    （判据与可观察验收按规格 D2 / D9）：
+    接受范围 = 规格 D4 的 ``[MIN_SUPPORTED_SOURCE_VERSION, SCHEMA_VERSION]``：从 3 到 11 的
+    **每一个**源版本都会被接受并逐版推进到终态。矩阵如下（判据与可观察验收按规格 D2 / D9）：
 
     - 没有库文件 ⇒ ``0``，**不凭空创建库**（与 ``--repair-targets`` 同一口径）。
-    - 版本闸门拒绝（版本低于 3 / 版本号缺失但有业务数据 / 认不出的号 / 未来版本，以及 ① 阶段尚无
-      迁移步骤时的 ``3``..``SCHEMA_VERSION - 1``）⇒ :data:`DATA_NOT_ACCEPTED_EXIT_CODE`，正文与
-      启动路径、``--repair-targets`` **逐字相同**。
+    - 版本可解析且落在 ``[3, SCHEMA_VERSION)`` ⇒ 真正执行迁移：整目录备份 → 单事务逐版推进 →
+      审计台账 → 报告；成功 ``0``、备份失败或链上失败（已回滚）⇒ ``5``。
+    - 版本闸门拒绝且不是可迁移源版本（低于 3 / 版本号缺失但有业务数据 / 认不出的号 / **未来版本**）
+      ⇒ :data:`DATA_NOT_ACCEPTED_EXIT_CODE`，正文与启动路径、``--repair-targets`` **逐字相同**。
     - 版本已是本代码版本、当前形态完好 ⇒ ``0``，无事可做、**不建备份**。
     - 版本已是本代码版本、但缺当前形态必须存在的表、**且**库里有业务数据 ⇒
       :data:`REPAIR_FAILED_EXIT_CODE`（复用 ``repair`` 的判据），发生在**任何写入之前**。
     - 版本已是本代码版本、缺表但**没有**业务数据 ⇒ ``0``（空库口径不变）。
 
-    所有分支都发生在任何写入之前：闸门只读，形态判定只读，本版也不执行任何迁移步骤——因此库文件
-    sha256 在每条路径上都不变。等 #90 把 ``3 → 4`` 一步落地后，接受范围才变为链的实际覆盖范围。
+    ``3`` / ``4`` 两条分支都发生在任何写入之前：闸门只读，形态判定只读——因此库文件 sha256 在这
+    两条路径上都不变、也不出现新备份。
     """
     # 复用既有判据（票面 Constraints）：形态清单与「有业务数据」都取自 ``repair`` / ``Database``
     # 已有的那一份，本入口不新增第二套判定，自己只做「事实 → 退出码」的映射。
@@ -107,6 +146,9 @@ def _run_migrate(data_dir: Path) -> int:
     try:
         database = Database.open_without_initializing(data_dir)  # 闸门 + **不建表**
     except SchemaVersionMismatch as exc:
+        source_version = _migratable_source_version(exc.found_version)
+        if source_version is not None:
+            return _perform_migration(data_dir, source_version)
         print(str(exc), file=sys.stderr)
         return DATA_NOT_ACCEPTED_EXIT_CODE
 
