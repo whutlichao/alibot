@@ -53,6 +53,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.body_invalid": "请求体不合法：{location}（{kind}）",
         "error.tier_value_null": "档位取值不能为 null（要保留原值请省略该字段）",
         "error.agent_field_null": "该字段不能为 null（要保留原值请省略该字段）",
+        # 提醒（#68）：同一条「文本 / 时间」形状的校验在两个入口（新增 / 删除）都指向它。
+        "error.reminder_invalid": "提醒校验未通过，未创建任何数据",
+        "error.reminder_text_empty": "提醒内容不能为空",
+        "error.reminder_text_too_long": "提醒内容最多 {limit} 个字符",
+        "error.reminder_time_shape": "提醒时间需要是 HH:MM（例如 09:00）",
+        "error.reminder_not_found": "提醒不存在：{reminder_id}",
         "availability.orchestrator_absent": "后端未启用成员面编排",
         "error.agent_transfer_needs_orchestrator": "Agent 转派任务需要启用成员面编排",
         "error.channel_member_join_failed": "加入频道校验未通过，未加入任何成员",
@@ -228,6 +234,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.body_invalid": "The request body is not valid: {location} ({kind})",
         "error.tier_value_null": "A tier value cannot be null (omit the field to keep the current value)",
         "error.agent_field_null": "This field cannot be null (omit it to keep the current value)",
+        # Reminders (#68): the text / time shape check both entry points point at.
+        "error.reminder_invalid": "Reminder validation failed; nothing was created",
+        "error.reminder_text_empty": "Reminder text cannot be empty",
+        "error.reminder_text_too_long": "Reminder text is limited to {limit} characters",
+        "error.reminder_time_shape": "A reminder time must be HH:MM (for example 09:00)",
+        "error.reminder_not_found": "No such reminder: {reminder_id}",
         "availability.orchestrator_absent": "The backend runs without the member-surface orchestrator",
         "error.agent_transfer_needs_orchestrator": (
             "An Agent handing a task to another Agent requires the member-surface orchestrator"

@@ -38,6 +38,14 @@
      在面板内直接有「加入」控件（人类裁定 2 选 a），点击调用 `POST /api/channels/{id}/members`。
    - 加入成功后**不刷新页面**：用响应里的最新成员表覆盖缓存，`@` 补全立刻能选到它。
      左栏「本机 Agent」（`renderMembers()`）仍是全工作区名单，语义与「频道成员」不再冲突。
+
+   本票（issue #68）新增：
+   - **提醒**：`reminder` 是**库内对象**（ADR-0012），后端是唯一正本。左栏 rail 的入口旁的圆点
+     只在**有提醒**时出现（原型 `alibot-app.html:511-514` / `:1886`）；弹窗按后端读数渲染列表
+     （时间 / 文本 / 归属频道 / 删除）、空态与新增控件（文本 + 时间）。
+   - 增删提醒与改设置同一条纪律：**不落消息、不唤醒、不消耗预算**，也不新增 target、不计未读。
+     写路径一律以**响应里的最新提醒表**覆盖本地镜像（不本地拼一条假行），因此列表永远等于后端说
+     的那一份；本文件依旧不用任何浏览器存储保存业务状态。
    ========================================================================== */
 'use strict';
 
@@ -186,6 +194,9 @@ const state = {
     message_density: 'comfortable',
     theme: DEFAULT_THEME,
   },
+  // 提醒（`CONTEXT.md` **提醒**，ADR-0012）：同样是**后端对象的镜像**，正本是 `GET /api/reminders`
+  // （`reminder` 表）。增删都以响应里的最新列表覆盖它，本地不造行、不落浏览器存储。
+  reminders: [],
   // 搜索是纯呈现状态：命中、来源和高亮区间都来自后端，不在浏览器保存或重算。
   // `facet` 是**后端的过滤参数**（原型的四档），前端只记「选的是哪一档」。
   search: { query: '', facet: 'all', hits: [], loading: false, error: '' },
@@ -651,6 +662,9 @@ function applySettings(settings) {
   document.documentElement.dataset.theme = state.settings.theme;
   applyStaticI18n(document);
   renderSettingsModal();
+  // 提醒弹窗的文案（空态、删除键的可访问名）也是词条：切语言时要与其它静态文案一起重铺，
+  // 否则它会留在上一个语言。渲染只读 `state.reminders`，不发请求。
+  renderRemindersModal();
   // 名册的动态文案（标题 / 副标题 / 行内角色与状态说法）由 `t()` 渲染，因此切语言时
   // 要跟设置弹窗一样重铺一遍（静态的关闭按钮由上面那句 `applyStaticI18n` 覆盖）。
   if (state.rosterChannelId) renderRoster();
@@ -726,6 +740,141 @@ function renderSettingsModal() {
   }
 }
 
+/* ─── 提醒（ADR-0012：库内对象，后端是唯一正本） ────────────────────────────
+   列表 / 空态 / 圆点全部按**后端读数**渲染，本地不拼行、不落浏览器存储。
+
+   两处刻意的**不照抄原型**（两边都写在票面的边界里）：
+   1. 圆点只在有提醒时出现 —— 原型 `alibot-app.html:1886` 就是这么写的，本票逐字照办。
+   2. 删除控件用 `×` 而不是原型那个 `plus` 图标 —— 原型 `:1570` 在一个 `aria-label="删除提醒"`
+      的控件里复用了「新增」的加号图标（图标与它的可访问名互相矛盾）。可视文案与可访问名不一致
+      会让图标/读屏用户读到相反的动作，因此这里按本仓的关闭控件形状用 `×`；
+      本仓已有先例：指派 pill 用 `<span>` 而不是原型的 `<button>`（那也是一个按下去不发生的站）。 */
+
+/** 读提醒（正本在后端）：刷新本地镜像、圆点与弹窗列表。
+
+    落点与写路径共用 `applyReminderPayload`——「拿到一份提醒表之后怎么铺界面」只有一处实现，
+    读与写不会各自演化（读成功同样要把上一次的错误话收回去：那份状态已经不成立了）。 */
+async function loadReminders() {
+  applyReminderPayload(await api('/api/reminders'));
+  return state.reminders;
+}
+
+/** 写路径（新增 / 删除）与读路径的**唯一落点**：用响应里的**最新**提醒表覆盖镜像，再重绘圆点与列表。
+
+    不在本地拼一条「看起来成功了」的行：界面只能显示后端说过的那一份。 */
+function applyReminderPayload(payload) {
+  state.reminders = (payload && payload.reminders) || [];
+  hideReminderError();
+  renderReminderDot();
+  renderRemindersModal();
+}
+
+function showReminderError(message) {
+  const box = $('#reminderFormError');
+  if (!box) return;
+  box.textContent = message;
+  box.hidden = false;
+}
+
+function hideReminderError() {
+  const box = $('#reminderFormError');
+  if (box) box.hidden = true;
+}
+
+/** 圆点**只在有提醒时**出现（原型 `alibot-app.html:1886`：`hidden = 没有`）。 */
+function renderReminderDot() {
+  const dot = $('#reminderDot');
+  if (!dot) return;
+  dot.hidden = state.reminders.length === 0;
+}
+
+function openRemindersModal() {
+  hideReminderError();
+  renderRemindersModal();
+  $('#remindersOverlay').hidden = false;
+  const input = $('#reminderText');
+  if (input) input.focus();
+  // 打开时按**后端正本**再读一次：别的浏览器或上一次会话设的提醒在这里出现。
+  // 读不到不关弹窗，把话留在弹窗里（正本读不到时界面不能假装列表是完整的）。
+  loadReminders().catch((err) => showReminderError(t('reminder.loadFailed', { reason: err.message })));
+}
+
+function closeRemindersModal() {
+  $('#remindersOverlay').hidden = true;
+}
+
+/** 新增一条提醒：文本 + 时间（原型只有 `type="time"`、没有日期与重复字段）。
+
+    归属 = **当前打开的频道**（原型 `:1775` 用当前频道）；DM 视图或空工作台里没有频道可归属，
+    于是显式传 `null`——后端把它读作「不归属任何频道」，与设置面那条「显式 null 整体拒绝」不同
+    （档位没有「不归属」这个合法状态，提醒有）。 */
+async function submitReminder() {
+  const textInput = $('#reminderText');
+  const timeInput = $('#reminderTime');
+  const channel = activeChannel();
+  try {
+    const payload = await api('/api/reminders', {
+      method: 'POST',
+      body: {
+        text: textInput ? textInput.value : '',
+        time: timeInput ? timeInput.value : '',
+        channel_id: channel ? channel.id : null,
+      },
+    });
+    applyReminderPayload(payload);
+    // 只清正文：时间格保留当前取值（原型 `#rmTime` 的默认值就是 09:00，连设两条不用重填）。
+    if (textInput) textInput.value = '';
+  } catch (err) {
+    showReminderError(t('reminder.saveFailed', { reason: err.message }));
+  }
+}
+
+async function deleteReminder(reminderId) {
+  try {
+    const payload = await api('/api/reminders/' + encodeURIComponent(reminderId), { method: 'DELETE' });
+    applyReminderPayload(payload);
+  } catch (err) {
+    showReminderError(t('reminder.deleteFailed', { reason: err.message }));
+  }
+}
+
+/** 弹窗内容的两态：有条目就是列表，没有就是空态（照原型 `:1567` 的那条 `|| 空态`）。 */
+function renderRemindersModal() {
+  const list = $('#reminderList');
+  if (!list) return;
+  if (!state.reminders.length) {
+    const empty = el('div', 'empty');
+    empty.appendChild(el('b', null, t('reminder.emptyTitle')));
+    empty.appendChild(el('p', null, t('reminder.emptyBody')));
+    replaceChildren(list, [empty]);
+    return;
+  }
+  replaceChildren(list, state.reminders.map(reminderRowNode));
+}
+
+/** 一行提醒：时间 / 文本（+ 归属频道）/ 删除（原型 `.reminder-row` 的三个字段）。 */
+function reminderRowNode(reminder) {
+  const row = el('div', 'reminder-row');
+  row.dataset.reminder = reminder.id;
+  row.appendChild(el('span', 'time', reminder.time));
+  const grow = el('span', 'grow');
+  // 正文用文本节点挂在 `.grow` 上，因为后面还要往里追加归属频道那一段
+  // （`el(tag, class, text)` 是「只有一段文字」时用的；`toast()` 对同一种形态也是这么拼的）。
+  grow.appendChild(document.createTextNode(reminder.text));
+  if (reminder.channel_id) {
+    // `· #频道名` 与原型同一形状；**不归属**时这一段不出现（可空列的正本事实）。
+    grow.appendChild(el('span', 'ch', ' · #' + (reminder.channel_name || reminder.channel_id)));
+  }
+  row.appendChild(grow);
+  const remove = el('button', 'icon-btn', '×');
+  remove.type = 'button';
+  remove.dataset.deleteReminder = reminder.id;
+  remove.setAttribute('aria-label', t('reminder.deleteAria'));
+  remove.setAttribute('data-od-id', 'reminder-delete');
+  row.appendChild(remove);
+  return row;
+}
+
 /* ─── 后端状态 → 前端 ───────────────────────────────────────────────── */
 async function loadWorkspace(options) {
   const settings = options || {};
@@ -754,6 +903,9 @@ async function loadWorkspace(options) {
     syncOpenAgentModal();
     await refreshTasks();
     loadRemoteFlow();
+    // 提醒的读取不阻塞主线：读不到不影响工作台（与 `loadRemoteFlow` 同一条，打开弹窗时会再试一次
+    // 并在弹窗里说明），读到了圆点与列表按后端说话。
+    loadReminders().catch(() => {});
     const known = state.channels.some((channel) => channel.id === state.activeChannelId)
       || state.dms.some((dm) => dm.id === state.activeChannelId);
     if (!known) {
@@ -2065,6 +2217,7 @@ function discardPending(clientId) {
 function render() {
   renderIdentity();
   renderUnreadSummary();
+  renderReminderDot();
   renderChannels();
   renderDms();
   renderMembers();
@@ -4064,6 +4217,23 @@ function bindEvents() {
     if (!card) return;
     saveSettings({ theme: card.dataset.theme });
   });
+  // ── 提醒：rail 入口 + 弹窗（列表 / 空态 / 新增 / 删除）──
+  $('#btnReminders').addEventListener('click', openRemindersModal);
+  $('#remindersModalClose').addEventListener('click', closeRemindersModal);
+  $('#remindersCancel').addEventListener('click', closeRemindersModal);
+  $('#remindersOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'remindersOverlay') closeRemindersModal();
+  });
+  $('#reminderAddSubmit').addEventListener('click', submitReminder);
+  // 与其它「一格正文 + 一个提交键」的弹窗同形：Enter 直接提交。
+  $('#reminderText').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); submitReminder(); }
+  });
+  // 删除：一个控件一条提醒，点击委派到它所在的那一行。
+  $('#reminderList').addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-delete-reminder]');
+    if (remove) deleteReminder(remove.dataset.deleteReminder);
+  });
   // 搜索现在是**主线视图**：rail 入口与 `⌘K` 面板里的「搜索」都进同一个视图。
   $('#btnSearch').addEventListener('click', showSearchView);
   bindSearchEvents();
@@ -4412,6 +4582,7 @@ function bindEvents() {
         return;
       }
       if (!$('#settingsOverlay').hidden) closeSettingsModal();
+      if (!$('#remindersOverlay').hidden) closeRemindersModal();
       if (!$('#rosterOverlay').hidden) closeRosterModal();
       if (!$('#agentEditOverlay').hidden) closeAgentEditModal();
       if (!$('#channelOverlay').hidden) closeChannelModal();

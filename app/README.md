@@ -95,6 +95,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关 | 模型与系统提示是**配置数据**，换模型不改代码 |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证** |
 | `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
+| `reminder` | id, text, time(`HH:MM`), channel_id(可空 = 不归属), created_at | **提醒**（ADR-0012）：库内对象，后端是唯一正本（不放 localStorage）。它与频道的关系是**归属**，不是 target 作用域——**不**新增 target、不计未读、不参与唤醒；增删**不落消息、不唤醒、不消耗预算** |
 | `channel` | id, 名称, 描述 | |
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
 | `channel_read` | member_id, channel_id, last_read_seq | 已读位置（未读的正本）。owner 的行使未读徽标；agent 的行是它自己的消费游标 |
@@ -195,6 +196,9 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
 | `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度** / **主题**；后端是唯一正本） |
 | `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?, theme?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
+| `GET /api/reminders` | 全部提醒（`id` / `text` / `time`（`HH:MM`）/ `channel_id` + `channel_name`（可空 = 不归属）/ `created_at`）。正本是库里的 `reminder` 表（ADR-0012） |
+| `POST /api/reminders` | 新建一条提醒 `{text, time, channel_id?}`（`channel_id` 省略或 `null` = 不归属任何频道）。校验失败**整体不创建**；**不落消息、不唤醒、不消耗预算**、不新增 target、不计未读 |
+| `DELETE /api/reminders/{id}` | 删除一条提醒；返回被删掉的那条与最新列表。不存在的 id ⇒ 404 |
 | `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
 | `POST /api/attachments?name=<原文件名>` | **上传一个未绑定的附件**（请求体是文件原始字节、`Content-Type` 是声明 MIME）；返回标识与可读元数据。大小 / 类型上限在这里拒绝（可读原因，`code` + `fields`） |
 | `GET /api/attachments/{id}` | 已绑定附件的内容（**草稿回 404**）；`Content-Disposition` 是原文件名，`?disposition=inline` 为浏览器内预览 |
