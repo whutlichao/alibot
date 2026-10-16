@@ -30,6 +30,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .i18n import SOURCE_LOCALE, locale_of, render
+
 OWNER_ID = "owner"
 OWNER_DISPLAY_NAME = "Owner"
 OWNER_AVATAR_SLOT = 4
@@ -45,7 +47,8 @@ SCHEMA_VERSION = 7
 # （列集就是「只有这些档位」这条约束的落点：没有通用 key-value 面，因此不可能被当成通用存储）。
 LOCALES = ("zh-CN", "en")
 MESSAGE_DENSITIES = ("comfortable", "compact")
-DEFAULT_LOCALE = "zh-CN"
+# 缺省语言 = 词条表的**源语言**（同一件事不写第二遍：改源语言只改 `i18n.SOURCE_LOCALE`）。
+DEFAULT_LOCALE = SOURCE_LOCALE
 DEFAULT_MESSAGE_DENSITY = "comfortable"
 
 DEFAULT_PORT = 8788
@@ -70,13 +73,6 @@ TASK_STATUS_TRANSITIONS = {
     "in_review": {"done", "in_progress", "todo"},
     "done": {"in_progress", "closed"},
     "closed": set(),
-}
-TASK_STATUS_LABELS = {
-    "todo": "待认领",
-    "in_progress": "进行中",
-    "in_review": "待审",
-    "done": "完成",
-    "closed": "已关闭",
 }
 
 # 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
@@ -497,7 +493,14 @@ class DomainError(Exception):
 
 
 class NotFound(DomainError):
-    def __init__(self, message: str = "资源不存在"):
+    """404 一族：``message`` 必须显式给出（调用点按**语言偏好**渲染，见 ``Database._copy``）。
+
+    这里**故意没有缺省文案**：缺省值要么是钉死源语言的一句话（切到 English 后就露出中文），要么
+    是一条不可达的死词条。删掉缺省，让「404 的正文来自词条表」成为签名级约束——漏传立即报错，
+    而不是悄悄说错语言。
+    """
+
+    def __init__(self, message: str):
         super().__init__("not_found", message, status=404)
 
 
@@ -660,10 +663,30 @@ class Database:
         with suppress(sqlite3.OperationalError):  # 事务已经结束
             self._conn.execute("ROLLBACK")
 
+    # ─── 可见文案（ADR-0009 第二层：按**库内**语言偏好渲染） ───────────────
+    def _render_copy(self, key: str, /, **params: Any) -> str:
+        """本层产出的**用户可见**自然语言一律经它取值：HTTP 错误的 ``message`` / ``fields`` 的
+        自然语言，以及落库的 ``system`` 消息正文。
+
+        取值方式选的是「本层自读偏好」而不是「由调用方注入」（票面授权里两种都算合规）：
+
+        - 语言偏好的正本就是本层的 ``workspace_settings`` 那一行，自读与编排路径（无请求头）
+          读的是**同一个来源**，因此两条路径不可能拿到不同语言；
+        - 落库正文必须在**写入那一刻**定型（append-only，历史不回填），把语言判断留在写路径内部
+          才不会被某个调用点漏掉；
+        - 代价是一次单行主键读（``locale_of`` → ``workspace_settings``），且**不做缓存**：
+          缓存会让「刚切换语言」的读数滞后，那正是这条机制要保证的。
+        """
+        return render(key, locale_of(self), **params)
+
     # ─── 成员 ─────────────────────────────────────────────────────────────
     def list_members(self, kind: str | None = None, include_deleted: bool = False) -> list[dict[str, Any]]:
         if kind not in (None, "owner", "agent"):
-            raise DomainError("validation_failed", f"未知的成员类型：{kind}", fields={"kind": "成员类型非法"})
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.unknown_member_kind", kind=kind),
+                fields={"kind": self._render_copy("error.field.member_kind_invalid")},
+            )
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM member "
@@ -678,7 +701,7 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT * FROM member WHERE id = ?", (member_id,)).fetchone()
         if row is None:
-            raise NotFound(f"成员不存在：{member_id}")
+            raise NotFound(self._render_copy("error.member_not_found", member_id=member_id))
         return self._member_payload(row)
 
     @staticmethod
@@ -711,7 +734,7 @@ class Database:
                 (member_id,),
             ).fetchone()
         if row is None:
-            raise NotFound(f"Agent 不存在：{member_id}")
+            raise NotFound(self._render_copy("error.agent_not_found", member_id=member_id))
         return self._agent_payload(row)
 
     @staticmethod
@@ -751,19 +774,23 @@ class Database:
 
         fields: dict[str, str] = {}
         if not clean_name:
-            fields["name"] = "Agent 名称不能为空"
+            fields["name"] = self._render_copy("error.field.agent_name_empty")
         elif len(clean_name) > MAX_MEMBER_NAME_LENGTH:
-            fields["name"] = f"Agent 名称最多 {MAX_MEMBER_NAME_LENGTH} 个字符"
+            fields["name"] = self._render_copy(
+                "error.field.agent_name_too_long", limit=MAX_MEMBER_NAME_LENGTH
+            )
         if not clean_model:
-            fields["model_id"] = "模型标识不能为空"
+            fields["model_id"] = self._render_copy("error.model_id_empty")
         elif len(clean_model) > MAX_MODEL_ID_LENGTH:
-            fields["model_id"] = f"模型标识最多 {MAX_MODEL_ID_LENGTH} 个字符"
+            fields["model_id"] = self._render_copy("error.field.model_id_too_long", limit=MAX_MODEL_ID_LENGTH)
         if len(clean_role) > MAX_AGENT_ROLE_LENGTH:
-            fields["role"] = f"角色最多 {MAX_AGENT_ROLE_LENGTH} 个字符"
+            fields["role"] = self._render_copy("error.field.role_too_long", limit=MAX_AGENT_ROLE_LENGTH)
         if len(clean_prompt) > MAX_SYSTEM_PROMPT_LENGTH:
-            fields["system_prompt"] = f"系统提示最多 {MAX_SYSTEM_PROMPT_LENGTH} 个字符"
+            fields["system_prompt"] = self._render_copy(
+                "error.field.system_prompt_too_long", limit=MAX_SYSTEM_PROMPT_LENGTH
+            )
         if fields:
-            raise DomainError("validation_failed", "Agent 校验未通过，未创建任何数据", fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.agent_invalid"), fields=fields)
 
         with self._lock:
             if avatar_slot is None:
@@ -809,7 +836,9 @@ class Database:
         clean = (provider or "").strip()
         if not clean:
             raise DomainError(
-                "validation_failed", "模型提供商不能为空", fields={"provider": "模型提供商不能为空"}
+                "validation_failed",
+                self._render_copy("error.field.provider_empty"),
+                fields={"provider": self._render_copy("error.field.provider_empty")},
             )
         now = utc_now()
         with self._lock:
@@ -859,11 +888,13 @@ class Database:
         """
         fields: dict[str, str] = {}
         if locale is not None and locale not in LOCALES:
-            fields["locale"] = f"必须是这些之一：{', '.join(LOCALES)}"
+            fields["locale"] = self._render_copy("error.field_choices", values=", ".join(LOCALES))
         if message_density is not None and message_density not in MESSAGE_DENSITIES:
-            fields["message_density"] = f"必须是这些之一：{', '.join(MESSAGE_DENSITIES)}"
+            fields["message_density"] = self._render_copy(
+                "error.field_choices", values=", ".join(MESSAGE_DENSITIES)
+            )
         if fields:
-            raise DomainError("validation_failed", "工作区设置校验未通过，未改动任何档位", fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.settings_invalid"), fields=fields)
         with self._lock:
             current = self.workspace_settings()
             self._conn.execute(
@@ -903,7 +934,9 @@ class Database:
         """
         if status not in ROUND_STATUSES:
             raise DomainError(
-                "validation_failed", f"未知的轮次结果状态：{status}", fields={"status": "轮次结果状态非法"}
+                "validation_failed",
+                self._render_copy("error.unknown_round_status", status=status),
+                fields={"status": self._render_copy("error.field.round_status_invalid")},
             )
         now = utc_now()
         outcome_id = new_id("round")
@@ -976,14 +1009,18 @@ class Database:
                 "SELECT id, kind, created_at FROM target WHERE id = ?", (target_id,)
             ).fetchone()
         if row is None:
-            raise NotFound(f"target 不存在：{target_id}")
+            raise NotFound(self._render_copy("error.target_not_found", target_id=target_id))
         return {"id": row["id"], "kind": row["kind"], "created_at": row["created_at"]}
 
     # ─── 任务 ─────────────────────────────────────────────────────────────
     def create_task(self, channel_id: str, title: str) -> dict[str, Any]:
         clean_title = (title or "").strip()
         if not clean_title:
-            raise DomainError("validation_failed", "任务标题不能为空", fields={"title": "任务标题不能为空"})
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.task_title_empty"),
+                fields={"title": self._render_copy("error.task_title_empty")},
+            )
         self.get_channel(channel_id)  # 必须恰属于一个存在的 channel 型 target
 
         task_id = new_id("task")
@@ -1009,8 +1046,8 @@ class Database:
                 )
                 self._conn.execute(
                     "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
-                    "mention_snapshot) VALUES (?, ?, 1, ?, 'system', '任务已创建', ?, '[]')",
-                    (new_id("msg"), target_id, OWNER_ID, now),
+                    "mention_snapshot) VALUES (?, ?, 1, ?, 'system', ?, ?, '[]')",
+                    (new_id("msg"), target_id, OWNER_ID, self._render_copy("system.task.created"), now),
                 )
                 self._commit()
             except Exception:
@@ -1026,7 +1063,7 @@ class Database:
                 (task_id,),
             ).fetchone()
         if row is None:
-            raise NotFound(f"任务不存在：{task_id}")
+            raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
         task = {
             "id": row["id"],
             "target_id": row["target_id"],
@@ -1060,7 +1097,7 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT id FROM task WHERE target_id = ?", (target_id,)).fetchone()
         if row is None:
-            raise NotFound(f"任务 target 没有关联任务：{target_id}")
+            raise NotFound(self._render_copy("error.task_missing_for_target", target_id=target_id))
         return self.get_task(str(row["id"]))
 
     def list_task_messages(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
@@ -1084,7 +1121,9 @@ class Database:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if status not in TASK_STATUSES:
             raise DomainError(
-                "validation_failed", f"未知的任务状态：{status}", fields={"status": "任务状态非法"}
+                "validation_failed",
+                self._render_copy("error.unknown_task_status", status=status),
+                fields={"status": self._render_copy("error.field.task_status_invalid")},
             )
         actor = self.get_member(actor_member_id)
         self.get_task(task_id)  # 404 早退
@@ -1095,7 +1134,7 @@ class Database:
                     "SELECT target_id, status, assignee_member_id FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
-                    raise NotFound(f"任务不存在：{task_id}")
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
                 current = str(row["status"])
                 target_id = str(row["target_id"])
                 if status == current:
@@ -1104,8 +1143,12 @@ class Database:
                 if status not in TASK_STATUS_TRANSITIONS[current]:
                     raise DomainError(
                         "validation_failed",
-                        f"任务不能从 {current} 迁移到 {status}；closed 是终态",
-                        fields={"status": f"不允许从 {current} 迁移到 {status}"},
+                        self._render_copy("error.task_transition_invalid", current=current, target=status),
+                        fields={
+                            "status": self._render_copy(
+                                "error.field.task_transition_invalid", current=current, target=status
+                            )
+                        },
                     )
                 if (
                     current == "in_review"
@@ -1115,15 +1158,19 @@ class Database:
                 ):
                     raise DomainError(
                         "validation_failed",
-                        "被指派 Agent 不能批准自己的待审任务",
-                        fields={"status": "in_review → done 必须由指派者之外的成员批准"},
+                        self._render_copy("error.task_self_approve"),
+                        fields={"status": self._render_copy("error.field.task_self_approve")},
                     )
                 now = utc_now()
                 self._conn.execute(
                     "UPDATE task SET status = ?, updated_at = ? WHERE id = ?", (status, now, task_id)
                 )
                 seq = self._append_task_system_message_locked(
-                    target_id, f"状态推进至 {TASK_STATUS_LABELS[status]}", now
+                    target_id,
+                    self._render_copy(
+                        "system.task.status", status=self._render_copy(f"status.task.{status}")
+                    ),
+                    now,
                 )
                 self._commit()
             except Exception:
@@ -1134,7 +1181,11 @@ class Database:
     def update_task_title(self, task_id: str, title: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
         clean_title = (title or "").strip()
         if not clean_title:
-            raise DomainError("validation_failed", "任务标题不能为空", fields={"title": "任务标题不能为空"})
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.task_title_empty"),
+                fields={"title": self._render_copy("error.task_title_empty")},
+            )
         self.get_task(task_id)  # 404 早退
         with self._lock:
             self._begin()
@@ -1143,7 +1194,7 @@ class Database:
                     "SELECT target_id, title FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
-                    raise NotFound(f"任务不存在：{task_id}")
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
                 target_id = str(row["target_id"])
                 if clean_title == row["title"]:
                     self._commit()
@@ -1152,7 +1203,9 @@ class Database:
                 self._conn.execute(
                     "UPDATE task SET title = ?, updated_at = ? WHERE id = ?", (clean_title, now, task_id)
                 )
-                seq = self._append_task_system_message_locked(target_id, f"标题已更改为：{clean_title}", now)
+                seq = self._append_task_system_message_locked(
+                    target_id, self._render_copy("system.task.title", title=clean_title), now
+                )
                 self._commit()
             except Exception:
                 self._rollback()
@@ -1169,13 +1222,15 @@ class Database:
                 assignee = self.get_member(member_id)
             except NotFound as exc:
                 raise DomainError(
-                    "validation_failed", "指派对象不存在", fields={"member_id": "Agent 不存在"}
+                    "validation_failed",
+                    self._render_copy("error.assignee_missing"),
+                    fields={"member_id": self._render_copy("error.field.assignee_missing")},
                 ) from exc
             if assignee["deleted_at"] is not None or assignee["kind"] != "agent":
                 raise DomainError(
                     "validation_failed",
-                    "任务只能指派给未删除的 Agent",
-                    fields={"member_id": "指派对象必须是 Agent"},
+                    self._render_copy("error.assignee_not_agent"),
+                    fields={"member_id": self._render_copy("error.field.assignee_not_agent")},
                 )
         self.get_task(task_id)  # 404 早退
         with self._lock:
@@ -1185,16 +1240,20 @@ class Database:
                     "SELECT target_id, assignee_member_id FROM task WHERE id = ?", (task_id,)
                 ).fetchone()
                 if row is None:
-                    raise NotFound(f"任务不存在：{task_id}")
+                    raise NotFound(self._render_copy("error.task_not_found", task_id=task_id))
                 target_id = str(row["target_id"])
                 previous_id = row["assignee_member_id"]
                 if actor["kind"] == "agent":
                     if actor["deleted_at"] is not None or previous_id != actor_member_id:
-                        raise DomainError("validation_failed", "只有当前受派 Agent 可以转派这项任务")
+                        raise DomainError(
+                            "validation_failed", self._render_copy("error.transfer_not_assignee")
+                        )
                     if member_id is None:
-                        raise DomainError("validation_failed", "Agent 转派必须指定另一位 Agent")
+                        raise DomainError(
+                            "validation_failed", self._render_copy("error.transfer_needs_target")
+                        )
                 elif actor["kind"] != "owner":
-                    raise DomainError("validation_failed", "只有 owner 或当前受派 Agent 可以改派任务")
+                    raise DomainError("validation_failed", self._render_copy("error.reassign_not_allowed"))
                 if member_id == previous_id:
                     self._commit()
                     return self.get_task(task_id), None
@@ -1221,7 +1280,11 @@ class Database:
                         "INSERT INTO target_read(member_id, target_id, last_read_seq) VALUES (?, ?, 0)",
                         (member_id, target_id),
                     )
-                label = f"已指派给 {assignee['display_name']}" if assignee is not None else "指派已取消"
+                label = (
+                    self._render_copy("system.task.assignee", name=assignee["display_name"])
+                    if assignee is not None
+                    else self._render_copy("system.task.unassigned")
+                )
                 seq = self._append_task_system_message_locked(target_id, label, now)
                 if member_id is not None and actor["kind"] == "owner":
                     self._conn.execute(
@@ -1247,13 +1310,15 @@ class Database:
         """
         if kind not in TARGET_KINDS:
             raise DomainError(
-                "validation_failed", f"未知的 target 类型：{kind}", fields={"kind": "target 类型非法"}
+                "validation_failed",
+                self._render_copy("error.unknown_target_kind", kind=kind),
+                fields={"kind": self._render_copy("error.field.target_kind_invalid")},
             )
         if kind == "channel":
             raise DomainError(
                 "validation_failed",
-                "channel 型 target 由频道创建时落影子行，不经此处",
-                fields={"kind": "channel 型 target 复用 channel.id"},
+                self._render_copy("error.channel_target_explicit"),
+                fields={"kind": self._render_copy("error.field.channel_target_explicit")},
             )
         new_target_id = target_id or new_id("tgt")
         with self._lock:
@@ -1288,7 +1353,7 @@ class Database:
                 CHANNEL_SELECT_SQL, {"member_id": member_id, "channel_id": channel_id}
             ).fetchone()
         if row is None:
-            raise NotFound(f"频道不存在：{channel_id}")
+            raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
         return self._channel_payload(row)
 
     def create_dm(self, agent_id: str, owner_id: str = OWNER_ID) -> tuple[dict[str, Any], bool]:
@@ -1299,12 +1364,14 @@ class Database:
         if row is None or row["deleted_at"] is not None or row["kind"] != "agent":
             raise DomainError(
                 "validation_failed",
-                "私信对象必须是存在且未删除的 Agent",
-                fields={"agent_id": f"Agent 不存在或不可用：{clean_agent_id}"},
+                self._render_copy("error.dm_peer_invalid"),
+                fields={
+                    "agent_id": self._render_copy("error.field.dm_peer_invalid", member_id=clean_agent_id)
+                },
             )
         owner = self.get_member(owner_id)
         if owner["kind"] != "owner":
-            raise DomainError("validation_failed", "私信创建者必须是 owner")
+            raise DomainError("validation_failed", self._render_copy("error.dm_creator_not_owner"))
 
         target_id: str
         created = False
@@ -1349,7 +1416,7 @@ class Database:
         with self._lock:
             row = self._conn.execute(DM_SELECT_SQL, {"member_id": member_id, "dm_id": dm_id}).fetchone()
         if row is None:
-            raise NotFound(f"私信不存在：{dm_id}")
+            raise NotFound(self._render_copy("error.dm_not_found", dm_id=dm_id))
         return self._dm_payload(row)
 
     @staticmethod
@@ -1422,13 +1489,17 @@ class Database:
 
         fields: dict[str, str] = {}
         if not clean_name:
-            fields["name"] = "频道名称不能为空"
+            fields["name"] = self._render_copy("error.field.channel_name_empty")
         elif len(clean_name) > MAX_CHANNEL_NAME_LENGTH:
-            fields["name"] = f"频道名称最多 {MAX_CHANNEL_NAME_LENGTH} 个字符"
+            fields["name"] = self._render_copy(
+                "error.field.channel_name_too_long", limit=MAX_CHANNEL_NAME_LENGTH
+            )
         if len(clean_description) > MAX_CHANNEL_DESCRIPTION_LENGTH:
-            fields["description"] = f"频道描述最多 {MAX_CHANNEL_DESCRIPTION_LENGTH} 个字符"
+            fields["description"] = self._render_copy(
+                "error.field.channel_description_too_long", limit=MAX_CHANNEL_DESCRIPTION_LENGTH
+            )
         if fields:
-            raise DomainError("validation_failed", "频道校验未通过，未创建任何数据", fields=fields)
+            raise DomainError("validation_failed", self._render_copy("error.channel_invalid"), fields=fields)
 
         self.get_member(creator_id)
         selected: list[dict[str, Any]] = []
@@ -1438,14 +1509,14 @@ class Database:
             if row is None or row["deleted_at"] is not None:
                 raise DomainError(
                     "validation_failed",
-                    "频道校验未通过，未创建任何数据",
-                    fields={"member_ids": f"成员不存在或已删除：{member_id}"},
+                    self._render_copy("error.channel_invalid"),
+                    fields={"member_ids": self._render_copy("error.member_unavailable", member_id=member_id)},
                 )
             if row["kind"] != "agent":
                 raise DomainError(
                     "validation_failed",
-                    "频道校验未通过，未创建任何数据",
-                    fields={"member_ids": f"初始成员只能是 Agent：{member_id}"},
+                    self._render_copy("error.channel_invalid"),
+                    fields={"member_ids": self._render_copy("error.member_not_agent", member_id=member_id)},
                 )
             selected.append(self._member_payload(row))
 
@@ -1530,15 +1601,25 @@ class Database:
     ) -> dict[str, Any]:
         """在同一事务内分配 **target 内**单调 seq 并落库。失败则不落任何行。"""
         if kind not in MESSAGE_KINDS:
-            raise DomainError("validation_failed", f"未知的消息类型：{kind}", fields={"kind": "消息类型非法"})
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.unknown_message_kind", kind=kind),
+                fields={"kind": self._render_copy("error.field.message_kind_invalid")},
+            )
         clean_body = (body or "").strip()
         if not clean_body:
-            raise DomainError("validation_failed", "消息正文不能为空", fields={"body": "消息正文不能为空"})
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.message_body_empty"),
+                fields={"body": self._render_copy("error.message_body_empty")},
+            )
         if len(clean_body) > MAX_MESSAGE_BODY_LENGTH:
             raise DomainError(
                 "validation_failed",
-                f"消息正文最多 {MAX_MESSAGE_BODY_LENGTH} 个字符",
-                fields={"body": f"消息正文最多 {MAX_MESSAGE_BODY_LENGTH} 个字符"},
+                self._render_copy("error.message_body_too_long", limit=MAX_MESSAGE_BODY_LENGTH),
+                fields={
+                    "body": self._render_copy("error.message_body_too_long", limit=MAX_MESSAGE_BODY_LENGTH)
+                },
             )
         self.get_target(target_id)  # 404 早退
         self.get_member(author_member_id)
@@ -1547,13 +1628,15 @@ class Database:
                 referenced_task = self.get_task(task_ref)
             except NotFound as exc:
                 raise DomainError(
-                    "validation_failed", "task_ref 指向的任务不存在", fields={"task_ref": "任务不存在"}
+                    "validation_failed",
+                    self._render_copy("error.task_ref_missing"),
+                    fields={"task_ref": self._render_copy("error.field.task_ref_missing")},
                 ) from exc
             if referenced_task["target_id"] != target_id:
                 raise DomainError(
                     "validation_failed",
-                    "task_ref 必须与消息位于同一 target",
-                    fields={"task_ref": "不能引用其他 target 的任务"},
+                    self._render_copy("error.task_ref_other_target"),
+                    fields={"task_ref": self._render_copy("error.field.task_ref_other_target")},
                 )
 
         message_id = new_id("msg")
@@ -1609,7 +1692,7 @@ class Database:
                 (target_id, seq),
             ).fetchone()
         if row is None:
-            raise NotFound(f"消息不存在：{target_id}#{seq}")
+            raise NotFound(self._render_copy("error.message_not_found", target_id=target_id, seq=seq))
         return self._message_payload(row)
 
     @staticmethod
@@ -1835,7 +1918,11 @@ class Database:
         ``db`` 层不把「channel 型的响应长什么样」写进自己的分支里（于是查询路径上没有 kind 分支）。
         """
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-            raise DomainError("validation_failed", "seq 必须是非负整数", fields={"seq": "seq 必须是非负整数"})
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.seq_invalid"),
+                fields={"seq": self._render_copy("error.seq_invalid")},
+            )
         self.get_target(target_id)  # 404 早退
         self.get_member(member_id)
         with self._lock:

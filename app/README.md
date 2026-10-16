@@ -234,6 +234,11 @@ Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次
 已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 搜索 DOM 行为由
 上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
 
+**唯一例外**：`app/tests/test_backend_copy.py` 直接读 `app/alibot/i18n.py` 的两份取值——词条表是
+**数据契约**（两份取值必须覆盖同一键集、参数位一致，且后端文案必须取自**当前语言**的那一条），
+它的键集不经 HTTP 面暴露，因此按与前端 `i18n_ui.test.cjs` 同款的做法直接读那份数据。行为断言仍然
+全部走 HTTP 面。
+
 四类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟。
 测试**不联网、零成本**；「什么时候跑完一轮」由测试自己拨（手动调度器），所以 in-flight 与
 合并这类窗口可以稳定观察。真模型连通性另有一条**默认跳过、本地手动运行**的冒烟测试：
@@ -245,6 +250,22 @@ ALIBOT_SMOKE_MODEL=ollama:qwen2.5 .venv/bin/python -m pytest tests/test_agent_sm
 ALIBOT_SMOKE_MODEL=dashscope:qwen-max ALIBOT_SMOKE_ALLOW_REMOTE=1 \
   DASHSCOPE_API_KEY=... .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 ```
+
+## 文案双语（后端）
+
+后端**生成的自然语言**按**语言偏好**取值：HTTP 错误的 `message` 与 `fields` 的值、落库的
+`system` 消息正文、`round_outcome.reason`、Agent 的 `enabled_reason`、远端数据流告知文案。
+词条表是 `app/alibot/i18n.py`（源语言**简体中文** + `en` 两份取值，键集必须一致、参数位必须一致，
+由 `app/tests/test_backend_copy.py` 当着机器判据）；语言偏好读 `workspace_settings` 那一行
+（`GET` / `PATCH /api/settings`），**不读请求头 / `Accept-Language` / 环境变量**——写 `system`
+消息与 `reason` 的是**唤醒编排**，它跑在 HTTP 请求之外，那里根本没有请求头可读（ADR-0009）。
+库内没有**用户选过**的偏好时取源语言。
+
+机器可读的东西**一律不译**：错误的 `code`、`fields` 的**键**、`round_outcome.status` 的词、
+任务状态词、`provider` / `model_id` / 环境变量名。**历史不回填**：已落库的正文保持**写入时**的
+语言（append-only，ADR-0001）——切换语言后此前的 `system` 消息仍是原语言，这是**已知代价**，
+不是缺陷。前端界面文案是**另一层**，见 `app/alibot/studio/i18n.js`（#61）；CLI 诊断文案
+（`__main__.py` / `repair.py`）不在双语范围内。
 
 ## 视觉契约
 
