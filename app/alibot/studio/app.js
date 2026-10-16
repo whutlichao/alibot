@@ -131,6 +131,9 @@ const state = {
   taskFilterMine: false,
   // 任务线程现在是右侧 dock 的**第二种形态**（`dockMode`），不再是主线上的一个视图。
   dockMode: 'agent',
+  // 成员名册（频道成员的**只读**全名单）当前锁定的频道 id；`null` = 弹窗关着。
+  // 名册回答「打开它的那个频道里有谁」，因此它在打开时锁定频道，不跟着激活频道跑。
+  rosterChannelId: null,
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -487,6 +490,9 @@ function applySettings(settings) {
   document.documentElement.dataset.density = state.settings.message_density;
   applyStaticI18n(document);
   renderSettingsModal();
+  // 名册的动态文案（标题 / 副标题 / 行内角色与状态说法）由 `t()` 渲染，因此切语言时
+  // 要跟设置弹窗一样重铺一遍（静态的关闭按钮由上面那句 `applyStaticI18n` 覆盖）。
+  if (state.rosterChannelId) renderRoster();
   return state.settings;
 }
 
@@ -2085,6 +2091,100 @@ function memberCard(member, agentsById, canJoin) {
   return card;
 }
 
+/* ─── 成员名册（频道成员的**只读**全名单） ────────────────────────────────
+   `CONTEXT.md` **成员名册**：内容 = 该频道后端成员表**逐条**（`GET /api/channels/{id}/members`，
+   含 owner），每条带**状态点**（`GET /api/member-statuses` 的四态，取值走与**成员面板**同一个
+   `statusOf()` / `presenceNode()`）。它与**成员面板**的分工是「动作」与「范围」两件事：
+   名册**唯一动作是关闭**——加入 / 移除 / 编辑都不是它的面，因此这里没有那些控件，
+   也不列「未加入」一段。 */
+
+/** 该频道的**完整**成员表（含 owner）；`null` = 还没读到 / 读不到——与「真的没有成员」
+    是两件事（与 `channelAgentMembers()` 同一条纪律，读的是同一份缓存，只是不按 kind 过滤）。 */
+function channelMemberRows(channelId) {
+  const members = state.channelMembers[channelId];
+  return members ? members.slice() : null;
+}
+
+/** 打开名册（入口 = 频道头部的成员按钮，原型 `#btnChannelMembers`）：锁定当前频道、
+    按需读一次它的成员表，然后渲染。名册只对**频道**存在，DM 下入口隐藏（见 `renderHeader()`）。 */
+function openRosterModal() {
+  const channel = activeChannel();
+  if (!channel) return;
+  state.rosterChannelId = channel.id;
+  $('#rosterOverlay').hidden = false;
+  renderRoster();
+  const close = $('#rosterClose');
+  if (close) close.focus();
+  // 名册的内容是后端成员表的读数：打开时读一次，读回后按**同一个频道**再渲染一遍
+  // （成员在别处长出来后重新打开名册就能看到；弹窗关掉或换过频道就不动它）。
+  refreshChannelMembers(channel.id).then(() => {
+    if (state.rosterChannelId === channel.id) renderRoster();
+  });
+}
+
+function closeRosterModal() {
+  state.rosterChannelId = null;
+  $('#rosterOverlay').hidden = true;
+}
+
+/** 名册的**唯一**渲染落点：打开、成员表读回、切语言三处都走它，于是「后端读到的成员表」
+    与「名册上列出的成员」不可能各说一份（不在这里另写一遍过滤或排序规则）。 */
+function renderRoster() {
+  const channelId = state.rosterChannelId;
+  if (!channelId) return;
+  const channel = state.channels.find((item) => item.id === channelId) || null;
+  const members = channelMemberRows(channelId);
+  const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
+  const title = $('#rosterTitle');
+  if (title) title.textContent = t('roster.title', { name: channel ? channel.name : '' });
+  const sub = $('#rosterSub');
+  // 副标题的数字就是成员表的**条数**；读不到时不写 0（那会把「读不到」说成「一个都没有」）。
+  if (sub) sub.textContent = members ? t('roster.sub', { count: members.length }) : '';
+  const body = $('#rosterBody');
+  if (!body) return;
+  if (!members) {
+    replaceChildren(body, [
+      el(
+        'div',
+        'rail-empty',
+        channelMembersFailed.has(channelId) ? t('roster.unavailable') : t('roster.loading'),
+      ),
+    ]);
+    return;
+  }
+  if (!members.length) {
+    replaceChildren(body, [el('div', 'rail-empty', t('roster.empty'))]);
+    return;
+  }
+  replaceChildren(body, members.map((member) => rosterRow(member, agentsById)));
+}
+
+/** 名册的一行：头像 + 姓名 / 角色，右侧是状态点。owner 那行右侧是「我」——原型 `:1601-1629`
+    与切片对 owner 的呈现就是「我」；`GET /api/member-statuses` 只覆盖 Agent，
+    给 owner 造一个状态点等于伪造后端没有的事实。 */
+function rosterRow(member, agentsById) {
+  const agent = agentsById.get(member.id) || null;
+  const row = el('div', 'roster-row');
+  row.dataset.member = member.id;
+  row.dataset.kind = member.kind;
+  row.setAttribute('data-od-id', 'roster-member-' + member.id);
+  const who = el('div', 'roster-who');
+  who.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
+  const text = el('div', 'roster-who-text');
+  text.appendChild(el('b', 'roster-name', member.display_name));
+  text.appendChild(el('span', 'roster-role', (agent && agent.role) || t('roster.roleFallback')));
+  who.appendChild(text);
+  row.appendChild(who);
+  if (member.kind === 'owner') {
+    row.appendChild(el('span', 'roster-me', t('identity.me')));
+  } else {
+    // 状态点按成员 id 查（Agent 配置快照里的 `status` 是后端 `member-statuses` 的回写；
+    // 快照里没有这个 Agent 时直接查状态表，而不是凭缺失下一句「未启用」的结论）。
+    row.appendChild(presenceNode(statusOf(agent || { id: member.id })));
+  }
+  return row;
+}
+
 function renderTyping() {
   const target = activeTarget();
   const container = $('#typingLine');
@@ -2105,6 +2205,9 @@ function renderHeader() {
   }
   const isDm = target.kind === 'dm';
   const name = isDm ? target.peer.display_name : target.name;
+  // 名册是**频道**成员的只读全名单（`CONTEXT.md` **成员名册**）：DM 下没有这条面，
+  // 入口随之隐藏——不留一个按下去什么都不发生的按钮。
+  $('#btnChannelMembers').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -3106,6 +3209,13 @@ function bindEvents() {
   $('#searchOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'searchOverlay') closeSearchModal();
   });
+  // ── 成员名册：频道头部成员入口 + 弹窗（**唯一动作是关闭**）──
+  $('#btnChannelMembers').addEventListener('click', openRosterModal);
+  $('#rosterClose').addEventListener('click', closeRosterModal);
+  $('#rosterDone').addEventListener('click', closeRosterModal);
+  $('#rosterOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'rosterOverlay') closeRosterModal();
+  });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   $('#btnNewDm').addEventListener('click', openDmModal);
   $('#dmCancel').addEventListener('click', closeDmModal);
@@ -3368,6 +3478,7 @@ function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (!$('#settingsOverlay').hidden) closeSettingsModal();
+    if (!$('#rosterOverlay').hidden) closeRosterModal();
     if (!$('#channelOverlay').hidden) closeChannelModal();
     if (!$('#dmOverlay').hidden) closeDmModal();
     if (!$('#agentOverlay').hidden) closeAgentModal();

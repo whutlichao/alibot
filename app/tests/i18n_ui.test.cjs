@@ -300,11 +300,26 @@ function createHarness(options) {
   const elements = new Map();
   const calls = [];
   let settings = config.settings || { locale: "zh-CN", message_density: "comfortable" };
+  // 后端事实的两份替身：频道成员表（`GET /api/channels/{id}/members`）与四态状态点
+  // （`GET /api/member-statuses`）。名册的内容与状态点必须来自它们——前端不许自己拼一份。
+  const channelMembers = config.channelMembers || {};
+  const memberStatuses = config.memberStatuses || {};
+  const sentMembers = {};
 
   async function fetchStub(url, init) {
     const method = (init && init.method) || "GET";
     const body = init && init.body ? JSON.parse(init.body) : null;
     calls.push({ url, method, body });
+    const membersMatch = /^\/api\/channels\/([^/]+)\/members$/.exec(url);
+    if (membersMatch && method === "GET") {
+      const channelId = decodeURIComponent(membersMatch[1]);
+      const members = channelMembers[channelId] || [];
+      sentMembers[channelId] = members;
+      return { ok: true, status: 200, json: async () => ({ members }) };
+    }
+    if (url === "/api/member-statuses") {
+      return { ok: true, status: 200, json: async () => ({ statuses: memberStatuses }) };
+    }
     if (mode.rejectPatch && url === "/api/settings" && method === "PATCH") {
       return {
         ok: false,
@@ -371,7 +386,8 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__i18nTest = { state, applySettings, loadSettings, saveSettings,"
-        + " openSettingsModal, renderSettingsModal, setLocale, applyStaticI18n, bindEvents };\n",
+        + " openSettingsModal, renderSettingsModal, setLocale, applyStaticI18n, bindEvents,"
+        + " openRosterModal, closeRosterModal, renderRoster, renderDock, refreshStatuses };\n",
     ),
     context,
     { filename: appPath },
@@ -390,6 +406,8 @@ function createHarness(options) {
     document,
     elementFor,
     settings: () => settings,
+    // 那次 `GET /api/channels/{id}/members` **实际返回**的成员表（名册的内容要逐条对得上它）。
+    membersSent: (channelId) => sentMembers[channelId] || [],
   };
 }
 
@@ -632,3 +650,198 @@ test("a rejected write leaves the local mirror and the language untouched", asyn
   assert.equal(select.value, "zh-CN", "选择器回到后端说的那一档");
   assert.equal(harness.elementFor("#settingsFormError").hidden, false, "失败要留在弹窗里，不静默");
 });
+
+/* ─── 7. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
+   名册的判据只有四条：入口能开、内容 = 后端成员表逐条（含 owner）、唯一动作是关闭、
+   文案在两份词条里都取到值。窄屏 / 真实页面的那条入口由浏览器实测验，这里用同一套 DOM 替身。 */
+
+/** 某词条在**指定语言**里的取值（`{name}` 这类参数位按 `t()` 的规则拼进去）。 */
+function catalogText(harness, locale, key, params) {
+  const value = harness.catalogs[locale][key];
+  return String(value).replace(/\{(\w+)\}/g, (whole, name) =>
+    params && params[name] !== undefined ? String(params[name]) : whole,
+  );
+}
+
+/** 一台「1 个频道 + owner + 1 个已加入 Agent + 1 个未加入 Agent」的工作台：
+    成员表与状态点都由 fetch 替身给出（名册的两样内容都必须来自它们）。 */
+function rosterHarness() {
+  const harness = createHarness({
+    channelMembers: {
+      ch_1: [
+        { id: "own_1", kind: "owner", display_name: "林舟", avatar_slot: 4 },
+        { id: "ag_1", kind: "agent", display_name: "Susan", avatar_slot: 0 },
+      ],
+    },
+    memberStatuses: { ag_1: "working", ag_2: "online" },
+  });
+  const state = harness.api.state;
+  state.channels = [{ id: "ch_1", name: "设计系统重构", description: "", unread_count: 0 }];
+  state.activeChannelId = "ch_1";
+  state.member = { id: "own_1", kind: "owner", display_name: "林舟", avatar_slot: 4 };
+  state.members = [
+    { id: "own_1", kind: "owner", display_name: "林舟", avatar_slot: 4 },
+    { id: "ag_1", kind: "agent", display_name: "Susan", avatar_slot: 0 },
+    { id: "ag_2", kind: "agent", display_name: "Atlas", avatar_slot: 1 },
+  ];
+  state.agents = [
+    { id: "ag_1", kind: "agent", display_name: "Susan", avatar_slot: 0, role: "秘书", model_id: "ollama:qwen2.5" },
+    { id: "ag_2", kind: "agent", display_name: "Atlas", avatar_slot: 1, role: "架构师", model_id: "ollama:qwen2.5" },
+  ];
+  harness.api.bindEvents();
+  return harness;
+}
+
+function rosterRowNodes(harness) {
+  return harness.elementFor("#rosterBody").querySelectorAll(".roster-row");
+}
+
+test("the channel-header entry opens a roster listing exactly the backend member table", async () => {
+  const harness = rosterHarness();
+  const overlay = harness.elementFor("#rosterOverlay");
+  // 启动后名册没有自己开过（弹窗的 `hidden` 初值来自 `index.html`，那条由浏览器实测覆盖）。
+  assert.equal(harness.api.state.rosterChannelId, null);
+
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  await flush();
+
+  assert.equal(overlay.hidden, false, "点频道头部入口要打开名册");
+  assert.equal(harness.api.state.rosterChannelId, "ch_1", "名册锁定的就是打开它的那个频道");
+  // 状态点也走后端那条面（`GET /api/member-statuses` 的回读），不是前端猜的。
+  await harness.api.refreshStatuses();
+  harness.api.renderRoster();
+
+  const table = harness.membersSent("ch_1");
+  assert.ok(table.length > 0, "替身必须真的被读过一次成员表");
+  const rows = rosterRowNodes(harness);
+  assert.deepEqual(
+    rows.map((row) => [row.dataset.member, row.dataset.kind]),
+    table.map((member) => [member.id, member.kind]),
+    "名册必须与该频道后端成员表逐条一致（含 owner，顺序也照后端给的顺序）",
+  );
+  // 姓名与角色也逐条对得上（角色是 Agent 配置的事实；owner 没有角色，走回退说法）。
+  assert.deepEqual(
+    rows.map((row) => row.querySelector(".roster-name").textContent),
+    table.map((member) => member.display_name),
+  );
+  assert.equal(
+    rows[0].querySelector(".roster-me").textContent,
+    catalogText(harness, "zh-CN", "identity.me"),
+    "owner 那行右侧是「我」（`GET /api/member-statuses` 不覆盖 owner，不替它造状态点）",
+  );
+  assert.deepEqual(rows[0].querySelectorAll(".presence"), [], "owner 那行没有状态点");
+  assert.equal(
+    rows[1].querySelector(".presence").dataset.status,
+    harness.api.state.statuses["ag_1"],
+    "Agent 那行的状态点取值必须就是 `GET /api/member-statuses` 给的四态词",
+  );
+  // 副标题的条数 = 成员表的条数（按词条取，不写死措辞）。
+  assert.equal(
+    harness.elementFor("#rosterSub").textContent,
+    catalogText(harness, "zh-CN", "roster.sub", { count: table.length }),
+  );
+});
+
+test("the roster's only action is closing: it holds no join, remove or edit control", async () => {
+  const harness = rosterHarness();
+  const overlay = harness.elementFor("#rosterOverlay");
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  await flush();
+
+  // 反：成员面板那几类动作控件一个都不许出现在名册里（加入 / 移除 / 编辑都不属于它）。
+  const body = harness.elementFor("#rosterBody");
+  for (const selector of ["[data-join]", ".member-opt", "input", "select", "textarea"]) {
+    assert.deepEqual(body.querySelectorAll(selector), [], `名册里出现了不该有的控件：${selector}`);
+  }
+  assert.deepEqual(
+    body.descendants().filter((node) => node.tagName === "button"),
+    [],
+    "名册正文里不该有任何按钮（唯一动作在弹窗外壳上）",
+  );
+
+  // 正：能关的就两条路（头部图标 + 页脚按钮），点哪条都真的把名册关掉。
+  await harness.elementFor("#rosterDone").dispatchEvent({ type: "click" });
+  assert.equal(overlay.hidden, true, "页脚按钮关闭名册");
+  assert.equal(harness.api.state.rosterChannelId, null, "关掉后不再锁定任何频道");
+
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  await flush();
+  await harness.elementFor("#rosterClose").dispatchEvent({ type: "click" });
+  assert.equal(overlay.hidden, true, "头部图标也关闭名册");
+});
+
+test("the roster is not the member panel: the un-joined agent never shows up in it", async () => {
+  const harness = rosterHarness();
+  await harness.api.refreshStatuses();
+
+  // 先打开一次名册：它按需读回该频道成员表，面板与名册因此读的是同一份后端事实。
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  await flush();
+
+  // 面板的「未加入」段里有 Atlas（带「加入」控件）——那是**成员面板**的面。
+  harness.api.renderDock();
+  assert.deepEqual(
+    harness.elementFor("#dockMembers").querySelectorAll("[data-join]").map((button) => button.dataset.join),
+    ["ag_2"],
+    "面板的「未加入」段必须有那个未加入的 Agent（名册与它不混）",
+  );
+
+  const listed = rosterRowNodes(harness).map((row) => row.dataset.member);
+  assert.deepEqual(listed, ["own_1", "ag_1"]);
+  assert.equal(listed.includes("ag_2"), false, "名册只回答「这个频道里有谁」，不列未加入者");
+  assert.deepEqual(harness.elementFor("#rosterBody").querySelectorAll("[data-join]"), []);
+});
+
+test("the roster copy is taken from the string catalogs in both languages", async () => {
+  const harness = rosterHarness();
+  await harness.api.refreshStatuses();
+  await harness.elementFor("#btnChannelMembers").dispatchEvent({ type: "click" });
+  await flush();
+
+  const keys = [
+    "roster.entryTitle",
+    "roster.title",
+    "roster.sub",
+    "roster.loading",
+    "roster.unavailable",
+    "roster.empty",
+    "roster.roleFallback",
+    "roster.closeAria",
+  ];
+  for (const key of keys) {
+    for (const locale of harness.locales) {
+      const value = harness.catalogs[locale][key];
+      assert.equal(typeof value, "string", `${key} 在 ${locale} 里必须有取值`);
+      assert.ok(value.length > 0, `${key} 在 ${locale} 里不能是空串`);
+    }
+  }
+
+  const name = harness.api.state.channels[0].name;
+  assert.equal(
+    harness.elementFor("#rosterTitle").textContent,
+    catalogText(harness, "zh-CN", "roster.title", { name }),
+  );
+
+  // 切到 English：标题 / 副标题 / 行内角色与状态说法都必须按第二语言重铺（同一批键的另一套取值）。
+  harness.api.applySettings({ locale: "en", message_density: "comfortable" });
+  assert.equal(
+    harness.elementFor("#rosterTitle").textContent,
+    catalogText(harness, "en", "roster.title", { name }),
+  );
+  assert.equal(
+    harness.elementFor("#rosterSub").textContent,
+    catalogText(harness, "en", "roster.sub", { count: 2 }),
+  );
+  assert.equal(
+    harness.elementFor("#rosterBody").querySelectorAll(".presence")[0].attributes["title"],
+    catalogText(harness, "en", "status.working"),
+    "状态点的可读说法也跟着语言走",
+  );
+
+  harness.api.applySettings({ locale: "zh-CN", message_density: "comfortable" });
+  assert.equal(
+    harness.elementFor("#rosterTitle").textContent,
+    catalogText(harness, "zh-CN", "roster.title", { name }),
+  );
+});
+
