@@ -45,6 +45,16 @@ REPAIR_FAILED_EXIT_CODE = 4
 # 数据没搬」的中间态。与上面那个 ``4`` 的区分是「动手之前 vs 动手之后」。
 MIGRATION_FAILED_EXIT_CODE = 5
 
+# ``--repair-targets`` 已降为 ``--migrate`` 的**弃用别名**（ADR-0015 §五 / 规格 D11 / S13）：同一个
+# 入口、同一条「形态步骤 + 逐版链」、同一结果、同一退出码集合 ``{0, 3, 4, 5}``，只在最前面多打一句
+# 改用指引。
+#
+# 这句提示打在 **stdout**（不是 stderr）：别名与 ``--migrate`` 的 **stderr 必须逐字相同**（S13 的
+# 等价性判据），而提示正是「别名多出来的那一行」；规格 T3 的 S13 行也明写「stdout 含弃用提示」。
+REPAIR_TARGETS_DEPRECATION_NOTICE = (
+    "提示：--repair-targets 已弃用，请改用 --migrate（同一入口、同一条链、同一个退出码）。"
+)
+
 
 def _is_loopback(host: str) -> bool:
     if host in {"localhost", "localhost.localdomain"}:
@@ -68,8 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--repair-targets",
         action="store_true",
         help=(
-            "【手动修复入口】把当前 schema 库里缺失的 channel 型 target 作用域数据补齐"
-            "（影子行 / 成员 / 已读 / 预算），幂等、可自校验；不会自动执行、不写迁移脚本"
+            "【已弃用别名】等价于 --migrate：同一入口、同一条「形态步骤 + 逐版链」、同一个退出码；"
+            "运行时会先打一句「请改用 --migrate」，随后行为与 --migrate 逐字相同"
         ),
     )
     parser.add_argument(
@@ -88,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
             "【只读预演】与 --migrate 同一条路径，但在**数据目录内**的临时副本上跑"
             "（alibot.db 连同旁边的 -wal / -shm 一起复制）：打出将执行的步骤与每步将改动的行数、"
             "原库 sha256 的前后两个读数，随后删掉副本。原库零字节改动、不建备份、不写审计。"
-            "必须与 --migrate 同用。"
+            "必须与 --migrate（或它的别名 --repair-targets）同用。"
         ),
     )
     return parser
@@ -98,9 +108,10 @@ def _migratable_source_version(found_version: str | None) -> int | None:
     """闸门拒收的读数里，哪些是**可迁移的源版本**（规格 D4：``[MIN, SCHEMA_VERSION)``）。
 
     闸门（``db.Database._assert_schema_compatible``）只在版本**恰好等于**本代码常量时放行，因此
-    版本在 ``3 .. SCHEMA_VERSION - 1`` 的旧库会在这里被拒。``--migrate`` 是唯一把这段区间接回来的
-    入口：读数是可解析的整数且落在区间内 ⇒ 交给迁移引擎；其余（低于 3 / 认不出的号 / **未来版本**）
-    一律给闸门的原答复（退出码 ``3``）。
+    版本在 ``3 .. SCHEMA_VERSION - 1`` 的旧库会在这里被拒。``--migrate`` 与它的**弃用别名**
+    ``--repair-targets``（本票 #94 起同入口、同版本门）是唯一把这段区间接回来的入口：读数是可解析的
+    整数且落在区间内 ⇒ 交给迁移引擎；其余（低于 3 / 认不出的号 / **未来版本**）一律给闸门的原答复
+    （退出码 ``3``）。
     """
     if found_version is None:
         return None
@@ -323,48 +334,30 @@ def _run_dry_run(data_dir: Path) -> int:
     return status
 
 
-def _run_repair(data_dir: Path) -> int:
-    """执行手动补齐并打印报告；返回进程退出码。
-
-    两类拒绝各占一个退出码，且都发生在**写入之前**：
-
-    - ``SchemaVersionMismatch``（库的版本不是本代码需要的）⇒ :data:`DATA_NOT_ACCEPTED_EXIT_CODE`，
-      与迁移入口、与启动路径**同一个答复与同一个退出码**：本入口**不**充当迁就旧库的后门。
-    - ``RepairError``（库版本匹配，但不是本入口能处置的形态）⇒ :data:`REPAIR_FAILED_EXIT_CODE`。
-      与 ``--migrate`` 同判：都是「库不被本入口处置」，都发生在任何写入之前。
-    """
-    from .repair import RepairError, render_outcome, repair_target_rows
-
-    try:
-        outcome = repair_target_rows(data_dir)
-    except SchemaVersionMismatch as exc:
-        print(str(exc), file=sys.stderr)
-        return DATA_NOT_ACCEPTED_EXIT_CODE
-    except RepairError as exc:
-        print(f"未执行修复：{exc}", file=sys.stderr)
-        return REPAIR_FAILED_EXIT_CODE
-
-    print(render_outcome(outcome))
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     data_dir = Path(args.data_dir).expanduser() if args.data_dir else default_data_dir()
 
-    if args.dry_run and not args.migrate:
+    # ``--repair-targets`` 是 ``--migrate`` 的**弃用别名**（ADR-0015 §五 / 规格 D11）：两条旗标走
+    # **同一个入口**（本分支）、同一条「形态步骤 + 逐版链」、同一个退出码集合 ``{0, 3, 4, 5}``。
+    # 别名只多打一句改用指引（stdout），因此它与 ``--migrate`` 的 stdout 只差那一行、stderr 逐字相同。
+    is_migration = args.migrate or args.repair_targets
+
+    if args.dry_run and not is_migration:
         # 只读预演是**迁移**这条路径的修饰旗标（规格 D10 的 ``--migrate --dry-run``），单独给它是
         # 用法错误：走 argparse 既有的「用法错误 ⇒ 2」那条路，而不是落进迁移入口的 ``{0, 3, 4, 5}``
         # 裁决集合——它不是对这个库的答复，是对这次调用的答复。（#93 人定裁定 (A)。）
         parser.error("--dry-run 只能与 --migrate 同用：预演的就是迁移这条路径。")
 
-    if args.migrate:
-        # 显式迁移入口：**唯一**的迁移入口，且只有显式触发才会跑到这里（任何启动路径都不会经过本
-        # 分支）。它不监听任何端口，``--host`` 对它没有意义——因此它**先于** loopback 闸门收口，
-        # 答复集合是 {0, 3, 4, 5}（规格 D2），不会落进「非 loopback ⇒ 2」那条启动路径的语义。
-        # 它在 ``create_app`` / uvicorn 之前收口，所以迁移不涉及 uvicorn、也不起任何监听（S1）。
+    if is_migration:
+        # 显式迁移入口（及其弃用别名）：**唯一**的迁移入口，且只有显式触发才会跑到这里（任何启动
+        # 路径都不会经过本分支）。它不监听任何端口，``--host`` 对它没有意义——因此它**先于** loopback
+        # 闸门收口，答复集合是 {0, 3, 4, 5}（规格 D2），不会落进「非 loopback ⇒ 2」那条启动路径的
+        # 语义。它在 ``create_app`` / uvicorn 之前收口，所以迁移不涉及 uvicorn、也不起任何监听（S1）。
         # ``--dry-run`` 只把这同一条路径挪到**数据目录内的临时副本**上（D10），答复矩阵不变。
+        if args.repair_targets:
+            print(REPAIR_TARGETS_DEPRECATION_NOTICE)
         return _run_dry_run(data_dir) if args.dry_run else _run_migrate(data_dir)
 
     if not _is_loopback(args.host) and os.environ.get(REMOTE_ENV) != "1":
@@ -374,11 +367,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-
-    if args.repair_targets:
-        # 手动修复入口：**显式**触发才能跑到这里（其它任何启动路径都不会经过本分支）。
-        # 它在 ``create_app`` 之前就收口，因此修复不涉及 uvicorn、也不起任何监听。
-        return _run_repair(data_dir)
 
     import uvicorn
 
