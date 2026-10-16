@@ -316,6 +316,13 @@ const I18N_CATALOGS = {
     'agent.enabledOnHint': '正常参与频道与任务',
     'agent.enabledOff': '停用',
     'agent.enabledOffHint': '不产出回复',
+    'agent.autoClaimLabel': '自动认领任务',
+    'agent.autoClaimOn': '开启',
+    'agent.autoClaimOnHint': '新建任务后由编排接手',
+    'agent.autoClaimOff': '关闭',
+    'agent.autoClaimOffHint': '新建任务保持未认领',
+    'agent.autoClaimNote':
+      '开启后：频道内新建的任务由编排交给它（一次只认领一个）；认领会写一条可读的系统记录、唤醒它，并为该任务重置一次回应预算——每张任务至多一次。',
 
     /* ─── Agent 详情（dock 第三形态）：概览 + 运行时两个页签（日志页签不做，D24） ──
        概览的每个数字都由**后端既有事实**推导（`stats`：`round_outcome` 聚合 + 任务行），
@@ -363,6 +370,9 @@ const I18N_CATALOGS = {
     'agentDetail.kvEnabled': '启用状态',
     'agentDetail.enabledOn': '已启用',
     'agentDetail.enabledOff': '已暂停',
+    'agentDetail.kvAutoClaim': '自动认领任务',
+    'agentDetail.autoClaimOn': '已开启',
+    'agentDetail.autoClaimOff': '已关闭',
     'agentDetail.emptyField': '（未填写）',
     'agentDetail.editTitle': '编辑配置',
     'agentDetail.editSub': '保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。',
@@ -737,6 +747,13 @@ const I18N_CATALOGS = {
     'agent.enabledOnHint': 'Takes part in channels and tasks',
     'agent.enabledOff': 'Disabled',
     'agent.enabledOffHint': 'Produces no replies',
+    'agent.autoClaimLabel': 'Auto-claim tasks',
+    'agent.autoClaimOn': 'On',
+    'agent.autoClaimOnHint': 'The orchestrator takes new tasks',
+    'agent.autoClaimOff': 'Off',
+    'agent.autoClaimOffHint': 'New tasks stay unclaimed',
+    'agent.autoClaimNote':
+      'When on: the orchestrator hands new tasks in this Agent\'s channels to it (one claimant at a time); a claim writes a readable system record, wakes the Agent, and resets that task\'s response budget once — at most once per task.',
 
     /* ─── Agent detail (dock form C): overview + runtime tabs (no log tab, D24) ──
        Every number on the overview is derived from **backend facts** (`stats`: aggregates over
@@ -787,6 +804,9 @@ const I18N_CATALOGS = {
     'agentDetail.kvEnabled': 'Enabled',
     'agentDetail.enabledOn': 'Enabled',
     'agentDetail.enabledOff': 'Paused',
+    'agentDetail.kvAutoClaim': 'Auto-claim tasks',
+    'agentDetail.autoClaimOn': 'On',
+    'agentDetail.autoClaimOff': 'Off',
     'agentDetail.emptyField': '(empty)',
     'agentDetail.editTitle': 'Edit configuration',
     'agentDetail.editSub':

@@ -2511,6 +2511,11 @@ function agentRuntimeNodes(agent) {
     ['agentDetail.kvRole', agent.role || t('agentDetail.emptyField'), 'agent-detail-role'],
     ['agentDetail.kvEnabled', agent.enabled ? t('agentDetail.enabledOn') : t('agentDetail.enabledOff'),
       'agent-detail-enabled'],
+    // 「自动认领任务」（#65）也是 `agent_config` 里真实存在的一列，因此与其余字段同一条口径：
+    // 运行时页签**读**它，写它的地方仍是**同一个**编辑配置弹窗（不另造第二个编辑面）。
+    ['agentDetail.kvAutoClaim',
+      agent.auto_claim ? t('agentDetail.autoClaimOn') : t('agentDetail.autoClaimOff'),
+      'agent-detail-auto-claim'],
   ];
   rows.forEach(([key, value, odId]) => section.appendChild(kvRow(t(key), value, odId)));
 
@@ -2602,6 +2607,7 @@ function openAgentEditModal(memberId) {
   const preferred = cut >= 0 ? modelId.slice(0, cut) : (agent.provider || '');
   renderAgentEditProviderSelect(preferred);
   renderAgentEditEnabled(agent.enabled !== false);
+  renderAgentEditAutoClaim(agent.auto_claim === true);
   renderAgentEditNotice();
   $('#agentEditOverlay').hidden = false;
   $('#agentEditName').focus();
@@ -2641,6 +2647,30 @@ function agentEditEnabledValue() {
   return on;
 }
 
+/** 「自动认领任务」的两个档位（与上面的启用态**同一套** `.radio-card` 控件族，不新造控件）。
+    它的取值直接来自后端读数 `agent.auto_claim`：界面不另存一个「开关状态」。 */
+function renderAgentEditAutoClaim(autoClaim) {
+  Array.prototype.forEach.call(
+    $('#agentEditAutoClaim').querySelectorAll('[data-auto-claim]'),
+    (card) => {
+      const on = (card.dataset.autoClaim === 'on') === Boolean(autoClaim);
+      card.classList.toggle('is-on', on);
+      card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    },
+  );
+}
+
+function agentEditAutoClaimValue() {
+  let on = false;
+  Array.prototype.forEach.call(
+    $('#agentEditAutoClaim').querySelectorAll('[data-auto-claim]'),
+    (card) => {
+      if (card.dataset.autoClaim === 'on') on = card.classList.contains('is-on');
+    },
+  );
+  return on;
+}
+
 function renderAgentEditNotice() {
   renderRemoteNoticeBlock(AGENT_EDIT_NOTICE_IDS, $('#agentEditProviderSelect').value);
 }
@@ -2657,6 +2687,7 @@ async function submitAgentEdit() {
     model_id: provider + ':' + $('#agentEditModelInput').value.trim(),
     system_prompt: $('#agentEditPromptInput').value.trim(),
     enabled: agentEditEnabledValue(),
+    auto_claim: agentEditAutoClaimValue(),
   };
   const box = $('#agentEditFormError');
   const submit = $('#agentEditSubmit');
@@ -3960,6 +3991,10 @@ function bindEvents() {
   $('#agentEditEnabled').addEventListener('click', (event) => {
     const card = event.target.closest('[data-enabled]');
     if (card) renderAgentEditEnabled(card.dataset.enabled === 'on');
+  });
+  $('#agentEditAutoClaim').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-auto-claim]');
+    if (card) renderAgentEditAutoClaim(card.dataset.autoClaim === 'on');
   });
   $('#agentEditOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'agentEditOverlay') closeAgentEditModal();

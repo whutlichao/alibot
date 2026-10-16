@@ -178,6 +178,7 @@ function agentDetail(overrides) {
       model_id: "ollama:qwen2.5",
       system_prompt: "你只回答一句话。",
       enabled: true,
+      auto_claim: false,
       provider: "ollama",
       is_remote: false,
       remote_consent: false,
@@ -221,12 +222,20 @@ function createHarness(options) {
   function buildNode(selector) {
     const node = new FakeNode("div");
     node.hidden = HIDDEN_IN_HTML.has(selector);
-    // 编辑弹窗的启用档位是静态 HTML 里的两个 `.radio-card`（`index.html`）；替身按同形构建它们，
-    // 于是「哪一档被选中」这条断言读的是控件自己的状态，不是应用里的一个布尔。
+    // 编辑弹窗的两个布尔档位组（启用状态 / 自动认领）都是静态 HTML 里的两个 `.radio-card`
+    // （`index.html`）；替身按同形构建它们，于是「哪一档被选中」这条断言读的是控件自己的状态，
+    // 不是应用里的一个布尔。
     if (selector === "#agentEditEnabled") {
       ["on", "off"].forEach((value) => {
         const card = new FakeNode("button");
         card.dataset.enabled = value;
+        node.appendChild(card);
+      });
+    }
+    if (selector === "#agentEditAutoClaim") {
+      ["on", "off"].forEach((value) => {
+        const card = new FakeNode("button");
+        card.dataset.autoClaim = value;
         node.appendChild(card);
       });
     }
@@ -534,6 +543,7 @@ test("运行时页签只呈现 agent_config 里的真字段，不出现原型的
     catalogText(harness, "zh-CN", "agentDetail.kvConsent"),
     catalogText(harness, "zh-CN", "agentDetail.kvRole"),
     catalogText(harness, "zh-CN", "agentDetail.kvEnabled"),
+    catalogText(harness, "zh-CN", "agentDetail.kvAutoClaim"),
   ]);
   const values = kvValues(harness.runtime);
   assert.equal(values[0], "ollama:qwen2.5");
@@ -542,6 +552,9 @@ test("运行时页签只呈现 agent_config 里的真字段，不出现原型的
   assert.equal(values[3], catalogText(harness, "zh-CN", "agentDetail.consentNotNeeded"));
   assert.equal(values[4], "前端工程师");
   assert.equal(values[5], catalogText(harness, "zh-CN", "agentDetail.enabledOn"));
+  // 「自动认领任务」也是 `agent_config` 里真实存在的一列（#65），因此与其余字段同一条口径：
+  // 它**读**的是后端读数本身，不是界面上的一个布尔。
+  assert.equal(values[6], catalogText(harness, "zh-CN", "agentDetail.autoClaimOff"));
   // 系统提示是配置数据的**原文**（不是被改写的一句话）。
   assert.equal(byDataset(harness.runtime, "odId", "agent-detail-prompt").textContent, "你只回答一句话。");
 
@@ -645,10 +658,66 @@ test("「编辑配置」预填当前配置，保存提交全部可写字段并�
     model_id: "ollama:qwen2.5",
     system_prompt: "你只回答一句话。",
     enabled: true,
+    auto_claim: false,
   });
   assert.equal(harness.editOverlay.hidden, true, "保存成功要关掉弹窗");
   assert.equal(harness.memberList.textContent.includes("小明明"), true, "左栏名字跟着后端读数走");
   assert.equal(harness.reportName.textContent, "小明明");
+});
+
+test("「自动认领任务」开关在既有详情面里可见、可写、读回一致（不另造第二个编辑面）", async () => {
+  const claimed = agentDetail({ auto_claim: true });
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const harness = createHarness({
+    fetch: async (url, init) => {
+      if (String(url) === "/api/agents/mem-1" && (init.method || "GET") === "PATCH") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ agent: claimed, agents: [claimed], members: [owner, claimed] }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  // 「可见」：详情面里就有这一档——编辑面（同一处入口）的两个档位。
+  await harness.overview.dispatchEvent({
+    type: "click",
+    target: harness.overview.querySelector("[data-agent-edit]"),
+  });
+  await flush();
+  assert.equal(harness.editOverlay.hidden, false);
+  const group = harness.elementFor("#agentEditAutoClaim");
+  const onCard = byDataset(group, "autoClaim", "on");
+  const offCard = byDataset(group, "autoClaim", "off");
+  assert.ok(onCard && offCard, "编辑面要有「开启 / 关闭」两个档位");
+  // 预填读的是**后端读数**（这句详情读数为 `auto_claim: false` ⇒ 关闭档选中）。
+  assert.equal(offCard.classList.contains("is-on"), true);
+  assert.equal(onCard.classList.contains("is-on"), false);
+
+  // 「可写」：点「开启」档位，保存时 payload 带 `auto_claim: true`。
+  await group.dispatchEvent({ type: "click", target: onCard });
+  assert.equal(onCard.classList.contains("is-on"), true);
+  await harness.elementFor("#agentEditSubmit").dispatchEvent({ type: "click" });
+  await flush();
+
+  const patch = harness.patches();
+  assert.equal(patch.length, 1);
+  assert.equal(patch[0].body.auto_claim, true);
+  assert.equal(harness.editOverlay.hidden, true, "保存成功要关掉弹窗");
+
+  // 「读回一致」：同一份读数的两处呈现——运行时页签那一行与重开编辑面的档位。
+  await harness.elementFor("#adTabRuntime").dispatchEvent({ type: "click" });
+  assert.equal(kvValues(harness.runtime)[6], catalogText(harness, "zh-CN", "agentDetail.autoClaimOn"));
+  await harness.overview.dispatchEvent({
+    type: "click",
+    target: harness.overview.querySelector("[data-agent-edit]"),
+  });
+  await flush();
+  assert.equal(byDataset(harness.elementFor("#agentEditAutoClaim"), "autoClaim", "on").classList.contains("is-on"), true);
 });
 
 test("后端整体拒绝时错误留在弹窗里，弹窗不关、名字不变", async () => {
@@ -729,6 +798,9 @@ test("本票新增的文案在两份词条里都取到值", () => {
     "agentDetail.kvEnabled",
     "agentDetail.enabledOn",
     "agentDetail.enabledOff",
+    "agentDetail.kvAutoClaim",
+    "agentDetail.autoClaimOn",
+    "agentDetail.autoClaimOff",
     "agentDetail.emptyField",
     "agentDetail.editTitle",
     "agentDetail.editSub",
@@ -741,6 +813,12 @@ test("本票新增的文案在两份词条里都取到值", () => {
     "agent.enabledOnHint",
     "agent.enabledOff",
     "agent.enabledOffHint",
+    "agent.autoClaimLabel",
+    "agent.autoClaimOn",
+    "agent.autoClaimOnHint",
+    "agent.autoClaimOff",
+    "agent.autoClaimOffHint",
+    "agent.autoClaimNote",
     "toast.agentUpdated",
     "toast.agentDetailFailed",
     "toast.agentPaused",

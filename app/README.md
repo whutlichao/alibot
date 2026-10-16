@@ -89,7 +89,8 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
-| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关 | 模型与系统提示是**配置数据**，换模型不改代码 |
+| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省关闭） | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领 |
+| `task` | id, target_id, channel_id, 标题, 状态, 指派者, **`claimed_at`** | 任务当前态在行上；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点） |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证** |
 | `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `channel` | id, 名称, 描述 | |
@@ -158,8 +159,28 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
   无可落库内容就不落行，所以它可能偏大也可能偏小）；要从只读面反推跳数，读
   `budget.used`。`round_outcome` 的 append-only 约束不变。
 - **并发合并**：同一 Agent 同时最多一轮 in-flight；窗口内到达的重复唤醒**不排队、不重放**，
-  收口时合成**恰好一条** `merged` 记录，`base_seq` 取窗口内**最大 seq**。被合并的消息仍在消费
+  收口时合并**恰好一条** `merged` 记录，`base_seq` 取窗口内**最大 seq**。被合并的消息仍在消费
   游标之后，下一次**新的**唤醒会被一并读到（不重放 ≠ 永久吞掉）。
+
+### Agent 主动认领（`auto_claim`，ADR-0010）
+
+频道内**新建任务之后**，由**编排**裁决认领——不让模型自己改数据库：候选 = 该频道里**可用**
+（模型配置、启用态、凭证、远端告知）且 `auto_claim` 开启的 Agent 成员，按创建顺序取**第一个**。
+一次只认领一个，不抢、不重复指派；开关缺省**关闭**，写它只有 `PATCH /api/agents/{id}` 这一个入口。
+
+- **认领的载荷效应只有三件**：任务线程里落一条**可读的** `system` 记录（`Claimed: {name} took this
+  task` / `已认领：{name} 接手了这张任务`，按**语言偏好**产出）、认领者进入该任务的 **target 成员**、
+  **唤醒认领者**（与 owner 指派同一条既有唤醒路径）。它**不改任务状态**：ADR-0005 的动作表里
+  「认领」与「改状态」是两格。
+- **认领不是一次跳**：它唤醒认领者，但 `target_budget.used` **不 +1**（跳的载体必须是一条 Agent 消息）。
+- **首次认领是任务 target 的一次开世代动作**：`target_budget.epoch_seq` = 那条 `system` 记录的
+  `seq`，`used` 按当世代生效的上界重置为满额——这是 q4 的人定裁定（ADR-0010 三）。
+- **每张任务至多一次**：落库的 `task.claimed_at` 是这条构造性保证的落点，认领只在
+  `claimed_at IS NULL`（且尚未指派）时成立；因此即便任务之后被取消指派，也不会触发第二次世代推进与
+  预算重置。**这条是 ADR-0002 三跳上界仍然可执行的前提**——没有它，Agent 就能靠「认领 → 用满 →
+  再认领」把「一次人类发言能引发多少 Agent 往返」这道闸门拆掉。
+- **已知代价**：认领会重置一次该任务的预算。触发者是人（人创建了任务），推进世代的动作却由编排
+  执行；风险由「每张任务至多一次」封住（见上）。
 
 ## 实时呈现（SSE 与断线补拉）
 
@@ -201,10 +222,10 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/channels/{id}/budget` | 有界响应预算 `{epoch_seq, limit, used, remaining}`（只读，后端持久事实） |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
-| `GET /api/agents` | Agent 成员 + 模型配置 + 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
-| `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt}`；校验失败**整体不创建** |
-| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason` 与 `stats`） |
-| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`。响应同形 `agent` + `agents` + `members` |
+| `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
+| `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt}`；校验失败**整体不创建**（开关缺省关闭） |
+| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim` 与 `stats`） |
+| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录 |
@@ -225,12 +246,13 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
   `null`，界面显示「—」）。原型里的 Token 消耗 / 上下文占用 / 内存 / 延迟在本仓**没有数据面**，
   因此不呈现。
 - **运行时页签只呈现 `agent_config` 里真实存在的字段**：`model_id`、`provider`、`is_remote`、
-  远端数据流告知状态、`role`、`system_prompt`、`enabled`（外加可用性推导出的当前状态）。
+  远端数据流告知状态、`role`、`system_prompt`、`enabled`、`auto_claim`（外加可用性推导出的当前状态）。
 - **写路径唯一**：`PATCH /api/agents/{id}` 可写 `display_name` / `role` / `model_id` /
-  `system_prompt` / `enabled`，**任一字段不合法则整体不写**（不得部分写入）；`model_id` 沿用与创建
-  同一套校验与**远端数据流告知**语义。`auto_claim` 属 #65，本票的写路径上它仍是未知键（整体拒绝）。
+  `system_prompt` / `enabled` / `auto_claim`，**任一字段不合法则整体不写**（不得部分写入）；`model_id`
+  沿用与创建同一套校验与**远端数据流告知**语义。「自动认领任务」开关就在这个既有编辑面里
+  （不另造第二个编辑面），写它只影响**之后新建**的任务。
 - **配置变更不是发言**：不落消息、不唤醒、不消耗预算、不开世代（ADR-0011 与 ADR-0007 的边界：
-  人类面可写配置类取值）。
+  人类面可写配置类取值）。`auto_claim` 同此——它是编排在**新建任务之后**读的配置，不是动作。
 - **「暂停」= 写 `enabled = 0`**，复用既有可用性判定：状态点为**未启用**、`enabled_reason` 可读；
   已知代价是它**仍会被唤醒**并落一条可读原因的 `failed` 轮次结果，只是不产出回复——「从唤醒面排除」
   是唤醒面的另一个决策，本轮不做。

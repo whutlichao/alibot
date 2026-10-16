@@ -78,6 +78,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "system.task.title": "标题已更改为：{title}",
         "system.task.assignee": "已指派给 {name}",
         "system.task.unassigned": "指派已取消",
+        "system.task.claimed": "已认领：{name} 接手了这张任务",
         "system.member.pierced_join": (
             "{name} 加入了频道：它被点名时并不在此频道，回复时顺带加入（成员变化只随真实回复发生）"
         ),
@@ -250,6 +251,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "system.task.title": "Title changed to: {title}",
         "system.task.assignee": "Assigned to {name}",
         "system.task.unassigned": "Assignment cleared",
+        "system.task.claimed": "Claimed: {name} took this task",
         "system.member.pierced_join": (
             "{name} joined the channel: it was mentioned while outside this channel and joined "
             "along with its reply (membership only changes alongside a real reply)"
