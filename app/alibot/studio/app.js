@@ -141,6 +141,9 @@ const state = {
   taskStream: null,
   taskStreamTimer: null,
   dms: [],
+  // 主 composer 里还没发送的附件草稿（上传成功后拿到标识与元数据；随下一条消息绑定）。
+  // 它**不是**业务正本：正本是库里的附件行（+ 数据目录里的字节）。
+  composerAttachments: [],
   agents: [],
   providers: [],
   localProviders: [],
@@ -1707,6 +1710,9 @@ function sendMessage() {
     toast(t('toast.sendBlockedOffline'), 'err');
     return;
   }
+  // 草稿随这条消息一起走：它们既不留在 composer（已经属于这条 pending），也在失败时随 pending
+  // 一起保留（重试会带上同一批标识）。
+  const attachments = state.composerAttachments.slice();
   const pending = {
     clientId: 'pending-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
     target_id: target.id,
@@ -1714,9 +1720,11 @@ function sendMessage() {
     status: 'pending',
     created_at: new Date().toISOString(),
     author: state.member,
+    attachments,
   };
   state.pending.push(pending);
   resetComposerInput();
+  clearComposerAttachments();
   renderMessages();
   scrollToBottom();
   deliver(pending);
@@ -1726,7 +1734,10 @@ async function deliver(pending) {
   try {
     const payload = await api(targetPath(pending.target_id, '/messages'), {
       method: 'POST',
-      body: { body: pending.body },
+      body: {
+        body: pending.body,
+        attachment_ids: (pending.attachments || []).map((item) => item.id),
+      },
     });
     removePending(pending.clientId);
     // 消息本身由事件流按 seq 追加（同一帧可能已经到达），这里只保证它一定在。
@@ -2637,6 +2648,7 @@ function messageNode(message) {
     head.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
     body.appendChild(head);
     body.appendChild(el('div', 'msg-text', message.body));
+    appendAttachmentList(body, message);
     appendTaskRefChip(body, message);
     article.appendChild(body);
     return article;
@@ -2662,6 +2674,7 @@ function messageNode(message) {
   if (failed) head.dataset.stateLabel = t('msg.failedTag');
   body.appendChild(head);
   body.appendChild(messageText(message));
+  appendAttachmentList(body, message);
   appendTaskRefChip(body, message);
 
   if (failed) {
@@ -2720,18 +2733,151 @@ function autosizeComposer() {
 
 function syncSendButton() {
   $('#btnSend').disabled =
-    !$('#composerInput').value.trim() || !state.online || !activeTarget() || state.mode !== 'channel';
+    !$('#composerInput').value.trim() ||
+    !state.online ||
+    !activeTarget() ||
+    state.mode !== 'channel' ||
+    // 上传还没落地时不能发：那会把还没拿到标识的文件丢在这条消息之外。
+    attachingCount > 0;
 }
 
 /** 清空主 composer 的输入区：正文、自适应高度、发送键、候选清单一起收。
     两条路径共用同一件事「正文已经不在输入框里了」：消息送出（`sendMessage`）与
-    「作为任务发送」成功把正文变成任务标题（D6）。 */
+    「作为任务发送」成功把正文变成任务标题（D6）。
+
+    **不**清附件草稿：这条路径只说「正文不在输入框里了」。消息送出会另调
+    `clearComposerAttachments()` 把草稿交给那条消息；「作为任务发送」则**留着**草稿——
+    任务不需要附件（D15），静默丢掉人选好的文件才是更难解释的行为。 */
 function resetComposerInput() {
   $('#composerInput').value = '';
   autosizeComposer();
   syncSendButton();
   // 清单描述的是刚消失的那段前缀，不能留在屏上。
   closeMentionPicker();
+}
+
+/* ─── 附件（#67 / ADR-0014）：两步上传 —— 先拿标识，随消息提交时绑定 ──────────
+   前端只做两件机械事：把选中的文件按**字节**POST 成一个草稿、把后端返回的标识攒在手上。
+   「绑定」发生在发送那条消息的**同一个请求**里（后端在同一事务内完成），前端不另开一条路径，
+   也不提前把草稿画成「已发送」——未绑定的草稿在读取面里不存在，前端也就不该假装它存在。 */
+
+/** 正在上传的个数：上传期间发送键禁用（否则会把还没拿到标识的文件丢在消息之外）。 */
+let attachingCount = 0;
+
+/** 附件体积的界面说法。单位符号与语言无关，因此不进词条表（词条表里没有裸符号的位置）。 */
+function formatBytes(size) {
+  const bytes = Number(size) || 0;
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+/** 上传一个文件成**草稿**，返回附件元数据（标识 / 原名 / 大小 / MIME / 内容 url）。
+
+    请求体是文件的原始字节、`Content-Type` 是声明的 MIME、文件名在 query 上：与后端
+    `POST /api/attachments` 的契约一致（那个端点因此不需要 multipart 解析）。
+    拒绝原因由后端按**语言偏好**渲染，这里只把它读出来给调用方。 */
+async function uploadAttachment(file) {
+  const response = await fetch('/api/attachments?name=' + encodeURIComponent(file.name || ''), {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    const error = new Error(readError(payload, response));
+    error.status = response.status;
+    throw error;
+  }
+  return payload.attachment;
+}
+
+/** 选中的文件逐个上传成草稿；单个失败只影响它自己（可读原因进 toast），已成功的留在手上。 */
+async function attachFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  attachingCount += list.length;
+  renderComposerAttachments();
+  for (const item of list) {
+    try {
+      state.composerAttachments.push(await uploadAttachment(item));
+    } catch (err) {
+      toast(t('toast.attachFailed', { reason: err.message }), 'err');
+    } finally {
+      attachingCount -= 1;
+      renderComposerAttachments();
+    }
+  }
+}
+
+/** 移除一个还没发送的草稿（只从手上移走；库里的草稿行与字节仍在——没有删除端点）。 */
+function removeComposerAttachment(attachmentId) {
+  state.composerAttachments = state.composerAttachments.filter((item) => item.id !== attachmentId);
+  renderComposerAttachments();
+}
+
+/** 草稿交给某条消息之后清空手上的清单（发送成功与乐观发送都走它）。 */
+function clearComposerAttachments() {
+  state.composerAttachments = [];
+  renderComposerAttachments();
+}
+
+/**
+ * 一块附件元素：草稿态（composer 里，可移除）与已发送态（消息里，可下载）共用同一块形状。
+ *
+ * 已发送态用**原生 `<a download>`**：内容端点给出 `Content-Disposition` 与 MIME，浏览器据此
+ * 落到本地文件；「预览」是同一个端点的 `disposition=inline`，由链接的 `target` 之外的调用点决定，
+ * 本票只做消息里的下载入口（富媒体预览是 Out of Scope）。
+ */
+function attachmentNode(attachment, options) {
+  const opts = options || {};
+  const name = attachment.name || t('attach.fallbackName');
+  const size = formatBytes(attachment.size);
+  const node = el(opts.link ? 'a' : 'span', 'attach' + (opts.link ? ' is-link' : ''));
+  node.dataset.attachment = attachment.id;
+  if (opts.link) {
+    node.setAttribute('href', attachment.url);
+    node.setAttribute('download', name);
+    node.setAttribute('aria-label', t('msg.attachmentAria', { name, size }));
+  }
+  node.appendChild(el('span', 'attach-name', name));
+  node.appendChild(el('span', 'attach-size', size));
+  if (opts.removable) {
+    const remove = el('button', 'attach-remove', '×');
+    remove.type = 'button';
+    remove.dataset.removeAttachment = attachment.id;
+    remove.setAttribute('aria-label', t('composer.attachRemove', { name }));
+    node.appendChild(remove);
+  }
+  return node;
+}
+
+/** 把待发送的草稿与「正在上传」的占位画进 composer 的附件区（空的时候整块隐藏）。 */
+function renderComposerAttachments() {
+  const box = $('#composerAttachments');
+  if (!box) return;
+  const nodes = state.composerAttachments.map((attachment) =>
+    attachmentNode(attachment, { removable: true }),
+  );
+  if (attachingCount > 0) {
+    nodes.push(el('span', 'attach is-pending', t('composer.attaching', { count: attachingCount })));
+  }
+  box.hidden = nodes.length === 0;
+  replaceChildren(box, nodes);
+}
+
+/** 消息里的附件：一块可点开（下载）的元素。没有附件时什么都不渲染。 */
+function appendAttachmentList(body, message) {
+  const attachments = message.attachments || [];
+  if (!attachments.length) return;
+  const list = el('div', 'msg-attachments');
+  attachments.forEach((attachment) => list.appendChild(attachmentNode(attachment, { link: true })));
+  body.appendChild(list);
 }
 
 /* ─── @ 补全：清单只找候选 + 按解析器的引号规则拼字符串（前端不解析提及） ──────
@@ -3646,7 +3792,21 @@ function bindEvents() {
     chooseMention(member);
   });
   $('#btnSend').addEventListener('click', sendMessage);
-  // composer 工具行：@提及 复用既有补全；作为任务发送 打开既有弹窗并预填正文（D6）。
+  // composer 工具行：附件（两步上传）→ @提及（复用既有补全）→ 作为任务发送（D6）。
+  $('#btnAttach').addEventListener('click', () => {
+    const input = $('#attachInput');
+    if (input && typeof input.click === 'function') input.click();
+  });
+  $('#attachInput').addEventListener('change', (event) => {
+    const input = event.target;
+    attachFiles(input && input.files);
+    // 选完之后把控件清空：同一个文件再选一次也应当触发一次新的 `change`。
+    if (input) input.value = '';
+  });
+  $('#composerAttachments').addEventListener('click', (event) => {
+    const remove = event.target.closest('[data-remove-attachment]');
+    if (remove) removeComposerAttachment(remove.dataset.removeAttachment);
+  });
   $('#btnMention').addEventListener('click', mentionFromToolbar);
   $('#btnAsTask').addEventListener('click', openTaskFromComposer);
 

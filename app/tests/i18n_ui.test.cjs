@@ -682,9 +682,14 @@ class FieldNode extends FakeNode {
   }
 }
 
-/** 只装载 composer 工具行所需的那几个元素：其余选择器给一个惰性替身（`bindEvents` 会挂到它们上）。 */
-function createComposerHarness() {
+/** 只装载 composer 工具行所需的那几个元素：其余选择器给一个惰性替身（`bindEvents` 会挂到它们上）。
+
+    `options.fetch` 是 HTTP 替身（默认一律返回空对象）：附件那条路径要断言「发出去的请求长什么样」，
+    因此这里把每个请求记进 `requests` 一并带回来。 */
+function createComposerHarness(options) {
+  const config = options || {};
   const nodes = new Map();
+  const requests = [];
 
   function newNode(tagName) {
     const node = new FakeNode(tagName);
@@ -739,7 +744,11 @@ function createComposerHarness() {
 
   const context = vm.createContext({
     document,
-    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      if (config.fetch) return config.fetch(url, init);
+      return { ok: true, json: async () => ({}) };
+    },
     URLSearchParams,
     window: { addEventListener: () => {} },
     console,
@@ -752,7 +761,10 @@ function createComposerHarness() {
   const startup = /\napplyStaticI18n\(document\);\nbindEvents\(\);\nloadWorkspace\(\);\s*$/;
   assert.match(source, startup, "app startup calls should remain at the end of app.js");
   vm.runInContext(
-    source.replace(startup, "\nglobalThis.__composerTest = { state, bindEvents };\n"),
+    source.replace(
+      startup,
+      "\nglobalThis.__composerTest = { state, bindEvents, attachFiles, renderComposerAttachments, removeComposerAttachment, renderMessages, messageNode, uploadAttachment, deliver, syncSendButton };\n",
+    ),
     context,
     { filename: appPath },
   );
@@ -772,6 +784,7 @@ function createComposerHarness() {
     api,
     document,
     elementFor,
+    requests,
     catalogs: context.AlibotI18n.catalogs,
     i18n: context.AlibotI18n,
   };
@@ -790,13 +803,14 @@ function indexOf(source, marker) {
   return at;
 }
 
-test("composer 工具行：按钮位与顺序照原型，且 #67 的附件位在本票不落", () => {
+test("composer 工具行：按钮位与顺序照原型，附件落在 #btnMention 之前的首槽", () => {
   const html = readStudio("index.html");
   const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
   const composerBar = composerBarAt(withoutComments);
 
-  // 顺序：@提及 → 作为任务发送 → 分隔 → 提示 → 发送（附件位在原型的首槽，本票留空给 #67）。
+  // 顺序照原型：附件 → @提及 → 作为任务发送 → 分隔 → 提示 → 发送。
   const order = [
+    'id="btnAttach"',
     'id="btnMention"',
     'id="btnAsTask"',
     'class="sep"',
@@ -808,21 +822,27 @@ test("composer 工具行：按钮位与顺序照原型，且 #67 的附件位在
     [...order].sort((a, b) => a - b),
     "工具行元素的先后顺序必须与原型一致（附件 → @提及 → 作为任务发送 → 分隔 → 提示 → 发送）",
   );
-
-  // 附件位：本票**不**落一个没有行为的图标按钮（#67 接线后插在 `#btnMention` 之前）。
-  assert.equal(
-    withoutComments.includes('id="btnAttach"'),
-    false,
-    "附件按钮属于 #67；一个按下去什么都不发生的按钮不进这个工具行",
-  );
-  // 两个交付的按钮都挂词条键（文案不写死）且各只有一份。
-  for (const marker of ["btn-mention", "btn-as-task"]) {
+  // 三个图标按钮都挂词条键（文案不写死）且各只有一份。
+  for (const marker of ["btn-attach", "btn-mention", "btn-as-task"]) {
     assert.equal(
       withoutComments.split(`data-od-id="${marker}"`).length - 1,
       1,
       `${marker} 在主 composer 里恰好一份`,
     );
   }
+  // 附件按钮接的是**隐藏的原生文件选择器**（不是一套自造的挑选器 UI），且允许多选。
+  assert.match(
+    withoutComments,
+    /class="sr-only"[^>]*type="file"[^>]*id="attachInput"[^>]*multiple/,
+    "附件按钮触发的是隐藏的原生 <input type=\"file\" multiple>",
+  );
+  assert.match(
+    withoutComments,
+    /id="attachInput"[^>]*data-i18n-attr="aria-label:composer\.attachAction"/,
+    "文件选择器也要有可本地化的可访问名",
+  );
+  // 待发送草稿的容器在 composer 里（消息里的附件元素由 app.js 渲染进消息流）。
+  assert.equal(withoutComments.includes('id="composerAttachments"'), true);
 });
 
 test("composer 工具行：@提及 追加 `@`、聚焦输入框、激活发送键并复用既有补全", async () => {
@@ -907,6 +927,267 @@ test("composer 工具行：两个新文案在两份词条里都取到值", () =>
     assert.equal(button.getAttribute("title"), catalogs[locale]["composer.mentionAction"]);
     assert.equal(taskButton.getAttribute("aria-label"), catalogs[locale]["composer.asTaskAction"]);
   }
+});
+
+/* ─── 7b. 附件（#67 / ADR-0014）：两步上传 —— 先拿标识，随消息提交时绑定 ─────
+   验收面：① composer 里的草稿元素来自**后端返回的元数据**；② 发送时标识随消息一起走
+   ③ 消息里的附件是**可点开的下载元素**（`href` 指向内容端点、`download` 是原文件名）
+   ④ 上传被拒时给出后端给的可读原因、不留下草稿 ⑤ 新增文案在两份词条里都取到值。
+
+   `fetch` 替身只回后端契约里那几样东西（附件元数据 / 消息 / 工作台快照），前端不许自己拼。 */
+
+/** 等两轮宏任务：上传是 `await fetch(...)` 链，`dispatchEvent` 只等同步那一段。 */
+async function settle() {
+  await flush();
+  await flush();
+}
+
+/** 附件路径的 HTTP 替身：上传与「发送带附件的消息」各回一份后端契约形状的载荷。 */
+function attachmentFetch(options) {
+  const config = options || {};
+  return async (url, init) => {
+    const method = (init && init.method) || "GET";
+    if (url.startsWith("/api/attachments?") && method === "POST") {
+      if (config.rejectUpload) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({
+            error: {
+              code: "validation_failed",
+              message: "附件校验未通过，未保存任何数据",
+              fields: { file: "附件超过单文件上限（10485760 字节）" },
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          attachment: {
+            id: "att_1",
+            name: "报告.pdf",
+            size: 204800,
+            mime_type: "application/pdf",
+            created_at: "2026-10-16T09:00:00Z",
+            message_id: null,
+            url: "/api/attachments/att_1",
+          },
+        }),
+      };
+    }
+    if (/\/messages$/.test(url) && method === "POST") {
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          message: {
+            id: "msg_1",
+            target_id: "ch-1",
+            seq: 1,
+            kind: "human",
+            body: "带附件的一条",
+            created_at: "2026-10-16T09:00:01Z",
+            mention_snapshot: [],
+            task_ref: null,
+            attachments: [],
+            author: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
+          },
+        }),
+      };
+    }
+    if (url === "/api/workspace") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          member: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
+          channels: [],
+          dms: [],
+          members: [],
+          agents: [],
+          unread_total: 0,
+          last_seq: 0,
+          model_providers: [],
+          local_providers: [],
+          remote_consents: [],
+        }),
+      };
+    }
+    if (url === "/api/channels") return { ok: true, status: 200, json: async () => ({ channels: [] }) };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+}
+
+/** 选一个文件：把 `files` 放进那个原生选择器并让它 `change` 一次（真实路径就是这样触发的）。 */
+async function chooseFiles(harness, files) {
+  const input = harness.elementFor("#attachInput");
+  input.files = files;
+  await input.dispatchEvent({ type: "change", target: input });
+  await settle();
+}
+
+test("附件：上传成功后 composer 里出现草稿元素，且请求就是「原始字节 + 文件名」", async () => {
+  const harness = createComposerHarness({ fetch: attachmentFetch() });
+  const box = harness.elementFor("#composerAttachments");
+  harness.api.renderComposerAttachments();
+  assert.equal(box.hidden, true, "没有附件时这一块不占版面");
+
+  const file = { name: "报告.pdf", type: "application/pdf", size: 204800 };
+  await chooseFiles(harness, [file]);
+
+  assert.equal(box.hidden, false);
+  const chips = box.querySelectorAll("[data-attachment]");
+  assert.deepEqual(chips.map((chip) => chip.dataset.attachment), ["att_1"]);
+  assert.equal(chips[0].textContent.includes("报告.pdf"), true);
+  assert.equal(chips[0].textContent.includes("200.0 KB"), true, "体积按元数据呈现");
+
+  const upload = harness.requests.find((request) => request.url.startsWith("/api/attachments"));
+  assert.equal(upload.url, "/api/attachments?name=" + encodeURIComponent("报告.pdf"));
+  assert.equal(upload.init.method, "POST");
+  assert.equal(upload.init.headers["Content-Type"], "application/pdf");
+  assert.equal(upload.init.body, file, "请求体是文件本身的字节，不是 JSON 包装");
+});
+
+test("附件：发送时把草稿标识随消息带上，然后从 composer 里收走", async () => {
+  const harness = createComposerHarness({ fetch: attachmentFetch() });
+  const input = harness.elementFor("#composerInput");
+  await chooseFiles(harness, [{ name: "报告.pdf", type: "application/pdf", size: 204800 }]);
+
+  input.value = "带附件的一条";
+  await harness.elementFor("#btnSend").dispatchEvent({ type: "click" });
+  await settle();
+
+  const sent = harness.requests.find(
+    (request) => request.init && request.init.method === "POST" && request.url === "/api/channels/ch-1/messages",
+  );
+  assert.ok(sent, "消息经既有发送路径发出");
+  assert.deepEqual(JSON.parse(sent.init.body).attachment_ids, ["att_1"], "标识随消息提交时绑定");
+  assert.equal(harness.elementFor("#composerAttachments").hidden, true, "草稿已经交给那条消息");
+});
+
+test("附件：消息里的附件渲染出可点开的下载元素（原文件名 + 内容端点）", () => {
+  const harness = createComposerHarness();
+  harness.api.state.messages = [
+    {
+      id: "msg_1",
+      target_id: "ch-1",
+      seq: 1,
+      kind: "human",
+      body: "带附件的一条",
+      created_at: "2026-10-16T09:00:00Z",
+      mention_snapshot: [],
+      task_ref: null,
+      attachments: [
+        {
+          id: "att_1",
+          name: "报告.pdf",
+          size: 204800,
+          mime_type: "application/pdf",
+          created_at: "2026-10-16T09:00:00Z",
+          message_id: "msg_1",
+          url: "/api/attachments/att_1",
+        },
+      ],
+      author: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
+    },
+  ];
+  harness.api.renderMessages();
+
+  const nodes = harness.elementFor("#messageList").querySelectorAll("[data-attachment]");
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].tagName, "a", "附件元素是可点开的链接");
+  assert.equal(nodes[0].getAttribute("href"), "/api/attachments/att_1", "指向内容端点");
+  assert.equal(nodes[0].getAttribute("download"), "报告.pdf", "下载名是库里的原文件名");
+  assert.equal(nodes[0].classList.contains("is-link"), true);
+  assert.ok(nodes[0].getAttribute("aria-label").includes("报告.pdf"));
+});
+
+test("附件：没有被绑定的草稿不进消息流（正反两向）", () => {
+  const harness = createComposerHarness();
+  harness.api.state.messages = [
+    {
+      id: "msg_1",
+      target_id: "ch-1",
+      seq: 1,
+      kind: "human",
+      body: "没有附件的一条",
+      created_at: "2026-10-16T09:00:00Z",
+      mention_snapshot: [],
+      task_ref: null,
+      attachments: [],
+      author: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
+    },
+  ];
+  harness.api.renderMessages();
+  assert.equal(
+    harness.elementFor("#messageList").querySelectorAll("[data-attachment]").length,
+    0,
+    "读取面没给附件时什么都不渲染",
+  );
+});
+
+test("附件：上传被拒时给出后端原因，且 composer 里不留下草稿", async () => {
+  const harness = createComposerHarness({ fetch: attachmentFetch({ rejectUpload: true }) });
+  await chooseFiles(harness, [{ name: "巨大.bin", type: "application/pdf", size: 11534336 }]);
+
+  assert.equal(harness.elementFor("#composerAttachments").hidden, true, "被拒的上传不留草稿");
+  const toast = harness.elementFor("#toastWrap").textContent;
+  assert.ok(toast.includes("附件上传失败"), "拒绝对话在界面里可读");
+  assert.ok(toast.includes("附件超过单文件上限"), "原因是**后端**给的那一句，前端不另编");
+});
+
+test("附件：新增文案在两份词条里都取到值", () => {
+  const harness = createComposerHarness();
+  const catalogs = harness.catalogs;
+  const keys = [
+    "composer.attachAction",
+    "composer.attachRemove",
+    "composer.attaching",
+    "attach.fallbackName",
+    "msg.attachmentAria",
+    "toast.attachFailed",
+  ];
+  for (const key of keys) {
+    assert.ok(catalogs["zh-CN"][key], `${key} 在源语言里缺失`);
+    assert.ok(catalogs.en[key], `${key} 在第二语言里缺失`);
+    assert.notEqual(catalogs["zh-CN"][key], catalogs.en[key], `${key} 的两份取值不能是同一句话`);
+  }
+
+  // 按键取两套值比对（不写死措辞）：同一个绑定在两套语言下各自取到本语言的值。
+  const root = new FakeNode("body");
+  const attachButton = new FakeNode("button");
+  attachButton.setAttribute("data-i18n-attr", "title:composer.attachAction,aria-label:composer.attachAction");
+  root.appendChild(attachButton);
+  for (const locale of ["zh-CN", "en"]) {
+    harness.i18n.setLocale(locale);
+    harness.i18n.applyStaticI18n(root);
+    assert.equal(attachButton.getAttribute("aria-label"), catalogs[locale]["composer.attachAction"]);
+    assert.equal(attachButton.getAttribute("title"), catalogs[locale]["composer.attachAction"]);
+  }
+
+  // 草稿元素与「正在上传」占位也按键取值（参数位按当前语言拼）。
+  const harnessEn = createComposerHarness();
+  harnessEn.i18n.setLocale("en");
+  const node = harnessEn.api.messageNode({
+    id: "msg_1",
+    target_id: "ch-1",
+    seq: 1,
+    kind: "human",
+    body: "x",
+    created_at: "2026-10-16T09:00:00Z",
+    mention_snapshot: [],
+    task_ref: null,
+    attachments: [{ id: "att_1", name: "report.pdf", size: 10, url: "/api/attachments/att_1" }],
+    author: { id: "owner", kind: "owner", display_name: "Owner", avatar_slot: 4 },
+  });
+  const englishAria = node.querySelector("[data-attachment]").getAttribute("aria-label");
+  assert.equal(
+    englishAria,
+    catalogText(harnessEn, "en", "msg.attachmentAria", { name: "report.pdf", size: "10 B" }),
+    "英文界面下附件元素取英文词条",
+  );
 });
 
 /* ─── 8. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
