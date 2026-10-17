@@ -488,14 +488,17 @@ class WorkspaceService:
 
     # ─── 提醒（库内对象；ADR-0012） ───────────────────────────────────────
     def reminders(self) -> list[dict[str, Any]]:
-        """全部提醒。正本是库里的 ``reminder`` 表，不是浏览器里的临时状态。"""
+        """全部提醒（含 ``fired_at`` 与派生 ``state``）。正本是库里的 ``reminder`` 表。"""
         return self._db.list_reminders()
 
     def create_reminder(self, text: str, time: str, channel_id: str | None = None) -> dict[str, Any]:
         """新建一条提醒（人类面动作）。``channel_id`` 省略 / ``None`` = 不归属任何频道。
 
-        与设置面同一条纪律：**不落消息、不唤醒、不消耗预算**，也不新增 target、不计未读——
-        提醒不是对话事实（ADR-0012 / D18）。
+        **增删**与设置面同一条纪律：**不落消息、不唤醒、不消耗预算**，也不新增 target、不计未读——
+        提醒的增删不是对话事实（ADR-0012 / D18）。
+        **到点**是另一条路径（ADR-0017 §一）：到期投递器会为有归属的提醒落一条 ``system`` 消息，
+        但它**不唤醒**、不耗预算、不计未读；无归属的提醒到点只写 ``fired_at``。那条写路径不在本类
+        （它跑在 HTTP 请求之外），本类只负责人类面的增删读。
         """
         return self._db.create_reminder(
             text=text,
@@ -504,7 +507,11 @@ class WorkspaceService:
         )
 
     def delete_reminder(self, reminder_id: str) -> dict[str, Any]:
-        """删除一条提醒（人类面动作），返回被删掉的那条；同样不落消息、不唤醒、不消耗预算。"""
+        """删除一条提醒（人类面动作），返回被删掉的那条。
+
+        **删除动作本身**不落消息、不唤醒、不消耗预算；它也不回收已到点落下的那条 ``system`` 消息
+        （消息 append-only，ADR-0001）。
+        """
         return self._db.delete_reminder(str(reminder_id).strip())
 
     # ─── 远端数据流告知 ──────────────────────────────────────────────────

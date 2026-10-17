@@ -1367,19 +1367,6 @@ class Database:
             "state": reminder_state(str(row["time"]), fired_at),
         }
 
-    def list_unfired_reminders(self) -> list[dict[str, Any]]:
-        """全部 ``fired_at IS NULL`` 的提醒（**到期投递器的候选集合**）。
-
-        到期与否**不在这里判**：库里不对本地到期时刻与 UTC 审计戳做大小比较（C7 规矩 3），判定由
-        :class:`alibot.reminder_trigger.ReminderTrigger` 在 Python 侧用**唯一的换算口径**做。
-        因此这条 SQL 只按「有没有投递过」筛选，与「现在几点」无关。
-        """
-        with self._lock:
-            rows = self._conn.execute(
-                REMINDER_SELECT_SQL + "WHERE r.fired_at IS NULL ORDER BY r.time, r.rowid"
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     def fire_reminder(
         self,
         reminder_id: str,
