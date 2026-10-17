@@ -1,0 +1,89 @@
+# 实施与门禁（多票实施约定）
+
+本文件是**多票实施 run** 的操作约定：门禁入口、环境坑、schema 号段、测试分层、worktree 与合并、
+交付形态。它有指针性质——具体行为判据仍以 `app/README.md`、`CONTEXT.md`、`docs/adr/**` 为准；
+这里只记「每轮都会重新踩一遍」的操作事实。
+
+## 门禁只有一个入口
+
+```sh
+scripts/check.sh            # 全量：pytest + ruff check + ruff format --check + mypy + pyright + node --test（glob）
+scripts/check.sh --fast     # 开发循环：除全量 pytest 外的一切（秒级）
+scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（路径**相对 app/**）
+```
+
+- CI（`.github/workflows/check.yml`）跑的就是同一个脚本：本地与 CI 不维护第二份命令清单。
+- **Node 用例族一律走 glob**（`app/tests/*.test.cjs`）：新增一个 DOM 用例文件不需要改任何清单。
+  曾经把 5 个文件名抄进票面门禁，同一轮新增的 3 套前端用例就不在门禁里了。
+- **不要在命令行再补 `-q`**：`app/pyproject.toml` 已有 `addopts = "-q"`，再补一次变成 `-qq`，
+  pytest 会连结果行一起吞掉（「跑了五分钟却看不到 passed 数」就是这么来的）。
+- pyright 不在 repo 依赖里：脚本按 `PYRIGHT_BIN` → `node_modules/.bin/pyright` → PATH →
+  `~/.pi-lens/tools/node_modules/pyright/index.js` 依次解析；CI 用 `pip install pyright`。
+- **不要跑 `ruff format`**：它会整文件重排，把一次小改动变成不可 review 的大 diff。
+  只跑 `ruff format --check`（脚本已含）。
+
+## 环境
+
+- 虚拟环境在**仓库根** `.venv/`；新 worktree 用符号链接接上：`ln -s ../alibot/.venv .venv`。
+- pytest 从 `app/` 跑（`testpaths = ["tests"]`）；**mypy 从仓库根跑**——`mypy.ini` 的
+  `files = app/alibot, app/tests` 按 cwd 解析，在 `app/` 下跑会报
+  `Duplicate module named "__main__"`（假象，不是回归）。
+- `GIT_CONFIG_COUNT` 设了却没有对应 key 时，**所有** git/gh 命令报
+  `error: missing config key GIT_CONFIG_KEY_0`。`scripts/check.sh` 已 `unset`；手工命令前也先
+  `unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1`。
+- 代理噪声：宿主 `NO_PROXY` 里带方括号的 IPv6 条目（如 `[::1]`）会让 httpx 把回环请求解析成
+  `InvalidURL: Invalid port: ':1]'`。`app/tests/conftest.py` 有一个 autouse fixture 把这类条目
+  摘掉，所以**直接跑 pytest 就该绿**；如果你在别的语言栈里遇到同类报错，先查宿主环境。
+
+- `AGENTS.md` 末节维护一份更短的本机噪声清单；改 `.github/workflows/**` 时注意 `gh` token 缺 `workflow` scope（用 SSH 推，见那里）。
+
+## schema 号段（ADR-0015）
+
+- 号段判据是「**必须高于当前 main**」，不是「等于被分配的预留号」。派发时写的号过时是常态，
+  以 `app/alibot/db.py` 的 `SCHEMA_VERSION` 为准。
+- 每次 bump 必须随票携带 `MigrationStep(from, to)`（严格 +1）、`app/tests/_migration_history.py`
+  留档、链保持连续（`app/tests/test_migration_chain_guard.py` 用真实子进程验）。
+- **只前进、不回填旧数据**：新列可空 + 读路径解释旧值，而不是造数据。
+- 别在**别票**的测试里把版本号钉成固定值（历史上 `== 6`、`== 13` 都发生过，每次 bump 都要回头
+  改别人的测试）。改成 `>=` 或从 `SCHEMA_VERSION` 派生——`test_schema_version_pins_guard.py`
+  会拦两种钉死形态。
+
+## 测试分层
+
+- pytest 只断言**外部可观察行为**（HTTP / SSE / 库级 CHECK 的对外结果 / 重启一致性），
+  不 import 私有名、不读 Studio 源码、不断言状态词表的形状：
+  `app/tests/test_test_layering_guard.py` 是机械判据（Studio 读的 i18n 例外在文件里列明）。
+- Studio 的 DOM 行为由 `node --test app/tests/*.test.cjs` 覆盖，沿用既有 `vm` + fetch 替身 + DOM
+  替身；**不新开第二套前端测试框架**。
+- Agent 行为由 `app/tests/scripted.py` 的脚本化替身固定（回应 / 忽略 / 失败 / 延迟 / 声明沉默）；
+  **不新开 seam**——票面要求核实某项能力（例如 provider 真的收到工具调用）时，才允许在既有
+  用例族里加进程内 stub，并在验收文档里写明理由。
+- 文档是数据契约的缓存：新增 `round_outcome` 状态 / 消息 kind 时，`app/README.md` 的词表要一起改
+  （`test_docs_vocabulary_guard.py` 会拦漏词）。
+
+## worktree 与合并
+
+- 一票一个 worktree、一个分支（`issue-<n>-impl`），都从集成分支切出；implementer 收尾前把
+  集成分支 tip **merge 进自己分支**再报告。
+- 合并固定 `--no-ff`，并**立刻推送**：
+
+  ```sh
+  scripts/merge-ticket.sh issue-53-impl 53
+  ```
+
+  合并后推送这条不是洁癖：真实发生过五张实施 worktree 连同分支在运行中被外部删除，而集成
+  分支当时一次都没 push 过——只剩主仓对象库里的悬空对象可以救。推送之后，同样的清理只是
+  「重开一个 worktree」。
+- 双轴 code-review 的收口单独开一个分支（例如 `issue-review-fix`），合回集成分支后同样立刻推送。
+
+## 交付
+
+- 每票落 `app/specs/issue-<n>-acceptance.md`：判据 → 落点 → 命令与读数。
+- 一张集成 PR：先 `--draft`，全部完成后转 ready；正文按 `pr` 技能的 Summary / Evidence /
+  Merge Danger 三段写，并用 `Closes #<n>` 逐票挂上。
+- 主工作副本不动：所有改动都在各自 worktree 的分支上，经集成分支与 PR 交付。
+
+## 子代理等待
+
+不要用 `sleep` 轮询子代理（一轮 PR 上这样做会烧掉几十分钟墙钟）。让 implementer 把进度写到
+自己的报告文件，协调者在自然检查点读文件；子代理 settle 时会有通知，等通知即可。
