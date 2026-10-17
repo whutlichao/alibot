@@ -51,8 +51,10 @@
    - 圆点的判据从「有提醒」改成「**还有未到点的提醒**」（`!state.reminders.some(r => !r.fired_at)`）：
      已响 / 已错过不等待任何事。
    - 新增控件从「文本 + 时间」改成「文本 + **日期 + 钟点**两个原生输入」，提交时拼成一个
-     `YYYY-MM-DD HH:MM` 串交给后端（ADR-0017 的时间语义）；列表行因此多了**状态后缀**
-     （待响 = 到期时刻 / 「已提醒」/「已错过」），只消费后端给的 `state`，前端不做任何判定。
+     `YYYY-MM-DD HH:MM` 串交给后端（ADR-0017 的时间语义）；列表行因此改成
+     「文本 · 归属频道 · [**到期时刻** | 「已提醒」 | 「已错过」] · 删除」：到期时刻与状态后缀
+     合并成同一列（用户裁定 2026-10-17，对规格 C16 的显式偏离），只消费后端给的 `state`，
+     前端不做任何判定。
    ========================================================================== */
 'use strict';
 
@@ -759,11 +761,13 @@ function renderSettingsModal() {
 /* ─── 提醒（ADR-0012：库内对象，后端是唯一正本） ────────────────────────────
    列表 / 空态 / 圆点全部按**后端读数**渲染，本地不拼行、不落浏览器存储。
 
-   三处刻意的**偏离原型**（每一条都记账）：
+   四处刻意的**偏离原型**（每一条都记账）：
    1. 圆点的判据从原型 `:1886` 的「有提醒就亮」改成「**还有未到点的提醒**才亮」（C17）：
       已响 / 已错过不等待任何事，圆点不能退化成历史计数器。
    2. 新增控件是**两个原生输入**（日期 + 钟点，C15）——原型 `:1579` 只有 `type="time"`。
-   3. 删除控件用 `×` 而不是原型那个 `plus` 图标 —— 原型 `:1570` 在一个 `aria-label="删除提醒"`
+   3. 行形态把原型的 `.time`（到期时刻列）并进**状态后缀**：时刻自己就是 `pending` 的一种取值，
+      单立一列会让 `pending` 行把同一时刻写两遍（用户裁定 2026-10-17）。
+   4. 删除控件用 `×` 而不是原型那个 `plus` 图标 —— 原型 `:1570` 在一个 `aria-label="删除提醒"`
       的控件里复用了「新增」的加号图标（图标与它的可访问名互相矛盾）。可视文案与可访问名不一致
       会让图标/读屏用户读到相反的动作，因此这里按本仓的关闭控件形状用 `×`；
       本仓已有先例：指派 pill 用 `<span>` 而不是原型的 `<button>`（那也是一个按下去不发生的站）。 */
@@ -898,11 +902,20 @@ function renderRemindersModal() {
     键名由 C18 钉死，不随渲染重建，也不拼成 `prefix.value` 那种动态键。 */
 const REMINDER_STATE_LABEL_KEYS = { fired: 'reminder.stateFired', missed: 'reminder.stateMissed' };
 
-/** 一条提醒的状态后缀节点（C16）：`pending` 显示到期时刻，`fired` / `missed` 显示词条文案。
+/** 一条提醒的**状态后缀**节点 —— 它同时是这一行的**时刻 
+    呈现**（用户裁定 2026-10-17，对规格 C16 的**显式偏离**，见 PR #122 正文「偏差登记」）：
 
-    只**消费**后端给的 `state`（C20 的只读派生值），前端自己不比对时钟。认不出的取值
-    （更老的后端、测试替身）落回到期时刻那一档：**不猜测**第三种语义。
-    `data-state` 让 CSS 按既有档位取色（只用既有 token，不新增色位名）。 */
+    | `state`   | 后缀取值                                       |
+    | --------- | ----------------------------------------------- |
+    | `pending` | 完整到期时刻（后端串原样，`YYYY-MM-DD HH:MM`）   |
+    | `fired`   | 前端词条 `reminder.stateFired`（「已提醒」）       |
+    | `missed`  | 前端词条 `reminder.stateMissed`（「已错过」）     |
+
+    为什么时刻只在这个后缀里、不再单立一个 `.time` 列：到期时刻与状态后缀本来就是同一件事
+    的两种说法（等哪会儿 / 已经过去了），分行展示会让 `pending` 行把同一时刻写两遍。
+    只**消费**后端给的 `state`（C20 的只读派生值），前端自己不比对时钟、不算
+    `fired_at − time`；认不出的取值（更老的后端、测试替身）落回到期时刻那一档：**不猜测**
+    第三种语义。`data-state` 让 CSS 按既有档位取色（只用既有 token，不新增色位名）。 */
 function reminderStateNode(reminder) {
   const stateValue = reminder.state || 'pending';
   const labelKey = Object.prototype.hasOwnProperty.call(REMINDER_STATE_LABEL_KEYS, stateValue)
@@ -913,12 +926,14 @@ function reminderStateNode(reminder) {
   return node;
 }
 
-/** 一行提醒：到期时刻 / 文本（+ 归属频道）/ **状态后缀** / 删除（原型 `.reminder-row` 的字段
-    再加上 C16 要求的状态后缀）。 */
+/** 一行提醒：文本（+ 归属频道）/ **状态后缀**（到期时刻 | 已提醒 | 已错过）/ 删除。
+
+    行形态是对原型 `.reminder-row`（`alibot-app.html:1567`：`.time` / `.grow` / 删除）的**又一次
+    显式偏离**：原型把到期时刻单列在行首，而本能力让时刻自己就是状态的一种取值，于是两者并进
+    同一个后缀（理由与裁定见 :func:`reminderStateNode` 的注释）。 */
 function reminderRowNode(reminder) {
   const row = el('div', 'reminder-row');
   row.dataset.reminder = reminder.id;
-  row.appendChild(el('span', 'time', reminder.time));
   const grow = el('span', 'grow');
   // 正文用文本节点挂在 `.grow` 上，因为后面还要往里追加归属频道那一段
   // （`el(tag, class, text)` 是「只有一段文字」时用的；`toast()` 对同一种形态也是这么拼的）。

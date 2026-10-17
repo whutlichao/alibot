@@ -487,18 +487,18 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 
 /* ─── 提醒弹窗（原型 `alibot-app.html:433-436` 的 `.reminder-row` 一族） ──────────
-   一行四件：到期时刻（mono，`--accent-deep` 文字档）/ 文本 + `· #归属频道`（`--faint`）/
-   **状态后缀**（C16）/ 删除键。
+   一行三件：文本 + `· #归属频道`（`--faint`）/ **状态后缀**（到期时刻 | 已提醒 | 已错过，C16）/
+   删除键。原型行首那一列 `.time` 已并进状态后缀（用户裁定 2026-10-17）：到期时刻就是
+   `pending` 的一种取值，单立一列会让 `pending` 行把同一时刻写两遍。
    行间用 hairline 分隔，最后一行不收尾（原型 `:434`）；新增控件与列表之间用一条分隔线（`:1578`）。 */
 .reminder-row {
   display: flex; align-items: center; gap: var(--sp-5);
   padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px;
 }
 .reminder-row:last-child { border-bottom: 0; }
-.reminder-row .time { font-family: var(--mono); font-size: var(--fs-caption); color: var(--accent-deep); }
 .reminder-row .grow { flex: 1; min-width: 0; }
 .reminder-row .ch { color: var(--faint); }
-/* 状态后缀（C16）：`pending` 显示到期时刻、`fired` 显示「已提醒」、`missed` 显示「已错过」。
+/* 状态后缀（C16）：`pending` 显示完整到期时刻、`fired` 显示「已提醒」、`missed` 显示「已错过」。
    **只消费既有档位**：未到点用 `--muted`（文字档）、已错过用 `--warn-deep`（`--warn-*` 一族）。
    已到点**不是错误**，所以这一族里**不出现** `--error`；也不新造任何 token 名——
    `CONTEXT.md` **视觉契约**的 token 名集合是承诺，不是实现细节。 */

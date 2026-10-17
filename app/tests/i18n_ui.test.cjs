@@ -1558,7 +1558,7 @@ test("提醒：没有提醒时是空态，有提醒时是列表，圆点跟着�
   assert.equal(list.querySelector(".empty"), null, "有条目时不再是空态");
 });
 
-test("提醒：列表条目字段齐全（到期时刻 / 文本 / 归属频道 / 状态后缀 / 删除）", async () => {
+test("提醒：列表条目字段齐全（文本 / 归属频道 / 状态后缀 / 删除），行里不再有独立的 .time 列", async () => {
   const harness = createHarness({
     reminders: [{ ...REMINDER_WITH_CHANNEL }, { ...REMINDER_WITH_CHANNEL, id: "rm_2", text: "评审 raft 快照方案", time: "2026-10-19 10:00", channel_id: null, channel_name: "" }],
   });
@@ -1569,10 +1569,17 @@ test("提醒：列表条目字段齐全（到期时刻 / 文本 / 归属频道 /
   assert.deepEqual(rows.map((row) => row.dataset.reminder), ["rm_1", "rm_2"]);
 
   const first = rows[0];
-  assert.equal(first.querySelector(".time").textContent, "2026-10-18 14:30", "到期时刻（日期 + 钟点）");
   assert.equal(first.querySelector(".grow").textContent, "检查令牌替换进度 · #设计系统重构", "文本 + 归属频道");
-  // 待响行的状态后缀就是**到期时刻**本身，不是「待响」这种标签（C16 的表格）。
-  assert.equal(first.querySelector(".state").textContent, "2026-10-18 14:30", "待响 ⇒ 到期时刻");
+  // 用户裁定 2026-10-17（对 C16 的显式偏离）：到期时刻并入状态后缀，行里**不再**单立一列。
+  assert.equal(first.querySelector(".time"), null, "行里没有独立的 .time 列（时刻只在后缀里出现一次）");
+  const entryTexts = first.descendants().map((node) => node.textContent);
+  assert.equal(
+    entryTexts.filter((text) => text === "2026-10-18 14:30").length,
+    1,
+    "同一行里到期时刻只出现一次",
+  );
+  // 待响行的状态后缀就是**到期时刻**本身（后端串原样，不切片），不是「待响」这种标签。
+  assert.equal(first.querySelector(".state").textContent, "2026-10-18 14:30", "待响 ⇒ 完整到期时刻");
   assert.equal(first.querySelector(".state").dataset.state, "pending");
   const remove = first.querySelector("[data-delete-reminder]");
   assert.equal(remove.dataset.deleteReminder, "rm_1");
@@ -1582,6 +1589,8 @@ test("提醒：列表条目字段齐全（到期时刻 / 文本 / 归属频道 /
   // 不归属任何频道的提醒：没有 `· #频道名` 那一段（可空列的正本事实）。
   assert.equal(rows[1].querySelector(".grow").textContent, "评审 raft 快照方案");
   assert.equal(rows[1].querySelector(".ch"), null);
+  assert.equal(rows[1].querySelector(".time"), null);
+  assert.equal(rows[1].querySelector(".state").textContent, "2026-10-19 10:00", "第二条的到期时刻也在后缀里");
 });
 
 test("提醒：三种 state 在同一列表里后缀可区分（待响 = 到期时刻 / 已提醒 / 已错过）", () => {
@@ -1605,10 +1614,8 @@ test("提醒：三种 state 在同一列表里后缀可区分（待响 = 到期�
   ];
   harness.api.renderRemindersModal();
 
-  const suffixes = harness
-    .elementFor("#reminderList")
-    .querySelectorAll(".reminder-row")
-    .map((row) => row.querySelector(".state").textContent);
+  const rows = harness.elementFor("#reminderList").querySelectorAll(".reminder-row");
+  const suffixes = rows.map((row) => row.querySelector(".state").textContent);
   assert.deepEqual(suffixes, [
     "2026-10-18 14:30",
     harness.catalogs["zh-CN"]["reminder.stateFired"],
