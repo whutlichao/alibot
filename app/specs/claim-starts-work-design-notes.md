@@ -505,25 +505,32 @@ ADR-0010 已登记「人类世代」这个名字不再字面准确（三种开�
 | **没有上下文会让人困惑** | 成立 | 读代码的人会问两个问题：为什么认领（一个指派动作）要改状态？为什么它**不计跳**却**必须回应**？答案只在 ADR-0010 + 本 ADR 的边界里 |
 | **是真权衡的结果** | 成立 | 单事务 vs 两条记录、私有推进 vs 复用 `update_task_status`、新键 vs 复用键、判据落 reason vs 落显式布尔——每条都有被否的替代方案与代价（ADR-0016 三、五、D1/D2/D6） |
 
-### A5. 实测读数（收尾前自查）
+### A5. 实测读数（本会话）
 
-见提交后的回填（§A6）。三条必查：`git diff --numstat CONTEXT.md`（应与七处量级相称）、
-占位扫描（四个占位词加沙漏符，命令见 A5 的 `grep` 行）、`git status`（只应列 4 个 Markdown 路径）。
+| 项 | 读数 |
+| --- | --- |
+| 占位扫描 | `grep -nE '待定\|待决\|未决\|⏳' CONTEXT.md app/specs/claim-starts-work-design-notes.md docs/adr/0016-*.md` 无命中（exit 1） |
+| `CONTEXT.md` 改动量 | `+23 / −10`（七处词条，与「七处」量级相称） |
+| `git status` | 仅四个 Markdown 路径（`CONTEXT.md` 修改 + 三个新增） |
+| 源码改动 | **0**（未动 `app/alibot/**`、未动 `app/tests/**`、未 bump `SCHEMA_VERSION`） |
+| ADR-0010 原文 | `git diff main -- docs/adr/0010-claiming-a-task-opens-one-epoch-per-task.md` 为空 |
 
-### A6. PR 与收尾（落盘后回填）
+### A6. PR 与收尾
 
 | 项 | 值 |
 | --- | --- |
-| 分支 | `claim-starts-work` |
-| 本票 PR | 见 A7 |
-| PR 正文 | `app/specs/claim-starts-work-pr-body.md` |
+| 分支 | `claim-starts-work`（已推送，`-u origin`） |
+| 本票 PR | [#104](https://github.com/whutlichao/alibot/pull/104)（base `main`，head `claim-starts-work`） |
+| PR 正文 | `app/specs/claim-starts-work-pr-body.md`（`--body-file` 直接取仓库内路径，随本票一起被跟踪） |
 
-### A7. 回填读数
+**为什么不新开 issue**：本票由 coordinator 派发，票面 Constraints 已定正本就是 worktree 内的设计文档 + PR。
 
-见 A8（提交与 PR 后追加）。
+### A7. 回填读数（本会话实测）
 
-### A8. 收尾读数（提交 / 推送 / PR 之后填）
-
-- 提交：待填
-- PR：待填
-- 改动文件：待填
+| 项 | 读数 |
+| --- | --- |
+| 提交 | `b46f211`（docs(specs): 认领即开工设计（ADR-0016 + 七处词条 + S1–S17 契约）） |
+| 分支推送 | `origin/claim-starts-work`（新分支） |
+| PR | `#104`，`state=OPEN`，`head=claim-starts-work`，`base=main`，`headRefOid=b46f211`（= 本地 HEAD） |
+| PR 改动文件 | `CONTEXT.md` / `app/specs/claim-starts-work-design-notes.md` / `app/specs/claim-starts-work-pr-body.md` / `docs/adr/0016-claiming-a-task-starts-the-work.md` |
+| 本票门禁 | **G-docs**（设计票）；**未跑** pytest / ruff / mypy / pyright / `node --test`，**未跑**双轴 code-review（理由：diff 只有 Markdown，双轴 review 审的是源码 diff） |
