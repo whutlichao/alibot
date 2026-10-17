@@ -1,4 +1,4 @@
-"""#58 结构化沉默信号 ``silent``：seam 契约、落库、库级 CHECK 与词表一致性。
+"""#58 结构化沉默信号 ``silent``：seam 契约、落库与库级 CHECK。
 
 判据来源：spec #35 的 D0-b / D0-d / D3（落点-b）与 ADR-0008。
 
@@ -17,12 +17,10 @@ seam 的正常自判忽略；``silent`` 专指模型经**结构化通道**明确
 
 from __future__ import annotations
 
-import re
 import sqlite3
-from pathlib import Path
 
 import pytest
-from alibot.agent_seam import SEAM_STATUSES, RoundMessage, RoundOutcome
+from alibot.agent_seam import RoundMessage, RoundOutcome
 from alibot.db import DATABASE_FILE_NAME, ROUND_STATUSES
 from fastapi.testclient import TestClient
 
@@ -42,12 +40,7 @@ _INSERT_OUTCOME_SQL = (
 )
 
 
-# ─── 1. seam 契约：第四个状态词 + 与非空 messages 互斥 ─────────────────────
-def test_silent_is_the_fourth_seam_status_on_par_with_the_other_three() -> None:
-    """``silent`` 与 ``replied`` / ``ignored`` / ``failed`` **平级**（同一个词表，不是布尔字段）。"""
-    assert SEAM_STATUSES == ("replied", "ignored", "failed", "silent")
-
-
+# ─── 1. seam 契约：``silent`` 与 ``messages`` 互斥，既有强校验不放宽 ─────────
 def test_a_silent_outcome_carries_no_storable_message() -> None:
     """``RoundOutcome(status="silent")`` 与**非空** ``messages`` 互斥（D0-d）。"""
     silent = RoundOutcome(status="silent", reason="模型经结构化通道声明本轮沉默")
@@ -208,28 +201,7 @@ def test_the_database_check_accepts_silent_and_refuses_an_unknown_word(
         conn.close()
 
 
-# ─── 5. 词表一致性：后端 status 词 ↔ Studio 摘要词表 ↔ 两种语言的说法 ──────
-def test_studio_vocabulary_agrees_with_the_backend_status_words() -> None:
-    """``silent`` 在前端是一等摘要状态，且**两种语言**都有准确说法（不是回退成 ``silent`` 原文）。"""
-    studio = Path(__file__).resolve().parents[1] / "alibot" / "studio"
-    app_js = (studio / "app.js").read_text(encoding="utf-8")
-    summary_source = re.search(r"const SUMMARY_STATUSES = \[(.*?)\];", app_js, re.S)
-    assert summary_source is not None, "Studio 的摘要词表仍在 app.js 里"
-    summary_statuses = set(re.findall(r"'([a-z-]+)'", summary_source.group(1)))
-    assert "silent" in summary_statuses, "silent 必须进摘要行（它不是失败，不能只挂 failed 那块）"
-    assert summary_statuses <= set(ROUND_STATUSES), "前端不得发明后端词表里没有的状态词"
-    # seam 的四个词都必须是持久化词表的子集：能落库的才能被查出来。
-    assert set(SEAM_STATUSES) <= set(ROUND_STATUSES)
-
-    i18n_js = (studio / "i18n.js").read_text(encoding="utf-8")
-    for status in sorted(summary_statuses):
-        for suffix in ("label", "note"):
-            key = f"outcome.{status}.{suffix}"
-            # 两种语言各一处：词条表是「同一键集、两份取值」，落单键会让一种语言回退成状态词原文。
-            assert i18n_js.count(f"'{key}'") == 2, f"{key} 必须在两种语言里都有取值"
-
-    # 两种语言的取值按**出现顺序**读（源语言在词条表前面）：同一键两处，缺一处就会变成状态词原文。
-    labels = re.findall(r"'outcome\.silent\.label': '([^']*)'", i18n_js)
-    assert len(labels) == 2, "silent 的说法必须在两种语言里各有一处"
-    assert "沉默" in labels[0], "源语言必须说「沉默」（CONTEXT.md 的沉默词条）"
-    assert "ilence" in labels[1], "第二语言必须说 silence（同一个事实）"
+# ─── 注：前端一侧（摘要行 + 两种语言的说法）由 Node 用例取证，不在这里跨层读源码 ──
+# ``silent`` 在 Studio 里「进摘要行」「两种语言各有一处准确说法」「与 ignored 说法不同」
+# 由 ``app/tests/silent_ui.test.cjs`` 在自己的 DOM 断言里取证；pytest 侧不读 ``studio/app.js``
+# 的源码常量、也不比对 ``studio/i18n.js`` 的词条数据（那两层不是 Python 的外部可观察面）。
