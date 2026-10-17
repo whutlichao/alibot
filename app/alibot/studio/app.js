@@ -229,8 +229,14 @@ function el(tag, className, text) {
   return node;
 }
 
+/** 头像的 class 串：左栏的就地更新（`syncAvatarCell`）与新建节点（`avatarNode`）共用同一个
+    写法，免得改名 / 换色位时两处漂成两套。 */
+function avatarClassName(size, slot) {
+  return 'avatar ' + (size ? size + ' ' : '') + avatarClass(slot);
+}
+
 function avatarNode(name, slot, size) {
-  return el('div', 'avatar ' + (size ? size + ' ' : '') + avatarClass(slot), initial(name));
+  return el('div', avatarClassName(size, slot), initial(name));
 }
 
 function activeChannel() {
@@ -2416,70 +2422,215 @@ function replaceChildren(container, nodes) {
   nodes.forEach((node) => container.appendChild(node));
 }
 
-function renderChannels() {
-  const rows = state.channels.map((channel) => {
-    const active = channel.id === state.activeChannelId;
-    const row = el('button', 'nav-row' + (active ? ' is-active' : ''));
-    row.dataset.channel = channel.id;
-    row.setAttribute('data-od-id', 'channel-' + channel.id);
-    row.setAttribute('aria-current', active ? 'true' : 'false');
-    row.appendChild(el('span', 'hash', '#'));
-    row.appendChild(el('span', 'grow', channel.name));
-    if (channel.unread_count > 0) {
-      const badge = el('span', 'badge', channel.unread_count);
-      badge.setAttribute('data-od-id', 'unread-' + channel.id);
-      row.appendChild(badge);
-    }
+/* ─── 左栏三份名单：就地更新，不整表换节点 ──────────────────────────────
+
+   左栏行（`.nav-row`）带 background/color 过渡，状态点带 `pulse` 动画。整表
+   `replaceChildren` 会把行节点连同过渡与动画一起换掉：Agent 每回复一条消息，回复路径上
+   都会先后走到「重取列表 → 三份名单重绘」与 `scheduleRead` → `render()`，于是左栏看起来
+   闪一下并刷新。因此这三份名单改成**按后端 id 认领已有行**：成员集合不变就沿用原节点，
+   只有真的新增 / 删除 / 换序才动 DOM 结构；行内部的可见变化（当前行、名字、未读徽标、
+   状态点、无障碍名）就地改那一个子节点，且值没变时不写。 */
+
+/** 行内某个 class 的直接子节点（每一行里同一 class 至多一个）。 */
+function railCell(row, className) {
+  return Array.from(row.children).find(
+    (node) => node.classList && node.classList.contains(className),
+  ) || null;
+}
+
+/** 就地写一格文本：文本没变就不写——对真实 DOM 来说，写一次 `textContent` 会换掉文本节点。 */
+function setRailCellText(row, className, text) {
+  const cell = railCell(row, className);
+  if (!cell) return;
+  const value = String(text);
+  if (cell.textContent !== value) cell.textContent = value;
+}
+
+/** 就地写「当前行」：`is-active` 与 `aria-current` 是同一条事实的两处呈现，一起对齐。 */
+function syncActiveRow(row, active) {
+  if (row.classList.contains('is-active') !== active) row.classList.toggle('is-active', active);
+  const current = active ? 'true' : 'false';
+  if (row.getAttribute('aria-current') !== current) row.setAttribute('aria-current', current);
+}
+
+/** 就地写未读徽标：计数 `>0` 时有一个徽标节点，`0` 时没有；数字变了只改文本，不换节点。 */
+function syncUnreadBadge(row, count, odId) {
+  const total = Number(count) || 0;
+  const badge = railCell(row, 'badge');
+  if (total <= 0) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    const node = el('span', 'badge', total);
+    node.setAttribute('data-od-id', odId);
+    row.appendChild(node);
+    return;
+  }
+  if (badge.textContent !== String(total)) badge.textContent = String(total);
+}
+
+/** 就地写头像（首字母 + 色位）：改名或换头像后，左栏那一格要跟着后端事实走。 */
+function syncAvatarCell(row, name, slot, size) {
+  const avatar = railCell(row, 'avatar');
+  if (!avatar) return;
+  const text = initial(name);
+  if (avatar.textContent !== text) avatar.textContent = text;
+  const className = avatarClassName(size, slot);
+  if (avatar.className !== className) avatar.className = className;
+}
+
+/** 就地写状态点：四态只表达后端事实（空闲 / 正在回复 / 出错 / 未启用），不从会话存活推导。
+
+    只改那一个子节点的 class / dataset / 无障碍名，行节点本身不动（`.presence.working`
+    的 pulse 动画因此在「已经是在回复」时不会重头开始）。每一行在 `build` 时就已经带上
+    状态点，所以这里不需要再造一个。
+
+    切语言的守卫：`title` / `aria-label` 是 `statusLabel()` 在当前 locale 下的取值，
+    只看 `dataset.status` 会让「状态没变、语言变了」的切语言路径整格跳过，把无障碍名
+    留在上一门语言里——因此把词条文本也当成同一条事实的一部分一起比对。 */
+function syncPresenceCell(row, status) {
+  const dot = railCell(row, 'presence');
+  if (!dot) return;
+  const label = statusLabel(status);
+  if (dot.dataset.status !== status
+    || dot.getAttribute('title') !== label
+    || dot.getAttribute('aria-label') !== label) {
+    applyPresence(dot, status);
+  }
+}
+
+/** 三份名单共用的就地更新：同一份成员集合下保留已有行节点。
+
+    `items` 是后端事实的镜像（频道 / 私信 / Agent 列表），行的身份取自后端 id
+    （`data-channel` / `data-dm` / `data-member`），因此每一趟都取回同一个节点。
+    `build(item)` 只在后端出现了新的 id 时调用（挂上固定的结构：图标位 / 名字格 / 状态点）；
+    `paint(row, item)` 每趟都调，负责把行内的可见事实对齐到当前值——它必须只改真的变了的
+    子节点（见上面几个 `sync*` 助手）。 */
+function syncRailRows(container, items, key, build, paint) {
+  if (!container) return;
+  const existing = new Map();
+  Array.from(container.children).forEach((node) => {
+    const id = node.dataset ? node.dataset[key] : undefined;
+    if (id !== undefined && !existing.has(id)) existing.set(id, node);
+  });
+  const rows = items.map((item) => {
+    // 复用的行从索引里取走：后端若意外给了重复 id，第二行必须新造，不能把同一个节点挂两次。
+    const id = String(item.id);
+    const row = existing.get(id) || build(item);
+    existing.delete(id);
+    paint(row, item);
     return row;
   });
-  replaceChildren($('#channelList'), rows);
+  // 只摘掉后端已经不再返回的行（以及没有 id 的杂物）。
+  Array.from(container.children).forEach((node) => {
+    if (!rows.includes(node)) node.remove();
+  });
+  // 位置已经对了就**一个 DOM 操作都不做**——未变的行不 remove 再 insert，它们的过渡与动画
+  // 因此不会重头开始。真的换序时才重排，且**只动错位的那一段**：前缀位置正确的行一律不碰，
+  // 从第一个错位的行开始按目标顺序重挂（`appendChild` 挂已在容器里的节点就是把它移到末尾）。
+  const orderChanged = container.children.length !== rows.length
+    || rows.some((row, index) => container.children[index] !== row);
+  if (orderChanged) {
+    let start = 0;
+    while (start < rows.length && container.children[start] === rows[start]) start += 1;
+    rows.slice(start).forEach((row) => container.appendChild(row));
+  }
+}
+
+/** 新建一行频道：只在后端出现了新的频道 id 时调用，之后每一趟都是就地改写这一行。 */
+function channelRowNode(channel) {
+  const row = el('button', 'nav-row');
+  row.dataset.channel = channel.id;
+  row.setAttribute('data-od-id', 'channel-' + channel.id);
+  row.appendChild(el('span', 'hash', '#'));
+  row.appendChild(el('span', 'grow', channel.name));
+  return row;
+}
+
+/** 就地改写一行频道：当前行、名字、未读徽标。 */
+function paintChannelRow(row, channel) {
+  syncActiveRow(row, channel.id === state.activeChannelId);
+  setRailCellText(row, 'grow', channel.name);
+  syncUnreadBadge(row, channel.unread_count, 'unread-' + channel.id);
+}
+
+function renderChannels() {
+  syncRailRows($('#channelList'), state.channels, 'channel', channelRowNode, paintChannelRow);
   $('#channelListEmpty').hidden = state.channels.length > 0;
+}
+
+/** 新建一行私信：结构与改前一致（头像 / 名字 / 状态点）。 */
+function dmRowNode(dm, status) {
+  const peer = dm.peer;
+  const row = el('button', 'nav-row');
+  row.type = 'button';
+  row.dataset.dm = dm.id;
+  row.setAttribute('data-od-id', 'dm-' + dm.id);
+  row.appendChild(avatarNode(peer.display_name, peer.avatar_slot, 'sm'));
+  row.appendChild(el('span', 'grow', peer.display_name));
+  row.appendChild(presenceNode(status));
+  return row;
+}
+
+/** 就地改写一行私信：当前行、头像与名字、状态点、未读徽标。 */
+function paintDmRow(row, dm, status) {
+  const peer = dm.peer;
+  syncActiveRow(row, dm.id === state.activeChannelId);
+  syncAvatarCell(row, peer.display_name, peer.avatar_slot, 'sm');
+  setRailCellText(row, 'grow', peer.display_name);
+  syncPresenceCell(row, status);
+  syncUnreadBadge(row, dm.unread_count, 'unread-' + dm.id);
 }
 
 function renderDms() {
   const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
-  const rows = state.dms.map((dm) => {
-    const peer = dm.peer;
-    const active = dm.id === state.activeChannelId;
-    const row = el('button', 'nav-row' + (active ? ' is-active' : ''));
-    row.type = 'button';
-    row.dataset.dm = dm.id;
-    row.setAttribute('data-od-id', 'dm-' + dm.id);
-    row.setAttribute('aria-current', active ? 'true' : 'false');
-    row.appendChild(avatarNode(peer.display_name, peer.avatar_slot, 'sm'));
-    row.appendChild(el('span', 'grow', peer.display_name));
-    row.appendChild(presenceNode(statusOf(agentsById.get(peer.id))));
-    if (dm.unread_count > 0) {
-      const badge = el('span', 'badge', dm.unread_count);
-      badge.setAttribute('data-od-id', 'unread-' + dm.id);
-      row.appendChild(badge);
-    }
-    return row;
-  });
-  replaceChildren($('#dmList'), rows);
+  const statusOfPeer = (dm) => statusOf(agentsById.get(dm.peer.id));
+  syncRailRows(
+    $('#dmList'),
+    state.dms,
+    'dm',
+    (dm) => dmRowNode(dm, statusOfPeer(dm)),
+    (row, dm) => paintDmRow(row, dm, statusOfPeer(dm)),
+  );
   $('#dmListEmpty').hidden = state.dms.length > 0;
+}
+
+/** 新建一行本机 Agent：左栏每一行都是**打开 Agent 详情**的入口，与频道 / 私信两段同形
+    （`<button class="nav-row">`），因此键盘可达、可聚焦，不是「看着能点、按下去什么都不发生」的装饰行。 */
+function memberRowNode(member, status) {
+  const row = el('button', 'nav-row');
+  row.type = 'button';
+  row.dataset.member = member.id;
+  row.setAttribute('data-od-id', 'agent-row-' + member.id);
+  row.setAttribute('aria-label', t('agentDetail.openAria', { name: member.display_name }));
+  row.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
+  row.appendChild(el('span', 'grow', member.display_name));
+  row.appendChild(presenceNode(status));
+  return row;
+}
+
+/** 就地改写一行 Agent：当前行、头像与名字、无障碍名（切语言后跟着词条走）、状态点。 */
+function paintMemberRow(row, member, status) {
+  syncActiveRow(row, member.id === state.activeAgentId);
+  syncAvatarCell(row, member.display_name, member.avatar_slot, 'sm');
+  setRailCellText(row, 'grow', member.display_name);
+  const label = t('agentDetail.openAria', { name: member.display_name });
+  if (row.getAttribute('aria-label') !== label) row.setAttribute('aria-label', label);
+  syncPresenceCell(row, status);
 }
 
 function renderMembers() {
   const byId = new Map(state.agents.map((agent) => [agent.id, agent]));
   const agents = state.members.filter((member) => member.kind === 'agent');
-  const rows = agents.map((member) => {
-    // 左栏每一行都是**打开 Agent 详情**的入口：与频道 / 私信两段同形（`<button class="nav-row">`），
-    // 因此键盘可达、可聚焦，不是「看着能点、按下去什么都不发生」的装饰行。
-    const open = member.id === state.activeAgentId;
-    const row = el('button', 'nav-row' + (open ? ' is-active' : ''));
-    row.type = 'button';
-    row.dataset.member = member.id;
-    row.setAttribute('data-od-id', 'agent-row-' + member.id);
-    row.setAttribute('aria-current', open ? 'true' : 'false');
-    row.setAttribute('aria-label', t('agentDetail.openAria', { name: member.display_name }));
-    row.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
-    row.appendChild(el('span', 'grow', member.display_name));
-    // 状态点：四态只表达后端事实（空闲 / 正在回复 / 出错 / 未启用），不从会话存活推导。
-    row.appendChild(presenceNode(statusOf(byId.get(member.id))));
-    return row;
-  });
-  replaceChildren($('#memberList'), rows);
+  const statusOfMember = (member) => statusOf(byId.get(member.id));
+  syncRailRows(
+    $('#memberList'),
+    agents,
+    'member',
+    (member) => memberRowNode(member, statusOfMember(member)),
+    (row, member) => paintMemberRow(row, member, statusOfMember(member)),
+  );
   $('#memberListEmpty').hidden = agents.length > 0;
 }
 

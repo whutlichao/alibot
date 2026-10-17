@@ -321,6 +321,7 @@ node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配
 node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
 node --test app/tests/agent_detail_ui.test.cjs # Studio Agent 详情（dock 第三形态）：概览 / 运行时 / 暂停 / 编辑配置
 node --test app/tests/i18n_ui.test.cjs    # 词条机制（同键集 / 无落单键 / 裸中文扫描 / <html lang> / 设置弹窗两档）
+node --test app/tests/rail_identity.test.cjs # Studio 左栏（`#rail`）三份名单在回复路径上保留行节点（不屏闪）
 ```
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
