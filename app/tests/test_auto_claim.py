@@ -930,43 +930,66 @@ def test_the_mandatory_flag_survives_a_deferred_wait_on_another_target(
 ) -> None:
     """[S8] 跨 target 被挡在后面（deferred）时，**必答标记必须一起传下去**。
 
-    这条守护的是一个真实缺陷形状：`_DeferredWake` 收下了 `mandatory_reply`（含「取或」合并），
+    这条守护一个真实缺陷形状：`_DeferredWake` 收下了 `mandatory_reply`（含「取或」合并），
     但收口时重投 deferred 若漏传它，认领轮就会以 `mandatory_reply=False` 重跑——自判忽略不再收口成
     `failed`、`reason.claim_round` 后缀也丢，而**其余一切看起来都正常**。
 
-    构造方式：先让认领者在一个**频道**轮次里挂着（delay 闸门），此时任务线程的认领唤醒只能进
-    deferred；放行后按 deferred 路径重跑，断言那一轮仍是**必须回应**的一轮。
+    **为什么必须并发造**：`ManualScheduler.drain` 在锁内 pop、**锁外执行**，因此单线程 drain 是串行的
+    ——认领唤醒只会排在队列里等，`run_round` 从未见过它，走不进 `_in_flight` 那条 deferred 分支
+    （插桩读数 `deferred_rounds=0` 可以证明）。这里让**两个线程各自 drain**：A 线程跑频道那轮并被
+    `DELAY` 闸门挂住（`_in_flight` 保持在场），B 线程把随后 submit 的认领轮 pop 起来——它命中
+    `active_turn.target_id != target_id`，写入 `deferred_rounds`。放行后 A 收口，`finally` 重投。
     """
+    import threading
+
     agent = create_agent(client, name="小明", model_id=LOCAL_MODEL_ID).json()["agent"]
     channel = create_channel(client, name="协作频道", member_ids=[agent["id"]]).json()["channel"]
     set_auto_claim(client, agent["id"], True)
     harness["seam"].behaviors[agent["id"]] = DELAY
 
-    # ① 先用一条频道消息把该 Agent 占住（这一轮停在闸门上，它的 target 是频道）。
+    # ① 频道消息 → 该 Agent 的一轮排进队列。闸门关着，它一旦被 pop 就会停在 run_round 里。
     harness["seam"].block()
     client.post(f"/api/channels/{channel['id']}/messages", json={"body": "先聊两句"})
-    import threading
 
-    runner = threading.Thread(target=drain, args=(harness,), daemon=True)
-    runner.start()
-    for _ in range(200):
-        if harness["seam"].calls_for(agent["id"]):
-            break
-        threading.Event().wait(0.01)
+    # A 线程：pop 频道那轮并挂在闸门上 ⇒ `_in_flight[agent]` 在场，target = 频道。
+    drainer_a = threading.Thread(target=drain, args=(harness,), daemon=True)
+    drainer_a.start()
+    _wait_until(lambda: bool(harness["seam"].calls_for(agent["id"])), "频道那轮必须已进接缝")
 
-    # ② 它正忙时新建任务 ⇒ 认领唤醒只能进 deferred（另一个 target）。
+    # ② 它还挂着时新建任务 ⇒ 认领唤醒 submit 进队列（target = 任务线程）。
     task = new_task(client, channel["id"], title="延迟中的认领")
 
-    # ③ 放行：闸门开 → 频道那轮收口 → deferred 的认领轮被重投。
+    # B 线程：把那条认领轮 pop 起来。此时 A 的 `_in_flight` 仍在 ⇒ 命中 deferred 分支并 return None。
+    drainer_b = threading.Thread(target=drain, args=(harness,), daemon=True)
+    drainer_b.start()
+    drainer_b.join(timeout=10)
+
+    # ③ 放行：A 那轮收口，`finally` 把 deferred 的认领轮重投出来，由后续 drain 收掉。
     harness["seam"].behaviors[agent["id"]] = IGNORE
     harness["seam"].release()
-    runner.join(timeout=10)
-    drain(harness)  # 收掉 deferred 重投出来的那一轮
+    drainer_a.join(timeout=10)
+    drain(harness)
 
-    calls = harness["seam"].calls_for(agent["id"])
-    claim_calls = [call for call in calls if call["target_id"] == task["target_id"]]
-    assert claim_calls, "任务线程那一轮必须真的跑过"
+    # 判据一（结构）：认领轮确实跑过，且**必答标记被保住了**。
+    claim_calls = [
+        call for call in harness["seam"].calls_for(agent["id"]) if call["target_id"] == task["target_id"]
+    ]
+    assert claim_calls, "任务线程那一轮必须真的跑过（deferred 重投）"
     assert claim_calls[-1]["mandatory_reply"] is True, "deferred 重投必须保住必答标记"
+
+    # 判据二（可观察后果）：IGNORE 在必答轮 ⇒ `failed`，且 reason 带认领后缀。
     outcomes = task_outcomes(client, task["id"])
     assert [outcome["status"] for outcome in outcomes] == ["failed"], "IGNORE 在必答轮 ⇒ failed"
     assert "认领" in outcomes[0]["reason"], "reason.claim_round 后缀也要在"
+
+
+def _wait_until(predicate: Any, message: str, timeout: float = 5.0) -> None:
+    """轮询等条件成立（等真实线程推进，不用固定 sleep 猜时序）。"""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError(message)
