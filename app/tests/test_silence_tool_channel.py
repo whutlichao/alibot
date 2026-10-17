@@ -28,8 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 
 import pytest
-from alibot import agent_seam
-from alibot.agent_seam import SILENCE_TOOL_NAME, AgentScopeAgentSeam, supports_tool_calling
+from alibot.agent_seam import SILENCE_TOOL_NAME, AgentScopeAgentSeam
 
 STUB_TEXT = "这是一条普通回复。"
 
@@ -164,6 +163,19 @@ def _tool_names(request_body: dict[str, Any]) -> set[str]:
     return {tool["function"]["name"] for tool in request_body.get("tools") or []}
 
 
+class _StubTransportSeam(AgentScopeAgentSeam):
+    """把 provider 名留在闸门之外的 seam，模型客户端仍指向本机 stub（只为一侧退化可观察）。
+
+    生产里「闸门」与「传输层」读同一张表（``PROVIDER_KEY_ENV``），因此今天没有任何一家真的落在
+    闸门之外。要观察「闸门为假时请求里没有 ``tools``」就只能把这两层临时拆开：provider 名交给
+    闸门判（不在表内 ⇒ 假），模型构造点接到 stub 的 OpenAI 兼容传输上，于是请求真的发得出去、
+    也真的可以被抓下来读。断言仍然只落在**抓到的请求载荷**与**轮次结果**上。
+    """
+
+    def _build_model(self, provider: str, model_name: str) -> Any:
+        return super()._build_model("openai", model_name)
+
+
 # ─── 1. 支持工具调用 ⇒ 能声明 silent，且零条待落库消息 ────────────────────
 def test_a_declared_silence_becomes_a_silent_outcome_without_any_message(stub_provider: str) -> None:
     """模型调用 ``declare_silence`` ⇒ ``silent`` + 零条 messages；工具之后写的正文也不落库。"""
@@ -187,16 +199,13 @@ def test_a_declared_silence_becomes_a_silent_outcome_without_any_message(stub_pr
     assert "回应纪律" in json.dumps(first, ensure_ascii=False)
 
 
-# ─── 2. 不支持工具调用的 provider ⇒ 结构性退化 ─────────────────────────────
-def test_a_provider_without_the_tool_transport_degrades_to_the_existing_outcomes(
-    stub_provider: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+# ─── 2. 闸门为假的 provider ⇒ 结构性退化（请求里看不到工具） ──────────────
+def test_a_provider_outside_the_gate_degrades_to_the_existing_outcomes(stub_provider: str) -> None:
     """闸门关掉 ⇒ 请求里既没有 ``tools`` 也没有工具说明书 ⇒ 只能得到既有的 ``replied``。"""
-    monkeypatch.setattr(agent_seam, "PROVIDER_TOOL_TRANSPORT", frozenset({"ollama"}))
-    assert supports_tool_calling("openai") is False, "闸门必须按 provider 逐个判（不能假定一致）"
     agent, messages = round_inputs()
+    agent["model_id"] = "no-such-provider:stub-model"
 
-    outcome = AgentScopeAgentSeam(timeout_seconds=10.0).run_round(
+    outcome = _StubTransportSeam(timeout_seconds=10.0).run_round(
         agent, messages, mentioned=False, target_id="ch_issue_58"
     )
 
@@ -206,13 +215,19 @@ def test_a_provider_without_the_tool_transport_degrades_to_the_existing_outcomes
     first = _StubProviderHandler.request_bodies[0]
     assert "tools" not in first, "不挂工具时请求里不能出现 tools（否则退化只是嘴上说说）"
     assert SILENCE_TOOL_NAME not in json.dumps(first, ensure_ascii=False)
-    assert supports_tool_calling("ollama") is True
 
 
-def test_the_unknown_provider_is_treated_as_unable_to_declare_silence() -> None:
-    """未知 provider 一律按「不能携带工具」处理：宁可不挂，也不assuming。"""
-    assert supports_tool_calling("") is False
-    assert supports_tool_calling("no-such-provider") is False
+def test_an_unavailable_provider_never_reaches_the_transport(stub_provider: str) -> None:
+    """本仓不认识的 provider 连客户端都建不出来：这一轮直接失败，一个请求都发不出去。"""
+    agent, messages = round_inputs()
+    agent["model_id"] = "no-such-provider:stub-model"
+
+    outcome = AgentScopeAgentSeam(timeout_seconds=10.0).run_round(
+        agent, messages, mentioned=False, target_id="ch_issue_58"
+    )
+
+    assert outcome.status == "failed", outcome.reason
+    assert _StubProviderHandler.request_bodies == [], "没有传输层 ⇒ 根本不会有请求，更不会有 tools 键"
 
 
 # ─── 3. 模型没调用工具 ⇒ 行为与 #58 之前逐字相同 ───────────────────────────

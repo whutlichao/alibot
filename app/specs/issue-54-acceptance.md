@@ -42,7 +42,7 @@ en **两份取值**；**后端生成的自然语言**（非法档位、用量只
 
 | # | 票面判据 | 实现落点 | 证据（命令 + 关键读数） |
 | --- | --- | --- | --- |
-| 1 | 频道设置写控件 + `PATCH /api/channels/{id}/budget`（建在 ① 的库内配置与读路径上） | `api.py`：`ChannelBudgetUpdate`（`extra="forbid"`，只认 `budget_limit`）+ `update_channel_budget()`；`service.py`：`set_channel_budget_limit()`（委托 #53 的唯一写函数）；`studio/index.html`：`#btnChannelBudget`（频道头）+ `#budgetOverlay` 弹窗；`studio/app.js`：`openBudgetModal` / `loadChannelBudget` / `renderBudgetModal` / `selectBudgetTier` / `submitBudgetTier` / `closeBudgetModal` | 后端：`pytest tests/test_channel_budget_write.py -q` ⇒ **37 passed**；其中 `test_patch_saves_the_upper_bound_and_returns_the_refreshed_budget`（200 + 返回刷新后的载荷）。前端：`node --test app/tests/channel_budget_ui.test.cjs` ⇒ **11 passed**；其中「频道头的预算入口打开弹窗…」断言 `PATCH` 一次调用后读数与后端载荷逐项相同。实机读数见 §3 |
+| 1 | 频道设置写控件 + `PATCH /api/channels/{id}/budget`（建在 ① 的库内配置与读路径上） | `api.py`：`ChannelBudgetUpdate`（`extra="forbid"`，只认 `budget_limit`）+ `update_channel_budget()`；`service.py`：`set_channel_budget_limit()`（委托 #53 的唯一写函数）；`studio/index.html`：`#btnChannelBudget`（频道头）+ `#budgetOverlay` 弹窗；`studio/app.js`：`openBudgetModal` / `loadChannelBudget` / `renderBudgetModal` / `selectBudgetTier` / `submitBudgetTier` / `closeBudgetModal` | 后端：`pytest tests/test_channel_budget_write.py -q` ⇒ **38 passed**；其中 `test_patch_saves_the_upper_bound_and_returns_the_refreshed_budget`（200 + 返回刷新后的载荷）。前端：`node --test app/tests/channel_budget_ui.test.cjs` ⇒ **11 passed**；其中「频道头的预算入口打开弹窗…」断言 `PATCH` 一次调用后读数与后端载荷逐项相同。实机读数见 §3 |
 | 2 | 只接受固定档位 3 / 5 / 10，默认仍 3；非法值**不部分写入** | `db.py::set_channel_budget_limit`（`budget_limit not in BUDGET_LIMIT_TIERS` ⇒ `DomainError("validation_failed", error.budget_limit_invalid)`；配置表列级 `CHECK` 兜底）；`api.py::ChannelBudgetUpdate.budget_limit` 用 `Annotated[int, Field(strict=True)]`（`"5"` 不被静默当成 5） | `pytest tests/test_channel_budget_write.py -q` 的 `test_an_integer_outside_the_fixed_tiers_is_refused_without_a_partial_write`（`-10/-1/0/1/2/4/6/7/9/11/100` ⇒ 400，`message` 含 `3, 5, 10` 与「未保存」，读回等于写入前载荷，**重启后**也等于写入前）、`test_a_value_that_is_not_a_tier_integer_is_refused`（`"5"/"abc"/""/null/5.0/true/[5]/{...}/"10"` ⇒ 400 且读回不变）、`test_a_body_without_the_upper_bound_is_refused`（`{}` / 缺字段 ⇒ 400）、`test_every_fixed_tier_is_accepted`（3/5/10 全绿；保存 3 与内置默认相同 ⇒ `pending_limit` 为 `null`） |
 | 3 | 逐频道持久化；**不**加环境变量 / 工作区 / 成员级覆盖 | 写路径只写 `channel_budget_limit(channel_id PK → channel(id))`；解析只有 `_budget_facts_locked` 一处 | `test_the_saved_upper_bound_stays_inside_its_own_channel`（A 保存 10 ⇒ A 的 `pending_limit=10`，B 仍 `limit=3` / `built-in-default` / `pending_limit=null`；同频道 task 型 target 仍 3）、`test_a_saved_upper_bound_survives_a_restart_and_still_activates_next_epoch`（重启后 `budget` 载荷逐字相等，仍是「当前 3 / 待生效 5」）。**没有别的配置面**：本票 0 行涉及 `os.environ` / 工作区设置表 / 成员行（`git diff` 清单见 §6） |
 | 4 | 请求不能写 / 重置 `used`；`used` 只由后端开世代时重置、一次**实际投递**跳 +1 | `ChannelBudgetUpdate` 把 `used` / `remaining` / `epoch_seq` / `applied_limit` 声明为**不可写字段**，校验器一律抛 `_TierValueError("error.budget_used_read_only")`（比落成「未知键」多一句实质原因）；未知键由 `extra="forbid"` 整体拒绝；写函数本身不碰 `target_budget`（#53） | `test_a_request_that_writes_used_is_refused_and_usage_stays_backend_owned`：一次真实投递把 `used` 推到 1，随后 `PATCH {budget_limit:5, used:0}` ⇒ **400**，`used` 仍是 1、`pending_limit` 仍是 `null`（被拒的请求连上界也没写）。`test_every_usage_or_epoch_field_is_refused[used/remaining/epoch_seq/applied_limit]`：每个字段两种体形（单独带 / 与 `budget_limit` 同带）都 400 且读回不变。可观察读数见 §3 |
@@ -50,32 +50,64 @@ en **两份取值**；**后端生成的自然语言**（非法档位、用量只
 | 6 | 展示必须区分**当前有效上界**与**下一世代设置**及两者**来源** | `renderBudgetModal()` 的 ①「当前世代」分区：`budget-used` / `budget-remaining` / `budget-limit` / `budget-source` 四行 + 耗尽行；②「下一个人类世代」分区：`budget-pending` 一行 + 说明（`budget.pendingEffective` / `budget.pendingSame`）；来源取值的说法由 `budgetSourceLabel()` 按 `source` 的**机器可读取值**取词条 | 前端：`channel_budget_ui.test.cjs` 的「四个读数都来自后端载荷」（`budget-used=1` / `budget-remaining=4` / `budget-limit=5` / `budget-source=频道覆盖`）、「待生效的下一世代值与当前有效上界分开呈现」（`budget-limit=3`、`budget-remaining=2`、`budget-pending=5`，正文含「下一个人类世代生效」）、「没有待生效差异时…写成与当前相同」（`budget-pending=3` + 「没有待生效改动」）。DOM 落点见 §4 |
 | 7 | 零投递耗尽、per-target 用量正本、并发硬上界**不变** | 本票 0 行改动消费路径（`orchestration.py` / `db.consume_budget` / `_reset_epoch_budget_locked` 未动）；写入口只写配置表 | `test_the_current_epochs_hard_bound_ignores_a_saved_pending_tier`（当前世代保存 5 ⇒ 接力停在 `used=3`、`remaining=0`、留下 `budget-exhausted`）、`test_the_next_epochs_hard_bound_follows_the_saved_tier`（新世代按 5 裁决 ⇒ 接力跑到 `used=5` 后耗尽）、`test_a_zero_delivery_agent_message_still_does_not_consume_budget`（零投递 ⇒ `used=0`、`remaining=10`）、`test_a_patch_while_a_round_is_in_flight_does_not_raise_the_current_bound`。既有族仍全绿：`pytest tests/test_bounded_relay.py tests/test_channel_budget_limit.py -q` |
 | 8 | ADR-0007 与实装边界一致；**不**修订 ADR-0002 | `docs/adr/0007-…md` **未改动一个字**；`docs/adr/0002-…md` 也**未改** | 见 §5 的逐句核对（结论：无需改动）。`git diff --stat docs/` 为空 |
-| 9 | 覆盖成功写入 / 非法输入 / 拒绝用量写入 / 下一世代生效 / 频道隔离 / 重启持久 / 既有耗尽行为 | `app/tests/test_channel_budget_write.py`（新增，37 个用例）| 覆盖面逐条见上表第 1–7 行；命令与读数：`pytest tests/test_channel_budget_write.py -q` ⇒ **37 passed in 2.04s** |
+| 9 | 覆盖成功写入 / 非法输入 / 拒绝用量写入 / 下一世代生效 / 频道隔离 / 重启持久 / 既有耗尽行为 | `app/tests/test_channel_budget_write.py`（新增，38 个用例）| 覆盖面逐条见上表第 1–7 行；命令与读数：`pytest tests/test_channel_budget_write.py -q` ⇒ **38 passed** |
 | 10 | （派生）既有 `error.budget_read_only` 不能再说假话 | `i18n.py` 同键改写为「回应预算的**用量**只读：人类面只能改上界（PATCH），已用跳数与世代由后端独占维护」；`api.py` 的 `no_budget_mutation` 只留 `PUT` / `POST` / `DELETE`（`PATCH` 已是真写路径） | 实机读数见 §3 的 `PUT` / `POST` / `DELETE` 行（404 + 新文案）；`pytest tests/test_backend_copy.py -q` 仍绿（键集与参数位不变，只有取值改写） |
-| 11 | （派生）新增文案两份词条齐备、三件套无裸中文 | `studio/i18n.js` 新增 27 个 `budget.*` 键（zh-CN / en 各一份）；`app/alibot/i18n.py` 新增 `error.budget_used_read_only`（zh / en 各一份）| `node --test app/tests/*.test.cjs` ⇒ **127 passed**（含 `i18n_ui.test.cjs` 的键集比对与裸中文扫描）；`channel_budget_ui.test.cjs` 的「新增的预算文案在两份词条里都存在…」把 `app.js` / `index.html` 里点名的预算键逐个对表 |
+| 11 | （派生）新增文案两份词条齐备、三件套无裸中文 | `studio/i18n.js` 新增 27 个 `budget.*` 键（zh-CN / en 各一份）；`app/alibot/i18n.py` 新增 `error.budget_used_read_only`（zh / en 各一份）| `node --test app/tests/*.test.cjs` ⇒ **132 passed**（含 `i18n_ui.test.cjs` 的键集比对与裸中文扫描）；`channel_budget_ui.test.cjs` 的「新增的预算文案在两份词条里都存在…」把 `app.js` / `index.html` 里点名的预算键逐个对表 |
 | 12 | （派生）不新开测试缝、不动 schema | 后端沿用 `conftest.py` 的 `client` / `launched` + `send` / `drain` / `outcomes`；前端沿用 `vm` + `fetch` 替身 + DOM 替身（与 `agent_detail_ui.test.cjs` 同款）；`SCHEMA_VERSION` 与 `MigrationStep` 未动 | `pytest tests/test_channel_budget_limit.py::test_the_schema_version_and_the_default_limit_are_what_the_ticket_says -q` ⇒ 通过（`SCHEMA_VERSION == 14`、`BUDGET_LIMIT == 3`）；`git diff app/alibot/migrate.py app/alibot/db.py` 为空 |
 
 ## 3. `PATCH` 的请求 / 响应形状与拒绝语义（实机读数）
 
-采集方式：隔离数据目录 + `create_app` 的手动调度器与脚本化替身（`/tmp/issue54_readings.py`，只走 HTTP 黑盒）。
+> **review 收口后重测**（本节的读数都是重测值）。两处改动：
+> 1. `_validation_detail` **已还原成仓库原版**——只取 `exc.errors()[0]`，首条错误带 `_TierValueError`
+>    才用词条。此前「优先采用任意一条校验器词条」是共享改动，会动到 `AgentUpdate` / `SettingsUpdate`
+>    等所有端点的 400 文案选择，越出了本票写面。
+> 2. 同一条可观察效果改由**本端点的字段顺序**达成：`ChannelBudgetUpdate` 把只读字段
+>    （`used` / `remaining` / `epoch_seq` / `applied_limit`）**声明在 `budget_limit` 之前**，pydantic
+>    按字段定义序校验，于是 `{"used": 0}` 与 `{"budget_limit": 5, "used": 0}` 的首条错误仍是
+>    「用量只读」那条词条。
+> 3. `_budget_facts_locked` 的无世代口径同时按 #54 票面改正：没有 `target_budget` 行时
+>    `limit` 报内置默认、新值只作 `pending_limit`（见 §8 第 1 条的处置）。
+
+采集方式：隔离数据目录 + `create_app` 的手动调度器与脚本化替身，只走 HTTP 黑盒。
+**频道还没有任何人类世代**（`epoch_seq = 0`）时：
 
 ```console
-GET              => 200 {"budget": {"channel_id": "ch_f37b0b1284ed", "epoch_seq": 1, "limit": 3,
-                                    "used": 0, "remaining": 3, "source": "built-in-default",
-                                    "pending_limit": null}}
-PATCH {"budget_limit": 5}          => 200 {"budget": {"…", "epoch_seq": 1, "limit": 3, "used": 0,
-                                        "remaining": 3, "source": "built-in-default",
-                                        "pending_limit": 5}}
-PATCH {"budget_limit": 4}          => 400 {"error": {"code": "validation_failed",
-                                        "message": "回应预算上界只接受固定档位：3, 5, 10，未保存任何改动",
-                                        "fields": {"budget_limit": "必须是这些之一：3, 5, 10"}}}
+GET                                  => 200 {"budget": {"channel_id": "ch_…", "epoch_seq": 0, "limit": 3,
+                                             "used": 0, "remaining": 3, "source": "built-in-default",
+                                             "pending_limit": null}}
+PATCH {"budget_limit": 5}            => 200 {"budget": {… "epoch_seq": 0, "limit": 3, "used": 0,
+                                             "remaining": 3, "source": "built-in-default",
+                                             "pending_limit": 5}}          ← 保存只作为待生效值
+PATCH {"budget_limit": 5, "used": 0} => 400 {"error": {"code": "validation_failed",
+                                             "message": "请求体校验未通过",
+                                             "fields": {"body": "回应预算的用量与世代事实只读：人类面只能改上界（PATCH），used 由后端独占维护"}}}
+PATCH {"used": 0}                    => 400 （同上：单独提交用量字段也得到「用量只读」这句实质原因）
+PATCH {"used": 0, "budget_limit": 5} => 400 （同上：提交顺序不影响字段校验序，首条仍是「用量只读」）
+PATCH {"budget_limit": 4}            => 400 {"error": {"code": "validation_failed",
+                                             "message": "回应预算上界只接受固定档位：3, 5, 10，未保存任何改动",
+                                             "fields": {"budget_limit": "必须是这些之一：3, 5, 10"}}}
+# 下一条人类消息落库（第一条人类消息）开世代：
+GET                                  => 200 {"budget": {… "epoch_seq": 1, "limit": 5, "used": 0,
+                                             "remaining": 5, "source": "channel-override",
+                                             "pending_limit": null}}
+```
+
+五种体形的 status 与 message 一览（`{"budget_limit": 5}` 是成功那条，其余四条都是整单拒绝）：
+
+| 请求体 | status | message / 读数 |
+| --- | --- | --- |
+| `{"budget_limit": 5, "used": 0}` | 400 | `fields.body` = 「回应预算的用量与世代事实只读：人类面只能改上界（PATCH），used 由后端独占维护」 |
+| `{"used": 0}` | 400 | 同上（首条错误就是用量只读，**不是**「缺 `budget_limit`」） |
+| `{"used": 0, "budget_limit": 5}` | 400 | 同上（请求体里的键序不影响字段校验序） |
+| `{"budget_limit": 4}` | 400 | `message` = 「回应预算上界只接受固定档位：3, 5, 10，未保存任何改动」 |
+| `{"budget_limit": 5}` | 200 | 无世代：`limit=3` / `pending_limit=5`；开世代后：`limit=5` / `source="channel-override"` / `pending_limit=null` |
+
+其余既有读数（未变）：
+
+```console
 PATCH {"budget_limit": "5"}        => 400 {"error": {"code": "validation_failed",
                                         "message": "请求体校验未通过",
                                         "fields": {"body": "请求体不合法：body.budget_limit（int_type）"}}}
-PATCH {"budget_limit": 5, "used": 0} => 400 {"error": {"code": "validation_failed",
-                                        "message": "请求体校验未通过",
-                                        "fields": {"body": "回应预算的用量与世代事实只读：人类面只能改上界（PATCH），used 由后端独占维护"}}}
-PATCH {"used": 0}                  => 400 （同上：即使用量字段单独提交，也得到「用量只读」这句实质原因）
 PUT    /api/channels/{id}/budget   => 404 {"error": {"code": "not_found",
                                         "message": "回应预算的用量只读：人类面只能改上界（PATCH），已用跳数与世代由后端独占维护"}}
 POST   /api/channels/{id}/budget   => 404 （同上）
@@ -84,9 +116,6 @@ DELETE /api/channels/{id}/budget   => 404 （同上）
 PATCH {"used": 0}                  => 400 {"error": {"code": "validation_failed",
                                         "message": "Request body failed validation",
                                         "fields": {"body": "Response-budget usage and epoch facts are read-only: the human surface can only change the upper bound (PATCH); used stays backend-owned"}}}
-# 下一条人类消息开新世代：
-GET              => 200 {"budget": {"…", "epoch_seq": 2, "limit": 5, "used": 0, "remaining": 5,
-                                    "source": "channel-override", "pending_limit": null}}
 ```
 
 形状小结：
@@ -176,35 +205,48 @@ GET              => 200 {"budget": {"…", "epoch_seq": 2, "limit": 5, "used": 0
 
 | 文件 | 改动 |
 | --- | --- |
-| `app/alibot/api.py` | 新增 `ChannelBudgetUpdate`（`extra="forbid"`；`budget_limit` 严格整数；用量 / 世代字段一律拒绝并给「用量只读」词条）；新增 `PATCH /api/channels/{id}/budget` 路由 `update_channel_budget()`；`no_budget_mutation` 的动词收窄为 `PUT` / `POST` / `DELETE`；`_validation_detail` 优先采用校验器带回的词条（于是「缺必填 + 提交用量」的体形得到实质原因而不是旁支）；模块端点清单与 `GET` 文档串同步 |
+| `app/alibot/api.py` | 新增 `ChannelBudgetUpdate`（`extra="forbid"`；`budget_limit` 严格整数；用量 / 世代字段一律拒绝并给「用量只读」词条）；新增 `PATCH /api/channels/{id}/budget` 路由 `update_channel_budget()`；`no_budget_mutation` 的动词收窄为 `PUT` / `POST` / `DELETE`；**只读字段声明在 `budget_limit` 之前**（pydantic 按定义序校验，于是「缺必填 + 提交用量」的体形得到实质原因而不是旁支；共享的 `_validation_detail` 未改）；模块端点清单与 `GET` 文档串同步 |
 | `app/alibot/service.py` | 新增 `set_channel_budget_limit()`（薄委托；写明「配置不是对话事实」） |
 | `app/alibot/i18n.py` | 改写 `error.budget_read_only`（zh / en，去掉「不存在写端点」的假话）；新增 `error.budget_used_read_only`（zh / en） |
 | `app/alibot/studio/index.html` | 频道头加 `#btnChannelBudget`；新增 `#budgetOverlay` 频道设置弹窗骨架（`#budgetBody` / `#budgetFormError` / `#budgetClose` / `#budgetDone`），静态中文全挂 `data-i18n` |
 | `app/alibot/studio/app.js` | 新增 `budget.*` 常量与 `budgetSourceLabel` / `savedBudgetTier` / `openBudgetModal` / `loadChannelBudget` / `closeBudgetModal` / `selectBudgetTier` / `submitBudgetTier` / `budgetHint` / `renderBudgetModal`；`state.channelBudget` 镜像；`renderHeader` 隐藏 DM 入口；`applySettings` 重铺弹窗；`bindEvents` 三个入口 + 正文点击委派；ESC 关闭；文件头交付说明 |
 | `app/alibot/studio/i18n.js` | 新增 27 个 `budget.*` 键（zh-CN / en 各一份） |
 | `app/README.md` | API 清单加 `PATCH /api/channels/{id}/budget` 一行；「有界响应」一节加「人类面只能写上界」一条 |
-| `app/tests/test_channel_budget_write.py` | **新增**（37 个用例）：§2 第 1–7、9 行的后端取证 |
+| `app/tests/test_channel_budget_write.py` | **新增**（38 个用例）：§2 第 1–7、9 行的后端取证（含「无世代保存 ⇒ 待生效」那条 review 收口用例） |
 | `app/tests/channel_budget_ui.test.cjs` | **新增**（11 个用例）：§4 的前端取证（已并入门禁命令 `node --test app/tests/*.test.cjs`） |
 | `app/tests/test_bounded_relay.py` | 一处既有断言跟随实机边界：`PUT/PATCH/DELETE/POST` 全部 404 ⇒ 改为 `PUT/DELETE/POST` 仍 404，并注明「上界只有 `PATCH` 一条写路径（#54 / ADR-0007）」 |
 | `app/specs/issue-54-acceptance.md` | 本文件 |
 
-**未改动**：`docs/adr/**`（含 ADR-0002 / ADR-0007）、`app/alibot/db.py`、`app/alibot/migrate.py`、
+**未改动**：`docs/adr/**`（含 ADR-0002 / ADR-0007）、`app/alibot/migrate.py`、
 `app/alibot/orchestration.py`、`app/alibot/studio/app.css`（弹窗复用既有 `.overlay` / `.modal` /
 `.kv` / `.radio-card` / `.d-sec` / `.form-error`，**零新色位、零新组件类**）。
+
+**review 收口后的追加改动**（不属于 #54 原交付，登记在这里免得文档与实装脱节；详见 §3 的提示与 §8）：
+
+- `app/alibot/api.py`：`_validation_detail` **还原成仓库原版**（只取首条错误）；「用量只读优先」改由
+  `ChannelBudgetUpdate` 的**字段声明序**在本端点内达成——共享选择器不再被本票改动。
+- `app/alibot/db.py`：删掉无调用方的 `channel_budget_limit()`；`applied_limit` 的快照取值收进
+  `_applied_limit_snapshot_locked()`（两处写入共用）；`_budget_facts_locked` 的**无世代口径**改为
+  「报内置默认 + 新值只作待生效」（§8 第 1 条的处置）。
+- `app/tests/test_channel_budget_write.py`：新增 `test_a_patch_before_the_first_human_epoch_is_read_back_as_pending`。
 
 ## 7. 门禁读数（在 wt-54 根目录执行）
 
 | 门禁 | 命令 | 读数 |
 | --- | --- | --- |
-| pytest（本票） | `cd app && ../.venv/bin/python -m pytest tests/test_channel_budget_write.py -q` | **37 passed in 2.04s** |
-| pytest（相邻两族） | `cd app && ../.venv/bin/python -m pytest tests/test_channel_budget_limit.py tests/test_bounded_relay.py tests/test_backend_copy.py tests/test_settings.py tests/test_shape_conditioned_step.py -q` | **86 passed in 14.36s**（#53 的读路径族 / 接力硬上界族 / 后端词条族 / 设置族 / 形态步骤，无 fail） |
-| pytest（全量） | `cd app && env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY ../.venv/bin/python -m pytest -q` | **614 passed, 2 skipped in 302.88s**（2 skipped 都是既有跳过：`test_agent_smoke.py` 需 `ALIBOT_SMOKE_MODEL`；`test_reminder_schema_step.py` 需 `libfaketime`） |
+| pytest（本票） | `cd app && ../.venv/bin/python -m pytest tests/test_channel_budget_write.py -q` | **38 passed** |
+| pytest（相邻两族） | `cd app && ../.venv/bin/python -m pytest tests/test_channel_budget_limit.py tests/test_bounded_relay.py tests/test_backend_copy.py tests/test_settings.py tests/test_shape_conditioned_step.py` | **88 passed in 14.28s**（#53 的读路径族 / 接力硬上界族 / 后端词条族 / 设置族 / 形态步骤，无 fail） |
+| pytest（全量） | `cd app && env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY ../.venv/bin/python -m pytest` | **637 passed, 2 skipped in 305.68s**（2 skipped 都是既有跳过：`test_agent_smoke.py` 需 `ALIBOT_SMOKE_MODEL`；`test_reminder_schema_step.py` 需 `libfaketime`） |
 | ruff lint | `.venv/bin/ruff check app` | `All checks passed!` |
-| ruff format | `.venv/bin/ruff format --check app` | `128 files already formatted` |
-| mypy | `.venv/bin/python -m mypy`（**仓库根**） | `Success: no issues found in 55 source files` |
+| ruff format | `.venv/bin/ruff format --check app` | `132 files already formatted` |
+| mypy | `.venv/bin/python -m mypy`（**仓库根**） | `Success: no issues found in 58 source files` |
 | pyright | `node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests` | `0 errors, 0 warnings, 0 informations` |
-| 前端契约（全量） | `node --test app/tests/*.test.cjs` | `tests 127 / pass 127 / fail 0` |
+| 前端契约（全量） | `node --test app/tests/*.test.cjs` | `tests 132 / pass 132 / fail 0` |
 | 前端契约（本票） | `node --test app/tests/channel_budget_ui.test.cjs` | `tests 11 / pass 11 / fail 0` |
+
+**上表是 review 收口后的重测读数**（分支 `issue-review-fix`，worktree `wt-fix`，base tip `53fdfaa` =
+#58 合并后的 integration tip）。两次全量 pytest 都是 `exit 0`（`637 passed, 2 skipped`），增量只是
+本票收口新增的两条用例与 `db.py` / `api.py` 的收口调整（§6 末段）。
 
 **已知噪声**（协调者给的基线，与本次改动无关）：`cd app` 里跑 `mypy` 会报
 `Duplicate module named "__main__"`（配置路径按 cwd 解析的老问题），权威跑法是仓库根 `mypy`；
@@ -212,15 +254,23 @@ GET              => 200 {"budget": {"…", "epoch_seq": 2, "limit": 5, "used": 0
 
 **合并 integration（交付前）**：`git merge alibot-budget-silence/integration` ⇒ `Already up to date.`
 （该分支 tip 仍是本票的 base `7867d26`，没有新的前进/冲突）。合并后上表门禁**全部重跑**，读数与合并前一致
-（`614 passed, 2 skipped in 302.88s` / `127 pass` / `0 errors`），故不需要解冲突后的额外回归。
+（本票交付时是 `614 passed, 2 skipped` / `127 pass` / `0 errors`；review 收口后在 `issue-review-fix`
+上重测为 `637 passed, 2 skipped` / `132 pass` / `0 errors`，见 §7 的新表），故不需要解冲突后的额外回归。
 
 ## 8. 遗留问题 / 相邻缺陷 / 不确定点（**未**自行修）
 
-1. **「还没有任何人类世代」的频道里保存上界，读路径直接按已保存值报**（#53 的既有边界，见
-   `issue-53-acceptance.md` §7 第 1 条）：`target_budget` 里没有行时没有「当前世代的有效上界」可
-   快照，于是 `limit` 立刻是新值、`pending_limit=null`。界面上表现为：toast 说「从下一个人类世代生效」，
-   而「下一个人类世代」那一行说「与当前上界相同」。两句都真（第一次世代就会用这个值），但放在一起
-   略绕；要不要为 `epoch_seq == 0` 单独换一句文案，需要一次产品裁定，本票不擅自加。
+1. **「还没有任何人类世代」的频道里保存上界 —— 已按 #54 票面口径处置（review 收口）**。
+   票面原句：「保存的改动不改变当前世代的有效上界与用量，从下一个人类世代生效，在此之前作为待生效值
+   读回」。因此 `_budget_facts_locked` 在 `target_budget` **无行**时不再取「已保存值」，而是报
+   `limit = 内置默认 3` / `source = "built-in-default"` / `pending_limit = 已保存值`（当且仅当 ≠ 3）。
+   实机读数（同 §3 的采集方式）：无世代频道 `PATCH {"budget_limit": 5}` ⇒ 200，载荷
+   `{"epoch_seq": 0, "limit": 3, "used": 0, "remaining": 3, "source": "built-in-default",
+   "pending_limit": 5}`；下一条人类消息开世代后 ⇒ `{"epoch_seq": 1, "limit": 5, "used": 0,
+   "remaining": 5, "source": "channel-override", "pending_limit": null}`。
+   界面上的两句因此不再互相绊住：toast 说「从下一个人类世代生效」，「下一个人类世代」那一行也真的
+   报的是待生效值。用例：`test_a_patch_before_the_first_human_epoch_is_read_back_as_pending`
+   （HTTP 写面）与 `test_a_saved_upper_bound_on_a_fresh_channel_is_pending_until_the_first_epoch`
+   （读面 + 保存 3 = 默认 ⇒ 待生效为 null）。有 `target_budget` 行的频道逐字不变（读 `applied_limit` 快照）。
 2. **非整数档位（`"5"` / `null` / `5.0`）得到的是通用字段文案**（`请求体不合法：body.budget_limit（int_type）`），
    而不是「只接受固定档位 3, 5, 10」那句。理由是它们属于**类型**错误、与**档位**错误不是一类；
    两句都可读，但如果希望所有拒绝都收敛到同一句，需要把类型校验也搬进库层（会削弱「请求模型只做形状
@@ -232,9 +282,10 @@ GET              => 200 {"budget": {"…", "epoch_seq": 2, "limit": 5, "used": 0
    `target_budget`），`app/alibot/repair.py:10` 的文档串仍写「本代码常量是 12」（实际 14），
    `app/tests/_migration_history.py` 的 `SOURCE_COMMITS[13]/[14]` 仍是 `'pending'`：三条都是 #53
    已记录的既有陈旧读数，与本票无关，未改。
-5. **`_validation_detail` 改动是共享的**（`AgentUpdate` / `SettingsUpdate` 的显式 `null` 也走它）：
-   行为从「取第一条错误的词条」变成「优先取任意一条校验器词条」。它只影响**同时**含「校验器词条错误」
-   与别的错误的体形（这两个模型的字段都非必填，既有用例里不出现），全量 pytest 已确认无回归；
-   但如果将来有人依赖「首条错误优先」，这里需要重新裁定。
+5. **`_validation_detail` 的共享改动已收回（review 收口）**：该函数还原成仓库原版——只取
+   `exc.errors()[0]`，首条错误带 `_TierValueError` 才用词条。原来的越界行为（「优先采用任意一条校验器
+   词条」）会影响 `AgentUpdate` / `SettingsUpdate` 等所有端点的 400 文案选择；现在同一可观察效果由
+   `ChannelBudgetUpdate` **本端点内**的字段声明序达成（只读字段在 `budget_limit` 之前）。五种体形的
+   实机读数见 §3，逐条与改前一致。
 6. **Studio 没有自动化浏览器端到端**（沿用既有 DOM 替身族，不起真浏览器）：`fetch` 的失败分支
    （网络断）在真机上由 `error.httpStatus` 兜底，本票只用替身覆盖了「后端返回 400」这条主路径。

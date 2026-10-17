@@ -131,6 +131,32 @@ def test_every_fixed_tier_is_accepted(client: TestClient, tier: int) -> None:
     assert after["pending_limit"] is None
 
 
+def test_a_patch_before_the_first_human_epoch_is_read_back_as_pending(client: TestClient) -> None:
+    """**还没有任何世代**的频道保存 5 ⇒ 读回 `limit=3` / `pending_limit=5`（不是「立刻生效」）。
+
+    #54 票面原句：「保存的改动不改变当前世代的有效上界与用量，从下一个人类世代生效，在此之前作为
+    待生效值读回」。没有世代时当前生效上界就是内置默认，因此读回必须仍是 3。
+    """
+    channel = create_channel(client, name="无世代写入").json()["channel"]
+    before = budget(client, channel["id"])
+    assert before["epoch_seq"] == 0 and before["limit"] == DEFAULT_LIMIT
+
+    response = _patch(client, channel["id"], {"budget_limit": OVERRIDE_LIMIT})
+
+    assert response.status_code == 200, response.text
+    saved = response.json()["budget"]
+    assert saved == budget(client, channel["id"])
+    assert saved["epoch_seq"] == 0, "写配置不开世代"
+    assert saved["limit"] == DEFAULT_LIMIT
+    assert saved["source"] == "built-in-default"
+    assert saved["used"] == 0 and saved["remaining"] == DEFAULT_LIMIT
+    assert saved["pending_limit"] == OVERRIDE_LIMIT
+
+    after = _open_epoch(client, channel["id"], "第一条人类消息")
+    assert after["limit"] == OVERRIDE_LIMIT and after["source"] == "channel-override"
+    assert after["pending_limit"] is None
+
+
 # ─── 2. 非法值：明确拒绝，无部分写入 ────────────────────────────────────────
 @pytest.mark.parametrize("illegal", [-10, -1, 0, 1, 2, 4, 6, 7, 9, 11, 100])
 def test_an_integer_outside_the_fixed_tiers_is_refused_without_a_partial_write(

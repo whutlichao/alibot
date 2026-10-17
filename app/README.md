@@ -136,11 +136,14 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 - **唤醒面** = 该频道的全部 agent 成员（**排除作者自己**）+ **穿透**（被个人提及但**未加入**该
   频道的 Agent）。穿透不豁免预算。
 - **回应判断**：被个人提及是确定信号 → **必须回应**（自判忽略按 `failed` 处理，不静默）；
-  明确无关 → `ignored`（正常协议选择，不是失败）。
-- **每轮落一条 `round_outcome`**：`replied` / `ignored` / `failed` / `merged` / `budget-exhausted`，
+  明确无关 → `ignored`（正常协议选择，不是失败）。**声明沉默**（`silent`）在确定信号下同样收口成
+  `failed`——`silent` 本身不是失败，只是「它决定不说话」在必须回应的场合不算回应（与 `ignored`
+  同款，见 `orchestration.py` 的 `definite_signal` 分支）。
+- **每轮落一条 `round_outcome`**：`replied` / `ignored` / `failed` / `merged` / `budget-exhausted` /
+  `silent`（`silent` = 模型经**结构化通道**声明本轮沉默，与 `ignored` 不同、也不是失败），
   带可读 reason、起止时间、是否消耗预算、是否被合并。
 - **一轮至多一条频道消息**；落库路径只有一条。
-- 消费游标只在 `replied` / `ignored` 推进；`failed` 不推进（下次唤醒会重新读到，但不是自动重放）。
+- 消费游标只在 `replied` / `ignored` / `silent` 推进；`failed` 不推进（下次唤醒会重新读到，但不是自动重放）。
 
 ### 穿透（点名一个未加入该频道的 Agent）
 
@@ -194,8 +197,8 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 - **认领推状态复用迁移表、不复用 actor 校验**：只用 `TASK_STATUS_TRANSITIONS` 做合法性判定
   （`todo → in_progress`），**不经** `update_task_status` 的 actor 校验——认领的授权来自**编排**
   （配置层裁决），不来自成员身份（ADR-0016 三）。
-- **认领轮必须回应**：判据与「被 @ 点名」**同级**（都是**确定信号**）——`ignored` 与「回复但无正文且无
-  任务动作」都收口成 `failed`，而**动作-only**（只调一次 `set_task_status` 而不说话）**算回应**。
+- **认领轮必须回应**：判据与「被 @ 点名」**同级**（都是**确定信号**）——`ignored`、`silent` 与
+  「回复但无正文且无任务动作」都收口成 `failed`，而**动作-only**（只调一次 `set_task_status` 而不说话）**算回应**。
   **只圈认领轮**：owner 手动改派维持既有纪律（任务本体照旧给到它，但不强制发言）。
 - **认领不是一次跳**：它唤醒认领者，但 `target_budget.used` **不 +1**（跳的载体必须是一条 Agent 消息）。
 - **首次认领是任务 target 的一次开世代动作**：`target_budget.epoch_seq` = 那条 `system` 记录的
@@ -295,8 +298,9 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 - **概览的四个数字全部来自既有事实**，由后端在 `stats` 里聚合，前端不自己算：
   `channel_count` = 它是成员的 channel 型 target 数；`round_count` = 它的 `round_outcome` 行数；
   `completed_task_count` = 指派给它且 `status='done'` 的任务行数；`success_rate` =
-  `replied ÷ (replied + ignored + failed)`（`merged` 与 `budget-exhausted` 不计入分母，没有样本时为
-  `null`，界面显示「—」）。原型里的 Token 消耗 / 上下文占用 / 内存 / 延迟在本仓**没有数据面**，
+  `replied ÷ (replied + ignored + failed)`（分母**不含 `silent`**：`silent` 与 `merged` /
+  `budget-exhausted` 一样不计入分母——`db.py` 的 `AGENT_STATS_ROUND_SQL` 只把
+  `replied` / `ignored` / `failed` 数进分母；没有样本时为 `null`，界面显示「—」）。原型里的 Token 消耗 / 上下文占用 / 内存 / 延迟在本仓**没有数据面**，
   因此不呈现。
 - **运行时页签只呈现 `agent_config` 里真实存在的字段**：`model_id`、`provider`、`is_remote`、
   远端数据流告知状态、`role`、`system_prompt`、`enabled`、`auto_claim`（外加可用性推导出的当前状态）。
@@ -326,14 +330,17 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
 node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
 node --test app/tests/agent_detail_ui.test.cjs # Studio Agent 详情（dock 第三形态）：概览 / 运行时 / 暂停 / 编辑配置
+node --test app/tests/narration_ui.test.cjs # Studio 旁白式交代的消息级呈现降档（一行 / 低权重 / 关联轮次结果，且不误降档）
+node --test app/tests/channel_budget_ui.test.cjs # Studio 频道设置弹窗：回应预算的读数 / 来源 / 待生效值 / 3-5-10 写控件
+node --test app/tests/silent_ui.test.cjs  # Studio 结构化沉默（`silent`）：进摘要行、两种语言的说法、与 `ignored` 可区分
 node --test app/tests/i18n_ui.test.cjs    # 词条机制（同键集 / 无落单键 / 裸中文扫描 / <html lang> / 设置弹窗两档）
 node --test app/tests/rail_identity.test.cjs # Studio 左栏（`#rail`）三份名单在回复路径上保留行节点（不屏闪）
 ```
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
 已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、
-Agent 详情面）由上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰**
-`~/Alibot`。
+Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要行与两种语言说法）由上面的 Node 内置测试
+单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
 
 **两处例外**，理由同源（词条表是**数据契约**，其键集不经 HTTP 面暴露）：
 
@@ -347,7 +354,8 @@ Agent 详情面）由上面的 Node 内置测试单独覆盖。每条 pytest 用
 两处都只读数据契约，**行为断言仍然全部走 HTTP 面**（含 `test_reminder_delivery.py` 里其余每一条用例：
 它们只经 `GET /api/reminders`、消息流、`budget`、`round-outcomes`、`search` 读数）。
 
-四类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟。
+五类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟 / 声明沉默
+（`SILENT`：经结构化通道声明本轮不说话，与「忽略」不是同一件事）。
 测试**不联网、零成本**；「什么时候跑完一轮」由测试自己拨（手动调度器），所以 in-flight 与
 合并这类窗口可以稳定观察。真模型连通性另有一条**默认跳过、本地手动运行**的冒烟测试：
 

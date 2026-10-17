@@ -120,11 +120,17 @@ $ pytest tests/test_migration_chain_guard.py tests/test_schema_migration.py test
 
 ## 7. 遗留问题 / 相邻缺陷 / 不确定点（**未**自行修）
 
-1. **「还没有任何世代」的频道里保存上界 ⇒ 读路径直接按已保存值报**（不算待生效）：`target_budget`
-   里没有行时没有「当前世代的有效上界」可快照，`_budget_facts_locked` 取当前解析值，于是
-   `limit` 立刻是新值、`pending_limit` 为 null；第一条人类消息开世代时快照同一个值，行为前后一致。
-   一旦该 target 有了预算行（开过世代或消耗过跳），保存就一律是「待生效」。这个边界是有意的，
-   但 #54 的界面文案需要知道它（「从下一世代生效」在有世代之后才字面成立）。
+1. **「还没有任何世代」的频道里保存上界 —— 已按 #54 票面口径处置（review 收口）**：票面原句是
+   「保存的改动不改变当前世代的有效上界与用量，从下一个人类世代生效，在此之前作为待生效值读回」，
+   因此 `_budget_facts_locked` 在 `target_budget` **无行**时不再取「已保存值」：报
+   `limit = 内置默认 3` / `source = "built-in-default"` / `pending_limit = 已保存值`（当且仅当 ≠ 3）。
+   实机读数：无世代频道保存 5 ⇒ `{"epoch_seq": 0, "limit": 3, "used": 0, "remaining": 3,
+   "source": "built-in-default", "pending_limit": 5}`；第一条人类消息开世代后 ⇒
+   `{"epoch_seq": 1, "limit": 5, "remaining": 5, "source": "channel-override", "pending_limit": null}`。
+   有预算行的频道逐字不变（读 `applied_limit` 快照）。新用例
+   `test_a_saved_upper_bound_on_a_fresh_channel_is_pending_until_the_first_epoch` 加在
+   `tests/test_channel_budget_limit.py`（本族由 19 条增至 **20 条**）；与之同口径的 HTTP 写面用例与
+   实机读数见 `issue-54-acceptance.md` §8 第 1 条。
 2. **保存与当前有效上界相同的档位**时 `pending_limit` 为 null（没有「会变」这回事），而 `source`
    要到下一世代开世代时才翻成 `channel-override`（因为快照那一刻才记下来源）。数值不变、来源变，
    这是诚实读数，不是抖动。

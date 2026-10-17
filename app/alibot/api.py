@@ -256,17 +256,22 @@ class ChannelBudgetUpdate(BaseModel):
       声明，但校验器对它们**一律拒绝**。写成显式字段（而不是留给 ``extra="forbid"`` 当未知键）是有意
       的：未知键只能得到一句泛泛的「请求体不合法」，而这里必须说清「用量由后端独占维护」
       （ADR-0007：``target_budget.used`` 是跳数正本，人类面既写不了、也清不了）。
+    - **只读字段声明在 ``budget_limit`` 之前是有意的**：pydantic 按**字段定义序**校验，因此
+      ``{"used": 0}``（缺必填 + 提交用量）与 ``{"budget_limit": 5, "used": 0}`` 的首条错误都是
+      「用量只读」那条词条，而不是一句旁支的「字段缺了」。这只是**本端点**的字段顺序，不牵动
+      ``_validation_detail`` 的共享选择规则——那条规则仍只认**首条**错误（见该函数的文档）。
     - 未知键由 ``extra="forbid"`` 整体拒绝，不静默忽略。于是任何一条被拒的请求都在服务层之前就
       结束，**不留下半成品**（配置表一个字都没写）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    budget_limit: Annotated[int, Field(strict=True)]
+    # 顺序即校验顺序（见类文档串）：只读字段在前，可写的 budget_limit 在后。
     used: Any = None
     remaining: Any = None
     epoch_seq: Any = None
     applied_limit: Any = None
+    budget_limit: Annotated[int, Field(strict=True)]
 
     @field_validator("used", "remaining", "epoch_seq", "applied_limit", mode="before")
     @classmethod
@@ -424,16 +429,15 @@ def create_app(
         标识符，与 ``code`` 同类）；自定义校验器（``_TierValueError``）带回词条键，在这里才渲染——
         校验器跑到时还没有语言偏好可读。
 
-        **优先用校验器带回的那句话**（而不是第一条错误）：一条请求可能同时缺必填字段与提交了不可写
-        的字段（``{"used": 0}`` 就是这种形态），此时要说的显然是「用量只读」这条实质拒绝，而不是
-        一句「某个字段缺了」的旁支。只在没有任何校验器词条时才回退到首条错误的「位置 + 类型」。
+        取值规则只有一条：**首条错误**带校验器词条就用它，否则回退到首条错误的「位置 + 类型」。
+        需要「实质拒绝优先于旁支错误」的模型把只读字段声明在必填字段之前即可（pydantic 按定义序
+        校验），不在这里加「任意一条词条优先」的规则——那会改变所有端点（``AgentUpdate`` /
+        ``SettingsUpdate`` 等）的 400 文案选择。
         """
-        errors = exc.errors()
-        for error in errors:
-            context_error = (error.get("ctx") or {}).get("error")
-            if isinstance(context_error, _TierValueError):
-                return _render_copy(context_error.key)
-        error = errors[0] if errors else {}
+        error = exc.errors()[0] if exc.errors() else {}
+        context_error = (error.get("ctx") or {}).get("error")
+        if isinstance(context_error, _TierValueError):
+            return _render_copy(context_error.key)
         location = ".".join(str(part) for part in error.get("loc", ())) or "body"
         return _render_copy(
             "error.field.body_invalid", location=location, kind=str(error.get("type") or "invalid")
