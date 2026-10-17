@@ -2640,7 +2640,7 @@ class Database:
         ``channel.id``（ADR-0004），因此按 target id 查这一列在 channel 型上就是按频道查；
         dm / task 型的 id 不在 ``channel`` 表里，查询自然无行 —— 「逐频道配置」不可能落到它们头上。
 
-        只由 :meth:`_budget_facts_locked` 与 :meth:`_reset_epoch_budget_locked` 调用（都在锁内）。
+        只由 :meth:`_budget_facts_locked` 与 :meth:`_applied_limit_snapshot_locked` 调用（都在锁内）。
         """
         row = self._conn.execute(
             "SELECT budget_limit FROM channel_budget_limit WHERE channel_id = ?", (target_id,)
@@ -2657,7 +2657,9 @@ class Database:
            非空 = 频道覆盖、``NULL`` = 内置默认。快照一写就不再随配置漂移，于是「保存的新值从
            下一个人类世代生效」与「当前世代不被回溯改写」是同一件事。
         2. 库里没有行 ⇒ 这个 target 还没有开过世代、也没消耗过跳，没有「当前世代的有效上界」可
-           快照；取**当前解析值**（频道的已保存覆盖，没有则内置默认）。
+           快照；按 #54 票面口径（「保存的改动不改变当前世代的有效上界与用量，从下一个人类世代
+           生效，在此之前作为待生效值读回」），此时报**内置默认**，已保存的覆盖只出现在
+           ``pending_limit`` 上——否则保存一下就会看起来「立刻生效」。
         3. ``pending_limit`` 只在「已保存的覆盖与当前有效上界**不同**」时给出：相同就没有「下个
            世代会变」这回事，报一个与当前值相等的待生效值只会制造噪音。
         """
@@ -2668,7 +2670,7 @@ class Database:
         used = int(row["used"]) if row is not None else 0
         saved = self._saved_budget_limit_locked(target_id)
         if row is None:
-            applied = saved
+            applied: int | None = None
         else:
             applied = None if row["applied_limit"] is None else int(row["applied_limit"])
         limit = BUDGET_LIMIT if applied is None else applied
@@ -2682,6 +2684,15 @@ class Database:
             "source": source,
             "pending_limit": saved if saved is not None and saved != limit else None,
         }
+
+    def _applied_limit_snapshot_locked(self, target_id: str) -> int | None:
+        """写 ``target_budget.applied_limit`` 时取的**快照值**（两处写入共用的唯一落点）。
+
+        两处写入是开世代动作（:meth:`_reset_epoch_budget_locked`）与消耗首跳时的惰性建行
+        （:meth:`consume_budget`）；它们都要求「快照取哪个值」与读路径解析的是同一份配置，
+        因此这个取值只在这里写一遍——两处的 INSERT 形参、冲突子句仍各自不同。
+        """
+        return self._saved_budget_limit_locked(target_id)
 
     def _reset_epoch_budget_locked(self, target_id: str, epoch_seq: int) -> None:
         """开世代动作落库：把用量重置为满额，并**快照**该世代生效的上界（#53）。
@@ -2697,7 +2708,7 @@ class Database:
             "INSERT INTO target_budget(target_id, epoch_seq, used, applied_limit) VALUES (?, ?, 0, ?) "
             "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0, "
             "applied_limit = excluded.applied_limit",
-            (target_id, epoch_seq, self._saved_budget_limit_locked(target_id)),
+            (target_id, epoch_seq, self._applied_limit_snapshot_locked(target_id)),
         )
 
     def budget_state(self, target_id: str) -> dict[str, Any]:
@@ -2740,13 +2751,6 @@ class Database:
         with self._lock:
             return self._budget_facts_locked(channel_id)
 
-    def channel_budget_limit(self, channel_id: str) -> int | None:
-        """该频道**已保存**的上界覆盖；没有配置时 ``None``（读路径回落到内置默认）。"""
-        self.get_channel(channel_id)  # 404 早退
-        self.get_target(channel_id)  # 目标作用域 404 早退（与读路径同一道门）
-        with self._lock:
-            return self._saved_budget_limit_locked(channel_id)
-
     def set_channel_budget_limit(self, channel_id: str, budget_limit: int) -> dict[str, Any]:
         """保存该频道的回应预算上界（**配置**，不是用量），返回保存后的只读读数。
 
@@ -2758,7 +2762,9 @@ class Database:
           的列级 CHECK 兜底。
         - **从下一个人类世代生效**：这里只写配置表，当前世代的 ``applied_limit`` 快照与 ``used``
           一字不改（快照由开世代动作写，见 :meth:`_reset_epoch_budget_locked`）。于是保存后读回的
-          载荷里 ``limit`` 不变、``pending_limit`` 才是新值——直到下一个人世代开世代。
+          载荷里 ``limit`` 不变、``pending_limit`` 才是新值——直到下一个人类世代开世代。**还没有
+          任何世代**（``target_budget`` 无行）的频道也照这条口径报：``limit`` = 内置默认、新值只作
+          ``pending_limit``（见 :meth:`_budget_facts_locked` 第 2 条）。
 
         人类面的 ``PATCH /api/channels/{id}/budget``（#54）是它的调用方；本票只建落点与读路径。
         """
@@ -2802,8 +2808,9 @@ class Database:
         （``WakeOrchestrator._spend_jump``）在同一把锁内裁决后才调用本方法 —— 这里只记事实，
         不重复做上界判定。
 
-        惰性建行（这个 target 还没有预算行）时**连生效上界一起快照**，与开世代动作同一口径：
-        否则「消耗第一跳」这个动作会让只读面的 ``limit`` 从「已保存的覆盖」跳回「内置默认」。
+        惰性建行（这个 target 还没有预算行）时**连生效上界一起快照**，与开世代动作同一口径
+        （两处共用 :meth:`_applied_limit_snapshot_locked`）：快照只在写入时取一次，之后读回的上界
+        与 ``used`` / ``epoch_seq`` 一起成为持久事实，不再随配置漂移。
         """
         self.get_target(target_id)  # 404 早退
         with self._lock:
@@ -2816,7 +2823,7 @@ class Database:
             self._conn.execute(
                 "INSERT INTO target_budget(target_id, epoch_seq, used, applied_limit) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = excluded.used",
-                (target_id, int(epoch_seq), used, self._saved_budget_limit_locked(target_id)),
+                (target_id, int(epoch_seq), used, self._applied_limit_snapshot_locked(target_id)),
             )
         return used
 

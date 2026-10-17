@@ -106,6 +106,45 @@ def test_a_saved_upper_bound_is_pending_until_the_next_human_epoch(client: TestC
     assert after["pending_limit"] is None  # 已生效 ⇒ 不再有待生效值
 
 
+# ─── 2b. 还没有任何世代：保存的改动同样是「待生效」 ──────────────────────────
+def test_a_saved_upper_bound_on_a_fresh_channel_is_pending_until_the_first_epoch(
+    client: TestClient,
+) -> None:
+    """无 ``target_budget`` 行的频道保存 5 ⇒ 生效上界仍是内置默认，新值只作待生效值。
+
+    #54 票面原句：「保存的改动不改变当前世代的有效上界与用量，从下一个人类世代生效，在此之前
+    作为待生效值读回」。没有世代时「当前世代的有效上界」就是内置默认，因此这里不得报新值。
+    """
+    channel = create_channel(client, name="无世代保存").json()["channel"]
+    before = _budget(client, channel["id"])
+    assert before["epoch_seq"] == 0 and before["limit"] == DEFAULT_LIMIT
+
+    _db(client).set_channel_budget_limit(channel["id"], OVERRIDE_LIMIT)
+
+    pending = _budget(client, channel["id"])
+    assert pending["epoch_seq"] == 0, "保存配置不显式开世代"
+    assert pending["limit"] == DEFAULT_LIMIT, "无世代时按内置默认报，新值不得看起来立刻生效"
+    assert pending["used"] == 0
+    assert pending["remaining"] == DEFAULT_LIMIT
+    assert pending["source"] == "built-in-default"
+    assert pending["pending_limit"] == OVERRIDE_LIMIT
+
+    send(client, channel["id"], "第一条人类消息开世代")
+
+    after = _budget(client, channel["id"])
+    assert after["epoch_seq"] > 0
+    assert after["limit"] == OVERRIDE_LIMIT
+    assert after["source"] == "channel-override"
+    assert after["pending_limit"] is None
+
+    # 保存与内置默认相同的 3：没有「下个世代会变」这回事，待生效值仍是 null（无世代也一样）。
+    intact = create_channel(client, name="无世代保存默认值").json()["channel"]
+    _db(client).set_channel_budget_limit(intact["id"], DEFAULT_LIMIT)
+    same = _budget(client, intact["id"])
+    assert same["limit"] == DEFAULT_LIMIT and same["source"] == "built-in-default"
+    assert same["pending_limit"] is None
+
+
 # ─── 3. remaining 按当前世代有效上界算，不按待生效值算 ───────────────────────
 def test_remaining_is_calculated_from_the_current_epoch_effective_limit(
     client: TestClient, harness: dict
