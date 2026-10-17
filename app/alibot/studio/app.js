@@ -46,6 +46,13 @@
    - 增删提醒与改设置同一条纪律：**不落消息、不唤醒、不消耗预算**，也不新增 target、不计未读。
      写路径一律以**响应里的最新提醒表**覆盖本地镜像（不本地拼一条假行），因此列表永远等于后端说
      的那一份；本文件依旧不用任何浏览器存储保存业务状态。
+
+   本票（issue #114）新增 —— 上一段 #68 里**两处读数已被本票取代**（原文保留作交付历史）：
+   - 圆点的判据从「有提醒」改成「**还有未到点的提醒**」（`!state.reminders.some(r => !r.fired_at)`）：
+     已响 / 已错过不等待任何事。
+   - 新增控件从「文本 + 时间」改成「文本 + **日期 + 钟点**两个原生输入」，提交时拼成一个
+     `YYYY-MM-DD HH:MM` 串交给后端（ADR-0017 的时间语义）；列表行因此多了**状态后缀**
+     （待响 = 到期时刻 / 「已提醒」/「已错过」），只消费后端给的 `state`，前端不做任何判定。
    ========================================================================== */
 'use strict';
 
@@ -808,14 +815,7 @@ function renderReminderDot() {
     只取「年 / 月 / 日」三段拼串，不做任何时区换算——到期时刻按**本机本地时间**解释是后端的
     口径（C7）；前端这里只是把「今天」填进原生控件，不需要建立一个第二时间正本。 */
 function todayDateValue() {
-  const now = new Date();
-  return (
-    now.getFullYear() +
-    '-' +
-    String(now.getMonth() + 1).padStart(2, '0') +
-    '-' +
-    String(now.getDate()).padStart(2, '0')
-  );
+  return localDateString(new Date());
 }
 
 function openRemindersModal() {
@@ -894,6 +894,10 @@ function renderRemindersModal() {
   replaceChildren(list, state.reminders.map(reminderRowNode));
 }
 
+/** 两个状态词条键（`pending` 没有标签键：它的后缀就是到期时刻本身，C16）。模块级常量：
+    键名由 C18 钉死，不随渲染重建，也不拼成 `prefix.value` 那种动态键。 */
+const REMINDER_STATE_LABEL_KEYS = { fired: 'reminder.stateFired', missed: 'reminder.stateMissed' };
+
 /** 一条提醒的状态后缀节点（C16）：`pending` 显示到期时刻，`fired` / `missed` 显示词条文案。
 
     只**消费**后端给的 `state`（C20 的只读派生值），前端自己不比对时钟。认不出的取值
@@ -901,9 +905,8 @@ function renderRemindersModal() {
     `data-state` 让 CSS 按既有档位取色（只用既有 token，不新增色位名）。 */
 function reminderStateNode(reminder) {
   const stateValue = reminder.state || 'pending';
-  const labelKeys = { fired: 'reminder.stateFired', missed: 'reminder.stateMissed' };
-  const labelKey = Object.prototype.hasOwnProperty.call(labelKeys, stateValue)
-    ? labelKeys[stateValue]
+  const labelKey = Object.prototype.hasOwnProperty.call(REMINDER_STATE_LABEL_KEYS, stateValue)
+    ? REMINDER_STATE_LABEL_KEYS[stateValue]
     : null;
   const node = el('span', 'state', labelKey ? t(labelKey) : reminder.time);
   node.dataset.state = stateValue;
@@ -3658,9 +3661,14 @@ function dayLabel(iso) {
   if (Number.isNaN(date.getTime())) return t('time.unknown');
   const today = new Date();
   if (date.toDateString() === today.toDateString()) return t('time.today');
+  return localDateString(date);
+}
+
+/** 本机日期的 `YYYY-MM-DD` 串（`dayLabel` 与提醒日期格的默认值共用同一个拼法）。 */
+function localDateString(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  return date.getFullYear() + '-' + month + '-' + day;
+  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 function timeLabel(iso) {
