@@ -669,16 +669,26 @@ def create_app(
         """
         return {"round_outcomes": service.round_outcomes(channel_id, after_seq=base_seq)}
 
-    # ─── 有界响应预算（只读；首版没有可观测页面） ────────────────────────
+    # ─── 有界响应预算（只读；频道设置视图的读数面） ──────────────────────
     @app.get("/api/channels/{channel_id}/budget")
     def get_channel_budget(channel_id: str) -> dict[str, Any]:
         """该频道当前人类世代的有界响应预算（后端持久事实）。
 
-        它让「任一人类世代内 agent→agent 跳数 ≤ 3」与「重启后预算状态不变」可以经 HTTP 面
-        直接断言，而不用从消息与轮次结果反推。
+        它让「任一人类世代内 agent→agent 跳数 ≤ 该世代生效上界」与「重启后预算状态不变」可以经
+        HTTP 面直接断言，而不用从消息与轮次结果反推。
 
         ``used`` 是「该人类世代已用跳数」的**唯一正本**：要从只读面拿跳数就读它，
         不要对 ``round_outcome`` 的 ``consumed_budget`` 求和（见那个端点的说明）。
+
+        #53 扩展（**既有字段名一个字不改**，只做附加）：
+
+        - ``limit`` = 当前人类世代的**有效上界**，``remaining`` 按它算（不是按待生效值）；
+        - ``source`` = ``channel-override``（库内逐频道配置）/ ``built-in-default``（内置默认 3）；
+        - ``pending_limit`` = 已保存、**从下一个人类世代起生效**的上界；没有待生效差异时为 ``null``。
+          它只是「下个世代会变成多少」，不会改变本世代返回的 ``used`` / ``remaining``。
+
+        读行为只经这个既有端点取证；本票不改任何既有字段名，也不新增写入口
+        （``PATCH`` 归 #54，``used`` 仍由后端独占维护，ADR-0007）。
         """
         return {"budget": service.channel_budget(channel_id)}
 

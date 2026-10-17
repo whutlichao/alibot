@@ -151,15 +151,17 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 
 ### 有界响应（策略 B）：预算从「只记录」变成「真压制」
 
-- **人类世代** = 该频道最近一条人类消息的 `seq`；人类消息落库**即**开启新世代，并把该频道的
-  回应预算重置为 **3**。
+- **人类世代** = 该频道最近一条人类消息的 `seq`；人类消息落库**即**开启新世代，把该频道的
+  回应预算用量重置为 0，并**快照**该世代生效的上界（`target_budget.applied_limit`）。
 - **一次 agent→agent 跳** = 一条 **Agent 消息**导致**至少一个其它** Agent 被唤醒（即**投递**了
   至少一个唤醒）；一条消息即使唤醒多个成员也只消耗 **1** 次。被**合并**掉的重复唤醒不额外计数、
   也不额外消耗预算。目标全部处于 in-flight ⇒ 零投递 ⇒ **不算一次跳**。
 - **预算耗尽**：Agent 消息照常落库（append-only、不可撤回），但**不产生任何唤醒**（一个都不投递），
   为每个「本应被唤醒却被压制」的成员各记一条 `budget-exhausted`。人类消息随后落库即重置。
-- **硬上界**：任一人类世代内同一频道的 agent→agent 跳数 **≤ 3**。上界由「耗尽的世代里零投递」
-  构造性保证。
+- **硬上界**：任一人类世代内同一频道的 agent→agent 跳数 **≤ 该世代生效上界**——未配置时是内置
+  默认 **3**（ADR-0002）；频道可在库内把它配成 **3 / 5 / 10** 之一，改动**从下一个人类世代生效**
+  （`channel_budget_limit` 表 = 配置，`target_budget.applied_limit` = 该世代的生效上界）。
+  上界由「耗尽的世代里零投递」构造性保证。
 - **预算落库**（`channel_budget` 表）：`used` / `epoch_seq` 是后端持久事实，重启后可恢复。
 - **`budget-exhausted` 不是出错**：它既不是「不想说」也不是「它坏了」，状态点仍是空闲。
 - **跳数的单一正本**：`channel_budget.used`（= `GET /api/channels/{id}/budget` 的 `used`）是「该人类
@@ -247,7 +249,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/channels/{id}/members` | 频道成员 |
 | `POST /api/channels/{id}/members` | 把 Agent 加入频道 `{member_id}`；幂等（`joined` 区分新增与本来就在），只接受 Agent，校验失败**整体不加入** |
 | `GET /api/channels/{id}/round-outcomes` | 轮次结果（只读；首版**没有**可观测页面） |
-| `GET /api/channels/{id}/budget` | 有界响应预算 `{epoch_seq, limit, used, remaining}`（只读，后端持久事实） |
+| `GET /api/channels/{id}/budget` | 有界响应预算（只读，后端持久事实）：`{epoch_seq, limit, used, remaining, source, pending_limit}`。`limit` = 当前人类世代的**有效上界**（`remaining` 按它算），`source` = `channel-override` / `built-in-default`，`pending_limit` = 已保存、**从下一个人类世代起生效**的上界（无待生效差异时 `null`）。频道覆盖存 `channel_budget_limit`，本世代生效值存 `target_budget.applied_limit` 快照 |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
 | `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |

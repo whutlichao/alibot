@@ -15,14 +15,16 @@
 
 预算策略（策略 B，实施票 ③）在本模块实现，且落库（``target_budget``）：
 
-- **人类世代** = 该 target 最近一次**开世代动作**所在消息的 `seq`；人类消息落库即开启新世代并把预算重置为 3。
+- **人类世代** = 该 target 最近一次**开世代动作**所在消息的 `seq`；人类消息落库即开启新世代并把预算
+  重置为满额，并把该世代**生效上界**拍成快照（``target_budget.applied_limit``，#53）。
 - **一次 agent→agent 跳** = 一条 Agent 消息**投递了至少一个**唤醒给其它 Agent。一条消息即使唤醒
   多个成员也只消耗 1 次——它就是一次跳。被**合并**掉的重复唤醒不额外计数、也不额外消耗预算
   （「跳数以投递的唤醒为准」）。
 - **预算耗尽**：Agent 消息照常落库（append-only，不可撤回），但**一个唤醒都不投递**，为每个
   「本应被唤醒却被压制」的成员各记一条 `budget-exhausted` 轮次结果。人类消息随后落库即重置。
-- **硬上界（可验收断言）**：任一人类世代内同一频道的 agent→agent 跳数 ≤ 3 —— 由「耗尽的世代里
-  一个都不投递」构造性保证，而不是靠事后统计。
+- **硬上界（可验收断言）**：任一人类世代内同一 target 的 agent→agent 跳数 ≤ 该世代**生效上界**
+  （频道覆盖或内置默认 3，见 :meth:`Database.channel_budget_view`）—— 由「耗尽的世代里一个都不
+  投递」构造性保证，而不是靠事后统计。
 - **穿透不豁免预算**：未加入却被点名的 Agent 同样走这条跳的裁决。
 
 **跳数的单一正本**是 :meth:`Database.budget_state` 据以读出的 ``target_budget.used``：它每次
@@ -51,7 +53,7 @@ from .agent_seam import (
     provider_of,
     read_api_key,
 )
-from .db import BUDGET_LIMIT, Database, DomainError, utc_now
+from .db import Database, DomainError, utc_now
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
@@ -393,7 +395,7 @@ class WakeOrchestrator:
 
         - 目标全部处于 in-flight ⇒ 只产生合并、零投递 ⇒ **不算一次跳**（票面原句），不消耗预算。
         - 目标非空且还有余额 ⇒ 先扣再投；扣款与投递决策在同一把锁内，因此并发到达的两条 Agent
-          消息不可能同时读到「还剩 1」而各投一次（硬上界 ≤ 3 由此成立）。
+          消息不可能同时读到「还剩 1」而各投一次（硬上界 = 该世代生效上界，由此成立）。
         """
         with self._lock:
             if not any(
@@ -402,7 +404,10 @@ class WakeOrchestrator:
             ):
                 return True
             state = self._db.budget_state(target_id)
-            if state["used"] >= BUDGET_LIMIT:
+            # 上界取**当前世代的有效上界**（``target_budget.applied_limit`` 快照，频道覆盖或内置
+            # 默认）：与只读面 ``GET /api/channels/{id}/budget`` 是同一份解析结果，否则「展示的
+            # effective limit」会与这里真正执行的压制行为分成两条事实。
+            if state["used"] >= state["limit"]:
                 self._record_budget_exhausted(target_id, from_seq, targets)
                 return False
             self._db.consume_budget(target_id, state["epoch_seq"])
@@ -412,10 +417,12 @@ class WakeOrchestrator:
         """耗尽的世代里不投递任何唤醒，但每个**本应被唤醒**的成员都要留下可追溯的轮次结果。
 
         状态点**不**因此变 ``--error``（``status_of`` 不把 ``budget-exhausted`` 当失败）：预算耗尽
-        既不是「它坏了」也不是「它不想说」，它是「这个人类世代已经用过 3 次往返了」这条后端事实。
+        既不是「它坏了」也不是「它不想说」，它是「这个人类世代已经用满它的回应预算上界」这条后端事实。
         """
-        epoch_seq = self._db.budget_state(target_id)["epoch_seq"]
-        reason = render("reason.budget_exhausted", self._locale(), epoch=epoch_seq, limit=BUDGET_LIMIT)
+        state = self._db.budget_state(target_id)
+        reason = render(
+            "reason.budget_exhausted", self._locale(), epoch=state["epoch_seq"], limit=state["limit"]
+        )
         for member in targets:
             record = self._db.append_round_outcome(
                 member_id=member["id"],
