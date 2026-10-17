@@ -118,6 +118,23 @@ DROP_TABLE_SQL = 'DROP TABLE "{table}"'
 RENAME_TABLE_SQL = 'ALTER TABLE "{source}" RENAME TO "{target}"'
 COPY_TABLE_SQL = 'INSERT INTO "{target}" ({columns}) SELECT {columns} FROM "{source}"'
 
+# ``12 → 13`` 的存量改写：只动「只有钟点」的行——已经是「日期 + 钟点」的行由 ``GLOB`` 的模式排除
+# 在第一项上（新形状的前四个字符是数字 + ``-``，不会是两位钟点 + ``:``），于是**幂等**不动它们。
+# 前缀（= 迁移执行当日的 ``YYYY-MM-DD ``）由绑定参数给，不在 SQL 里拼。
+# 模式与 :data:`alibot.db.REMINDER_TIME_PATTERN` 的旧半互为镜像：这里认的是「**旧**形状」这个窄集合。
+REWRITE_LEGACY_REMINDER_TIME_SQL = (
+    "UPDATE reminder SET time = ? || time "
+    "WHERE time GLOB '[0-2][0-9]:[0-5][0-9]' AND time NOT GLOB '*[^0-9:]*'"
+)
+
+# 存量 ``HH:MM`` 要补的日期前缀格式（本机本地日期；口径见 :func:`_reminder_legacy_time_prefix`）。
+REMINDER_LEGACY_DATE_FORMAT = "%Y-%m-%d "
+
+# 「时间语义一次性收窄」那一票的号段（``12 → 13``）。报告里的收窄说明只在链真的含这一步时给出，
+# 因此这里需要这两个数（写成常量而不是散在两处的字面量）。
+REMINDER_TIME_STEP_FROM = 12
+REMINDER_TIME_STEP_TO = 13
+
 # 表重建时临时表的前缀（迁移事务内短暂存在，随后被 RENAME 成正式名）。
 REBUILD_TABLE_PREFIX = "__migrate_new_"
 
@@ -616,6 +633,41 @@ def _step_11_to_12(conn: sqlite3.Connection) -> int:
     return 0
 
 
+def _reminder_legacy_time_prefix() -> str:
+    """存量别名要补的日期前缀：**迁移执行当日**（本机本地时区，``YYYY-MM-DD ``）。
+
+    口径出处：ADR-0017 §五 / 规格 C12。为什么是「迁移执行当日」而不是「下一个该钟点」——后者的
+    结果**依赖迁移执行的时刻**（同一份备份 08:00 迁与 16:00 迁得到两个不同的到期日），不可复现、
+    难以写测试；前者是**唯一不依赖运行时状态**的解释口径。
+
+    单独提为一个函数只为一件事：让「当日」这个词的地点只有一个（测试可以把 ``TZ`` 固定住真跑
+    子进程，断言读到的日期就是这个函数给出的那个）。
+    """
+    return datetime.now().astimezone().strftime(REMINDER_LEGACY_DATE_FORMAT)
+
+
+def _step_12_to_13(conn: sqlite3.Connection) -> int:
+    """提醒的到点形态：``reminder.time`` 形状扩为「日期 + 钟点」+ 新增可空列 ``fired_at``。
+
+    **硬要求（ADR-0017 §五 / 规格 C12、C13）**：存量只有钟点的行统一解释成「**迁移执行当日**」的
+    该钟点（本机本地时间口径），``fired_at`` 补 ``NULL``。这是一次**时间语义的一次性收窄**：用户
+    原来的「**每天** 9 点」在迁移后变成「**迁移那天** 9 点」。它不丢数据行，但**改变了行的含义**
+    ——因此报告必须能读到这句（见 :data:`REMINDER_TIME_SEMANTICS_NARROWING`），不能只有步数统计。
+
+    本步只做**改写与加列**，不写任何投递逻辑（原子性「落消息 + 写 ``fired_at``」归票 ②）；
+    也不加第二个状态列（``state`` 是读路径的派生值，D4 否掉的是状态**列**）。
+
+    改写是**窄的**：只动 ``time`` 形如旧 ``HH:MM`` 的行。已是新形状的行原样留着，于是重跑本步
+    （或幂等地重跑整条链）不会二次改写；返回的行数就是**实际被改写**的 ``reminder`` 行数。
+    """
+    _create_missing_tables(conn, ("reminder",))
+    _add_missing_columns(conn, "reminder")
+    if "reminder" not in _table_names(conn):
+        return 0
+    cursor = conn.execute(REWRITE_LEGACY_REMINDER_TIME_SQL, (_reminder_legacy_time_prefix(),))
+    return max(cursor.rowcount, 0)
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -658,6 +710,7 @@ STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(9, 10, "主题三档（workspace_settings.theme + 列级 CHECK）", _step_9_to_10),
     MigrationStep(10, 11, "附件触发器替换（先删 attachment_no_rebind，后建两条新触发器）", _step_10_to_11),
     MigrationStep(11, 12, "认领与 claimed_at（auto_claim / task.claimed_at）", _step_11_to_12),
+    MigrationStep(12, 13, "提醒的到点形态（time 补日期 / fired_at 列）", _step_12_to_13),
 )
 
 
@@ -863,6 +916,29 @@ def _render_step_lines(chain: ChainResult) -> list[str]:
     return lines
 
 
+def _time_narrowing_lines(chain: ChainResult) -> list[str]:
+    """``12 → 13`` 那一步的**时间语义一次性收窄**说明（只在链真的含这一步时给出）。
+
+    为什么必须在报告里（ADR-0017 §五 / 规格 C13 判据 2）：这一步不丢数据行，但把存量行「每天该
+    钟点」的含义改成了「迁移执行当日该钟点」——**改变了行的含义**。只给步数统计会让读者以为这是
+    一次无害的形变；因此这句要能直接读到（``render_report`` 与预演报告共用，两处同口径）。
+
+    条件句的理由与 :func:`_render_step_lines` 同源：形态步骤那一档链可能是空的（版本已是 13、只是
+    作用域数据还留在旧表名下），那时打这句会凭空声称一件没发生的事。
+    """
+    if not any(
+        step.from_version == REMINDER_TIME_STEP_FROM and step.to_version == REMINDER_TIME_STEP_TO
+        for step in chain.steps
+    ):
+        return []
+    return [
+        "",
+        "【时间语义的一次性收窄】存量提醒的到期语义从「每天该钟点」收窄为「迁移执行当日该钟点」"
+        "（本机本地时间口径）：原来的「每天 9 点」现在是「迁移那天 9 点」。",
+        "它不丢数据行，但改变了行的含义——这是一次语义收窄，不是一次普通的形变（ADR-0017 §五）。",
+    ]
+
+
 def render_report(report: MigrationReport) -> str:
     """把一次迁移写成人类 / 脚本都读得懂的报告（stdout 用；D8）。"""
     lines = [
@@ -873,6 +949,7 @@ def render_report(report: MigrationReport) -> str:
         "实际执行的步骤（每步改动的数据行数）：",
     ]
     lines.extend(_render_step_lines(report.chain))
+    lines.extend(_time_narrowing_lines(report.chain))
     lines.extend(
         [
             "",
@@ -1096,6 +1173,7 @@ def render_dry_run_report(report: DryRunReport) -> str:
         "将执行的步骤（每步将改动的数据行数）：",
     ]
     lines.extend(_render_step_lines(chain))
+    lines.extend(_time_narrowing_lines(chain))
     lines.extend(_dry_run_proof_lines(report))
     lines.append(f"预演结论：这条链在副本上跑通了；本次共将改动 {chain.changed_rows} 行。")
     return "\n".join(lines)

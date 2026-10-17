@@ -53,10 +53,13 @@ AVATAR_SLOT_COUNT = 5
 # 正确判据是「**必须高于当前 main**」而不是「等于被分配的预留号」，故 #67 取 11（12 归 #65）；
 # 该票已随 PR #83 落在 main（b619336），main 当前读数 11。
 # #65 的 12 高于当前 main 的 11，合并后**保持 12**（不回退到 11）。
-# 代价（与既有纪律一致）：合力后 main 的号由 11 升到 12，被 11 及更早代码创建过的库在本版下
+# 13 = **本票 #112**（提醒到点触发的库形态：`reminder.time` 形状扩为「日期 + 钟点」、新增可空列
+# `reminder.fired_at`）。它取 13 的判据同上：`main` 是 12、13 是满足「必须高于当前 main」的最小号
+# （ADR-0017 §五）。
+# 代价（与既有纪律一致）：合力后 main 的号由 12 升到 13，被 12 及更早代码创建过的库在本版下
 # 会被闸门拒绝——处置由拒绝正文给出：先备份整个数据目录，再用 `python -m alibot --migrate` 逐版
-# 推进（迁移链覆盖 3..12，见 `app/alibot/migrate.py`）。
-SCHEMA_VERSION = 12
+# 推进（迁移链覆盖 3..13，见 `app/alibot/migrate.py`）。
+SCHEMA_VERSION = 13
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -182,11 +185,12 @@ ALLOWED_ATTACHMENT_MIME_TYPES = (
 ATTACHMENTS_DIR_NAME = "attachments"
 
 # 提醒（`CONTEXT.md` **提醒**：本机用户给自己设的一条**时间 + 文本**备忘，可关联频道）。
-# 列的形状由实施票给定（ADR-0012）：**时间 + 文本 + 可归属一个频道**。
-# 时间只有钟点：原型 `#rmTime` 只有 `type="time"`（没有日期、没有重复），因此这里唯一的合法形状
-# 就是 24 小时的 `HH:MM`；日期 / 重复属于未授权的扩张，不在本票。
+# 列的形状由实施票给定（ADR-0012）：**时间 + 文本 + 可归属一个频道**；ADR-0017 §二把时间语义升为
+# **一次性**的「日期 + 钟点」，因此这里的合法形状是 24 小时制、零填充的 `YYYY-MM-DD HH:MM`。
+# **没有重复字段**（「每天 / 每周」不接受）：重复这件事在本仓由**任务**承载，提醒不造第二个重复
+# 语义（ADR-0017 §二）。
 MAX_REMINDER_TEXT_LENGTH = 200
-REMINDER_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+REMINDER_TIME_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01]) ([01]\d|2[0-3]):[0-5]\d$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -384,13 +388,18 @@ CREATE TABLE IF NOT EXISTS workspace_settings (
 -- 不消耗预算**；提醒**不新增 target**、不计未读、不参与唤醒——它与频道的关系是**归属**，
 -- 不是 target 作用域（因此这里没有也不能有 `target_id`）。
 -- ``channel_id`` **可空**：空 = 这条提醒不归属任何频道（空工作台 / DM 视图下也设得成提醒）。
--- ``time`` 的形状由 :data:`REMINDER_TIME_PATTERN` 在写路径上校验（24 小时的 `HH:MM`）。
+-- ``time`` 的形状由 :data:`REMINDER_TIME_PATTERN` 在写路径上校验（24 小时的 `YYYY-MM-DD HH:MM`，
+-- **一次性**到期时刻；按本机本地时区解释，见 ADR-0017 §二）。
+-- ``fired_at`` **可空**：``NULL`` = 还没到点；非空 = 已投递（ISO-8601 **UTC** 串、带 ``Z`` 后缀，与
+-- ``created_at`` 同一族口径）。它是**唯一**的「已投递」标记，同时承担「至多投递一次」与「至多补投
+-- 一次」（ADR-0017 §三）。**不落**第二个状态列（``state`` 是读路径的派生值，不是列）。
 CREATE TABLE IF NOT EXISTS reminder (
   id          TEXT PRIMARY KEY,
   text        TEXT NOT NULL CHECK (length(trim(text)) > 0),
   time        TEXT NOT NULL,
   channel_id  TEXT REFERENCES channel(id),
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  fired_at    TEXT
 );
 
 -- 远端数据流告知的一次性确认（spec #1 §8）：按模型提供商记一次，与成员无关。

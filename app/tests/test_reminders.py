@@ -49,14 +49,14 @@ def test_create_list_delete_round_trip(client: TestClient) -> None:
 
     created = client.post(
         "/api/reminders",
-        json={"text": "检查令牌替换进度", "time": "14:30", "channel_id": channel["id"]},
+        json={"text": "检查令牌替换进度", "time": "2026-10-18 14:30", "channel_id": channel["id"]},
     )
 
     assert created.status_code == 201
     reminder = created.json()["reminder"]
     # 列的形状：时间 + 文本 + 归属频道（可读名随行带出，前端不必自己去查频道表）。
     assert reminder["text"] == "检查令牌替换进度"
-    assert reminder["time"] == "14:30"
+    assert reminder["time"] == "2026-10-18 14:30"
     assert reminder["channel_id"] == channel["id"]
     assert reminder["channel_name"] == "设计系统重构"
     assert reminder["created_at"]
@@ -74,7 +74,7 @@ def test_create_list_delete_round_trip(client: TestClient) -> None:
 
 def test_reminder_without_channel_has_no_affiliation(client: TestClient) -> None:
     """「**可**归属一个频道」：省略即不归属——空工作台（还没有频道）里也设得成提醒。"""
-    created = client.post("/api/reminders", json={"text": "看一眼构建", "time": "09:00"})
+    created = client.post("/api/reminders", json={"text": "看一眼构建", "time": "2026-10-18 09:00"})
 
     assert created.status_code == 201
     reminder = created.json()["reminder"]
@@ -84,7 +84,9 @@ def test_reminder_without_channel_has_no_affiliation(client: TestClient) -> None
 
 def test_explicit_null_channel_id_means_unaffiliated(client: TestClient) -> None:
     """显式 ``null`` 在这里是**合法取值**（不归属），与设置面「显式 null 一律拒绝」不同。"""
-    created = client.post("/api/reminders", json={"text": "不归属", "time": "09:00", "channel_id": None})
+    created = client.post(
+        "/api/reminders", json={"text": "不归属", "time": "2026-10-18 09:00", "channel_id": None}
+    )
 
     assert created.status_code == 201
     assert created.json()["reminder"]["channel_id"] is None
@@ -96,7 +98,7 @@ def test_listing_keeps_creation_order_and_returns_every_reminder(client: TestCli
         assert (
             client.post(
                 "/api/reminders",
-                json={"text": text, "time": "09:00", "channel_id": channel["id"]},
+                json={"text": text, "time": "2026-10-18 09:00", "channel_id": channel["id"]},
             ).status_code
             == 201
         )
@@ -110,7 +112,7 @@ def test_reminders_survive_backend_restart(launched: dict) -> None:
     channel = create_channel(client, name="设计系统重构").json()["channel"]
     before = client.post(
         "/api/reminders",
-        json={"text": "检查令牌替换进度", "time": "14:30", "channel_id": channel["id"]},
+        json={"text": "检查令牌替换进度", "time": "2026-10-18 14:30", "channel_id": channel["id"]},
     ).json()["reminder"]
 
     restarted = launched["restart"]()
@@ -120,14 +122,14 @@ def test_reminders_survive_backend_restart(launched: dict) -> None:
 
 def test_invalid_input_is_rejected_with_a_code_and_creates_nothing(client: TestClient) -> None:
     cases = [
-        ({"text": "   ", "time": "09:00"}, "text"),
+        ({"text": "   ", "time": "2026-10-18 09:00"}, "text"),
         ({"text": "x", "time": ""}, "time"),
-        ({"text": "x", "time": "9:00"}, "time"),
+        ({"text": "x", "time": "2026-10-18 9:00"}, "time"),
         ({"text": "x", "time": "24:00"}, "time"),
         ({"text": "x", "time": "09:60"}, "time"),
         ({"text": "x", "time": "09:00:00"}, "time"),
-        ({"text": "x" * 201, "time": "09:00"}, "text"),
-        ({"text": "x", "time": "09:00", "channel_id": "ch_not_here"}, "channel_id"),
+        ({"text": "x" * 201, "time": "2026-10-18 09:00"}, "text"),
+        ({"text": "x", "time": "2026-10-18 09:00", "channel_id": "ch_not_here"}, "channel_id"),
     ]
 
     for body, field in cases:
@@ -149,7 +151,7 @@ def test_unknown_and_out_of_scope_keys_are_rejected_whole(client: TestClient) ->
     for extra in ({"theme": "dark"}, {"date": "2026-10-17"}, {"repeat": "daily"}):
         response = client.post(
             "/api/reminders",
-            json={"text": "x", "time": "09:00", "channel_id": channel["id"], **extra},
+            json={"text": "x", "time": "2026-10-18 09:00", "channel_id": channel["id"], **extra},
         )
 
         assert response.status_code == 400
@@ -166,8 +168,12 @@ def test_deleting_an_unknown_reminder_is_404(client: TestClient) -> None:
 
 
 def test_deleting_leaves_the_other_reminders_alone(client: TestClient) -> None:
-    first = client.post("/api/reminders", json={"text": "第一条", "time": "09:00"}).json()["reminder"]
-    second = client.post("/api/reminders", json={"text": "第二条", "time": "10:00"}).json()["reminder"]
+    first = client.post("/api/reminders", json={"text": "第一条", "time": "2026-10-18 09:00"}).json()[
+        "reminder"
+    ]
+    second = client.post("/api/reminders", json={"text": "第二条", "time": "2026-10-18 10:00"}).json()[
+        "reminder"
+    ]
 
     deleted = client.delete(f"/api/reminders/{first['id']}")
 
@@ -198,7 +204,7 @@ def test_reminder_writes_leave_production_facts_untouched(launched: dict) -> Non
 
     created = client.post(
         "/api/reminders",
-        json={"text": "检查令牌替换进度", "time": "14:30", "channel_id": channel["id"]},
+        json={"text": "检查令牌替换进度", "time": "2026-10-18 14:30", "channel_id": channel["id"]},
     )
     assert created.status_code == 201
     assert facts() == before, "新增提醒不得落消息、不得唤醒、不得消耗预算"
@@ -226,7 +232,7 @@ def test_reminder_writes_add_no_target_and_no_unread(launched: dict) -> None:
 
     created = client.post(
         "/api/reminders",
-        json={"text": "检查令牌替换进度", "time": "14:30", "channel_id": channel["id"]},
+        json={"text": "检查令牌替换进度", "time": "2026-10-18 14:30", "channel_id": channel["id"]},
     )
     assert created.status_code == 201
 
@@ -252,12 +258,12 @@ def test_reminder_copy_follows_the_stored_locale(client: TestClient) -> None:
     def error(payload: dict) -> dict:
         return client.post("/api/reminders", json=payload).json()["error"]
 
-    zh_invalid = error({"text": "   ", "time": "9:00"})
+    zh_invalid = error({"text": "   ", "time": "2026-10-18 9:00"})
     zh_missing = client.delete("/api/reminders/rm_nope").json()["error"]
 
     client.patch("/api/settings", json={"locale": "en"})
 
-    en_invalid = error({"text": "   ", "time": "9:00"})
+    en_invalid = error({"text": "   ", "time": "2026-10-18 9:00"})
     en_missing = client.delete("/api/reminders/rm_nope").json()["error"]
 
     # code 与 fields 的键是机器可读的：两种语言下逐字相同。
@@ -277,7 +283,7 @@ def test_reminder_copy_follows_the_stored_locale(client: TestClient) -> None:
     assert en_missing["message"] == i18n.render("error.reminder_not_found", "en", reminder_id="rm_nope")
 
     # 归属频道的字段文案复用既有的 `error.channel_not_found`，不另立一条。
-    en_channel = error({"text": "x", "time": "09:00", "channel_id": "ch_nope"})
+    en_channel = error({"text": "x", "time": "2026-10-18 09:00", "channel_id": "ch_nope"})
     assert en_channel["fields"]["channel_id"] == i18n.render(
         "error.channel_not_found", "en", channel_id="ch_nope"
     )
@@ -289,6 +295,8 @@ def test_reminder_text_too_long_message_carries_the_limit(client: TestClient) ->
 
     for locale in ("zh-CN", "en"):
         client.patch("/api/settings", json={"locale": locale})
-        error = client.post("/api/reminders", json={"text": "x" * 201, "time": "09:00"}).json()["error"]
+        error = client.post("/api/reminders", json={"text": "x" * 201, "time": "2026-10-18 09:00"}).json()[
+            "error"
+        ]
 
         assert error["fields"]["text"] == i18n.render("error.reminder_text_too_long", locale, limit=200)
