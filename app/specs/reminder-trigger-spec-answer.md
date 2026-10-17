@@ -126,7 +126,7 @@
 | --- | --- |
 | 分支 | `reminder-trigger-spec`（已推送） |
 | 提交 | 见 PR 的 commits |
-| PR | 见 §9 回填（base `main`，body 走 `--body-file`） |
+| PR | **#110**（base `main`，body 走 `--body-file`），见 §9 |
 | PR 正文 | `app/specs/reminder-trigger-spec-pr-body.md` |
 | 规格票正本 | GitHub issue **#109** |
 | 改动文件 | 3 个：`app/specs/reminder-trigger-spec.md`、`app/specs/reminder-trigger-spec-answer.md`、`app/specs/reminder-trigger-spec-pr-body.md` |
@@ -137,8 +137,9 @@
 
 ## 9. PR 号回填
 
-- PR：**#110**（base `main`，head `reminder-trigger-spec`）
-- PR body 路径：`app/specs/reminder-trigger-spec-pr-body.md`
+- PR：**#110** — https://github.com/whutlichao/alibot/pull/110
+- `state=OPEN`，`base=main`，`head=reminder-trigger-spec`，改动 **3 文件 / +1250 / −0**
+- PR body：`app/specs/reminder-trigger-spec-pr-body.md`（`gh pr create --body-file` 提交）
 
 ## 10. 偏差登记
 
