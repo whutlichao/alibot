@@ -14,6 +14,9 @@
 | GitHub issue **#114** = ③ | **新建**：人类面，覆盖 **C15 C16 C17 + C18 前端半边**，`blocked_by 1`（`[113]`） |
 | GitHub issue **#115** = ④ | **新建**：三处存量注释改口径，覆盖 **仅 C19**，`blocked_by 3`（`[112,113,114]`） |
 | `app/specs/reminder-trigger-tickets.md` | **新增**：拆分记录（4 票的编号 → 簇 → 覆盖契约 → 依赖图 + 偏差登记 + 行号复核 + 本 Answer 留档） |
+| `app/specs/reminder-trigger-tickets-answer.md` | **新增**：本 Answer 留档（73 行） |
+| `app/specs/reminder-trigger-tickets-pr-body.md` | **新增**：PR 正文正本（`pr` skill 体例，`--body-file` 用） |
+| **PR #116** | **新建**：base `main` ← `reminder-trigger-tickets`，body 路径 `app/specs/reminder-trigger-tickets-pr-body.md` |
 
 四张实施票全部挂 `ready-for-agent`，全部首行 `Part of #1`。**票数与分簇未改**（Q2 = 4 票是用户人定）。
 
@@ -61,6 +64,8 @@
 | `SCHEMA_VERSION` | 仍是 **12**（`db.py:59`），**未 bump** |
 | 源码 / 测试 / ADR / CONTEXT | `git diff origin/main -- app/alibot/ app/tests/ docs/adr/ CONTEXT.md` **为空** |
 | 本票 diff 面 | 只有 `app/specs/reminder-trigger-tickets.md`（新增）+ `app/specs/reminder-trigger-tickets-answer.md`（新增）+ `app/specs/reminder-trigger-tickets-pr-body.md`（新增） |
+| 提交 | `e4dc4d1`（父提交 = `5c4dc5c`，即 `origin/main`） |
+| PR | **#116**，base `main`，body = `app/specs/reminder-trigger-tickets-pr-body.md` |
 
 ## 6. 行号复核（自决地把唯一偏差登记出来）
 
