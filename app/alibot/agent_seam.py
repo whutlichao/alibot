@@ -86,25 +86,25 @@ PROVIDER_CREDENTIAL_TYPE: dict[str, str] = {
 
 PROVIDERS = tuple(PROVIDER_KEY_ENV)
 
+
 # 能携带工具调用的 provider（结构化沉默通道的**能力闸门**，按 provider 逐个判，不做整体假设）。
 #
 # 核实方法（取证记录见 ``app/specs/issue-58-acceptance.md``）：读安装的 AgentScope 2.0.9 源码
 # ``.venv/lib/python3.11/site-packages/agentscope/model/<provider>/_model.py``——十一家 ChatModel 的
 # ``_call_api`` 都声明 ``tools: list[dict] | None``，并各自实现了 ``_format_tools``，即**传输层**都把
-# 工具 schema 转发给服务端。因此这张表今天就是 ``PROVIDERS`` 全集。它存在的理由不是「有人是 False」：
+# 工具 schema 转发给服务端。因此闸门的取值表今天就是 ``PROVIDER_KEY_ENV`` 的键集（同一份单一事实
+# 来源，不另立一张与它恒等的表）。它存在的理由不是「有人是 False」：
 #
 # 1. **模型层不可静态判定**：chat 的 ``ModelCard`` 只有 input/output 类型，``supports_tools`` 只存在于
 #    realtime 的 card；某个具体模型会不会真的产出 tool call 只能由运行时回答。因此本仓**不假定**
 #    「所有 provider / 所有模型一致」，判据落在运行时是否真的收到这个工具调用上。
 # 2. **退化必须是结构性的**：闸门为 False 时这一轮**不挂**沉默工具（请求里没有 ``tools``），
 #    于是模型无法声明 ⇒ 结论只可能来自正文，即既有的 ``replied`` / ``ignored`` / ``failed``。
-#    将来某家的传输层丢掉工具，把它从这里删掉即可，不需要改判据。
-PROVIDER_TOOL_TRANSPORT: frozenset[str] = frozenset(PROVIDER_KEY_ENV)
-
-
+#    今天没有任何 provider 落在 False（这是逐 provider 判定的结果，不是整体假设）；将来真出现
+#    「传输层丢掉工具」的一家，再把能力表从凭证表分出去即可，不为一个还不存在的差异预置第二张表。
 def supports_tool_calling(provider: str) -> bool:
     """该 provider 的这一轮能否携带工具调用（结构化沉默通道的前提；未知 provider 一律 False）。"""
-    return provider in PROVIDER_TOOL_TRANSPORT
+    return provider in PROVIDER_KEY_ENV
 
 
 # 落在本机、不把数据送出本机的 provider：不需要「远端数据流告知」。
