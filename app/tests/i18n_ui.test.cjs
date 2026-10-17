@@ -1424,6 +1424,8 @@ function remindersMarkup() {
 test("提醒：rail 入口与指示点照原型，圆点的初始标记就是「没有」", () => {
   const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
   const rail = html.slice(html.indexOf('class="rail-head"'), html.indexOf("</aside>"));
+  // rail-head 那一段（到 `.search-shell` 为止）：提醒与设置都是这里的 `.icon-btn`。
+  const head = rail.slice(0, indexOf(rail, 'class="search-shell"'));
 
   assert.equal(rail.includes('id="btnReminders"'), true, "rail head 里应有提醒入口");
   const dot = /<span class="dot" id="reminderDot"([^>]*)>/.exec(rail);
@@ -1431,7 +1433,32 @@ test("提醒：rail 入口与指示点照原型，圆点的初始标记就是「
   // `hidden` 是标记里的静态事实：JS 还没跑完的那一帧也不能凭空空出一个点（原型 :1886 同一纪律）。
   assert.match(dot[1], /\bhidden\b/, "指示点的初始状态必须是「没有提醒」");
   // 入口与设置入口同形：文案不写死，按词条键取。
-  assert.match(rail, /data-i18n-attr="aria-label:rail\.reminders,title:rail\.reminders"/);
+  assert.match(head, /data-i18n-attr="aria-label:rail\.reminders,title:rail\.reminders"/);
+});
+
+test("rail 头部：提醒与设置两枚 icon-btn 同处 rail-head，顺序照原型（品牌 → 提醒 → 设置）", () => {
+  const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
+  const rail = html.slice(html.indexOf('class="rail-head"'), html.indexOf("</aside>"));
+  const head = rail.slice(0, indexOf(rail, 'class="search-shell"'));
+
+  // 用户 D1 的裁定：齿轮回头部、不新增太阳图标与主题快捷键。
+  assert.equal(head.includes('id="btnSettings"'), true, "设置入口应在 rail-head 里（原型 :515 的位置）");
+  assert.match(
+    head,
+    /data-od-id="btn-settings"[^>]*data-i18n-attr="aria-label:settings\.open,title:settings\.open"/,
+    "设置入口保留原型的 data-od-id 与词条绑定",
+  );
+  const order = ["class=\"brand\"", 'id="btnReminders"', 'id="btnSettings"'].map((marker) => indexOf(head, marker));
+  assert.deepEqual(
+    order,
+    [...order].sort((a, b) => a - b),
+    "rail-head 的次序是品牌 → 提醒 → 设置（原型 alibot-app.html:511-518）",
+  );
+  // 底部的「我」那一行只剩身份信息，不再有控件。
+  const foot = rail.slice(indexOf(rail, 'class="rail-foot"'));
+  assert.equal(/<button/i.test(foot), false, "rail-foot 里不再有设置入口（已回到头部）");
+  assert.equal(rail.includes('id="btnSettings"'), true, "设置入口在整个 rail 里恰好一份");
+  assert.equal(rail.split('id="btnSettings"').length - 1, 1, "设置入口不重复");
 });
 
 test("提醒：弹窗是 wide，新增控件只有文本与时间（没有日期与重复字段）", () => {
