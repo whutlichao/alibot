@@ -48,9 +48,18 @@ Default five-role vocabulary; label strings equal role names. See `docs/agents/t
 
 Single-context: glossary in `CONTEXT.md` (section `## Language`), ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
+### Implementation
+
+Run the gates through `scripts/check.sh` (CI runs the same script); worktree/merge/push discipline and the schema-number rule: see `docs/agents/implementation.md`.
+
+### Code review
+
+Standards sources and the judgement rules the reviewer enforces: see `docs/agents/review-rules.md`.
+
 ## 本机已知环境噪声
 
-- `GIT_CONFIG_COUNT` 已设而 `GIT_CONFIG_KEY_0` 缺失 ⇒ 任何 `git` / `gh` 立即 `fatal: missing config key`；绕法：命令前 `unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1`。
-- `no_proxy` / `NO_PROXY` 含 `[::1]` ⇒ `pytest` 里 httpx 报 `InvalidURL: Invalid port: ':1]'`（`test_agent_seam_client_lifecycle.py` 假红）；绕法：`env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY`。
-- 仓库 `.venv` 不含 `pyright` ⇒ 用 `node ~/.pi-lens/tools/node_modules/pyright/index.js`，或 `--pythonpath` 指 `.venv/bin/python`（在别的 worktree 里必须加）。
+- `GIT_CONFIG_COUNT` 已设而 `GIT_CONFIG_KEY_0` 缺失 ⇒ 任何 `git` / `gh` 立即 `fatal: missing config key`；`scripts/check.sh` 已内置 `unset`，手工命令前也先 `unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1`。
+- `no_proxy` / `NO_PROXY` 含 `[::1]` ⇒ httpx 报 `InvalidURL: Invalid port: ':1]'`；`app/tests/conftest.py` 的 autouse fixture 已把这类条目摘掉（pytest 直接跑即可），只有绕开 pytest 的手工工具才需要 `env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY`。
+- `gh` 的 OAuth token 缺 `workflow` scope ⇒ 改动 `.github/workflows/**` 的分支用 HTTPS 推会被拒（`refusing to allow an OAuth App to create or update workflow`）；用 SSH 推同一分支即可（`git push git@github.com:whutlichao/alibot.git <branch>`），或先 `gh auth refresh -s workflow`。
+- 仓库 `.venv` 不含 `pyright` ⇒ `scripts/check.sh` 依次找 `PYRIGHT_BIN` → `node_modules/.bin/pyright` → PATH → `~/.pi-lens/tools/node_modules/pyright/index.js`；手工调用时用最后那条，或在别的 worktree 里加 `--pythonpath .venv/bin/python`。
 

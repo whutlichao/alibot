@@ -324,23 +324,27 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 ## 测试与检查
 
 ```sh
-.venv/bin/python -m pytest          # HTTP + SSE 黑盒契约测试（每条用例独立临时数据目录）
-.venv/bin/ruff check app && .venv/bin/ruff format --check app
-.venv/bin/python -m mypy            # 配置在仓库根 mypy.ini
-node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests   # 配置在仓库根 pyrightconfig.json
-node --test app/tests/search_ui.test.cjs # Studio 搜索的 DOM 呈现、错误与并发行为
-node --test app/tests/agent_detail_ui.test.cjs # Studio Agent 详情（dock 第三形态）：概览 / 运行时 / 暂停 / 编辑配置
-node --test app/tests/narration_ui.test.cjs # Studio 旁白式交代的消息级呈现降档（一行 / 低权重 / 关联轮次结果，且不误降档）
-node --test app/tests/channel_budget_ui.test.cjs # Studio 频道设置弹窗：回应预算的读数 / 来源 / 待生效值 / 3-5-10 写控件
-node --test app/tests/silent_ui.test.cjs  # Studio 结构化沉默（`silent`）：进摘要行、两种语言的说法、与 `ignored` 可区分
-node --test app/tests/i18n_ui.test.cjs    # 词条机制（同键集 / 无落单键 / 裸中文扫描 / <html lang> / 设置弹窗两档）
-node --test app/tests/rail_identity.test.cjs # Studio 左栏（`#rail`）三份名单在回复路径上保留行节点（不屏闪）
+./scripts/check.sh            # 全量门禁：pytest + ruff check + ruff format --check + mypy + pyright + node --test（glob）
+./scripts/check.sh --fast     # 开发循环：除全量 pytest 外的一切（秒级）
+./scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（路径相对 app/）
 ```
+
+`pytest` 是 HTTP + SSE 黑盒契约测试（每条用例独立临时数据目录）；ruff / mypy / pyright 的配置分别
+在 `app/pyproject.toml` / 仓库根 `mypy.ini` / 仓库根 `pyrightconfig.json`。**不要在命令行补 `-q`**
+（配置里已有 `addopts = "-q"`，补了会变 `-qq`，结果行会被吞掉）；**不要跑 `ruff format`**，只跑
+`--check`。Studio 的 DOM 用例族由 `node --test app/tests/*.test.cjs` **按 glob** 跑（新增文件自动
+纳入；每个文件覆盖什么写在各自的文件头注释里）。CI（`.github/workflows/check.yml`）跑的是同一个
+`scripts/check.sh`。
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
 已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、
 Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要行与两种语言说法）由上面的 Node 内置测试
 单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
+
+上面这条纪律、以及「本文件的词表必须跟着 `db.py` 走」，都有**机械判据**：
+`app/tests/test_test_layering_guard.py`（不读 Studio 源码 / 不断言词表形状 / 不 import 私有名）、
+`app/tests/test_docs_vocabulary_guard.py`（状态词表与 kind 不与 README 漂移）、
+`app/tests/test_schema_version_pins_guard.py`（不把 `SCHEMA_VERSION` 钉成历史号）。
 
 **两处例外**，理由同源（词条表是**数据契约**，其键集不经 HTTP 面暴露）：
 

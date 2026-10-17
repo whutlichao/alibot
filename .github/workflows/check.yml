@@ -1,6 +1,8 @@
-# 本仓此前没有 CI：门禁只写在 app/README.md「测试与检查」一节，靠人/agent 手动跑。
-# 这个 workflow 把同一组命令接上 CI——步骤顺序与 README:317-324 一致，差异只有两处，
-# 分别写在对应用的注释里：venv 路径 → runner python、本机 pyright 路径 → npx pyright。
+# 门禁的**唯一入口**是 `scripts/check.sh`；本文件只做「装环境 + 跑脚本」两件事。
+#
+# 为什么不在 workflow 里逐条抄命令：命令清单是缓存，抄进 workflow / 票面 / README 各一份就会
+# 漂移——本仓已经吃过一次：票面门禁手列了 5 个 `*.test.cjs`，同一轮新增的 3 套前端用例就不在
+# 门禁里。脚本里 Node 用例族一律走 glob，新增文件自动纳入。
 name: check
 
 on:
@@ -35,39 +37,19 @@ jobs:
         with:
           node-version: "20"
 
-      # app/pyproject.toml 的运行依赖 + dev extra（pytest / ruff / mypy / httpx2）。
-      # agentscope 已 pin 在 pyproject 里（==2.0.9），这里不另钉版本。
+      # 运行依赖 + dev extra（pytest / ruff / mypy / httpx2）；agentscope 已 pin 在 pyproject。
       - name: 安装依赖
-        run: pip install -e "app[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "app[dev]"
 
-      - name: pytest（HTTP + SSE 黑盒契约测试）
-        # README 写的是 .venv/bin/python -m pytest：本机用仓库根的 .venv，CI 用 runner 上的 python。
-        # 在 app/ 下跑，命中 app/pyproject.toml 的 [tool.pytest.ini_options]
-        # （testpaths = tests、filterwarnings = error）。
-        #
-        # 本机跑法与本 workflow 的差异：本机 no_proxy/NO_PROXY 含 [::1]，httpx 会报
-        # InvalidURL: Invalid port（test_agent_seam_client_lifecycle.py 假红），需要
-        # `env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY`；runner 上通常没有这些变量，
-        # 所以这一层不写进 CI 步骤。
-        run: cd app && python -m pytest
+      # `scripts/check.sh` 按 PYRIGHT_BIN → node_modules/.bin/pyright → PATH → ~/.pi-lens
+      # 依次找 pyright。runner 上既没有 `.venv` 也没有 pi-lens，所以把它装到 PATH 上。
+      - name: 安装 pyright
+        run: npm install --global pyright
 
-      - name: ruff check + ruff format --check
-        # README: .venv/bin/ruff check app && .venv/bin/ruff format --check app（venv → runner ruff）。
-        run: ruff check app && ruff format --check app
-
-      - name: mypy
-        # README: .venv/bin/python -m mypy。配置在仓库根 mypy.ini（mypy 只从 cwd 往上找配置），
-        # 所以必须在仓库根跑。
-        run: python -m mypy
-
-      - name: pyright
-        # 本机用的是 pi-lens 里的 pyright：~/.pi-lens/tools/node_modules/pyright/index.js；
-        # CI 用 npx --yes pyright，同一个仓库根 pyrightconfig.json。
-        # CI 里没有 .venv（pyrightconfig 的 venvPath/venv 指向它），pyright 退回用 PATH 上的
-        # runner python——依赖已由上面的 pip 步骤装进这个解释器。
-        run: npx --yes pyright app/alibot app/tests
-
-      - name: node --test（Studio 前端 DOM 行为）
-        # README 逐文件列了 4 个 node 测试（search_ui / agent_detail_ui / i18n_ui / rail_identity）；
-        # glob 覆盖 app/tests 下全部 *.test.cjs（当前 5 个，含 mobile_shell.test.cjs）。
-        run: node --test app/tests/*.test.cjs
+      - name: Gate（scripts/check.sh）
+        # 与本地完全同一条命令。runner 上没有 `.venv`，脚本回退到 python3（上面已装好依赖）；
+        # 本机 `no_proxy` 的 `[::1]` 噪声由 `app/tests/conftest.py` 的 autouse fixture 摘掉，
+        # 所以 CI 与本机都不需要再写 `env -u ...`。
+        run: ./scripts/check.sh
