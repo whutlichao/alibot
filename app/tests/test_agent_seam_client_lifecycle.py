@@ -388,5 +388,11 @@ def test_task_tools_return_only_structured_actions(
     assert outcome.task_action == expected
     assert len(_StubProviderHandler.requests) == 2
     tools = _StubProviderHandler.request_bodies[0]["tools"]
-    assert {tool["function"]["name"] for tool in tools} == {"set_task_status", "transfer_task"}
+    # 任务动作工具逐字在此；``declare_silence``（#58）与它们**同轮并存**——沉默是轮级事实，
+    # 不是频道轮次才有的东西，因此任务线程里的模型同样有权声明本轮沉默（否则它只能写旁白）。
+    assert {tool["function"]["name"] for tool in tools} == {
+        "set_task_status",
+        "transfer_task",
+        "declare_silence",
+    }
     assert "mem_issue_32" not in json.dumps(_StubProviderHandler.request_bodies[0])
