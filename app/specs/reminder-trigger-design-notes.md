@@ -561,21 +561,92 @@ PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remote
 
 ### 5.4 落盘读数（逐条可复现）
 
-见 §5.6 的实测回填（提交 hash、文件清单、`git diff` 读数、PR 号）。
+| 项 | 读数 |
+| --- | --- |
+| 基线 | `origin/main` = `04eccc9`（PR #104 `claim-starts-work`）；已 `git rebase origin/main` |
+| 提交 | `36d65fd`（docs(reminders): 到点触发设计落盘）+ `f616b3c`（PR 正文） |
+| 分支 | `reminder-trigger-design`（`-u origin` 已推送） |
+| PR | **#108**，`state=OPEN`，`base=main`，`head=reminder-trigger-design`，`headRefOid=f616b3c04d2501376f8ce5203ed33e8deedb0a0a`（= 本地 HEAD） |
+| PR 改动文件 | 4 个：`CONTEXT.md` / `app/specs/reminder-trigger-design-notes.md` / `app/specs/reminder-trigger-design-pr-body.md` / `docs/adr/0017-reminders-fire-into-the-message-stream.md` |
+| PR 正文 | `app/specs/reminder-trigger-design-pr-body.md`（`--body-file` 提交） |
+| 设计票正本 | GitHub issue **#107**（`ready-for-agent`，`Part of #1` 首行，body 与本文同源） |
+| 源码改动 | **0**（`git diff origin/main -- app/` 只含 `app/specs/*.md`） |
+| `SCHEMA_VERSION` | **仍是 12**（未 bump） |
+| 既有 ADR 改动 | **0**（`git diff origin/main -- docs/adr/` 只有 0017 新增文件的 157 insertions） |
 
-### 5.5 零改动取证
+### 5.5 零改动取证（实测）
 
 ```text
 $ git diff origin/main -- docs/adr/0012-reminders-are-backend-objects.md
-（空）
+（空 —— ADR-0012 正文一字未改）
 
-$ git diff origin/main -- docs/adr/ | grep '^diff' 
-（只应出现 0017 新增文件的 one-line）
+$ git diff origin/main --stat -- docs/adr/
+ docs/adr/0017-reminders-fire-into-the-message-stream.md | 157 +++++++++++++++++++++
+ 1 file changed, 157 insertions(+)
+（只有新增，没有一条既有 ADR 被改）
+
+$ git diff 04eccc9 -- CONTEXT.md
+ CONTEXT.md | 14 +++++++++-----  （9 insertions / 5 deletions）
+（全部落在「系统事件消息」与「提醒」两段，PR #104 改的七处词条未碰）
+
+$ grep -m1 '^SCHEMA_VERSION' app/alibot/db.py
+SCHEMA_VERSION = 12
 ```
 
-（本节的实际读数在 §5.6 回填；占位处只描述「应当为零」，交付前必须实测确认。）
+### 5.6 Answer 回填（与追加到 issue 的 Answer 同源）
 
-### 5.6 Answer 回填（落盘后追加）
+本节内容与追加到 GitHub issue **#107** 的 Answer **同源**；两者冲突时**以 tracker 为准**。
 
-本节内容与追加到 GitHub issue 的 Answer **同源**；两者冲突时**以 tracker 为准**。
-实际读数（提交、分支、PR 号、`git diff` 结果、issue 号）在本票收尾时回填。
+---
+
+#### Answer（本票收口）
+
+**交付物**（4 文件，零源码改动）：
+
+| 文件 | 动作 |
+| --- | --- |
+| `app/specs/reminder-trigger-design-notes.md` | 新增（581 行）：§0 开工核对事实 / §1 决策账 / §2 被否方案与代价 / §3 S1–S19 规格输入 / §4 落点与冲突处置 / §5 Answer |
+| `docs/adr/0017-reminders-fire-into-the-message-stream.md` | 新增（157 行）：首段逐句声明取代 ADR-0012 的哪三句，六节覆盖 D1–D9 |
+| `CONTEXT.md` | 修订 2 条 + 新增 1 条（系统事件消息加第四来源 / 提醒改新口径 / 新增到点） |
+| `app/specs/reminder-trigger-design-pr-body.md` | 新增：PR 正文（`--body-file` 用） |
+
+**grill 三轮记录与每轮应答去向**（详见 §1.1）：
+
+| 轮 | messageId | answerMessageId | 结论 |
+| --- | --- | --- | --- |
+| 1 | `msg_81719459bdae` | `msg_d2335fcb15a9` | Q1–Q4 全按推荐（Q1/Q2/Q3 人定，Q4 代答） |
+| 2 | `msg_12138ac93caa` | `msg_a63c3867f8db` | Q5–Q8 全按推荐（四条人定，Q8 逐句表整表通过） |
+| 3 | `msg_36620f744ace` | `msg_441d710cdda9` | Q9–Q12 全按推荐（Q9/Q10/Q11 人定，Q12 代答） |
+
+第一轮曾超时一次（`answer: null`，`timedOut: true`），按纪律用**同一 message ID** `--resume` 续等，未重复提问。
+
+**D1–D9 裁定速览**：
+
+| # | 结论 | 归属 |
+| --- | --- | --- |
+| D1 | 到点落一条 `system` 消息进归属频道（不唤醒、不耗预算）；**无归属只改状态不落消息** | 人定 |
+| D2 | 一次性「日期 + 钟点」，无重复 | 人定 |
+| D3 | 错过补投一次 + **24 小时窗口**（窗口外只写 `fired_at`、标已错过） | 人定 |
+| D4 | 保留行 + 新增 `fired_at`（`NULL` = 未到点） | 人定 |
+| D5 | 本机本地时区；`created_at` 仍 UTC；两者不做换算比较（只在判据比较时换算） | 人定 |
+| D6 | 新 ADR-0017 逐句声明取代 ADR-0012 的三句；ADR-0012 正文一字不改 | 人定 |
+| D7 | `SCHEMA_VERSION` 12 → **13** + `MigrationStep(12, 13)`；存量 `HH:MM` 解释成**迁移执行当日**；**本票只做设计判断** | 人定 |
+| D8 | 可注入的到期投递器 + 进程内轮询（**30 秒**上界）+ 启动先扫；接 shutdown；测试注入时刻 | 代答 |
+| D9 | `type="date"` + `type="time"` 两控件（显式偏离原型）/ 状态后缀 / 指示点改 `some(r => !r.fired_at)` | 人定 |
+
+**文案义务**（ADR-0009 两层，不许有第三层）：
+- **后端第二层**（`app/alibot/i18n.py` 两份）：`system.reminder.fired`、`system.reminder.fired_late`（两个键，因为准点与补投是两个落库路径）
+- **前端第一层**（`app/alibot/studio/i18n.js` 两份）：`reminder.dateLabel`、`reminder.stateFired`、`reminder.stateMissed`（+ 条件性的 `reminder.timePast`）
+- **同一条文案不许两边都登记**
+
+**基线偏差与编号处置**（如实登记）：
+- spec 给的基线是 `main = 63e8163`，开工时 `origin/main` 已前进到 `04eccc9`（PR #104），它**已占用 `docs/adr/0016-*.md`**。
+- 处置：先 `git rebase origin/main`，新 ADR 改取 **0017**。coordinator 独立核对后确认「取 0017 是正确的，无需再问」。
+- 这不是执行偏差，是 **spec 基线过时**的记账。
+
+**PR 与收尾**：
+- 分支 `reminder-trigger-design`，已推送。
+- PR **#108**（base `main`，head `reminder-trigger-design`，4 文件，`state=OPEN`）。
+- PR 正文：`app/specs/reminder-trigger-design-pr-body.md`。
+- 设计票正本：issue **#107**。
+
