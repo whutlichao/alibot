@@ -77,13 +77,15 @@
     </div>
 
     <!-- rail 的**搜索入口**（原型 `:518-524`）。形态是原型的 `.search-shell` + `.search-btn`：
-         放大镜 + 文案 + `⌘K` 徽标。徽标是符号不是文案，直接写在标记里；文案走词条键。
-         点击进的是**主线搜索视图**（#63 决策 D14「搜索是主线视图、不是弹层」）。 -->
+         放大镜 + 文案。点击进的是**主线搜索视图**（#63 决策 D14「搜索是主线视图、不是弹层」）。
+         原型 `:524` 在这枚按钮上还印了一枚 `<kbd>⌘K</kbd>`；本工作台**不搬它**：`⌘K` 真绑定的是
+         **打开命令面板**（不是搜索视图，见 `bindCmdEvents` 与规格 D10），而本仓纪律是「界面不承诺一个
+         按键做不到的事」——把 ⌘K 印在搜索按钮上会让人以为它能开搜索。
+         **人定（用户本人，2026-10-17）：删掉这枚徽标，保留按钮本身。** -->
     <div class="search-shell">
       <button class="search-btn" id="btnSearch" type="button" data-od-id="btn-workspace-search" data-i18n-attr="title:rail.searchTitle" title="搜索工作台">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <span data-i18n="rail.searchPlaceholder">搜索消息、任务…</span>
-        <kbd>⌘K</kbd>
       </button>
     </div>
 

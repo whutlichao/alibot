@@ -38,9 +38,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .brand-sub { font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--faint); letter-spacing: var(--ls-wide); }
 
 /* 搜索入口照原型 `ui_kits/app/app.css:74-82` 搬到 studio（`.search-shell` / `.search-btn` /
-   `.search-btn span` / `.search-btn kbd` 四条）。原型里那几个 9 / 7 / 10px 在这里落成既有 token
-   （`--sp-4` = 8px / `--sp-5` = 12px），与旁边 `.rail-head` 的 gap、`.search-field` 的 kbd 同一口径。
-   它是**按钮**不是输入框：真正落笔的地方是主线搜索视图里的 `#searchInput`（#63 决策 D14）。 */
+   `.search-btn span` 三条）。原型里那几个 9 / 7 / 10px 在这里落成既有 token
+   （`--sp-4` = 8px / `--sp-5` = 12px），与旁边 `.rail-head` 的 gap 同一口径。
+   它是**按钮**不是输入框：真正落笔的地方是主线搜索视图里的 `#searchInput`（#63 决策 D14）。
+   原型的 `.search-btn kbd`（`⌘K` 徽标）**不搬**：`⌘K` 真绑定的是打开命令面板，不是搜索
+   （人定 2026-10-17，见 `index.html` 搜索入口那段注释）——**没有节点带这枚 kbd，故无对应规则**。 */
 .search-shell { padding: 0 var(--sp-5) var(--sp-4); }
 .search-btn {
   width: 100%; display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5);
@@ -49,10 +51,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 .search-btn:hover { border-color: var(--border-strong); color: var(--fg); }
 .search-btn span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.search-btn kbd {
-  font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint);
-  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
-}
 .rail-actions { display: flex; gap: var(--sp-4); padding: 0 var(--sp-5) var(--sp-5); border-bottom: 1px solid var(--border); }
 .rail-unread {
   display: flex; align-items: center; justify-content: space-between;
@@ -97,7 +95,9 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider); text-transform: uppercase;
   color: var(--faint); font-weight: var(--fw-semi);
 }
-/* 分组标题右侧的 `+`（原型 `:544` 的 `.group-label` 内 button）：新建私信入口与它同形。 */
+/* 分组标题右侧的 `+`（原型 `:544` 的 `.group-label` 内 button）：新建私信入口与它同形。
+   尺寸 18×18 是原型 `:544` 的分组 `+` 尺寸，**低于**设计系统 `--tap-min: 44px`；本轮照原型
+   不放大（用户 D4 只修四处入口、不做逐项复核；代答登记：这是原型尺寸，不是新造的退化）。 */
 .group-label button { color: var(--faint); display: grid; place-items: center; width: var(--sp-8); height: var(--sp-8); border-radius: 4px; }
 .group-label button:hover { color: var(--fg); background: var(--surface); }
 .rail-empty { padding: var(--sp-3) var(--sp-5); font-size: var(--fs-sm); color: var(--faint); line-height: var(--lh-snug); }

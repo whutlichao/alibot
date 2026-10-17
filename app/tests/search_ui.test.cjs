@@ -626,17 +626,20 @@ test("本票新增的文案在两份词条里都取到值", () => {
 
 /* ─── 6. rail 搜索入口的形态（#103） ───────────────────────────────────── */
 
-test("rail 搜索入口是 .search-shell 里的 .search-btn：放大镜 + 词条文案 + ⌘K 徽标", () => {
+test("rail 搜索入口是 .search-shell 里的 .search-btn：放大镜 + 词条文案，**不带** ⌘K 徽标", () => {
   const markup = fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8").replace(/<!--[\s\S]*?-->/g, "");
   const shell = /<div class="search-shell">([\s\S]*?)<\/div>/.exec(markup);
   assert.ok(shell, "index.html 里应有 .search-shell 容器");
 
   assert.match(shell[1], /<button class="search-btn" id="btnSearch"/, "容器里是 .search-btn 形态的 #btnSearch");
   assert.match(shell[1], /data-od-id="btn-workspace-search"/, "保留设计系统的对外标识");
-  // 文案不写死：挂新词条键；⌘K 是符号，直接写在标记里（票面明写）。
+  // 文案不写死：挂新词条键。
   assert.match(shell[1], /<span data-i18n="rail\.searchPlaceholder">/, "文案挂 rail.searchPlaceholder");
-  assert.match(shell[1], /<kbd>⌘K<\/kbd>/, "⌘K 徽标直接写在标记里");
   assert.match(shell[1], /<svg/, "放大镜图标");
+  // 原型 `:524` 的 ⌘K 徽标**不搬**：⌘K 真绑定的是打开命令面板、不是搜索，印在这里就是承诺
+  // 一个按键做不到的事（人定 2026-10-17；依据 `app.js` 的 `bindCmdEvents` 注释与规格 D10）。
+  assert.equal(shell[1].includes("<kbd"), false, "搜索按钮上不再有任何 kbd 徽标");
+  assert.equal(shell[1].includes("⌘K"), false, "搜索按钮不承诺 ⌘K");
 
   // rail-actions 里不再有搜索/私信两条文字按钮，只剩两个：新建频道 + 新建 Agent。
   const actions = /<div class="rail-actions">([\s\S]*?)\n    <\/div>/.exec(markup);
@@ -646,6 +649,15 @@ test("rail 搜索入口是 .search-shell 里的 .search-btn：放大镜 + 词条
   assert.match(actions[1], /id="btnNewAgent"/);
   assert.equal(actions[1].includes('id="btnSearch"'), false, "搜索不再待在 .rail-actions 里");
   assert.equal(actions[1].includes('id="btnNewDm"'), false, "私信不再待在 .rail-actions 里");
+});
+
+test("搜索按钮不印 ⌘K：这个键真打开的是命令面板，不是搜索视图", async () => {
+  const harness = createHarness();
+
+  await harness.key("k", { metaKey: true });
+
+  assert.equal(harness.cmdOverlay.hidden, false, "⌘K 打开的是命令面板");
+  assert.equal(harness.viewSearch.hidden, true, "⌘K 不进搜索视图 —— 因此按钮上不印它");
 });
 
 test("点 rail 搜索入口进主线搜索视图（行为与改动前一致）", async () => {
