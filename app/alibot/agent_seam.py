@@ -146,11 +146,17 @@ class TaskAgentOption:
 
 @dataclass(frozen=True)
 class TaskActionContext:
-    """当前任务专用工具的服务端上下文；task id 与成员 id 不由模型提供。"""
+    """当前任务专用工具的服务端上下文；task id 与成员 id 不由模型提供。
+
+    ``title`` / ``status`` 是**输入侧**的任务本体（ADR-0016 四）：它们进 prompt，让被唤醒的那一轮
+    不必从几条第三人称 ``system`` 记录里推断「我在干什么」。输出形状不动（ADR-0010 一）。
+    """
 
     task_id: str
     assignee_member_id: str | None
     agent_members: tuple[TaskAgentOption, ...]
+    title: str = ""
+    status: str = ""
 
     def transfer_options_for(self, actor_id: str) -> tuple[TaskAgentOption, ...]:
         """模型不可见的转派目标正本，顺序由服务端固定，允许显示名重复。"""
@@ -202,6 +208,7 @@ class AgentSeam(Protocol):
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
     ) -> RoundOutcome:
         """跑一轮，返回结论。
 
@@ -212,6 +219,9 @@ class AgentSeam(Protocol):
             mentioned: 这批新消息里是否个人提及了该成员（rubric：被点名必须回应）。
             target_id: 频道 id。
             task_context: 仅任务线程提供的内部动作上下文；频道与 DM 不开放任务工具。
+            mandatory_reply: 本轮的**回应纪律标记**（不落库）：为真时本轮必须回应，
+                由编排在投递时算好（认领唤醒）。它**不用** ``reason`` 推导——重复唤醒会被合并，
+                而合并后的 ``reason`` 取决于先到者。
         """
         ...
 
@@ -311,12 +321,18 @@ class AgentScopeAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
     ) -> RoundOutcome:
         import asyncio
 
         provider = provider_of(str(agent.get("model_id") or ""))
         model_name = model_name_of(str(agent.get("model_id") or ""))
-        system_prompt = _system_prompt(agent, mentioned=mentioned, task_context=task_context)
+        system_prompt = _system_prompt(
+            agent,
+            mentioned=mentioned,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+        )
         task_actions: list[AgentTaskAction] = []
 
         async def _round() -> Any:
@@ -434,9 +450,18 @@ async def _aclose_model_client(model: Any) -> None:
 
 
 def _system_prompt(
-    agent: dict[str, Any], *, mentioned: bool, task_context: TaskActionContext | None = None
+    agent: dict[str, Any],
+    *,
+    mentioned: bool,
+    task_context: TaskActionContext | None = None,
+    mandatory_reply: bool = False,
 ) -> str:
-    """把成员配置里的系统提示 + 本轮的回应 rubric 合成一次调用的 system prompt。"""
+    """把成员配置里的系统提示 + 本轮的回应 rubric + 任务上下文合成一次调用的 system prompt。
+
+    ``mandatory_reply`` 是**认领轮**的纪律标记（ADR-0016 五）：它由编排在投递时算好，**不由**
+    ``reason`` 或 ``mentioned`` 推导——同一 Agent 的重复唤醒会被合并，而合并后的 ``reason``
+    取决于先到者，纪律不该随它漂。
+    """
     base = str(agent.get("system_prompt") or "").strip()
     role = str(agent.get("role") or "").strip()
     parts = []
@@ -452,6 +477,19 @@ def _system_prompt(
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
     if task_context is not None:
+        # 任务本体（ADR-0016 四）：标题 + 当前状态 + 受派者身份。
+        # 身份句只在**本轮 Agent 就是受派者**时给——否则会制造「我是受派者」的假事实。
+        context_lines = ["任务上下文："]
+        if task_context.title:
+            context_lines.append(f"任务：{task_context.title}")
+        if task_context.status:
+            context_lines.append(f"当前状态：{render(f'status.task.{task_context.status}', SOURCE_LOCALE)}")
+        if task_context.assignee_member_id == str(agent.get("id") or ""):
+            context_lines.append("你是这张任务的受派者。")
+        parts.append("\n".join(context_lines))
+        if mandatory_reply:
+            # 认领轮另有显式声明（S5）：纪律不靠模型猜 rubric。
+            parts.append("本轮由认领唤醒，你必须回应。")
         transfer_options = task_context.transfer_options_for(str(agent.get("id") or ""))
         option_names = "\n".join(
             f"{index}. {option.display_name}" for index, option in enumerate(transfer_options, start=1)

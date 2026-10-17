@@ -16,13 +16,22 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from alibot.agent_seam import AgentTaskAction, RoundMessage, RoundOutcome, TaskActionContext
+from alibot.agent_seam import (
+    AgentTaskAction,
+    RoundMessage,
+    RoundOutcome,
+    TaskActionContext,
+    _system_prompt,
+)
 
 REPLY = "reply"
 IGNORE = "ignore"
 FAIL = "fail"
 DELAY = "delay"
 ACTION_ONLY = "action-only"
+# 「回复但没有可落库正文、也没有任务动作」：确定信号下这应当收口成 `failed`。
+# 它对应真适配器的 `RoundOutcome(status="replied")` + 空 messages + 无 task_action。
+EMPTY_REPLY = "empty-reply"
 
 
 class ManualScheduler:
@@ -108,14 +117,27 @@ class ScriptedAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
     ) -> RoundOutcome:
         member_id = str(agent["id"])
+        # 接缝的**输入侧**全记下来：prompt 注入（S5）没有 HTTP 可观测面，因此按仓库既有做法
+        # 用脚本化替身取证。``prompt`` 复用真适配器的同一个合成函数（不手抄一份文案），
+        # 这样断言落在具体片段上时，测的就是**真的会被送进模型的那段文本**。
+        prompt = _system_prompt(
+            agent,
+            mentioned=mentioned,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+        )
         with self._lock:
             self.calls.append(
                 {
                     "member_id": member_id,
                     "target_id": target_id,
                     "mentioned": mentioned,
+                    "task_context": task_context,
+                    "mandatory_reply": mandatory_reply,
+                    "prompt": prompt,
                     "seqs": [message["seq"] for message in messages],
                     "bodies": [message["body"] for message in messages],
                 }
@@ -145,6 +167,8 @@ class ScriptedAgentSeam:
                 messages=[RoundMessage(body=self.replies.get(member_id, "延迟后的回应"))],
                 task_action=task_action,
             )
+        if behavior == EMPTY_REPLY:
+            return RoundOutcome(status="replied", reason="脚本化替身：回复了但没有正文也没有动作")
         if behavior == ACTION_ONLY:
             if task_action is None:
                 return RoundOutcome(status="ignored", reason="脚本化替身：没有结构化任务动作")
