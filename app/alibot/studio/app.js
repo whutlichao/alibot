@@ -20,13 +20,13 @@
      `--error` 是这一轮的结论（消息流里的失败行）。
 
    本票（issue #18）新增：
-   - 轮次结果**五态全可见**，但**每一条消息下面至多一行**：同一条消息（同一 `base_seq`）下
-     若有多条**非 `failed`** 的轮次结果（`ignored` / `budget-exhausted` / `merged`），收成
+   - 轮次结果**全态可见**（#58 起六态），但**每一条消息下面至多一行**：同一条消息（同一 `base_seq`）下
+     若有多条**非 `failed`** 的轮次结果（`ignored` / `budget-exhausted` / `merged` / `silent`），收成
      **一行默认折叠的摘要行**（成员名按后端返回序逐个列出，超过 2 人写成「甲、乙 等 N 人」）；
      展开后逐成员一行给出该成员的 status 中文说法与后端 `reason` 原文（不重新措辞、不截断）。
    - `failed` 保持**直接展开**（不藏在折叠后面），与摘要行同挂一条消息、互不吞并。
-     「它为什么没说话」的三种**正常协议选择**（自判忽略 / 预算已用尽 / 被合并）从静默
-     变成可读，但不得淹没对话，也不得与「它坏了」混为一谈。
+     「它为什么没说话」的四种**正常协议选择**（自判忽略 / 预算已用尽 / 被合并 / 结构化声明沉默）从静默
+     变成可读，但不得淹没对话，也不得与「它坏了」混为一谈（`silent` 不是失败，也不是 `ignored`）。
    - 折叠/展开是本浏览器页面的呈现状态（内存里的 `state.expandedOutcomes`），不进 localStorage：
      本文件依旧不用浏览器存储保存任何业务状态。
 
@@ -104,16 +104,17 @@ function providerLabel(provider) {
 /* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
    （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
 
-   键集是 `CONTEXT.md` `## Language` 词表里、**不进摘要行**的那三个：`ignored`（自判忽略）、
-   `budget-exhausted`（预算耗尽）、`merged`（被合并）。它们**不得混为一谈**：`ignored` 是正常
-   协议选择、`budget-exhausted` 不是出错、`merged` 不是失败。
+   键集是 `CONTEXT.md` `## Language` 词表里、**不进摘要行**的那四个：`ignored`（自判忽略）、
+   `budget-exhausted`（预算耗尽）、`merged`（被合并）、`silent`（模型经结构化通道声明沉默）。
+   它们**不得混为一谈**：`ignored` 是正常协议选择、`budget-exhausted` 不是出错、`merged` 不是失败、
+   `silent` 是模型**显式声明**的沉默（不是失败，也不是既有的自判忽略）。
 
    `replied` 与 `failed` 不在表里：`replied` 的可见事实就是那条回复消息本身（不为它挂行）；
    `failed` 直接展开（状态词要在「成员此刻未启用」与「这一轮失败」之间区分，写在 `roundOutcomeNode()` 里）。
    不给它们留查不到的死词条。
 
-   `note` 是折叠态那一句「为什么」——三态各自的后端事实不同，说法就应当不同。 */
-const SUMMARY_STATUSES = ['ignored', 'budget-exhausted', 'merged'];
+   `note` 是折叠态那一句「为什么」——四态各自的后端事实不同，说法就应当不同。 */
+const SUMMARY_STATUSES = ['ignored', 'budget-exhausted', 'merged', 'silent'];
 
 /** 取一个 status 的中文说法；不在摘要词表里就原样回退（不伪造一个说法）。 */
 function outcomeLabel(status) {
@@ -121,7 +122,7 @@ function outcomeLabel(status) {
   return hasKey(key) ? t(key) : status;
 }
 
-/** 折叠行那一句「为什么」（三态各自的后端事实说法；与 `label` 一样只在词条表里）。 */
+/** 折叠行那一句「为什么」（四态各自的后端事实说法；与 `label` 一样只在词条表里）。 */
 function outcomeNote(status) {
   const key = 'outcome.' + status + '.note';
   return hasKey(key) ? t(key) : status;
@@ -3422,7 +3423,7 @@ function renderMessages() {
   renderTabs();
 }
 
-/** 摘要行要覆盖的三种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
+/** 摘要行要覆盖的四种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
 function summarizableOutcomes(records) {
   return records.filter((record) => SUMMARY_STATUSES.includes(record.status));
 }
@@ -3466,7 +3467,7 @@ function roundOutcomeSummaryNode(records) {
   head.appendChild(el('span', 'msg-time', timeLabel(items[0].finished_at)));
   body.appendChild(head);
 
-  // 折叠态：一行说清「为什么」——三态的**后端事实不同，说法就不同**，不得混为一谈。
+  // 折叠态：一行说清「为什么」——四态的**后端事实不同，说法就不同**，不得混为一谈。
   // 只有一种状态时不重复上一行的名单（名单已经在折叠控件里）；混合状态时才逐组点名，
   // 否则读不出「是谁因为哪条原因」。
   body.appendChild(el('div', 'msg-outcome-summary-why', summarizeWhy(items)));
@@ -3527,7 +3528,7 @@ function summarizeWhy(items) {
  * 展开后的一行：一个成员的 `status` 中文说法 + 后端给出的 `reason` **原文**。
  *
  * `reason` 已是可读中文，因此直接呈现——不重新措辞、不截断成省略号（票面硬要求）。
- * 成员名与状态词用 `--faint`/`--muted` 一档：这三态都**不是失败**，不得使用 `--error`。
+ * 成员名与状态词用 `--faint`/`--muted` 一档：这四态都**不是失败**，不得使用 `--error`。
  */
 function roundOutcomeSummaryLine(record) {
   const line = el('div', 'msg-outcome-line');

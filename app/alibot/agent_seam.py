@@ -30,7 +30,23 @@ from .i18n import SOURCE_LOCALE, Locale, render
 _CLOSE_METHOD_NAMES = ("aclose", "close")
 
 # 轮次结果的状态：与规格 §5 的 round outcome status 同一套词。
-SEAM_STATUSES = ("replied", "ignored", "failed")
+#
+# ``silent``（#58 / ADR-0008）与 ``ignored`` **不是**同一件事，也不是 ``failed`` 的变体：
+# - ``ignored``：既有 seam 的正常自判忽略，「这一轮我看了、没什么可说的」（没有结构化声明）；
+# - ``silent``：模型经**结构化通道**（:data:`SILENCE_TOOL_NAME` 这个工具）明确声明本轮沉默。
+# 把声明塞进 ``reason`` 就只能靠自由文本取证，机器无法稳定区分两种事实——所以它是独立的状态词。
+SEAM_STATUSES = ("replied", "ignored", "failed", "silent")
+
+# 「声明沉默」的结构化通道：一个**只记录意图**的工具，落在既有 toolkit 那一层。
+#
+# 为什么是工具调用而不是别的出口：AgentScope 2.0.9 的另一条结构化出口是
+# ``Agent.reply(..., structured_schema=…)``，它经**强制** ``tool_choice``
+# （``ToolChoice(mode="generate_structured_output")``，见 ``agentscope/model/_base.py``）实现；
+# 而强制工具选择正是各家差异最大的那一档（思考模式下会被拒绝，``OllamaChatModel._format_tools``
+# 干脆明写忽略 ``tool_choice.mode``）。普通工具调用只要求「把 schema 送过去」，跨 provider 的形状
+# 最一致，且**不做任何正文解析**——声明与正文是两条互不推演的通道。
+SILENCE_TOOL_NAME = "declare_silence"
+
 
 # provider → 该 provider 需要的凭证环境变量名（可能有多个候选，任一存在即视为有凭证）。
 #
@@ -69,6 +85,27 @@ PROVIDER_CREDENTIAL_TYPE: dict[str, str] = {
 }
 
 PROVIDERS = tuple(PROVIDER_KEY_ENV)
+
+# 能携带工具调用的 provider（结构化沉默通道的**能力闸门**，按 provider 逐个判，不做整体假设）。
+#
+# 核实方法（取证记录见 ``app/specs/issue-58-acceptance.md``）：读安装的 AgentScope 2.0.9 源码
+# ``.venv/lib/python3.11/site-packages/agentscope/model/<provider>/_model.py``——十一家 ChatModel 的
+# ``_call_api`` 都声明 ``tools: list[dict] | None``，并各自实现了 ``_format_tools``，即**传输层**都把
+# 工具 schema 转发给服务端。因此这张表今天就是 ``PROVIDERS`` 全集。它存在的理由不是「有人是 False」：
+#
+# 1. **模型层不可静态判定**：chat 的 ``ModelCard`` 只有 input/output 类型，``supports_tools`` 只存在于
+#    realtime 的 card；某个具体模型会不会真的产出 tool call 只能由运行时回答。因此本仓**不假定**
+#    「所有 provider / 所有模型一致」，判据落在运行时是否真的收到这个工具调用上。
+# 2. **退化必须是结构性的**：闸门为 False 时这一轮**不挂**沉默工具（请求里没有 ``tools``），
+#    于是模型无法声明 ⇒ 结论只可能来自正文，即既有的 ``replied`` / ``ignored`` / ``failed``。
+#    将来某家的传输层丢掉工具，把它从这里删掉即可，不需要改判据。
+PROVIDER_TOOL_TRANSPORT: frozenset[str] = frozenset(PROVIDER_KEY_ENV)
+
+
+def supports_tool_calling(provider: str) -> bool:
+    """该 provider 的这一轮能否携带工具调用（结构化沉默通道的前提；未知 provider 一律 False）。"""
+    return provider in PROVIDER_TOOL_TRANSPORT
+
 
 # 落在本机、不把数据送出本机的 provider：不需要「远端数据流告知」。
 LOCAL_PROVIDERS = ("ollama",)
@@ -186,6 +223,11 @@ class RoundOutcome:
         # 而不是让落库路径多出一条谁都没预料到的消息。
         if len(self.messages) > 1:
             raise ValueError("一轮最多产出 1 条频道消息")
+        # ``silent`` 与**非空** ``messages`` 互斥（#35 D0-d / ADR-0008）：声明沉默就是零条待落库消息。
+        # 这条校验放在互斥的**唯一**落点（seam 的输出类型）上，而不是散在落库路径里——编排据此落
+        # ``round_outcome(status="silent")``，``reply_seq`` 自然为 NULL。
+        if self.status == "silent" and self.messages:
+            raise ValueError("silent 轮次不得产出待落库的回复消息")
         if self.task_action is not None and not isinstance(
             self.task_action, (TransferTaskAction, SetTaskStatusAction)
         ):
@@ -332,8 +374,12 @@ class AgentScopeAgentSeam:
             mentioned=mentioned,
             task_context=task_context,
             mandatory_reply=mandatory_reply,
+            structured_silence=supports_tool_calling(provider),
         )
         task_actions: list[AgentTaskAction] = []
+        # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
+        # 它是一个进程内的事实列表，只在 ``_round`` 的 loop 里被工具线程追加，不落库。
+        silence_declarations: list[None] = []
 
         async def _round() -> Any:
             # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
@@ -350,10 +396,15 @@ class AgentScopeAgentSeam:
                     "system_prompt": system_prompt,
                     "model": model,
                 }
-                if task_context is not None:
-                    agent_options["toolkit"] = _task_action_toolkit(
-                        task_context, str(agent["id"]), task_actions
-                    )
+                toolkit = _round_toolkit(
+                    provider,
+                    task_context=task_context,
+                    actor_id=str(agent["id"]),
+                    task_actions=task_actions,
+                    silence_declarations=silence_declarations,
+                )
+                if toolkit is not None:
+                    agent_options["toolkit"] = toolkit
                 instance = Agent(**agent_options)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
@@ -392,6 +443,19 @@ class AgentScopeAgentSeam:
 
         task_action = task_actions[0] if task_actions else None
         text = _msg_text(reply)
+        # 结构化声明**优先于**正文（D0-d：silent ↔ 非空 messages 互斥）：模型既调了工具又写了一段
+        # 「好的，本轮我不说话」，那段仍是正文，不能作为回复落库。声明与正文互不推演——这里只读工具
+        # 记录，不从文本里认任何措辞。
+        if silence_declarations:
+            if task_action is not None:
+                # 既声明沉默又提交任务动作：动作是本轮真正发生的事，按既有的「动作-only 算回应」收口
+                # （否则会静默丢掉一个已经校验过的结构化动作）。reason 把两件事都说清楚。
+                return RoundOutcome(
+                    status="replied",
+                    reason=render("seam.silence_with_action", self._locale()),
+                    task_action=task_action,
+                )
+            return RoundOutcome(status="silent", reason=render("seam.silent", self._locale()))
         if not text.strip():
             if task_action is not None:
                 return RoundOutcome(
@@ -455,6 +519,7 @@ def _system_prompt(
     mentioned: bool,
     task_context: TaskActionContext | None = None,
     mandatory_reply: bool = False,
+    structured_silence: bool = False,
 ) -> str:
     """把成员配置里的系统提示 + 本轮的回应 rubric + 任务上下文合成一次调用的 system prompt。
 
@@ -468,6 +533,10 @@ def _system_prompt(
     因此这里不再用「回什么」描述沉默，并把它的反面（括注 / 旁白 / 说明 / 道歉）逐个点名。
     边界必须留在同一段里：被点名必须回应，未被点名且话题无关才轮到沉默——只写一半，模型就没有
     依据判断这一轮该不该说话。
+
+    ``structured_silence``（#58）只**补一句**：这一轮模型手上有 ``declare_silence`` 这个工具时，
+    沉默要用它声明，而不是靠「什么都不写」让后端去猜。它不改 #57 的措辞，也不改变纪律——声明之后
+    仍然由后端按同一套 rubric 收口（被点名时声明沉默照样按 failed 处理）。
     """
     base = str(agent.get("system_prompt") or "").strip()
     role = str(agent.get("role") or "").strip()
@@ -486,6 +555,16 @@ def _system_prompt(
     )
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
+    if structured_silence:
+        # 结构化通道的**说明书**（#58）：只解释这个出口怎么用，不重述纪律（上面那段是唯一的 rubric）。
+        # 措辞刻意不复述「被点名 / 话题无关」这两条边界：它们已经在上面的 rubric 里，写第二遍会让
+        # 「回应纪律恰好是一段」这条既有判据（#57 的测试）变成两段自相解释的规矩。
+        parts.append(
+            "你本轮配有一个 declare_silence 工具。当上面的回应纪律允许你沉默时，"
+            "调用它来声明本轮沉默——声明之后什么都不要再写；"
+            "不要用括注、旁白、说明或道歉去交代「我本轮不说话」，那仍然是一条正文。"
+            "当纪律要求你必须回应时，不要用它回避。"
+        )
     if task_context is not None:
         # 任务本体（ADR-0016 四）：标题 + 当前状态 + 受派者身份。
         # 身份句只在**本轮 Agent 就是受派者**时给——否则会制造「我是受派者」的假事实。
@@ -513,10 +592,70 @@ def _system_prompt(
     return "\n\n".join(parts)
 
 
-def _task_action_toolkit(context: TaskActionContext, actor_id: str, actions: list[AgentTaskAction]) -> Any:
+def _round_toolkit(
+    provider: str,
+    *,
+    task_context: TaskActionContext | None,
+    actor_id: str,
+    task_actions: list[AgentTaskAction],
+    silence_declarations: list[None],
+) -> Any:
+    """装配这一轮的工具集：任务动作（仅任务线程）+ 沉默声明（provider 传输层能携带工具时）。
+
+    **能力闸门在这里**：``supports_tool_calling(provider)`` 为假时**不挂**沉默工具，于是请求里没有
+    ``tools``、模型无法声明沉默，这一轮只能靠正文收口成既有的 ``replied`` / ``ignored`` / ``failed``。
+    退化是结构性的（不是「模型大概不会调」的侥幸），这与「不假定所有 provider 一致」是同一条纪律。
+
+    返回 ``None`` 表示这一轮不需要任何工具（频道里的非任务轮次 + 不支持工具的 provider）：此时
+    ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
+    """
+    from agentscope.tool import Toolkit
+
+    tools: list[Any] = []
+    if task_context is not None:
+        tools.extend(_task_action_tools(task_context, actor_id, task_actions))
+    if supports_tool_calling(provider):
+        tools.extend(_silence_tools(silence_declarations))
+    if not tools:
+        return None
+    return Toolkit(tools=tools)
+
+
+def _silence_tools(declarations: list[None]) -> list[Any]:
+    """「声明沉默」这个结构化通道：**只记录意图**、不写任何东西（写入仍由编排决定）。
+
+    工具是**自愿**调用的、不做强制 ``tool_choice``：强制工具选择在 AgentScope 2.0.9 里是各家差异
+    最大的一档（思考模式会被拒绝、Ollama 传输层忽略 mode），而本通道只需要「模型想沉默时有一个
+    正式的出口」——它自愿调用，我们据此落 ``silent``；不调用就完全退回既有判据。
+    """
+    from agentscope.permission import PermissionBehavior, PermissionDecision
+    from agentscope.tool import FunctionTool, ToolBase
+
+    declaration_lock = threading.Lock()
+
+    def declare_silence() -> str:
+        """声明本轮沉默：这一轮不产出正文（不要再用括注 / 旁白 / 道歉交代）。"""
+        with declaration_lock:
+            declarations.append(None)
+        return "已记录本轮沉默；请不要再输出任何正文。"
+
+    permission = PermissionDecision(
+        behavior=PermissionBehavior.ALLOW,
+        message="沉默声明只记录为本轮的结构化结果，不改写任何消息或任务。",
+    )
+    # AgentScope 2.0.9 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
+    tools: list[ToolBase] = [
+        FunctionTool(declare_silence, permission=permission, is_read_only=True)  # type: ignore[arg-type]
+    ]
+    return tools
+
+
+def _task_action_tools(
+    context: TaskActionContext, actor_id: str, actions: list[AgentTaskAction]
+) -> list[Any]:
     """仅在任务轮次提供两种类型化动作工具；工具只收集意图，写入仍由编排器授权。"""
     from agentscope.permission import PermissionBehavior, PermissionDecision
-    from agentscope.tool import FunctionTool, ToolBase, Toolkit
+    from agentscope.tool import FunctionTool, ToolBase
 
     action_lock = threading.Lock()
 
@@ -557,7 +696,7 @@ def _task_action_toolkit(context: TaskActionContext, actor_id: str, actions: lis
             return record(TransferTaskAction(context.task_id, recipient.member_id))
 
         tools.append(FunctionTool(transfer_task, permission=permission))  # type: ignore[arg-type]
-    return Toolkit(tools=tools)
+    return tools
 
 
 def _author_name(message: dict[str, Any]) -> str:

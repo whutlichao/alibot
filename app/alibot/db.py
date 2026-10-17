@@ -65,7 +65,12 @@ AVATAR_SLOT_COUNT = 5
 # 14 是满足它的最小号；后续票从 15 起（号段是跨在途票的分配，不是每次 +1）。
 # 代价同上：被 13 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
 # `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..14）。
-SCHEMA_VERSION = 14
+# 15 = **本票 #58**（结构化沉默信号 `silent`：`round_outcome.status` 的库级 CHECK 纳入第六个词，
+# ADR-0008）。SQLite 改表级 CHECK 只能重建表，因此多了一步 `14 → 15`（`migrate._step_14_to_15`）；
+# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号，后续票从 16 起。
+# 代价同上：被 14 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
+# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..15）。
+SCHEMA_VERSION = 15
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -119,8 +124,10 @@ TASK_STATUS_TRANSITIONS = {
 # 认领会跟着失败，而不是绕过这张表静默越界。
 CLAIM_START_STATUS = "in_progress"
 
-# 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
-ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
+# 轮次结果的六种状态（spec #1 §5 + #58 / ADR-0008）。status 是「自判忽略」「模型声明沉默」与
+# 「处理失败」的区分来源：``ignored`` 与 ``silent`` 都不是失败，前者是既有的 seam 自判忽略，后者是
+# 模型经结构化通道（``declare_silence`` 工具）明确声明本轮沉默。``reason`` 只是可读诊断，不承担判别。
+ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted", "silent")
 
 # 有界响应预算（策略 B，spec #1 §5）：一个**人类世代内同一 target** 允许的 agent→agent 跳数上界。
 # 内置默认值仍是 3（ADR-0002 保留原文：耗尽仍零投递、默认值仍是它）。频道可以把它**上调/下调**到
@@ -461,7 +468,7 @@ CREATE TABLE IF NOT EXISTS round_outcome (
   target_id       TEXT NOT NULL REFERENCES target(id),
   base_seq        INTEGER NOT NULL,
   status          TEXT NOT NULL CHECK (status IN
-                    ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted')),
+                    ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted', 'silent')),
   reason          TEXT NOT NULL DEFAULT '',
   started_at      TEXT NOT NULL,
   finished_at     TEXT NOT NULL,

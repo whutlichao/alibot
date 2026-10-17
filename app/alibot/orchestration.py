@@ -537,9 +537,17 @@ class WakeOrchestrator:
                 # 认领那一侧用 ``mandatory_reply`` 判定（不读 reason：重复唤醒会被合并，原因见 run_round
                 # docstring）；提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把「它坏了」当成「它不想说」）。
                 definite_signal = mentioned or mandatory_reply
-                if definite_signal and outcome.status == "ignored":
-                    # 诊断文案按**哪个**确定信号选：认领轮不能写成「被个人提及」（那是一个不存在的事实）。
-                    key = "reason.claim_ignored" if mandatory_reply else "reason.mention_ignored"
+                # ``silent``（#58）与 ``ignored`` 在确定信号下**同级**处理：两者都是「它决定不说话」，
+                # 而不是「没被问」。CONTEXT.md 的**回应判断**词条明写这条纪律不因状态来源而放宽。
+                if definite_signal and outcome.status in ("ignored", "silent"):
+                    # 诊断文案按**哪个**确定信号 + **哪种**沉默选：认领轮不能写成「被个人提及」，
+                    # 声明沉默也不能写成「自判忽略」（那是一个不存在的事实）。
+                    if mandatory_reply:
+                        key = "reason.claim_silent" if outcome.status == "silent" else "reason.claim_ignored"
+                    elif outcome.status == "silent":
+                        key = "reason.mention_silent"
+                    else:
+                        key = "reason.mention_ignored"
                     outcome = RoundOutcome(
                         status="failed",
                         reason=render(key, self._locale(), reason=outcome.reason),
@@ -593,9 +601,11 @@ class WakeOrchestrator:
                         task_action=outcome.task_action,
                     )
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
-            elif outcome.status == "ignored" or (
+            elif outcome.status in ("ignored", "silent") or (
                 outcome.status == "replied" and outcome.task_action is not None
             ):
+                # ``ignored`` / ``silent`` 都是「这一轮处理完了、没有正文要留」：待读推到本轮基线，
+                # 否则这些消息会在下一轮被当成「新消息」再喂一次（同一轮被问两遍）。
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
 
             if outcome.status == "replied" and outcome.task_action is not None:

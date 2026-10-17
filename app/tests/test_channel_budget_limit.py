@@ -329,7 +329,12 @@ def test_a_v13_library_migrates_to_fourteen_and_old_rows_read_as_the_default(
 
 # ─── 边界：schema 号与内置默认值的独立读数 ──────────────────────────────────
 def test_the_schema_version_and_the_default_limit_are_what_the_ticket_says() -> None:
-    """本票拿号 14（#31 的号段裁定）；内置默认仍是 3（ADR-0002 不修订）。"""
-    assert SCHEMA_VERSION == 14
+    """本票（#53）拿号 14；内置默认仍是 3（ADR-0002 不修订）。
+
+    ``SCHEMA_VERSION`` 不钉**等号**：ADR-0015 §三 明写判据是「必须高于当前 main」而不是「等于被分配
+    的预留号」——#58 把它推到 15（``round_outcome.status`` 的 CHECK 纳入 ``silent``），本票的号段事实
+    仍然成立（``>= 14``），但「此刻恰好等于 14」不是本票要守的契约。
+    """
+    assert SCHEMA_VERSION >= 14
     assert DEFAULT_LIMIT == BUDGET_LIMIT == 3
     assert DATABASE_FILE_NAME.endswith(".db")

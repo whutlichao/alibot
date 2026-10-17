@@ -74,13 +74,18 @@ const I18N_CATALOGS = {
     'task.transition.todo': '退回待认领',
     'task.transition.closed': '关闭任务',
 
-    /* ─── 轮次结果的三种「正常选择」（`failed` 单独成行，`replied` 由回复承载） ── */
+    /* ─── 轮次结果的四种「正常选择」（`failed` 单独成行，`replied` 由回复承载） ── */
     'outcome.ignored.label': '自判忽略',
     'outcome.ignored.note': '自判忽略（正常的协议选择，不是失败）',
     'outcome.budget-exhausted.label': '预算耗尽',
     'outcome.budget-exhausted.note': '预算已用尽，本轮零投递（不是出错，成员状态点仍空闲）',
     'outcome.merged.label': '被合并',
     'outcome.merged.note': '重复唤醒被合并进正在进行的那一轮（不是失败）',
+    /* `silent`（#58 / ADR-0008）：模型经**结构化通道**（`declare_silence` 工具）明确声明本轮沉默。
+       它不是失败，也不是 `ignored`（后者是既有 seam 的正常自判忽略，没有结构化声明）。 */
+    'outcome.silent.label': '模型声明沉默',
+    'outcome.silent.note':
+      '模型经结构化通道声明本轮沉默，没有产出正文（不是失败，也不是自判忽略）',
     'outcome.summaryAria': '{names} 没有回应：{count} 条轮次结果',
     'outcome.collapse': '收起原因',
     'outcome.expand': '没有回应 · 展开看原因',
@@ -529,7 +534,7 @@ const I18N_CATALOGS = {
     'task.transition.todo': 'Send back to unclaimed',
     'task.transition.closed': 'Close task',
 
-    /* ─── The three normal round outcomes ──────────────────────────── */
+    /* ─── The four normal round outcomes ───────────────────────────── */
     'outcome.ignored.label': 'Ignored by choice',
     'outcome.ignored.note': 'Ignored by choice (a normal protocol decision, not a failure)',
     'outcome.budget-exhausted.label': 'Budget exhausted',
@@ -538,6 +543,13 @@ const I18N_CATALOGS = {
     'outcome.merged.label': 'Merged',
     'outcome.merged.note':
       'A duplicate wake-up was merged into the round already running (not a failure)',
+    /* `silent` (#58 / ADR-0008): the model declared silence through the **structured channel**
+       (the `declare_silence` tool). Not a failure, and not `ignored` (the existing self-judged
+       ignore, which carries no structured declaration). */
+    'outcome.silent.label': 'Silence declared',
+    'outcome.silent.note':
+      'The model declared silence for this round through the structured channel and produced no body '
+      + '(not a failure, and not an ignored round)',
     'outcome.summaryAria': '{names} did not reply: {count} round outcomes',
     'outcome.collapse': 'Hide reasons',
     'outcome.expand': 'No reply · show reasons',

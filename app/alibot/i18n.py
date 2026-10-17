@@ -114,6 +114,11 @@ CATALOGS: dict[str, dict[str, str]] = {
             "被个人提及是确定信号，必须回应；本轮自判忽略，按失败处理（原因为：{reason}）"
         ),
         "reason.mention_no_body": "被个人提及是确定信号，但本轮没有产出可落库的正文，按失败处理",
+        # 声明沉默在确定信号下同样按失败处理（CONTEXT.md 的**回应判断**词条）：它是「不想说」，
+        # 不是「没被问」，所以不能像空正文那样静默——诊断要把原始的 silent 理由带出来。
+        "reason.mention_silent": (
+            "被个人提及是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
+        ),
         # 认领唤醒的两个**同级**文案（D6：与 mention 那一对同级，不是复用它们的正文——
         # 否则诊断会写成「被个人提及」，而那是一个不存在的事实）。
         "reason.claim_ignored": (
@@ -121,6 +126,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "reason.claim_no_body": (
             "认领唤醒是确定信号，但本轮没有产出可落库的正文、也没有提交任务动作，按失败处理"
+        ),
+        "reason.claim_silent": (
+            "认领唤醒是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
         ),
         # 认领轮的可读后缀（ADR-0016 五）：照 `reason.pierced_suffix` 的先例追加进 reason 文本。
         # `reason` 只承担可读诊断，**不**承担纪律判据（那是进程内布尔 `mandatory_reply` 的事）。
@@ -153,6 +161,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "模型通过任务工具提交了结构化动作",
         "seam.no_body": "模型没有产出可落库的正文（本轮自判不回应）",
         "seam.replied": "模型自主判断需要回应",
+        # ``silent``（#58）：声明来自**结构化通道**（declare_silence 工具），不是从正文猜的。
+        "seam.silent": "模型经结构化通道（declare_silence 工具）声明本轮沉默，没有产出正文",
+        "seam.silence_with_action": (
+            "模型声明了本轮沉默，但同时提交了结构化任务动作（本轮以动作为准，不产出正文）"
+        ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "消息正文",
@@ -334,6 +347,10 @@ CATALOGS: dict[str, dict[str, str]] = {
             "A personal mention is a definite signal, but this round produced no storable body, "
             "so it counts as a failure"
         ),
+        "reason.mention_silent": (
+            "A personal mention is a definite signal and must be answered; this round declared "
+            "silence, so it counts as a failure (original reason: {reason})"
+        ),
         # The two **sibling** claim-wake reasons (D6): same rank as the mention pair above,
         # deliberately not reusing their wording (which would name a mention that never happened).
         "reason.claim_ignored": (
@@ -343,6 +360,10 @@ CATALOGS: dict[str, dict[str, str]] = {
         "reason.claim_no_body": (
             "A claim wake is a definite signal, but this round produced no storable body and "
             "submitted no task action, so it counts as a failure"
+        ),
+        "reason.claim_silent": (
+            "A claim wake is a definite signal and must be answered; this round declared silence, "
+            "so it counts as a failure (original reason: {reason})"
         ),
         # The readable suffix for a claim round (ADR-0016 五): appended to the reason text,
         # following the existing `reason.pierced_suffix` precedent.
@@ -390,6 +411,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "The model submitted a structured action through the task tool",
         "seam.no_body": "The model produced no storable body (it chose not to answer this round)",
         "seam.replied": "The model decided an answer was needed",
+        "seam.silent": (
+            "The model declared silence through the structured channel (the declare_silence tool) "
+            "and produced no body"
+        ),
+        "seam.silence_with_action": (
+            "The model declared silence for this round but also submitted a structured task action "
+            "(the action wins and no body is stored)"
+        ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "message bodies",
