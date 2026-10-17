@@ -19,9 +19,9 @@ D3（落点-b）与 Testing Decisions；契约正本：`docs/adr/0008-structured
 
 ```bash
 cd app && ../.venv/bin/python -m pytest tests/test_silent_outcome.py -q
-# 11 passed
-#   test_silent_is_the_fourth_seam_status_on_par_with_the_other_three
-#   test_a_declared_silence_becomes_a_silent_outcome_without_any_message（真实 seam + 本机 stub provider）
+# 9 passed
+#   test_a_silent_outcome_carries_no_storable_message（外加既有「一轮至多一条消息」与四结论参数化）
+#   （真实 seam 那一侧在 tests/test_silence_tool_channel.py，见判据 2）
 ```
 
 ### 判据 2｜结构化通道**真的存在**、可被 provider 支持，且不假定所有 provider 一致
@@ -32,8 +32,8 @@ cd app && ../.venv/bin/python -m pytest tests/test_silent_outcome.py -q
 cd app && ../.venv/bin/python -m pytest tests/test_silence_tool_channel.py -q
 # 5 passed
 #   test_a_declared_silence_becomes_a_silent_outcome_without_any_message
-#   test_a_provider_without_the_tool_transport_degrades_to_the_existing_outcomes
-#   test_the_unknown_provider_is_treated_as_unable_to_declare_silence
+#   test_a_provider_outside_the_gate_degrades_to_the_existing_outcomes
+#   test_an_unavailable_provider_never_reaches_the_transport
 #   test_a_model_that_does_not_call_the_tool_keeps_the_plain_reply
 #   test_an_empty_body_without_a_declaration_is_still_ignored
 ```
@@ -58,8 +58,8 @@ cd app && ../.venv/bin/python -m pytest tests/test_silent_outcome.py -q -k "sile
 
 ```bash
 cd app && ../.venv/bin/python -m pytest tests/test_silent_outcome.py -q
-# 11 passed（含四结论参数化：replied=1 条消息 / ignored=0 / failed=0 / silent=0，
-#            且各自的成员状态点读数分别为 online/online/error/online）
+# 9 passed（含四结论参数化：replied=1 条消息 / ignored=0 / failed=0 / silent=0，
+#           且各自的成员状态点读数分别为 online/online/error/online）
 cd app && ../.venv/bin/python -m pytest tests/test_round_outcome_visibility.py tests/test_backend_copy.py -q
 # 全部通过（#18 的摘要行与 #62 的两层文案契约未受影响）
 ```
@@ -121,7 +121,7 @@ node --test app/tests/*.test.cjs                # 121 passed / 0 failed
 | `silent` 恰一条 `round_outcome`、无回复 message | 同上参数化用例（`[record["status"]] == ["silent"]`、消息 kinds 只有 `human`） | passed |
 | `reason` 可读 | 参数化用例的 `record["reason"].strip()` + `silent_ui.test.cjs` 的 reason 原文断言 | passed |
 | 库级 CHECK 接受 `silent` / 拒绝非法词 | `test_the_database_check_accepts_silent_and_refuses_an_unknown_word`、`test_a_v14_library_migrates_to_a_check_that_accepts_silent` | passed |
-| `SCHEMA_VERSION` 与前端词表一致 | `test_studio_vocabulary_agrees_with_the_backend_status_words`（前端摘要词集 ⊆ `ROUND_STATUSES`、`SEAM_STATUSES ⊆ ROUND_STATUSES`、两种语言各一处） | passed |
+| 前端摘要行与两种语言的说法 | `silent_ui.test.cjs`（进摘要行而不是失败卡、两种语言各一处且不等于 `ignored` 的说法、状态词用 `--faint`） | 5 passed |
 
 前端门禁用例族与归属：沿用既有 `vm` + `fetch` 替身 + DOM 替身那一族（与 `narration_ui.test.cjs` 同形）。
 **新建的 `app/tests/silent_ui.test.cjs` 已被既有门禁命令的 glob 覆盖**，命令仍是
@@ -184,8 +184,9 @@ grep -n "tools: list\[dict\] | None = None," */_model.py
 
 **结论分两层，两层都不做整体假设：**
 
-1. **传输层**：十一家都携带 `tools`。因此本仓的能力闸门 `PROVIDER_TOOL_TRANSPORT` 今天等于
-   `PROVIDERS` 全集（逐 provider 判定，`supports_tool_calling(provider)`）。
+1. **传输层**：十一家都携带 `tools`。因此本仓的能力闸门 `supports_tool_calling(provider)` 直接读
+   `PROVIDER_KEY_ENV` 的键集（review 收口删掉了与它恒等的第四张表 `PROVIDER_TOOL_TRANSPORT`——
+   加一家 provider 只改一处，闸门与「该 provider 有没有客户端」仍是同一份事实来源）。
 2. **模型层**：AgentScope 2.0.9 **没有**给 chat 模型提供工具能力元数据——chat 的 `ModelCard`
    （`agentscope/model/_model_card.py`）只有 input/output 类型，`supports_tools` 只存在于 **realtime**
    的 card（`agentscope/realtime/_model_card.py:59`）。所以「某个具体模型会不会真的调工具」只能由
@@ -197,7 +198,7 @@ grep -n "tools: list\[dict\] | None = None," */_model.py
   请求里没有 `tools`、prompt 里没有那段说明书 ⇒ 模型无法声明 ⇒ 结论只可能来自正文，即既有的
   `replied` / `ignored` / `failed`。
 - 闸门为真但**模型不调**工具 ⇒ 同样退回既有判据：正文 ⇒ `replied`；空正文且无声明 ⇒ `ignored`。
-- 两条退化都有用例（`test_a_provider_without_the_tool_transport_degrades_to_the_existing_outcomes`、
+- 两条退化都有用例（`test_a_provider_outside_the_gate_degrades_to_the_existing_outcomes`、
   `test_a_model_that_does_not_call_the_tool_keeps_the_plain_reply`、
   `test_an_empty_body_without_a_declaration_is_still_ignored`），并且第一条同时断言「请求里没有
   `tools` 键、prompt 里没有工具名」——退化是**看得见**的。
@@ -263,3 +264,44 @@ node --test app/tests/*.test.cjs
 - **不确定点**：前端「准确中文说法」的具体措辞由本票定稿（`模型声明沉默`），若产品侧要改词，
   只需改 `studio/i18n.js` 的两处取值，测试断言的是「两种语言都有、且不等于 `ignored` 的说法」+
   「含「沉默」字样」，不钉整句。
+
+## 七、两处取舍与备选（review 收口补记）
+
+### 7.1 `silent` + 同轮 `task_action` 收口成 `replied`
+
+**现状**（`AgentScopeAgentSeam.run_round`）：`silence_declarations` 非空时，若同一轮还提交了任务动作，
+结论是 `RoundOutcome(status="replied", reason=render("seam.silence_with_action"), task_action=…)`，而**不是**
+`silent`。
+
+**为什么**：动作是本轮**真正发生**且已被工具层校验过的事实（`set_task_status` / `transfer_task` 只记录
+意图，写入仍由编排在回复后授权）。若报 `silent`，`RoundOutcome` 的互斥契约要求它**零条待落库消息**，
+于是这份动作没有任何编排会去应用——等于静默丢掉一个合法动作。用 `replied` 承载动作是既有的
+「动作-only 算回应」体例；`reason` 用独立词条 `seam.silence_with_action` 把「模型宣布沉默 + 提交了动作」
+两件事都说清，不让读者以为它说了话。
+
+**备选（未采用）**：让 `silent` 与动作解耦，由编排在 `silent` 分支里**另行应用**动作。代价是同一件事
+出现两条应用路径（`replied` 与 `silent` 各一条），且 status 与「动作是否已应用」变成两个各自要解释的
+维度——`replied` 的既有语义（「这一轮说了话」）会与「声明了沉默」的读法打架。当前取舍保持单一应用路径，
+把差异只放在 `reason` 里。
+
+**失效方向**：界面摘要行按 `replied` 呈现；若将来需要让「声明了沉默但有动作」在 UI 可区分，出口是给这条
+`reason` 一个前端说法（后端词条已存在），**不需要**新增状态词或改库级 CHECK。
+
+### 7.2 确定信号下 `silent` 按 `failed` 处理（与既有 `ignored` 同款）
+
+**现状**：`orchestration.py` 的 `definite_signal` 分支把 `ignored` 与 `silent` **同级**处理——被个人提及、
+或被认领唤醒时，两者都收口成 `failed`；`reason` 用**新增**词条 `reason.mention_silent` /
+`reason.claim_silent`，不复用 `*_ignored` 的正文（否则会写出一个不存在的事实：它并没有「自判忽略」）。
+
+**为什么与 `ignored` 同款**：`CONTEXT.md` 的**回应判断**词条把「被点名必须回应」定为确定信号；`ignored`
+与 `silent` 都是「它决定不说话」，在必须回应的场合都**不算回应**。差别只在**原因**（自判无关 vs 结构化
+声明），不在**后果**。状态点仍然只看「最近一条非 merged 的轮次结果是否为 failed」，因此确定信号下的
+`silent` 与 `ignored` 一样会落到 `error` 状态点，而不是「在线但没说话」。
+
+**备选（未采用）**：给「确定信号下的声明沉默」一个新状态词（例如 `silent-overridden`）。收益只是措辞更
+精确，代价是扩 `SEAM_STATUSES` / `ROUND_STATUSES` / 库级 CHECK / 前端摘要词表 / `success_rate` 分母，
+并让一条 `silent` 在两种上下文里有两种读法。本票不扩状态词表；改判 + 可读 `reason` 已足以不留假话。
+
+**失效方向**：`silent` 的另一半语义（**非**确定信号下 = 正常协议结果、状态点仍 online、不进 `success_rate`
+分母）由 `test_each_round_outcome_kind_is_persisted_with_its_message_count` 与 `test_silent_and_ignored_are_two_distinguishable_rows_in_one_round` 钉住。
+
