@@ -92,6 +92,15 @@ const I18N_CATALOGS = {
     'outcome.inspect': '看成员状态',
     'outcome.disabledNote': '{name} 现在是「未启用」，所以这一轮没有回复。后端给出的原因：',
 
+    /* ─── 旁白式交代（一条消息的**呈现降档**，不是一种轮次结果） ──────────
+       旁白仍是真实消息：它占自己的 `seq`、计未读。这里只有它那一行怎么读、以及展开后
+       「关联轮次结果的 reason」这块的说法——不并入 `outcome.*` 摘要行的文案。 */
+    'narration.tag': '旁白',
+    'narration.expand': '展开看这一轮的结果',
+    'narration.collapse': '收起这一轮的结果',
+    'narration.toggleAria': '{name} 的旁白：{action}',
+    'narration.reasonMissing': '这一轮的结论暂时读不到。',
+
     /* ─── 模型提供商（远端 / 本机是**事实**，不是档位） ───────────────── */
     'provider.dashscope': 'DashScope（远端）',
     'provider.openai': 'OpenAI（远端）',
@@ -540,6 +549,16 @@ const I18N_CATALOGS = {
     'outcome.inspect': 'View member status',
     'outcome.disabledNote':
       '{name} is disabled right now, so this round got no reply. The backend gives this reason:',
+
+    /* ─── Silent narration (a message's **presentation downgrade**, not an
+       outcome status). It is still a real message: it keeps its own `seq` and
+       counts as unread. Only how that one line reads, plus the wording of the
+       expandable "related round outcome reason" block. ─────────────────── */
+    'narration.tag': 'Aside',
+    'narration.expand': 'Show this round’s result',
+    'narration.collapse': 'Hide this round’s result',
+    'narration.toggleAria': 'Aside from {name}: {action}',
+    'narration.reasonMissing': 'This round’s outcome is not available right now.',
 
     /* ─── Model providers ──────────────────────────────────────────── */
     'provider.dashscope': 'DashScope (remote)',
