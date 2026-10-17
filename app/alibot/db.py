@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .i18n import SOURCE_LOCALE, locale_of, render
+from .reminder_trigger import reminder_state
 
 OWNER_ID = "owner"
 OWNER_DISPLAY_NAME = "Owner"
@@ -1343,6 +1344,17 @@ class Database:
 
     @staticmethod
     def _reminder_payload(row: sqlite3.Row) -> dict[str, Any]:
+        """一条提醒的读路径载荷。
+
+        ``fired_at`` 与 ``state`` 是**恒有**的两个键（C20）：
+
+        - ``fired_at``：``null`` = 还没到点；非空 = 已投递（ISO-8601 **UTC** 串、带 ``Z`` 后缀，与
+          ``created_at`` 同一族口径）。它是**无归属**提醒唯一可观察的到点证据——那些提醒到点不落消息。
+        - ``state``：``pending`` / ``fired`` / ``missed`` 三取一的**只读派生值**，由 ``fired_at`` 与到期
+          时刻之差推导（唯一规则在 :func:`alibot.reminder_trigger.reminder_state`）。它**不落库、不进列**：
+          D4 否掉的是「第三个状态**列**」，派生字段不是列。
+        """
+        fired_at = row["fired_at"]
         return {
             "id": row["id"],
             "text": row["text"],
@@ -1351,7 +1363,87 @@ class Database:
             # 不归属时是空串而不是 null：前端那一行按「有归属才显示频道」分支，空串就是没有。
             "channel_name": row["channel_name"] or "",
             "created_at": row["created_at"],
+            "fired_at": fired_at,
+            "state": reminder_state(str(row["time"]), fired_at),
         }
+
+    def list_unfired_reminders(self) -> list[dict[str, Any]]:
+        """全部 ``fired_at IS NULL`` 的提醒（**到期投递器的候选集合**）。
+
+        到期与否**不在这里判**：库里不对本地到期时刻与 UTC 审计戳做大小比较（C7 规矩 3），判定由
+        :class:`alibot.reminder_trigger.ReminderTrigger` 在 Python 侧用**唯一的换算口径**做。
+        因此这条 SQL 只按「有没有投递过」筛选，与「现在几点」无关。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                REMINDER_SELECT_SQL + "WHERE r.fired_at IS NULL ORDER BY r.time, r.rowid"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def fire_reminder(
+        self,
+        reminder_id: str,
+        copy_key: str | None = None,
+        *,
+        fired_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """把一条提醒标成**已投递**，并在给了 ``copy_key`` 时落一条 ``system`` 消息。
+
+        **同一事务**（C5）：落消息与写 ``fired_at`` 在同一个 ``_begin()`` / ``_commit()`` 里收口，任一步
+        失败整体回滚——于是「消息落了但标记没写」这条会重复投递的中间态在构造上不可达（体例照
+        :meth:`append_message` 的事务边界）。回滚意味着「从未成功」，下一轮轮询会重试。
+
+        幂等（「至多投递一次」的唯一落点）：``SELECT ... WHERE fired_at IS NULL`` 先把「已投过」的行
+        排除掉。已被别的路径投过 ⇒ 返回 ``None``、**改动 0 行**，调用方据此知道这一批不必再落消息。
+
+        ``copy_key`` 为 ``None`` 表示「只写标记、不落消息」的两条分支：**无归属**提醒（不新增 target，
+        ADR-0012）与**窗口外**的错过（人类面只呈现为已错过）。消息的作者恒为 **owner**，``kind='system'``
+        ——它不是对话回合，因此不唤醒、不消耗预算、不计未读、不进搜索（既有口径一个都不变，C3）。
+
+        ``fired_at`` 是审计戳：它取**投递时刻**（由投递器传入，与 ``created_at`` 同一族口径：UTC、
+        毫秒精度、``Z`` 后缀）。不在这里取墙钟的原因：投递器的判定用的是**注入时刻**，两者必须是
+        同一个瞬时，否则「已投递」会晚于「判定到点」，C9 的 30 秒精度判据与 C20 的 `state` 推导
+        会在同一次投递里各算两份时间。
+
+        返回 ``{"reminder": <最新载荷>, "message": <新消息或 None>}``；已投递过则整条返回 ``None``。
+        """
+        stamp = fired_at if fired_at is not None else utc_now()
+        now = utc_now()
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT text, channel_id FROM reminder WHERE id = ? AND fired_at IS NULL",
+                    (reminder_id,),
+                ).fetchone()
+                if row is None:
+                    # 已投递过（或这条提醒不在了）：**改动 0 行**，这是「至多投递一次」的构造性保证。
+                    self._rollback()
+                    return None
+                self._conn.execute("UPDATE reminder SET fired_at = ? WHERE id = ?", (stamp, reminder_id))
+                channel_id = row["channel_id"]
+                body = ""
+                message: dict[str, Any] | None = None
+                if copy_key is not None and channel_id is not None:
+                    # 正文按**库内语言偏好**渲染（投递跑在 HTTP 请求之外，没有请求头可读，ADR-0009），
+                    # 且在写入那一刻定型：落库后不随偏好切换回溯（append-only 取证面）。
+                    body = self._render_copy(copy_key, text=str(row["text"]))
+                    seq = self._append_target_message_locked(str(channel_id), body, now)
+                    message = {
+                        "target_id": str(channel_id),
+                        "seq": seq,
+                        "kind": "system",
+                        "body": body,
+                        "created_at": now,
+                    }
+                self._commit()
+            except Exception:
+                # 落消息那一步失败 ⇒ 整体回滚：消息没落、``fired_at`` 没写，下一轮轮询会**重试**
+                # （那是「从未成功」，不是重复投递）。
+                self._rollback()
+                raise
+            reminder = self._get_reminder(reminder_id)
+        return {"reminder": reminder, "message": message}
 
     def create_reminder(self, text: str, time: str, channel_id: str | None = None) -> dict[str, Any]:
         """落一条提醒；校验先于写入（任一字段不合法则**不留任何半成品行**）。
@@ -1608,7 +1700,12 @@ class Database:
         task = self.get_task(task_id)  # task 面只认任务，不把任意 target 当成任务线程
         return self.list_messages(task["target_id"], after_seq=after_seq)
 
-    def _append_task_system_message_locked(self, target_id: str, body: str, now: str) -> int:
+    def _append_target_message_locked(self, target_id: str, body: str, now: str) -> int:
+        """在**已开着的事务内**分配 target 内单调 seq，并落一条 ``system`` 消息（作者恒为 owner）。
+
+        任务面的四处状态推进与提醒的到点投递共用这一条写形状：它不 ``begin`` / ``commit``
+        （调用方持有事务边界），因此「落消息 + 同一个事务里的其它写」在构造上原子。
+        """
         row = self._conn.execute(
             "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM message WHERE target_id = ?", (target_id,)
         ).fetchone()
@@ -1669,7 +1766,7 @@ class Database:
                 self._conn.execute(
                     "UPDATE task SET status = ?, updated_at = ? WHERE id = ?", (status, now, task_id)
                 )
-                seq = self._append_task_system_message_locked(
+                seq = self._append_target_message_locked(
                     target_id,
                     self._render_copy(
                         "system.task.status", status=self._render_copy(f"status.task.{status}")
@@ -1707,7 +1804,7 @@ class Database:
                 self._conn.execute(
                     "UPDATE task SET title = ?, updated_at = ? WHERE id = ?", (clean_title, now, task_id)
                 )
-                seq = self._append_task_system_message_locked(
+                seq = self._append_target_message_locked(
                     target_id, self._render_copy("system.task.title", title=clean_title), now
                 )
                 self._commit()
@@ -1789,7 +1886,7 @@ class Database:
                     if assignee is not None
                     else self._render_copy("system.task.unassigned")
                 )
-                seq = self._append_task_system_message_locked(target_id, label, now)
+                seq = self._append_target_message_locked(target_id, label, now)
                 if member_id is not None and actor["kind"] == "owner":
                     self._conn.execute(
                         "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
@@ -1872,7 +1969,7 @@ class Database:
                     "ON CONFLICT(member_id, target_id) DO NOTHING",
                     (member_id, target_id),
                 )
-                seq = self._append_task_system_message_locked(
+                seq = self._append_target_message_locked(
                     target_id,
                     self._render_copy("system.task.claimed", name=agent["display_name"]),
                     now,
@@ -1920,7 +2017,7 @@ class Database:
             "UPDATE task SET status = ?, updated_at = ? WHERE id = ?",
             (CLAIM_START_STATUS, now, task_id),
         )
-        return self._append_task_system_message_locked(
+        return self._append_target_message_locked(
             target_id,
             self._render_copy(
                 "system.task.claim_started",

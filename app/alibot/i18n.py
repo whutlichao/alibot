@@ -91,6 +91,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         "system.member.pierced_join": (
             "{name} 加入了频道：它被点名时并不在此频道，回复时顺带加入（成员变化只随真实回复发生）"
         ),
+        # 提醒的**到点**产物（ADR-0017 §一 / C18）：它是落库的 ``system`` 消息正文，由到期投递器在
+        # HTTP 请求之外写入、没有请求头可读 ⇒ 只能按**库内语言偏好**渲染；写入后是 append-only 取证面，
+        # **不随偏好切换回溯**。准点与补投**必须是两个键**（C21）：分档判据是投递时刻与到期时刻之差，
+        # 不靠参数区分。这两条**只**在本表（前端词条表不许登记同一句）。
+        "system.reminder.fired": "提醒到点了：{text}",
+        "system.reminder.fired_late": "补投提醒（原定时间已过）：{text}",
         # ─── 嵌进自然语言的任务状态说法（结构化状态词本身仍是 ``status`` 那一列） ──
         "status.task.todo": "待认领",
         "status.task.in_progress": "进行中",
@@ -297,6 +303,13 @@ CATALOGS: dict[str, dict[str, str]] = {
             "{name} joined the channel: it was mentioned while outside this channel and joined "
             "along with its reply (membership only changes alongside a real reply)"
         ),
+        # A reminder **coming due** (ADR-0017 §一 / C18): this is the stored body of a `system` message,
+        # written by the due deliverer outside any HTTP request, so there is no request header to read —
+        # it renders from the **stored locale preference** and never gets rewritten afterwards.
+        # On time and late are **two keys** (C21): the tiering criterion is the gap between the delivery
+        # moment and the due moment, not a parameter. These belong to this table only.
+        "system.reminder.fired": "Reminder is due: {text}",
+        "system.reminder.fired_late": "Reminder delivered late (its due time has passed): {text}",
         # ─── 嵌进自然语言的任务状态说法 ──────────────────────────────────
         "status.task.todo": "Unclaimed",
         "status.task.in_progress": "In progress",

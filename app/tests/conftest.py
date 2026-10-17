@@ -45,7 +45,33 @@ def build_app(
         data_dir=data_dir,
         scheduler=scheduler if scheduler is not None else ManualScheduler(),
         seam=seam if seam is not None else ScriptedAgentSeam(),
+        # 到期投递器同样默认注入一个**惰性替身**（同 ManualScheduler 的理由）：行为测试必须确定，
+        # 不能因为「今天恰巧过了某条提醒的到期时刻」而多出系统事件消息。真实后台轮询由
+        # ``test_reminder_trigger.py`` 自己在**单独的**用例里注入（那两条恰好要验证启动先扫与关停）。
+        reminder_driver=InertReminderDriver,
     )
+
+
+class InertReminderDriver:
+    """测试默认的到期驱动器：既不做启动扫、也不轮询（只有显式注入时刻才会投递）。
+
+    它让「提醒存在」与「提醒到点」在既有用例里彻底解耦：一个用例只要不主动喂时刻，就绝不会因为
+    跑在哪个钟点而多出消息。这与 ``ManualScheduler`` 把「什么时候跑完一轮」交给测试是同一条纪律。
+    """
+
+    THREAD_NAME = "alibot-reminder-poller"
+
+    def __init__(self, trigger: Any) -> None:
+        self.trigger = trigger
+
+    def start(self) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        return None
+
+    def deliver(self, now: Any) -> Any:
+        return self.trigger.deliver(now)
 
 
 @contextmanager
