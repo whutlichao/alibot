@@ -22,6 +22,8 @@ If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is 
 - 用法：`skill("ego-browser")` 加载后，通过 Bash 运行 `ego-browser nodejs <<'EOF' ... EOF` heredoc 驱动真实浏览器。
 - 适用：打开页面、点击/输入、截图观察、`js()` 注入探针做前端行为验证（如监测重渲染/滚动跳变）、网络抓取等。
 - 仅当 ego-browser 不可用（未安装且安装失败）或任务明确要求 Playwright 特有能力时才回退到 Playwright。
+- 需要浏览器时先跑 `ego-browser skill` 取本机版本匹配的用法指南；脚本里的 `ego.helpers.help()` 可查 API 签名（直接调用，不要 `console.log` 包裹）。
+- 脚本挂起时先拆成单动作定位：`goto` / `evaluate` / `screenshot` 分开跑（0.5.x 上多动作串一条曾反复挂死，0.6 已复测通过）。
   <!-- BROWSER_END -->
 
 <!-- LANGUAGE_START -->
@@ -45,4 +47,10 @@ Default five-role vocabulary; label strings equal role names. See `docs/agents/t
 ### Domain docs
 
 Single-context: glossary in `CONTEXT.md` (section `## Language`), ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
+## 本机已知环境噪声
+
+- `GIT_CONFIG_COUNT` 已设而 `GIT_CONFIG_KEY_0` 缺失 ⇒ 任何 `git` / `gh` 立即 `fatal: missing config key`；绕法：命令前 `unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1`。
+- `no_proxy` / `NO_PROXY` 含 `[::1]` ⇒ `pytest` 里 httpx 报 `InvalidURL: Invalid port: ':1]'`（`test_agent_seam_client_lifecycle.py` 假红）；绕法：`env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY`。
+- 仓库 `.venv` 不含 `pyright` ⇒ 用 `node ~/.pi-lens/tools/node_modules/pyright/index.js`，或 `--pythonpath` 指 `.venv/bin/python`（在别的 worktree 里必须加）。
 
