@@ -62,8 +62,10 @@
       </div>
 
       <!-- rail 的**提醒入口**（原型 `alibot-app.html:511-514`：`.icon-btn` + 铃铛图标 + `#reminderDot`）。
-           圆点**只在有提醒时**出现（原型 `:1886` = `hidden = 没有`），初始标记里就带 `hidden`，
-           于是「JS 还没跑完」的那一帧也不会凭空空出一个点。 -->
+           圆点**只在「还有未到点的提醒」时**出现（C17）：原型 `:1886` 只写了 `hidden = 没有`，
+           本票把「有没有」细化为「有没有**还没到点**的」——已响 / 已错过不等待任何事，圆点不能
+           退化成历史计数器。判据是后端给的 `fired_at`（C20），前端不比对时钟。
+           初始标记里就带 `hidden`，于是「JS 还没跑完」的那一帧也不会凭空空出一个点。 -->
       <button class="icon-btn" id="btnReminders" type="button" data-od-id="btn-reminders" data-i18n-attr="aria-label:rail.reminders,title:rail.reminders" aria-label="提醒" title="提醒">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
         <span class="dot" id="reminderDot" hidden></span>
