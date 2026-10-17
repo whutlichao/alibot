@@ -191,6 +191,13 @@ const state = {
   // 摘要行的展开/折叠：**会话内的呈现状态**，不是业务状态（不进任何浏览器存储）。
   // 键 = 触发它的那条消息的 seq。
   expandedOutcomes: {},
+  // 轮次结果的第二份索引：按**回复消息**的 `reply_seq` 直取那一条轮次结果。
+  // 旁白行要展开看「关联轮次结果的 reason」，而 `outcomes` 是按**触发消息**的 `base_seq`
+  // 分组的——两份索引都从同一批后端行来、在 `applyOutcomes` 一处建，因此不会各自漂。
+  replyOutcomes: {},
+  // 旁白行的展开/折叠：同样是**会话内的呈现状态**。键 = 旁白那条消息自己的 `seq`
+  // （与 `expandedOutcomes` 不共用：那一个键是**触发**消息的 seq，两者会撞号）。
+  expandedNarrations: {},
   pending: [],
   members: [],
   channelMembers: {},
@@ -995,7 +1002,7 @@ async function loadWorkspace(options) {
   } catch (err) {
     state.online = false;
     state.ready = true;
-    state.outcomes = {};
+    applyOutcomes([]);
     state.expandedOutcomes = {};
     if (!settings.silent) toast(t('load.workspaceFailed', { reason: err.message }), 'err');
     // 后端不可达不是终点：自动重试，于是「重连后恢复」不需要人点按钮。
@@ -1033,29 +1040,37 @@ async function refreshMessages() {
 async function refreshOutcomes() {
   const channel = activeChannel();
   if (!channel) {
-    state.outcomes = {};
+    applyOutcomes([]);
     return;
   }
   try {
     const payload = await api(channelPath(channel.id, '/round-outcomes'));
-    state.outcomes = groupOutcomes(payload.round_outcomes || []);
+    applyOutcomes(payload.round_outcomes || []);
   } catch {
     // 轮次结果读不到不影响消息流（与 refreshStatuses 同一条纪律）：保留上一次已知值，
     // 也不把整个工作台判成「后端不可达」。
   }
 }
 
-// 轮次结果按成员分组：同一条消息可能唤醒多个成员，于是同一 `base_seq` 下可能有多条失败。
-function groupOutcomes(records) {
-  const grouped = {};
+// 轮次结果的两份索引，都从**同一批**后端行建、在**同一处**换，免得两份各自漂：
+//   - `byBase`：按**触发它的**那条消息的 `base_seq` + 成员分组（摘要行与失败行按它挂）；
+//   - `byReply`：按**它产出的**那条回复消息的 `reply_seq` 直取（旁白行展开看 reason 按它查）。
+// `reply_seq` 是后端写进 `round_outcome` 的取证字段（`replied` 之外为 `null`），不是前端推断。
+function applyOutcomes(records) {
+  const byBase = {};
+  const byReply = {};
   records.forEach((record) => {
-    if (!record || !Number.isInteger(record.base_seq)) return;
-    if (!grouped[record.base_seq]) grouped[record.base_seq] = {};
-    const byMember = grouped[record.base_seq];
-    if (!byMember[record.member_id]) byMember[record.member_id] = [];
-    byMember[record.member_id].push(record);
+    if (!record) return;
+    if (Number.isInteger(record.base_seq)) {
+      if (!byBase[record.base_seq]) byBase[record.base_seq] = {};
+      const byMember = byBase[record.base_seq];
+      if (!byMember[record.member_id]) byMember[record.member_id] = [];
+      byMember[record.member_id].push(record);
+    }
+    if (Number.isInteger(record.reply_seq)) byReply[record.reply_seq] = record;
   });
-  return grouped;
+  state.outcomes = byBase;
+  state.replyOutcomes = byReply;
 }
 
 async function refreshStatuses() {
@@ -2375,6 +2390,9 @@ function onStreamOutcome(targetId, payload) {
       records.push(outcome);
       added = true;
     }
+    // 回复序号的索引也要跟着更新：刚到达的这条结果可能是某条旁白消息**自己那一轮**的结论，
+    // 而那条消息可能先于它到达（`replied` 的消息先落库、结果后收口）。
+    if (Number.isInteger(outcome.reply_seq)) state.replyOutcomes[outcome.reply_seq] = outcome;
   }
   renderMembers();
   renderDock();
@@ -3591,7 +3609,109 @@ function roundOutcomeNode(record) {
   return row;
 }
 
+/* ─── 旁白式交代的**呈现降档**（#57；#35 的 D1 判据-4 + D4 形态-a）───────────
+
+   旁白式交代 = Agent 把「我不需要说话」当成正文说出来（「（本轮消息与我无关，无需回应）」）。
+   它**仍是**一条真实 Agent 消息：占自己的 `seq`、计未读、照旧唤醒与花预算——这些数据面后果按
+   #35 登记为**已知代价**，本票不改，也不在这里补。本票只把它的**呈现**降一档。
+
+   判据是**形态**，不是措辞表：整条正文被**同一对圆括号**从头包到尾、只有一行、而且很短。
+   因此这里既没有正则词表、也没有「无需回应」这类字样清单——换措辞、换语言都不会让判据失效。
+   **失效方向可放松**：判据拿不准（多行、超长、中途就闭合、方括号/书名号、不是 Agent 发的）时
+   一律按普通消息呈现，宁可少降档，不可误吞真实回复。
+
+   长度上限取 24 个字符：整条括注式交代是一句自我说明（「（本轮消息与我无关，无需回应）」是 15 个
+   字符），超过这个长度的括注更可能是真的在说一件事（引用、长句说明），按真实回复对待。 */
+const NARRATION_MAX_LENGTH = 24;
+/** 成对的圆括号：只认圆括号，不认方括号 / 书名号（那些是标题式强调，可能就是真实回复）。 */
+const NARRATION_PAREN_PAIRS = { '\uFF08': '\uFF09', '(': ')' };
+
+/** 这一条消息是不是旁白式交代；是就返回它降档后要显示的正文（已去首尾空白），否则 `null`。 */
+function narrationOf(message) {
+  // 只判**已落库的 Agent 消息**：还没落库的乐观发送项没有 seq，也不该在这里被判定。
+  if (!message || message.kind !== 'agent') return null;
+  if (!Number.isInteger(message.seq) || message.seq <= 0) return null;
+  const body = typeof message.body === 'string' ? message.body.trim() : '';
+  if (!body) return null;
+  // 按**码点**数长度（`body.length` 数的是 UTF-16 单元，会把汉字算成 1、生僻字算成 2）。
+  const chars = Array.from(body);
+  if (chars.length > NARRATION_MAX_LENGTH) return null;
+  // 多行的括注更可能是真内容（清单 / 引用），不降档。
+  if (/[\r\n]/.test(body)) return null;
+  const close = NARRATION_PAREN_PAIRS[chars[0]];
+  if (!close || chars[chars.length - 1] !== close) return null;
+  let depth = 0;
+  for (let index = 0; index < chars.length; index += 1) {
+    if (chars[index] === chars[0]) depth += 1;
+    else if (chars[index] === close) {
+      depth -= 1;
+      // 括号在**中途**就回到 0，说明它不是「整条被一对括住」（例如「（一）（二）」）。
+      if (depth === 0 && index !== chars.length - 1) return null;
+    }
+  }
+  return depth === 0 ? body : null;
+}
+
+/**
+ * 把一条旁白式交代渲染成**一行**、低权重、可展开的消息行（`D4` 形态-a）。
+ *
+ * 形态-a 的三条硬约束都在这里：
+ * 1. **它仍是消息**：占自己的 `seq`（`data-seq`）、有作者与时间、`role` 保持默认（不是摘要行的
+ *    `role="status"`）。因此「数几条消息」的口径一个字都不用改。
+ * 2. **一行**：正文与作者名同处 `.msg-head` 这一行（不再有独立的 `.msg-text` 段落），折叠态就是一行。
+ * 3. **可展开看关联轮次结果的 `reason`**：这一行按钮展开的是**它自己那一轮**的结论——按这条消息
+ *    的 `seq` 去 `state.replyOutcomes`（`round_outcome.reply_seq`）直取，不跨数据面拼装、也不并入
+ *    摘要行。查不到时如实说「读不到」，不编造理由。
+ */
+function narrationNode(message, body) {
+  const author = message.author || state.member;
+  const seq = String(message.seq);
+  const expanded = Boolean(state.expandedNarrations[seq]);
+  const record = state.replyOutcomes[message.seq] || null;
+
+  const article = el('article', 'msg narration');
+  article.dataset.seq = message.seq;
+  // 头像降一档（`sm`）：它与正文一起构成「低权重」，但作者身份照旧是它自己的色位。
+  article.appendChild(avatarNode(author.display_name, author.avatar_slot, 'sm'));
+  const bodyNode = el('div', 'msg-body');
+  const line = el('div', 'msg-head');
+  line.appendChild(el('span', 'msg-author is-agent', author.display_name));
+  line.appendChild(el('span', 'msg-tag', t('narration.tag')));
+  line.appendChild(el('span', 'msg-narration-text', body));
+
+  const toggle = el('button', 'msg-narration-toggle');
+  toggle.dataset.narrationToggle = seq;
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  toggle.setAttribute('aria-controls', 'narration-reason-' + seq);
+  const action = expanded ? t('narration.collapse') : t('narration.expand');
+  toggle.setAttribute('aria-label', t('narration.toggleAria', { name: author.display_name, action }));
+  toggle.appendChild(el('span', 'msg-narration-mark', expanded ? '\u25be' : '\u25b8'));
+  toggle.appendChild(el('span', 'msg-narration-toggle-text', action));
+  line.appendChild(toggle);
+  line.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
+  bodyNode.appendChild(line);
+
+  // 明细**恒常渲染**、用 `hidden` 切可见性（与摘要行同一条理由）：`aria-controls` 指向的 id 在
+  // 任何时刻都要能解析到，否则折叠态就是一个悬空引用。`reason` 是后端原文，不重新措辞、不截断。
+  const details = el('div', 'msg-narration-reason');
+  details.id = 'narration-reason-' + seq;
+  details.hidden = !expanded;
+  if (record) {
+    details.dataset.odId = 'round-reason-' + record.id;
+    details.textContent = record.reason || t('outcome.lineReasonEmpty');
+  } else {
+    details.textContent = t('narration.reasonMissing');
+  }
+  bodyNode.appendChild(details);
+
+  article.appendChild(bodyNode);
+  return article;
+}
+
 function messageNode(message) {
+  // 旁白式交代先判：它是最省的一种呈现，且必须**永远**保留消息身份（seq / 作者 / 时间）。
+  const narration = narrationOf(message);
+  if (narration !== null) return narrationNode(message, narration);
   if (message.kind === 'system') {
     // 系统事件消息（穿透加入）：沿用既有消息行形态——方形头像色位 + 作者名 + 时间。
     // 不新造色位：作者名 + 头像用**该成员自己的** --av-* 色位（与他说话时同一个），
@@ -4509,7 +4629,10 @@ async function selectTarget(targetId) {
   closeMentionPicker();
   state.outcomes = {};
   // 折叠态的键是「触发它的那条消息的 seq」，跨频道不通用：换频道时一并清掉。
+  // 旁白行的折叠态键是旁白自己的 seq，同理只在当前 target 内有效。
   state.expandedOutcomes = {};
+  state.replyOutcomes = {};
+  state.expandedNarrations = {};
   render();
   try {
     await refreshMessages();
@@ -4908,6 +5031,18 @@ function bindEvents() {
     const taskRef = event.target.closest('[data-open-task]');
     if (taskRef) {
       openTask(taskRef.dataset.openTask);
+      return;
+    }
+    // 旁白行的折叠控件：与摘要行同一个纪律（只切**呈现状态**、重建后把焦点还回去），
+    // 但键是旁白那条消息**自己的** seq（摘要行的键是触发消息的 base_seq，两者会撞号）。
+    const narration = event.target.closest('[data-narration-toggle]');
+    if (narration) {
+      const seq = narration.dataset.narrationToggle;
+      if (state.expandedNarrations[seq]) delete state.expandedNarrations[seq];
+      else state.expandedNarrations[seq] = true;
+      renderMessages();
+      const next = $('#messageList').querySelector('[data-narration-toggle="' + seq + '"]');
+      if (next) next.focus();
       return;
     }
     // 摘要行的折叠控件：切换的只是**呈现状态**（内存），后端事实一个字不动。
