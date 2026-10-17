@@ -4,16 +4,35 @@
 
 > 正本：https://github.com/whutlichao/alibot/issues/112 ｜ PR：https://github.com/whutlichao/alibot/pull/118 ｜ 2026-10-17
 
+## 0. 一次已修正的事故（必须如实登记）
+
+**事故**：PR #118 首次提交时**未 rebase 到 #117 之后的 `main`**，于是 PR 相对 `origin/main` 显示出**把上游代码整体回退**的样子（`test_auto_claim.py` 被显示为 +10/−594、`orchestration.py` +17/−99 等，即 ADR-0016「认领即开工」的实现看起来被删了）。
+
+**原因**：#117 于 12:02:10 合入 main，而本票最后一个提交是 12:29:32——**在 #117 合并之后 27 分钟才提交，却从未 rebase**。`git merge-base origin/main HEAD` 当时停在 `271dc2f`（#116 的合并提交）。
+
+**这是本票的失误，不是 #117 有问题。** #117 / #119 的内容一个字节都没被改：rebase 后 `test_auto_claim.py` = 999 行、`rail_identity.test.cjs` = 721 行、`WAKE_REASON_CLAIM` 仍在。
+
+**处置**：重新 `git fetch origin && git rebase origin/main` 两次（第一次 rebase 到 `5904e53`，取验证时 `origin/main` 又前进到 `566899d`（#119 合并），再次 rebase）。此后每次收尾前都重新 `git fetch` 而不是沿用旧的 `origin/main` 读数。
+
+## 0.1 一次被授权的跨票改动（`test_auto_claim.py`）
+
+rebase 后重跑门禁出现 1 条**跨票语义冲突**（不是 rebase 冲突）：`app/tests/test_auto_claim.py:845` 的 `assert SCHEMA_VERSION == 12, "本票零 DDL、不 bump（ADR-0016 六）"` 由 #117 引入（`origin/main` 上逐字存在，本票对该文件 0 行改动），它把「#117 本票没 bump」写成了**字面量 12 的全局不变**，而 #112 合法地把 `SCHEMA_VERSION` 推到 13 ⇒ 它必红。
+
+**用户 2026-10-17 授权的例外**（原票面「不写面」在本条开例外）：删掉版本号硬钉，保留该用例的**实质不变**（`RoundOutcome` 字段集 7 个、`round_outcome` 列集 11 列——它们才是「没新增 DDL」的可观察落点），并改准 docstring。
+
+**理由**：`SCHEMA_VERSION` 是**跨票递增的共享常量**，任何票都可以合法推进它；用字面量钉它会把后续正常的 bump 变成假红。这是「一次性事实被写成全局不变」的修法，不是顺手清理。
+
 ## 1. 开工时实际基线（如实登记）
 
 | 项 | 读数 |
 | --- | --- |
-| `git fetch origin` 后 `origin/main` | **`271dc2f`**（`Merge pull request #116 from whutlichao/reminder-trigger-tickets`） |
-| 是否前进 / 是否 rebase | **未前进** —— 与本票 HEAD 相同，**无需 rebase** |
+| **最终 rebase 基准** | **`566899d`**（`Merge pull request #119 from whutlichao/rail-reply-flash`）—— `git merge-base --is-ancestor origin/main HEAD` ⇒ **OK** |
+| 首次开工时 `origin/main` | `271dc2f`（#116）—— **这是事故的根源：开工后 #117 / #119 陆续合入，本票未跟上** |
 | 票面给的基线 | `main` = `5c4dc5c`、`SCHEMA_VERSION` = 12 |
-| 实测 `SCHEMA_VERSION` | **12**（`app/alibot/db.py:59`），与票面一致 |
+| 实测 `SCHEMA_VERSION`（开工时） | **12**（`app/alibot/db.py:59`），与票面一致 |
+| 本票交付后 | **13** |
 | `docs/adr/` 最大编号 | **0017**，本票不新增 ADR |
-| 号段是否被抢 | **否** —— `origin/main` 上仍是 12，因此按判据取 **13**（「高于当前 main 的最小号」），未走 ask 确认 |
+| 号段是否被抢 | **否** —— 开工时 `origin/main` 上仍是 12，因此按判据取 **13**（「高于当前 main 的最小号」），未走 ask 确认 |
 
 **行号复核（自行实测，未照抄票面）**：票面给的 `db.py:59` / `:182-183` / `:378-388` / `:1341` / `:1359-1360`、`migrate.py:651` / `:660`、`i18n.py:60` / `:242` 全部与实测一致。
 

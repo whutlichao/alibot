@@ -78,6 +78,40 @@ _step_12_to_13
 
 - **一处如实登记的取证局限**：C12 判据 2 的**强形式**（同一天两个不同钟点各迁一次 ⇒ 同一日期）需要用 `libfaketime` 把子进程时钟挪走。本机未安装它，那一条**跳过**而不是伪造——判据 1（已知执行日）、判据 2 的弱形式（N 条不同钟点 ⇒ 全部同一日期）、以及上面那条跨日界线的本地/UTC 判据都在任何机器上都真跑且已绿。
 
+## 一次已修正的事故（打回 + follow-up）
+
+**本 PR 首次提交时未 rebase 到 #117 之后的 `main`**，因此它一度相对 `origin/main` 显示出**把上游代码整体回退**的样子（`test_auto_claim.py` 被显示为 +10/−594、`orchestration.py` +17/−99 等）。
+
+**原因**：#117 于 12:02:10 合入 main，而本分支最后一个提交是 12:29:32——**在 #117 合并之后 27 分钟才提交，却从未 rebase**。`git merge-base origin/main HEAD` 当时停在 `271dc2f`。**这是本分支的失误，不是 #117 有问题。**
+
+**已修复**：`git fetch origin && git rebase origin/main`（两次——首次 rebase 到 `5904e53`，再取证时 `origin/main` 又前进到 `566899d`（#119 合并），再次 rebase）。自证：
+
+```text
+$ git merge-base --is-ancestor origin/main HEAD && echo OK
+OK
+
+$ git diff --stat origin/main HEAD
+ app/README.md                          |   4 +-
+ app/alibot/db.py                       |  27 +-
+ app/alibot/i18n.py                     |   4 +-
+ app/alibot/migrate.py                  |  76 ++++
+ app/specs/issue-112-answer.md          | 105 +++++
+ app/specs/issue-112-pr-body.md         |  92 +++++
+ app/tests/_migration_history.py        |   5 +-
+ app/tests/test_auto_claim.py           |  10 +-
+ app/tests/test_reminder_schema_step.py | 676 +++++++++++++++++++++++++++++++++
+ app/tests/test_reminders.py            |  51 ++-
+ 10 files changed, 1012 insertions(+), 38 deletions(-)
+```
+
+`CONTEXT.md` / `orchestration.py` / `agent_seam.py` / `test_auto_claim.py` / `scripted.py` / `test_tasks.py` / `test_backend_copy.py` / `studio/app.js` / `rail_identity.test.cjs` / `docs/adr/` 相对 `origin/main` **全部 0 行改动**。#117 / #119 的内容完整保留（`test_auto_claim.py` 999 行、`rail_identity.test.cjs` 721 行、`WAKE_REASON_CLAIM` 仍在）。
+
+### 一次被授权的跨票改动：`test_auto_claim.py`
+
+rebase 后门禁出现 1 条**跨票语义冲突**（不是 rebase 冲突）：`test_auto_claim.py` 的 `assert SCHEMA_VERSION == 12, "本票零 DDL、不 bump（ADR-0016 六）"` 由 #117 引入，它把「#117 本票没 bump」写成了**字面量 12 的全局不变**，而本票合法地把版本推到 13 ⇒ 必红。
+
+**用户 2026-10-17 授权的例外**（原票面「不写面」在本条开例外）：删掉版本号硬钉，保留该用例的**实质不变**（`RoundOutcome` 字段集 7 个、`round_outcome` 列集 11 列——它们才是「没新增 DDL」的可观察落点），并改准 docstring。**理由**：`SCHEMA_VERSION` 是跨票递增的共享常量，用字面量钉它会把后续正常的 bump 变成假红。这是「一次性事实被写成全局不变」的修法，不是顺手清理。
+
 ## Merge Danger
 
 **Door:** two-way —— 代码本身可 `git revert`；但**号段是单向的**：合并后 `main` 的 `SCHEMA_VERSION` 由 12 升到 13，被 12 及更早代码创建过的库在本版下会被闸门拒绝（既有纪律，`db.py:44-58` 的代价栏已登记）。处置由拒绝正文给出：先备份整个数据目录，再 `python -m alibot --migrate` 逐版推进。迁移前的整目录备份是构造性前置，失败即拒绝迁移。
