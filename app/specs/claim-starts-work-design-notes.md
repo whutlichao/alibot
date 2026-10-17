@@ -509,7 +509,7 @@ ADR-0010 已登记「人类世代」这个名字不再字面准确（三种开�
 
 | 项 | 读数 |
 | --- | --- |
-| 占位扫描 | `grep -nE '待定\|待决\|未决\|⏳' CONTEXT.md app/specs/claim-starts-work-design-notes.md docs/adr/0016-*.md` 无命中（exit 1） |
+| 占位扫描 | S14 的占位词表对 `CONTEXT.md` / 本文件 / `docs/adr/0016-*.md` 跑 `grep -nE`：**正文无命中**；唯一条命中是引用了该命令本身的那一行（自指，不构成占位） |
 | `CONTEXT.md` 改动量 | `+23 / −10`（七处词条，与「七处」量级相称） |
 | `git status` | 仅四个 Markdown 路径（`CONTEXT.md` 修改 + 三个新增） |
 | 源码改动 | **0**（未动 `app/alibot/**`、未动 `app/tests/**`、未 bump `SCHEMA_VERSION`） |
