@@ -68,6 +68,25 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
         <span class="dot" id="reminderDot" hidden></span>
       </button>
+      <!-- rail 的**设置入口**（原型 `alibot-app.html:515-518`：紧随提醒的第二枚 `.icon-btn`）。
+           它曾按旧票面字面放在 `.rail-foot` 的「我」那一行（`#103` 起回到 head），
+           图标与 `aria-label` / `title` 沿用原型的「圆 + 八条射线」齿轮。 -->
+      <button class="icon-btn" id="btnSettings" type="button" data-od-id="btn-settings" data-i18n-attr="aria-label:settings.open,title:settings.open" aria-label="设置" title="设置">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+      </button>
+    </div>
+
+    <!-- rail 的**搜索入口**（原型 `:518-524`）。形态是原型的 `.search-shell` + `.search-btn`：
+         放大镜 + 文案。点击进的是**主线搜索视图**（#63 决策 D14「搜索是主线视图、不是弹层」）。
+         原型 `:524` 在这枚按钮上还印了一枚 `<kbd>⌘K</kbd>`；本工作台**不搬它**：`⌘K` 真绑定的是
+         **打开命令面板**（不是搜索视图，见 `bindCmdEvents` 与规格 D10），而本仓纪律是「界面不承诺一个
+         按键做不到的事」——把 ⌘K 印在搜索按钮上会让人以为它能开搜索。
+         **人定（用户本人，2026-10-17）：删掉这枚徽标，保留按钮本身。** -->
+    <div class="search-shell">
+      <button class="search-btn" id="btnSearch" type="button" data-od-id="btn-workspace-search" data-i18n-attr="title:rail.searchTitle" title="搜索工作台">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span data-i18n="rail.searchPlaceholder">搜索消息、任务…</span>
+      </button>
     </div>
 
     <div class="rail-actions">
@@ -75,11 +94,9 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
         <span data-i18n="rail.newChannel">新建频道</span>
       </button>
-      <button class="btn" id="btnSearch" type="button" data-od-id="btn-workspace-search" data-i18n-attr="title:rail.searchTitle" title="搜索工作台"><span data-i18n="rail.search">搜索</span></button>
-      <button class="btn" id="btnNewDm" data-od-id="btn-new-dm" data-i18n-attr="title:rail.newDmTitle" title="新建私信"><span data-i18n="rail.newDm">私信</span></button>
-      <button class="btn" id="btnNewAgent" data-od-id="btn-new-agent" data-i18n-attr="title:rail.newAgentTitle" title="新建 Agent">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 13h.01M15 13h.01"/></svg>
-        <span data-i18n="rail.newAgent">Agent</span>
+      <!-- 新建 Agent：原型 `:531` 是**纯图标**按钮（`+` 套圆环），不显示文字。 -->
+      <button class="btn" id="btnNewAgent" type="button" data-od-id="btn-new-agent" data-i18n-attr="title:rail.newAgentTitle,aria-label:rail.newAgentTitle" title="新建 Agent" aria-label="新建 Agent">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9" opacity=".35"/></svg>
       </button>
     </div>
 
@@ -95,7 +112,11 @@
         <div class="rail-empty" id="channelListEmpty" hidden data-i18n="rail.emptyChannels">还没有频道。新建一个频道就能开始记录。</div>
       </div>
       <div class="group" data-od-id="dm-section">
-        <div class="group-label" data-i18n="rail.groupDms">私信</div>
+        <!-- 新建私信入口：与「频道」分组的 `+` 同形（原型 `:544` 的 `.group-label` 内 button）。
+             它曾按 #27 的票面字面待在 `.rail-actions` 里当第三个文字按钮（`#103` 起挪到这里）。
+             标签文字放在内层 `<span data-i18n>`：`applyStaticI18n` 对 `data-i18n` 节点是
+             `textContent = t(key)`，若把词条键挂在 `.group-label` 上，这句会把 `+` 按钮一起冲掉。 -->
+        <div class="group-label"><span data-i18n="rail.groupDms">私信</span><button type="button" id="btnNewDm" data-od-id="btn-new-dm" data-i18n-attr="title:rail.newDmTitle,aria-label:rail.newDmTitle" title="新建私信" aria-label="新建私信"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg></button></div>
         <div id="dmList"></div>
         <div class="rail-empty" id="dmListEmpty" data-i18n="rail.emptyDms">还没有私信。新建私信后会在这里显示。</div>
       </div>
@@ -106,9 +127,8 @@
       </div>
     </nav>
 
-    <!-- rail 底部的**设置入口**（票面：「rail 底部设置入口」）。原型 :515 把它放在 rail head 的
-         icon-btn 行里；本工作台按票面字面放在底部「我」那一行，控件形态沿用原型的 icon-btn
-         （齿轮图标 + `aria-label` / `title`），因为 #68 的提醒入口才占 head 那一行。 -->
+    <!-- rail 底部只剩「我」这一行（头像 / 名字 / 在线点）。设置入口 `#103` 起回到 `.rail-head`
+         （原型 `:515` 就在那里）；这里不再放任何控件。 -->
     <div class="rail-foot">
       <div class="avatar av-4" id="meAvatar" aria-hidden="true" data-i18n="identity.me">我</div>
       <div style="flex:1; min-width:0">
@@ -116,9 +136,6 @@
         <div class="brand-sub" style="letter-spacing:0" id="meSub" data-i18n="identity.human">人类 · 本机</div>
       </div>
       <span class="presence online" data-i18n-attr="title:status.online" title="在线"></span>
-      <button class="icon-btn" id="btnSettings" type="button" data-od-id="btn-settings" data-i18n-attr="aria-label:settings.open,title:settings.open" aria-label="设置" title="设置">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
-      </button>
     </div>
   </aside>
 
