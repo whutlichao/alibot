@@ -201,7 +201,13 @@ class FakeNode {
   removeChild(child) {
     const index = this.children.indexOf(child);
     if (index >= 0) this.children.splice(index, 1);
+    // 真实 DOM 里被摘掉的节点不再有父节点（`closest` 之类因此会在这条链上停下）。
+    child.parentNode = null;
     return child;
+  }
+
+  remove() {
+    if (this.parentNode) this.parentNode.removeChild(this);
   }
 
   replaceChildren(...children) {
@@ -463,7 +469,7 @@ function createHarness(options) {
         + " loadReminders, renderReminderDot, renderRemindersModal, openRemindersModal,"
         + " closeRemindersModal, submitReminder, deleteReminder,"
         + " openRosterModal, closeRosterModal, renderRoster, renderDock, refreshStatuses,"
-        + " refreshChannelMembers };\n",
+        + " renderChannels, renderDms, refreshChannelMembers };\n",
     ),
     context,
     { filename: appPath },
@@ -1878,3 +1884,127 @@ test("a failed member read is reported as unavailable, never as an empty roster"
   assert.equal(harness.elementFor("#rosterSub").textContent, "");
 });
 
+/* ─── 10. 左栏「工作区未读」汇总行下线：整块移除，行内的未读徽标照旧 ─────────────
+
+   那一行是纯展示层的汇总（各 target 的 `unread_count` 相加），不是 `GET /api/workspace`
+   的 `unread_total` 契约：后端字段与各端点读数在本票里一字不动，所以守护用例只看两件事——
+   ① 左栏不再有那个容器 / 词条（HTML 与两份词条同时消失，工具栏之后不留任何节点）；
+   ② 频道名单容器与频道 / 私信行内的未读徽标仍然照旧（不许把隔壁那只徽标一起删掉）。 */
+
+/** 一段标记里某个 `class="..."` 起点所在的元素闭合之后、`<nav data-od-id="nav-lists">` 之前的那截文本。
+
+    按标签深度数闭合，而不是数 `<div` / 数换行：加一个合法包装 div 不该误报，
+    残留的空 `<span>` 也不该漏检。注释不算标记（同本文件其它扫描的先例）。 */
+function railGap(html) {
+  const stripped = html.replace(/<!--[\s\S]*?-->/g, "");
+  const classAt = stripped.indexOf('class="rail-actions"');
+  assert.notEqual(classAt, -1, "index.html 里应有工具栏（.rail-actions）");
+  let index = stripped.indexOf(">", classAt) + 1;
+  let depth = 1;
+  while (index < stripped.length && depth > 0) {
+    const tag = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)/.exec(stripped.slice(index));
+    if (!tag) break;
+    const tagStart = index + tag.index;
+    index = stripped.indexOf(">", tagStart) + 1;
+    if (tag[2].toLowerCase() === "div") depth += tag[1] ? -1 : 1;
+  }
+  const navAt = stripped.indexOf('data-od-id="nav-lists"');
+  assert.notEqual(navAt, -1, "index.html 里应有名单容器（nav-lists）");
+  return stripped.slice(index, stripped.lastIndexOf("<", navAt));
+}
+
+test("左栏不再有「工作区未读」汇总行，频道与私信行内的未读徽标照旧", () => {
+  // 注释不算标记：下面每一条扫描都和本文件其它 HTML 扫描一样先剥掉注释。
+  const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
+
+  // ① 那一整块（容器 + 词条标签 + 徽标 + 定位名）从标记里消失：四项各自是一条独立的回归面。
+  assert.equal(html.includes('id="unreadSummary"'), false, "左栏不再有未读汇总容器");
+  assert.equal(html.includes('data-od-id="workspace-unread"'), false, "它的定位名一并下线");
+  assert.equal(html.includes("rail-unread"), false, "不再有 .rail-unread 这个样式钩子");
+  assert.equal(/rail\.unread/.test(html), false, "HTML 里不再挂着 rail.unread* 的文案绑定");
+  // 工具栏与名单之间不留任何节点（含空节点）。
+  assert.match(railGap(html), /^\s*$/, "工具栏之后只剩白字，没有残留的空节点");
+
+  // ② 名单容器与分组标签原样在：删的是汇总行，不是左栏的名单。
+  assert.ok(html.includes('id="channelList"'), "频道名单容器还在");
+  assert.ok(html.includes('id="channelListEmpty"'), "频道空态还在");
+  assert.match(html, /data-i18n="rail\.groupChannels"/, "「频道」分组标签还在");
+
+  // ③ 两份词条都不再留这两个键（只删一半会让某语言露出键名）。
+  const { catalogs } = createHarness();
+  for (const locale of ["zh-CN", "en"]) {
+    for (const key of ["rail.unread", "rail.unreadCount"]) {
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(catalogs[locale], key),
+        false,
+        `${locale} 里不该再有 ${key}`,
+      );
+    }
+  }
+
+  // ④ app.js 里那套汇总状态与两个渲染函数一并下线（不是只摘调用点、留下死代码）。
+  //    注释不算代码：本文件对「裸中文」的扫描同样跳过注释，这里守同一条纪律。
+  const appSource = stripBlockComments(readStudio("app.js")).replace(/^\s*\/\/.*$/gm, "");
+  for (const symbol of ["unreadTotal", "syncUnreadTotal", "renderUnreadSummary"]) {
+    assert.equal(
+      new RegExp(`\\b${symbol}\\b`).test(appSource),
+      false,
+      `app.js 里不该再有 ${symbol}`,
+    );
+  }
+  assert.equal(/rail\.unread/.test(appSource), false, "app.js 不再引用 rail.unread* 词条");
+
+  // ⑤ 行内未读徽标照旧：频道与私信两条都在，读数都跟着后端给的 `unread_count` 走。
+  const harness = createHarness();
+  harness.api.state.agents = [
+    {
+      id: "ag_1",
+      kind: "agent",
+      display_name: "演示 Agent",
+      avatar_slot: 2,
+      enabled: true,
+      status: "online",
+    },
+  ];
+  harness.api.state.channels = [
+    { id: "ch_9", name: "设计系统重构", last_seq: 7, last_read_seq: 4, unread_count: 3 },
+  ];
+  harness.api.state.dms = [
+    {
+      id: "dm_1",
+      kind: "dm",
+      peer: { id: "ag_1", display_name: "演示 Agent", avatar_slot: 2 },
+      last_seq: 5,
+      last_read_seq: 3,
+      unread_count: 2,
+    },
+  ];
+  harness.api.renderChannels();
+  harness.api.renderDms();
+  const rowOf = (container, key, id) => {
+    const row = container.children.find((node) => node.dataset[key] === id);
+    assert.ok(row, `${key}=${id} 的行仍按后端 id 渲染`);
+    return row;
+  };
+  const badgeOf = (row) => row.children.find((node) => node.classList.contains("badge")) || null;
+
+  const channelBadge = badgeOf(rowOf(harness.elementFor("#channelList"), "channel", "ch_9"));
+  assert.ok(channelBadge, "频道的未读徽标仍在（本票不许连带删掉它）");
+  assert.equal(channelBadge.textContent, "3", "频道徽标读的就是后端给的 unread_count");
+
+  const dmList = harness.elementFor("#dmList");
+  const dmBadge = badgeOf(rowOf(dmList, "dm", "dm_1"));
+  assert.ok(dmBadge, "私信的未读徽标也在");
+  assert.equal(dmBadge.textContent, "2", "私信徽标同样读后端给的 unread_count");
+  assert.equal(dmBadge.getAttribute("data-od-id"), "unread-dm_1", "徽标的定位名不变");
+
+  // 归零后徽标照旧被摘掉：就地更新那条行为没有被这次删除带偏（也真走到节点的 remove 路径）。
+  harness.api.state.dms = [{ ...harness.api.state.dms[0], unread_count: 0 }];
+  harness.api.renderDms();
+  assert.equal(badgeOf(rowOf(dmList, "dm", "dm_1")), null, "未读归零时徽标被摘掉");
+
+  // ⑥ 样式侧同样只下线汇总行那两条：`.rail-unread` 没了，行内 `.badge` 的未读色仍在。
+  const css = readStudio("app.css");
+  assert.equal(css.includes(".rail-unread"), false, "app.css 里不再有 .rail-unread 规则");
+  assert.match(css, /\.badge \{[^}]*var\(--unread\)/, "行内未读徽标的样式还在");
+});
