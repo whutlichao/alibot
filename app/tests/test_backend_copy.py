@@ -158,8 +158,8 @@ def test_task_system_message_body_follows_the_locale_at_write_time(client: TestC
     use_locale(client, EN)
     en_task = create_task(client, channel, "English task")
 
-    assert task_bodies(client, zh_task)[0] == i18n.render("system.task.created", ZH)
-    assert task_bodies(client, en_task)[0] == i18n.render("system.task.created", EN)
+    assert task_bodies(client, zh_task)[0] == i18n.render("system.task.created", ZH, title="中文任务")
+    assert task_bodies(client, en_task)[0] == i18n.render("system.task.created", EN, title="English task")
     assert task_bodies(client, zh_task)[0] != task_bodies(client, en_task)[0]
 
 
@@ -380,14 +380,14 @@ def test_history_is_not_backfilled_when_the_locale_changes(client: TestClient) -
     use_locale(client, ZH)
     zh_task = create_task(client, channel, "先写下的任务")
     before = task_bodies(client, zh_task)
-    assert before == [i18n.render("system.task.created", ZH)]
+    assert before == [i18n.render("system.task.created", ZH, title="先写下的任务")]
 
     use_locale(client, EN)
     en_task = create_task(client, channel, "written later")
 
     # 切语言不重渲染：老正文逐字不变（含后续再读一次）。
     assert task_bodies(client, zh_task) == before
-    assert task_bodies(client, en_task)[0] == i18n.render("system.task.created", EN)
+    assert task_bodies(client, en_task)[0] == i18n.render("system.task.created", EN, title="written later")
 
 
 def test_fresh_workspace_falls_back_to_the_source_language(client: TestClient) -> None:
@@ -397,5 +397,5 @@ def test_fresh_workspace_falls_back_to_the_source_language(client: TestClient) -
     channel = create_channel(client).json()["channel"]["id"]
     task_id = create_task(client, channel, "空工作台的任务")
 
-    assert task_bodies(client, task_id)[0] == i18n.render("system.task.created", ZH)
+    assert task_bodies(client, task_id)[0] == i18n.render("system.task.created", ZH, title="空工作台的任务")
     assert messages(client, channel) == []

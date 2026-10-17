@@ -65,6 +65,11 @@ STATUS_OFFLINE = "offline"
 
 WAKE_REASON_MENTION = "mention"
 WAKE_REASON_CHANNEL_MESSAGE = "channel-message"
+# 认领那条投递的 reason（ADR-0016 五）：**不落库**，只进进程内轮次参数与 typing 事件；
+# 「本轮由认领唤醒」以 ``reason.claim_round`` 后缀追加进 ``round_outcome.reason`` 文本。
+# 它与 ``mention`` 同级（都是**确定信号**），因此 `notify` 里 ``mention`` 可以覆盖它——
+# 覆盖**不削弱**判据：两者都要求必须回应（见 `CONTEXT.md` **回应判断**）。
+WAKE_REASON_CLAIM = "claim"
 
 
 class Scheduler(Protocol):
@@ -134,6 +139,9 @@ class _DeferredWake:
     reason: str
     consumed_budget: bool
     pierced: bool
+    # 本轮的回应纪律标记（不落库）。跨 target 的 deferred 轮次必须**继承**它，合并时**取或**：
+    # 任一方强制 ⇒ 合并后强制（同一 Agent 的重复唤醒会被合并，判据不能随谁先到而漂）。
+    mandatory_reply: bool = False
 
 
 @dataclass
@@ -226,6 +234,8 @@ class WakeOrchestrator:
         mentions = set(mentioned_member_ids(message["mention_snapshot"]))
         for wake_target in targets:
             member = wake_target.member
+            # `mention` 可以覆盖 `claim`（两者同级、都是**确定信号**），覆盖**不削弱**判据：
+            # 「必须回应」由下面那个布尔承载，不读 reason（ADR-0016 五）。谁先到都不改变纪律。
             member_reason = WAKE_REASON_MENTION if member["id"] in mentions else reason
             self._scheduler.submit(
                 self.run_round,
@@ -238,9 +248,20 @@ class WakeOrchestrator:
             )
         return len(targets)
 
-    def notify_task_assignment(self, target_id: str, from_seq: int, member_id: str) -> int:
-        """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。"""
-        return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=False)
+    def notify_task_assignment(
+        self,
+        target_id: str,
+        from_seq: int,
+        member_id: str,
+        *,
+        reason: str = WAKE_REASON_CHANNEL_MESSAGE,
+    ) -> int:
+        """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。
+
+        ``reason`` 缺省是普通消息唤醒——owner 手动改派走这个缺省值，因此那一轮维持既有纪律；
+        **认领**由编排传入 ``WAKE_REASON_CLAIM``，它算出的 ``mandatory_reply`` 才是 True。
+        """
+        return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=False, reason=reason)
 
     def claim_new_task(self, task_id: str, channel_id: str) -> int:
         """新建任务后由**编排**裁决认领（`CONTEXT.md` **认领** / ADR-0010）；返回是否认领（0 / 1）。
@@ -267,12 +288,22 @@ class WakeOrchestrator:
         )
         if claimant is None:
             return 0
-        claimed_task, message = self._db.claim_task(task_id, str(claimant["id"]))
-        if message is None:  # 与上面同一组前置条件；库层再判一次（幂等无操作）
+        claimed_task, messages = self._db.claim_task(task_id, str(claimant["id"]))
+        if not messages:  # 与上面同一组前置条件；库层再判一次（幂等无操作）
             return 0
         target_id = str(claimed_task["target_id"])
-        self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
-        self.notify_task_assignment(target_id, int(message["seq"]), str(claimant["id"]))
+        # 一个认领事务产出**两条**记录（已认领 + 认领后自动开工）：逐条 push 给订阅者，
+        # 否则实时视图只看到第一条、而补拉看到两条——那两个面不能分叉。
+        for message in messages:
+            self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
+        # `from_seq` **仍取第一条**（「已认领」那条）：它既是世代标识（ADR-0010 三），
+        # 也是本轮唤醒的 base_seq——不要改成最后一条。
+        self.notify_task_assignment(
+            target_id,
+            int(messages[0]["seq"]),
+            str(claimant["id"]),
+            reason=WAKE_REASON_CLAIM,
+        )
         return 1
 
     def notify_task_reassignment(self, target_id: str, from_seq: int, member_id: str) -> int:
@@ -280,9 +311,19 @@ class WakeOrchestrator:
         return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=True)
 
     def _notify_task_assignee(
-        self, target_id: str, from_seq: int, member_id: str, *, agent_jump: bool
+        self,
+        target_id: str,
+        from_seq: int,
+        member_id: str,
+        *,
+        agent_jump: bool,
+        reason: str = WAKE_REASON_CHANNEL_MESSAGE,
     ) -> int:
-        """验证任务指派事件、按动作预算裁决后唤醒新受派 Agent。"""
+        """验证任务指派事件、按动作预算裁决后唤醒新受派 Agent。
+
+        ``reason`` 与由此算出的 ``mandatory_reply`` **只认领轮为真**（ADR-0016 五的适用范围）：
+        owner 手动改派走同一条路径、reason 仍是普通消息唤醒，于是那一轮维持既有纪律（不强制发言）。
+        """
         target = self._db.get_target(target_id)
         if target["kind"] != "task":
             return 0
@@ -302,9 +343,10 @@ class WakeOrchestrator:
             assignee,
             target_id,
             from_seq,
-            WAKE_REASON_CHANNEL_MESSAGE,
+            reason,
             agent_jump,
             False,
+            reason == WAKE_REASON_CLAIM,
         )
         return 1
 
@@ -399,12 +441,18 @@ class WakeOrchestrator:
         reason: str,
         consumed_budget: bool = False,
         pierced: bool = False,
+        mandatory_reply: bool = False,
     ) -> dict[str, Any] | None:
         """跑一轮。返回落下的轮次结果；瞬态轮次（无新消息、只被合并）返回 None。
 
         ``consumed_budget`` 只写进这一行的 ``round_outcome.consumed_budget`` 列：它是**行级**
         标记（「这一轮由哪次跳送来」），**不是**跳的计数 —— 一次跳投递 N 个成员会写 N 条为真的行，
         跳数只 +1。跳数的唯一正本是 ``target_budget.used``。
+
+        ``reason`` 只承担**可读诊断 + 正在回复指示**，**不**承担纪律判据：那是
+        ``mandatory_reply``（进程内、不落库）的事。原因：同一 Agent 同 target 的重复唤醒不排队、
+        只合成一条 merged，而跨 target 的 deferred 轮次会继承参数——若判据读 reason，一条同时到达的
+        普通消息就可能让「必答」静默失效，取决于谁先到（ADR-0016 五）。
         """
         member_id = agent["id"]
 
@@ -425,11 +473,14 @@ class WakeOrchestrator:
                             reason=reason,
                             consumed_budget=consumed_budget,
                             pierced=pierced,
+                            mandatory_reply=mandatory_reply,
                         )
                     else:
                         deferred.from_seq = max(deferred.from_seq, int(from_seq))
                         deferred.consumed_budget = deferred.consumed_budget or consumed_budget
                         deferred.pierced = deferred.pierced or pierced
+                        # 任一方强制 ⇒ 合并后强制（与 consumed_budget / pierced 同款合并）。
+                        deferred.mandatory_reply = deferred.mandatory_reply or mandatory_reply
                         if reason == WAKE_REASON_MENTION:
                             deferred.reason = reason
                 return None
@@ -473,24 +524,43 @@ class WakeOrchestrator:
                     mentioned=mentioned,
                     target_id=target_id,
                     task_context=task_context,
+                    mandatory_reply=mandatory_reply,
                 )
-                # rubric：被个人提及是**确定信号**——必须回应。自判忽略在确定信号下按失败处理，
-                # 不静默（不能把「它坏了」当成「它不想说」）。
-                if mentioned and outcome.status == "ignored":
+                # rubric：**确定信号**有两条（被个人提及 / 被认领唤醒），两条**同级**、**同一套判据、同一处落点**。
+                # 认领那一侧用 ``mandatory_reply`` 判定（不读 reason：重复唤醒会被合并，原因见 run_round
+                # docstring）；提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把「它坏了」当成「它不想说」）。
+                definite_signal = mentioned or mandatory_reply
+                if definite_signal and outcome.status == "ignored":
+                    # 诊断文案按**哪个**确定信号选：认领轮不能写成「被个人提及」（那是一个不存在的事实）。
+                    key = "reason.claim_ignored" if mandatory_reply else "reason.mention_ignored"
                     outcome = RoundOutcome(
                         status="failed",
-                        reason=render("reason.mention_ignored", self._locale(), reason=outcome.reason),
+                        reason=render(key, self._locale(), reason=outcome.reason),
                     )
-                # 被点名却不产出正文同理：不是「不想说」，是没做到。
+                # 确定信号下不产出正文同理：不是「不想说」，是没做到。
+                # **动作-only 算回应**：``task_action is not None`` 时不判失败。
                 elif (
-                    mentioned
+                    definite_signal
                     and outcome.status == "replied"
                     and not outcome.messages
                     and outcome.task_action is None
                 ):
+                    key = "reason.claim_no_body" if mandatory_reply else "reason.mention_no_body"
                     outcome = RoundOutcome(
                         status="failed",
-                        reason=render("reason.mention_no_body", self._locale()),
+                        reason=render(key, self._locale()),
+                    )
+                if mandatory_reply:
+                    # 可读后缀（ADR-0016 五）：照 ``reason.pierced_suffix`` 的既有先例追加进 reason 文本。
+                    # 它只是诊断——纪律已由上面的布尔落定。
+                    outcome = RoundOutcome(
+                        status=outcome.status,
+                        reason=render("reason.claim_round", self._locale(), reason=outcome.reason),
+                        messages=outcome.messages,
+                        started_at=outcome.started_at,
+                        finished_at=outcome.finished_at,
+                        consumed_budget=outcome.consumed_budget,
+                        task_action=outcome.task_action,
                     )
 
             finished_at = utc_now()
@@ -583,6 +653,9 @@ class WakeOrchestrator:
                     deferred.reason,
                     deferred.consumed_budget,
                     deferred.pierced,
+                    # 必答标记必须沿 deferred 一起传下去，否则「跨 target 被挡在后面」的认领轮会以
+                    # mandatory_reply=False 重跑——纪律静默失效，reason 后缀也丢（ADR-0016 五）。
+                    deferred.mandatory_reply,
                 )
             # 收口后的状态点必须在**清掉 in-flight 之后**发：否则最后一帧会停在 working，
             # 前端的状态点就会永久显示「正在回复」。这是后端事实，不是前端补偿。
@@ -648,6 +721,11 @@ class WakeOrchestrator:
 
     # ─── 适配接口调用 ─────────────────────────────────────────────────────
     def _task_action_context(self, target_id: str) -> TaskActionContext | None:
+        """任务上下文（`TaskActionContext` 的**唯一装配点**）：除 id 与成员表外还带任务本体。
+
+        ``title`` / ``status`` 是 ADR-0016 四要求进 prompt 的那两样（标题、当前状态）；受派者身份
+        由接缝根据 ``assignee_member_id`` 与**本轮 Agent 的 id** 比对得出，不在这里预先替你判断。
+        """
         task = self._db.task_for_target(target_id)
         if task is None:
             return None
@@ -659,6 +737,8 @@ class WakeOrchestrator:
             task_id=str(task["id"]),
             assignee_member_id=task["assignee_member_id"],
             agent_members=agents,
+            title=str(task["title"]),
+            status=str(task["status"]),
         )
 
     def _run_seam(
@@ -669,6 +749,7 @@ class WakeOrchestrator:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
     ) -> RoundOutcome:
         try:
             return self._seam.run_round(
@@ -677,6 +758,7 @@ class WakeOrchestrator:
                 mentioned=mentioned,
                 target_id=target_id,
                 task_context=task_context,
+                mandatory_reply=mandatory_reply,
             )
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
             return RoundOutcome(

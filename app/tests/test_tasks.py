@@ -36,8 +36,9 @@ def test_creating_a_task_creates_its_own_thread_without_a_channel_message(client
     assert client.get("/api/tasks").json()["tasks"] == [task]
     assert messages(client, channel["id"]) == []
 
+    # 任务本体（标题）随第一条 `system` 记录进消息流（S4）：人读线程能读懂，Agent 读消息也能读懂。
     thread = client.get(f"/api/tasks/{task['id']}/messages").json()
-    assert [message["body"] for message in thread["messages"]] == ["任务已创建"]
+    assert [message["body"] for message in thread["messages"]] == ["任务已创建：整理验收清单"]
     assert [message["kind"] for message in thread["messages"]] == ["system"]
     assert thread["messages"][0]["target_id"] == task["target_id"]
 
@@ -131,7 +132,7 @@ def test_task_event_stream_replays_thread_messages_and_rejects_missing_tasks(cli
             first = next(lines)
         assert first is not None
         assert '"type":"message"' in first
-        assert '"body":"任务已创建"' in first
+        assert '"body":"任务已创建：事件流"' in first
 
     missing = client.get("/api/tasks/missing/events")
     assert missing.status_code == 404

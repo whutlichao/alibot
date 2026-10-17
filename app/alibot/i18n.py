@@ -79,12 +79,15 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.task_action_not_member": "只有任务成员可以更新任务状态",
         "error.task_action_rejected": "Agent 任务动作被拒绝：{message}",
         # ─── 落库的系统事件消息（写入时的语言，不回填） ───────────────────
-        "system.task.created": "任务已创建",
+        "system.task.created": "任务已创建：{title}",
         "system.task.status": "状态推进至 {status}",
         "system.task.title": "标题已更改为：{title}",
         "system.task.assignee": "已指派给 {name}",
         "system.task.unassigned": "指派已取消",
         "system.task.claimed": "已认领：{name} 接手了这张任务",
+        # 认领在同一个事务里落下的**第二条**记录（ADR-0016 二）：新键，不与 `system.task.status` 共键。
+        # 后者继续只表示「有人推了状态」。
+        "system.task.claim_started": "认领后自动开工：状态推进至 {status}",
         "system.member.pierced_join": (
             "{name} 加入了频道：它被点名时并不在此频道，回复时顺带加入（成员变化只随真实回复发生）"
         ),
@@ -103,6 +106,17 @@ CATALOGS: dict[str, dict[str, str]] = {
             "被个人提及是确定信号，必须回应；本轮自判忽略，按失败处理（原因为：{reason}）"
         ),
         "reason.mention_no_body": "被个人提及是确定信号，但本轮没有产出可落库的正文，按失败处理",
+        # 认领唤醒的两个**同级**文案（D6：与 mention 那一对同级，不是复用它们的正文——
+        # 否则诊断会写成「被个人提及」，而那是一个不存在的事实）。
+        "reason.claim_ignored": (
+            "认领唤醒是确定信号，必须回应；本轮自判忽略，按失败处理（原因为：{reason}）"
+        ),
+        "reason.claim_no_body": (
+            "认领唤醒是确定信号，但本轮没有产出可落库的正文、也没有提交任务动作，按失败处理"
+        ),
+        # 认领轮的可读后缀（ADR-0016 五）：照 `reason.pierced_suffix` 的先例追加进 reason 文本。
+        # `reason` 只承担可读诊断，**不**承担纪律判据（那是进程内布尔 `mandatory_reply` 的事）。
+        "reason.claim_round": "{reason}；本轮由**认领**唤醒（编排把这张任务交给你，你必须回应）",
         "reason.pierced_suffix": (
             "{reason}；本轮是被点名的**穿透**唤醒（它原本不在该频道），回复时顺带加入，"
             "system 事件消息 seq={seq}"
@@ -270,12 +284,15 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.task_action_not_member": "Only task members can update the task status",
         "error.task_action_rejected": "The Agent task action was rejected: {message}",
         # ─── 落库的系统事件消息 ──────────────────────────────────────────
-        "system.task.created": "Task created",
+        "system.task.created": "Task created: {title}",
         "system.task.status": "Status moved to {status}",
         "system.task.title": "Title changed to: {title}",
         "system.task.assignee": "Assigned to {name}",
         "system.task.unassigned": "Assignment cleared",
         "system.task.claimed": "Claimed: {name} took this task",
+        # The **second** record a claim writes in the same transaction (ADR-0016 二): a new key,
+        # deliberately not shared with `system.task.status`, which keeps meaning "someone moved the status".
+        "system.task.claim_started": "Claim started the work: status moved to {status}",
         "system.member.pierced_join": (
             "{name} joined the channel: it was mentioned while outside this channel and joined "
             "along with its reply (membership only changes alongside a real reply)"
@@ -298,6 +315,22 @@ CATALOGS: dict[str, dict[str, str]] = {
         "reason.mention_no_body": (
             "A personal mention is a definite signal, but this round produced no storable body, "
             "so it counts as a failure"
+        ),
+        # The two **sibling** claim-wake reasons (D6): same rank as the mention pair above,
+        # deliberately not reusing their wording (which would name a mention that never happened).
+        "reason.claim_ignored": (
+            "A claim wake is a definite signal and must be answered; this round chose to ignore "
+            "it, so it counts as a failure (original reason: {reason})"
+        ),
+        "reason.claim_no_body": (
+            "A claim wake is a definite signal, but this round produced no storable body and "
+            "submitted no task action, so it counts as a failure"
+        ),
+        # The readable suffix for a claim round (ADR-0016 五): appended to the reason text,
+        # following the existing `reason.pierced_suffix` precedent.
+        "reason.claim_round": (
+            "{reason}; this round was woken by the **claim** (orchestration handed you this task, "
+            "you must reply)"
         ),
         "reason.pierced_suffix": (
             "{reason}; this round was a mention-driven pierce wake (the member was not in this "

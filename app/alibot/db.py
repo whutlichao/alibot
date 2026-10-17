@@ -104,6 +104,12 @@ TASK_STATUS_TRANSITIONS = {
     "closed": set(),
 }
 
+# 认领在同一个事务里把任务推进到的状态（ADR-0016 二：认领是**开工动作**）。
+# 它是**表里的一个格子**而不是任意取值：``claim_task`` 用
+# ``CLAIM_START_STATUS in TASK_STATUS_TRANSITIONS['todo']`` 做合法性判定，因此收紧迁移表时
+# 认领会跟着失败，而不是绕过这张表静默越界。
+CLAIM_START_STATUS = "in_progress"
+
 # 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
 ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
 
@@ -1529,7 +1535,13 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
                     "mention_snapshot) VALUES (?, ?, 1, ?, 'system', ?, ?, '[]')",
-                    (new_id("msg"), target_id, OWNER_ID, self._render_copy("system.task.created"), now),
+                    (
+                        new_id("msg"),
+                        target_id,
+                        OWNER_ID,
+                        self._render_copy("system.task.created", title=clean_title),
+                        now,
+                    ),
                 )
                 self._commit()
             except Exception:
@@ -1781,26 +1793,40 @@ class Database:
                 raise
         return self.get_task(task_id), self.get_message(target_id, seq)
 
-    def claim_task(self, task_id: str, member_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        """**认领**写路径（`CONTEXT.md` **认领** / ADR-0010）：把一张**尚未指派**的任务指派给认领者自己。
+    def claim_task(self, task_id: str, member_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """**认领**写路径（`CONTEXT.md` **认领** / ADR-0010 / ADR-0016）：把一张**尚未指派**的任务指派给认领者
+        自己，并**在同一个事务里开工**。
 
         它与 :meth:`update_task_assignee` 是**两条不同的写路径**，不是同一端点的另一种用法：那条要求
         ``previous_id == actor_member_id``（Agent 只能转派自己手上的任务），因此**直接拒绝** Agent 认领
-        未指派任务。认领的裁定在**编排**（谁认领、开不开开关、可不可用），这里只落**结构事实**：
+        未指派任务。认领的裁定在**编排**（谁认领、开不开开关、可不可用），这里落它后的**全部七件事**：
 
-        1. 一条可读的 ``system`` 记录（**认领不是跳**：``system`` 记录不是对话回合，不触发通用唤醒）；
+        1. ``assignee_member_id`` / ``claimed_at`` / ``updated_at``；
         2. 认领者进入该任务 target 的 **target 成员**（与 owner 指派同一张表、同一个键）；
-        3. **首次认领开一次世代**：``epoch_seq`` = 那条 ``system`` 记录的 seq，``used`` 重置为 0
-           （按当世代生效的**回应预算上界**给回满额）。唤醒认领者是**指派这个动作**的载体效应，
-           由调用方走既有的 ``notify_task_assignment``（那条路径**不消耗跳数**）。
+        3. 一条可读的 ``system`` 记录「已认领」（**认领不是跳**：``system`` 记录不是对话回合，不触发通用唤醒）；
+        4. **首次认领开一次世代**：``epoch_seq`` = 那条「已认领」记录的 seq，``used`` 重置为 0
+           （按当世代生效的**回应预算上界**给回满额）；
+        5. **状态推进** ``todo → in_progress``（ADR-0016 二：认领是**开工动作**）；
+        6. 第二条 ``system`` 记录「认领后自动开工」（**新键** ``system.task.claim_started``，``seq`` 在「已认领」那条之后）；
+        7. 唤醒认领者由调用方走既有的 ``notify_task_assignment``（那条路径**不消耗跳数**）。
+
+        **任一步失败 ⇒ 全部零改动**（同一个 ``try/except`` 的 ``_rollback`` 兜住）。
+
+        **状态推进的合法性复用迁移表、不复用 actor 校验**（ADR-0016 三）：目标状态取
+        ``TASK_STATUS_TRANSITIONS["todo"]`` 里那一个可开工的迁移，而不是硬写一个字面量；又因为认领的
+        授权来自**编排**（配置层裁决）而不是成员身份，这里**不经** :meth:`update_task_status`
+        （那条路要求 actor 是存在的成员，并在 ``in_review → done`` 里拒绝受派者自我批准）。
+        ``system`` 记录的 ``author`` 恒为 ``OWNER_ID``：那是**系统事件消息**的既有口径，**不表示人推的**；
+        「人推的」与「编排替它开工」的区别**只在词条键**。
 
         **每张任务至多一次**由 ``task.claimed_at`` 这条构造性保证封住——不靠界面不给按钮，也不靠
         「任务恰好还指着某个指派者」：认领只在 ``claimed_at IS NULL`` 时成立，因此任务之后被取消指派
         也不会再触发第二次世代推进与预算重置（这正是 ADR-0002 三跳上界仍然可执行的前提）。
 
-        不成立时是**幂等无操作**（返回 ``None`` 的消息，不推进世代、不改成员、不写记录），与
-        :meth:`update_task_assignee` 遇到「指派没变」时的收口同形——它会被编排在每次新建任务后调用，
-        「这次没人认领」是正常结果，不是错误。
+        不成立时是**幂等无操作**：返回 ``(task, [])``——空列表表示**本次没落任何消息**（不推进世代、
+        不改成员、不改状态），与 :meth:`update_task_assignee` 遇到「指派没变」时的收口同形。成功时第二个
+        元素是**本次事务按 seq 升序**新增的 ``system`` 消息（两条）——一次写事务可以产出多条消息，返回值
+        如实说这件事，调用方才能把两条都推给订阅者（补拉与实时视图不分叉）。
         """
         agent = self.get_agent(member_id)  # 存在 + 「必须是 Agent」：认领者只能是一个活着的 Agent
         if agent.get("deleted_at") is not None:
@@ -1821,7 +1847,7 @@ class Database:
                 target_id = str(row["target_id"])
                 if row["claimed_at"] is not None or row["assignee_member_id"] is not None:
                     self._commit()
-                    return self.get_task(task_id), None
+                    return self.get_task(task_id), []
                 now = utc_now()
                 self._conn.execute(
                     "UPDATE task SET assignee_member_id = ?, claimed_at = ?, updated_at = ? WHERE id = ?",
@@ -1849,11 +1875,50 @@ class Database:
                     "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
                     (target_id, seq),
                 )
+                # 认领即开工（ADR-0016 二）：同一个事务里推进状态，并落**第二条**记录。
+                # 记录② 的 seq 在记录① 之后，**不参与开世代**（``epoch_seq`` 仍是上面那个 seq）。
+                started_seq = self._claim_start_status(task_id, target_id, now)
                 self._commit()
             except Exception:
                 self._rollback()
                 raise
-        return self.get_task(task_id), self.get_message(target_id, seq)
+        return self.get_task(task_id), [
+            self.get_message(target_id, seq),
+            self.get_message(target_id, started_seq),
+        ]
+
+    def _claim_start_status(self, task_id: str, target_id: str, now: str) -> int:
+        """认领事务内部的两件开工动作：推状态 + 落「认领后自动开工」记录（返回它的 seq）。
+
+        **复用迁移表做合法性判定**：目标状态 ``CLAIM_START_STATUS`` 必须落在
+        ``TASK_STATUS_TRANSITIONS["todo"]`` 里；将来收紧那张表时，认领会随之**失败**而不是静默越界。
+        **不复用** :meth:`update_task_status` 的 actor 校验：认领的授权来自**编排**（配置层裁决），
+        不来自成员身份；这里也不嵌套第二个事务，否则「单事务开工」（ADR-0016 二）当场破。
+
+        只供 :meth:`claim_task` 在**已开着的事务内**调用；它自己不 ``begin`` / ``commit``。
+        """
+        if CLAIM_START_STATUS not in TASK_STATUS_TRANSITIONS["todo"]:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.task_transition_invalid", current="todo", target=CLAIM_START_STATUS),
+                fields={
+                    "status": self._render_copy(
+                        "error.field.task_transition_invalid", current="todo", target=CLAIM_START_STATUS
+                    )
+                },
+            )
+        self._conn.execute(
+            "UPDATE task SET status = ?, updated_at = ? WHERE id = ?",
+            (CLAIM_START_STATUS, now, task_id),
+        )
+        return self._append_task_system_message_locked(
+            target_id,
+            self._render_copy(
+                "system.task.claim_started",
+                status=self._render_copy(f"status.task.{CLAIM_START_STATUS}"),
+            ),
+            now,
+        )
 
     def create_target(self, kind: str, target_id: str | None = None) -> dict[str, Any]:
         """落一个新的 **dm / task 型** target 行。
