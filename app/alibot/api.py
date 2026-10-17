@@ -75,6 +75,11 @@ from .db import (
 from .events import EventBus, sse_frame
 from .i18n import locale_of, render
 from .orchestration import ThreadScheduler, WakeOrchestrator
+from .reminder_delivery import (
+    ReminderDeliverer,
+    ReminderDeliveryDriverFactory,
+    ReminderDeliveryWorker,
+)
 from .service import WorkspaceService
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -306,12 +311,18 @@ def create_app(
     *,
     scheduler: Any | None = None,
     seam: Any | None = None,
+    reminder_delivery: ReminderDeliveryDriverFactory | None = None,
 ) -> FastAPI:
     """组装后端。
 
-    ``scheduler`` / ``seam`` 是测试注入点：传入手动调度器与脚本化替身，就能在不联网、零成本
-    的前提下把「回应 / 忽略 / 失败 / 延迟」四种行为固定下来，并让测试自己决定什么时候跑完一轮。
-    生产默认是线程池 + 真实 AgentScope 适配器。
+    ``scheduler`` / ``seam`` / ``reminder_delivery`` 是测试注入点：传入手动调度器、脚本化替身与**手动
+    触发的到期驱动器**，就能在不联网、零成本、**不等时间**的前提下把行为固定下来，并让测试自己
+    决定什么时候跑完一轮、什么时候喂一个时刻给到期投递器。生产默认是线程池 + 真实 AgentScope 适配器
+    + 后台轮询线程（启动先扫一次）。
+
+    ``reminder_delivery`` 收的是一个**工厂**（``ReminderDeliverer -> 驱动器``）而不是实例：到期投递器
+    需要本函数刚打开的库句柄，而驱动器需要投递器——工厂把这条依赖顺序收在一处。它与 ``scheduler``
+    同处一个装配点，**不开第二个**（C8）。
     """
     database = db if db is not None else open_database(data_dir)
     events = EventBus()
@@ -326,16 +337,31 @@ def create_app(
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
     )
+    # **到期投递器**（ADR-0017 §四）：判定「到点」的唯一 seam。它的产物是 `system` 消息与行上的
+    # `fired_at`，与唤醒编排无关——到点**不唤醒**任何人，因此这里只把 `EventBus` 交给它做广播。
+    make_driver: ReminderDeliveryDriverFactory = (
+        reminder_delivery if reminder_delivery is not None else ReminderDeliveryWorker
+    )
+    driver = make_driver(ReminderDeliverer(database, events))
     service = WorkspaceService(database, orchestrator=orchestrator, events=events)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # 开窗前先扫一次（C8 判据 3）：一条启动前就已过点且在窗口内的提醒，在「第一次读到
+        # ``GET /api/reminders``」时 `fired_at` 已非空，不需要等第一轮 30 秒轮询。
+        start_driver = getattr(driver, "start", None)
+        if callable(start_driver):
+            start_driver()
         try:
             yield
         finally:
             # 顺序很重要：先让事件流退出（它们会在半个 keep-alive 周期内看到这个信号），
-            # 再停调度器，最后关库。
+            # 再停到期投递器（它写库，必须收口在关库**之前**，否则关库之后它还能拿到库句柄），
+            # 再停调度器，最后关库（C10）。
             shutting_down.set()
+            close_driver = getattr(driver, "shutdown", None)
+            if callable(close_driver):
+                close_driver()
             close_scheduler = getattr(orchestrator._scheduler, "shutdown", None)
             if callable(close_scheduler):
                 close_scheduler()
@@ -346,6 +372,7 @@ def create_app(
     app.state.service = service
     app.state.events = events
     app.state.orchestrator = orchestrator
+    app.state.reminder_delivery = driver
     app.state.data_dir = database.data_dir
 
     def _not_found(message: str) -> JSONResponse:
@@ -467,18 +494,25 @@ def create_app(
             )
         }
 
-    # ─── 提醒（库内对象；ADR-0012：后端是唯一正本） ────────────────────────
+    # ─── 提醒（库内对象；ADR-0012 增删不落消息 / ADR-0017 到点落 system 消息） ──
     @app.get("/api/reminders")
     def list_reminders() -> dict[str, Any]:
-        """全部提醒（时间 / 文本 / 归属频道）。正本是库里的 ``reminder`` 表。"""
+        """全部提醒（时间 / 文本 / 归属频道 / 已到点标记与派生状态）。正本是库里的 ``reminder`` 表。
+
+        每条恒含 ``fired_at``（``null`` = 还没到点）与 ``state``（``pending`` / ``fired`` / ``missed``，
+        后端派生的只读值）。**无归属**提醒到点不落消息，因此这两个键是它唯一可观察的到点证据。
+        """
         return {"reminders": service.reminders()}
 
     @app.post("/api/reminders", status_code=201)
     def create_reminder(payload: ReminderCreate) -> dict[str, Any]:
         """新建一条提醒。
 
-        增删提醒**不落消息、不唤醒、不消耗预算**（ADR-0012 / D18）：提醒不是对话事实，
+        **增删**提醒**不落消息、不唤醒、不消耗预算**（ADR-0012 / D18）：提醒的增删不是对话事实，
         因此这里既不写 `system` 消息，也不新增 target、不计未读。
+        **到点**是另一件事（ADR-0017 §一）：到期投递器会为**有归属**的提醒落一条 `kind='system'`
+        消息进该频道的消息流（作者恒为 owner），但它**不唤醒**任何人、不消耗回应预算、不计未读、
+        不进搜索；**无归属**的提醒到点只写 `fired_at`、不落消息。
         响应同时带**最新**的完整提醒表，于是前端一次调用就能重绘列表，不必「先写再读」两次往返。
         """
         reminder = service.create_reminder(payload.text, payload.time, payload.channel_id)
@@ -488,7 +522,8 @@ def create_app(
     def delete_reminder(reminder_id: str) -> dict[str, Any]:
         """删除一条提醒（人类面动作）；同样不落消息、不唤醒、不消耗预算。
 
-        不存在的 id ⇒ 404 ``not_found``（键不存在不是「删掉了一个已经不在的东西」）。
+        「不落消息」在这里指的是**删除动作本身**不写消息——它不回收已到点落下的那条 `system` 消息
+        （消息是 append-only 的取证面，ADR-0001）。不存在的 id ⇒ 404 ``not_found``。
         """
         reminder = service.delete_reminder(reminder_id)
         return {"reminder": reminder, "reminders": service.reminders()}

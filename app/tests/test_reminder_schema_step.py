@@ -597,8 +597,10 @@ def test_the_migrated_library_opens_and_serves_the_reminders_it_rewrote(tmp_path
         assert opened.get("/api/health").json()["status"] == "ok"
         listed = opened.get("/api/reminders").json()["reminders"]
         assert [item["time"] for item in listed] == [f"{_fixed_tz_today()}09:00"]
-        # 本票**不写**投递逻辑：读路径此时既不保证 fired_at 键、也不保证 state 键（归票 ②）。
-        assert "fired_at" not in listed[0]
+        # 票 ① 不写投递逻辑：「谁用谁负责」——`fired_at` / `state` 两个键由票 ②（#113）的读路径契约
+        # 提供（C20），因此这里的期望随 #113 落地一并收紧为「键已就位且值为**未到点**」。
+        assert listed[0]["fired_at"] is None
+        assert listed[0]["state"] == "pending"
 
 
 # ─── 迁移审计台账如实记录这一步（既有报告机制的继承） ────────────────────────
