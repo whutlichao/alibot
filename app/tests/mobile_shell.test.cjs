@@ -398,8 +398,12 @@ const ATTRIBUTES_IN_HTML = new Map(
     .filter(Boolean),
 );
 
-/** 与 `index.html` 的 rail 同形的动作行（`firstFocusable()` 的 DOM 序就取这一串）。 */
-const RAIL_ACTIONS = ["btnNewChannel", "btnSearch", "btnNewDm", "btnNewAgent"];
+/** 与 `index.html` 的 rail 同形的三段控件（`firstFocusable()` 的 DOM 序就取这一串）。
+    #103 起 rail 的 DOM 序是：head（提醒 → 设置）→ `.search-shell`（搜索）→ `.rail-actions`
+    （新建频道 → 新建 Agent）；「新建私信」已挪进「私信」分组标题，不在这一串里。 */
+const RAIL_HEAD = ["btnReminders", "btnSettings"];
+const RAIL_SEARCH = ["btnSearch"];
+const RAIL_ACTIONS = ["btnNewChannel", "btnNewAgent"];
 
 function createHarness(options) {
   const config = options || {};
@@ -417,13 +421,21 @@ function createHarness(options) {
     }
     node.hidden = HIDDEN_IN_HTML.has(selector);
     if (selector === "#rail") {
-      const actions = new FakeNode("div");
-      for (const id of RAIL_ACTIONS) {
-        const button = new FakeNode("button");
-        button.setAttribute("id", id);
-        actions.appendChild(button);
+      // 三段按 `index.html` 的先后 append：head 里的两枚 icon-btn → 搜索入口 → 动作行。
+      for (const [className, ids] of [
+        ["rail-head", RAIL_HEAD],
+        ["search-shell", RAIL_SEARCH],
+        ["rail-actions", RAIL_ACTIONS],
+      ]) {
+        const group = new FakeNode("div");
+        group.className = className;
+        for (const id of ids) {
+          const button = new FakeNode("button");
+          button.setAttribute("id", id);
+          group.appendChild(button);
+        }
+        node.appendChild(group);
       }
-      node.appendChild(actions);
     }
     if (selector === "#dock") {
       // 与 `index.html` 同形的两个形态容器：成员那一栏的头部里有「关闭详情面板」
@@ -599,10 +611,17 @@ test("≤900px：顶部栏按钮开左抽屉，状态三者同步，焦点进抽
   // DOM 序的第二个控件 = 真浏览器里 Tab 一次的落点（替身没有 Tab 键，这里按序递推）。
   const focusables = rail.querySelectorAll("button, a[href], input, select, textarea, [tabindex]");
   assert.ok(focusables.length >= 2, "抽屉里要有可继续 Tab 的控件");
-  assert.equal(focusables[0], harness.active(), "打开时落在第一个控件上");
+  assert.equal(focusables[0], harness.active(), "打开时落在第一个控件上（rail-head 里的提醒入口）");
   focusables[1].focus();
   assert.equal(harness.active(), focusables[1], "Tab 一次的落点是抽屉里的下一个控件");
-  assert.equal(focusables[1].id, "btnSearch");
+  // #103 起 head 里并排放着提醒与设置两枚 icon-btn（原型 :511-518），Tab 一次落在设置上。
+  assert.equal(focusables[1].id, "btnSettings", "第二枚焦点是同处 rail-head 的设置入口");
+  assert.equal(focusables[2].id, "btnSearch", "接着才是 .search-shell 里的搜索入口");
+  assert.equal(
+    focusables.slice(0, 5).map((node) => node.id).join(","),
+    "btnReminders,btnSettings,btnSearch,btnNewChannel,btnNewAgent",
+    "rail 的 Tab 序：提醒 → 设置 → 搜索 → 新建频道 → 新建 Agent",
+  );
 });
 
 test("≤900px：点遮罩 / 按 ESC / 选中导航行都收起抽屉，焦点还给触发者", async () => {

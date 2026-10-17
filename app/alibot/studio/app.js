@@ -4370,7 +4370,7 @@ function bindCmdEvents() {
 }
 
 function bindEvents() {
-  // ── 工作区设置：rail 底部入口 + 弹窗（语言 / 消息密度 / 主题三档）──
+  // ── 工作区设置：rail **头部**入口（原型 `:515-518` 的第二枚 icon-btn）+ 弹窗（语言 / 消息密度 / 主题三档）──
   $('#btnSettings').addEventListener('click', openSettingsModal);
   $('#settingsModalClose').addEventListener('click', closeSettingsModal);
   $('#settingsDone').addEventListener('click', closeSettingsModal);
@@ -4410,7 +4410,7 @@ function bindEvents() {
     const remove = event.target.closest('[data-delete-reminder]');
     if (remove) deleteReminder(remove.dataset.deleteReminder);
   });
-  // 搜索现在是**主线视图**：rail 入口与 `⌘K` 面板里的「搜索」都进同一个视图。
+  // 搜索现在是**主线视图**：rail 头下方的 `.search-shell` 入口与 `⌘K` 面板里的「搜索」都进同一个视图。
   $('#btnSearch').addEventListener('click', showSearchView);
   bindSearchEvents();
   bindCmdEvents();
@@ -4422,6 +4422,7 @@ function bindEvents() {
     if (event.target.id === 'rosterOverlay') closeRosterModal();
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
+  // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。
   $('#btnNewDm').addEventListener('click', openDmModal);
   $('#dmCancel').addEventListener('click', closeDmModal);
   $('#dmModalClose').addEventListener('click', closeDmModal);

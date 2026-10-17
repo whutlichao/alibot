@@ -44,11 +44,10 @@ const I18N_CATALOGS = {
     /* ─── 左栏 ─────────────────────────────────────────────────────── */
     'rail.nav': '工作区导航',
     'rail.newChannel': '新建频道',
-    'rail.newDm': '私信',
     'rail.newDmTitle': '新建私信',
-    'rail.search': '搜索',
     'rail.searchTitle': '搜索工作台',
-    'rail.newAgent': 'Agent',
+    /* 搜索入口按钮上的提示语（原型 `:522` 的「搜索消息、任务…」，末尾的省略号是文案的一部分） */
+    'rail.searchPlaceholder': '搜索消息、任务…',
     'rail.newAgentTitle': '新建 Agent',
     'rail.unread': '工作区未读',
     'rail.unreadCount': '工作区未读 {count} 条',
@@ -489,11 +488,9 @@ const I18N_CATALOGS = {
     /* ─── Left rail ────────────────────────────────────────────────── */
     'rail.nav': 'Workspace navigation',
     'rail.newChannel': 'New channel',
-    'rail.newDm': 'Direct message',
     'rail.newDmTitle': 'New direct message',
-    'rail.search': 'Search',
     'rail.searchTitle': 'Search the workspace',
-    'rail.newAgent': 'Agent',
+    'rail.searchPlaceholder': 'Search messages, tasks…',
     'rail.newAgentTitle': 'New agent',
     'rail.unread': 'Workspace unread',
     'rail.unreadCount': '{count} unread in the workspace',
