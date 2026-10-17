@@ -174,7 +174,6 @@ const state = {
   providers: [],
   localProviders: [],
   consents: [],
-  unreadTotal: 0,
   dmSelectedAgentId: null,
   dataFaces: [],
   activeChannelId: null,
@@ -901,7 +900,6 @@ async function loadWorkspace(options) {
     state.members = snapshot.members;
     state.channels = snapshot.channels;
     state.dms = snapshot.dms || [];
-    state.unreadTotal = Number(snapshot.unread_total) || 0;
     state.agents = snapshot.agents || [];
     state.providers = snapshot.model_providers || [];
     state.localProviders = snapshot.local_providers || [];
@@ -2025,7 +2023,6 @@ function scheduleRead(targetId, seq) {
           const active = activeChannel();
           if (active) replaceChannel(active);
         }
-        syncUnreadTotal();
         render();
       } catch (err) {
         toast(t('toast.readFailed', { reason: err.message }), 'err');
@@ -2246,8 +2243,6 @@ async function refreshDmList() {
   try {
     const payload = await api('/api/dms');
     state.dms = payload.dms;
-    syncUnreadTotal();
-    renderUnreadSummary();
     renderDms();
   } catch {
     // 保留上一次已知的计数：宁可略陈旧，也不伪造。
@@ -2258,8 +2253,6 @@ async function refreshChannelList() {
   try {
     const payload = await api('/api/channels');
     state.channels = payload.channels;
-    syncUnreadTotal();
-    renderUnreadSummary();
     const active = activeChannel();
     if (active) replaceChannel(active);
     renderChannels();
@@ -2362,7 +2355,6 @@ function discardPending(clientId) {
 /* ─── 渲染 ──────────────────────────────────────────────────────────── */
 function render() {
   renderIdentity();
-  renderUnreadSummary();
   renderReminderDot();
   renderChannels();
   renderDms();
@@ -2398,23 +2390,6 @@ function renderIdentity() {
   const avatar = $('#meAvatar');
   avatar.className = 'avatar ' + avatarClass(member.avatar_slot);
   avatar.textContent = initial(member.display_name);
-}
-
-function syncUnreadTotal() {
-  state.unreadTotal = [...state.channels, ...state.dms].reduce(
-    (total, target) => total + (Number(target.unread_count) || 0),
-    0,
-  );
-}
-
-function renderUnreadSummary() {
-  const summary = $('#unreadSummary');
-  const badge = $('#unreadTotal');
-  if (!summary || !badge) return;
-  const total = Number(state.unreadTotal) || 0;
-  summary.hidden = total === 0;
-  badge.textContent = total;
-  summary.setAttribute('aria-label', t('rail.unreadCount', { count: total }));
 }
 
 function replaceChildren(container, nodes) {
