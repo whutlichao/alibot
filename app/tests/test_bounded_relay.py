@@ -287,6 +287,10 @@ def test_agent_to_agent_relay_is_bounded_by_three_jumps_per_human_epoch(
         "limit": 3,
         "used": 3,
         "remaining": 0,
+        # #53 在既有五项之上补的两个只读读数（票面 Constraint：字段名一律不改，只做扩展）：
+        # 这里没有频道覆盖，所以来源是内置默认、也没有待生效值。
+        "source": "built-in-default",
+        "pending_limit": None,
     }
     # 跳数上界：世代内消耗预算的投递恰好 3 次（每次跳可能唤醒多个成员，但只算一次）。
     assert budget(client, channel["id"])["used"] <= 3

@@ -360,10 +360,14 @@ class WorkspaceService:
 
         ``used``/``remaining`` 读的是 ``target_budget`` 正本，因此后端重启后与压制行为一致。
         预算是 **每 target 一份**（ADR-0004）：channel 型 target 与频道同 id，因此这个只读端点的
-        路径与字段名一律不变。
+        路径与既有字段名一律不变。
+
+        本票（#53）在既有五项之上补两个只读读数（``source`` / ``pending_limit``），落在
+        :meth:`Database.channel_budget_view`：当前世代的**有效上界**及其来源，以及「已保存、
+        从下一个人类世代起生效」的那个值——两者分开报，于是待生效配置不会被误读成当前额度。
         """
         self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
-        return self._db.budget_state(channel_id)
+        return self._db.channel_budget_view(channel_id)
 
     # ─── 成员面：Agent 创建与配置 ─────────────────────────────────────────
     def agents(self) -> list[dict[str, Any]]:

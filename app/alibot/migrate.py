@@ -666,6 +666,23 @@ def _step_12_to_13(conn: sqlite3.Connection) -> int:
     return max(cursor.rowcount, 0)
 
 
+def _step_13_to_14(conn: sqlite3.Connection) -> int:
+    """回应预算的**配置落点**（#53）：频道上界覆盖表 + 该世代生效上界的快照列。
+
+    本步只做两件 DDL 级的事，**不动任何既有行**（返回 0 行改动）：
+
+    - 建 ``channel_budget_limit``：库内**逐频道**配置（没有行 = 回落内置默认 3）；
+    - 给 ``target_budget`` 补 ``applied_limit``：该世代生效上界的快照列，可空。
+
+    **不回填旧数据**（ADR-0015 的只前进纪律）：存量 ``target_budget`` 行的 ``applied_limit`` 留
+    ``NULL``，读路径把它解释为「该世代用的是内置默认值」——这与本票之前的行为逐字等价（配置能力
+    是这一版才出现的，旧世代不可能有频道覆盖），因此不需要、也不允许按今天的配置倒推历史快照。
+    """
+    _create_missing_tables(conn, ("channel_budget_limit",))
+    _add_missing_columns(conn, "target_budget")
+    return 0
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -709,6 +726,12 @@ STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(10, 11, "附件触发器替换（先删 attachment_no_rebind，后建两条新触发器）", _step_10_to_11),
     MigrationStep(11, 12, "认领与 claimed_at（auto_claim / task.claimed_at）", _step_11_to_12),
     MigrationStep(12, 13, "提醒的到点形态（time 补日期 / fired_at 列）", _step_12_to_13),
+    MigrationStep(
+        13,
+        14,
+        "回应预算的配置落点（channel_budget_limit + target_budget.applied_limit）",
+        _step_13_to_14,
+    ),
 )
 
 

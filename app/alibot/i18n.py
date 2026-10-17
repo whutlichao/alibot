@@ -46,6 +46,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         # ─── HTTP 错误：机器可读的 code / fields 键不在这里 ───────────────
         "error.round_outcomes_immutable": "轮次结果不可编辑、不可删除：人类面不存在该端点",
         "error.budget_read_only": "回应预算只读：人类面不存在写入它的端点",
+        # #53 的配置落点：上界只接受固定档位，非法值整体拒绝（#31 §2 人定）。
+        "error.budget_limit_invalid": "回应预算上界只接受固定档位：{tiers}，未保存任何改动",
         "error.channel_members_append_only": "频道成员只能加入、不能移出：人类面不存在该端点",
         "error.messages_immutable": "消息不可编辑、不可删除：人类面不存在该端点",
         "error.agent_delete_unsupported": "Agent 不可删除：人类面不存在该端点",
@@ -241,6 +243,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "error.budget_read_only": (
             "The response budget is read-only: the human surface has no endpoint that writes it"
+        ),
+        "error.budget_limit_invalid": (
+            "The response-budget upper bound accepts only the fixed tiers {tiers}; nothing was saved"
         ),
         "error.channel_members_append_only": (
             "Channel members can only be added, never removed: the human surface has no such endpoint"
