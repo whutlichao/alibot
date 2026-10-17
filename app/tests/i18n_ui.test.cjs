@@ -1569,16 +1569,24 @@ test("提醒：列表条目字段齐全（文本 / 归属频道 / 状态后缀 /
   assert.deepEqual(rows.map((row) => row.dataset.reminder), ["rm_1", "rm_2"]);
 
   const first = rows[0];
-  assert.equal(first.querySelector(".grow").textContent, "检查令牌替换进度 · #设计系统重构", "文本 + 归属频道");
-  // 用户裁定 2026-10-17（对 C16 的显式偏离）：到期时刻并入状态后缀，行里**不再**单立一列。
+  // 行形态（用户裁定：到期时刻并入状态后缀）：文本 · 归属频道 · 状态后缀 · 删除，且**顺序就是这个**。
+  const order = ["grow", "state", "icon-btn"];
+  assert.equal(first.children.length, order.length, "一行三段：文本 / 状态后缀 / 删除");
+  order.forEach((name, index) => {
+    assert.ok(
+      first.children[index].classList.contains(name),
+      `行内第 ${index + 1} 个节点应是 .${name}（时刻不再单立一列）`,
+    );
+  });
   assert.equal(first.querySelector(".time"), null, "行里没有独立的 .time 列（时刻只在后缀里出现一次）");
+  assert.equal(first.querySelector(".grow").textContent, "检查令牌替换进度 · #设计系统重构", "文本 + 归属频道");
   const entryTexts = first.descendants().map((node) => node.textContent);
   assert.equal(
     entryTexts.filter((text) => text === "2026-10-18 14:30").length,
     1,
     "同一行里到期时刻只出现一次",
   );
-  // 待响行的状态后缀就是**到期时刻**本身（后端串原样，不切片），不是「待响」这种标签。
+  // 待响行的状态后缀就是**到期时刻**本身（后端串原样，不切片），不是「待响」这种标签（C16）。
   assert.equal(first.querySelector(".state").textContent, "2026-10-18 14:30", "待响 ⇒ 完整到期时刻");
   assert.equal(first.querySelector(".state").dataset.state, "pending");
   const remove = first.querySelector("[data-delete-reminder]");
