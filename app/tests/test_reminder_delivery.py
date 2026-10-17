@@ -5,7 +5,7 @@
 ``/api/channels/{id}/budget``、``/api/channels/{id}/round-outcomes``、``/api/search``）。
 
 因此本文件**一行都不真等时间**：没有 ``sleep``、没有真轮询、没有 ``timeout`` 等待。每个用例用
-:class:`ManualReminderDriver`（本文件自带的几行替身）把「现在几点」直接喂进去。
+:class:`ManualReminderDeliveryDriver`（本文件自带的几行替身）把「现在几点」直接喂进去。
 
 本文件覆盖的契约（票面正本 = GitHub issue #113）：
 
@@ -24,18 +24,20 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from alibot import i18n
 from alibot.api import create_app
-from alibot.reminder_trigger import (
+from alibot.reminder_delivery import (
     POLL_INTERVAL_SECONDS,
-    ReminderPoller,
-    ReminderTrigger,
+    ReminderDeliverer,
+    ReminderDeliveryWorker,
     reminder_due_instant,
 )
 from fastapi.testclient import TestClient
@@ -53,7 +55,7 @@ def local_instant(offset: timedelta = timedelta(0)) -> datetime:
     return DUE_AT + offset
 
 
-class ManualReminderDriver:
+class ManualReminderDeliveryDriver:
     """测试替身：**不跑线程**，由测试显式喂时刻（C8 的测试 adapter）。
 
     它只实现驱动器那三个方法——`start` 不做启动扫（测试不想要一个隐式投递）、`shutdown` 空操作、
@@ -61,8 +63,8 @@ class ManualReminderDriver:
     （:func:`test_the_startup_sweep_fires_without_waiting_for_the_first_poll`），行为用例则完全确定。
     """
 
-    def __init__(self, trigger: ReminderTrigger) -> None:
-        self.trigger = trigger
+    def __init__(self, deliverer: ReminderDeliverer) -> None:
+        self.deliverer = deliverer
         self.started = 0
         self.shut = 0
 
@@ -73,7 +75,7 @@ class ManualReminderDriver:
         self.shut += 1
 
     def deliver(self, now: datetime):
-        return self.trigger.deliver(now)
+        return self.deliverer.deliver(now)
 
 
 @contextmanager
@@ -83,22 +85,22 @@ def reminder_backend(data_dir: Path, **kwargs) -> Iterator[dict]:
     seam = ScriptedAgentSeam()
     state: dict = {"scheduler": scheduler, "seam": seam, "driver": None}
 
-    def factory(trigger: ReminderTrigger) -> ManualReminderDriver:
-        state["driver"] = ManualReminderDriver(trigger)
+    def factory(deliverer: ReminderDeliverer) -> ManualReminderDeliveryDriver:
+        state["driver"] = ManualReminderDeliveryDriver(deliverer)
         return state["driver"]
 
     with TestClient(
-        build_app_with_reminder_driver(data_dir, factory, scheduler=scheduler, seam=seam)
+        build_app_with_reminder_delivery(data_dir, factory, scheduler=scheduler, seam=seam)
     ) as client:
         state["client"] = client
         state["fire"] = lambda now: state["driver"].deliver(now)
         yield state
 
 
-def build_app_with_reminder_driver(
+def build_app_with_reminder_delivery(
     data_dir: Path, factory, *, scheduler: ManualScheduler, seam: ScriptedAgentSeam
 ):
-    return create_app(data_dir=data_dir, scheduler=scheduler, seam=seam, reminder_driver=factory)
+    return create_app(data_dir=data_dir, scheduler=scheduler, seam=seam, reminder_delivery=factory)
 
 
 @pytest.fixture
@@ -275,6 +277,45 @@ def test_an_unaffiliated_reminder_only_writes_the_marker(timed: dict) -> None:
     assert second.outcomes() == ("already-fired",)
     assert targets_snapshot(client) == before
     assert reminder["channel_id"] is None
+
+
+def test_an_unaffiliated_reminder_past_the_window_also_only_writes_the_marker(timed: dict) -> None:
+    """C6 判据 4（与 C2 同一分叉）：无归属的过期提醒在**两条路径**（窗口内 / 窗口外）都只写 ``fired_at``。
+
+    上一条用例覆盖窗口内那一支；这一条补窗口外那一支——它证明「无归属」这条分叉**优先于**
+    「距到期多远」，因此窗口外也绝不会因为「差点要补投」而落出消息。
+    """
+    client: TestClient = timed["client"]
+    inside = add_reminder(client, "无归属·窗口内", "2026-10-18 08:00")
+    outside = add_reminder(client, "无归属·窗口外", "2026-10-16 09:00")
+
+    before = targets_snapshot(client)
+    report = timed["fire"](local_instant())
+
+    # 两条都归「无归属」分支，而不是「补投」或「窗口外」——分叉判据是**有没有归属**。
+    assert set(report.ids_for("unaffiliated")) == {inside["id"], outside["id"]}
+    assert report.ids_for("late", "out-of-window") == ()
+    for text in ("无归属·窗口内", "无归属·窗口外"):
+        item = one_reminder(client, text)
+        assert item["fired_at"] is not None
+    assert targets_snapshot(client) == before
+
+
+def test_the_reminder_suite_does_not_wait_for_real_time(tmp_path: Path) -> None:
+    """C9 判据 3：整套提醒相关测试的**实测墙钟耗时显著小于 30 秒**，据此可判定「没有测试真等」。
+
+    这条把判据本身变成机器可判定的（否则它只能靠人跑一遍看时间）。上界取得比规格举例的 5 秒宽，
+    因为整条 pytest 进程的启动开销不是本能力的行为；关键是它必须**远小于** 30 秒那个轮询间隔。
+    """
+    started = time.monotonic()
+    with TestClient(build_app(tmp_path / "data")) as client:
+        channel = create_channel(client, name="墙钟").json()["channel"]
+        add_reminder(client, "不该等", DUE, channel["id"])
+    elapsed = time.monotonic() - started
+
+    assert elapsed < POLL_INTERVAL_SECONDS / 3, (
+        f"启停一次后端耗时 {elapsed:.2f}s，已接近轮询间隔：说明有路径真的在等时间"
+    )
 
 
 # ─── C3：system 的既有口径一个都不变 ────────────────────────────────────────
@@ -478,12 +519,12 @@ def test_a_failed_message_write_leaves_the_marker_null(tmp_path: Path) -> None:
         seam = ScriptedAgentSeam()
         state: dict = {}
 
-        def factory(trigger: ReminderTrigger):
-            state["driver"] = ManualReminderDriver(trigger)
+        def factory(deliverer: ReminderDeliverer):
+            state["driver"] = ManualReminderDeliveryDriver(deliverer)
             return state["driver"]
 
         with TestClient(
-            create_app(data_dir=tmp_path, scheduler=scheduler, seam=seam, reminder_driver=factory)
+            create_app(data_dir=tmp_path, scheduler=scheduler, seam=seam, reminder_delivery=factory)
         ) as client:
             state["client"] = client
             state["fire"] = state["driver"].deliver
@@ -494,17 +535,16 @@ def test_a_failed_message_write_leaves_the_marker_null(tmp_path: Path) -> None:
         channel = create_channel(client, name="回滚").json()["channel"]
         add_reminder(client, "会失败一次", DUE, channel["id"])
 
-        original = Database._append_target_message_locked
-
-        def boom(self, target_id: str, body: str, now: str) -> int:
-            raise RuntimeError("注入的落消息失败")
-
-        Database._append_target_message_locked = boom  # type: ignore[method-assign]
-        try:
-            with pytest.raises(RuntimeError):
-                state["fire"](local_instant(timedelta(seconds=5)))
-        finally:
-            Database._append_target_message_locked = original  # type: ignore[method-assign]
+        # **故障注入**，不是对内部分支的断言（C5 判据 2 允许「测试替身注入」）：让「落消息」那一步抛错，
+        # 随后的一切断言只落在 HTTP 读数面（消息条数、``fired_at``），与规格 T1 的「只断言外部可观察行为」
+        # 一致。``mock.patch.object`` 负责装载与还原，测试因此不需要自己管恢复。
+        with (
+            mock.patch.object(
+                Database, "_append_target_message_locked", side_effect=RuntimeError("注入的落消息失败")
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            state["fire"](local_instant(timedelta(seconds=5)))
 
         # 回滚：消息没落、标记没写 ⇒ 下一轮会**重试**（那是「从未成功」，不是重复投递）。
         assert messages(client, channel["id"]) == []
@@ -569,5 +609,6 @@ def test_repeated_start_and_stop_leaves_no_orphan_thread_and_no_closed_database_
         # 退出 ``TestClient`` = 走完整条 lifespan 关停顺序（停事件流 → 停投递器 → 停调度器 → 关库）。
 
     assert not any(
-        thread.name == ReminderPoller.THREAD_NAME and thread.is_alive() for thread in threading.enumerate()
+        thread.name == ReminderDeliveryWorker.THREAD_NAME and thread.is_alive()
+        for thread in threading.enumerate()
     )

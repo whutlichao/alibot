@@ -3,11 +3,11 @@
 **seam 的形状**（宽度 = 1 输入 + 1 输出）：
 
 ```text
-   注入时刻 ───▶ ReminderTrigger.deliver(now) ───▶ DeliveryReport（这一批的投递后果）
+   注入时刻 ───▶ ReminderDeliverer.deliver(now) ───▶ DeliveryReport（这一批的投递后果）
 ```
 
-它**不暴露**轮询间隔、锁、线程生命周期——那些是 :class:`ReminderPoller` 这个 adapter 的内部关注点，
-而 :class:`ReminderTrigger` 只回答一件事：「在**这个时刻**，这一批提醒各自的投递后果是什么」。
+它**不暴露**轮询间隔、锁、线程生命周期——那些是 :class:`ReminderDeliveryWorker` 这个 adapter 的内部关注点，
+而 :class:`ReminderDeliverer` 只回答一件事：「在**这个时刻**，这一批提醒各自的投递后果是什么」。
 于是测试可以喂一个时刻就驱动全部分支（准点 / 补投 / 窗口外 / 已投过 / 无归属），**一行都不真等时间**；
 生产装配下同一段代码由后台线程按 :data:`POLL_INTERVAL_SECONDS` 驱动，并在进程启动时**先扫一次**。
 
@@ -129,10 +129,10 @@ class DeliveryReport:
         return tuple(firing.reminder_id for firing in self.firings if firing.outcome in outcomes)
 
 
-class ReminderDriver(Protocol):
+class ReminderDeliveryDriver(Protocol):
     """投递器的**生命周期**侧面（生产 = 后台线程；测试 = 手动触发）。
 
-    seam 本身（:class:`ReminderTrigger`）只有「喂时刻 → 拿后果」，生命周期在它之外——
+    seam 本身（:class:`ReminderDeliverer`）只有「喂时刻 → 拿后果」，生命周期在它之外——
     因此注入替身时调用方不需要学轮询间隔、锁或线程。
     """
 
@@ -145,10 +145,10 @@ class ReminderDriver(Protocol):
 
 # 装配点注入的是**驱动器的构造器**而不是实例：seam 需要库句柄（它由 ``create_app`` 打开），
 # 而驱动器需要 seam。构造器的形状把这两条依赖顺序在一个地方收口。
-ReminderDriverFactory = Callable[["ReminderTrigger"], ReminderDriver]
+ReminderDeliveryDriverFactory = Callable[["ReminderDeliverer"], ReminderDeliveryDriver]
 
 
-class ReminderTrigger:
+class ReminderDeliverer:
     """到期投递器：输入**当前时刻**，输出这一批的投递后果。
 
     ``now`` 必须是**带时区**的瞬时（生产传 ``datetime.now(UTC)``；测试传「本地某刻 → 瞬时」）。
@@ -194,20 +194,12 @@ class ReminderTrigger:
         reminder_id = str(reminder["id"])
         channel_id = reminder["channel_id"]
         stamp = utc_audit_stamp(now)
-        if channel_id is None:
-            # 无归属：只写已投递标记，**任何 target 的消息条数都不变**（不新增 target）。
-            return (
-                OUTCOME_UNAFFILIATED
-                if self._db.fire_reminder(reminder_id, fired_at=stamp) is not None
-                else OUTCOME_ALREADY_FIRED
-            )
-        if offset > MISSED_WINDOW:
-            # 窗口外：只写标记、不落消息（人类面呈现为**已错过**）。
-            return (
-                OUTCOME_OUT_OF_WINDOW
-                if self._db.fire_reminder(reminder_id, fired_at=stamp) is not None
-                else OUTCOME_ALREADY_FIRED
-            )
+        # 两条**只写标记、不落消息**的分支（无归属 / 窗口外）共用同一个写动作，
+        # 区别只在「为什么没有消息」——那个理由就是后果词汇，不靠另一份重复的写代码。
+        silent = OUTCOME_UNAFFILIATED if channel_id is None else OUTCOME_OUT_OF_WINDOW
+        if channel_id is None or offset > MISSED_WINDOW:
+            fired = self._db.fire_reminder(reminder_id, fired_at=stamp)
+            return silent if fired is not None else OUTCOME_ALREADY_FIRED
         on_time = offset <= poll_interval()
         fired = self._db.fire_reminder(
             reminder_id, copy_key=COPY_ON_TIME if on_time else COPY_LATE, fired_at=stamp
@@ -228,28 +220,29 @@ class ReminderTrigger:
         self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
 
 
-class ReminderPoller:
+class ReminderDeliveryWorker:
     """生产 adapter：进程内后台线程按固定间隔轮询 + **启动先扫一次**。
 
     启动扫在 :meth:`start` 里**同步**做完（它由 ``lifespan`` 在监听开始之前调用），于是「一条启动前
     就已过点且在窗口内的提醒」在第一次读到 ``GET /api/reminders`` 时 ``fired_at`` 已非空——不需要
     等第一次轮询到点（C8 判据 3）。之后的轮询在后台线程上跑，与启动扫是**同一段代码**（
-    :meth:`ReminderTrigger.deliver`），不新增第二条时间路径。
+    :meth:`ReminderDeliverer.deliver`），不新增第二条时间路径。
 
     关停顺序由装配点保证：本对象在 ``database.close()`` **之前**收口（C10），因此线程不会在库关掉之后
     还去拿库句柄。
     """
 
-    THREAD_NAME = "alibot-reminder-poller"
+    THREAD_NAME = "alibot-reminder-delivery"
 
-    def __init__(self, trigger: ReminderTrigger, *, interval: float = POLL_INTERVAL_SECONDS) -> None:
-        self._trigger = trigger
-        self._interval = interval
+    def __init__(self, deliverer: ReminderDeliverer) -> None:
+        # 间隔**不是**构造参数：ADR-0017 §四 明确否掉「把轮询间隔做成可配置项」（配错了的表现是
+        # 「静默不响」）。它只来自模块级常量 POLL_INTERVAL_SECONDS。
+        self._deliverer = deliverer
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def deliver(self, now: datetime) -> DeliveryReport:
-        return self._trigger.deliver(now)
+        return self._deliverer.deliver(now)
 
     def start(self) -> None:
         """同步跑一次启动扫，然后起后台线程按间隔轮询（可重复启停）。"""
@@ -265,16 +258,16 @@ class ReminderPoller:
         self._stop.set()
         thread, self._thread = self._thread, None
         if thread is not None:
-            thread.join(timeout=self._interval + POLL_INTERVAL_SECONDS)
+            thread.join(timeout=2 * POLL_INTERVAL_SECONDS)
 
     def _run(self) -> None:
-        while not self._stop.wait(self._interval):
+        while not self._stop.wait(POLL_INTERVAL_SECONDS):
             self._sweep()
 
     def _sweep(self) -> None:
         """一轮投递。单条写失败（库忙、外键被并发删掉）不得让轮询线程死掉：下一轮会重试。"""
         try:
-            self._trigger.deliver(datetime.now(UTC))
+            self._deliverer.deliver(datetime.now(UTC))
         except Exception:
             return
 

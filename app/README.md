@@ -234,7 +234,7 @@ pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.
 | `GET /api/workspace` | 工作台快照（成员、Agent、频道、未读合计、可用 provider） |
 | `GET /api/settings` | 工作区设置（**语言偏好** / **消息密度** / **主题**；后端是唯一正本） |
 | `PATCH /api/settings` | 写工作区设置 `{locale?, message_density?, theme?}`（部分更新；未知键与非法档位整体拒绝）。改设置**不落消息、不唤醒、不消耗预算** |
-| `GET /api/reminders` | 全部提醒（`id` / `text` / `time`（`YYYY-MM-DD HH:MM`，**一次性**）/ `channel_id` + `channel_name`（可空 = 不归属）/ `created_at` / `fired_at`（`null` = 还没到点））。正本是库里的 `reminder` 表（ADR-0012 / ADR-0017） |
+| `GET /api/reminders` | 全部提醒（`id` / `text` / `time`（`YYYY-MM-DD HH:MM`，**一次性**）/ `channel_id` + `channel_name`（可空 = 不归属）/ `created_at` / `fired_at`（`null` = 还没到点）/ `state`（`pending` / `fired` / `missed`，**后端派生的只读值**，不落库不占列））。每条恒含 `fired_at` 与 `state`——**无归属**提醒到点不落消息，这两个键是它唯一的到点证据。正本是库里的 `reminder` 表（ADR-0012 / ADR-0017） |
 | `POST /api/reminders` | 新建一条提醒 `{text, time, channel_id?}`（`channel_id` 省略或 `null` = 不归属任何频道）。校验失败**整体不创建**；**不落消息、不唤醒、不消耗预算**、不新增 target、不计未读 |
 | `DELETE /api/reminders/{id}` | 删除一条提醒；返回被删掉的那条与最新列表。不存在的 id ⇒ 404 |
 | `GET /api/search?q=<关键词>&target_id=<可选>&limit=<可选>` | 跨 channel / DM / task target 搜索普通消息；默认上限 200，target 可收窄到单一作用域；每条命中返回消息、target（id / kind / 显示名）与后端计算的全部 `highlight_ranges` |
@@ -329,10 +329,17 @@ Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次
 Agent 详情面）由上面的 Node 内置测试单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰**
 `~/Alibot`。
 
-**唯一例外**：`app/tests/test_backend_copy.py` 直接读 `app/alibot/i18n.py` 的两份取值——词条表是
-**数据契约**（两份取值必须覆盖同一键集、参数位一致，且后端文案必须取自**当前语言**的那一条），
-它的键集不经 HTTP 面暴露，因此按与前端 `i18n_ui.test.cjs` 同款的做法直接读那份数据。行为断言仍然
-全部走 HTTP 面。
+**两处例外**，理由同源（词条表是**数据契约**，其键集不经 HTTP 面暴露）：
+
+1. `app/tests/test_backend_copy.py` 直接读 `app/alibot/i18n.py` 的两份取值——两份取值必须覆盖同一键集、
+   参数位一致，且后端文案必须取自**当前语言**的那一条。
+2. `app/tests/test_reminder_delivery.py` 的 `test_the_two_copy_keys_are_backend_only` 直接读同一个
+   `i18n.CATALOGS` 与 `app/alibot/studio/i18n.js` 的文本——它验的是**越界方向**：落库的
+   `system.reminder.*` 正文只许进后端那一层，前端词条表里出现同一条就是 ADR-0009 明确否掉的「第三层」。
+   这条反向判据没有 HTTP 读数面（它比的是两份**词条数据**本身）。
+
+两处都只读数据契约，**行为断言仍然全部走 HTTP 面**（含 `test_reminder_delivery.py` 里其余每一条用例：
+它们只经 `GET /api/reminders`、消息流、`budget`、`round-outcomes`、`search` 读数）。
 
 四类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟。
 测试**不联网、零成本**；「什么时候跑完一轮」由测试自己拨（手动调度器），所以 in-flight 与

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .i18n import SOURCE_LOCALE, locale_of, render
-from .reminder_trigger import reminder_state
+from .reminder_delivery import reminder_state
 
 OWNER_ID = "owner"
 OWNER_DISPLAY_NAME = "Owner"
@@ -1351,7 +1351,7 @@ class Database:
         - ``fired_at``：``null`` = 还没到点；非空 = 已投递（ISO-8601 **UTC** 串、带 ``Z`` 后缀，与
           ``created_at`` 同一族口径）。它是**无归属**提醒唯一可观察的到点证据——那些提醒到点不落消息。
         - ``state``：``pending`` / ``fired`` / ``missed`` 三取一的**只读派生值**，由 ``fired_at`` 与到期
-          时刻之差推导（唯一规则在 :func:`alibot.reminder_trigger.reminder_state`）。它**不落库、不进列**：
+          时刻之差推导（唯一规则在 :func:`alibot.reminder_delivery.reminder_state`）。它**不落库、不进列**：
           D4 否掉的是「第三个状态**列**」，派生字段不是列。
         """
         fired_at = row["fired_at"]
@@ -1394,8 +1394,12 @@ class Database:
 
         返回 ``{"reminder": <最新载荷>, "message": <新消息或 None>}``；已投递过则整条返回 ``None``。
         """
+        # **一个瞬时服务三处**：``fired_at``（已投递标记）、新消息的 ``created_at``、以及投递器的判定口径。
+        # 若在这里各自再取一次墙钟，注入时刻的行为测试会落出「``fired_at`` 晚于 ``created_at``」的
+        # 审计行，C9 的 30 秒精度判据与 C20 的 `state` 推导也会在同一次投递里算出两份时间。
         stamp = fired_at if fired_at is not None else utc_now()
-        now = utc_now()
+        channel_id: str | None = None
+        seq: int | None = None
         with self._lock:
             self._begin()
             try:
@@ -1409,26 +1413,24 @@ class Database:
                     return None
                 self._conn.execute("UPDATE reminder SET fired_at = ? WHERE id = ?", (stamp, reminder_id))
                 channel_id = row["channel_id"]
-                body = ""
-                message: dict[str, Any] | None = None
                 if copy_key is not None and channel_id is not None:
                     # 正文按**库内语言偏好**渲染（投递跑在 HTTP 请求之外，没有请求头可读，ADR-0009），
                     # 且在写入那一刻定型：落库后不随偏好切换回溯（append-only 取证面）。
-                    body = self._render_copy(copy_key, text=str(row["text"]))
-                    seq = self._append_target_message_locked(str(channel_id), body, now)
-                    message = {
-                        "target_id": str(channel_id),
-                        "seq": seq,
-                        "kind": "system",
-                        "body": body,
-                        "created_at": now,
-                    }
+                    seq = self._append_target_message_locked(
+                        str(channel_id), self._render_copy(copy_key, text=str(row["text"])), stamp
+                    )
                 self._commit()
             except Exception:
                 # 落消息那一步失败 ⇒ 整体回滚：消息没落、``fired_at`` 没写，下一轮轮询会**重试**
                 # （那是「从未成功」，不是重复投递）。
                 self._rollback()
                 raise
+            # 消息载荷走**既有那一条**装配路径（与 ``append_message`` 同样的收尾）：事件流的订阅者
+            # 因此拿到与 ``GET /messages`` 逐字同形的一条（含 ``id`` 与 ``author``），
+            # 不在投递路径上自拼一份少字段的近似形状。
+            message = (
+                self.get_message(str(channel_id), seq) if seq is not None and channel_id is not None else None
+            )
             reminder = self._get_reminder(reminder_id)
         return {"reminder": reminder, "message": message}
 

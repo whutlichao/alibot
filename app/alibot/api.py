@@ -75,7 +75,11 @@ from .db import (
 from .events import EventBus, sse_frame
 from .i18n import locale_of, render
 from .orchestration import ThreadScheduler, WakeOrchestrator
-from .reminder_trigger import ReminderPoller, ReminderTrigger
+from .reminder_delivery import (
+    ReminderDeliverer,
+    ReminderDeliveryDriverFactory,
+    ReminderDeliveryWorker,
+)
 from .service import WorkspaceService
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -307,18 +311,18 @@ def create_app(
     *,
     scheduler: Any | None = None,
     seam: Any | None = None,
-    reminder_driver: Any | None = None,
+    reminder_delivery: ReminderDeliveryDriverFactory | None = None,
 ) -> FastAPI:
     """组装后端。
 
-    ``scheduler`` / ``seam`` / ``reminder_driver`` 是测试注入点：传入手动调度器、脚本化替身与**手动
+    ``scheduler`` / ``seam`` / ``reminder_delivery`` 是测试注入点：传入手动调度器、脚本化替身与**手动
     触发的到期驱动器**，就能在不联网、零成本、**不等时间**的前提下把行为固定下来，并让测试自己
     决定什么时候跑完一轮、什么时候喂一个时刻给到期投递器。生产默认是线程池 + 真实 AgentScope 适配器
     + 后台轮询线程（启动先扫一次）。
 
-    ``reminder_driver`` 收的是一个**工厂**（``ReminderTrigger -> 驱动器``）而不是实例：到期投递器需要
-    本函数刚打开的库句柄，而驱动器需要投递器——工厂把这条依赖顺序收在一处。它与 ``scheduler`` 同处
-    一个装配点，**不开第二个**（C8）。
+    ``reminder_delivery`` 收的是一个**工厂**（``ReminderDeliverer -> 驱动器``）而不是实例：到期投递器
+    需要本函数刚打开的库句柄，而驱动器需要投递器——工厂把这条依赖顺序收在一处。它与 ``scheduler``
+    同处一个装配点，**不开第二个**（C8）。
     """
     database = db if db is not None else open_database(data_dir)
     events = EventBus()
@@ -335,9 +339,10 @@ def create_app(
     )
     # **到期投递器**（ADR-0017 §四）：判定「到点」的唯一 seam。它的产物是 `system` 消息与行上的
     # `fired_at`，与唤醒编排无关——到点**不唤醒**任何人，因此这里只把 `EventBus` 交给它做广播。
-    driver = (reminder_driver if reminder_driver is not None else ReminderPoller)(
-        ReminderTrigger(database, events)
+    make_driver: ReminderDeliveryDriverFactory = (
+        reminder_delivery if reminder_delivery is not None else ReminderDeliveryWorker
     )
+    driver = make_driver(ReminderDeliverer(database, events))
     service = WorkspaceService(database, orchestrator=orchestrator, events=events)
 
     @asynccontextmanager
@@ -367,7 +372,7 @@ def create_app(
     app.state.service = service
     app.state.events = events
     app.state.orchestrator = orchestrator
-    app.state.reminder_driver = driver
+    app.state.reminder_delivery = driver
     app.state.data_dir = database.data_dir
 
     def _not_found(message: str) -> JSONResponse:
