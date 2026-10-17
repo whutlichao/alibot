@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -36,6 +37,37 @@ SPEC_OWNER_ID = "owner"
 LOCAL_MODEL_ID = "ollama:qwen2.5"
 # 远端 provider：启用前需要一次数据流告知确认。
 REMOTE_MODEL_ID = "dashscope:qwen-max"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _sanitize_proxy_environment() -> Iterator[None]:
+    """把宿主环境的 `no_proxy` / `NO_PROXY` 收干净：这些测试只跟 127.0.0.1 说话。
+
+    触发场景（本机真实踩到）：环境里 `NO_PROXY=localhost,127.0.0.1,::1,[::1]` 时，httpx 解析
+    代理绕过表会把 `[::1]` 当成 URL，于是连**回环**请求都报
+    ``InvalidURL: Invalid port: ':1]'``。它发生在 seam 自己建的客户端上（那条路径不吃
+    ``trust_env=False``），因此 `test_agent_seam_client_lifecycle` 与本机 stub provider 的用例
+    会以「环境」而不是「代码」为原因失败——基线也跟着红。
+
+    只摘掉**带方括号的 IPv6 条目**（不是 host / domain，注定解析失败），其余代理条目照旧：
+    真模型冒烟若要走用户自己的代理，行为不变。
+    """
+    keys = ("no_proxy", "NO_PROXY")
+    saved = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            value = os.environ.get(key)
+            if not value:
+                continue
+            kept = [entry for entry in value.split(",") if "[" not in entry and "]" not in entry]
+            os.environ[key] = ",".join(kept)
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def build_app(
