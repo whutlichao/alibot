@@ -487,7 +487,8 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 
 /* ─── 提醒弹窗（原型 `alibot-app.html:433-436` 的 `.reminder-row` 一族） ──────────
-   一行三件：时间（mono，`--accent-deep` 文字档）/ 文本 + `· #归属频道`（`--faint`）/ 删除键。
+   一行四件：到期时刻（mono，`--accent-deep` 文字档）/ 文本 + `· #归属频道`（`--faint`）/
+   **状态后缀**（C16）/ 删除键。
    行间用 hairline 分隔，最后一行不收尾（原型 `:434`）；新增控件与列表之间用一条分隔线（`:1578`）。 */
 .reminder-row {
   display: flex; align-items: center; gap: var(--sp-5);
@@ -497,10 +498,18 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .reminder-row .time { font-family: var(--mono); font-size: var(--fs-caption); color: var(--accent-deep); }
 .reminder-row .grow { flex: 1; min-width: 0; }
 .reminder-row .ch { color: var(--faint); }
+/* 状态后缀（C16）：`pending` 显示到期时刻、`fired` 显示「已提醒」、`missed` 显示「已错过」。
+   **只消费既有档位**：未到点用 `--muted`（文字档）、已错过用 `--warn-deep`（`--warn-*` 一族）。
+   已到点**不是错误**，所以这一族里**不出现** `--error`；也不新造任何 token 名——
+   `CONTEXT.md` **视觉契约**的 token 名集合是承诺，不是实现细节。 */
+.reminder-row .state { font-family: var(--mono); font-size: var(--fs-caption); color: var(--muted); }
+.reminder-row .state[data-state='missed'] { color: var(--warn-deep); }
 .reminder-add { margin: var(--sp-5) 0 0; padding-top: var(--sp-5); border-top: 1px solid var(--border); }
 .reminder-add-row { display: flex; gap: var(--sp-4); }
 .reminder-add-row .input:first-child { flex: 1; }
-/* 时间格照原型 `:1580` 的固定 110px，不随弹窗宽度拉伸。 */
+/* 日期格与时间格同形的固定宽（日期串比钟点长，所以宽一档）；它们都不随弹窗宽度拉伸。 */
+.reminder-date { width: 150px; flex: 0 0 150px; }
+/* 时间格照原型 `:1580` 的固定 110px。 */
 .reminder-time { width: 110px; flex: 0 0 110px; }
 
 /* ─── 设置弹窗的档位控件（原型 `#btnSettings` → `openSettings()` 的 `radio-row`） ────
