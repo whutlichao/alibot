@@ -10,9 +10,9 @@
 | 项 | 值 |
 | --- | --- |
 | 分支 | `rail-header-entries` |
-| 提交 | `bcda9b8` feat（四处入口落地 + 词条 + 测试）/ `6358c2f` fix（双轴 review 收口：删 ⌘K 徽标）+ 本文件与 PR 正文的 docs 提交 |
+| 提交 | `bcda9b8` feat（四处入口落地 + 词条 + 测试）/ `6358c2f` fix（双轴 review 收口：删 ⌘K 徽标）/ `578f9c7` docs（本文件 + PR 正文） |
 | 本票 base | `63e8163`（`main`，即 #102 合并后的读数） |
-| PR | [#104](https://github.com/whutlichao/alibot/pull/104)（base `main`，head `rail-header-entries`） |
+| PR | [#106](https://github.com/whutlichao/alibot/pull/106)（base `main`，head `rail-header-entries`） |
 | PR body | `app/specs/issue-103-pr-body.md`（`--body-file` 用） |
 
 ---
@@ -229,9 +229,9 @@ Standards 轴同时确认的三条「Correct」：键集不分叉（三个旧键
 | 项 | 值 |
 | --- | --- |
 | worktree | 干净（`git status --short` 空） |
-| 提交 | `bcda9b8`（feat）+ `6358c2f`（review 收口）+ 本文件与 PR 正文的 docs 提交 |
-| 分支已推送 | `rail-header-entries` → `origin`，head = 本票最终提交 |
-| PR | [#104](https://github.com/whutlichao/alibot/pull/104)（base `main`，head `rail-header-entries`） |
+| 提交 | `bcda9b8`（feat）/ `6358c2f`（review 收口）/ `578f9c7`（docs：本文件 + PR 正文） |
+| 分支已推送 | `rail-header-entries` → `origin`，head = `578f9c7` = PR head（`headRefOid` 核对一致） |
+| PR | [#106](https://github.com/whutlichao/alibot/pull/106)（base `main`，head `rail-header-entries`） |
 | PR body | `app/specs/issue-103-pr-body.md`（`gh pr create --body-file` / `--body-file` 更新） |
 | #103 摘要 comment | 已发（逐条读数摘要 + Answer / PR 指针） |
 | `worker_done` | 从本 worker 终端发送并已收到成功回执（`succeeded`，带 Task ID / Dispatch ID） |
