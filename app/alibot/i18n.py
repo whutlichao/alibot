@@ -57,7 +57,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.reminder_invalid": "提醒校验未通过，未创建任何数据",
         "error.reminder_text_empty": "提醒内容不能为空",
         "error.reminder_text_too_long": "提醒内容最多 {limit} 个字符",
-        "error.reminder_time_shape": "提醒时间需要是 HH:MM（例如 09:00）",
+        "error.reminder_time_shape": "提醒时间需要是日期加钟点，例如 2026-10-18 09:00（现只支持一次性提醒，不支持重复）",
         "error.reminder_not_found": "提醒不存在：{reminder_id}",
         "availability.orchestrator_absent": "后端未启用成员面编排",
         "error.agent_transfer_needs_orchestrator": "Agent 转派任务需要启用成员面编排",
@@ -253,7 +253,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.reminder_invalid": "Reminder validation failed; nothing was created",
         "error.reminder_text_empty": "Reminder text cannot be empty",
         "error.reminder_text_too_long": "Reminder text is limited to {limit} characters",
-        "error.reminder_time_shape": "A reminder time must be HH:MM (for example 09:00)",
+        "error.reminder_time_shape": "A reminder time needs a date and a clock time, such as 2026-10-18 09:00 (reminders fire once; repetition is not supported)",
         "error.reminder_not_found": "No such reminder: {reminder_id}",
         "availability.orchestrator_absent": "The backend runs without the member-surface orchestrator",
         "error.agent_transfer_needs_orchestrator": (
