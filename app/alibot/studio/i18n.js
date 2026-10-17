@@ -389,10 +389,11 @@ const I18N_CATALOGS = {
     'agentDetail.pauseFailed': '暂停失败：{reason}',
     'agentDetail.resumeFailed': '恢复失败：{reason}',
 
-    /* ─── 提醒（ADR-0012：库内对象） ─────────────────────────────────
-       两句话都只说**这条交付里真成立的事**：提醒存在后端、跨刷新与重启仍在。
-       **不**写「到点会发一条 ⏰ 系统消息」——到期触发的唤醒不在本票授权范围内
-       （规格未授权、原型也没有实现），写上去就是界面在声称一个不存在的行为。 */
+    /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
+       两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
+       别在这里笼统替它承诺——有归属的提醒到点确实落一条 `system` 消息进该频道消息流
+       （ADR-0017 §一），但到点**不唤醒**任何人、不消耗回应预算、不计未读；**不归属**任何
+       频道的提醒无处可落，到点只记已到点、不落消息（`CONTEXT.md` **到点**）。 */
     'reminder.modalTitle': '提醒',
     'reminder.modalSub': '提醒保存在本机后端，刷新或重启后仍在。',
     'reminder.closeAria': '关闭提醒',
@@ -854,10 +855,14 @@ const I18N_CATALOGS = {
     'agentDetail.pauseFailed': 'Could not pause: {reason}',
     'agentDetail.resumeFailed': 'Could not resume: {reason}',
 
-    /* ─── Reminders (ADR-0012: backend objects) ──────────────────────
-       Both sentences claim only what this delivery actually does: reminders live in the
-       backend and survive a refresh or a restart. No "a ⏰ system message will appear when
-       it is due" — due-time wake-up is outside this ticket, so that copy would be a lie. */
+    /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
+       Both values state existence and persistence only: reminders live in the backend and
+       survive a refresh or a restart. Due time is a second, separate truth, so do not
+       promise it from here: a reminder that belongs to a channel does drop one `system`
+       message into that channel's stream (ADR-0017 §1), but due time wakes nobody,
+       consumes no reply budget and never counts as unread; a reminder with no channel has
+       nowhere to land, so it is only marked as fired and drops no message
+       (CONTEXT.md "Due time"). */
     'reminder.modalTitle': 'Reminders',
     'reminder.modalSub':
       'Reminders are stored in the local backend; they survive a refresh or a restart.',
