@@ -60,7 +60,17 @@ AVATAR_SLOT_COUNT = 5
 # 代价（与既有纪律一致）：合力后 main 的号由 12 升到 13，被 12 及更早代码创建过的库在本版下
 # 会被闸门拒绝——处置由拒绝正文给出：先备份整个数据目录，再用 `python -m alibot --migrate` 逐版
 # 推进（迁移链覆盖 3..13，见 `app/alibot/migrate.py`）。
-SCHEMA_VERSION = 13
+# 14 = **本票 #53**（回应预算的配置落点：`channel_budget_limit` 表 +
+# `target_budget.applied_limit` 快照列）。判据同前：「必须高于当前 main」——main 是 13，
+# 14 是满足它的最小号；后续票从 15 起（号段是跨在途票的分配，不是每次 +1）。
+# 代价同上：被 13 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
+# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..14）。
+# 15 = **本票 #58**（结构化沉默信号 `silent`：`round_outcome.status` 的库级 CHECK 纳入第六个词，
+# ADR-0008）。SQLite 改表级 CHECK 只能重建表，因此多了一步 `14 → 15`（`migrate._step_14_to_15`）；
+# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号，后续票从 16 起。
+# 代价同上：被 14 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
+# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..15）。
+SCHEMA_VERSION = 15
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -114,12 +124,29 @@ TASK_STATUS_TRANSITIONS = {
 # 认领会跟着失败，而不是绕过这张表静默越界。
 CLAIM_START_STATUS = "in_progress"
 
-# 轮次结果的五种状态（spec #1 §5）。status 是「自判忽略」与「处理失败」的区分来源。
-ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted")
+# 轮次结果的六种状态（spec #1 §5 + #58 / ADR-0008）。status 是「自判忽略」「模型声明沉默」与
+# 「处理失败」的区分来源：``ignored`` 与 ``silent`` 都不是失败，前者是既有的 seam 自判忽略，后者是
+# 模型经结构化通道（``declare_silence`` 工具）明确声明本轮沉默。``reason`` 只是可读诊断，不承担判别。
+ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted", "silent")
 
 # 有界响应预算（策略 B，spec #1 §5）：一个**人类世代内同一 target** 允许的 agent→agent 跳数上界。
-# 它是**常量**：本票不做配置化（那是 #31 的范围），只把「每频道一份」泛化为「每 target 一份」。
+# 内置默认值仍是 3（ADR-0002 保留原文：耗尽仍零投递、默认值仍是它）。频道可以把它**上调/下调**到
+# 固定档位之一（#31 §2 人定，落库于 ``channel_budget_limit``），未配置的频道回落到这里。
 BUDGET_LIMIT = 3
+
+# 频道可选的**固定档位**（#31 §2 人定）：不支持任意整数、0 或 1。非法值必须明确拒绝、不部分写入
+# （写路径见 :meth:`Database.set_channel_budget_limit`）。
+BUDGET_LIMIT_TIERS = (3, 5, 10)
+
+# 「当前世代的**有效上界**」来自哪一层：机器可读的词，不译（文案由读方各自取词条）。
+# 这两个值只出现在只读载荷的 ``source`` 字段里，判据是「上一层是否有已保存的频道覆盖」。
+BUDGET_LIMIT_SOURCE_CHANNEL = "channel-override"
+BUDGET_LIMIT_SOURCE_DEFAULT = "built-in-default"
+
+# ``GET /api/{channels,tasks}/{id}/budget`` 的**既有**五项载荷。字段名一个字不改（票面 Constraint：
+# 只做扩展）——频道面在它之上再补 ``source`` / ``pending_limit``（见 ``channel_budget_view``），
+# 而 task 型读路径仍只给这五项（它的载荷契约由既有测试逐字钉住）。
+BUDGET_STATE_KEYS = ("channel_id", "epoch_seq", "limit", "used", "remaining")
 
 # 工作台搜索的硬上限：前端可以请求更小的窗口，但不能把整张消息表一次搬到浏览器。
 SEARCH_RESULT_LIMIT = 200
@@ -343,10 +370,31 @@ CREATE TABLE IF NOT EXISTS target_read (
 -- ``used`` = 该世代内**已投递**的 agent→agent 跳数。
 -- 落库而不是放进程内存：「已用/剩余」必须在后端重启后仍是同一条事实（验收项明写）。
 -- **每 target 一份**：「一个频道烧完把另一个频道锁死」因此不可能发生（跨 target 不锁死）。
+-- ``applied_limit``（#53）= 该世代**生效上界**的快照：开世代动作落库时写一次，之后只读。
+-- ``NULL`` = 该世代用**内置默认值**（``BUDGET_LIMIT``），非空 = 该世代用**频道覆盖**
+-- （``channel_budget_limit`` 那一行）。它同时是三条判据的落点：①「已保存的新值从下一个人类
+-- 世代生效」（快照不随配置漂移，所以当前世代不会被回溯改写）；②「上界跨后端重启保持」；
+-- ③「只读面展示的 effective limit 与后端压制行为是同一份事实」（两处都读这个快照）。
 CREATE TABLE IF NOT EXISTS target_budget (
   target_id TEXT PRIMARY KEY REFERENCES target(id),
   epoch_seq INTEGER NOT NULL DEFAULT 0,
-  used      INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0)
+  used      INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0),
+  applied_limit INTEGER CHECK (applied_limit IN (3, 5, 10))
+);
+
+-- 频道回应预算的**配置**落点（#53 / 规格 #31 §2 的 L2「库内逐频道配置」）。
+-- 一行 = 该频道已保存的上界；**没有行 = 回落到内置默认值**（``BUDGET_LIMIT``）。
+-- 与 ``target_budget`` 的分工是**配置 vs 用量**：这里只有配置，用量正本永远是 ``target_budget.used``
+-- （人类面不能写用量，ADR-0007）。``budget_limit`` 的取值集合就是裁定过的固定档位——非法档位在
+-- 建行那一刻被 CHECK 挡住，于是「回应预算始终是合法档位」是结构性的，不是约定。
+-- 生效时机：保存这一行**不动**任何世代的 ``applied_limit`` / ``used``；下一个人类世代开世代时
+-- 才把它快照进 ``target_budget.applied_limit``（见 ``Database.set_channel_budget_limit``）。
+-- 按 ``channel_id`` 而不是 ``target_id`` 建键：配置的作用域是**频道**（ADR-0004 规定 channel 型
+-- target 复用 ``channel.id``，因此两个 id 同值，但这一列声明的是「它只能挂在一个真实频道上」）。
+CREATE TABLE IF NOT EXISTS channel_budget_limit (
+  channel_id   TEXT PRIMARY KEY REFERENCES channel(id),
+  budget_limit INTEGER NOT NULL CHECK (budget_limit IN (3, 5, 10)),
+  updated_at   TEXT NOT NULL
 );
 
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
@@ -420,7 +468,7 @@ CREATE TABLE IF NOT EXISTS round_outcome (
   target_id       TEXT NOT NULL REFERENCES target(id),
   base_seq        INTEGER NOT NULL,
   status          TEXT NOT NULL CHECK (status IN
-                    ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted')),
+                    ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted', 'silent')),
   reason          TEXT NOT NULL DEFAULT '',
   started_at      TEXT NOT NULL,
   finished_at     TEXT NOT NULL,
@@ -1877,11 +1925,9 @@ class Database:
                 )
                 seq = self._append_target_message_locked(target_id, label, now)
                 if member_id is not None and actor["kind"] == "owner":
-                    self._conn.execute(
-                        "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
-                        "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
-                        (target_id, seq),
-                    )
+                    # owner 改指派 = task 型 target 的一次开世代动作（ADR-0005）：世代标识是那条
+                    # system 记录的 seq；预算用量重置为满额，并按当世代生效上界拍快照。
+                    self._reset_epoch_budget_locked(target_id, seq)
                 self._commit()
             except Exception:
                 self._rollback()
@@ -1965,11 +2011,7 @@ class Database:
                 )
                 # 首次认领 = 该 task target 的一次开世代动作（ADR-0010 三）：世代标识是那条 system
                 # 记录的 seq（与 owner 指派同一个落点），用量按当世代生效的上界重置为满额。
-                self._conn.execute(
-                    "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
-                    "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
-                    (target_id, seq),
-                )
+                self._reset_epoch_budget_locked(target_id, seq)
                 # 认领即开工（ADR-0016 二）：同一个事务里推进状态，并落**第二条**记录。
                 # 记录② 的 seq 在记录① 之后，**不参与开世代**（``epoch_seq`` 仍是上面那个 seq）。
                 started_seq = self._claim_start_status(task_id, target_id, now)
@@ -2425,12 +2467,9 @@ class Database:
                     # 人类消息落库**即**开启新世代并把回应预算重置为满额（spec #1 §5）。
                     # 写在这里而不是等到下一次扣款时惰性重置：「人类消息随后落库即重置」
                     # 是落库那一刻的事实，预算状态端点与压制行为必须同时看到它。
-                    # 预算按 **target** 一份（ADR-0004 决策 4）：同一个写点服务三种 kind。
-                    self._conn.execute(
-                        "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, 0) "
-                        "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0",
-                        (target_id, seq),
-                    )
+                    # 预算按 **target** 一份（ADR-0004 决策 4）：同一个写点服务三种 kind，
+                    # 并在这一刻把该世代生效的上界拍成快照（#53：保存的新值从这里才生效）。
+                    self._reset_epoch_budget_locked(target_id, seq)
                 self._commit()
             except Exception:
                 self._rollback()
@@ -2594,29 +2633,158 @@ class Database:
         }
 
     # ─── 有界响应预算（策略 B 的正本，落库） ──────────────────────────────
-    def budget_state(self, target_id: str, limit: int = BUDGET_LIMIT) -> dict[str, Any]:
-        """该 target 当前人类世代的预算状态（只读）。没有行时 used=0、epoch_seq=0。
+    def _saved_budget_limit_locked(self, target_id: str) -> int | None:
+        """该 target 所在**频道**已保存的上界覆盖；没有配置（或不是频道）时 ``None``。
 
-        ``epoch_seq=0`` 表示还没有开世代动作 —— 此时预算按满额生效：预算约束的是
-        「一次人类发言能引发多少 agent 往返」，没有开世代动作时没有可越界的世代。
+        ``channel_budget_limit.channel_id`` 的外键指向 ``channel(id)``，而 channel 型 target 复用
+        ``channel.id``（ADR-0004），因此按 target id 查这一列在 channel 型上就是按频道查；
+        dm / task 型的 id 不在 ``channel`` 表里，查询自然无行 —— 「逐频道配置」不可能落到它们头上。
 
-        返回载荷里的 ``channel_id`` 是 **HTTP 面既有字段名**（票面 Constraint：响应字段名一律不变），
-        它承载的是这个 target 的 id——channel 型下就等于频道 id。
+        只由 :meth:`_budget_facts_locked` 与 :meth:`_applied_limit_snapshot_locked` 调用（都在锁内）。
         """
-        self.get_target(target_id)  # 404 早退
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT epoch_seq, used FROM target_budget WHERE target_id = ?", (target_id,)
-            ).fetchone()
+        row = self._conn.execute(
+            "SELECT budget_limit FROM channel_budget_limit WHERE channel_id = ?", (target_id,)
+        ).fetchone()
+        return None if row is None else int(row["budget_limit"])
+
+    def _budget_facts_locked(self, target_id: str) -> dict[str, Any]:
+        """预算读数的**唯一**组装点：五项既有载荷 + 当前上界的来源 + 下一世代的待生效值。
+
+        有效上界的解析只有这一个落点（读路径与硬上界裁决都用它的结果，否则「展示的 limit」与
+        「压制行为」会分成两条事实）。判定顺序：
+
+        1. 库里有 ``target_budget`` 行 ⇒ 上界是该世代**开世代那一刻的快照** ``applied_limit``：
+           非空 = 频道覆盖、``NULL`` = 内置默认。快照一写就不再随配置漂移，于是「保存的新值从
+           下一个人类世代生效」与「当前世代不被回溯改写」是同一件事。
+        2. 库里没有行 ⇒ 这个 target 还没有开过世代、也没消耗过跳，没有「当前世代的有效上界」可
+           快照；按 #54 票面口径（「保存的改动不改变当前世代的有效上界与用量，从下一个人类世代
+           生效，在此之前作为待生效值读回」），此时报**内置默认**，已保存的覆盖只出现在
+           ``pending_limit`` 上——否则保存一下就会看起来「立刻生效」。
+        3. ``pending_limit`` 只在「已保存的覆盖与当前有效上界**不同**」时给出：相同就没有「下个
+           世代会变」这回事，报一个与当前值相等的待生效值只会制造噪音。
+        """
+        row = self._conn.execute(
+            "SELECT epoch_seq, used, applied_limit FROM target_budget WHERE target_id = ?", (target_id,)
+        ).fetchone()
         epoch_seq = int(row["epoch_seq"]) if row is not None else 0
         used = int(row["used"]) if row is not None else 0
+        saved = self._saved_budget_limit_locked(target_id)
+        if row is None:
+            applied: int | None = None
+        else:
+            applied = None if row["applied_limit"] is None else int(row["applied_limit"])
+        limit = BUDGET_LIMIT if applied is None else applied
+        source = BUDGET_LIMIT_SOURCE_DEFAULT if applied is None else BUDGET_LIMIT_SOURCE_CHANNEL
         return {
             "channel_id": target_id,
             "epoch_seq": epoch_seq,
             "limit": limit,
             "used": used,
             "remaining": max(limit - used, 0),
+            "source": source,
+            "pending_limit": saved if saved is not None and saved != limit else None,
         }
+
+    def _applied_limit_snapshot_locked(self, target_id: str) -> int | None:
+        """写 ``target_budget.applied_limit`` 时取的**快照值**（两处写入共用的唯一落点）。
+
+        两处写入是开世代动作（:meth:`_reset_epoch_budget_locked`）与消耗首跳时的惰性建行
+        （:meth:`consume_budget`）；它们都要求「快照取哪个值」与读路径解析的是同一份配置，
+        因此这个取值只在这里写一遍——两处的 INSERT 形参、冲突子句仍各自不同。
+        """
+        return self._saved_budget_limit_locked(target_id)
+
+    def _reset_epoch_budget_locked(self, target_id: str, epoch_seq: int) -> None:
+        """开世代动作落库：把用量重置为满额，并**快照**该世代生效的上界（#53）。
+
+        三种开世代动作（人类消息落库 / owner 改指派 / 首次认领）共用这一个写点——预算按 **target**
+        一份（ADR-0004 决策 4），三种 kind 走同一段代码。``applied_limit`` 是「该世代生效上界」的
+        唯一落点：写成**快照**而不是每次读配置，才同时满足「保存的新值下个世代才生效」与
+        「上界跨后端重启保持」。
+
+        调用方必须已在事务内、且持有 ``self._lock``。
+        """
+        self._conn.execute(
+            "INSERT INTO target_budget(target_id, epoch_seq, used, applied_limit) VALUES (?, ?, 0, ?) "
+            "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = 0, "
+            "applied_limit = excluded.applied_limit",
+            (target_id, epoch_seq, self._applied_limit_snapshot_locked(target_id)),
+        )
+
+    def budget_state(self, target_id: str) -> dict[str, Any]:
+        """该 target 当前人类世代的预算状态（只读）。没有行时 used=0、epoch_seq=0。
+
+        ``epoch_seq=0`` 表示还没有开世代动作 —— 此时预算按满额生效：预算约束的是
+        「一次人类发言能引发多少 agent 往返」，没有开世代动作时没有可越界的世代。
+
+        ``limit`` 是**当前世代的有效上界**（频道覆盖或内置默认，见 :meth:`_budget_facts_locked`），
+        ``remaining`` 按它算；``used`` 是 ``target_budget.used`` 正本，不由轮次结果行求和。
+
+        载荷只给 :data:`BUDGET_STATE_KEYS` 那五项（既有字段名一个字不改）。频道设置视图要的
+        ``source`` / ``pending_limit`` 由 :meth:`channel_budget_view` 在同一份事实上补出来。
+
+        返回载荷里的 ``channel_id`` 是 **HTTP 面既有字段名**（票面 Constraint：响应字段名一律不变），
+        它承载的是这个 target 的 id——channel 型下就等于频道 id。
+        """
+        self.get_target(target_id)  # 404 早退
+        with self._lock:
+            facts = self._budget_facts_locked(target_id)
+        return {key: facts[key] for key in BUDGET_STATE_KEYS}
+
+    def channel_budget_view(self, channel_id: str) -> dict[str, Any]:
+        """频道设置视图的只读读数：``budget_state`` 的五项 + ``source`` / ``pending_limit``。
+
+        **只做扩展**（票面 Constraint：既有字段名一个字不改）：
+
+        - ``limit`` / ``used`` / ``remaining`` / ``epoch_seq`` / ``channel_id`` 语义与既有端点逐字相同
+          （其中 ``limit`` 现在是**当前世代的有效上界**，``remaining`` 按它算）；
+        - ``source`` = ``channel-override``（频道覆盖）/ ``built-in-default``（内置默认），机器可读、
+          不译（文案由读方各自取词条）；
+        - ``pending_limit`` = 已保存、**从下一个人类世代起生效**的上界；没有待生效差异时为 ``null``。
+          它绝不参与当前 ``remaining`` 的计算。
+        """
+        self.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        # 目标作用域 404 早退：与 ``budget_state`` 同一道门。``get_channel`` 只读 ``channel`` 行，
+        # 它在「channel 行在、target 影子行缺」的事故形态里不会 404，因此这里必须补 target 这一道
+        # （否则本端点会在事故库里给出一个「看起来正常」的读数）。
+        self.get_target(channel_id)
+        with self._lock:
+            return self._budget_facts_locked(channel_id)
+
+    def set_channel_budget_limit(self, channel_id: str, budget_limit: int) -> dict[str, Any]:
+        """保存该频道的回应预算上界（**配置**，不是用量），返回保存后的只读读数。
+
+        三条边界（ADR-0007 / 规格 #31 §2）：
+
+        - **只写上界**：本方法不碰 ``target_budget``——``used`` 仍只由后端在开世代时重置、在一次
+          实际投递的跳上推进；这里没有「重置用量」这条路。
+        - **只收固定档位** ``{3, 5, 10}``：其余取值整体拒绝（不留半成品），档位集合同时由建表语句
+          的列级 CHECK 兜底。
+        - **从下一个人类世代生效**：这里只写配置表，当前世代的 ``applied_limit`` 快照与 ``used``
+          一字不改（快照由开世代动作写，见 :meth:`_reset_epoch_budget_locked`）。于是保存后读回的
+          载荷里 ``limit`` 不变、``pending_limit`` 才是新值——直到下一个人类世代开世代。**还没有
+          任何世代**（``target_budget`` 无行）的频道也照这条口径报：``limit`` = 内置默认、新值只作
+          ``pending_limit``（见 :meth:`_budget_facts_locked` 第 2 条）。
+
+        人类面的 ``PATCH /api/channels/{id}/budget``（#54）是它的调用方；本票只建落点与读路径。
+        """
+        self.get_channel(channel_id)  # 404 早退
+        self.get_target(channel_id)  # 目标作用域 404 早退（与读路径同一道门）
+        if budget_limit not in BUDGET_LIMIT_TIERS:
+            tiers = ", ".join(str(tier) for tier in BUDGET_LIMIT_TIERS)
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.budget_limit_invalid", tiers=tiers),
+                fields={"budget_limit": self._render_copy("error.field_choices", values=tiers)},
+            )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO channel_budget_limit(channel_id, budget_limit, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(channel_id) DO UPDATE SET budget_limit = excluded.budget_limit, "
+                "updated_at = excluded.updated_at",
+                (channel_id, int(budget_limit), utc_now()),
+            )
+        return self.channel_budget_view(channel_id)
 
     def human_epoch_seq(self, target_id: str) -> int:
         """该 target 最近一条**人类**消息的 seq（人类世代的定义，spec #1 §5）。没有则为 0。"""
@@ -2636,8 +2804,13 @@ class Database:
         累加已经发生的投递。这里仍按 seq 兜底：若调用顺序意外让旧世代的行盖住新世代，
         用量就从 0 起算，而不是把旧世代的额度算到新世代头上。
 
-        上界（≤ ``BUDGET_LIMIT``）由调用方（``WakeOrchestrator._spend_jump``）在同一把锁内
-        裁决后才调用本方法 —— 这里只记事实，不重复做上界判定。
+        上界（= 该世代生效上界，见 :meth:`_budget_facts_locked`）由调用方
+        （``WakeOrchestrator._spend_jump``）在同一把锁内裁决后才调用本方法 —— 这里只记事实，
+        不重复做上界判定。
+
+        惰性建行（这个 target 还没有预算行）时**连生效上界一起快照**，与开世代动作同一口径
+        （两处共用 :meth:`_applied_limit_snapshot_locked`）：快照只在写入时取一次，之后读回的上界
+        与 ``used`` / ``epoch_seq`` 一起成为持久事实，不再随配置漂移。
         """
         self.get_target(target_id)  # 404 早退
         with self._lock:
@@ -2648,9 +2821,9 @@ class Database:
             used = previous[1] if previous is not None and previous[0] >= int(epoch_seq) else 0
             used += max(int(amount), 0)
             self._conn.execute(
-                "INSERT INTO target_budget(target_id, epoch_seq, used) VALUES (?, ?, ?) "
+                "INSERT INTO target_budget(target_id, epoch_seq, used, applied_limit) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(target_id) DO UPDATE SET epoch_seq = excluded.epoch_seq, used = excluded.used",
-                (target_id, int(epoch_seq), used),
+                (target_id, int(epoch_seq), used, self._applied_limit_snapshot_locked(target_id)),
             )
         return used
 

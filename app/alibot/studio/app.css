@@ -282,6 +282,42 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   max-width: 68ch; overflow-wrap: anywhere;
 }
 
+/* ─── 旁白式交代（一条消息的**呈现降档**）────────────────────────────────
+   形态-a（#57 / #35 D4）：它**仍是**一条消息——`data-seq` / 头像 / 作者名 / 时间都在，只是把
+   「一条完整消息」压到**一行**、降到低权重。因此这里不借用 `.msg.outcome*` 那两族（它们
+   **不是消息**：没有 seq、`role="status"`）。也不出现任何表示失败的视觉：旁白不是失败。
+
+   低权重靠三件事，只用既有色位与量例：正文与标签降到 `--muted`（正常正文是 `--fg`）、
+   头像降到 `sm` 档、整行字号用 `--fs-sm`。色位全部按名字消费既有角色族，不硬编码 hex/rgb。 */
+.msg.narration { align-items: baseline; padding: 2px var(--sp-4); }
+.msg.narration .msg-body { min-width: 0; }
+.msg.narration .msg-head { gap: var(--sp-4); flex-wrap: wrap; }
+/* 作者名不抢眼：旁白是「谁在旁听」，不是一次发言。 */
+.msg.narration .msg-author { font-weight: var(--fw-semi); color: var(--muted); }
+/* 「旁白」capsule：与「事件」「Agent」标签同一个形态，用 `--faint` 一档——它比正文还轻。 */
+.msg.narration .msg-tag {
+  font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--faint); border-color: var(--border);
+}
+/* 正文就在这一行里（不是独立段落）：低一档的字号与颜色，但仍可选中、可读全文。 */
+.msg-narration-text {
+  font-size: var(--fs-sm); line-height: var(--lh-snug); color: var(--muted);
+  overflow-wrap: anywhere; max-width: 68ch;
+}
+/* 展开控件与摘要行同族：原生 `<button>`（可 Tab、Enter/Space 激活），`aria-expanded` 表达状态。 */
+.msg-narration-toggle {
+  display: inline-flex; align-items: baseline; gap: var(--sp-2); padding: 0; text-align: left;
+  font-size: var(--fs-caption); color: var(--faint);
+}
+.msg-narration-toggle:hover .msg-narration-toggle-text { color: var(--fg); }
+.msg-narration-mark { font-size: var(--fs-mono-xs); color: var(--faint); }
+.msg-narration-toggle-text { color: var(--faint); }
+/* 展开后：这一行是**关联轮次结果**的 `reason` 原文（后端措辞，不重新措辞、不截断）。 */
+.msg-narration-reason {
+  margin-top: 2px; font-size: var(--fs-caption); line-height: var(--lh-snug); color: var(--muted);
+  max-width: 68ch; overflow-wrap: anywhere; border-left: 1px solid var(--border); padding-left: var(--sp-5);
+}
+.msg.narration .msg-time { margin-left: auto; }
+
 .empty { text-align: center; padding: var(--sp-12) var(--sp-9); color: var(--faint); }
 .empty b { display: block; color: var(--muted); font-weight: var(--fw-semi); font-size: 13.5px; margin-bottom: var(--sp-2); }
 .empty p { margin: 0; font-size: 12.5px; }

@@ -3,7 +3,7 @@
 为什么替身在**测试侧**而不是生产侧：票面要求「在 AgentScope 之前保留一个薄适配接口，测试注入
 脚本化替身」。替身遵守同一个 :class:`~alibot.agent_seam.AgentSeam`，于是：
 
-- 四种行为（回应 / 忽略 / 失败 / 延迟）可以固定下来，测试**不联网、零成本**；
+- 五种行为（回应 / 忽略 / 失败 / 延迟 / 声明沉默）可以固定下来，测试**不联网、零成本**；
 - 协作域的行为测试与「模型是哪一家」完全解耦，换持久化引擎或换模型提供商都不会让测试失败。
 
 ``ManualScheduler`` 让测试自己决定「什么时候跑完一轮」，于是「一轮 in-flight」这个窗口可以稳定
@@ -22,6 +22,8 @@ from alibot.agent_seam import (
     RoundOutcome,
     TaskActionContext,
     _system_prompt,
+    provider_of,
+    supports_tool_calling,
 )
 
 REPLY = "reply"
@@ -32,6 +34,9 @@ ACTION_ONLY = "action-only"
 # 「回复但没有可落库正文、也没有任务动作」：确定信号下这应当收口成 `failed`。
 # 它对应真适配器的 `RoundOutcome(status="replied")` + 空 messages + 无 task_action。
 EMPTY_REPLY = "empty-reply"
+# 「模型经结构化通道明确声明本轮沉默」（#58）：对应真适配器收到 `declare_silence` 工具调用时的
+# `RoundOutcome(status="silent")` + 零条 messages。它不是 `ignore`：后者的语义仍是既有的自判忽略。
+SILENT = "silent"
 
 
 class ManualScheduler:
@@ -128,6 +133,7 @@ class ScriptedAgentSeam:
             mentioned=mentioned,
             task_context=task_context,
             mandatory_reply=mandatory_reply,
+            structured_silence=supports_tool_calling(provider_of(str(agent.get("model_id") or ""))),
         )
         with self._lock:
             self.calls.append(
@@ -159,6 +165,9 @@ class ScriptedAgentSeam:
                 reason=self.replies.get(member_id, "脚本化替身：自判无关"),
                 task_action=task_action,
             )
+        if behavior == SILENT:
+            # 结构化声明沉默：零条待落库消息（`RoundOutcome` 自己也会拒绝非空 messages）。
+            return RoundOutcome(status="silent", reason="脚本化替身：模型经结构化通道声明本轮沉默")
         if behavior == DELAY:
             # 延迟结束后按「回应」收口——延迟只推迟一轮的结束，不改变它的结论类型。
             return RoundOutcome(

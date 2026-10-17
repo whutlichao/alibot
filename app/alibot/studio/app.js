@@ -20,13 +20,13 @@
      `--error` 是这一轮的结论（消息流里的失败行）。
 
    本票（issue #18）新增：
-   - 轮次结果**五态全可见**，但**每一条消息下面至多一行**：同一条消息（同一 `base_seq`）下
-     若有多条**非 `failed`** 的轮次结果（`ignored` / `budget-exhausted` / `merged`），收成
+   - 轮次结果**全态可见**（#58 起六态），但**每一条消息下面至多一行**：同一条消息（同一 `base_seq`）下
+     若有多条**非 `failed`** 的轮次结果（`ignored` / `budget-exhausted` / `merged` / `silent`），收成
      **一行默认折叠的摘要行**（成员名按后端返回序逐个列出，超过 2 人写成「甲、乙 等 N 人」）；
      展开后逐成员一行给出该成员的 status 中文说法与后端 `reason` 原文（不重新措辞、不截断）。
    - `failed` 保持**直接展开**（不藏在折叠后面），与摘要行同挂一条消息、互不吞并。
-     「它为什么没说话」的三种**正常协议选择**（自判忽略 / 预算已用尽 / 被合并）从静默
-     变成可读，但不得淹没对话，也不得与「它坏了」混为一谈。
+     「它为什么没说话」的四种**正常协议选择**（自判忽略 / 预算已用尽 / 被合并 / 结构化声明沉默）从静默
+     变成可读，但不得淹没对话，也不得与「它坏了」混为一谈（`silent` 不是失败，也不是 `ignored`）。
    - 折叠/展开是本浏览器页面的呈现状态（内存里的 `state.expandedOutcomes`），不进 localStorage：
      本文件依旧不用浏览器存储保存任何业务状态。
 
@@ -54,6 +54,13 @@
      `YYYY-MM-DD HH:MM` 串交给后端（ADR-0017 的时间语义）；列表行改成
      「文本 · 归属频道 · [到期时刻 | 「已提醒」 | 「已错过」] · 删除」：到期时刻并进状态后缀
      （用户裁定，见 :func:`reminderStateNode`），只消费后端给的 `state`，前端不做任何判定。
+
+   本票（issue #54）新增 —— 频道设置里的**回应预算**（ADR-0007 / 规格 #31 §2）：
+   - 频道头新增预算入口，打开一张**频道设置**弹窗（工作区设置弹窗的语义一个字不改）；
+   - 弹窗只读四项后端读数（已用 / 剩余 / **有效上界** / **来源**）与**下一世代待生效值**，两者分开
+     呈现；预算耗尽写成一条明确事实，不进错误区；
+   - 写控件只有固定档位 3 / 5 / 10（默认 3），提交 `{budget_limit}`；保存后按响应里的新读数重铺，
+     并提示「从下一个人类世代生效」。用量（`used`）前端既不算也不提交——它是后端的正本。
    ========================================================================== */
 'use strict';
 
@@ -104,16 +111,17 @@ function providerLabel(provider) {
 /* 轮次结果在**摘要行**里的呈现：一个 status 一行，三张字段不再各占一张平行表
    （加一态只需改一处，也不会出现「某张表漏了一态」的漂移）。
 
-   键集是 `CONTEXT.md` `## Language` 词表里、**不进摘要行**的那三个：`ignored`（自判忽略）、
-   `budget-exhausted`（预算耗尽）、`merged`（被合并）。它们**不得混为一谈**：`ignored` 是正常
-   协议选择、`budget-exhausted` 不是出错、`merged` 不是失败。
+   键集是 `CONTEXT.md` `## Language` 词表里、**不进摘要行**的那四个：`ignored`（自判忽略）、
+   `budget-exhausted`（预算耗尽）、`merged`（被合并）、`silent`（模型经结构化通道声明沉默）。
+   它们**不得混为一谈**：`ignored` 是正常协议选择、`budget-exhausted` 不是出错、`merged` 不是失败、
+   `silent` 是模型**显式声明**的沉默（不是失败，也不是既有的自判忽略）。
 
    `replied` 与 `failed` 不在表里：`replied` 的可见事实就是那条回复消息本身（不为它挂行）；
    `failed` 直接展开（状态词要在「成员此刻未启用」与「这一轮失败」之间区分，写在 `roundOutcomeNode()` 里）。
    不给它们留查不到的死词条。
 
-   `note` 是折叠态那一句「为什么」——三态各自的后端事实不同，说法就应当不同。 */
-const SUMMARY_STATUSES = ['ignored', 'budget-exhausted', 'merged'];
+   `note` 是折叠态那一句「为什么」——四态各自的后端事实不同，说法就应当不同。 */
+const SUMMARY_STATUSES = ['ignored', 'budget-exhausted', 'merged', 'silent'];
 
 /** 取一个 status 的中文说法；不在摘要词表里就原样回退（不伪造一个说法）。 */
 function outcomeLabel(status) {
@@ -121,7 +129,7 @@ function outcomeLabel(status) {
   return hasKey(key) ? t(key) : status;
 }
 
-/** 折叠行那一句「为什么」（三态各自的后端事实说法；与 `label` 一样只在词条表里）。 */
+/** 折叠行那一句「为什么」（四态各自的后端事实说法；与 `label` 一样只在词条表里）。 */
 function outcomeNote(status) {
   const key = 'outcome.' + status + '.note';
   return hasKey(key) ? t(key) : status;
@@ -168,6 +176,10 @@ const state = {
   // 成员名册（频道成员的**只读**全名单）当前锁定的频道 id；`null` = 弹窗关着。
   // 名册回答「打开它的那个频道里有谁」，因此它在打开时锁定频道，不跟着激活频道跑。
   rosterChannelId: null,
+  // 频道回应预算弹窗（#54）：`budget` 是 `GET/PATCH /api/channels/{id}/budget` 载荷的镜像，
+  // `selected` 是**还没提交**的档位选择（呈现状态）。两者都不是业务正本——正本在后端；
+  // 关闭时整个镜像作废，于是「拿旧读数当现状」这个中间态不存在。
+  channelBudget: { channelId: null, budget: null, selected: null, loading: false, error: '' },
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -191,6 +203,13 @@ const state = {
   // 摘要行的展开/折叠：**会话内的呈现状态**，不是业务状态（不进任何浏览器存储）。
   // 键 = 触发它的那条消息的 seq。
   expandedOutcomes: {},
+  // 轮次结果的第二份索引：按**回复消息**的 `reply_seq` 直取那一条轮次结果。
+  // 旁白行要展开看「关联轮次结果的 reason」，而 `outcomes` 是按**触发消息**的 `base_seq`
+  // 分组的——两份索引都从同一批后端行来、在 `applyOutcomes` 一处建，因此不会各自漂。
+  replyOutcomes: {},
+  // 旁白行的展开/折叠：同样是**会话内的呈现状态**。键 = 旁白那条消息自己的 `seq`
+  // （与 `expandedOutcomes` 不共用：那一个键是**触发**消息的 seq，两者会撞号）。
+  expandedNarrations: {},
   pending: [],
   members: [],
   channelMembers: {},
@@ -685,6 +704,9 @@ function applySettings(settings) {
   // 名册的动态文案（标题 / 副标题 / 行内角色与状态说法）由 `t()` 渲染，因此切语言时
   // 要跟设置弹窗一样重铺一遍（静态的关闭按钮由上面那句 `applyStaticI18n` 覆盖）。
   if (state.rosterChannelId) renderRoster();
+  // 预算弹窗的读数标签、来源说法与写控件文案同样由 `t()` 渲染：开着就按同一份读数重铺，
+  // 于是它不会留在上一门语言（读数本身是后端事实，重铺不发请求）。
+  if (state.channelBudget.channelId) renderBudgetModal();
   return state.settings;
 }
 
@@ -995,7 +1017,7 @@ async function loadWorkspace(options) {
   } catch (err) {
     state.online = false;
     state.ready = true;
-    state.outcomes = {};
+    applyOutcomes([]);
     state.expandedOutcomes = {};
     if (!settings.silent) toast(t('load.workspaceFailed', { reason: err.message }), 'err');
     // 后端不可达不是终点：自动重试，于是「重连后恢复」不需要人点按钮。
@@ -1033,29 +1055,37 @@ async function refreshMessages() {
 async function refreshOutcomes() {
   const channel = activeChannel();
   if (!channel) {
-    state.outcomes = {};
+    applyOutcomes([]);
     return;
   }
   try {
     const payload = await api(channelPath(channel.id, '/round-outcomes'));
-    state.outcomes = groupOutcomes(payload.round_outcomes || []);
+    applyOutcomes(payload.round_outcomes || []);
   } catch {
     // 轮次结果读不到不影响消息流（与 refreshStatuses 同一条纪律）：保留上一次已知值，
     // 也不把整个工作台判成「后端不可达」。
   }
 }
 
-// 轮次结果按成员分组：同一条消息可能唤醒多个成员，于是同一 `base_seq` 下可能有多条失败。
-function groupOutcomes(records) {
-  const grouped = {};
+// 轮次结果的两份索引，都从**同一批**后端行建、在**同一处**换，免得两份各自漂：
+//   - `byBase`：按**触发它的**那条消息的 `base_seq` + 成员分组（摘要行与失败行按它挂）；
+//   - `byReply`：按**它产出的**那条回复消息的 `reply_seq` 直取（旁白行展开看 reason 按它查）。
+// `reply_seq` 是后端写进 `round_outcome` 的取证字段（`replied` 之外为 `null`），不是前端推断。
+function applyOutcomes(records) {
+  const byBase = {};
+  const byReply = {};
   records.forEach((record) => {
-    if (!record || !Number.isInteger(record.base_seq)) return;
-    if (!grouped[record.base_seq]) grouped[record.base_seq] = {};
-    const byMember = grouped[record.base_seq];
-    if (!byMember[record.member_id]) byMember[record.member_id] = [];
-    byMember[record.member_id].push(record);
+    if (!record) return;
+    if (Number.isInteger(record.base_seq)) {
+      if (!byBase[record.base_seq]) byBase[record.base_seq] = {};
+      const byMember = byBase[record.base_seq];
+      if (!byMember[record.member_id]) byMember[record.member_id] = [];
+      byMember[record.member_id].push(record);
+    }
+    if (Number.isInteger(record.reply_seq)) byReply[record.reply_seq] = record;
   });
-  return grouped;
+  state.outcomes = byBase;
+  state.replyOutcomes = byReply;
 }
 
 async function refreshStatuses() {
@@ -2375,6 +2405,9 @@ function onStreamOutcome(targetId, payload) {
       records.push(outcome);
       added = true;
     }
+    // 回复序号的索引也要跟着更新：刚到达的这条结果可能是某条旁白消息**自己那一轮**的结论，
+    // 而那条消息可能先于它到达（`replied` 的消息先落库、结果后收口）。
+    if (Number.isInteger(outcome.reply_seq)) state.replyOutcomes[outcome.reply_seq] = outcome;
   }
   renderMembers();
   renderDock();
@@ -3311,6 +3344,234 @@ function renderTyping() {
   container.textContent = agent ? t('typing.working', { name: agent.display_name }) : '';
 }
 
+/* ─── 频道回应预算（#54 / ADR-0007 / 规格 #31 §2）：读数是后端事实的镜像，写控件只表达**上界** ──
+
+   `CONTEXT.md` **回应预算**：每个 target 每个**人类世代**最多可发生的 Agent→Agent 跳数。上界是
+   **库内逐频道配置**（ADR-0007），人类面只能改它；用量（`used`）是后端的正本——后端在人类消息
+   落库开世代时重置、并只在一次**实际投递**的跳上 +1。因此这张频道设置弹窗里：
+
+   - 只读的四项读数（已用 / 剩余 / 有效上界 / **来源**）与待生效值全部来自
+     `GET /api/channels/{id}/budget`，前端不计算、不推断、也不保存跨会话的旧读数；
+   - 写控件只有固定档位 3 / 5 / 10（默认 3），提交 `{budget_limit: <档位>}`，**绝不提交**任何用量
+     字段（后端也会整体拒绝：用量不可写，`error.budget_used_read_only`）；
+   - 保存后按**响应里的新读数**重铺（一次调用即刷新），并明确提示「从下一个人类世代生效」——
+     当前世代的 `limit` / `used` / `remaining` 不变由后端保证，前端不乐观改写本地读数。 */
+
+/** 固定档位（与后端 `BUDGET_LIMIT_TIERS` 同序同名）；默认档位是后端内置默认 3（ADR-0002 未修订）。 */
+const BUDGET_LIMIT_TIERS = [3, 5, 10];
+const BUDGET_DEFAULT_LIMIT = 3;
+
+/** 来源取值的界面说法（键名与后端 `source` 的取值同名；未知取值原样回退，不伪造一个说法）。 */
+function budgetSourceLabel(source) {
+  const key = 'budget.source.' + source;
+  return hasKey(key) ? t(key) : source;
+}
+
+/** 弹窗里「已保存的档位」：待生效值优先；否则「当前有效上界就是频道覆盖」那份；再否则内置默认。 */
+function savedBudgetTier(budget) {
+  if (!budget) return BUDGET_DEFAULT_LIMIT;
+  const pending = budget.pending_limit;
+  if (pending !== null && pending !== undefined) return Number(pending);
+  return budget.source === 'channel-override' ? Number(budget.limit) : BUDGET_DEFAULT_LIMIT;
+}
+
+/** 弹窗的空镜像（打开 / 关闭都用它，于是「缓存了过期读数」这个中间态不存在）。 */
+function emptyBudgetView() {
+  return { channelId: null, budget: null, selected: null, loading: false, error: '' };
+}
+
+/** 打开弹窗（入口 = 频道头的预算按钮）：锁定当前频道、先显示「读取中」，随后按后端读数渲染。 */
+async function openBudgetModal() {
+  const channel = activeChannel();
+  if (!channel) return;
+  state.channelBudget = {
+    channelId: channel.id,
+    budget: null,
+    selected: null,
+    loading: true,
+    error: '',
+  };
+  $('#budgetOverlay').hidden = false;
+  const box = $('#budgetFormError');
+  if (box) box.hidden = true;
+  renderBudgetModal();
+  await loadChannelBudget(channel.id);
+}
+
+/** 读一次该频道的预算读数（正本是后端）。读回后按**同一个频道**重铺——关掉 / 换过频道就不动它。 */
+async function loadChannelBudget(channelId) {
+  try {
+    const payload = await api(channelPath(channelId, '/budget'));
+    if (state.channelBudget.channelId !== channelId) return;
+    state.channelBudget.budget = payload.budget;
+    state.channelBudget.selected = savedBudgetTier(payload.budget);
+    state.channelBudget.loading = false;
+    state.channelBudget.error = '';
+  } catch (err) {
+    if (state.channelBudget.channelId !== channelId) return;
+    state.channelBudget.loading = false;
+    state.channelBudget.error = err.message;
+  }
+  renderBudgetModal();
+}
+
+function closeBudgetModal() {
+  state.channelBudget = emptyBudgetView();
+  $('#budgetOverlay').hidden = true;
+  const box = $('#budgetFormError');
+  if (box) box.hidden = true;
+}
+
+/** 选中一个档位（**还没提交**的呈现状态）。不在固定档位里的取值连选中都不成立。 */
+function selectBudgetTier(tier) {
+  const value = Number(tier);
+  if (!BUDGET_LIMIT_TIERS.includes(value)) return;
+  if (!state.channelBudget.channelId) return;
+  state.channelBudget.selected = value;
+  renderBudgetModal();
+}
+
+/** 保存选中的档位：写后端（正本），成功后按响应里的新读数重铺并提示下个世代生效。
+
+    失败时**不**改本地读数——界面不能声称一个没落库的档位（与 `saveSettings` 同一条纪律）。 */
+async function submitBudgetTier() {
+  const view = state.channelBudget;
+  const channelId = view.channelId;
+  const tier = view.selected;
+  if (!channelId || tier === null || !BUDGET_LIMIT_TIERS.includes(Number(tier))) return;
+  const box = $('#budgetFormError');
+  if (box) box.hidden = true;
+  try {
+    const payload = await api(channelPath(channelId, '/budget'), {
+      method: 'PATCH',
+      body: { budget_limit: Number(tier) },
+    });
+    if (state.channelBudget.channelId !== channelId) return;
+    state.channelBudget.budget = payload.budget;
+    state.channelBudget.selected = savedBudgetTier(payload.budget);
+    state.channelBudget.error = '';
+    state.channelBudget.loading = false;
+    renderBudgetModal();
+    toast(t('budget.saved', { limit: Number(tier) }));
+  } catch (err) {
+    if (state.channelBudget.channelId !== channelId) return;
+    if (box) {
+      box.textContent = t('budget.saveFailed', { reason: err.message });
+      box.hidden = false;
+    }
+    renderBudgetModal();
+  }
+}
+
+/** 一行说明（`.field .hint` 那一档的排版，不新造样式）。 */
+function budgetHint(key, odId) {
+  const field = el('div', 'field');
+  const hint = el('div', 'hint', t(key));
+  if (odId) hint.setAttribute('data-od-id', odId);
+  field.appendChild(hint);
+  return field;
+}
+
+/** 弹窗的唯一渲染落点：读数 / 待生效 / 写控件都从这里出，于是「读数」与「可写档位」不会各说一份。 */
+function renderBudgetModal() {
+  const view = state.channelBudget;
+  const body = $('#budgetBody');
+  if (!body) return;
+  const channel = view.channelId ? state.channels.find((item) => item.id === view.channelId) : null;
+  const title = $('#budgetTitle');
+  if (title) title.textContent = t('budget.title');
+  const sub = $('#budgetSub');
+  if (sub) sub.textContent = t('budget.sub', { name: channel ? channel.name : '' });
+  if (!view.channelId) {
+    replaceChildren(body, []);
+    return;
+  }
+  if (view.loading) {
+    replaceChildren(body, [el('div', 'rail-empty', t('budget.loading'))]);
+    return;
+  }
+  if (view.error) {
+    replaceChildren(body, [el('div', 'rail-empty', t('budget.loadFailed', { reason: view.error }))]);
+    return;
+  }
+  const budget = view.budget;
+  if (!budget) {
+    replaceChildren(body, []);
+    return;
+  }
+
+  const nodes = [];
+
+  // ① 当前人类世代：四项读数，`remaining` 是后端按**当前有效上界**算好的那一份。
+  const current = el('section', 'd-sec');
+  current.appendChild(sectionTitle('budget.sectionCurrent', 'budget-section-current'));
+  current.appendChild(kvRow(t('budget.used'), String(budget.used), 'budget-used'));
+  current.appendChild(kvRow(t('budget.remaining'), String(budget.remaining), 'budget-remaining'));
+  current.appendChild(kvRow(t('budget.limit'), String(budget.limit), 'budget-limit'));
+  current.appendChild(kvRow(t('budget.source'), budgetSourceLabel(budget.source), 'budget-source'));
+  if (Number(budget.remaining) === 0) {
+    // 预算是**耗尽**，不是出错：它和轮次结果里的 `budget-exhausted` 是同一条事实
+    // （消息照常落库、零投递），因此**不进错误区**，只在读数里说清楚。
+    current.appendChild(kvRow(t('budget.state'), t('budget.exhausted'), 'budget-exhausted'));
+    current.appendChild(budgetHint('budget.exhaustedNote', 'budget-exhausted-note'));
+  }
+  nodes.push(current);
+
+  // ② 下一个人类世代：待生效值与当前有效上界**分开**一行，避免把待生效配置误读成当前额度。
+  const next = el('section', 'd-sec');
+  next.appendChild(sectionTitle('budget.sectionNext', 'budget-section-next'));
+  const pending = budget.pending_limit;
+  const hasPending = pending !== null && pending !== undefined;
+  next.appendChild(
+    kvRow(t('budget.pending'), String(hasPending ? pending : budget.limit), 'budget-pending'),
+  );
+  next.appendChild(
+    budgetHint(
+      hasPending ? 'budget.pendingEffective' : 'budget.pendingSame',
+      'budget-pending-note',
+    ),
+  );
+  nodes.push(next);
+
+  // ③ 写控件：只有固定三档（没有可输入任意数字的控件 ⇒ 非法值不会被提交）。
+  const tiers = el('section', 'd-sec');
+  tiers.appendChild(sectionTitle('budget.tierLabel', 'budget-section-tiers'));
+  const row = el('div', 'radio-row');
+  BUDGET_LIMIT_TIERS.forEach((tier) => {
+    const on = Number(view.selected) === tier;
+    const card = el('button', 'radio-card');
+    card.type = 'button';
+    card.dataset.budgetTier = String(tier);
+    card.setAttribute('data-od-id', 'budget-tier-' + tier);
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    card.classList.toggle('is-on', on);
+    card.appendChild(el('b', null, String(tier)));
+    card.appendChild(
+      el(
+        'span',
+        null,
+        tier === BUDGET_DEFAULT_LIMIT ? t('budget.tierDefaultUnit') : t('budget.tierUnit'),
+      ),
+    );
+    row.appendChild(card);
+  });
+  tiers.appendChild(row);
+  tiers.appendChild(budgetHint('budget.tierHint', 'budget-tier-hint'));
+  const actions = el('div', 'agent-actions');
+  const save = el('button', 'btn btn-primary', t('budget.save'));
+  save.type = 'button';
+  save.dataset.budgetSave = '1';
+  save.setAttribute('data-od-id', 'budget-save');
+  // 「与已保存的档位相同」时没有可提交的改动：按钮禁用，而不是发一个空转的 PATCH。
+  save.disabled =
+    !state.online || view.selected === null || Number(view.selected) === savedBudgetTier(budget);
+  actions.appendChild(save);
+  tiers.appendChild(actions);
+  nodes.push(tiers);
+
+  replaceChildren(body, nodes);
+}
+
 
 function renderHeader() {
   const target = activeTarget();
@@ -3325,6 +3586,9 @@ function renderHeader() {
   // 名册是**频道**成员的只读全名单（`CONTEXT.md` **成员名册**）：DM 下没有这条面，
   // 入口随之隐藏——不留一个按下去什么都不发生的按钮。
   $('#btnChannelMembers').hidden = isDm;
+  // 回应预算同样是**频道**配置（库内逐频道项，ADR-0007）：DM / 任务型 target 没有这条设置面，
+  // 入口随之隐藏（预算读数的路径 `/api/channels/{id}/budget` 只认频道）。
+  $('#btnChannelBudget').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -3404,7 +3668,7 @@ function renderMessages() {
   renderTabs();
 }
 
-/** 摘要行要覆盖的三种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
+/** 摘要行要覆盖的四种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
 function summarizableOutcomes(records) {
   return records.filter((record) => SUMMARY_STATUSES.includes(record.status));
 }
@@ -3448,7 +3712,7 @@ function roundOutcomeSummaryNode(records) {
   head.appendChild(el('span', 'msg-time', timeLabel(items[0].finished_at)));
   body.appendChild(head);
 
-  // 折叠态：一行说清「为什么」——三态的**后端事实不同，说法就不同**，不得混为一谈。
+  // 折叠态：一行说清「为什么」——四态的**后端事实不同，说法就不同**，不得混为一谈。
   // 只有一种状态时不重复上一行的名单（名单已经在折叠控件里）；混合状态时才逐组点名，
   // 否则读不出「是谁因为哪条原因」。
   body.appendChild(el('div', 'msg-outcome-summary-why', summarizeWhy(items)));
@@ -3509,7 +3773,7 @@ function summarizeWhy(items) {
  * 展开后的一行：一个成员的 `status` 中文说法 + 后端给出的 `reason` **原文**。
  *
  * `reason` 已是可读中文，因此直接呈现——不重新措辞、不截断成省略号（票面硬要求）。
- * 成员名与状态词用 `--faint`/`--muted` 一档：这三态都**不是失败**，不得使用 `--error`。
+ * 成员名与状态词用 `--faint`/`--muted` 一档：这四态都**不是失败**，不得使用 `--error`。
  */
 function roundOutcomeSummaryLine(record) {
   const line = el('div', 'msg-outcome-line');
@@ -3591,7 +3855,109 @@ function roundOutcomeNode(record) {
   return row;
 }
 
+/* ─── 旁白式交代的**呈现降档**（#57；#35 的 D1 判据-4 + D4 形态-a）───────────
+
+   旁白式交代 = Agent 把「我不需要说话」当成正文说出来（「（本轮消息与我无关，无需回应）」）。
+   它**仍是**一条真实 Agent 消息：占自己的 `seq`、计未读、照旧唤醒与花预算——这些数据面后果按
+   #35 登记为**已知代价**，本票不改，也不在这里补。本票只把它的**呈现**降一档。
+
+   判据是**形态**，不是措辞表：整条正文被**同一对圆括号**从头包到尾、只有一行、而且很短。
+   因此这里既没有正则词表、也没有「无需回应」这类字样清单——换措辞、换语言都不会让判据失效。
+   **失效方向可放松**：判据拿不准（多行、超长、中途就闭合、方括号/书名号、不是 Agent 发的）时
+   一律按普通消息呈现，宁可少降档，不可误吞真实回复。
+
+   长度上限取 24 个字符：整条括注式交代是一句自我说明（「（本轮消息与我无关，无需回应）」是 15 个
+   字符），超过这个长度的括注更可能是真的在说一件事（引用、长句说明），按真实回复对待。 */
+const NARRATION_MAX_LENGTH = 24;
+/** 成对的圆括号：只认圆括号，不认方括号 / 书名号（那些是标题式强调，可能就是真实回复）。 */
+const NARRATION_PAREN_PAIRS = { '\uFF08': '\uFF09', '(': ')' };
+
+/** 这一条消息是不是旁白式交代；是就返回它降档后要显示的正文（已去首尾空白），否则 `null`。 */
+function narrationOf(message) {
+  // 只判**已落库的 Agent 消息**：还没落库的乐观发送项没有 seq，也不该在这里被判定。
+  if (!message || message.kind !== 'agent') return null;
+  if (!Number.isInteger(message.seq) || message.seq <= 0) return null;
+  const body = typeof message.body === 'string' ? message.body.trim() : '';
+  if (!body) return null;
+  // 按**码点**数长度（`body.length` 数的是 UTF-16 单元，会把汉字算成 1、生僻字算成 2）。
+  const chars = Array.from(body);
+  if (chars.length > NARRATION_MAX_LENGTH) return null;
+  // 多行的括注更可能是真内容（清单 / 引用），不降档。
+  if (/[\r\n]/.test(body)) return null;
+  const close = NARRATION_PAREN_PAIRS[chars[0]];
+  if (!close || chars[chars.length - 1] !== close) return null;
+  let depth = 0;
+  for (let index = 0; index < chars.length; index += 1) {
+    if (chars[index] === chars[0]) depth += 1;
+    else if (chars[index] === close) {
+      depth -= 1;
+      // 括号在**中途**就回到 0，说明它不是「整条被一对括住」（例如「（一）（二）」）。
+      if (depth === 0 && index !== chars.length - 1) return null;
+    }
+  }
+  return depth === 0 ? body : null;
+}
+
+/**
+ * 把一条旁白式交代渲染成**一行**、低权重、可展开的消息行（`D4` 形态-a）。
+ *
+ * 形态-a 的三条硬约束都在这里：
+ * 1. **它仍是消息**：占自己的 `seq`（`data-seq`）、有作者与时间、`role` 保持默认（不是摘要行的
+ *    `role="status"`）。因此「数几条消息」的口径一个字都不用改。
+ * 2. **一行**：正文与作者名同处 `.msg-head` 这一行（不再有独立的 `.msg-text` 段落），折叠态就是一行。
+ * 3. **可展开看关联轮次结果的 `reason`**：这一行按钮展开的是**它自己那一轮**的结论——按这条消息
+ *    的 `seq` 去 `state.replyOutcomes`（`round_outcome.reply_seq`）直取，不跨数据面拼装、也不并入
+ *    摘要行。查不到时如实说「读不到」，不编造理由。
+ */
+function narrationNode(message, body) {
+  const author = message.author || state.member;
+  const seq = String(message.seq);
+  const expanded = Boolean(state.expandedNarrations[seq]);
+  const record = state.replyOutcomes[message.seq] || null;
+
+  const article = el('article', 'msg narration');
+  article.dataset.seq = message.seq;
+  // 头像降一档（`sm`）：它与正文一起构成「低权重」，但作者身份照旧是它自己的色位。
+  article.appendChild(avatarNode(author.display_name, author.avatar_slot, 'sm'));
+  const bodyNode = el('div', 'msg-body');
+  const line = el('div', 'msg-head');
+  line.appendChild(el('span', 'msg-author is-agent', author.display_name));
+  line.appendChild(el('span', 'msg-tag', t('narration.tag')));
+  line.appendChild(el('span', 'msg-narration-text', body));
+
+  const toggle = el('button', 'msg-narration-toggle');
+  toggle.dataset.narrationToggle = seq;
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  toggle.setAttribute('aria-controls', 'narration-reason-' + seq);
+  const action = expanded ? t('narration.collapse') : t('narration.expand');
+  toggle.setAttribute('aria-label', t('narration.toggleAria', { name: author.display_name, action }));
+  toggle.appendChild(el('span', 'msg-narration-mark', expanded ? '\u25be' : '\u25b8'));
+  toggle.appendChild(el('span', 'msg-narration-toggle-text', action));
+  line.appendChild(toggle);
+  line.appendChild(el('span', 'msg-time', timeLabel(message.created_at)));
+  bodyNode.appendChild(line);
+
+  // 明细**恒常渲染**、用 `hidden` 切可见性（与摘要行同一条理由）：`aria-controls` 指向的 id 在
+  // 任何时刻都要能解析到，否则折叠态就是一个悬空引用。`reason` 是后端原文，不重新措辞、不截断。
+  const details = el('div', 'msg-narration-reason');
+  details.id = 'narration-reason-' + seq;
+  details.hidden = !expanded;
+  if (record) {
+    details.dataset.odId = 'round-reason-' + record.id;
+    details.textContent = record.reason || t('outcome.lineReasonEmpty');
+  } else {
+    details.textContent = t('narration.reasonMissing');
+  }
+  bodyNode.appendChild(details);
+
+  article.appendChild(bodyNode);
+  return article;
+}
+
 function messageNode(message) {
+  // 旁白式交代先判：它是最省的一种呈现，且必须**永远**保留消息身份（seq / 作者 / 时间）。
+  const narration = narrationOf(message);
+  if (narration !== null) return narrationNode(message, narration);
   if (message.kind === 'system') {
     // 系统事件消息（穿透加入）：沿用既有消息行形态——方形头像色位 + 作者名 + 时间。
     // 不新造色位：作者名 + 头像用**该成员自己的** --av-* 色位（与他说话时同一个），
@@ -4509,7 +4875,10 @@ async function selectTarget(targetId) {
   closeMentionPicker();
   state.outcomes = {};
   // 折叠态的键是「触发它的那条消息的 seq」，跨频道不通用：换频道时一并清掉。
+  // 旁白行的折叠态键是旁白自己的 seq，同理只在当前 target 内有效。
   state.expandedOutcomes = {};
+  state.replyOutcomes = {};
+  state.expandedNarrations = {};
   render();
   try {
     await refreshMessages();
@@ -4612,6 +4981,23 @@ function bindEvents() {
   $('#rosterDone').addEventListener('click', closeRosterModal);
   $('#rosterOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'rosterOverlay') closeRosterModal();
+  });
+  // ── 频道回应预算（#54）：频道头入口 + 频道设置弹窗（只读读数 + 3 / 5 / 10 上界档位）──
+  // 正文（读数 / 待生效 / 写控件）是**整段重铺**的，因此点击委派到 `#budgetBody` 上（一个监听器），
+  // 与成员列表 / 提醒列表同一做法：重铺不会把监听器一起换掉。
+  $('#btnChannelBudget').addEventListener('click', openBudgetModal);
+  $('#budgetClose').addEventListener('click', closeBudgetModal);
+  $('#budgetDone').addEventListener('click', closeBudgetModal);
+  $('#budgetOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'budgetOverlay') closeBudgetModal();
+  });
+  $('#budgetBody').addEventListener('click', (event) => {
+    const tier = event.target.closest('[data-budget-tier]');
+    if (tier) {
+      selectBudgetTier(tier.dataset.budgetTier);
+      return;
+    }
+    if (event.target.closest('[data-budget-save]')) submitBudgetTier();
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。
@@ -4910,6 +5296,18 @@ function bindEvents() {
       openTask(taskRef.dataset.openTask);
       return;
     }
+    // 旁白行的折叠控件：与摘要行同一个纪律（只切**呈现状态**、重建后把焦点还回去），
+    // 但键是旁白那条消息**自己的** seq（摘要行的键是触发消息的 base_seq，两者会撞号）。
+    const narration = event.target.closest('[data-narration-toggle]');
+    if (narration) {
+      const seq = narration.dataset.narrationToggle;
+      if (state.expandedNarrations[seq]) delete state.expandedNarrations[seq];
+      else state.expandedNarrations[seq] = true;
+      renderMessages();
+      const next = $('#messageList').querySelector('[data-narration-toggle="' + seq + '"]');
+      if (next) next.focus();
+      return;
+    }
     // 摘要行的折叠控件：切换的只是**呈现状态**（内存），后端事实一个字不动。
     const summary = event.target.closest('[data-summary-toggle]');
     if (summary) {
@@ -4973,6 +5371,7 @@ function bindEvents() {
       if (!$('#settingsOverlay').hidden) closeSettingsModal();
       if (!$('#remindersOverlay').hidden) closeRemindersModal();
       if (!$('#rosterOverlay').hidden) closeRosterModal();
+      if (!$('#budgetOverlay').hidden) closeBudgetModal();
       if (!$('#agentEditOverlay').hidden) closeAgentEditModal();
       if (!$('#channelOverlay').hidden) closeChannelModal();
       if (!$('#dmOverlay').hidden) closeDmModal();

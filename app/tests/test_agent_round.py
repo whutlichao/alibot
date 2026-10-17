@@ -613,6 +613,84 @@ def test_agent_reply_body_is_immutable(client: TestClient, harness: dict) -> Non
     assert messages(client, channel["id"])[1]["body"] == "原文"
 
 
+# ─── 8. 回应纪律的措辞定稿（#57 / D5）：沉默 = 不产出正文 ─────────────────────
+
+
+def test_the_silence_rubric_defines_silence_as_producing_no_body(client: TestClient, harness: dict) -> None:
+    """[#57 D5] 系统提示把沉默表述成**不产出正文**，不再示范「回一句简短说明」当沉默。
+
+    旧措辞自相矛盾：主句要求沉默，括注却把「回一个空字符串之外的简短说明」写成合规形态。模型
+    照着它把「（本轮消息与我无关，无需回应）」说了出来——那不是沉默，而是一条真实正文。
+
+    断言落在**真的会被送进模型的那段文本**上：``prompt`` 由真适配器的同一个 ``_system_prompt``
+    产出（脚本化替身只做记录），因此这里测的不是手抄的文案副本。
+    """
+    agent = create_agent(client, name="旁听者").json()["agent"]
+    channel = channel_with_agent(client, agent["id"])
+    send(client, channel["id"], "记一笔：今天的对齐会推迟到明天。")
+    harness["scheduler"].drain()
+
+    prompt = harness["seam"].calls_for(agent["id"])[-1]["prompt"]
+    # 自相矛盾的旧片段连同它的形态一起消失：沉默不再用「回什么」来描述。
+    assert "空字符串" not in prompt, "沉默不再被表述成一个要回的东西（哪怕是空字符串）"
+    assert "只回一个空字符串之外的简短说明不算回应" not in prompt
+    # 沉默只有一个形态：这一轮不产出正文。
+    assert "不产出正文" in prompt
+    # 而「不产出正文」的反面必须点到——括注、旁白、说明、道歉都是正文。
+    for shape in ("括注", "旁白", "说明", "道歉"):
+        assert shape in prompt, f"沉默的反面必须点到「{shape}」"
+
+
+def test_the_silence_rubric_states_the_mention_and_ignore_boundary(client: TestClient, harness: dict) -> None:
+    """[#57 D5] 同一条纪律写清「被点名必须回应」与「正常忽略」的边界。
+
+    两条边界落在**同一条 rubric** 里（不是只写在 ``mentioned`` 的追加句里）：不点名的那一轮
+    只给「必须回应」的纪律、不给「可以沉默」的边界，模型就没有依据判断这一轮该不该说话。
+    """
+    agent = create_agent(client, name="旁听者").json()["agent"]
+    channel = channel_with_agent(client, agent["id"])
+    send(client, channel["id"], "记一笔：今天的对齐会推迟到明天。")
+    harness["scheduler"].drain()
+    plain = harness["seam"].calls_for(agent["id"])[-1]["prompt"]
+
+    # 两条边界与「沉默是什么」必须在**同一段**纪律里（分开写就成了两条互不相干的规矩）。
+    rubric = [block for block in plain.split("\n\n") if "点名" in block]
+    assert len(rubric) == 1, f"回应纪律应当恰好是一段：{rubric}"
+    assert "必须回应" in rubric[0], "被点名必须回应"
+    assert "与你无关" in rubric[0], "正常忽略的边界：话题与你无关"
+    assert "沉默" in rubric[0]
+    assert "不产出正文" in rubric[0], "沉默的定义与边界在同一段里，不留「该不该说话」的空档"
+
+    # 被点名的那一轮：同一条 rubric + 本轮点名句，两处一起构成「必须回应」。
+    send(client, channel["id"], f"@{agent['display_name']} 你看下这次的档期")
+    harness["scheduler"].drain()
+    mentioned = harness["seam"].calls_for(agent["id"])[-1]
+    assert mentioned["mentioned"] is True
+    assert "本轮有人点名了你，因此你必须回应。" in mentioned["prompt"]
+
+
+def test_a_narration_body_is_still_an_ordinary_agent_message(client: TestClient, harness: dict) -> None:
+    """[#57 数据面不变] 旁白式正文在后端仍是**普通 Agent 消息**：照旧占 `seq`、照旧是 `replied`。
+
+    本票只改呈现（#35 的 D1 判据-4）：`replied` / `ignored` 判据、消息 kind、未读口径、唤醒与预算
+    一律不动。这条用例守住那条边界——未读 / 唤醒 / 预算的污染是 #35 登记的**已知代价**，不是待修的
+    缺陷，因此这里断言它们**仍然按普通消息计算**，而不是断言它们消失了。
+    """
+    agent = create_agent(client, name="旁白者").json()["agent"]
+    harness["seam"].replies[agent["id"]] = "（本轮消息与我无关，无需回应）"
+    channel = channel_with_agent(client, agent["id"])
+    send(client, channel["id"], "记一笔：今天的对齐会推迟到明天。")
+    harness["scheduler"].drain()
+
+    listed = messages(client, channel["id"])
+    assert [message["seq"] for message in listed] == [1, 2]
+    assert listed[1]["kind"] == "agent"
+    assert listed[1]["body"] == "（本轮消息与我无关，无需回应）"
+    record = outcomes(client, channel["id"])[0]
+    assert record["status"] == "replied"
+    assert record["reply_seq"] == 2
+
+
 def test_reply_from_a_different_backend_instance_sees_the_same_stream(data_dir: Path, harness: dict) -> None:
     """回复落库后，换一个后端实例读同一数据目录看到的是同一条流（正本在库里）。"""
     agent = create_agent(harness["client"], name="小明").json()["agent"]

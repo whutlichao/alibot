@@ -45,7 +45,17 @@ CATALOGS: dict[str, dict[str, str]] = {
         "common.list_sep": "、",
         # ─── HTTP 错误：机器可读的 code / fields 键不在这里 ───────────────
         "error.round_outcomes_immutable": "轮次结果不可编辑、不可删除：人类面不存在该端点",
-        "error.budget_read_only": "回应预算只读：人类面不存在写入它的端点",
+        # 本键的**语义位置**是「预算的用量面不可写」（ADR-0007）。#54 打开上界写入口后它不能再
+        # 宣称「不存在写端点」——那句在实机上已经是假话；留着键、改说边界：
+        "error.budget_read_only": (
+            "回应预算的用量只读：人类面只能改上界（PATCH），已用跳数与世代由后端独占维护"
+        ),
+        # 写入口拒绝**请求体里的用量字段**时用它（比上一条更具体：这一次提交的是用量）。
+        "error.budget_used_read_only": (
+            "回应预算的用量与世代事实只读：人类面只能改上界（PATCH），used 由后端独占维护"
+        ),
+        # #53 的配置落点：上界只接受固定档位，非法值整体拒绝（#31 §2 人定）。
+        "error.budget_limit_invalid": "回应预算上界只接受固定档位：{tiers}，未保存任何改动",
         "error.channel_members_append_only": "频道成员只能加入、不能移出：人类面不存在该端点",
         "error.messages_immutable": "消息不可编辑、不可删除：人类面不存在该端点",
         "error.agent_delete_unsupported": "Agent 不可删除：人类面不存在该端点",
@@ -112,6 +122,11 @@ CATALOGS: dict[str, dict[str, str]] = {
             "被个人提及是确定信号，必须回应；本轮自判忽略，按失败处理（原因为：{reason}）"
         ),
         "reason.mention_no_body": "被个人提及是确定信号，但本轮没有产出可落库的正文，按失败处理",
+        # 声明沉默在确定信号下同样按失败处理（CONTEXT.md 的**回应判断**词条）：它是「不想说」，
+        # 不是「没被问」，所以不能像空正文那样静默——诊断要把原始的 silent 理由带出来。
+        "reason.mention_silent": (
+            "被个人提及是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
+        ),
         # 认领唤醒的两个**同级**文案（D6：与 mention 那一对同级，不是复用它们的正文——
         # 否则诊断会写成「被个人提及」，而那是一个不存在的事实）。
         "reason.claim_ignored": (
@@ -119,6 +134,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "reason.claim_no_body": (
             "认领唤醒是确定信号，但本轮没有产出可落库的正文、也没有提交任务动作，按失败处理"
+        ),
+        "reason.claim_silent": (
+            "认领唤醒是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
         ),
         # 认领轮的可读后缀（ADR-0016 五）：照 `reason.pierced_suffix` 的先例追加进 reason 文本。
         # `reason` 只承担可读诊断，**不**承担纪律判据（那是进程内布尔 `mandatory_reply` 的事）。
@@ -151,6 +169,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "模型通过任务工具提交了结构化动作",
         "seam.no_body": "模型没有产出可落库的正文（本轮自判不回应）",
         "seam.replied": "模型自主判断需要回应",
+        # ``silent``（#58）：声明来自**结构化通道**（declare_silence 工具），不是从正文猜的。
+        "seam.silent": "模型经结构化通道（declare_silence 工具）声明本轮沉默，没有产出正文",
+        "seam.silence_with_action": (
+            "模型声明了本轮沉默，但同时提交了结构化任务动作（本轮以动作为准，不产出正文）"
+        ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "消息正文",
@@ -240,7 +263,15 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Round outcomes cannot be edited or deleted: the human surface has no such endpoint"
         ),
         "error.budget_read_only": (
-            "The response budget is read-only: the human surface has no endpoint that writes it"
+            "Response-budget usage is read-only: the human surface can only change the upper bound "
+            "(PATCH); used jumps and the epoch stay backend-owned"
+        ),
+        "error.budget_used_read_only": (
+            "Response-budget usage and epoch facts are read-only: the human surface can only change "
+            "the upper bound (PATCH); used stays backend-owned"
+        ),
+        "error.budget_limit_invalid": (
+            "The response-budget upper bound accepts only the fixed tiers {tiers}; nothing was saved"
         ),
         "error.channel_members_append_only": (
             "Channel members can only be added, never removed: the human surface has no such endpoint"
@@ -329,6 +360,10 @@ CATALOGS: dict[str, dict[str, str]] = {
             "A personal mention is a definite signal, but this round produced no storable body, "
             "so it counts as a failure"
         ),
+        "reason.mention_silent": (
+            "A personal mention is a definite signal and must be answered; this round declared "
+            "silence, so it counts as a failure (original reason: {reason})"
+        ),
         # The two **sibling** claim-wake reasons (D6): same rank as the mention pair above,
         # deliberately not reusing their wording (which would name a mention that never happened).
         "reason.claim_ignored": (
@@ -338,6 +373,10 @@ CATALOGS: dict[str, dict[str, str]] = {
         "reason.claim_no_body": (
             "A claim wake is a definite signal, but this round produced no storable body and "
             "submitted no task action, so it counts as a failure"
+        ),
+        "reason.claim_silent": (
+            "A claim wake is a definite signal and must be answered; this round declared silence, "
+            "so it counts as a failure (original reason: {reason})"
         ),
         # The readable suffix for a claim round (ADR-0016 五): appended to the reason text,
         # following the existing `reason.pierced_suffix` precedent.
@@ -385,6 +424,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "The model submitted a structured action through the task tool",
         "seam.no_body": "The model produced no storable body (it chose not to answer this round)",
         "seam.replied": "The model decided an answer was needed",
+        "seam.silent": (
+            "The model declared silence through the structured channel (the declare_silence tool) "
+            "and produced no body"
+        ),
+        "seam.silence_with_action": (
+            "The model declared silence for this round but also submitted a structured task action "
+            "(the action wins and no body is stored)"
+        ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "message bodies",

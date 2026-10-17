@@ -189,15 +189,22 @@ def _utc_today() -> str:
 
 
 # ─── C11 · 号 = 13，且链上登记了 12 → 13 ────────────────────────────────────
-def test_schema_version_is_thirteen_and_the_step_is_registered() -> None:
-    """C11：``SCHEMA_VERSION`` = 13（字面量钉死，防「两侧同步漂移」）。"""
-    assert SCHEMA_VERSION == REMINDER_SCHEMA_VERSION, (
-        f"SCHEMA_VERSION 应是 {REMINDER_SCHEMA_VERSION}（ADR-0017 §五 的最小号判据），实际 {SCHEMA_VERSION}"
+def test_the_reminder_step_is_registered_and_schema_version_is_at_least_thirteen() -> None:
+    """C11：本票那一步是 ``12 → 13``，且它仍在链上（``SCHEMA_VERSION`` ≥ 13）。
+
+    **不**把 ``SCHEMA_VERSION`` 钉成字面量 13：它是**跨票递增的共享常量**（ADR-0015 第三节的号段
+    纪律——后续票正常 bump 到 14、15 都合法），钉死它会把后续每一次合法 bump 变成假红。本判据要
+    守的是「提醒那一步存在且没被绕过」，故用 ``>=``；``12 → 13`` 这一步本身由下面那条报告用例与
+    链连续性守卫（``test_migration_chain_guard.py``）逐字取证。与 #112 处置
+    ``test_auto_claim`` 里那个字面量 12 是同一体例。
+    """
+    assert SCHEMA_VERSION >= REMINDER_SCHEMA_VERSION, (
+        f"SCHEMA_VERSION 不该低于提醒那一步的 {REMINDER_SCHEMA_VERSION}，实际 {SCHEMA_VERSION}"
     )
 
 
 def test_a_v12_library_migrates_to_thirteen_and_reports_the_new_step(tmp_path: Path) -> None:
-    """C11 判据 1 + 2：v12 库 ``--migrate`` ⇒ 退出 0、``schema_version`` = 13、报告含 ``12 → 13``。
+    """C11 判据 1 + 2：v12 库 ``--migrate`` ⇒ 退出 0、``schema_version`` = 当前版本、报告含 ``12 → 13``。
 
     报告的步骤表由**真实子进程**给出，因此这条同时是「链连续性守卫覆盖了这一步」的读数：删掉
     ``MigrationStep(12, 13)`` 会让报告的步骤表止于 12，``_step_line`` 当场断言失败。
@@ -210,7 +217,8 @@ def test_a_v12_library_migrates_to_thirteen_and_reports_the_new_step(tmp_path: P
     assert completed.returncode == MIGRATION_SUCCEEDED, (
         f"实际 {completed.returncode}（stdout={completed.stdout!r} stderr={completed.stderr!r}）"
     )
-    assert _version(data_dir / DATABASE_FILE_NAME) == str(REMINDER_SCHEMA_VERSION)
+    # 终态读数是**当前** ``SCHEMA_VERSION``（提醒那一步之后还可能有别的票的步骤）。
+    assert _version(data_dir / DATABASE_FILE_NAME) == str(SCHEMA_VERSION)
     assert _step_line(completed.stdout)[:2] == (REMINDER_STEP_FROM, REMINDER_STEP_TO)
 
 
@@ -616,12 +624,12 @@ def test_the_audit_record_covers_the_new_step(tmp_path: Path) -> None:
         for line in (data_dir / "schema-migrations.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert records[-1]["from"] == REMINDER_STEP_FROM
-    assert records[-1]["to"] == REMINDER_SCHEMA_VERSION
+    assert records[-1]["to"] == SCHEMA_VERSION
     assert records[-1]["result"] == "success"
 
 
 def test_the_backup_name_carries_the_new_target_version(tmp_path: Path) -> None:
-    """备份目录名带 ``<from>-to-<to>``：这一步之后它是 ``12-to-13``（既有命名口径不变）。"""
+    """备份目录名带 ``<from>-to-<to>``：从 v12 起迁移是 ``12-to-<SCHEMA_VERSION>``（命名口径不变）。"""
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
@@ -629,7 +637,7 @@ def test_the_backup_name_carries_the_new_target_version(tmp_path: Path) -> None:
 
     backups = [path for path in data_dir.parent.iterdir() if path.name.startswith(f"{data_dir.name}-backup-")]
     assert len(backups) == 1, backups
-    assert backups[0].name.startswith(f"{data_dir.name}-backup-12-to-13-")
+    assert backups[0].name.startswith(f"{data_dir.name}-backup-{REMINDER_STEP_FROM}-to-{SCHEMA_VERSION}-")
 
 
 def test_a_current_version_library_is_not_backed_up_or_written(tmp_path: Path) -> None:
