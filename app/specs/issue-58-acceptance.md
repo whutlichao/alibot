@@ -5,7 +5,8 @@ D3（落点-b）与 Testing Decisions；契约正本：`docs/adr/0008-structured
 迁移纪律：`docs/adr/0015-schema-migration-is-explicit-and-forward-only.md`。
 
 - 分支：`issue-58-impl`（从 `alibot-budget-silence/integration` 的 `7867d26` 切出）
-- 提交：`feat(seam): 结构化沉默信号 silent（#58）` + `docs(specs): #58 逐条验收取证`
+- 提交：`042ca52` feat(seam)（代码 + 测试）→ `docs(specs)`（本文件 + ADR-0008 最小事实修正）
+  → `docs(seam)`（提交号回填 + 行为枚举补「声明沉默」）
 - 基线：`SCHEMA_VERSION` 14（#53 合并后）→ 本票 15；migration 链 `3..15` 连续
 
 ## 一、逐条判据 → 落点 → 命令与读数

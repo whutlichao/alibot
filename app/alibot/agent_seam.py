@@ -7,7 +7,7 @@
 2. ``AgentScopeAgentSeam``——真实实现，进程内直接调用 AgentScope 2.x（``Agent`` /
    ``agentscope.model`` / ``agentscope.credential``），不使用框架的 Agent Service。
 
-为什么必须薄：测试要能在**不联网、零成本**的前提下把「回应 / 忽略 / 失败 / 延迟」四种行为
+为什么必须薄：测试要能在**不联网、零成本**的前提下把「回应 / 忽略 / 失败 / 延迟 / 声明沉默」五种行为
 固定下来，所以替身（``tests/scripted.py`` 的 ``ScriptedAgentSeam``）注入的是同一个接口，
 而不是去 mock 框架内部。于是协作域的行为测试与「模型是哪一家」完全解耦。
 
