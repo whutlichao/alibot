@@ -670,6 +670,12 @@
         <div class="reminder-add-row">
           <!-- 文本：占位与可访问名同一个词条（原型 `#rmText` 只有占位符）。 -->
           <input class="input" id="reminderText" type="text" autocomplete="off" data-i18n-attr="placeholder:reminder.textLabel,aria-label:reminder.textLabel" placeholder="提醒内容" data-od-id="reminder-text" />
+          <!-- 日期：**对原型的显式偏离**（ADR-0017 §六 / C15）——原型 `:1579` 只有 `type="time"`、
+               没有日期，而 `HH:MM` 说不出「明天 9 点」。日期与钟点是**两个原生输入**，提交时由
+               app.js 拼成一个 `YYYY-MM-DD HH:MM` 交给后端（合法形状由后端裁决，前端不判定）。
+               默认值「今天」由 app.js 在打开弹窗时填：标记里不写死日期（写死的那一格隔天就是谎）；
+               `type="date"` 的控件自己没有可读标签，因此同样给它一个 `aria-label`。 -->
+          <input class="input reminder-date" id="reminderDate" type="date" data-i18n-attr="aria-label:reminder.dateLabel" aria-label="提醒日期" data-od-id="reminder-date" />
           <!-- 时间：`type="time"` 的控件自己没有可读标签，因此给它一个 `aria-label`（原型那一格没有标签）。 -->
           <input class="input reminder-time" id="reminderTime" type="time" value="09:00" data-i18n-attr="aria-label:reminder.timeLabel" aria-label="提醒时间" data-od-id="reminder-time" />
         </div>

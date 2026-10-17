@@ -21,6 +21,13 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const STUDIO_DIR = path.join(__dirname, "../alibot/studio");
+// 视觉契约的正本（只读参照）：token **名**的声明处。C16 的「不加新色位」就是拿实际消费的
+// token 名去这三个文件里对——名字对不上就是新色位。
+const TOKEN_FILES = [
+  path.join(__dirname, "../../alibot-design-system/colors_and_type.css"),
+  path.join(__dirname, "../../alibot-design-system/tokens.css"),
+  path.join(STUDIO_DIR, "product-tokens.css"),
+];
 const CJK = /[\u4e00-\u9fff]/;
 // 可本地化属性（`data-i18n-attr` 的适用面）：这几类之外的中文属性不属于文案。
 const LOCALIZABLE_ATTRIBUTES = ["aria-label", "title", "placeholder", "alt"];
@@ -367,6 +374,7 @@ function createHarness(options) {
     }
     if (url === "/api/reminders" && method === "POST") {
       // 归属频道的可读名由后端随行带出（替身照这个形状给）。
+      // `fired_at` / `state` 是读路径**恒有**的两个键（C20）：刚建的提醒一定是未到点。
       const reminder = {
         id: "rm_" + (reminders.length + 1),
         text: String(body.text).trim(),
@@ -374,6 +382,8 @@ function createHarness(options) {
         channel_id: body.channel_id === undefined ? null : body.channel_id,
         channel_name: body.channel_id ? "设计系统重构" : "",
         created_at: "2026-10-16T10:00:00.000Z",
+        fired_at: null,
+        state: "pending",
       };
       reminders.push(reminder);
       return { ok: true, status: 201, json: async () => ({ reminder, reminders: reminders.slice() }) };
@@ -413,13 +423,18 @@ function createHarness(options) {
       group.appendChild(themeCard("system", "settings.themeSystem", "settings.themeSystemHint"));
       return group;
     }
-    // 提醒：三处替身照 `index.html` 的初始态建（弹窗关着、圆点 `hidden`、时间格默认 09:00）。
+    // 提醒：三处替身照 `index.html` 的初始态建（弹窗关着、圆点 `hidden`、钟点格默认 09:00、
+    // 日期格留空——「今天」由 `openRemindersModal` 在打开时填，C15 判据 2）。
     if (selector === "#remindersOverlay" || selector === "#reminderDot") {
       const node = new FakeNode(selector === "#reminderDot" ? "span" : "div");
       node.hidden = true;
       return node;
     }
-    if (selector === "#reminderText" || selector === "#reminderTime") {
+    if (
+      selector === "#reminderText" ||
+      selector === "#reminderTime" ||
+      selector === "#reminderDate"
+    ) {
       const node = new FakeNode("input");
       node.value = selector === "#reminderTime" ? "09:00" : "";
       return node;
@@ -1402,19 +1417,32 @@ test("附件：新增文案在两份词条里都取到值", () => {
   );
 });
 
-/* ─── 8. 提醒（#68）：rail 入口 + 指示点 + 弹窗（列表 / 空态 / 新增 / 删除） ─────
-   验收面：① 入口与指示点照原型 ② 圆点**只在有提醒时**出现 ③ 列表条目字段齐全
-   ④ 删除后回到空态 ⑤ 新增文案在两份词条里都取到值。
-   数据面归属见 ADR-0012：提醒是**库内对象**，这里的每一条断言都只经后端载荷（替身 fetch）。 */
+/* ─── 8. 提醒（#68 / #114）：rail 入口 + 指示点 + 弹窗（列表 / 空态 / 新增 / 删除） ─────
+   验收面：① 入口与指示点照原型，但圆点的判据是「**还有未到点的提醒**」（C17）
+   ② 新增控件是**日期 + 钟点两个原生输入**，提交拼成 `YYYY-MM-DD HH:MM` 一个串（C15）
+   ③ 列表行按后端给的 `state` 加状态后缀，只用既有档位 token（C16）
+   ④ 三条新词条只在前端两份词条里（C18 的前端半边）⑤ 删除后回到空态。
+   数据面归属见 ADR-0012 / ADR-0017：提醒是**库内对象**、**到点是后端事实**，这里的每一条
+   断言都只经后端载荷（替身 fetch）；测试里没有任何一行自己算「这个时刻过没过」。 */
 
-/** 一条有归属频道的提醒（形状与 `GET /api/reminders` 的元素一致）。 */
+/** 与 app.js 同一口径的「本机今天」（`YYYY-MM-DD`）：日期格的默认值就是它（C15 判据 2）。 */
+function localToday() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/** 一条有归属频道的提醒（形状与 `GET /api/reminders` 的元素一致，含 C20 的两个恒有键）。 */
 const REMINDER_WITH_CHANNEL = {
   id: "rm_1",
   text: "检查令牌替换进度",
-  time: "14:30",
+  time: "2026-10-18 14:30",
   channel_id: "ch-1",
   channel_name: "设计系统重构",
   created_at: "2026-10-16T10:00:00.000Z",
+  fired_at: null,
+  state: "pending",
 };
 
 /** 提醒弹窗那一段标记（从 overlay 起到下一个顶层注释为止）。 */
@@ -1467,21 +1495,42 @@ test("rail 头部：提醒与设置两枚 icon-btn 同处 rail-head，顺序照�
   assert.equal(rail.split('id="btnSettings"').length - 1, 1, "设置入口不重复");
 });
 
-test("提醒：弹窗是 wide，新增控件只有文本与时间（没有日期与重复字段）", () => {
+test("提醒：弹窗是 wide，新增控件是两个原生输入（文本 + 日期 + 钟点）", () => {
   const markup = remindersMarkup();
 
   assert.ok(markup.includes('class="modal wide"'), "提醒弹窗照原型走 wide 那一档");
   assert.ok(markup.includes('id="reminderList"'), "列表容器由 app.js 按后端读数渲染");
-  assert.equal((markup.match(/type="time"/g) || []).length, 1, "时间格恰好一个");
   assert.ok(markup.includes('id="reminderText"'), "文本格");
-  // 本票不扩张：日期与重复字段是规格未授权的东西，标记里也不许先落一个。
-  assert.equal(markup.includes('type="date"'), false, "没有日期字段");
-  assert.equal(/id="reminder(Day|Date|Repeat)"/.test(markup), false, "没有日期 / 重复字段");
+  // C15 判据 1：日期与钟点是**两个原生输入**（不是 `datetime-local` 那种一个控件两个语义）。
+  const types = [...markup.matchAll(/<input[^>]*\stype="([a-z]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(types, ["text", "date", "time"], "新增控件就是文本 + 日期 + 钟点三个原生输入");
+  // 日期格里不写死取值：默认「今天」是 app.js 在打开弹窗时填的（写死在标记里的那格隔天就是谎）。
+  const dateTag = /<input[^>]*id="reminderDate"[^>]*>/.exec(markup);
+  assert.ok(dateTag, "有日期格");
+  assert.match(dateTag[0], /type="date"/);
+  assert.equal(/\svalue=/.test(dateTag[0]), false, "日期格的默认值不写死在标记里");
+  // C15 判据 5：日期格有可访问名，且可访问名走词条（裸中文扫描也靠这条绑定过）。
+  assert.match(dateTag[0], /data-i18n-attr="aria-label:reminder\.dateLabel"/);
+  // 重复字段仍然不扩张（ADR-0017 §二：重复由任务承载，提醒不造第二个重复语义）。
+  assert.equal(/id="reminder(Day|Repeat)"/.test(markup), false, "没有重复字段");
   // 时间格的默认取值照原型 `#rmTime`（`value="09:00"`）。
   assert.match(markup, /id="reminderTime"[\s\S]{0,160}value="09:00"/);
-  // 可访问名与占位符都走词条（`type="time"` 的控件自己没有可读标签）。
+  // 可访问名与占位符都走词条（两个控件自己都没有可读标签）。
   assert.match(markup, /data-i18n-attr="aria-label:reminder\.timeLabel"/);
 });
+
+test("提醒：日期格打开弹窗时就是当天（不用手填），钟点保持 09:00", () => {
+  const harness = createHarness();
+  const dateInput = harness.elementFor("#reminderDate");
+  const timeInput = harness.elementFor("#reminderTime");
+
+  dateInput.value = "1999-01-01"; // 先填一个旧值，证明下面把它改成今天的是这条规则本身
+  harness.api.openRemindersModal();
+
+  assert.equal(dateInput.value, localToday(), "日期格的默认值是当天（C15 判据 2）");
+  assert.equal(timeInput.value, "09:00", "钟点默认仍是 09:00（与现行为一致）");
+});
+
 
 test("提醒：没有提醒时是空态，有提醒时是列表，圆点跟着出现与消失", () => {
   const harness = createHarness();
@@ -1509,9 +1558,9 @@ test("提醒：没有提醒时是空态，有提醒时是列表，圆点跟着�
   assert.equal(list.querySelector(".empty"), null, "有条目时不再是空态");
 });
 
-test("提醒：列表条目字段齐全（时间 / 文本 / 归属频道 / 删除）", async () => {
+test("提醒：列表条目字段齐全（文本 / 归属频道 / 状态后缀 / 删除），行里不再有独立的 .time 列", async () => {
   const harness = createHarness({
-    reminders: [{ ...REMINDER_WITH_CHANNEL }, { ...REMINDER_WITH_CHANNEL, id: "rm_2", text: "评审 raft 快照方案", time: "10:00", channel_id: null, channel_name: "" }],
+    reminders: [{ ...REMINDER_WITH_CHANNEL }, { ...REMINDER_WITH_CHANNEL, id: "rm_2", text: "评审 raft 快照方案", time: "2026-10-19 10:00", channel_id: null, channel_name: "" }],
   });
   await harness.api.loadReminders(); // 列表来自后端读数（`GET /api/reminders`），不是本地拼的
 
@@ -1520,8 +1569,26 @@ test("提醒：列表条目字段齐全（时间 / 文本 / 归属频道 / 删�
   assert.deepEqual(rows.map((row) => row.dataset.reminder), ["rm_1", "rm_2"]);
 
   const first = rows[0];
-  assert.equal(first.querySelector(".time").textContent, "14:30", "时间");
+  // 行形态（用户裁定：到期时刻并入状态后缀）：文本 · 归属频道 · 状态后缀 · 删除，且**顺序就是这个**。
+  const order = ["grow", "state", "icon-btn"];
+  assert.equal(first.children.length, order.length, "一行三段：文本 / 状态后缀 / 删除");
+  order.forEach((name, index) => {
+    assert.ok(
+      first.children[index].classList.contains(name),
+      `行内第 ${index + 1} 个节点应是 .${name}（时刻不再单立一列）`,
+    );
+  });
+  assert.equal(first.querySelector(".time"), null, "行里没有独立的 .time 列（时刻只在后缀里出现一次）");
   assert.equal(first.querySelector(".grow").textContent, "检查令牌替换进度 · #设计系统重构", "文本 + 归属频道");
+  const entryTexts = first.descendants().map((node) => node.textContent);
+  assert.equal(
+    entryTexts.filter((text) => text === "2026-10-18 14:30").length,
+    1,
+    "同一行里到期时刻只出现一次",
+  );
+  // 待响行的状态后缀就是**到期时刻**本身（后端串原样，不切片），不是「待响」这种标签（C16）。
+  assert.equal(first.querySelector(".state").textContent, "2026-10-18 14:30", "待响 ⇒ 完整到期时刻");
+  assert.equal(first.querySelector(".state").dataset.state, "pending");
   const remove = first.querySelector("[data-delete-reminder]");
   assert.equal(remove.dataset.deleteReminder, "rm_1");
   assert.equal(remove.getAttribute("aria-label"), harness.catalogs["zh-CN"]["reminder.deleteAria"]);
@@ -1530,14 +1597,86 @@ test("提醒：列表条目字段齐全（时间 / 文本 / 归属频道 / 删�
   // 不归属任何频道的提醒：没有 `· #频道名` 那一段（可空列的正本事实）。
   assert.equal(rows[1].querySelector(".grow").textContent, "评审 raft 快照方案");
   assert.equal(rows[1].querySelector(".ch"), null);
+  assert.equal(rows[1].querySelector(".time"), null);
+  assert.equal(rows[1].querySelector(".state").textContent, "2026-10-19 10:00", "第二条的到期时刻也在后缀里");
 });
 
-test("提醒：新增写入后端（文本 + 时间 + 当前频道），并铺上响应里的最新列表", async () => {
+test("提醒：三种 state 在同一列表里后缀可区分（待响 = 到期时刻 / 已提醒 / 已错过）", () => {
+  const harness = createHarness();
+  harness.api.state.reminders = [
+    { ...REMINDER_WITH_CHANNEL, id: "rm_pending", state: "pending", fired_at: null },
+    {
+      ...REMINDER_WITH_CHANNEL,
+      id: "rm_fired",
+      time: "2026-10-17 14:30",
+      state: "fired",
+      fired_at: "2026-10-17T06:30:05.000Z",
+    },
+    {
+      ...REMINDER_WITH_CHANNEL,
+      id: "rm_missed",
+      time: "2026-10-10 09:00",
+      state: "missed",
+      fired_at: "2026-10-16T09:00:00.000Z",
+    },
+  ];
+  harness.api.renderRemindersModal();
+
+  const rows = harness.elementFor("#reminderList").querySelectorAll(".reminder-row");
+  const suffixes = rows.map((row) => row.querySelector(".state").textContent);
+  assert.deepEqual(suffixes, [
+    "2026-10-18 14:30",
+    harness.catalogs["zh-CN"]["reminder.stateFired"],
+    harness.catalogs["zh-CN"]["reminder.stateMissed"],
+  ]);
+  assert.equal(new Set(suffixes).size, 3, "三种 state 的后缀文本互不相同（C16 判据 1）");
+});
+
+test("提醒：状态后缀在两份词条里各取各的语言，切语言后即时重渲染", () => {
+  const harness = createHarness();
+  harness.api.state.reminders = [
+    { ...REMINDER_WITH_CHANNEL, id: "rm_fired", state: "fired", fired_at: "2026-10-17T06:30:05.000Z" },
+    { ...REMINDER_WITH_CHANNEL, id: "rm_missed", state: "missed", fired_at: "2026-10-16T09:00:00.000Z" },
+  ];
+  harness.api.renderRemindersModal();
+
+  harness.api.applySettings({ locale: "en" });
+  const suffixes = harness
+    .elementFor("#reminderList")
+    .querySelectorAll(".reminder-row")
+    .map((row) => row.querySelector(".state").textContent);
+  assert.deepEqual(suffixes, [
+    harness.catalogs.en["reminder.stateFired"],
+    harness.catalogs.en["reminder.stateMissed"],
+  ]);
+});
+
+test("提醒：到点不计未读（状态后缀重渲染不改任何未读读数）", () => {
+  const harness = createHarness();
+  harness.api.state.channels = [
+    { id: "ch-1", name: "设计系统重构", unread_count: 3, last_seq: 42 },
+  ];
+  const before = JSON.stringify(harness.api.state.channels);
+  const callsBefore = harness.calls.length;
+
+  harness.api.state.reminders = [
+    { ...REMINDER_WITH_CHANNEL, id: "rm_fired", state: "fired", fired_at: "2026-10-17T06:30:05.000Z" },
+    { ...REMINDER_WITH_CHANNEL, id: "rm_missed", state: "missed", fired_at: "2026-10-16T09:00:00.000Z" },
+  ];
+  harness.api.renderRemindersModal();
+  harness.api.renderReminderDot();
+
+  assert.equal(JSON.stringify(harness.api.state.channels), before, "state 变化不改变任何未读读数（C16 判据 4）");
+  assert.deepEqual(harness.calls.slice(callsBefore), [], "重绘状态后缀不发任何请求（更不会去改未读）");
+});
+
+test("提醒：新增写入后端（文本 + 拼好的到期时刻 + 当前频道），并铺上响应里的最新列表", async () => {
   const harness = createHarness();
   harness.api.bindEvents();
   harness.api.state.channels = [{ id: "ch-1", name: "设计系统重构" }];
   harness.api.state.activeChannelId = "ch-1";
   harness.elementFor("#reminderText").value = "评审 raft 快照方案";
+  harness.elementFor("#reminderDate").value = "2026-10-18";
   harness.elementFor("#reminderTime").value = "10:00";
 
   await harness.elementFor("#reminderAddSubmit").dispatchEvent({ type: "click" });
@@ -1546,17 +1685,46 @@ test("提醒：新增写入后端（文本 + 时间 + 当前频道），并铺�
   const posts = harness.calls.filter((call) => call.method === "POST");
   assert.deepEqual(
     posts.map((call) => ({ url: call.url, body: call.body })),
-    [{ url: "/api/reminders", body: { text: "评审 raft 快照方案", time: "10:00", channel_id: "ch-1" } }],
+    [
+      {
+        url: "/api/reminders",
+        body: { text: "评审 raft 快照方案", time: "2026-10-18 10:00", channel_id: "ch-1" },
+      },
+    ],
   );
   assert.equal(harness.api.state.reminders.length, 1);
-  assert.equal(harness.elementFor("#reminderDot").hidden, false, "新增后指示点出现");
+  assert.equal(harness.elementFor("#reminderDot").hidden, false, "新增一条未到点的提醒后指示点出现");
   assert.equal(
     harness.elementFor("#reminderList").querySelectorAll(".reminder-row").length,
     1,
     "列表按后端返回的那一份渲染",
   );
   assert.equal(harness.elementFor("#reminderText").value, "", "提交后清空正文");
-  assert.equal(harness.elementFor("#reminderTime").value, "10:00", "时间格保留当前取值");
+  assert.equal(harness.elementFor("#reminderTime").value, "10:00", "钟点格保留当前取值");
+  assert.equal(harness.elementFor("#reminderDate").value, localToday(), "日期格回到今天");
+});
+
+test("提醒：只改日期不改钟点也能提交（钟点保留 09:00），payload 的 time 是一个串", async () => {
+  const harness = createHarness();
+  harness.api.bindEvents();
+  harness.api.state.channels = [{ id: "ch-1", name: "设计系统重构" }];
+  harness.api.state.activeChannelId = "ch-1";
+  harness.api.openRemindersModal(); // 日期格被填成今天，钟点保持 09:00
+  harness.elementFor("#reminderText").value = "评审 raft 快照方案";
+  harness.elementFor("#reminderDate").value = "2026-11-02"; // 只改日期
+
+  await harness.elementFor("#reminderAddSubmit").dispatchEvent({ type: "click" });
+  await flush();
+
+  const posts = harness.calls.filter((call) => call.method === "POST");
+  assert.equal(posts.length, 1, "提交成功（没被前端拦下）");
+  assert.equal(posts[0].body.time, "2026-11-02 09:00", "钟点保留默认 09:00（C15 判据 3）");
+  assert.equal(typeof posts[0].body.time, "string", "time 是**一个串**，不是数组（C15 判据 4）");
+  assert.deepEqual(
+    Object.keys(posts[0].body).sort(),
+    ["channel_id", "text", "time"],
+    "没有第二个时间键（日期与钟点在发送前就拼成一个）",
+  );
 });
 
 test("提醒：删除走 DELETE 端点，删空后回到空态（圆点也跟着消失）", async () => {
@@ -1630,7 +1798,10 @@ test("提醒：新增文案在两份词条里都取到值", () => {
     "reminder.emptyBody",
     "reminder.newLabel",
     "reminder.textLabel",
+    "reminder.dateLabel",
     "reminder.timeLabel",
+    "reminder.stateFired",
+    "reminder.stateMissed",
     "reminder.add",
     "reminder.deleteAria",
     "reminder.saveFailed",
@@ -1648,6 +1819,95 @@ test("提醒：新增文案在两份词条里都取到值", () => {
     );
   }
 });
+test("提醒：rail 指示点的判据是「有未到点的提醒」，不读条数（C17）", () => {
+  const harness = createHarness();
+  const dot = harness.elementFor("#reminderDot");
+  const fired = {
+    ...REMINDER_WITH_CHANNEL,
+    id: "rm_fired",
+    time: "2026-10-17 14:30",
+    state: "fired",
+    fired_at: "2026-10-17T06:30:05.000Z",
+  };
+  const missed = {
+    ...REMINDER_WITH_CHANNEL,
+    id: "rm_missed",
+    time: "2026-10-10 09:00",
+    state: "missed",
+    fired_at: "2026-10-16T09:00:00.000Z",
+  };
+  const pending = { ...REMINDER_WITH_CHANNEL, id: "rm_pending", fired_at: null };
+
+  // C17 判据 4（旧判据下是**红**的那一条）：有两条提醒、但两条都已到点 ⇒ 指示点隐藏。
+  dot.hidden = false; // 先点亮，证明下面把它收回去的是这条判据本身
+  harness.api.state.reminders = [fired, missed];
+  harness.api.renderReminderDot();
+  assert.equal(dot.hidden, true, "只有已到点的提醒 ⇒ 指示点隐藏（length 判据在这里会亮）");
+
+  // C17 判据 2：还有一条未到点 ⇒ 出现（混在一起也是出现）。
+  harness.api.state.reminders = [fired, pending];
+  harness.api.renderReminderDot();
+  assert.equal(dot.hidden, false, "还有一条未到点的提醒 ⇒ 指示点出现");
+
+  harness.api.state.reminders = [pending];
+  harness.api.renderReminderDot();
+  assert.equal(dot.hidden, false, "只有那条未到点的提醒 ⇒ 仍然出现");
+
+  harness.api.state.reminders = [];
+  harness.api.renderReminderDot();
+  assert.equal(dot.hidden, true, "一条都没有 ⇒ 隐藏（既有行为保持）");
+});
+
+test("提醒：状态后缀只消费既有档位 token（不加新色位、不用 --error）", () => {
+  // 扫**去注释**后的 CSS：注释里提到 `--error`（就是上面那条纪律的说明文字）不算消费点。
+  const css = stripBlockComments(readStudio("app.css"));
+  // token **名**的正本 = 三个只读文件里**声明**过的名字（`--x:` 形式，`var(--x)` 不算声明）。
+  const declared = new Set();
+  for (const file of TOKEN_FILES) {
+    const source = fs.readFileSync(file, "utf8");
+    for (const match of source.matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)) declared.add(match[1]);
+  }
+  assert.ok(declared.size > 40, `token 名集合看起来不对：${declared.size}`);
+
+  const reminderRules = css.match(/^[^{}]*\.reminder[^{}]*\{[^}]*\}/gm) || [];
+  assert.ok(reminderRules.length >= 5, `提醒那几条规则没扫到：${reminderRules.length}`);
+  const used = new Set();
+  for (const rule of reminderRules) {
+    for (const match of rule.matchAll(/var\((--[a-zA-Z0-9-]+)\)/g)) used.add(match[1]);
+  }
+  assert.ok(used.size > 0, "提醒的规则总该消费一些 token");
+  for (const name of used) {
+    assert.ok(declared.has(name), `提醒规则消费了未声明的 token 名（= 新色位）：${name}`);
+  }
+  // C16 判据 3：已到点**不是错误**，这一族里不出现 `--error`。
+  assert.equal(
+    reminderRules.some((rule) => rule.includes("--error")),
+    false,
+    "提醒的规则里不该出现 --error（已到点不是错误态）",
+  );
+});
+
+test("提醒：状态后缀的三种取值都在前端词条里，且没越界写进后端词条表", () => {
+  const harness = createHarness();
+  const keys = ["reminder.dateLabel", "reminder.stateFired", "reminder.stateMissed"];
+
+  for (const key of keys) {
+    assert.ok(harness.catalogs["zh-CN"][key], `${key} 在源语言里缺失`);
+    assert.ok(harness.catalogs.en[key], `${key} 在第二语言里缺失`);
+    assert.notEqual(
+      harness.catalogs["zh-CN"][key],
+      harness.catalogs.en[key],
+      `${key} 的两份取值不能是同一句话`,
+    );
+  }
+
+  // C18 判据 2：本票的越界校验方向是「验前端没越界写后端键」——界面静态文案只进第一层。
+  const backend = fs.readFileSync(path.join(__dirname, "../alibot/i18n.py"), "utf8");
+  for (const key of keys) {
+    assert.equal(backend.includes(key), false, `后端词条表里不该出现前端键：${key}`);
+  }
+});
+
 /* ─── 9. 成员名册（频道成员的**只读**全名单） ──────────────────────────────
    名册的判据只有四条：入口能开、内容 = 后端成员表逐条（含 owner）、唯一动作是关闭、
    文案在两份词条里都取到值。窄屏 / 真实页面的那条入口由浏览器实测验，这里用同一套 DOM 替身。 */

@@ -46,6 +46,14 @@
    - 增删提醒与改设置同一条纪律：**不落消息、不唤醒、不消耗预算**，也不新增 target、不计未读。
      写路径一律以**响应里的最新提醒表**覆盖本地镜像（不本地拼一条假行），因此列表永远等于后端说
      的那一份；本文件依旧不用任何浏览器存储保存业务状态。
+
+   本票（issue #114）新增 —— 上一段 #68 里**两处读数已被本票取代**（原文保留作交付历史）：
+   - 圆点的判据从「有提醒」改成「**还有未到点的提醒**」（`!state.reminders.some(r => !r.fired_at)`）：
+     已响 / 已错过不等待任何事。
+   - 新增控件从「文本 + 时间」改成「文本 + **日期 + 钟点**两个原生输入」，提交时拼成一个
+     `YYYY-MM-DD HH:MM` 串交给后端（ADR-0017 的时间语义）；列表行改成
+     「文本 · 归属频道 · [到期时刻 | 「已提醒」 | 「已错过」] · 删除」：到期时刻并进状态后缀
+     （用户裁定，见 :func:`reminderStateNode`），只消费后端给的 `state`，前端不做任何判定。
    ========================================================================== */
 'use strict';
 
@@ -752,9 +760,12 @@ function renderSettingsModal() {
 /* ─── 提醒（ADR-0012：库内对象，后端是唯一正本） ────────────────────────────
    列表 / 空态 / 圆点全部按**后端读数**渲染，本地不拼行、不落浏览器存储。
 
-   两处刻意的**不照抄原型**（两边都写在票面的边界里）：
-   1. 圆点只在有提醒时出现 —— 原型 `alibot-app.html:1886` 就是这么写的，本票逐字照办。
-   2. 删除控件用 `×` 而不是原型那个 `plus` 图标 —— 原型 `:1570` 在一个 `aria-label="删除提醒"`
+   四处刻意的**偏离原型**（每一条都记账）：
+   1. 圆点的判据从原型 `:1886` 的「有提醒就亮」改成「**还有未到点的提醒**才亮」（C17）：
+      已响 / 已错过不等待任何事，圆点不能退化成历史计数器。
+   2. 新增控件是**两个原生输入**（日期 + 钟点，C15）——原型 `:1579` 只有 `type="time"`。
+   3. 行形态把原型的 `.time`（到期时刻列）并进**状态后缀**（理由见 :func:`reminderStateNode`）。
+   4. 删除控件用 `×` 而不是原型那个 `plus` 图标 —— 原型 `:1570` 在一个 `aria-label="删除提醒"`
       的控件里复用了「新增」的加号图标（图标与它的可访问名互相矛盾）。可视文案与可访问名不一致
       会让图标/读屏用户读到相反的动作，因此这里按本仓的关闭控件形状用 `×`；
       本仓已有先例：指派 pill 用 `<span>` 而不是原型的 `<button>`（那也是一个按下去不发生的站）。 */
@@ -790,17 +801,33 @@ function hideReminderError() {
   if (box) box.hidden = true;
 }
 
-/** 圆点**只在有提醒时**出现（原型 `alibot-app.html:1886`：`hidden = 没有`）。 */
+/** 圆点**只在「还有未到点的提醒」时**出现（C17）：已响 / 已错过不等待任何事。
+
+    判据是后端给的「已投递」标记 `fired_at`（C20），**不是条数**——只剩已到点的提醒时圆点
+    必须灭掉，否则它就从「还有事等着」退化成历史计数器。这里只**消费**这个标记：`fired_at`
+    的含义、以及「到没到点」的判定都在后端，前端不比对时钟（C20 把判定放在后端）。 */
 function renderReminderDot() {
   const dot = $('#reminderDot');
   if (!dot) return;
-  dot.hidden = state.reminders.length === 0;
+  dot.hidden = !state.reminders.some((reminder) => !reminder.fired_at);
+}
+
+/** 本机当天日期（`YYYY-MM-DD`）：日期格的默认值（C15 判据 2）。
+
+    只取「年 / 月 / 日」三段拼串，不做任何时区换算——到期时刻按**本机本地时间**解释是后端的
+    口径（C7）；前端这里只是把「今天」填进原生控件，不需要建立一个第二时间正本。 */
+function todayDateValue() {
+  return localDateString(new Date());
 }
 
 function openRemindersModal() {
   hideReminderError();
   renderRemindersModal();
   $('#remindersOverlay').hidden = false;
+  // 日期格默认**今天**：打开弹窗就能直接填文本提交，不用先手填日期（C15 判据 2）。
+  // 每次打开都回到今天——这是「新提醒」的默认语义，不是记住上一次的取值。
+  const dateInput = $('#reminderDate');
+  if (dateInput) dateInput.value = todayDateValue();
   const input = $('#reminderText');
   if (input) input.focus();
   // 打开时按**后端正本**再读一次：别的浏览器或上一次会话设的提醒在这里出现。
@@ -812,27 +839,35 @@ function closeRemindersModal() {
   $('#remindersOverlay').hidden = true;
 }
 
-/** 新增一条提醒：文本 + 时间（原型只有 `type="time"`、没有日期与重复字段）。
+/** 新增一条提醒：文本 + **日期与钟点两个原生输入**拼成的到期时刻（C15）。
+
+    拼成 `YYYY-MM-DD HH:MM` **一个串**交给后端（ADR-0017 §二把时间语义升成「日期 + 钟点」）。
+    合法形状由后端裁决（`db.py` 的写路径正则），前端不替后端猜：空的那一半不补默认值，
+    形状不对就由后端回 `validation_failed`，界面把后端的话留在弹窗里。
 
     归属 = **当前打开的频道**（原型 `:1775` 用当前频道）；DM 视图或空工作台里没有频道可归属，
     于是显式传 `null`——后端把它读作「不归属任何频道」，与设置面那条「显式 null 整体拒绝」不同
     （档位没有「不归属」这个合法状态，提醒有）。 */
 async function submitReminder() {
   const textInput = $('#reminderText');
+  const dateInput = $('#reminderDate');
   const timeInput = $('#reminderTime');
   const channel = activeChannel();
+  const due = [dateInput ? dateInput.value : '', timeInput ? timeInput.value : ''].join(' ').trim();
   try {
     const payload = await api('/api/reminders', {
       method: 'POST',
       body: {
         text: textInput ? textInput.value : '',
-        time: timeInput ? timeInput.value : '',
+        time: due,
         channel_id: channel ? channel.id : null,
       },
     });
     applyReminderPayload(payload);
-    // 只清正文：时间格保留当前取值（原型 `#rmTime` 的默认值就是 09:00，连设两条不用重填）。
+    // 只清正文：日期格回到今天、钟点格保留当前取值（原型 `#rmTime` 的默认值就是 09:00，
+    // 连设两条不用重填）。
     if (textInput) textInput.value = '';
+    if (dateInput) dateInput.value = todayDateValue();
   } catch (err) {
     showReminderError(t('reminder.saveFailed', { reason: err.message }));
   }
@@ -861,11 +896,36 @@ function renderRemindersModal() {
   replaceChildren(list, state.reminders.map(reminderRowNode));
 }
 
-/** 一行提醒：时间 / 文本（+ 归属频道）/ 删除（原型 `.reminder-row` 的三个字段）。 */
+/** 两个状态词条键（`pending` 没有标签键：它的后缀就是到期时刻本身，C16）。模块级常量：
+    键名由 C18 钉死，不随渲染重建，也不拼成 `prefix.value` 那种动态键。 */
+const REMINDER_STATE_LABEL_KEYS = { fired: 'reminder.stateFired', missed: 'reminder.stateMissed' };
+
+/** 一条提醒的**状态后缀**节点（C16）：`pending` 时它兼作这一行的到期时刻呈现（完整后端串、
+    不切片），`fired` / `missed` 时它显示前端词条文案。
+
+    行形态的正本在这里：**到期时刻与状态后缀是同一件事的两种说法**（等哪会儿 / 已经过去了），
+    所以时刻不再单立一个 `.time` 列（原型 `alibot-app.html:1567` 是分开的）——单立会让
+    `pending` 行把同一时刻写两遍。这是用户 2026-10-17 对规格 C16 行形态的裁定（B：时刻只出现
+    一次），属**显式偏离**，不是实现随差；偏差登记见 PR #122 正文。
+
+    只**消费**后端给的 `state`（C20 的只读派生值），前端自己不比对时钟、不算 `fired_at − time`；
+    认不出的取值（更老的后端、测试替身）落回到期时刻那一档：**不猜测**第三种语义。
+    `data-state` 让 CSS 按既有档位取色（只用既有 token，不新增色位名）。 */
+function reminderStateNode(reminder) {
+  const stateValue = reminder.state || 'pending';
+  const labelKey = Object.prototype.hasOwnProperty.call(REMINDER_STATE_LABEL_KEYS, stateValue)
+    ? REMINDER_STATE_LABEL_KEYS[stateValue]
+    : null;
+  const node = el('span', 'state', labelKey ? t(labelKey) : reminder.time);
+  node.dataset.state = stateValue;
+  return node;
+}
+
+/** 一行提醒：文本（+ 归属频道）/ **状态后缀**（到期时刻 | 已提醒 | 已错过）/ 删除。
+    行形态为何比原型少了行首那个 `.time`：见 :func:`reminderStateNode`。 */
 function reminderRowNode(reminder) {
   const row = el('div', 'reminder-row');
   row.dataset.reminder = reminder.id;
-  row.appendChild(el('span', 'time', reminder.time));
   const grow = el('span', 'grow');
   // 正文用文本节点挂在 `.grow` 上，因为后面还要往里追加归属频道那一段
   // （`el(tag, class, text)` 是「只有一段文字」时用的；`toast()` 对同一种形态也是这么拼的）。
@@ -875,6 +935,7 @@ function reminderRowNode(reminder) {
     grow.appendChild(el('span', 'ch', ' · #' + (reminder.channel_name || reminder.channel_id)));
   }
   row.appendChild(grow);
+  row.appendChild(reminderStateNode(reminder));
   const remove = el('button', 'icon-btn', '×');
   remove.type = 'button';
   remove.dataset.deleteReminder = reminder.id;
@@ -3607,9 +3668,14 @@ function dayLabel(iso) {
   if (Number.isNaN(date.getTime())) return t('time.unknown');
   const today = new Date();
   if (date.toDateString() === today.toDateString()) return t('time.today');
+  return localDateString(date);
+}
+
+/** 本机日期的 `YYYY-MM-DD` 串（`dayLabel` 与提醒日期格的默认值共用同一个拼法）。 */
+function localDateString(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  return date.getFullYear() + '-' + month + '-' + day;
+  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 function timeLabel(iso) {
