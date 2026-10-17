@@ -836,13 +836,17 @@ def test_the_claim_round_is_mandatory_even_when_the_epoch_was_already_used(
 def test_claim_keeps_the_schema_and_round_outcome_column_set_unchanged(
     client: TestClient, harness: dict
 ) -> None:
-    """[S12/S9 不变量] schema 不 bump；`RoundOutcome` 字段集不变；认领轮不写新列。"""
+    """[S12/S9 不变量] 本票**无新增 DDL**；`RoundOutcome` 字段集不变；认领轮不写新列。
+
+    这里**不再**钉 ``SCHEMA_VERSION`` 的字面量：它是一条**跨票递增的共享常量**，任何票都可以
+    合法推进它（例如 #112 把提醒的到点形态推到 13），用字面量钉它会把后续正常的 bump 变成假红。
+    「#117 那次交付没有新增 DDL」这个**一次性事实**已经由下面两条更硬的断言表达：
+    ``RoundOutcome`` 的字段集与 ``round_outcome`` 的列集——它们才是「没新增 DDL」的可观察落点。
+    """
     import dataclasses
 
     from alibot.agent_seam import RoundOutcome
-    from alibot.db import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 12, "本票零 DDL、不 bump（ADR-0016 六）"
     assert [field.name for field in dataclasses.fields(RoundOutcome)] == [
         "status",
         "reason",
