@@ -133,7 +133,7 @@ ADR-0010「**不改 ADR-0005 原文**……就地改写会让『当时为什么�
 ## 六、人类面：两个原生输入、状态后缀、指示点只表示「还有事等着」
 
 1. **新增控件 = `<input type="date">`（默认今天）+ 既有 `<input type="time">`**，提交时后端起拼成一个到期时刻。
-   **这是对原型的显式偏离**：原型与产物现在都只有 `type="time"`（`alibot-design-system/alibot-app.html:1579`、`app/alibot/studio/index.html:662`）。
+   **这是对原型的显式偏离**：原型与产物现在都只有 `type="time"`（`alibot-design-system/alibot-app.html:1579`、`app/alibot/studio/index.html:679`）。
    被否：`type="datetime-local"` 单控件（一个控件塞两个语义、跨浏览器日历弹层形态不一、无法分字段校验）；
    保持只有 `type="time"`（本 ADR §二 的裁定无法表达）。
 2. **列表行加状态后缀**：待响 = 到期时刻；已到点 = 「已提醒」；已错过（超 24 小时）= 「已错过」。**只用既有档位 token，不加新色位**

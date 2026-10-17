@@ -54,10 +54,10 @@ $ git diff --stat origin/main
 ```
 
 **`CONTEXT.md` 只动了该动的两段**（PR #104 改的唤醒 / 回应判断 / 沉默 / 成员面适配接缝 / 人类世代 / 认领 / 任务状态 七处未碰）：
-`git diff 04eccc9 -- CONTEXT.md` ⇒ 9 insertions / 5 deletions，全部落在**系统事件消息**与**提醒**区块。
+`git diff origin/main -- CONTEXT.md` ⇒ 9 insertions / 5 deletions，全部落在**系统事件消息**与**提醒**区块。
 
-**基线偏差已如实登记**：spec 给的基线是 `main = 63e8163`，但开工时 `origin/main` 已是 `04eccc9`（PR #104），
-它**已占用 `docs/adr/0016-*.md`** ⇒ 新 ADR 改取 **0017**，并先做了 `git rebase origin/main`。
+**基线偏差已如实登记**：spec 给的基线是 `main = 63e8163`，但开工时 `origin/main` 已是 `04eccc9`（PR #104）、
+收尾时已是 `2ccf6fb`（PR #106）。`04eccc9` **已占用 `docs/adr/0016-*.md`** ⇒ 新 ADR 改取 **0017**；两次 `git rebase origin/main` 后再交付。
 
 **没有改动的东西（可逐条核）**：`SCHEMA_VERSION` 仍是 `12`；`app/alibot/**` 与 `app/tests/**` 零改动；
 没有迁移步骤代码；没有跑源码测试与双轴 code-review（G-docs 本票不跑）。
@@ -77,5 +77,5 @@ $ git diff --stat origin/main
   实施票应在 #68 的 Answer 或新建实施票里引用 ADR-0017 并声明该条被取代。
 - **#95（链连续性守卫测试）** 会在实施票 bump 到 13 时自动覆盖 `12 → 13`——S11 的判据正是它。
 - **#103（Studio 左栏入口对齐）** 管 rail 入口位置，本设计管指示点**判据**（S17），不冲突。
-- `CONTEXT.md` **提醒**词条的新口径（到点落消息）与 `app/alibot/studio/index.html:640-642` 的既有注释
+- `CONTEXT.md` **提醒**词条的新口径（到点落消息）与 `app/alibot/studio/index.html:656-659` 的既有注释
   （「到期触发不在本票授权范围内」）相互矛盾——S19 已把它登记为实施票必须同步处置的落点。

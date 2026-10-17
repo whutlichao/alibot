@@ -7,9 +7,9 @@
 - 前置 skill：`grill-with-docs`（依次调用 `grilling` 与 `domain-modeling`）。提问通道：`orca orchestration ask`（禁 `AskUserQuestion`）。
 - **正本声明**：本能力的正本是本设计票的 **GitHub issue**；本文是**同源留档**（`app/specs/`）。
   两者冲突时**以 tracker 为准**（沿用本仓 `app/specs/issue-*.md` 的既有声明体例）。
-- **基线**：`main` = `04eccc9`。开工时 spec 给的基线是 `63e8163`，但 `origin/main` 已前进到 `04eccc9`
-  （PR #104 `claim-starts-work`），因此本票先 `git rebase origin/main` 再动笔。**这不是票面的偏差，是 spec 基线过时的记账**。
-  本文所有 `file:line` 读数基于 `04eccc9`，实施票开工时须重新 `grep` 复核。
+- **基线**：`main` = `2ccf6fb`（PR #106 `rail-header-entries`）。开工时 spec 给的基线是 `63e8163`，但 `origin/main` 已先后前进到 `04eccc9`（PR #104）
+  与 `2ccf6fb`（PR #106），因此本票两次 `git rebase origin/main` 再动笔/收尾。**这不是票面的偏差，是 spec 基线过时的记账**。
+  本文所有 `file:line` 读数基于 `2ccf6fb`（PR #106 把 `studio/index.html` 的行号挪动了 +17，`db.py` 的 `REMINDER_SELECT_SQL` 挪了 +1，已逐条重测），实施票开工时须重新 `grep` 复核。
 - **上游正本**（均已合入 `main`）：ADR-0012（提醒是后端对象）、ADR-0001（消息 append-only）、
   ADR-0002（回应预算每次三跳）、ADR-0009（双语两层 + 语言偏好落库）、ADR-0015（迁移是显式命令、逐版链）。
   本票新增 **ADR-0017** 处置与 ADR-0012 的取代关系。
@@ -18,7 +18,8 @@
 
 ## 0. 开工核对的事实（只读取证，不是决策）
 
-> 票面给的行号**逐条复核过**，下面每一条都是自己在 `04eccc9` 上读出来的读数；
+> 票面给的行号**逐条复核过**，下面每一条都是自己在 `2ccf6fb` 上读出来的读数；
+> （开工首读在 `04eccc9` 上做，收尾时 PR #106 合入后又逐条重测了一次，差异见 §0.9。）
 > 与票面不符的地方在 §0.9 单独列出。
 
 ### 0.1 提醒对象的库形态与写路径
@@ -29,7 +30,7 @@
 | `time` 的形状由正则 `^([01]\d\|2[0-3]):[0-5]\d$` 在写路径校验（**只有 24 小时钟点，没有日期**） | `db.py:183`、`db.py:1359-1360` |
 | `channel_id` **可空**，空 = 不归属任何频道 | `db.py:386`、`db.py:380` 的列注释 |
 | `text` 上限 200 字符 | `db.py:182` |
-| 唯一的选取形状是 `REMINDER_SELECT_SQL`（`LEFT JOIN channel`，从不写 `JOIN`），三处共用 | `db.py:562-566` |
+| 唯一的选取形状是 `REMINDER_SELECT_SQL`（`LEFT JOIN channel`，从不写 `JOIN`），三处共用 | `db.py:563-565` |
 | 人类面三端点：`GET /api/reminders`、`POST /api/reminders`、`DELETE /api/reminders/{id}` | `api.py:471-494` |
 | 写路径的契约文档明写「增删提醒**不落消息、不唤醒、不消耗预算**」 | `api.py:480-481`、`api.py:489`、`service.py:494-508` |
 | `created_at` 由 `utc_now()` 生成（UTC，毫秒精度，`Z` 后缀） | `db.py:756-758`、`db.py:1378-1379` |
@@ -39,11 +40,11 @@
 | 事实 | 落点 |
 | --- | --- |
 | 原型的新增控件**只有钟点**：`<input class="input" id="rmTime" type="time" value="09:00">` | `alibot-design-system/alibot-app.html:1579` |
-| 产物里同一控件：`<input class="input reminder-time" id="reminderTime" type="time" value="09:00">` | `app/alibot/studio/index.html:662` |
+| 产物里同一控件：`<input class="input reminder-time" id="reminderTime" type="time" value="09:00">` | `app/alibot/studio/index.html:679` |
 | 原型把提醒写进 **localStorage**（`persist()`） | `alibot-app.html:1019-1026`、`:1775` |
-| 产物**不照抄**原型那句「到点后 ⏰ 系统消息会直接出现在对应频道的消息流中」，注释写明理由：到期触发当时不在授权范围内 | `app/alibot/studio/index.html:640-642`（注释在弹窗节点之前） |
+| 产物**不照抄**原型那句「到点后 ⏰ 系统消息会直接出现在对应频道的消息流中」，注释写明理由：到期触发当时不在授权范围内 | `app/alibot/studio/index.html:656-659`（注释在弹窗节点之前） |
 
-**这条注释是本票要处置的存量断言**：`index.html:640-642` 明确写了「到期触发的唤醒不在本票授权范围内，照抄会让界面声称一个不存在的行为」。
+**这条注释是本票要处置的存量断言**：`index.html:656-659` 明确写了「到期触发的唤醒不在本票授权范围内，照抄会让界面声称一个不存在的行为」。
 本设计一旦成立，那句话的前半句（「系统消息会出现在对应频道的消息流中」）就**变成真的**（有归属的提醒确实会落 `system` 消息），
 后半句（「唤醒」）仍不成立（本设计**不唤醒**）。⇒ 实施票必须把这段注释改成与实现一致的表述。
 
@@ -127,7 +128,7 @@ ADR-0009 的硬纪律：**不许有第三层**；两份取值必须覆盖**同�
 | 票面说法 | 实测 | 处置 |
 | --- | --- | --- |
 | 「`reminder.time` 只有 `HH:MM`（`app/alibot/db.py:382-388`）」 | **一致**（`db.py:382-388` 是表 DDL；正则另在 `db.py:183`） | 无 |
-| 「基线是 `main` = `63e8163`」 | **已过时**：`origin/main` = `04eccc9`（PR #104） | 已 rebase；ADR 改取 0017（见 §0.7） |
+| 「基线是 `main` = `63e8163`」 | **已过时两次**：开工时 `origin/main` = `04eccc9`（PR #104），收尾时 = `2ccf6fb`（PR #106） | 两次 `git rebase origin/main`；ADR 改取 0017（见 §0.7）。PR #106 把 `studio/index.html` 行号 +17、`db.py` 的 `REMINDER_SELECT_SQL` +1，已逐条重测修正 |
 | 「`docs/adr/0016-*.md`（新增 ADR）」 | **撞号**：0016 已被 #104 占用 | 改取 **0017**（命名/编号细节，自决） |
 | 「既有编排的唯一触发点是消息落库后的 `WakeOrchestrator.notify`（`app/alibot/orchestration.py:1-40`）」 | **一致**，但精确落点是 `notify` 定义在 `orchestration.py:183`，五条纪律的 docstring 在 `:1-14`，调用点在 `service.py:614` 与 `orchestration.py:730` | 已按实测引用 |
 | 「进程内另有一个 `ThreadScheduler`」 | **一致**（`orchestration.py:76-88`），但它**不是调度器**：它只是线程池包装，没有定时能力 | §0.4 已点明；这是 D8 选型的关键 |
@@ -341,7 +342,7 @@ ADR-0009 的硬纪律：**不许有第三层**；两份取值必须覆盖**同�
 - **问题**：`time` 从 `HH:MM` 变成日期+钟点时，弹窗长什么样、到点后人类看到什么（指示点？未读？消息？）。
 - **选项取**（三条同时定，第 3 轮整组通过）：
   1. **新增控件 = 两个原生输入**：`<input type="date">`（默认填今天）+ 既有 `<input type="time">`，提交时后端拼成到期时刻。
-     **这是对原型的显式偏离**——原型与产物现在都只有 `type="time"`（`alibot-app.html:1579` / `index.html:662`），必须记账。
+     **这是对原型的显式偏离**——原型与产物现在都只有 `type="time"`（`alibot-app.html:1579` / `index.html:679`），必须记账。
   2. **到点后的可观察形态**：**落 `system` 消息进归属频道的消息流**（有归属时）+ 列表行加**状态后缀**
      （待响 = 到期时刻；已到点 = 「已提醒」；已错过 = 「已错过（超过 24 小时）」）。
      **不加新色位**，只用既有档位 token（`--muted` / `--warn-*`，见 `CONTEXT.md` **档位** / **角色族**）。
@@ -441,7 +442,7 @@ ADR-0009 的硬纪律：**不许有第三层**；两份取值必须覆盖**同�
 | **S16** | **列表行状态后缀**：待响显示到期时刻／已到点显示「已提醒」／已错过（超 24 小时）显示「已错过」；**只用既有档位 token，不加新色位** | 三种状态的提醒在同一列表里可区分；`git diff` 里**没有**新增 token 名 |
 | **S17** | **rail 指示点判据改为「有未到点的提醒」**：`state.reminders.some(r => !r.fired_at)` | 全部提醒都已到点 ⇒ 圆点隐藏；新增一条未到点的 ⇒ 圆点出现 |
 | **S18** | **文案分层（不许有第三层）**：`system.reminder.fired` / `system.reminder.fired_late` 只进**后端** `app/alibot/i18n.py` 的两份词条；`reminder.dateLabel` / `reminder.stateFired` / `reminder.stateMissed` 只进**前端** `app/alibot/studio/i18n.js` 的两份词条。**同一条文案不许两边都登记** | `tests/test_backend_copy.py` 的两份键集相等且无落单键；前端两份键集相等；新增键在两个文件里**互不重复** |
-| **S19** | **`index.html:640-642` 那段注释必须与实现一致**：它现在写「到期触发的唤醒不在本票授权范围内，照抄会让界面声称一个不存在的行为」。本设计成立后，「系统消息会出现在对应频道的消息流中」**变成真的**（有归属时），而「唤醒」仍不成立 | 该注释不再声称到点不产生消息；弹窗副标题与空态不出现在点相关的不实承诺 |
+| **S19** | **`index.html:656-659` 那段注释必须与实现一致**：它现在写「到期触发的唤醒不在本票授权范围内，照抄会让界面声称一个不存在的行为」。本设计成立后，「系统消息会出现在对应频道的消息流中」**变成真的**（有归属时），而「唤醒」仍不成立 | 该注释不再声称到点不产生消息；弹窗副标题与空态不出现在点相关的不实承诺 |
 
 **S1–S19 的汇总计数**：19 条，每条都有契约 + 可观察判据两半。**没有一条需要本票写代码**。
 
@@ -451,7 +452,7 @@ ADR-0009 的硬纪律：**不许有第三层**；两份取值必须覆盖**同�
 
 ### 4.1 新增 ADR：编号取 `0017`
 
-`docs/adr/` 在 `origin/main`（`04eccc9`）上的最大编号是 **0016**（`0016-claiming-a-task-starts-the-work.md`，
+`docs/adr/` 在 `origin/main`（`2ccf6fb`）上的最大编号是 **0016**（`0016-claiming-a-task-starts-the-work.md`，
 PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remotes/origin/*` 与本地分支**的 `docs/adr/`：
 没有任何分支存在 `0017` 及以上编号 ⇒ 本票取 **`0017`**。
 
@@ -475,7 +476,7 @@ PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remote
 ### 4.3 `CONTEXT.md` 词条 diff（只碰两处 + 需要时新增）
 
 > **边界**：PR #104 已改 `CONTEXT.md` 的**唤醒** / **回应判断** / **沉默** / **成员面适配接缝** / **人类世代** / **认领** / **任务状态** 七个词条。
-> 本票**不许**顺手回退或重排那七个词条。交付前 `git diff 04eccc9 -- CONTEXT.md` 应当**只**显示下表这几段。
+> 本票**不许**顺手回退或重排那七个词条。交付前 `git diff origin/main -- CONTEXT.md` 应当**只**显示下表这几段。
 
 | 词条 | 动作 |
 | --- | --- |
@@ -498,13 +499,13 @@ PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remote
 | `db.py:182-183` | `REMINDER_TIME_PATTERN`（`HH:MM` 正则）与 `MAX_REMINDER_TEXT_LENGTH` 的注释 | 实施票改（正则扩为日期+钟点） |
 | `db.py:378-388` | `reminder` 表的 DDL 与列注释（含「这里没有也不能有 `target_id`」） | 实施票改：加 `fired_at`、改 `time` 语义、注释补「到点落 `system` 消息但**不新增 target**」 |
 | `db.py:1290-1393` | `list_reminders` / `_reminder_payload` / `create_reminder` / `delete_reminder` | 实施票改：payload 加 `fired_at`；写路径校验新时间形状 |
-| `db.py:562-566` | `REMINDER_SELECT_SQL`（加列时只改这里） | 实施票改（若用 `r.*` 则无需改，但要核对） |
+| `db.py:563-565` | `REMINDER_SELECT_SQL`（加列时只改这里） | 实施票改（若用 `r.*` 则无需改，但要核对） |
 | `migrate.py:651-661` | `STEPS` 注册表 | 实施票**追加** `MigrationStep(12, 13, ...)` |
 | `api.py:10-12`、`api.py:471-494` | 提醒三端点的 docstring（「不落消息、不唤醒」的表述需区分「增删」与「到点」） | 实施票改 |
 | `service.py:490-508` | `reminders` / `create_reminder` / `delete_reminder` | 实施票改（同上） |
 | `i18n.py:57-61`、`:239-243` | 提醒相关错误词条 | 实施票改（时间形状那条文案）+ 新增 `system.reminder.*` |
-| `studio/index.html:640-642` | 注释声称「到期触发不在授权范围内」 | 实施票改（S19） |
-| `studio/index.html:662`、`studio/app.js:815-834` | 只有 `type="time"` 的控件与提交路径 | 实施票改（S15） |
+| `studio/index.html:656-659` | 注释声称「到期触发不在授权范围内」 | 实施票改（S19） |
+| `studio/index.html:679`、`studio/app.js:815-834` | 只有 `type="time"` 的控件与提交路径 | 实施票改（S15） |
 | `studio/app.js:789-793` | `renderReminderDot` 的判据 | 实施票改（S17） |
 | `studio/app.js:860-880` | `reminderRowNode`（加状态后缀） | 实施票改（S16） |
 | `studio/i18n.js:399-411`、`:865-878` | 前端提醒词条 | 实施票改（新增 `reminder.dateLabel` / `stateFired` / `stateMissed` 等） |
@@ -514,7 +515,8 @@ PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remote
 
 | 票 | 交互 | 处置 |
 | --- | --- | --- |
-| #104（claim-starts-work，已合入） | 它占用 ADR-0016、改了 `CONTEXT.md` 七个词条、并把 `SCHEMA_VERSION` 保持在 12 | 已 rebase 到 `04eccc9`；ADR 取 0017；`CONTEXT.md` 只碰提醒与系统事件消息 |
+| #104（claim-starts-work，已合入） | 它占用 ADR-0016、改了 `CONTEXT.md` 七个词条、并把 `SCHEMA_VERSION` 保持在 12 | 已 rebase；ADR 取 0017；`CONTEXT.md` 只碰提醒与系统事件消息 |
+| #106（rail-header-entries，已合入） | 它改 `studio/index.html` / `app.js` / `i18n.js` / `app.css` 与三个前端测试，**未碰** `CONTEXT.md` 与 `docs/adr/` | 收尾时已 rebase；本票的 `index.html` 行号已按新基线重测（662 → 679、640-642 → 656-659） |
 | #95（链连续性守卫测试） | 它把 `_assert_chain_is_continuous` 做成源码测试 | 本票 bump 到 13 后，那**同一类**守卫会自动覆盖 `12 → 13`（S11 的判据正是它） |
 | #68（⑧ 提醒 reminders，仍 OPEN） | 它的票面写「不落消息、不唤醒」，与本设计冲突 | 本设计**不修改** #68；实施票应在 #68 的 Answer 或新建的实施票里显式引用 ADR-0017 并声明该条被取代 |
 | #103（Studio 左栏四处入口对齐） | 它动 rail 上的提醒入口位置 | 与本票**不冲突**：它管入口位置，本票管指示点的**判据**（S17）；实施顺序上谁后到谁 rebase |
@@ -553,7 +555,7 @@ PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remote
 
 | 项 | 票面 | 实测/执行 | 处置 |
 | --- | --- | --- | --- |
-| 基线 | `main = 63e8163` | 开工时 `origin/main = 04eccc9`（PR #104 已合入） | 已 `git rebase origin/main`；**这是 spec 基线过时，不是执行偏差** |
+| 基线 | `main = 63e8163` | 开工时 `origin/main = 04eccc9`（PR #104），收尾时 = `2ccf6fb`（PR #106） | 两次 `git rebase origin/main`；**这是 spec 基线过时，不是执行偏差** |
 | 新 ADR 编号 | `docs/adr/0016-*.md` | 0016 已被 #104（`claim-starts-task`）占用 | 改取 **0017**（编号细节，自决；已报备 coordinator，答复确认「取 0017 是正确的，无需再问」） |
 | `orchestration.py` 行号 | 票面写「触发点 `orchestration.py:1-40`」 | `notify` 定义在 `:183`；五条纪律的 docstring 在 `:1-14` | 已按实测引用（§0.9） |
 | `db.py` 提醒表行号 | 票面写「`db.py:382-388`」 | **一致** | 无 |
@@ -563,10 +565,10 @@ PR #104 刚合入）。为排除并行票撞号，扫描了**全部 `refs/remote
 
 | 项 | 读数 |
 | --- | --- |
-| 基线 | `origin/main` = `04eccc9`（PR #104 `claim-starts-work`）；已 `git rebase origin/main` |
-| 提交 | `36d65fd`（docs(reminders): 到点触发设计落盘）+ `f616b3c`（PR 正文） |
+| 基线 | `origin/main` = `2ccf6fb`（PR #106）；本票两次 `git rebase origin/main`（开工时 `04eccc9`、收尾时 `2ccf6fb`） |
+| 提交 | `310c6dd`（设计落盘）+ `24f8425`（PR 正文）+ `7f7033f`（Answer 回填） |
 | 分支 | `reminder-trigger-design`（`-u origin` 已推送） |
-| PR | **#108**，`state=OPEN`，`base=main`，`head=reminder-trigger-design`，`headRefOid=f616b3c04d2501376f8ce5203ed33e8deedb0a0a`（= 本地 HEAD） |
+| PR | **#108**，`state=OPEN`，`base=main`，`head=reminder-trigger-design`；收尾时 `headRefOid` 以 `gh pr view 108 --json headRefOid` 实测为准（本文件最新一次提交） |
 | PR 改动文件 | 4 个：`CONTEXT.md` / `app/specs/reminder-trigger-design-notes.md` / `app/specs/reminder-trigger-design-pr-body.md` / `docs/adr/0017-reminders-fire-into-the-message-stream.md` |
 | PR 正文 | `app/specs/reminder-trigger-design-pr-body.md`（`--body-file` 提交） |
 | 设计票正本 | GitHub issue **#107**（`ready-for-agent`，`Part of #1` 首行，body 与本文同源） |
@@ -585,7 +587,7 @@ $ git diff origin/main --stat -- docs/adr/
  1 file changed, 157 insertions(+)
 （只有新增，没有一条既有 ADR 被改）
 
-$ git diff 04eccc9 -- CONTEXT.md
+$ git diff origin/main -- CONTEXT.md
  CONTEXT.md | 14 +++++++++-----  （9 insertions / 5 deletions）
 （全部落在「系统事件消息」与「提醒」两段，PR #104 改的七处词条未碰）
 
@@ -640,9 +642,9 @@ SCHEMA_VERSION = 12
 - **同一条文案不许两边都登记**
 
 **基线偏差与编号处置**（如实登记）：
-- spec 给的基线是 `main = 63e8163`，开工时 `origin/main` 已前进到 `04eccc9`（PR #104），它**已占用 `docs/adr/0016-*.md`**。
-- 处置：先 `git rebase origin/main`，新 ADR 改取 **0017**。coordinator 独立核对后确认「取 0017 是正确的，无需再问」。
-- 这不是执行偏差，是 **spec 基线过时**的记账。
+- spec 给的基线是 `main = 63e8163`；开工时 `origin/main` 已是 `04eccc9`（PR #104），它**已占用 `docs/adr/0016-*.md`**；收尾时 `origin/main` 又前进到 `2ccf6fb`（PR #106，只改 studio 与前端测试，未碰 `CONTEXT.md` / `docs/adr/`）。
+- 处置：两次 `git rebase origin/main`，新 ADR 改取 **0017**。coordinator 独立核对后确认「取 0017 是正确的，无需再问」。
+- 这不是执行偏差，是 **spec 基线过时**的记账。PR #106 使 `studio/index.html` 行号 +17（662 → 679、640-642 → 656-659）、`db.py` 的 `REMINDER_SELECT_SQL` +1（三处引用已重测修正）。
 
 **PR 与收尾**：
 - 分支 `reminder-trigger-design`，已推送。
