@@ -662,8 +662,6 @@ def _step_12_to_13(conn: sqlite3.Connection) -> int:
     """
     _create_missing_tables(conn, ("reminder",))
     _add_missing_columns(conn, "reminder")
-    if "reminder" not in _table_names(conn):
-        return 0
     cursor = conn.execute(REWRITE_LEGACY_REMINDER_TIME_SQL, (_reminder_legacy_time_prefix(),))
     return max(cursor.rowcount, 0)
 

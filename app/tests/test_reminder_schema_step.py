@@ -21,23 +21,24 @@ C12 判据 2（「口径不依赖执行时刻」）的取证方式：两次迁�
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from alibot.db import DATABASE_FILE_NAME, SCHEMA_VERSION
 
 # v12 形态库的搭建逻辑很重（历史对象 + 补列 + 灌数据），复用既有迁移测试的 fixture builder——
 # 与 ``test_migration_chain_guard.py`` / ``test_migrate_dry_run.py`` 同一体例：只借它的**文件级
-# 外部面**（``_run`` 起真实子进程、``_migrate_argv`` 拼命令行），不改那个文件。
-from tests.test_schema_migration import _build_library, _migrate_argv, _run
+# 外部面**（``_build_library`` 造磁盘上的真实库、``_migrate_argv`` 拼命令行、``_sha256`` 取读数），
+# 不改那个文件。真跑子进程的 runner 由本文件自带（它要钉 ``TZ``，见 :data:`FIXED_TZ`）。
+from tests.test_schema_migration import _build_library, _migrate_argv, _sha256
 
 APP_DIR = Path(__file__).resolve().parents[1]
 
@@ -96,7 +97,7 @@ def _reminder_rows(db_path: Path) -> list[tuple]:
         conn.close()
 
 
-def _build_v12_library(data_dir: Path, times: tuple[str, ...] = ()) -> Path:
+def _build_v12_library(data_dir: Path) -> Path:
     """造一个**真 v12 main 形态**的库：``reminder`` 五列（无 ``fired_at``）、版本读数钉成 12。
 
     为什么不用历史抽取留档里的 ``VERSION_OBJECTS[12]``：那份表是**机器抽取**的「该版出现过哪些对象」，
@@ -110,11 +111,6 @@ def _build_v12_library(data_dir: Path, times: tuple[str, ...] = ()) -> Path:
     db_path = _build_library(data_dir, REMINDER_STEP_FROM - 1)
     conn = sqlite3.connect(db_path, isolation_level=None)
     try:
-        for index, legacy_time in enumerate(times):
-            conn.execute(
-                "INSERT INTO reminder(id, text, time, channel_id, created_at) VALUES (?, ?, ?, ?, ?)",
-                (f"rm_legacy_{index}", f"存量提醒 {index}", legacy_time, None, "2026-10-14T09:00:00Z"),
-            )
         conn.execute(
             "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'", (str(REMINDER_STEP_FROM),)
         )
@@ -158,9 +154,38 @@ def _changed_rows(report: str) -> int:
     return int(match.group(1))
 
 
-def _today_prefix() -> str:
-    """本机本地时区的今天（``YYYY-MM-DD ``）——「迁移执行当日」这个口径的正本读数。"""
-    return datetime.now().astimezone().strftime("%Y-%m-%d ")
+def _fixed_tz_today() -> str:
+    """**固定 TZ** 下的当日（``YYYY-MM-DD ``）——「迁移执行当日」这个口径的正本读数。"""
+    return _fixed_tz_now().strftime("%Y-%m-%d ")
+
+
+# 本文件所有**真跑**迁移的子进程都钉住同一个时区。理由：「到期判定用**本机本地时间**；``created_at``
+# 仍是 **UTC 审计时间戳**」这条口径（规格 C7）与「迁移执行当日」（C12）都只在本机 TZ 下可判定，
+# 而一个**用 UTC 当日**的错误实现只有在「本地日 ≠ UTC 日」的窗口里才会红。钉一个与 UTC 恒有 8 小时
+# 偏移的 TZ，于是这条判据在**每一次**运行里都成立，不靠当天恰好在窗口内。
+FIXED_TZ = "UTC-8"
+
+
+def _run_at_fixed_tz(*args: str) -> subprocess.CompletedProcess[str]:
+    """在**固定时区**下真跑 ``python -m alibot``（其余环境与 ``_run`` 逐字一致）。"""
+    return subprocess.run(
+        [sys.executable, "-m", "alibot", *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={"PYTHONPATH": str(APP_DIR), "PATH": "/usr/bin:/bin", "TZ": FIXED_TZ},
+        cwd=str(APP_DIR),
+    )
+
+
+def _fixed_tz_now() -> datetime:
+    """**固定 TZ** 下的当前时刻（``TZ=UTC-8`` 的 POSIX 语义 = UTC+8）。"""
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
+
+
+def _utc_today() -> str:
+    """**UTC** 当日（``YYYY-MM-DD ``）——用来证明迁移取的不是这个读数。"""
+    return datetime.now(UTC).strftime("%Y-%m-%d ")
 
 
 # ─── C11 · 号 = 13，且链上登记了 12 → 13 ────────────────────────────────────
@@ -180,7 +205,7 @@ def test_a_v12_library_migrates_to_thirteen_and_reports_the_new_step(tmp_path: P
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, (
         f"实际 {completed.returncode}（stdout={completed.stdout!r} stderr={completed.stderr!r}）"
@@ -194,7 +219,7 @@ def test_the_report_ends_at_the_schema_version(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     steps = [(int(a), int(b)) for a, b, _ in STEP_LINE_RE.findall(completed.stdout)]
@@ -214,7 +239,7 @@ def test_the_migrated_reminder_table_has_exactly_one_new_column(tmp_path: Path) 
     db_path = _build_v12_library(data_dir)
     assert _columns(db_path, "reminder") == LEGACY_REMINDER_COLUMNS, "v12 库本就不该有 fired_at"
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     assert _columns(data_dir / DATABASE_FILE_NAME, "reminder") == NEW_REMINDER_COLUMNS
 
@@ -226,7 +251,7 @@ def test_every_migrated_reminder_has_a_null_fired_at(tmp_path: Path) -> None:
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00", "14:30"))
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     for row in _reminder_rows(data_dir / DATABASE_FILE_NAME):
         assert row[3] is None, f"迁移不得预写 fired_at：{row!r}"
@@ -243,10 +268,10 @@ def test_legacy_times_get_the_migration_day_as_their_date(tmp_path: Path) -> Non
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00",))
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     rows = _reminder_rows(data_dir / DATABASE_FILE_NAME)
-    assert [row[2] for row in rows] == [f"{_today_prefix()}09:00"]
+    assert [row[2] for row in rows] == [f"{_fixed_tz_today()}09:00"]
     assert rows[0][3] is None
 
 
@@ -257,7 +282,7 @@ def test_every_legacy_row_shares_the_same_date_and_keeps_its_own_time(tmp_path: 
     legacy_times = ("00:05", "07:30", "12:00", "18:45", "23:59")
     _seed_legacy_reminders(db_path, legacy_times)
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     rewritten = [row[2] for row in _reminder_rows(data_dir / DATABASE_FILE_NAME)]
     dates = {value[:10] for value in rewritten}
@@ -342,11 +367,54 @@ def test_rows_already_in_the_new_shape_are_not_rewritten(tmp_path: Path) -> None
     finally:
         conn.close()
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     times = {row[0]: row[2] for row in _reminder_rows(data_dir / DATABASE_FILE_NAME)}
     assert times["rm_new_shape"] == "2026-12-31 23:59", "已是新形状的行不得被二次改写"
-    assert times["rm_legacy_0"] == f"{_today_prefix()}09:00"
+    assert times["rm_legacy_0"] == f"{_fixed_tz_today()}09:00"
+
+
+# ─── C12 · 口径是**本机本地**日期，不是 UTC 日期 ─────────────────────────────
+def test_the_rewritten_date_is_the_local_day_and_not_the_utc_day(tmp_path: Path) -> None:
+    """C12 + C7：迁移补的日期取**本机本地**当日，**不是** UTC 当日。
+
+    为什么这条判据在**任何时刻**都成立：偏移是**按当前 UTC 小时动态挑的**——UTC 小时 < 12 时取
+    ``UTC+12``（本地 = UTC−12，落在**前一天**），否则取 ``UTC-12``（本地 = UTC+12，落在**下一天**）。
+    12 小时的整体位移必然跨过一个日历日界线，于是「本地日 ≠ UTC 日」这条前提在每次运行里都为真（本
+    用例先自查它），一个误用 ``datetime.now(UTC)`` 取日期的实现**每一次**都会红，不必等某一天恰好
+    落在窗口里。
+
+    本文件其它的真跑用例用固定的 ``TZ="UTC-8"``（见 :data:`FIXED_TZ`）：它们断言的是「改写结果等于
+    本地当日」这件事本身，而这条用例负责把「本地 vs UTC」的分野**变成必然可判**。
+    """
+    utc_now = datetime.now(UTC)
+    # POSIX 的 ``TZ`` 把**东正西负**反过来写：``UTC+12`` = 本地比 UTC **晚** 12 小时（落在前一天），
+    # ``UTC-12`` = 本地比 UTC **早** 12 小时（落在下一天）。挑那一个必然跨过日界线的一侧。
+    behind = utc_now.hour < 12
+    tz = "UTC+12" if behind else "UTC-12"
+    local_now = utc_now + timedelta(hours=-12 if behind else 12)
+    local_day = local_now.strftime("%Y-%m-%d ")
+    utc_day = utc_now.strftime("%Y-%m-%d ")
+    assert local_day != utc_day, f"前提失效：本地日与 UTC 日相同（{local_day!r}）——这条用例失去区分力"
+
+    data_dir = tmp_path / "data"
+    db_path = _build_v12_library(data_dir)
+    _seed_legacy_reminders(db_path, ("09:00",))
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "alibot", *_migrate_argv(data_dir)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={"PYTHONPATH": str(APP_DIR), "PATH": "/usr/bin:/bin", "TZ": tz},
+        cwd=str(APP_DIR),
+    )
+
+    assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
+    written = _reminder_rows(data_dir / DATABASE_FILE_NAME)[0][2]
+    assert written == f"{local_day}09:00", (
+        f"迁移补的日期不是本地当日（TZ={tz}）：写出 {written!r}，本地日={local_day!r}，UTC 日={utc_day!r}"
+    )
 
 
 # ─── C13 · 一次性收窄必须能从迁移报告里读到 ────────────────────────────────
@@ -359,7 +427,7 @@ def test_the_report_states_the_one_time_semantic_narrowing(tmp_path: Path) -> No
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     report = completed.stdout
@@ -374,7 +442,7 @@ def test_the_step_reports_three_changed_rows_for_three_legacy_rows(tmp_path: Pat
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00", "14:30", "20:00"))
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     assert _changed_rows(completed.stdout) == 3, completed.stdout
@@ -385,7 +453,7 @@ def test_the_step_reports_zero_changed_rows_for_an_empty_reminder_table(tmp_path
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     assert _changed_rows(completed.stdout) == 0, completed.stdout
@@ -405,7 +473,7 @@ def test_only_the_legacy_shaped_rows_count_towards_the_rewritten_total(tmp_path:
     finally:
         conn.close()
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     assert _changed_rows(completed.stdout) == 3, completed.stdout
@@ -421,19 +489,13 @@ def test_the_dry_run_reports_the_same_rewrite_count_without_touching_the_library
     data_dir = tmp_path / "dry-data"
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00", "13:00"))
-    digest_before = hashlib_sha256(db_path)
+    digest_before = _sha256(db_path)
 
-    dry = _run("--migrate", "--dry-run", "--data-dir", str(data_dir))
+    dry = _run_at_fixed_tz("--migrate", "--dry-run", "--data-dir", str(data_dir))
 
     assert dry.returncode == MIGRATION_SUCCEEDED, dry.stderr
     assert _changed_rows(dry.stdout) == 2, dry.stdout
-    assert hashlib_sha256(db_path) == digest_before, "预演不得改动原库"
-
-
-def hashlib_sha256(path: Path) -> str:
-    import hashlib
-
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    assert _sha256(db_path) == digest_before, "预演不得改动原库"
 
 
 # ─── C4 · 写路径：新形状受理、旧形状与不该做的键被拒 ────────────────────────
@@ -508,7 +570,7 @@ def test_the_report_has_no_new_field_besides_the_step_table(tmp_path: Path) -> N
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00",))
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     report = completed.stdout
@@ -529,12 +591,12 @@ def test_the_migrated_library_opens_and_serves_the_reminders_it_rewrote(tmp_path
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00",))
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     with backend(data_dir) as opened:
         assert opened.get("/api/health").json()["status"] == "ok"
         listed = opened.get("/api/reminders").json()["reminders"]
-        assert [item["time"] for item in listed] == [f"{_today_prefix()}09:00"]
+        assert [item["time"] for item in listed] == [f"{_fixed_tz_today()}09:00"]
         # 本票**不写**投递逻辑：读路径此时既不保证 fired_at 键、也不保证 state 键（归票 ②）。
         assert "fired_at" not in listed[0]
 
@@ -545,7 +607,7 @@ def test_the_audit_record_covers_the_new_step(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     records = [
         json.loads(line)
@@ -561,7 +623,7 @@ def test_the_backup_name_carries_the_new_target_version(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     _build_v12_library(data_dir)
 
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
 
     backups = [path for path in data_dir.parent.iterdir() if path.name.startswith(f"{data_dir.name}-backup-")]
     assert len(backups) == 1, backups
@@ -575,12 +637,12 @@ def test_a_current_version_library_is_not_backed_up_or_written(tmp_path: Path) -
     data_dir = tmp_path / "data"
     with backend(data_dir) as opened:
         assert opened.get("/api/health").json()["status"] == "ok"
-    digest_before = hashlib_sha256(data_dir / DATABASE_FILE_NAME)
+    digest_before = _sha256(data_dir / DATABASE_FILE_NAME)
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
-    assert hashlib_sha256(data_dir / DATABASE_FILE_NAME) == digest_before
+    assert _sha256(data_dir / DATABASE_FILE_NAME) == digest_before
     assert not [
         path for path in data_dir.parent.iterdir() if path.name.startswith(f"{data_dir.name}-backup-")
     ]
@@ -592,7 +654,7 @@ def test_rerunning_the_step_on_an_already_migrated_library_changes_nothing(tmp_p
     data_dir = tmp_path / "data"
     db_path = _build_v12_library(data_dir)
     _seed_legacy_reminders(db_path, ("09:00", "14:30"))
-    assert _run(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
+    assert _run_at_fixed_tz(*_migrate_argv(data_dir)).returncode == MIGRATION_SUCCEEDED
     after_first = _reminder_rows(data_dir / DATABASE_FILE_NAME)
 
     # 把版本号退回 12，让同一条链再走一遍（这是「重跑」在库里最直接的形态）。
@@ -607,39 +669,8 @@ def test_rerunning_the_step_on_an_already_migrated_library_changes_nothing(tmp_p
     finally:
         conn.close()
 
-    completed = _run(*_migrate_argv(data_dir))
+    completed = _run_at_fixed_tz(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
     assert _reminder_rows(data_dir / DATABASE_FILE_NAME) == after_first, "已是新形状的行不得被二次改写"
     assert _changed_rows(completed.stdout) == 0, completed.stdout
-
-
-def test_the_tmp_copy_helper_is_not_leaking_into_the_repo(tmp_path: Path) -> None:
-    """取证卫生：迁移在**测试自己的** ``tmp_path`` 里跑，不碰任何真实数据目录。
-
-    这条守住 conftest 的既有约定（``~/Alibot`` 与 ``ALIBOT_DATA_DIR`` 一律不碰）——它也是上面那些
-    「真跑子进程」用例的前提：跑的是 ``--data-dir <tmp_path>``。
-    """
-    data_dir = tmp_path / "data"
-    _build_v12_library(data_dir)
-
-    completed = _run(*_migrate_argv(data_dir))
-
-    assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
-    assert str(data_dir) in completed.stdout
-    home = Path.home()
-    assert not (home / "Alibot" / "schema-migrations.jsonl").exists() or True  # 只读断言：不新造
-
-
-def test_database_file_name_is_where_the_ticket_says_it_is(tmp_path: Path) -> None:
-    """取证定位：库文件就是 ``DATABASE_FILE_NAME``（本文件的读数都读它，不该猜路径）。"""
-    data_dir = tmp_path / "data"
-    db_path = _build_v12_library(data_dir)
-
-    assert db_path == data_dir / DATABASE_FILE_NAME
-    assert db_path.is_file()
-
-
-def test_shutil_is_available_for_the_fixture_helpers() -> None:
-    """``_build_library`` 依赖标准库的复制能力；这里只是把它当成显式前提钉住。"""
-    assert shutil.which("sh") is not None or os.name == "posix"
