@@ -54,6 +54,13 @@
      `YYYY-MM-DD HH:MM` 串交给后端（ADR-0017 的时间语义）；列表行改成
      「文本 · 归属频道 · [到期时刻 | 「已提醒」 | 「已错过」] · 删除」：到期时刻并进状态后缀
      （用户裁定，见 :func:`reminderStateNode`），只消费后端给的 `state`，前端不做任何判定。
+
+   本票（issue #54）新增 —— 频道设置里的**回应预算**（ADR-0007 / 规格 #31 §2）：
+   - 频道头新增预算入口，打开一张**频道设置**弹窗（工作区设置弹窗的语义一个字不改）；
+   - 弹窗只读四项后端读数（已用 / 剩余 / **有效上界** / **来源**）与**下一世代待生效值**，两者分开
+     呈现；预算耗尽写成一条明确事实，不进错误区；
+   - 写控件只有固定档位 3 / 5 / 10（默认 3），提交 `{budget_limit}`；保存后按响应里的新读数重铺，
+     并提示「从下一个人类世代生效」。用量（`used`）前端既不算也不提交——它是后端的正本。
    ========================================================================== */
 'use strict';
 
@@ -168,6 +175,10 @@ const state = {
   // 成员名册（频道成员的**只读**全名单）当前锁定的频道 id；`null` = 弹窗关着。
   // 名册回答「打开它的那个频道里有谁」，因此它在打开时锁定频道，不跟着激活频道跑。
   rosterChannelId: null,
+  // 频道回应预算弹窗（#54）：`budget` 是 `GET/PATCH /api/channels/{id}/budget` 载荷的镜像，
+  // `selected` 是**还没提交**的档位选择（呈现状态）。两者都不是业务正本——正本在后端；
+  // 关闭时整个镜像作废，于是「拿旧读数当现状」这个中间态不存在。
+  channelBudget: { channelId: null, budget: null, selected: null, loading: false, error: '' },
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -692,6 +703,9 @@ function applySettings(settings) {
   // 名册的动态文案（标题 / 副标题 / 行内角色与状态说法）由 `t()` 渲染，因此切语言时
   // 要跟设置弹窗一样重铺一遍（静态的关闭按钮由上面那句 `applyStaticI18n` 覆盖）。
   if (state.rosterChannelId) renderRoster();
+  // 预算弹窗的读数标签、来源说法与写控件文案同样由 `t()` 渲染：开着就按同一份读数重铺，
+  // 于是它不会留在上一门语言（读数本身是后端事实，重铺不发请求）。
+  if (state.channelBudget.channelId) renderBudgetModal();
   return state.settings;
 }
 
@@ -3329,6 +3343,234 @@ function renderTyping() {
   container.textContent = agent ? t('typing.working', { name: agent.display_name }) : '';
 }
 
+/* ─── 频道回应预算（#54 / ADR-0007 / 规格 #31 §2）：读数是后端事实的镜像，写控件只表达**上界** ──
+
+   `CONTEXT.md` **回应预算**：每个 target 每个**人类世代**最多可发生的 Agent→Agent 跳数。上界是
+   **库内逐频道配置**（ADR-0007），人类面只能改它；用量（`used`）是后端的正本——后端在人类消息
+   落库开世代时重置、并只在一次**实际投递**的跳上 +1。因此这张频道设置弹窗里：
+
+   - 只读的四项读数（已用 / 剩余 / 有效上界 / **来源**）与待生效值全部来自
+     `GET /api/channels/{id}/budget`，前端不计算、不推断、也不保存跨会话的旧读数；
+   - 写控件只有固定档位 3 / 5 / 10（默认 3），提交 `{budget_limit: <档位>}`，**绝不提交**任何用量
+     字段（后端也会整体拒绝：用量不可写，`error.budget_used_read_only`）；
+   - 保存后按**响应里的新读数**重铺（一次调用即刷新），并明确提示「从下一个人类世代生效」——
+     当前世代的 `limit` / `used` / `remaining` 不变由后端保证，前端不乐观改写本地读数。 */
+
+/** 固定档位（与后端 `BUDGET_LIMIT_TIERS` 同序同名）；默认档位是后端内置默认 3（ADR-0002 未修订）。 */
+const BUDGET_LIMIT_TIERS = [3, 5, 10];
+const BUDGET_DEFAULT_LIMIT = 3;
+
+/** 来源取值的界面说法（键名与后端 `source` 的取值同名；未知取值原样回退，不伪造一个说法）。 */
+function budgetSourceLabel(source) {
+  const key = 'budget.source.' + source;
+  return hasKey(key) ? t(key) : source;
+}
+
+/** 弹窗里「已保存的档位」：待生效值优先；否则「当前有效上界就是频道覆盖」那份；再否则内置默认。 */
+function savedBudgetTier(budget) {
+  if (!budget) return BUDGET_DEFAULT_LIMIT;
+  const pending = budget.pending_limit;
+  if (pending !== null && pending !== undefined) return Number(pending);
+  return budget.source === 'channel-override' ? Number(budget.limit) : BUDGET_DEFAULT_LIMIT;
+}
+
+/** 弹窗的空镜像（打开 / 关闭都用它，于是「缓存了过期读数」这个中间态不存在）。 */
+function emptyBudgetView() {
+  return { channelId: null, budget: null, selected: null, loading: false, error: '' };
+}
+
+/** 打开弹窗（入口 = 频道头的预算按钮）：锁定当前频道、先显示「读取中」，随后按后端读数渲染。 */
+async function openBudgetModal() {
+  const channel = activeChannel();
+  if (!channel) return;
+  state.channelBudget = {
+    channelId: channel.id,
+    budget: null,
+    selected: null,
+    loading: true,
+    error: '',
+  };
+  $('#budgetOverlay').hidden = false;
+  const box = $('#budgetFormError');
+  if (box) box.hidden = true;
+  renderBudgetModal();
+  await loadChannelBudget(channel.id);
+}
+
+/** 读一次该频道的预算读数（正本是后端）。读回后按**同一个频道**重铺——关掉 / 换过频道就不动它。 */
+async function loadChannelBudget(channelId) {
+  try {
+    const payload = await api(channelPath(channelId, '/budget'));
+    if (state.channelBudget.channelId !== channelId) return;
+    state.channelBudget.budget = payload.budget;
+    state.channelBudget.selected = savedBudgetTier(payload.budget);
+    state.channelBudget.loading = false;
+    state.channelBudget.error = '';
+  } catch (err) {
+    if (state.channelBudget.channelId !== channelId) return;
+    state.channelBudget.loading = false;
+    state.channelBudget.error = err.message;
+  }
+  renderBudgetModal();
+}
+
+function closeBudgetModal() {
+  state.channelBudget = emptyBudgetView();
+  $('#budgetOverlay').hidden = true;
+  const box = $('#budgetFormError');
+  if (box) box.hidden = true;
+}
+
+/** 选中一个档位（**还没提交**的呈现状态）。不在固定档位里的取值连选中都不成立。 */
+function selectBudgetTier(tier) {
+  const value = Number(tier);
+  if (!BUDGET_LIMIT_TIERS.includes(value)) return;
+  if (!state.channelBudget.channelId) return;
+  state.channelBudget.selected = value;
+  renderBudgetModal();
+}
+
+/** 保存选中的档位：写后端（正本），成功后按响应里的新读数重铺并提示下个世代生效。
+
+    失败时**不**改本地读数——界面不能声称一个没落库的档位（与 `saveSettings` 同一条纪律）。 */
+async function submitBudgetTier() {
+  const view = state.channelBudget;
+  const channelId = view.channelId;
+  const tier = view.selected;
+  if (!channelId || tier === null || !BUDGET_LIMIT_TIERS.includes(Number(tier))) return;
+  const box = $('#budgetFormError');
+  if (box) box.hidden = true;
+  try {
+    const payload = await api(channelPath(channelId, '/budget'), {
+      method: 'PATCH',
+      body: { budget_limit: Number(tier) },
+    });
+    if (state.channelBudget.channelId !== channelId) return;
+    state.channelBudget.budget = payload.budget;
+    state.channelBudget.selected = savedBudgetTier(payload.budget);
+    state.channelBudget.error = '';
+    state.channelBudget.loading = false;
+    renderBudgetModal();
+    toast(t('budget.saved', { limit: Number(tier) }));
+  } catch (err) {
+    if (state.channelBudget.channelId !== channelId) return;
+    if (box) {
+      box.textContent = t('budget.saveFailed', { reason: err.message });
+      box.hidden = false;
+    }
+    renderBudgetModal();
+  }
+}
+
+/** 一行说明（`.field .hint` 那一档的排版，不新造样式）。 */
+function budgetHint(key, odId) {
+  const field = el('div', 'field');
+  const hint = el('div', 'hint', t(key));
+  if (odId) hint.setAttribute('data-od-id', odId);
+  field.appendChild(hint);
+  return field;
+}
+
+/** 弹窗的唯一渲染落点：读数 / 待生效 / 写控件都从这里出，于是「读数」与「可写档位」不会各说一份。 */
+function renderBudgetModal() {
+  const view = state.channelBudget;
+  const body = $('#budgetBody');
+  if (!body) return;
+  const channel = view.channelId ? state.channels.find((item) => item.id === view.channelId) : null;
+  const title = $('#budgetTitle');
+  if (title) title.textContent = t('budget.title');
+  const sub = $('#budgetSub');
+  if (sub) sub.textContent = t('budget.sub', { name: channel ? channel.name : '' });
+  if (!view.channelId) {
+    replaceChildren(body, []);
+    return;
+  }
+  if (view.loading) {
+    replaceChildren(body, [el('div', 'rail-empty', t('budget.loading'))]);
+    return;
+  }
+  if (view.error) {
+    replaceChildren(body, [el('div', 'rail-empty', t('budget.loadFailed', { reason: view.error }))]);
+    return;
+  }
+  const budget = view.budget;
+  if (!budget) {
+    replaceChildren(body, []);
+    return;
+  }
+
+  const nodes = [];
+
+  // ① 当前人类世代：四项读数，`remaining` 是后端按**当前有效上界**算好的那一份。
+  const current = el('section', 'd-sec');
+  current.appendChild(sectionTitle('budget.sectionCurrent', 'budget-section-current'));
+  current.appendChild(kvRow(t('budget.used'), String(budget.used), 'budget-used'));
+  current.appendChild(kvRow(t('budget.remaining'), String(budget.remaining), 'budget-remaining'));
+  current.appendChild(kvRow(t('budget.limit'), String(budget.limit), 'budget-limit'));
+  current.appendChild(kvRow(t('budget.source'), budgetSourceLabel(budget.source), 'budget-source'));
+  if (Number(budget.remaining) === 0) {
+    // 预算是**耗尽**，不是出错：它和轮次结果里的 `budget-exhausted` 是同一条事实
+    // （消息照常落库、零投递），因此**不进错误区**，只在读数里说清楚。
+    current.appendChild(kvRow(t('budget.state'), t('budget.exhausted'), 'budget-exhausted'));
+    current.appendChild(budgetHint('budget.exhaustedNote', 'budget-exhausted-note'));
+  }
+  nodes.push(current);
+
+  // ② 下一个人类世代：待生效值与当前有效上界**分开**一行，避免把待生效配置误读成当前额度。
+  const next = el('section', 'd-sec');
+  next.appendChild(sectionTitle('budget.sectionNext', 'budget-section-next'));
+  const pending = budget.pending_limit;
+  const hasPending = pending !== null && pending !== undefined;
+  next.appendChild(
+    kvRow(t('budget.pending'), String(hasPending ? pending : budget.limit), 'budget-pending'),
+  );
+  next.appendChild(
+    budgetHint(
+      hasPending ? 'budget.pendingEffective' : 'budget.pendingSame',
+      'budget-pending-note',
+    ),
+  );
+  nodes.push(next);
+
+  // ③ 写控件：只有固定三档（没有可输入任意数字的控件 ⇒ 非法值不会被提交）。
+  const tiers = el('section', 'd-sec');
+  tiers.appendChild(sectionTitle('budget.tierLabel', 'budget-section-tiers'));
+  const row = el('div', 'radio-row');
+  BUDGET_LIMIT_TIERS.forEach((tier) => {
+    const on = Number(view.selected) === tier;
+    const card = el('button', 'radio-card');
+    card.type = 'button';
+    card.dataset.budgetTier = String(tier);
+    card.setAttribute('data-od-id', 'budget-tier-' + tier);
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    card.classList.toggle('is-on', on);
+    card.appendChild(el('b', null, String(tier)));
+    card.appendChild(
+      el(
+        'span',
+        null,
+        tier === BUDGET_DEFAULT_LIMIT ? t('budget.tierDefaultUnit') : t('budget.tierUnit'),
+      ),
+    );
+    row.appendChild(card);
+  });
+  tiers.appendChild(row);
+  tiers.appendChild(budgetHint('budget.tierHint', 'budget-tier-hint'));
+  const actions = el('div', 'agent-actions');
+  const save = el('button', 'btn btn-primary', t('budget.save'));
+  save.type = 'button';
+  save.dataset.budgetSave = '1';
+  save.setAttribute('data-od-id', 'budget-save');
+  // 「与已保存的档位相同」时没有可提交的改动：按钮禁用，而不是发一个空转的 PATCH。
+  save.disabled =
+    !state.online || view.selected === null || Number(view.selected) === savedBudgetTier(budget);
+  actions.appendChild(save);
+  tiers.appendChild(actions);
+  nodes.push(tiers);
+
+  replaceChildren(body, nodes);
+}
+
 
 function renderHeader() {
   const target = activeTarget();
@@ -3343,6 +3585,9 @@ function renderHeader() {
   // 名册是**频道**成员的只读全名单（`CONTEXT.md` **成员名册**）：DM 下没有这条面，
   // 入口随之隐藏——不留一个按下去什么都不发生的按钮。
   $('#btnChannelMembers').hidden = isDm;
+  // 回应预算同样是**频道**配置（库内逐频道项，ADR-0007）：DM / 任务型 target 没有这条设置面，
+  // 入口随之隐藏（预算读数的路径 `/api/channels/{id}/budget` 只认频道）。
+  $('#btnChannelBudget').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -4736,6 +4981,23 @@ function bindEvents() {
   $('#rosterOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'rosterOverlay') closeRosterModal();
   });
+  // ── 频道回应预算（#54）：频道头入口 + 频道设置弹窗（只读读数 + 3 / 5 / 10 上界档位）──
+  // 正文（读数 / 待生效 / 写控件）是**整段重铺**的，因此点击委派到 `#budgetBody` 上（一个监听器），
+  // 与成员列表 / 提醒列表同一做法：重铺不会把监听器一起换掉。
+  $('#btnChannelBudget').addEventListener('click', openBudgetModal);
+  $('#budgetClose').addEventListener('click', closeBudgetModal);
+  $('#budgetDone').addEventListener('click', closeBudgetModal);
+  $('#budgetOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'budgetOverlay') closeBudgetModal();
+  });
+  $('#budgetBody').addEventListener('click', (event) => {
+    const tier = event.target.closest('[data-budget-tier]');
+    if (tier) {
+      selectBudgetTier(tier.dataset.budgetTier);
+      return;
+    }
+    if (event.target.closest('[data-budget-save]')) submitBudgetTier();
+  });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。
   $('#btnNewDm').addEventListener('click', openDmModal);
@@ -5108,6 +5370,7 @@ function bindEvents() {
       if (!$('#settingsOverlay').hidden) closeSettingsModal();
       if (!$('#remindersOverlay').hidden) closeRemindersModal();
       if (!$('#rosterOverlay').hidden) closeRosterModal();
+      if (!$('#budgetOverlay').hidden) closeBudgetModal();
       if (!$('#agentEditOverlay').hidden) closeAgentEditModal();
       if (!$('#channelOverlay').hidden) closeChannelModal();
       if (!$('#dmOverlay').hidden) closeDmModal();
