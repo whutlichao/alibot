@@ -45,7 +45,15 @@ CATALOGS: dict[str, dict[str, str]] = {
         "common.list_sep": "、",
         # ─── HTTP 错误：机器可读的 code / fields 键不在这里 ───────────────
         "error.round_outcomes_immutable": "轮次结果不可编辑、不可删除：人类面不存在该端点",
-        "error.budget_read_only": "回应预算只读：人类面不存在写入它的端点",
+        # 本键的**语义位置**是「预算的用量面不可写」（ADR-0007）。#54 打开上界写入口后它不能再
+        # 宣称「不存在写端点」——那句在实机上已经是假话；留着键、改说边界：
+        "error.budget_read_only": (
+            "回应预算的用量只读：人类面只能改上界（PATCH），已用跳数与世代由后端独占维护"
+        ),
+        # 写入口拒绝**请求体里的用量字段**时用它（比上一条更具体：这一次提交的是用量）。
+        "error.budget_used_read_only": (
+            "回应预算的用量与世代事实只读：人类面只能改上界（PATCH），used 由后端独占维护"
+        ),
         # #53 的配置落点：上界只接受固定档位，非法值整体拒绝（#31 §2 人定）。
         "error.budget_limit_invalid": "回应预算上界只接受固定档位：{tiers}，未保存任何改动",
         "error.channel_members_append_only": "频道成员只能加入、不能移出：人类面不存在该端点",
@@ -242,7 +250,12 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Round outcomes cannot be edited or deleted: the human surface has no such endpoint"
         ),
         "error.budget_read_only": (
-            "The response budget is read-only: the human surface has no endpoint that writes it"
+            "Response-budget usage is read-only: the human surface can only change the upper bound "
+            "(PATCH); used jumps and the epoch stay backend-owned"
+        ),
+        "error.budget_used_read_only": (
+            "Response-budget usage and epoch facts are read-only: the human surface can only change "
+            "the upper bound (PATCH); used stays backend-owned"
         ),
         "error.budget_limit_invalid": (
             "The response-budget upper bound accepts only the fixed tiers {tiers}; nothing was saved"

@@ -18,7 +18,8 @@
 - ``GET  /api/channels/{id}/members``         频道成员
 - ``POST /api/channels/{id}/members``         把 Agent 成员加入频道（幂等，只接受 Agent）
 - ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
-- ``GET  /api/channels/{id}/budget``          有界响应预算（只读，无 UI）
+- ``GET  /api/channels/{id}/budget``          有界响应预算的读数（当前世代 + 来源 + 待生效值）
+- ``PATCH /api/channels/{id}/budget``         保存回应预算**上界**（固定档位 3 / 5 / 10；用量不可写）
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
 - ``GET  /api/tasks``                         全工作区任务看板（可按频道筛选）
@@ -243,6 +244,37 @@ class MarkRead(BaseModel):
     seq: Annotated[int, Field(strict=True)]
 
 
+class ChannelBudgetUpdate(BaseModel):
+    """频道回应预算**上界**的写入（ADR-0007 / 规格 #31 §2；写路径形态照 ADR-0011）。
+
+    人类面只能表达**上界**，因此可写字段只有一个 ``budget_limit``：
+
+    - 取值只接受固定档位 ``{3, 5, 10}``；档位裁决落在库层（``Database.set_channel_budget_limit``），
+      于是非法档位得到的是与读路径同一句词条文案（``error.budget_limit_invalid``），且**整体不写**。
+      ``strict=True`` 与 ``MarkRead.seq`` 同一条纪律：``"5"`` 这类字符串不会被静默当成 5。
+    - **用量与世代事实不可写**：``used`` / ``remaining`` / ``epoch_seq`` / ``applied_limit`` 被显式
+      声明，但校验器对它们**一律拒绝**。写成显式字段（而不是留给 ``extra="forbid"`` 当未知键）是有意
+      的：未知键只能得到一句泛泛的「请求体不合法」，而这里必须说清「用量由后端独占维护」
+      （ADR-0007：``target_budget.used`` 是跳数正本，人类面既写不了、也清不了）。
+    - 未知键由 ``extra="forbid"`` 整体拒绝，不静默忽略。于是任何一条被拒的请求都在服务层之前就
+      结束，**不留下半成品**（配置表一个字都没写）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    budget_limit: Annotated[int, Field(strict=True)]
+    used: Any = None
+    remaining: Any = None
+    epoch_seq: Any = None
+    applied_limit: Any = None
+
+    @field_validator("used", "remaining", "epoch_seq", "applied_limit", mode="before")
+    @classmethod
+    def _reject_usage_write(cls, value: Any) -> Any:
+        """Pydantic v2 的字段校验器只对**出现在请求体里**的字段运行，因此这里只拦真正提交的用量字段。"""
+        raise _TierValueError("error.budget_used_read_only")
+
+
 class _TierValueError(ValueError):
     """**档位取值**类校验错误：只带**词条键**，正文由边界按语言偏好渲染。
 
@@ -391,11 +423,17 @@ def create_app(
         英文 repr。现在：句子是我们的（词条表），**出错位置与 pydantic 的错误类型原样保留**（它们是
         标识符，与 ``code`` 同类）；自定义校验器（``_TierValueError``）带回词条键，在这里才渲染——
         校验器跑到时还没有语言偏好可读。
+
+        **优先用校验器带回的那句话**（而不是第一条错误）：一条请求可能同时缺必填字段与提交了不可写
+        的字段（``{"used": 0}`` 就是这种形态），此时要说的显然是「用量只读」这条实质拒绝，而不是
+        一句「某个字段缺了」的旁支。只在没有任何校验器词条时才回退到首条错误的「位置 + 类型」。
         """
-        error = exc.errors()[0] if exc.errors() else {}
-        context_error = (error.get("ctx") or {}).get("error")
-        if isinstance(context_error, _TierValueError):
-            return _render_copy(context_error.key)
+        errors = exc.errors()
+        for error in errors:
+            context_error = (error.get("ctx") or {}).get("error")
+            if isinstance(context_error, _TierValueError):
+                return _render_copy(context_error.key)
+        error = errors[0] if errors else {}
         location = ".".join(str(part) for part in error.get("loc", ())) or "body"
         return _render_copy(
             "error.field.body_invalid", location=location, kind=str(error.get("type") or "invalid")
@@ -687,10 +725,25 @@ def create_app(
         - ``pending_limit`` = 已保存、**从下一个人类世代起生效**的上界；没有待生效差异时为 ``null``。
           它只是「下个世代会变成多少」，不会改变本世代返回的 ``used`` / ``remaining``。
 
-        读行为只经这个既有端点取证；本票不改任何既有字段名，也不新增写入口
-        （``PATCH`` 归 #54，``used`` 仍由后端独占维护，ADR-0007）。
+        读行为只经这个既有端点取证；#53 只做附加（既有字段名一个字不改），**写入口是同一路径上的
+        ``PATCH``**（见 ``update_channel_budget``；``used`` 仍由后端独占维护，ADR-0007）。
         """
         return {"budget": service.channel_budget(channel_id)}
+
+    @app.patch("/api/channels/{channel_id}/budget")
+    def update_channel_budget(channel_id: str, payload: ChannelBudgetUpdate) -> dict[str, Any]:
+        """保存该频道的回应预算**上界**（人类面唯一的写路径，ADR-0007 / 规格 #31 §2）。
+
+        只表达上界：请求体只有一个可写的 ``budget_limit``（固定档位 3 / 5 / 10，默认仍为 3）。
+        带上 ``used``（或 ``remaining`` / ``epoch_seq`` / ``applied_limit``）一律**整体拒绝**：
+        用量与世代事实是后端的正本，人类面既写不了、也清不了；``used`` 仍只在人类消息落库开世代时
+        重置、并只在一次**实际投递**的 Agent→Agent 跳上 +1。
+
+        成功后返回**刷新后的只读读数**，与 ``GET`` 同一份载荷——前端一次调用就能同时刷新当前世代
+        读数与待生效值。三条语义与读路径是同一条事实：当前世代**不被回溯改写**（``limit`` / ``used``
+        / ``remaining`` 一字不变）、新值以 ``pending_limit`` 报出、从**下一个人类世代**起生效。
+        """
+        return {"budget": service.set_channel_budget_limit(channel_id, payload.budget_limit)}
 
     # ─── Agent（人类面的创建入口；Agent 本身不经 HTTP） ───────────────────
     @app.get("/api/agents")
@@ -969,11 +1022,11 @@ def create_app(
 
     @app.api_route(
         "/api/channels/{channel_id}/budget",
-        methods=["PUT", "PATCH", "DELETE", "POST"],
+        methods=["PUT", "POST", "DELETE"],
         include_in_schema=False,
     )
     def no_budget_mutation(channel_id: str) -> JSONResponse:
-        """预算只由后端在「人类消息重置 / 一次跳投递」时推进：人类面不能直接改它。"""
+        """上界只经 ``PATCH`` 写（ADR-0007）；用量只由后端在「人类消息开世代 / 一次跳投递」时推进。"""
         return _not_found(_render_copy("error.budget_read_only"))
 
     @app.api_route(

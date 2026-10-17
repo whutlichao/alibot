@@ -433,6 +433,38 @@ const I18N_CATALOGS = {
     'roster.roleFallback': '成员',
     'roster.closeAria': '关闭成员名册',
 
+    /* ─── 频道设置：回应预算（#54 / ADR-0007 / 规格 #31 §2） ──────────────────
+       入口在频道头；弹窗把**当前人类世代的有效上界**与**下一世代待生效值**分开说清楚，
+       并只提供固定档位 3 / 5 / 10。术语沿用 `CONTEXT.md` 的 `## Language` 词条：
+       人类世代 / 回应预算 / 跳 / 预算耗尽 / 预算表——不复述成别的说法。 */
+    'budget.entryTitle': '回应预算',
+    'budget.title': '回应预算',
+    'budget.sub': '#{name} · 上界由你设置；已用跳数由后端维护',
+    'budget.closeAria': '关闭回应预算设置',
+    'budget.loading': '正在读取该频道的预算读数…',
+    'budget.loadFailed': '暂时读不到该频道的预算读数（后端请求失败）：{reason}',
+    'budget.sectionCurrent': '当前世代',
+    'budget.used': '已用',
+    'budget.remaining': '剩余',
+    'budget.limit': '有效上界',
+    'budget.source': '来源',
+    'budget.source.channel-override': '频道覆盖',
+    'budget.source.built-in-default': '内置默认',
+    'budget.state': '状态',
+    'budget.exhausted': '预算耗尽',
+    'budget.exhaustedNote': '本轮零投递：Agent 消息照常落库，只是不再唤醒任何人（不是出错）。',
+    'budget.sectionNext': '下一个人类世代',
+    'budget.pending': '已保存上界',
+    'budget.pendingEffective': '这是已保存的档位，从下一个人类世代生效；当前世代仍按上面的有效上界算。',
+    'budget.pendingSame': '与当前上界相同，没有待生效改动。',
+    'budget.tierLabel': '上界档位',
+    'budget.tierUnit': '跳',
+    'budget.tierDefaultUnit': '跳（默认）',
+    'budget.tierHint': '只有这三档；其它取值后端会整体拒绝，不会留下半成品。',
+    'budget.save': '保存上界',
+    'budget.saved': '已保存 {limit} 跳的上界；从下一个人类世代生效。',
+    'budget.saveFailed': '上界未保存：{reason}',
+
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
     'settings.sub': '工作区偏好',
@@ -911,6 +943,43 @@ const I18N_CATALOGS = {
     'roster.empty': 'This channel has no members yet.',
     'roster.roleFallback': 'member',
     'roster.closeAria': 'Close the member roster',
+
+    /* ─── Channel settings: response budget (#54 / ADR-0007 / spec #31 §2) ────
+       The entry lives in the channel header. The popup keeps the **effective bound of the
+       current human epoch** and the **next-epoch pending value** apart, and offers only the
+       fixed tiers 3 / 5 / 10. Vocabulary follows the `CONTEXT.md` `## Language` entries:
+       human epoch / response budget / jump / budget-exhausted / budget table. */
+    'budget.entryTitle': 'Response budget',
+    'budget.title': 'Response budget',
+    'budget.sub': '#{name} · You set the upper bound; used jumps stay backend-owned',
+    'budget.closeAria': 'Close the response-budget settings',
+    'budget.loading': 'Reading this channel’s budget…',
+    'budget.loadFailed':
+      'This channel’s budget is not readable right now (the backend request failed): {reason}',
+    'budget.sectionCurrent': 'Current epoch',
+    'budget.used': 'Used',
+    'budget.remaining': 'Remaining',
+    'budget.limit': 'Effective bound',
+    'budget.source': 'Source',
+    'budget.source.channel-override': 'Channel override',
+    'budget.source.built-in-default': 'Built-in default',
+    'budget.state': 'State',
+    'budget.exhausted': 'Budget exhausted',
+    'budget.exhaustedNote':
+      'Zero deliveries in this epoch: Agent messages are still stored, nobody is woken (this is not an error).',
+    'budget.sectionNext': 'Next human epoch',
+    'budget.pending': 'Saved bound',
+    'budget.pendingEffective':
+      'This saved tier takes effect at the next human epoch; the current epoch keeps the effective bound above.',
+    'budget.pendingSame': 'Same as the current bound; nothing is pending.',
+    'budget.tierLabel': 'Upper-bound tier',
+    'budget.tierUnit': 'jumps',
+    'budget.tierDefaultUnit': 'jumps (default)',
+    'budget.tierHint':
+      'Only these three tiers; the backend rejects anything else outright and saves nothing.',
+    'budget.save': 'Save upper bound',
+    'budget.saved': 'Saved the {limit}-jump upper bound; it applies from the next human epoch.',
+    'budget.saveFailed': 'The upper bound was not saved: {reason}',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',

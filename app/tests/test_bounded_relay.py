@@ -845,6 +845,6 @@ def test_no_message_edit_or_delete_path_even_after_budget_exhaustion(
     # 流没有变化。
     assert messages(client, channel["id"]) == before
 
-    # 预算也只读：人类面没有写入它的端点。
-    for method in ("put", "patch", "delete", "post"):
+    # 预算的**用量**不可写：上界只有 ``PATCH`` 一条写路径（#54 / ADR-0007），其余动词仍是 404。
+    for method in ("put", "delete", "post"):
         assert getattr(client, method)(f"/api/channels/{channel['id']}/budget").status_code == 404
