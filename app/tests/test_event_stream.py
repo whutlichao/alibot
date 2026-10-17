@@ -257,6 +257,14 @@ def test_typing_indicator_is_emitted_while_a_round_is_in_flight(live: dict) -> N
     assert not runner.is_alive()
     _wait_for(events, lambda items: any(i["type"] == "typing" and i["active"] is False for i in items))
 
+    # ``typing`` 的收口帧与收口后的状态点是**两次独立推送**：typing=False 在轮次的 try 尾部发，
+    # 状态点则在 finally 里「清掉 in-flight 之后」才发（顺序见 orchestration.run_round）。所以
+    # 「看到 typing=False」并不等于「online 那一帧已经到了」——最后一条状态要显式等，不能裸断言。
+    _wait_for(
+        events,
+        lambda items: [e["status"] for e in items if e["type"] == "member_status"][-1:] == ["online"],
+    )
+
     statuses = [event["status"] for event in events if event["type"] == "member_status"]
     assert "working" in statuses, events
     assert statuses[-1] == "online", events
