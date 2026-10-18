@@ -85,7 +85,7 @@ $ gh api repos/whutlichao/alibot/issues/159 --jq '.issue_dependencies_summary.bl
 - **图无环**：本地 Kahn 拓扑排序覆盖全部 28 个子票；GitHub 原生 `blocked_by` 边已设置。
 - **frontier 非空**：`#132`（R1）、`#133`（R2）、`#134`（R3）、`#135`（R4）、`#136`（R5）、`#137`（V1）。
 - **未改产品源码**：PR diff 只含 `app/specs/**` 与 `docs/adr/**`。
-- **最终提交**：`724169a`；PR #160 的 head 与该提交一致，分支已推送、工作树干净。
+- **最终提交**：以 PR #160 的 head 与分支 tip 为准；两者一致，分支已推送、工作树干净。
 
 ## 6. 为什么没有新增 schema/API 票
 
