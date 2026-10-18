@@ -235,5 +235,10 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
   6. 替身 dry-run 只作行为证据，报告与 ADR 都显式标 `usage_evidence=false` / `cost_evidence=false`。
 - **PR**：[#175](https://github.com/whutlichao/alibot/pull/175)（draft，base `main`，head branch
   `issue-55-impl`；正文正本 `app/specs/issue-55-pr-body.md`）。PR 不含 `Closes #55`。
+- **Head**：本轮代码 / 证据提交为 `c20379cd7bbc2a4d09d98a2b10de26cb722a91fc`；其后仅追加本文件的
+  记录提交。PR 页面显示的最终 head = 远端分支 tip = 本地 HEAD。
+- **Base 适用关系**：原始全量证据（864 passed / 2 skipped）取自 `ebde45e` / `99c5012` 代码基线；
+  follow-up 只改测量工具、CLI 测试、README 例外段落、ADR 事实与证据文件，并 merge 仅图标差异的
+  `origin/main` `6c7d0e7`。因此全量证据仍适用；本轮按 spec 只跑受影响 pytest + `--fast`（含 Node）。
 - **Next**：人定提高预算/收窄条件后，在人类环境启动 Ollama 并准备本机模型、按 §4 先预检再跑；把本机
   与远端两组读数补进 ADR-0024 与本节，再转 ready、执行 `Closes #55`。
