@@ -7,11 +7,29 @@
   "conservative_bound_usd": 6.0864,
   "approved_usd": null,
   "fits": false,
+  "framework_defaults": {
+    "verified_with": "agentscope==2.0.10",
+    "verified_at": "2026-10-18",
+    "agent_react_max_iters": 50,
+    "agent_react_structured_output_grace_iters": 5,
+    "agent_model_config_max_retries": 0,
+    "deepseek_chat_model_max_retries": 3,
+    "deepseek_chat_model_context_size": 65536,
+    "deepseek_parameters_max_tokens": null,
+    "deepseek_parameters_thinking_enable": false,
+    "note": "候选事实（不是本工具已推导的调用界）：ReAct 默认 max_iters=50 + grace=5；Agent 的 ModelConfig.max_retries=0；DeepSeekChatModel max_retries=3、context_size=65536；Parameters 默认 max_tokens=None、thinking_enable=False。",
+    "installed_version": "2.0.10",
+    "matches_verified_version": true
+  },
+  "framework_call_bound": {
+    "derived": false,
+    "reason": "本工具尚未把 ReAct max_iters / grace、ModelConfig.max_retries、DeepSeek max_retries 与 context_size 合成成总调用界；次数是显式假设。"
+  },
   "assumptions": [
-    "每轮最多按一个模型的 context/output 硬限制（输入与输出同时拉满）计费。",
-    "每轮模型调用次数取显式假设值；框架内部的 thinking / 工具批次 / 重试没有硬上限。",
+    "每轮最多按官方 context/output 硬限制（输入与输出同时拉满）计费；实际生成参数另见 conditions.framework_defaults（max_tokens=None、thinking_enable=False 等）。",
+    "每轮模型调用次数取显式假设值；本工具尚未把 ReAct max_iters=50 + grace=5、ModelConfig.max_retries=0、DeepSeek max_retries=3 完整合成为调用界。",
     "费率取快照里输入与输出各自的最高档（峰时）。",
     "本机 provider 的轮次按 0 成本计；只有远端模型进入金额。"
   ],
-  "not_a_hard_bound": "它是保守的量化预估，不是数学上界；真实费用还可能因调用次数、重试与价目调整而更高。"
+  "not_a_hard_bound": "它是量化预检，不是完整推导的金额上界；框架调用界未完整合成，真实费用还可能因调用次数、重试与价目调整而更高。"
 }

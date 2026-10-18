@@ -17,10 +17,13 @@ docs/adr/0024-…md                  # 结果、缺项、局限、保留默认 3
 - 真实远端调用必须 `ALIBOT_MEASURE_ALLOW_REMOTE=1` + 显式 `--max-remote-usd`；先过
   `--preflight-only` 的保守预估。
 - 脚本化替身只用于 `--dry-run` 行为取证，报告标 `usage_evidence=false` / `cost_evidence=false`。
+- follow-up：usage 记录一一归轮（歧义 / 未命中 / 不可定价都标 incomplete）；`test_budget_measure.py`
+  改为 CLI 黑盒并撤回 README 临时例外；报告 / ADR / help 记录框架实际默认（ReAct 50+5、DeepSeek
+  retries 3 等）并明确「尚未完整推导总调用界」；`--no-ff` 吸收 origin/main `6c7d0e7`（仅图标差异）。
 
 **Head branch:** `issue-55-impl`（base `main`，diff 从 `bc6f761` 起；latest commit 见 PR 页面）。
-**Worker:** `task_f7818420888e` / dispatch `ctx_a9be1af651e0`（`worker_done` 在交付结尾发送，回执由
-coordinator 的 Run 记录核对）。**状态：draft。** 真实本机 provider 与远端付费 provider 读数尚未取得：本机 Ollama 不可用；远端付费
+**Worker:** `task_0475697480f9` / dispatch `ctx_8131fddc678c`（本 follow-up 的 `worker_done` 在交付
+结尾发送，回执由 coordinator 的 Run 记录核对）。**状态：draft。** 真实本机 provider 与远端付费 provider 读数尚未取得：本机 Ollama 不可用；远端付费
 授权仍 pending（人民币 5 元额度），且按模型硬限制的保守预估为 **$6.0864**，预检不通过，工具拒绝执行。
 因此本 PR **不关闭 #55**，也不把 dry-run 或预检写成实测成本。
 
@@ -35,9 +38,12 @@ coordinator 的 Run 记录核对）。**状态：draft。** 真实本机 provide
 - 预检（不建库/不调用模型）：`deepseek:deepseek-flash`、tier 3、每轮 2 次调用 ⇒ 单调用上限 `$0.7608`、
   保守预估 `$6.0864`、`fits=false`；证据
   `app/specs/issue-55-preflight-deepseek-flash-2026-10-18.json`。
-- 全量门禁 `scripts/check.sh`：**864 passed, 2 skipped in 378.92s**；ruff `All checks passed!`；
-  ruff format `217 files already formatted`；mypy `Success: no issues found in 92 source files`；
-  pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`。
+- follow-up 门禁（不重跑全量）：受影响 pytest **115 passed in 26.02s**；
+  `scripts/check.sh --fast ...` 全绿（ruff / format / mypy / pyright / node `180 pass`）。
+- 全量门禁基线（follow-up 前的 `ebde45e` / `99c5012` 代码基线）：**864 passed, 2 skipped in 378.92s**；
+  ruff `All checks passed!`；ruff format `217 files already formatted`；mypy `Success: no issues found
+  in 92 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`。
+  follow-up 只改测量工具 / 测试 / 文档，并 merge 仅图标差异的 main，故该证据仍适用。
 - 复跑命令见 `app/specs/issue-55-acceptance.md` §4；dry-run 无需凭证、零成本。
 - 双轴 code-review（Standards / Spec）：两轮均只读完成。第一轮发现初始唤醒漏算、失败轮漏 usage、
   成本证据可误标完整等已修复；第二轮确认闭合，并补了 `--max-model-calls-per-round` 正整数校验、

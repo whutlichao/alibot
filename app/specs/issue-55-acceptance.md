@@ -7,7 +7,9 @@
 `docs/adr/0007-human-face-writes-budget-limit-only.md`（**原文未改**）。
 
 - worktree：`/Users/apple/orca/workspaces/alibot/issue-55-impl`
-- 分支：`issue-55-impl`（base `bc6f761cc129b2e53e06f6b55b4d4c072f945ace`，与启动时核对一致）
+- 分支：`issue-55-impl`（原始 base `bc6f761cc129b2e53e06f6b55b4d4c072f945ace`；follow-up 已
+  `--no-ff` merge `origin/main` `6c7d0e722c77d8832ed394be03994777934d2c1a`，差异仅
+  `app/alibot/studio/index.html` 图标 35 增 35 删）
 - schema：**未动**，仍是 `SCHEMA_VERSION = 17`（测量只读轮次结果与预算，不新增列/表）
 - 状态：**真实 provider 读数缺项**（缺一项即不能宣称 #55 验收通过或关闭）；工具、行为测试、价格快照、
   ADR 与 dry-run 取证已完成。
@@ -28,12 +30,12 @@
 
 | 采集项 | 实现 |
 | --- | --- |
-| `Msg.usage` token | `AgentScopeAgentSeam(usage_sink=…)`（`app/alibot/agent_seam.py`）：每轮最终 `Msg.usage` 的 `input_tokens` / `output_tokens` / `cache_input_tokens` / `cache_creation_input_tokens` 原样交出；默认 `None`，不落库、不进 `RoundOutcome`；`usage is None` 与 `0` 分开记录。失败/超时轮没有最终 `Msg`，发 `usage=None` 记录，报告 `accounting_complete=false`、`usage_evidence=false` |
+| `Msg.usage` token | `AgentScopeAgentSeam(usage_sink=…)`（`app/alibot/agent_seam.py`）：每轮最终 `Msg.usage` 的 `input_tokens` / `output_tokens` / `cache_input_tokens` / `cache_creation_input_tokens` 原样交出；默认 `None`，不落库、不进 `RoundOutcome`；`usage is None` 与 `0` 分开记录。失败/超时轮没有最终 `Msg`，发 `usage=None` 记录。报告把 usage **一一归到轮次**：一条记录命中多轮、或一轮命中多条记录都标 ambiguous，不复用；未命中的记录也计入账目欠项。`cost.usage_complete` 同时要求两个目标模型都有真实 usage、所有实际执行轮次完整、所有记录可定价；否则 `usage_evidence` / `cost_evidence` 为 false、完整 `total_measured_usd=null`（保留 partial） |
 | 时延 | `GET /api/channels/{id}/round-outcomes` 的 `started_at` / `finished_at`；报告分 `initial_wake` / `jump_rounds` / `all_rounds` 三组汇总 |
 | 世代结束判定 | `budget.remaining == 0` + 无 Agent `working` + 消息/轮次/预算读数在静默期内不变；未耗尽/超时/护栏触发记 `incomplete` / `aborted-cost-cap` |
 | 成本 | `app/specs/issue-55-model-prices-2026-10-18.json`（官方 DeepSeek 价目，取得日期 2026-10-18，快照 sha256 入报告）；DeepSeek `input_tokens` 含缓存命中，按 miss/hit 分开计；本机 `ollama:*` 为 0（无 provider 账单，电费/硬件不计） |
 | 外推 | 初始唤醒成本 + `tier × max/mean(jump_cost)`；另给 `empirical_fanout_estimate = members × max_round + tier × (members−1) × max_round`（经验估计，不是系统普遍上界；`system_monetary_upper_bound=null`）；假设与限制写在 ADR §三/§五 |
-| 成本阈值（**不是硬上限**） | `ALIBOT_MEASURE_ALLOW_REMOTE=1` + 必填 `--max-remote-usd`；`CostGuard` 只在一轮结束拿到 usage 后累计，越限后 `GuardedScheduler` 不再提交**下一轮**，报告标 `aborted-cost-cap`；远端 usage 缺失则同样停止提交，标 `aborted-usage-missing`。真实执行前 `preflight_cost_estimate` 按模型硬限制/最大费率/显式调用数假设做保守预估，不通过就拒绝执行 |
+| 成本阈值（**不是硬上限**） | `ALIBOT_MEASURE_ALLOW_REMOTE=1` + 必填 `--max-remote-usd`；`CostGuard` 只在一轮结束拿到 usage 后累计，越限后 `GuardedScheduler` 不再提交**下一轮**，报告标 `aborted-cost-cap`；远端 usage 缺失则同样停止提交，标 `aborted-usage-missing`。真实执行前 `preflight_cost_estimate` 按官方模型硬限制/最大费率/显式调用数假设做量化预估，不通过就拒绝执行。框架默认（agentscope 2.0.10：ReAct max_iters 50 + grace 5、ModelConfig.max_retries 0、DeepSeek max_retries 3 / context_size 65536、Parameters max_tokens None / thinking_enable False）单独写进报告条件；本工具尚**未**把它们完整合成为总调用界 |
 
 **为什么新增 `usage_sink` 仍是「局部采集实现」而不是扩接缝形状**：`RoundOutcome` 的字段没有增加，
 `AgentSeam` 协议没有增加方法；sink 与既有 `emit` 同级（进程内观察面、默认关闭、异常不影响轮次结论）。
@@ -43,13 +45,13 @@
 
 | # | AC | 落点 | 命令 / 读数 |
 | --- | --- | --- | --- |
-| 1 | 隔离数据目录，不碰真实数据 | `prepare_data_dir()`、`RunConfig.data_dir`、报告 `environment.isolated_data_dir` | `pytest tests/test_budget_measure.py::test_a_non_empty_or_default_data_dir_is_refused` ⇒ passed；dry-run 证据里的数据目录是临时目录 |
-| 2 | 量 `Msg.usage`、`round_outcome` 时延、按价目换算成本 | `AgentScopeAgentSeam._record_usage`、`build_report()`、价格快照 | `pytest tests/test_agent_seam_client_lifecycle.py::test_usage_sink_receives_the_final_msg_usage_without_changing_the_outcome` ⇒ passed（stub provider 的真实 `usage={prompt_tokens:1, completion_tokens:1}` 被读到）；`test_cost_separates_cache_hit_tokens_from_cache_miss_tokens` ⇒ passed |
-| 3 | 至少一种本机 + 一种远端付费；记录模型/环境/价格源/条件；默认跳过、仓库无凭证 | CLI 必填 `--local-model` / `--remote-model`；`validate_models()`；`ALIBOT_MEASURE_ALLOW_REMOTE=1`；价格快照 | `test_real_remote_runs_require_the_explicit_environment_switch`、`test_real_remote_runs_require_an_explicit_cost_cap` ⇒ passed；`git diff` 中无凭证值；**真实读数缺项见 §5** |
+| 1 | 隔离数据目录，不碰真实数据 | `prepare_data_dir()`、`RunConfig.data_dir`、报告 `environment.isolated_data_dir` | `pytest tests/test_budget_measure.py::test_data_dir_must_be_fresh_and_not_the_user_directory` ⇒ passed（CLI 退出码 2 + stderr）；dry-run 证据里的数据目录是临时目录 |
+| 2 | 量 `Msg.usage`、`round_outcome` 时延、按价目换算成本 | `AgentScopeAgentSeam._record_usage`、`build_report()`、价格快照 | `pytest tests/test_agent_seam_client_lifecycle.py::test_usage_sink_receives_the_final_msg_usage_without_changing_the_outcome` ⇒ passed（stub provider 的真实 `usage={prompt_tokens:1, completion_tokens:1}` 被读到）；`test_preflight_reports_official_limits_and_framework_defaults` ⇒ passed（CLI 预检 JSON：per_call `$0.7608`、bound `$6.0864`） |
+| 3 | 至少一种本机 + 一种远端付费；记录模型/环境/价格源/条件；默认跳过、仓库无凭证 | CLI 必填 `--local-model` / `--remote-model`；`validate_models()`；`ALIBOT_MEASURE_ALLOW_REMOTE=1`；价格快照 | `test_real_mode_requires_opt_in_and_an_explicit_cap` ⇒ passed（CLI 退出码 2 + stderr）；`test_real_mode_refuses_before_any_call_when_preflight_exceeds_budget` ⇒ passed；`git diff` 中无凭证值；**真实读数缺项见 §5** |
 | 4 | 跑满一个人类世代，解释 3/5/10 的实测与外推最坏成本 | `run_epoch()` / `_wait_for_epoch()` / `_extrapolate()` | dry-run：`used=3`、`remaining=0`、`suppressed_rounds=1`、`rounds_total=5`、`jump_round_groups=2`（证据 §5 表）；真实外推未填，见 §5 |
 | 5 | 结果、限制、默认档位依据进新 ADR + 证据 | `docs/adr/0024-…md`；本文件；`app/specs/issue-55-dry-run-evidence.json` | ADR 已写方法/缺项/外推口径/保留 3 的条件；证据文件可复跑 |
 | 6 | 档位固定 3/5/10，默认 3；改默认需新 ADR | `db.py` 的 `BUDGET_LIMIT` / `BUDGET_LIMIT_TIERS` **未改**；ADR-0002 未改 | `pytest tests/test_channel_budget_limit.py` 相关既有用例仍绿（全量见 §6）；dry-run 的 `budget_final.limit=3`、`source=channel-override` |
-| 7 | 脚本化替身只用于行为测试，零 usage 不算成本证据 | `--dry-run` 分支、`usage_evidence` / `cost_evidence` 标志 | `test_dry_run_exhausts_a_full_epoch_with_doubles_and_marks_it_not_cost_evidence` ⇒ passed；证据里 `raw.usage_records=[]`、`cost.total_measured_usd=null` |
+| 7 | 脚本化替身只用于行为测试，零 usage 不算成本证据 | `--dry-run` 分支、`usage_evidence` / `cost_evidence` 标志 | `test_dry_run_writes_a_desensitized_report_and_marks_no_cost_evidence` ⇒ passed；证据里 `raw.usage_records=[]`、`cost.usage_complete=false`、`cost.total_measured_usd=null` |
 
 ## 4. 复跑命令（真实 provider 需人定授权）
 
@@ -94,10 +96,10 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | 档位 | `tier=3`，`limit=3`，`source=channel-override` |
 | 跳数正本 | `used=3`、`remaining=0`（耗尽） |
 | 轮次 | `rounds_total=5`，`jump_round_groups=2`，`suppressed_rounds=1` |
-| 初始人类唤醒 | 2 条轮次（min 0 / mean 1 / p50 1 / max 2 ms；第二条的 `base_seq=2`，因为单线程下它在首条回复落库后才开始） |
-| 时延 | 全部 5 轮：min 0 / mean 0.4 / p50 0 / max 2 ms（替身即时返回，**不代表真模型**） |
+| 初始人类唤醒 | 2 条轮次（min 1 / mean 1 / p50 1 / max 1 ms；第二条的 `base_seq=2`，因为单线程下它在首条回复落库后才开始） |
+| 时延 | 全部 5 轮：min 0 / mean 0.6 / p50 1 / max 1 ms（替身即时返回，**不代表真模型**） |
 | 世代墙钟 | 822 ms |
-| usage / 成本 | `usage_records=[]`；`usage_evidence=false`、`cost_evidence=false`、`total_measured_usd=null` |
+| usage / 成本 | `usage_records=[]`；`cost.usage_complete=false`、`cost.accounting_complete=false`、`usage_evidence=false`、`cost_evidence=false`、`total_measured_usd=null` |
 | 结论 | 只证明「编排 → 设档 → 发人类消息 → 预算耗尽 → 轮次/时延/抑制结果采集」路径可用 |
 
 ### 5.2 真实 provider（缺项）
@@ -118,7 +120,9 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | 远端轮次假设 | 4（初始人类唤醒 1 + tier 3 每跳至多投递远端 1 次） |
 | 模型调用数假设 | 8（4 轮 × 每轮 2 次） |
 | 保守预估 | **$6.0864** |
-| 结论 | pending 额度是人民币 5 元，尚未折算为 USD；报告 `approved_usd=null`、`fits=false`。框架内部调用次数没有公开硬上限 ⇒ **拒绝真实执行**，符合「不能事前约束就不跑」 |
+| 框架默认（报告 `framework_defaults`） | ReAct `max_iters=50` + grace 5；`ModelConfig.max_retries=0`；DeepSeek `max_retries=3`、`context_size=65536`；`max_tokens=None`、`thinking_enable=False`（agentscope 2.0.10，`matches_verified_version=true`） |
+| 调用界 | `framework_call_bound.derived=false`：本工具尚未把上述默认完整合成为总调用界；`--max-model-calls-per-round` 是显式假设 |
+| 结论 | pending 额度是人民币 5 元，尚未折算为 USD；报告 `approved_usd=null`、`fits=false`。工具在预检不通过时 **拒绝真实执行**，符合「不能事前约束就不跑」 |
 
 因此：**本票不声称任何真实 token / 时延 / 金额读数**，也不把 dry-run 的零 usage 写成实测成本；
 默认 3 的保留依据是 ADR-0002 的策略裁定 + 没有相反证据（ADR-0024 §四），不是实测结论。
@@ -127,9 +131,15 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 
 | 门禁 | 命令 | 读数 |
 | --- | --- | --- |
-| 新增行为测试 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` | **22 passed**（7.8s，review 收口后） |
-| 预算相邻族 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py tests/test_bounded_relay.py tests/test_channel_budget_limit.py tests/test_channel_budget_write.py tests/test_target_scope.py` | **121 passed in 24.10s** |
-| 全量门禁 | `scripts/check.sh` | **864 passed, 2 skipped in 378.92s**；ruff `All checks passed!`；ruff format `217 files already formatted`；mypy `Success: no issues found in 92 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`；`门禁全绿` |
+| 新增 CLI 黑盒测试 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` | **16 passed in 6.95s**（CLI 9 + seam 7） |
+| 预算相邻族 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py tests/test_bounded_relay.py tests/test_channel_budget_limit.py tests/test_channel_budget_write.py tests/test_target_scope.py` | **115 passed in 26.02s** |
+| fast 门禁（follow-up） | `scripts/check.sh --fast tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py tests/test_bounded_relay.py tests/test_channel_budget_limit.py tests/test_channel_budget_write.py tests/test_target_scope.py` | **115 passed**；ruff `All checks passed!`；ruff format `217 files already formatted`；mypy `Success: no issues found in 92 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`；`门禁全绿` |
+| 全量门禁（原始完整证据） | `scripts/check.sh`（在 follow-up 前的 head `ebde45e`/`99c5012` 代码基线上取得） | **864 passed, 2 skipped in 378.92s**；ruff / format / mypy / pyright / node 全绿 |
+
+**适用关系**：follow-up 只改测量工具、其 CLI 测试、README 例外段落、ADR 事实与证据文件；生产路径未动
+（`agent_seam.py` 的 usage_sink 仍是原实现）。`origin/main` merge 只带 `studio/index.html` 图标 35 增
+35 删。因此全量证据仍适用于当前代码；本轮按 spec 只重跑受影响 pytest 与 `--fast`（含 Node），不跑第四次
+全量。
 
 两个 skip 是既有跳过：`test_agent_smoke.py`（需 `ALIBOT_SMOKE_MODEL`）与
 `test_reminder_schema_step.py`（需 `libfaketime`）。本票没有新增 skip；dry-run 走的是独立手动入口，
@@ -154,13 +164,13 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | --- | --- |
 | `app/alibot/agent_seam.py` | 新增默认 `None` 的 `usage_sink` 观察口；单 Agent / 队长轮次在收口前记录最终 `Msg.usage`；异常不影响轮次 |
 | `app/tests/measure_budget.py` | **新增**：隔离目录、真实编排、成本阈值与预检、usage/时延采集、价格换算、外推与脱敏报告 |
-| `app/tests/test_budget_measure.py` | **新增**：价目/成本/缺失 usage/护栏/隔离/opt-in/dry-run 行为测试 |
+| `app/tests/test_budget_measure.py` | **新增**：通过 CLI `main(argv)` 的退出码 / stdout / 证据文件覆盖价目、预检、隔离、opt-in、dry-run；不直接调内部辅助函数 |
 | `app/tests/test_agent_seam_client_lifecycle.py` | 新增 2 条 seam 级用例：usage sink 收到真实 stub provider usage；sink 异常不改轮次 |
 | `app/specs/issue-55-model-prices-2026-10-18.json` | **新增**：官方价格快照（DeepSeek，带来源与日期；本机零价） |
 | `app/specs/issue-55-dry-run-evidence.json` | **新增**：脱敏 dry-run 证据 |
 | `app/specs/issue-55-preflight-deepseek-flash-2026-10-18.json` | **新增**：不调用模型的事前约束预检（保守预估 $6.0864，拒绝在 pending 预算内执行） |
 | `CONTEXT.md` | 「成员面适配接缝」补一句默认关闭的用量观察口（不是第三种输出） |
-| `app/README.md` | 「测试与检查」补一段手动实测入口（dry-run / preflight / opt-in） |
+| `app/README.md` | 「测试与检查」补一段手动实测入口（dry-run / preflight / opt-in）；follow-up **撤回**了临时的「第三处例外」，仍只保留原有两处 |
 | `app/specs/issue-55-acceptance.md` | 本文件 |
 | `app/specs/issue-55-pr-body.md` | PR #175 正文正本 |
 | `docs/adr/0024-response-budget-measured-evidence-keeps-default-three.md` | **新增** ADR；不改 ADR-0002 / 0007 |
@@ -197,6 +207,16 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 结论：两轴均无 blocking；缺项是**外部条件**（本机模型未准备、付费授权未到、预检不通过），
 不是代码遗留。
 
+**follow-up 局部收尾（本 Task，未重开完整双轴 review）**
+
+| 项 | 处理 | 证据 |
+| --- | --- | --- |
+| 报告完整性 | usage 记录一一归轮；闭区间重叠、单轮多记录、未命中记录都标 incomplete；`usage_complete` 要求两个目标模型均有真实 usage、实际执行轮次全完整、全部记录可定价；`usage_evidence` / `cost_evidence` / 完整 total 与之一致，partial 保留 | 手动复核（非模型实测）：complete 路径 `usage_complete=true` / total `0.00022`；同轮双记录歧义路径 `false` / total `null` / 2 条 ambiguous |
+| 测试分层 | 撤回 README 第三处例外；`test_budget_measure.py` 改为 CLI 黑盒（退出码 / stdout / JSON 文件），删除 CostGuard / usage_cost_usd / build_report 等内部断言 | 16 passed；README 恢复「两处例外」 |
+| 框架默认事实 | ADR / CLI help / 报告改为：ReAct max_iters 50 + grace 5、ModelConfig.max_retries 0、DeepSeek max_retries 3 / context_size 65536、max_tokens None / thinking_enable False；**尚未完整推导总调用界**，预检次数是显式假设 | `conditions.framework_defaults` / `framework_call_bound.derived=false`；预检证据已重生成 |
+| merge main | `--no-ff` 吸收 `origin/main` `6c7d0e7`；diff 仅 `studio/index.html` 图标 35 增 35 删 | `git diff HEAD^..HEAD --stat` |
+| 门禁 | 不跑第四次全量；受影响 pytest + `scripts/check.sh --fast`（含 Node） | §6：115 passed / node 180 pass / 全绿 |
+
 ## Answer（Status / Decisions）
 
 - **Status**：`implemented_tooling_pending_real_measurement`。工具、行为测试、价格快照、ADR、dry-run
@@ -205,11 +225,14 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
   1. 默认仍为 3，固定档位仍为 3 / 5 / 10；ADR-0002 不修订、不取代。
   2. 测量采集用默认关闭的 `usage_sink`，不扩 `RoundOutcome` / `AgentSeam` 的输出形状。
   3. `--max-remote-usd` 是观测后停机阈值，不是硬上限；远端 usage 缺失即停止提交。真实执行前必须
-     `--preflight-only` 按模型硬限制/最大费率/调用数假设做保守预估；本次预估 $6.0864 高于 pending
-     人民币 5 元，因此**不执行付费调用**。
-  4. 外推只给 `scenario_bound` 与 `empirical_fanout_estimate`；不声称系统普遍金额上界（调用/重试/
-     上下文增长无有限硬约束）。
-  5. 替身 dry-run 只作行为证据，报告与 ADR 都显式标 `usage_evidence=false` / `cost_evidence=false`。
+     `--preflight-only` 按官方模型硬限制/最大费率/显式调用数假设做量化预估；本次预估 $6.0864 高于
+     pending 人民币 5 元，因此**不执行付费调用**。框架默认（ReAct 50+5、DeepSeek retries 3 等）已
+     记录，但**尚未完整推导总调用界**。
+  4. 外推只给 `scenario_bound` 与 `empirical_fanout_estimate`；不声称系统普遍金额上界（本工具尚未
+     把框架调用界与价目变化完整合成）。
+  5. 报告完整性以「一条 usage 只归一轮」为硬约束：歧义 / 未命中 / 不可定价都让 `usage_complete=false`，
+     完整 total 为 null、partial 保留；`usage_evidence` / `cost_evidence` 与之一致。
+  6. 替身 dry-run 只作行为证据，报告与 ADR 都显式标 `usage_evidence=false` / `cost_evidence=false`。
 - **PR**：[#175](https://github.com/whutlichao/alibot/pull/175)（draft，base `main`，head branch
   `issue-55-impl`；正文正本 `app/specs/issue-55-pr-body.md`）。PR 不含 `Closes #55`。
 - **Next**：人定提高预算/收窄条件后，在人类环境启动 Ollama 并准备本机模型、按 §4 先预检再跑；把本机
