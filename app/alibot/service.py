@@ -329,6 +329,29 @@ class WorkspaceService:
         task = self._db.get_task(task_id, self._member_id)
         return self._db.budget_state(task["target_id"])
 
+    def team_runs(
+        self,
+        target_id: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """该 target 的运行记录（倒序分页）与各自的分派快照。
+
+        这是运行面板断线后的快照兜底（ADR-0020 四）：``agent_event`` / ``team_assignment``
+        是 live-only，重连后只能靠这份读面恢复。``target_id`` 既可以是频道，也可以是任务
+        线程的 target；未知 target 由库层 404。
+        """
+        runs, has_more = self._db.list_team_runs_page(target_id, limit=limit, offset=offset, task_id=task_id)
+        return {
+            "target_id": target_id,
+            "runs": runs,
+            "limit": limit,
+            "offset": offset,
+            "has_more": has_more,
+        }
+
     def mark_task_read(self, task_id: str, seq: int) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)
         self._db.mark_read(task["target_id"], seq, member_id=self._member_id)

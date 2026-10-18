@@ -1125,6 +1125,7 @@ class AgentScopeAgentSeam:
                     task_id=team.task_id,
                     team_run_id=team.team_run_id,
                     budget=team.budget,
+                    publish=team.publish,
                 )
                 inputs: Any = [
                     UserMsg(name=_author_name(item), content=_body(item)) for item in messages
@@ -1176,6 +1177,10 @@ class AgentScopeAgentSeam:
                         )
                         if record is None:
                             continue
+                        if record.type == "REPLY_START":
+                            # 分派 SSE 的 reply_id 归属（#144）：成员按调用顺序串行运行，
+                            # ReplyStart 的到达顺序即该成员的分派顺序。
+                            pipeline.note_member_reply(record.member_id, record.reply_id)
                         try:
                             emit(record)
                         except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
