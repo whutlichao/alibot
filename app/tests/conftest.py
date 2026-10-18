@@ -71,16 +71,24 @@ def _sanitize_proxy_environment() -> Iterator[None]:
 
 
 def build_app(
-    data_dir: Path, scheduler: ManualScheduler | None = None, seam: ScriptedAgentSeam | None = None
+    data_dir: Path,
+    scheduler: ManualScheduler | None = None,
+    seam: ScriptedAgentSeam | None = None,
+    **kwargs: Any,
 ):
+    """默认注入脚本化替身 + 手动调度器；``seam_factory`` 存在时交给 factory 决定成员面。"""
+    provided_seam = seam
+    if provided_seam is None and kwargs.get("seam_factory") is None:
+        provided_seam = ScriptedAgentSeam()
     return create_app(
         data_dir=data_dir,
         scheduler=scheduler if scheduler is not None else ManualScheduler(),
-        seam=seam if seam is not None else ScriptedAgentSeam(),
+        seam=provided_seam,
         # 到期投递器同样默认注入一个**惰性替身**（同 ManualScheduler 的理由）：行为测试必须确定，
         # 不能因为「今天恰巧过了某条提醒的到期时刻」而多出系统事件消息。真实后台轮询由
         # ``test_reminder_delivery.py`` 自己在**单独的**用例里注入（那两条恰好要验证启动先扫与关停）。
         reminder_delivery=InertReminderDeliveryDriver,
+        **kwargs,
     )
 
 
