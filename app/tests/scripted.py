@@ -146,12 +146,17 @@ class ScriptedAgentSeam:
         target_id: str,
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
+        team: Any = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
     ) -> RoundOutcome:
         """脚本化流式行为：结论与 :meth:`run_round` 相同，另按固定形状发事件。
 
         替身不模拟 token 增量，只发 ``REPLY_START`` → 每个待落库正文一条 ``TEXT_BLOCK_DELTA``
         → ``REPLY_END``；归属字段仍按真适配器的规则填（派生命中、本轮 target）。
+
+        ``team`` 是队长的 team 轮次上下文（T1）：替身只跑**队长**的行为（成员由真适配器里的
+        ``TeamPipeline`` 运行，不是本替身的职责），但把它原样记进 ``calls``，于是「每轮按当前
+        成员重建」可以经这个既有接缝观察。
         """
         outcome = self._resolve_outcome(
             agent,
@@ -160,6 +165,7 @@ class ScriptedAgentSeam:
             target_id=target_id,
             task_context=task_context,
             mandatory_reply=mandatory_reply,
+            team=team,
         )
         if emit is not None:
             member_id = str(agent["id"])
@@ -198,6 +204,7 @@ class ScriptedAgentSeam:
         target_id: str,
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
+        team: Any = None,
     ) -> RoundOutcome:
         member_id = str(agent["id"])
         # 接缝的**输入侧**全记下来：prompt 注入（S5）没有 HTTP 可观测面，因此按仓库既有做法
@@ -218,6 +225,7 @@ class ScriptedAgentSeam:
                     "mentioned": mentioned,
                     "task_context": task_context,
                     "mandatory_reply": mandatory_reply,
+                    "team": team,
                     "prompt": prompt,
                     "seqs": [message["seq"] for message in messages],
                     "bodies": [message["body"] for message in messages],

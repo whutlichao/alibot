@@ -274,6 +274,8 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 | `POST /api/channels/{id}/messages` | 发送人类消息 `{body, attachment_ids?}`（同事务分配 seq 并绑定附件，随后唤醒成员面） |
 | `GET /api/channels/{id}/members` | 频道成员 |
 | `POST /api/channels/{id}/members` | 把 Agent 加入频道 `{member_id}`；幂等（`joined` 区分新增与本来就在），只接受 Agent，校验失败**整体不加入** |
+| `GET /api/channels/{id}/config` | 频道配置：`mode`（`autonomous` / `team`）、`team_scope`（固定 `channel+task`）、`team_leader_member_id`、`leader_available` / `leader_reason`、`workspace_root` / `workspace_backend` / `permission_mode` |
+| `PATCH /api/channels/{id}/config` | 写频道配置 `{mode?, team_leader_member_id?, workspace_root?, workspace_backend?, permission_mode?}`；任一字段不合法**整体拒绝**；team 要求队长是当前频道成员且未删除；**不**自动改 `auto_claim` |
 | `GET /api/channels/{id}/round-outcomes` | 轮次结果（只读；首版**没有**可观测页面） |
 | `GET /api/channels/{id}/budget` | 有界响应预算（后端持久事实）：`{epoch_seq, limit, used, remaining, source, pending_limit}`。`limit` = 当前人类世代的**有效上界**（`remaining` 按它算），`source` = `channel-override` / `built-in-default`，`pending_limit` = 已保存、**从下一个人类世代起生效**的上界（无待生效差异时 `null`）。频道覆盖存 `channel_budget_limit`，本世代生效值存 `target_budget.applied_limit` 快照 |
 | `PATCH /api/channels/{id}/budget` | 保存回应预算**上界** `{budget_limit}`，只接受固定档位 `3` / `5` / `10`（默认 3）；其它取值**整体拒绝**、不留半成品。**用量不可写**：请求体带 `used`（或 `remaining` / `epoch_seq` / `applied_limit`）一律整体拒绝。成功返回刷新后的读数（与 `GET` 同形）；当前世代不被回溯改写，新值从**下一个人类世代**生效 |
