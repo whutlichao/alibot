@@ -4,7 +4,7 @@
 **任务线程也只唤醒队长**。既有任务五态保留（owner 与成员的结构化工具维护；队长可分派），但**认领与受派者唤醒
 在 team 模式任务线程中不再是唤醒路径**；`auto_claim` 已按 D16 全关；`TeamAssign` 在任务线程可用并记入运行期分派。
 
-本 ADR 取代 ADR-0022 的旧版本（旧版本按“team 不覆盖 task target、任务线程沿用既有受派者/认领唤醒”写的）。
+本 ADR 取代 ADR-0022 的旧版本（旧版本假定 team 只覆盖 channel target）。
 ADR-0005 / ADR-0010 / ADR-0016 的正文**一字不改**；覆盖与保留关系只在这里、`CONTEXT.md` 的**任务** /
 **任务状态** / **认领** / **唤醒**词条、以及 `app/specs/agentscope-2-alignment.md` 里声明。
 
