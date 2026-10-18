@@ -71,10 +71,11 @@
         <span class="dot" id="reminderDot" hidden></span>
       </button>
       <!-- rail 的**设置入口**（原型 `alibot-app.html:515-518`：紧随提醒的第二枚 `.icon-btn`）。
-           它曾按旧票面字面放在 `.rail-foot` 的「我」那一行（`#103` 起回到 head），
-           图标与 `aria-label` / `title` 沿用原型的「圆 + 八条射线」齿轮。 -->
+           它曾按旧票面字面放在 `.rail-foot` 的「我」那一行（`#103` 起回到 head）。
+           原型 `:515` 的「圆 + 八条射线」在 15px 下读作太阳，本票改为真正的齿轮
+           （设计反馈，2026-10-18）；`aria-label` / `title` 不变。 -->
       <button class="icon-btn" id="btnSettings" type="button" data-od-id="btn-settings" data-i18n-attr="aria-label:settings.open,title:settings.open" aria-label="设置" title="设置">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M19.5 12a7.5 7.5 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L14.6 3h-3.2l-.4 2.6a7.5 7.5 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.5 7.5 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2 1.2l.4 2.6h3.2l.4-2.6a7.5 7.5 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.06-.4.1-.8.1-1.2z"/></svg>
       </button>
     </div>
 
