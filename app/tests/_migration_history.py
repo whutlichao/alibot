@@ -27,9 +27,9 @@ SOURCE_COMMITS: dict[int, str] = {
     12: 'a700d05',
     13: 'pending',  # 尚未落地：v13 由 issue #112 引入，合并后回填该合并提交
     14: 'pending',  # 尚未落地：v14 由 issue #53 引入，合并后回填该合并提交
-    15: 'pending',  # 尚未落地：v15 由 issue #58 引入（round_outcome.status 的 CHECK 重建），合并后回填该合并提交
-    16: 'pending',  # 尚未落地：v16 由 issue #138 引入（team / Plan / SOP 的纯增量形态），合并后回填该合并提交
-    17: 'pending',  # 尚未落地：v17 由 issue #139 引入（workspace / permission / MCP / Skill / approval），合并后回填该合并提交
+    15: '53fdfaa',  # #58 的合并提交（round_outcome.status 的 CHECK 重建）
+    16: 'b63bfb7',  # #138 的合并提交（team / Plan / SOP 的纯增量形态）
+    17: '5763122',  # #139 的合并提交（workspace / permission / MCP / Skill / approval）
 }
 
 OBJECTS: dict[str, str] = {
