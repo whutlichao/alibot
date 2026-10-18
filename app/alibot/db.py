@@ -112,6 +112,20 @@ MESSAGE_KINDS = ("human", "agent", "system")
 # dm / task 由各自的服务路径创建与管理；本表统一承载三种 target 作用域。
 TARGET_KINDS = ("channel", "dm", "task")
 
+# team 模式（D1 / ADR-0018）：频道级拓扑开关。缺省 autonomous；team 必须有一个队长（由库内
+# 触发器守不变量，写入路径在 :meth:`Database.update_channel_config` 再做可读校验）。
+CHANNEL_MODES = ("autonomous", "team")
+
+# 频道级 workspace 默认值（ADR-0021）：``workspace_root`` 可空，后端与权限档是默认值。
+WORKSPACE_BACKENDS = ("local", "docker")
+PERMISSION_MODES = ("read-only", "ask-writes", "trusted-writes")
+
+# team 运行记录的状态词（规格 §4.2）。它不是 ``round_outcome``：只描述一次队长轮次的生命周期。
+TEAM_RUN_STATUSES = ("running", "completed", "failed", "interrupted", "invalid-leader")
+
+# 「这次请求没提到这个字段」与「显式清空」是两件事；只有 ``workspace_root`` 允许后者。
+_UNSET = object()
+
 # 计入工作台快照 ``unread_total`` 的 kind（规格 §2 / 决策 G5）：channel 型 + dm 型之和。
 # **task 型不进** ``unread_total``（看板卡片自带徽标，各自读它）。
 UNREAD_TOTAL_KINDS = ("channel", "dm")
@@ -2571,6 +2585,234 @@ class Database:
                 self._rollback()
                 raise
         return self.get_channel(channel_id, creator_id)
+
+    # ─── 频道配置（team / workspace；人类面唯一写路径是 PATCH config） ─────
+    def get_channel_config(self, channel_id: str) -> dict[str, Any]:
+        """频道配置的库内正本；不存在则 404。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, mode, team_leader_member_id, workspace_root, workspace_backend, "
+                "permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
+        return {
+            "channel_id": row["id"],
+            "mode": row["mode"],
+            "team_leader_member_id": row["team_leader_member_id"],
+            "workspace_root": row["workspace_root"],
+            "workspace_backend": row["workspace_backend"],
+            "permission_mode": row["permission_mode"],
+        }
+
+    def update_channel_config(
+        self,
+        channel_id: str,
+        *,
+        mode: str | None = None,
+        team_leader_member_id: str | None = None,
+        workspace_root: Any = _UNSET,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """写频道配置：**任一字段不合法整体拒绝**（校验先于写入，事务内一次 UPDATE）。
+
+        ``None`` 在这些参数上表示「这次请求没提到它」（与 ``update_agent`` 同一条纪律）；
+        ``workspace_root`` 是唯一允许显式清空的字段（``_UNSET`` 区分「没提到」与「清空」），
+        因为「未配置项目根」本身是一个合法状态（ADR-0021 §六）。
+
+        team 的队长校验（规格 §4.4）：必须是**当前频道成员**里未删除的 Agent。库内触发器还守着
+        「team 不能没有队长」这条不变量；这里先给出可读的字段错误，而不是让 SQL 的 ABORT 文案
+        露给用户。``mode=team`` 作用于该频道 target 与它的全部 task target，写路径不复制任何
+        状态到 task 行（解析在读路径 ``task.channel_id -> channel.mode``）。
+        """
+        current = self.get_channel_config(channel_id)
+        fields: dict[str, str] = {}
+
+        resolved_mode = current["mode"] if mode is None else mode
+        if resolved_mode not in CHANNEL_MODES:
+            fields["mode"] = self._render_copy(
+                "error.field.channel_mode_invalid", values=", ".join(CHANNEL_MODES)
+            )
+        resolved_leader = (
+            current["team_leader_member_id"] if team_leader_member_id is None else team_leader_member_id
+        )
+        leader_error = None
+        if resolved_mode == "team" or team_leader_member_id is not None:
+            leader_error = self._channel_leader_error(
+                channel_id,
+                resolved_leader,
+                require_member=resolved_mode == "team",
+            )
+        if leader_error is not None:
+            fields["team_leader_member_id"] = leader_error
+        if resolved_mode == "team" and not resolved_leader:
+            fields["team_leader_member_id"] = self._render_copy("error.field.channel_leader_required")
+
+        if workspace_backend is not None and workspace_backend not in WORKSPACE_BACKENDS:
+            fields["workspace_backend"] = self._render_copy(
+                "error.field.channel_workspace_backend_invalid",
+                values=", ".join(WORKSPACE_BACKENDS),
+            )
+        if permission_mode is not None and permission_mode not in PERMISSION_MODES:
+            fields["permission_mode"] = self._render_copy(
+                "error.field.channel_permission_mode_invalid",
+                values=", ".join(PERMISSION_MODES),
+            )
+
+        resolved_root: Any
+        if workspace_root is _UNSET:
+            resolved_root = current["workspace_root"]
+        elif workspace_root is None:
+            resolved_root = None
+        else:
+            candidate = str(workspace_root).strip()
+            if not candidate or not os.path.isabs(candidate):
+                fields["workspace_root"] = self._render_copy(
+                    "error.field.channel_workspace_root_not_absolute",
+                    path=candidate or str(workspace_root),
+                )
+            else:
+                resolved_root = candidate
+
+        if fields:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.channel_config_invalid"),
+                fields=fields,
+            )
+
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "UPDATE channel SET mode = ?, team_leader_member_id = ?, workspace_root = ?, "
+                    "workspace_backend = ?, permission_mode = ? WHERE id = ?",
+                    (
+                        resolved_mode,
+                        resolved_leader,
+                        resolved_root,
+                        current["workspace_backend"] if workspace_backend is None else workspace_backend,
+                        current["permission_mode"] if permission_mode is None else permission_mode,
+                        channel_id,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_channel_config(channel_id)
+
+    def _channel_leader_error(
+        self, channel_id: str, leader_member_id: str | None, *, require_member: bool
+    ) -> str | None:
+        """队长的可读校验；返回字段错误文案（通过则 ``None``）。"""
+        if not leader_member_id:
+            return (
+                None
+                if leader_member_id is None
+                else self._render_copy("error.field.channel_leader_unavailable", member_id=leader_member_id)
+            )
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT kind, deleted_at FROM member WHERE id = ?", (leader_member_id,)
+            ).fetchone()
+            if row is None or row["kind"] != "agent" or row["deleted_at"] is not None:
+                return self._render_copy("error.field.channel_leader_unavailable", member_id=leader_member_id)
+            if not require_member:
+                return None
+            member = self._conn.execute(
+                "SELECT 1 FROM target_member WHERE target_id = ? AND member_id = ?",
+                (channel_id, leader_member_id),
+            ).fetchone()
+        if member is None:
+            return self._render_copy("error.field.channel_leader_unavailable", member_id=leader_member_id)
+        return None
+
+    # ─── team 运行记录（ADR-0018 / ADR-0022；不是消息、不进未读/搜索） ─────
+    def create_team_run(
+        self,
+        *,
+        target_id: str,
+        leader_member_id: str,
+        base_seq: int,
+        status: str = "running",
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in TEAM_RUN_STATUSES:
+            raise DomainError("validation_failed", self._render_copy("error.team_run_status_invalid"))
+        self.get_target(target_id)
+        now = started_at or utc_now()
+        team_run_id = new_id("teamrun")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO team_run(id, target_id, leader_member_id, base_seq, status, "
+                    "started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        team_run_id,
+                        target_id,
+                        leader_member_id,
+                        int(base_seq),
+                        status,
+                        now,
+                        finished_at,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_run(team_run_id)
+
+    def finish_team_run(self, team_run_id: str, status: str) -> dict[str, Any]:
+        if status not in TEAM_RUN_STATUSES:
+            raise DomainError("validation_failed", self._render_copy("error.team_run_status_invalid"))
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE team_run SET status = ?, finished_at = ? WHERE id = ?",
+                    (status, utc_now(), team_run_id),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(self._render_copy("error.team_run_not_found", team_run_id=team_run_id))
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_run(team_run_id)
+
+    def get_team_run(self, team_run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM team_run WHERE id = ?", (team_run_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.team_run_not_found", team_run_id=team_run_id))
+        return self._team_run_payload(row)
+
+    def list_team_runs(self, target_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        self.get_target(target_id)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM team_run WHERE target_id = ? ORDER BY started_at DESC, id DESC LIMIT ?",
+                (target_id, int(limit)),
+            ).fetchall()
+        return [self._team_run_payload(row) for row in rows]
+
+    @staticmethod
+    def _team_run_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "target_id": row["target_id"],
+            "leader_member_id": row["leader_member_id"],
+            "base_seq": row["base_seq"],
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+        }
 
     # ─── 消息（作用域键是 **target_id**） ────────────────────────────────
     def list_messages(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:

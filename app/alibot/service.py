@@ -36,6 +36,7 @@ from .db import (
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
+from .team import TEAM_SCOPE
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
@@ -222,6 +223,70 @@ class WorkspaceService:
             name=name, description=description, member_ids=member_ids, creator_id=self._member_id
         )
 
+    # ─── 频道配置（team / workspace；规格 §4.4） ──────────────────────────
+    def channel_config(self, channel_id: str) -> dict[str, Any]:
+        """频道配置读数（含队长的可读可用性）。
+
+        读的是库内正本（``channel.mode`` / ``team_leader_member_id`` / workspace 三列）；队长的
+        ``enabled`` / 凭证 / 成员关系由**编排**按后端事实推导，于是设置页看到的原因与真正唤醒
+        裁决读的是同一份事实（D18 的「配置无效」不是另一套判断）。
+        """
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        config = self._db.get_channel_config(channel_id)
+        return self._channel_config_view(config)
+
+    def update_channel_config(self, channel_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """写频道配置（人类面动作）：**任一字段不合法整体拒绝**。
+
+        它是配置写路径，与 ``PATCH /api/agents/{id}`` 同一纪律：**不落消息、不唤醒、不消耗预算、
+        不开世代**。``mode=team`` 只在读路径生效（覆盖该频道 target 与全部 task target），
+        不复制到 task 行；``auto_claim`` 不在本方法里被改写（D16 是读路径规则）。
+        """
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        allowed = {
+            "mode",
+            "team_leader_member_id",
+            "workspace_root",
+            "workspace_backend",
+            "permission_mode",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise DomainError(
+                "validation_failed",
+                self._locale_copy("error.channel_config_invalid"),
+                fields={
+                    key: self._locale_copy("error.field.channel_config_unknown") for key in sorted(unknown)
+                },
+            )
+        config = self._db.update_channel_config(channel_id, **changes)
+        return self._channel_config_view(config)
+
+    def _locale_copy(self, key: str, **params: Any) -> str:
+        return render(key, self._locale(), **params)
+
+    def _channel_config_view(self, config: dict[str, Any]) -> dict[str, Any]:
+        """配置载荷：库内字段 + 固定 ``team_scope`` + 队长的后端事实。"""
+        if self._orchestrator is not None:
+            availability = self._orchestrator.leader_status(config)
+            leader_available = availability.ok
+            leader_reason = "" if availability.ok else availability.reason
+        else:  # pragma: no cover - 生产装配总有编排；没有时给出最保守的可读事实
+            leader_available = False
+            leader_reason = self._locale_copy("availability.orchestrator_absent")
+        return {
+            "channel_id": config["channel_id"],
+            "mode": config["mode"],
+            # team 覆盖 channel 型 target 与全部 task target（D23=B）；它不是可写字段。
+            "team_scope": TEAM_SCOPE,
+            "team_leader_member_id": config["team_leader_member_id"],
+            "leader_available": leader_available,
+            "leader_reason": leader_reason,
+            "workspace_root": config["workspace_root"],
+            "workspace_backend": config["workspace_backend"],
+            "permission_mode": config["permission_mode"],
+        }
+
     # ─── 任务看板与任务线程 ───────────────────────────────────────────────
     def tasks(self, channel_id: str | None = None) -> list[dict[str, Any]]:
         return self._db.list_tasks(channel_id=channel_id, member_id=self._member_id)
@@ -298,9 +363,13 @@ class WorkspaceService:
             )
         if message is not None and member_id is not None and self._orchestrator is not None:
             if actor["kind"] == "owner":
-                self._orchestrator.notify_task_assignment(task["target_id"], message["seq"], member_id)
+                self._orchestrator.notify_task_assignment(
+                    task["target_id"], message["seq"], member_id, actor_member_id=actor["id"]
+                )
             else:
-                self._orchestrator.notify_task_reassignment(task["target_id"], message["seq"], member_id)
+                self._orchestrator.notify_task_reassignment(
+                    task["target_id"], message["seq"], member_id, actor_member_id=actor["id"]
+                )
         return {"task": task, "message": message}
 
     def channel_messages(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
