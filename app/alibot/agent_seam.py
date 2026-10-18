@@ -24,9 +24,12 @@ import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .i18n import SOURCE_LOCALE, Locale, render
+
+if TYPE_CHECKING:
+    from .team import TeamRoundContext
 
 _log = logging.getLogger(__name__)
 
@@ -489,12 +492,14 @@ class AgentSeam(Protocol):
         target_id: str,
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
+        team: TeamRoundContext | None = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
     ) -> RoundOutcome:
         """跑一轮并（可选地）把框架事件按白名单直播出去。
 
-        ``emit`` 是**同步**回调（编排跑在工作线程），事件仅用于直播、不落库；``emit=None``
-        与 :meth:`run_round` 完全等价。参数语义同 :meth:`run_round`。
+        ``team`` 非空时这是**队长的 team 轮次**：适配器在 ``TeamPipeline`` 里运行队长与成员，
+        ``RoundOutcome`` 仍只描述队长（成员结论是分派结果，不是频道轮次）。``emit=None`` 时
+        与单 Agent 轮次一样只返回结论。其它参数语义同 :meth:`run_round`。
         """
         ...
 
@@ -675,14 +680,29 @@ class AgentScopeAgentSeam:
         target_id: str,
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
+        team: TeamRoundContext | None = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
     ) -> RoundOutcome:
-        """流式一轮：消费 ``Agent.reply_stream``，按白名单直播归属完整的事件。
+        """流式一轮：消费 ``Agent.reply_stream`` / ``TeamPipeline.reply_stream``。
 
         有 ``emit`` 时才打开模型流式（否则 provider 请求形状与 ``run_round`` 的既有形态一致）。
         事件只是观察面：回调失败只记 debug，不改写本轮结论；``RoundOutcome`` 仍只由最终 ``Msg``
         与结构化工具记录决定，事件也不落库。
+
+        ``team`` 非空时走队长轮次：同一轮里按 ``TeamContext`` 的成员快照重建 ``TeamPipeline``
+        （D11），队长与成员的事件都按 D10 派生名归属后直播；队长最终回复才是本轮的结论。
         """
+        if team is not None:
+            return self._run_team_round_stream(
+                agent,
+                messages,
+                mentioned=mentioned,
+                target_id=target_id,
+                task_context=task_context,
+                mandatory_reply=mandatory_reply,
+                team=team,
+                emit=emit,
+            )
         import asyncio
 
         provider = provider_of(str(agent.get("model_id") or ""))
@@ -919,6 +939,197 @@ class AgentScopeAgentSeam:
                 ),
             )
 
+        return self._outcome_from_reply(reply, task_actions, silence_declarations)
+
+    def _run_team_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None,
+        mandatory_reply: bool,
+        team: TeamRoundContext,
+        emit: Callable[[AgentEventRecord], None] | None,
+    ) -> RoundOutcome:
+        """队长轮次：按这一轮的成员快照重建 ``TeamPipeline`` 并消费它的事件流。
+
+        - **D11**：pipeline 在每次调用里重建，成员来自 ``team.members``（编排每轮从库里读）；
+          进程不缓存成员表。
+        - **D10**：队长与成员都用 ``m-<member id>`` 作为框架内部名；``display_name`` 只进工具
+          描述，因此重名不会撞名。事件归属表同时含队长与成员。
+        - **D2**：只有队长的最终回复进入本轮的 ``RoundOutcome``；成员结论是队长看到的
+          ``ToolResult``，不落 target 消息。
+        """
+        import asyncio
+
+        from .team import build_team_pipeline, member_internal_name
+
+        provider = provider_of(str(agent.get("model_id") or ""))
+        system_prompt = _system_prompt(
+            agent,
+            mentioned=mentioned,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+            structured_silence=supports_tool_calling(provider),
+        )
+        task_actions: list[AgentTaskAction] = []
+        silence_declarations: list[None] = []
+        member_id = str(agent["id"])
+        names = dict(team.name_to_member)
+        names.setdefault(member_internal_name(member_id), member_id)
+        reply_members: dict[str, str] = {}
+
+        async def _round() -> Any:
+            from agentscope.agent import Agent
+            from agentscope.message import UserMsg
+
+            from .workspace import assemble_local_workspace, session_partition_id
+
+            models: list[Any] = []
+            mounts: list[Any] = []
+
+            async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
+                """这一轮该成员的项目根工具（未配置 / 非 local 后端时没有；ADR-0021 §六）。"""
+                settings = self._workspace_settings(target_id, member_id_value)
+                if settings is None:
+                    return None
+                mount = await assemble_local_workspace(
+                    settings,
+                    member_id=member_id_value,
+                    session_id=session_partition_id(member_id_value, target_id),
+                )
+                mounts.append(mount)
+                return mount.tools
+
+            def _build_agent(
+                member: dict[str, Any],
+                prompt: str,
+                *,
+                toolkit: Any = None,
+                stream: bool = False,
+            ) -> Any:
+                member_provider = provider_of(str(member.get("model_id") or ""))
+                member_model = model_name_of(str(member.get("model_id") or ""))
+                model = self._build_model(member_provider, member_model, stream=stream)
+                models.append(model)
+                options: dict[str, Any] = {
+                    "name": member_internal_name(str(member["id"])),
+                    "system_prompt": prompt,
+                    "model": model,
+                }
+                if toolkit is not None:
+                    options["toolkit"] = toolkit
+                return Agent(**options)
+
+            try:
+                leader_toolkit = _round_toolkit(
+                    provider,
+                    task_context=task_context,
+                    actor_id=member_id,
+                    task_actions=task_actions,
+                    silence_declarations=silence_declarations,
+                    workspace_tools=await _workspace_tools_for(member_id),
+                )
+                leader_agent = _build_agent(
+                    agent,
+                    system_prompt,
+                    toolkit=leader_toolkit,
+                    stream=emit is not None,
+                )
+                member_agents: list[tuple[dict[str, Any], Any]] = []
+                for member in team.members:
+                    member_id_value = str(member["id"])
+                    workspace_tools = await _workspace_tools_for(member_id_value)
+                    member_agents.append(
+                        (
+                            member,
+                            _build_agent(
+                                member,
+                                _team_member_prompt(member),
+                                # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
+                                # 只有配置了项目根时成员才挂工具集（含受限文件工具）。
+                                toolkit=(
+                                    _round_toolkit(
+                                        provider_of(str(member.get("model_id") or "")),
+                                        task_context=None,
+                                        actor_id=member_id_value,
+                                        task_actions=[],
+                                        silence_declarations=[],
+                                        workspace_tools=workspace_tools,
+                                    )
+                                    if workspace_tools
+                                    else None
+                                ),
+                            ),
+                        )
+                    )
+                pipeline = build_team_pipeline(
+                    leader_agent=leader_agent,
+                    leader_id=member_id,
+                    members=member_agents,
+                    target_id=target_id,
+                    task_id=team.task_id,
+                )
+                inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
+
+                async def _consume() -> Any:
+                    async for item in pipeline.reply_stream(inputs if inputs else None):
+                        if emit is None:
+                            continue
+                        record = _agent_event_record(
+                            item,
+                            target_id=target_id,
+                            names=names,
+                            reply_members=reply_members,
+                        )
+                        if record is None:
+                            continue
+                        try:
+                            emit(record)
+                        except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
+                            _log.debug("agent event emit failed", exc_info=True)
+                    return _final_reply_message(leader_agent)
+
+                return await asyncio.wait_for(_consume(), timeout=self.timeout_seconds)
+            finally:
+                for mount in mounts:
+                    await mount.workspace.close()
+                for model in models:
+                    await _aclose_model_client(model)
+
+        try:
+            reply = asyncio.run(_round())
+        except TimeoutError:
+            return RoundOutcome(
+                status="failed",
+                reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
+            )
+        except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
+            return RoundOutcome(
+                status="failed",
+                reason=render(
+                    "seam.call_failed",
+                    self._locale(),
+                    type=type(error).__name__,
+                    error=error,
+                ),
+            )
+        if reply is None:
+            return RoundOutcome(
+                status="failed",
+                reason=render("seam.team_no_leader_reply", self._locale()),
+            )
+        return self._outcome_from_reply(reply, task_actions, silence_declarations)
+
+    def _outcome_from_reply(
+        self,
+        reply: Any,
+        task_actions: list[AgentTaskAction],
+        silence_declarations: list[None],
+    ) -> RoundOutcome:
+        """把最终 ``Msg`` 与结构化工具记录收口成一轮的结论（单 Agent / 队长共用）。"""
         reply_error = getattr(reply, "error", None)
         if reply_error:
             return RoundOutcome(
@@ -955,6 +1166,31 @@ class AgentScopeAgentSeam:
             messages=[RoundMessage(body=text)],
             task_action=task_action,
         )
+
+
+def _team_member_prompt(member: Mapping[str, Any]) -> str:
+    """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。"""
+    parts: list[str] = []
+    base = str(member.get("system_prompt") or "").strip()
+    if base:
+        parts.append(base)
+    role = str(member.get("role") or "").strip()
+    if role:
+        parts.append(f"你的角色：{role}")
+    parts.append(
+        "你是团队频道里的成员。队长会把一项具体任务分派给你；你看不到频道上下文，"
+        "任务描述就是全部输入。请直接完成并在正文里给出结果。"
+    )
+    return "\n\n".join(parts)
+
+
+def _final_reply_message(agent: Any) -> Any:
+    """队长这一轮的最终回复：``TeamPipeline`` 不返回 ``Msg``，它留在 Agent 的上下文尾部。"""
+    context = getattr(getattr(agent, "state", None), "context", None) or []
+    for message in reversed(context):
+        if getattr(message, "role", "") == "assistant" and getattr(message, "name", "") == agent.name:
+            return message
+    return None
 
 
 def _client_closer(client: Any) -> Any:

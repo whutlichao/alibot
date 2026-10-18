@@ -17,6 +17,8 @@
 - ``POST /api/channels/{id}/messages``        发送人类消息（同事务分配频道内单调 seq）
 - ``GET  /api/channels/{id}/members``         频道成员
 - ``POST /api/channels/{id}/members``         把 Agent 成员加入频道（幂等，只接受 Agent）
+- ``GET  /api/channels/{id}/config``          频道配置（mode / team_scope / 队长 / workspace / 权限）
+- ``PATCH /api/channels/{id}/config``         写频道配置（team 需合法队长；任一字段不合法整体拒绝）
 - ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
 - ``GET  /api/channels/{id}/budget``          有界响应预算的读数（当前世代 + 来源 + 待生效值）
 - ``PATCH /api/channels/{id}/budget``         保存回应预算**上界**（固定档位 3 / 5 / 10；用量不可写）
@@ -239,6 +241,33 @@ class ChannelMemberAdd(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     member_id: str = ""
+
+
+class ChannelConfigUpdate(BaseModel):
+    """频道配置的**部分**更新（规格 §4.4 / ADR-0018 / ADR-0021）。
+
+    未知键由 ``extra="forbid"`` 整体拒绝；字段缺省 = 这次请求没提到它（保持原值）。
+    ``workspace_root`` 是唯一允许显式 ``null`` 的字段（``null`` = 清空项目根，即回到「未配置」
+    的既有默认行为）；其余字段的显式 ``null`` 既不是合法取值、也不是「没提到」，整体拒绝。
+
+    ``team_scope`` 是只读事实（固定 ``channel+task``），不在可写字段里：提交它会被
+    ``extra="forbid"`` 拒绝，而不是被静默忽略。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str | None = None
+    team_leader_member_id: str | None = None
+    workspace_root: str | None = None
+    workspace_backend: str | None = None
+    permission_mode: str | None = None
+
+    @field_validator("mode", "team_leader_member_id", "workspace_backend", "permission_mode", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise _TierValueError("error.field.channel_config_field_null")
+        return value
 
 
 class MarkRead(BaseModel):
@@ -820,6 +849,24 @@ def create_app(
     @app.get("/api/channels/{channel_id}/members")
     def list_channel_members(channel_id: str) -> dict[str, Any]:
         return {"members": service.channel_members(channel_id)}
+
+    @app.get("/api/channels/{channel_id}/config")
+    def get_channel_config(channel_id: str) -> dict[str, Any]:
+        """频道配置：mode / ``team_scope=channel+task`` / 队长 / workspace / 权限档。
+
+        ``leader_available`` / ``leader_reason`` 与唤醒裁决读**同一个**后端事实（D18）：队长被停用
+        或删除时设置页给出可读原因，频道消息照常落库但不唤醒任何人，不回落 autonomous。
+        """
+        return {"config": service.channel_config(channel_id)}
+
+    @app.patch("/api/channels/{channel_id}/config")
+    def update_channel_config(channel_id: str, payload: ChannelConfigUpdate) -> dict[str, Any]:
+        """写频道配置（人类面动作）：任一字段不合法**整体拒绝**、不留下半成品。
+
+        ``mode=team`` 要求队长是当前频道成员且非 deleted；它同时覆盖该频道 target 与全部 task
+        target（读路径解析，不复制到 task 行）。本端点**不**改 ``auto_claim``（D16 是读路径规则）。
+        """
+        return {"config": service.update_channel_config(channel_id, payload.model_dump(exclude_unset=True))}
 
     @app.post("/api/channels/{channel_id}/members")
     def add_channel_member(channel_id: str, payload: ChannelMemberAdd) -> dict[str, Any]:

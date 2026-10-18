@@ -164,6 +164,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "availability.credential_unreadable": "无法解析 {provider} 的凭证：{type}: {error}",
         # ─── 适配层的一轮结论 ────────────────────────────────────────────
         "seam.timeout": "模型调用超时（{seconds} 秒）",
+        "seam.team_no_leader_reply": "team 轮次结束时队长没有产出最终回复",
         "seam.call_failed": "模型调用失败：{type}: {error}",
         "seam.reply_error": "模型返回错误：{error}",
         "seam.task_action_only": "模型通过任务工具提交了结构化动作",
@@ -245,6 +246,22 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.channel_name_too_long": "频道名称最多 {limit} 个字符",
         "error.field.channel_description_too_long": "频道描述最多 {limit} 个字符",
         "error.channel_invalid": "频道校验未通过，未创建任何数据",
+        # ─── 频道配置（team / workspace；#142 / ADR-0018 / ADR-0021） ─────
+        "error.channel_config_invalid": "频道配置校验未通过，未改动任何字段",
+        "error.field.channel_config_field_null": "该配置字段不能为 null（要保留原值请省略该字段）",
+        "error.field.channel_config_unknown": "未知的频道配置字段",
+        "error.field.channel_mode_invalid": "频道模式只能是这些之一：{values}",
+        "error.field.channel_leader_required": "team 模式必须指定一个队长",
+        "error.field.channel_leader_unavailable": "队长必须是该频道里未删除的 Agent：{member_id}",
+        "error.field.channel_workspace_backend_invalid": "工作区后端只能是这些之一：{values}",
+        "error.field.channel_permission_mode_invalid": "权限档只能是这些之一：{values}",
+        "error.field.channel_workspace_root_not_absolute": "项目根必须是绝对路径：{path}",
+        "error.team_run_status_invalid": "team 运行状态非法",
+        "error.team_run_not_found": "team 运行不存在：{team_run_id}",
+        "team.leader_missing": "该频道未设置队长",
+        "team.leader_deleted": "队长已被删除：{member_id}",
+        "team.leader_disabled": "队长已停用：{member_id}",
+        "team.leader_not_member": "队长不是该频道的成员：{member_id}",
         "error.unknown_message_kind": "未知的消息类型：{kind}",
         "error.field.message_kind_invalid": "消息类型非法",
         "error.message_body_empty": "消息正文不能为空",
@@ -432,6 +449,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         # ─── 适配层的一轮结论 ────────────────────────────────────────────
         "seam.timeout": "Model call timed out ({seconds} seconds)",
+        "seam.team_no_leader_reply": "The team round ended without a final reply from the leader",
         "seam.call_failed": "Model call failed: {type}: {error}",
         "seam.reply_error": "The model returned an error: {error}",
         "seam.task_action_only": "The model submitted a structured action through the task tool",
@@ -523,6 +541,28 @@ CATALOGS: dict[str, dict[str, str]] = {
             "The channel description is limited to {limit} characters"
         ),
         "error.channel_invalid": "Channel validation failed; nothing was created",
+        # Channel config (team / workspace; #142 / ADR-0018 / ADR-0021).
+        "error.channel_config_invalid": ("Channel configuration validation failed; no field was changed"),
+        "error.field.channel_config_field_null": (
+            "This configuration field cannot be null (omit it to keep the current value)"
+        ),
+        "error.field.channel_config_unknown": "Unknown channel configuration field",
+        "error.field.channel_mode_invalid": "The channel mode must be one of: {values}",
+        "error.field.channel_leader_required": "team mode requires a leader",
+        "error.field.channel_leader_unavailable": (
+            "The leader must be an undeleted Agent in this channel: {member_id}"
+        ),
+        "error.field.channel_workspace_backend_invalid": ("The workspace backend must be one of: {values}"),
+        "error.field.channel_permission_mode_invalid": ("The permission mode must be one of: {values}"),
+        "error.field.channel_workspace_root_not_absolute": (
+            "The project root must be an absolute path: {path}"
+        ),
+        "error.team_run_status_invalid": "Invalid team-run status",
+        "error.team_run_not_found": "No such team run: {team_run_id}",
+        "team.leader_missing": "This channel has no leader configured",
+        "team.leader_deleted": "The leader was deleted: {member_id}",
+        "team.leader_disabled": "The leader is disabled: {member_id}",
+        "team.leader_not_member": "The leader is not a member of this channel: {member_id}",
         "error.unknown_message_kind": "Unknown message kind: {kind}",
         "error.field.message_kind_invalid": "Invalid message kind",
         "error.message_body_empty": "The message body cannot be empty",

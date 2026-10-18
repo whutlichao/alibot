@@ -58,6 +58,7 @@ from .events import EventBus, agent_event
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
 from .service import WorkspaceService, remote_data_faces
+from .team import TeamRoundContext
 
 # 状态点四态（spec #1 §3）：只表达后端事实，不从任何会话存活推导。
 STATUS_ONLINE = "online"
@@ -215,6 +216,11 @@ class WakeOrchestrator:
         if message["kind"] == "system":
             return 0
 
+        # team 模式（D1 / D23=B）：该频道 target 与它全部 task target 只唤醒队长。
+        team = self._team_config(target_id, target)
+        if team is not None:
+            return self._notify_team(target_id, from_seq, message, team, reason)
+
         # DM 成员关系固定为 owner + 单一 Agent：Agent 回复与其正文提及都不产生唤醒。
         if target["kind"] == "dm" and author_kind == "agent":
             return 0
@@ -257,13 +263,24 @@ class WakeOrchestrator:
         member_id: str,
         *,
         reason: str = WAKE_REASON_CHANNEL_MESSAGE,
+        actor_member_id: str | None = None,
     ) -> int:
         """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。
 
         ``reason`` 缺省是普通消息唤醒——owner 手动改派走这个缺省值，因此那一轮维持既有纪律；
         **认领**由编排传入 ``WAKE_REASON_CLAIM``，它算出的 ``mandatory_reply`` 才是 True。
+
+        ``actor_member_id`` 是改派的发起者（owner 或 Agent）。team 模式只唤醒队长，并且
+        **actor 就是队长时零唤醒**（D23=B）；system 记录的作者恒为 owner，因此不能从消息反推。
         """
-        return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=False, reason=reason)
+        return self._notify_task_assignee(
+            target_id,
+            from_seq,
+            member_id,
+            agent_jump=False,
+            reason=reason,
+            actor_member_id=actor_member_id,
+        )
 
     def claim_new_task(self, task_id: str, channel_id: str) -> int:
         """新建任务后由**编排**裁决认领（`CONTEXT.md` **认领** / ADR-0010）；返回是否认领（0 / 1）。
@@ -279,6 +296,9 @@ class WakeOrchestrator:
         """
         task = self._db.get_task(task_id)
         if task["assignee_member_id"] is not None or task["claimed_at"] is not None:
+            return 0
+        # team 模式下认领不再是一条唤醒路径（D16 / D23=B）：创建立即停在 todo，不替任何人接手。
+        if self._db.get_channel_config(channel_id)["mode"] == "team":
             return 0
         claimant = next(
             (
@@ -308,9 +328,25 @@ class WakeOrchestrator:
         )
         return 1
 
-    def notify_task_reassignment(self, target_id: str, from_seq: int, member_id: str) -> int:
-        """Agent 转派按一次有界 agent→agent 跳处理；预算耗尽时保留记录但不唤醒。"""
-        return self._notify_task_assignee(target_id, from_seq, member_id, agent_jump=True)
+    def notify_task_reassignment(
+        self,
+        target_id: str,
+        from_seq: int,
+        member_id: str,
+        *,
+        actor_member_id: str | None = None,
+    ) -> int:
+        """Agent 转派按一次有界 agent→agent 跳处理；预算耗尽时保留记录但不唤醒。
+
+        team 模式下唤醒对象是队长；``actor_member_id`` 是队长时零唤醒（不自我唤醒）。
+        """
+        return self._notify_task_assignee(
+            target_id,
+            from_seq,
+            member_id,
+            agent_jump=True,
+            actor_member_id=actor_member_id,
+        )
 
     def _notify_task_assignee(
         self,
@@ -320,6 +356,7 @@ class WakeOrchestrator:
         *,
         agent_jump: bool,
         reason: str = WAKE_REASON_CHANNEL_MESSAGE,
+        actor_member_id: str | None = None,
     ) -> int:
         """验证任务指派事件、按动作预算裁决后唤醒新受派 Agent。
 
@@ -332,6 +369,15 @@ class WakeOrchestrator:
         message = self._db.get_message(target_id, from_seq)
         if message["kind"] != "system":
             return 0
+        team = self._team_config(target_id, target)
+        if team is not None:
+            return self._notify_team_task_assignee(
+                target_id,
+                from_seq,
+                team,
+                agent_jump=agent_jump,
+                actor_member_id=actor_member_id,
+            )
         assignee = next(
             (agent for agent in self._db.list_target_agent_members(target_id) if agent["id"] == member_id),
             None,
@@ -351,6 +397,187 @@ class WakeOrchestrator:
             reason == WAKE_REASON_CLAIM,
         )
         return 1
+
+    # ─── team 模式（D1 / D18 / D23=B） ────────────────────────────────────
+    def _team_config(self, target_id: str, target: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """解析该 target 的 team 配置；不是 team 频道（或 DM）时返回 ``None``。
+
+        task target **没有**自己的 mode 列：它经 ``task.channel_id -> channel.mode`` 解析
+        （ADR-0022 §一）。DM 恒为 autonomous（D1）。
+        """
+        target = target if target is not None else self._db.get_target(target_id)
+        if target["kind"] == "dm":
+            return None
+        task: dict[str, Any] | None = None
+        if target["kind"] == "task":
+            task = self._db.task_for_target(target_id)
+            if task is None:
+                return None
+            channel_id = str(task["channel_id"])
+        elif target["kind"] == "channel":
+            channel_id = target_id
+        else:  # pragma: no cover - TARGET_KINDS 是封闭集合
+            return None
+        config = self._db.get_channel_config(channel_id)
+        if config["mode"] != "team":
+            return None
+        return {
+            **config,
+            "target_id": target_id,
+            "target_kind": target["kind"],
+            "task_id": None if task is None else str(task["id"]),
+        }
+
+    def leader_status(self, config: dict[str, Any]) -> Availability:
+        """队长的可读可用性（D18）：不存在 / 已删除 / 已停用 / 不是成员 / 不可运行。
+
+        设置页的 ``leader_available`` / ``leader_reason`` 与唤醒裁决读的是这**同一个**方法：
+        「配置无效」于是不可能在两个面上给出不同结论。
+        """
+        locale = self._locale()
+        leader_id = config.get("team_leader_member_id")
+        channel_id = str(config.get("channel_id") or "")
+        if not leader_id:
+            return Availability(False, render("team.leader_missing", locale))
+        try:
+            agent = self._db.get_agent(str(leader_id))
+        except Exception:
+            return Availability(False, render("team.leader_deleted", locale, member_id=str(leader_id)))
+        if agent.get("deleted_at"):
+            return Availability(False, render("team.leader_deleted", locale, member_id=str(leader_id)))
+        if not agent.get("enabled", True):
+            return Availability(False, render("team.leader_disabled", locale, member_id=str(leader_id)))
+        try:
+            is_member = self._db.is_target_member(channel_id, str(leader_id))
+        except Exception:
+            is_member = False
+        if not is_member:
+            return Availability(False, render("team.leader_not_member", locale, member_id=str(leader_id)))
+        return self.availability(agent)
+
+    def _notify_team(
+        self,
+        target_id: str,
+        from_seq: int,
+        message: dict[str, Any],
+        team: dict[str, Any],
+        reason: str = WAKE_REASON_CHANNEL_MESSAGE,
+    ) -> int:
+        """team 模式下的唤醒集合：队长（channel 另加穿透候选；task 不穿透）。
+
+        运行矩阵（规格 §3.3）逐条落在这里：channel 的人类消息只唤醒队长、Agent 消息零唤醒；
+        task 的人类/非队长 Agent 消息只唤醒队长；队长自己的消息零唤醒；system 不在对话回合内。
+        """
+        author_id = str(message["author"]["id"])
+        author_kind = str(message["author"]["kind"])
+        status = self.leader_status(team)
+        if not status.ok:
+            self._record_invalid_leader(team, from_seq)
+            return 0
+        leader_id = str(team["team_leader_member_id"])
+        leader = self._db.get_agent(leader_id)
+        mentions = set(mentioned_member_ids(message["mention_snapshot"]))
+        targets: list[_WakeTarget] = []
+
+        if team["target_kind"] == "channel":
+            # D2：队长自己的最终回复不再唤醒任何成员（含穿透）。
+            if message["kind"] != "human":
+                return 0
+            if leader_id != author_id:
+                targets.append(_WakeTarget(member=leader))
+            # D17：穿透仍是一次性送达，但不进入 pipeline（成员集合不再被唤醒）。
+            seen = {leader_id, author_id} | {
+                str(member["id"]) for member in self._db.list_target_agent_members(team["channel_id"])
+            }
+            for member_id in mentions:
+                if member_id in seen:
+                    continue
+                agent = self._pierce_target(member_id)
+                if agent is None:
+                    continue
+                targets.append(_WakeTarget(member=agent, pierced=True))
+                seen.add(member_id)
+        else:  # task：只唤醒队长，不做穿透
+            if message["kind"] == "human":
+                if leader_id != author_id:
+                    targets.append(_WakeTarget(member=leader))
+            elif author_kind == "agent":
+                # 队长自己的最终回复零唤醒；非队长 Agent 的任务消息只唤醒队长（不穿透）。
+                if author_id == leader_id:
+                    return 0
+                targets.append(_WakeTarget(member=leader))
+            else:
+                return 0
+
+        if not targets:
+            return 0
+        jump_delivered = author_kind == "agent" and team["target_kind"] != "dm"
+        if jump_delivered and not self._spend_jump(
+            target_id, from_seq, [target.member for target in targets]
+        ):
+            return 0
+        for wake_target in targets:
+            member = wake_target.member
+            member_reason = WAKE_REASON_MENTION if member["id"] in mentions else reason
+            self._scheduler.submit(
+                self.run_round,
+                member,
+                target_id,
+                from_seq,
+                member_reason,
+                jump_delivered,
+                wake_target.pierced,
+            )
+        return len(targets)
+
+    def _notify_team_task_assignee(
+        self,
+        target_id: str,
+        from_seq: int,
+        team: dict[str, Any],
+        *,
+        agent_jump: bool,
+        actor_member_id: str | None,
+    ) -> int:
+        """team 任务线程的改派/转派：唤醒**队长**，不唤醒新受派者（ADR-0005 收窄）。"""
+        status = self.leader_status(team)
+        if not status.ok:
+            self._record_invalid_leader(team, from_seq)
+            return 0
+        leader_id = str(team["team_leader_member_id"])
+        if actor_member_id == leader_id:
+            return 0
+        leader = self._db.get_agent(leader_id)
+        if agent_jump and not self._spend_jump(target_id, from_seq, [leader]):
+            return 0
+        self._scheduler.submit(
+            self.run_round,
+            leader,
+            target_id,
+            from_seq,
+            WAKE_REASON_CHANNEL_MESSAGE,
+            agent_jump,
+            False,
+        )
+        return 1
+
+    def _record_invalid_leader(self, team: dict[str, Any], from_seq: int) -> None:
+        """队长不可用 ⇒ 零唤醒，并留下一条 ``invalid-leader`` 运行记录（D18）。
+
+        可读原因由 ``GET /api/channels/{id}/config`` 的 ``leader_reason`` 给出；运行记录本身
+        没有 reason 列（规格 §4.2），它只回答「这一轮为什么没跑」。
+        """
+        leader_id = team.get("team_leader_member_id")
+        if not leader_id:
+            return
+        with suppress(Exception):
+            self._db.create_team_run(
+                target_id=str(team["target_id"]),
+                leader_member_id=str(leader_id),
+                base_seq=int(from_seq),
+                status="invalid-leader",
+                finished_at=utc_now(),
+            )
 
     def _wake_targets(self, target_id: str, author_id: str, message: dict[str, Any]) -> list[_WakeTarget]:
         """唤醒面 = **该 target** 的 agent 成员（除作者）+ 被点名但**未加入**该 target 的 Agent（穿透）。
@@ -525,14 +752,31 @@ class WakeOrchestrator:
                 outcome = RoundOutcome(status="failed", reason=availability.reason)
             else:
                 task_context = self._task_action_context(target_id)
-                outcome = self._run_seam(
-                    agent,
-                    pending,
-                    mentioned=mentioned,
-                    target_id=target_id,
-                    task_context=task_context,
-                    mandatory_reply=mandatory_reply,
-                )
+                team_context = self._team_round_context(target_id, agent)
+                team_run_id: str | None = None
+                if team_context is not None:
+                    team_run = self._db.create_team_run(
+                        target_id=target_id,
+                        leader_member_id=member_id,
+                        base_seq=base_seq,
+                    )
+                    team_run_id = str(team_run["id"])
+                team_status = "failed"
+                try:
+                    outcome = self._run_seam(
+                        agent,
+                        pending,
+                        mentioned=mentioned,
+                        target_id=target_id,
+                        task_context=task_context,
+                        mandatory_reply=mandatory_reply,
+                        team=team_context,
+                    )
+                    team_status = "completed" if outcome.status != "failed" else "failed"
+                finally:
+                    if team_run_id is not None:
+                        with suppress(Exception):
+                            self._db.finish_team_run(team_run_id, team_status)
                 # rubric：**确定信号**有两条（被个人提及 / 被认领唤醒），两条**同级**、**同一套判据、同一处落点**。
                 # 认领那一侧用 ``mandatory_reply`` 判定（不读 reason：重复唤醒会被合并，原因见 run_round
                 # docstring）；提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把「它坏了」当成「它不想说」）。
@@ -758,6 +1002,27 @@ class WakeOrchestrator:
             status=str(task["status"]),
         )
 
+    def _team_round_context(self, target_id: str, agent: dict[str, Any]) -> TeamRoundContext | None:
+        """队长轮次的 team 上下文；非 team target 或非队长时返回 ``None``。
+
+        **每轮**从库里读当前频道成员（D11）：加入/移除从下一轮生效，不需要重启进程。
+        不可运行的成员不进入 pipeline（它们无法被 ``TeamAssign`` 真正执行）。
+        """
+        team = self._team_config(target_id)
+        if team is None or str(team["team_leader_member_id"]) != str(agent["id"]):
+            return None
+        members = tuple(
+            member
+            for member in self._db.list_target_agent_members(str(team["channel_id"]))
+            if str(member["id"]) != str(agent["id"]) and self.availability(member).ok
+        )
+        return TeamRoundContext(
+            target_id=target_id,
+            leader_id=str(agent["id"]),
+            members=members,
+            task_id=team["task_id"],
+        )
+
     def _run_seam(
         self,
         agent: dict[str, Any],
@@ -767,6 +1032,7 @@ class WakeOrchestrator:
         target_id: str,
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
+        team: TeamRoundContext | None = None,
     ) -> RoundOutcome:
         def emit(record: Any) -> None:
             # 事件只直播、不落库（ADR-0020）；emit 在编排的工作线程里同步调用，
@@ -781,6 +1047,7 @@ class WakeOrchestrator:
                 target_id=target_id,
                 task_context=task_context,
                 mandatory_reply=mandatory_reply,
+                team=team,
                 emit=emit,
             )
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
