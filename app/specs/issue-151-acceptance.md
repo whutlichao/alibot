@@ -120,9 +120,10 @@ scripts/check.sh
 门禁全绿
 ```
 
-同一轮里：`ruff check` 全通过、`ruff format --check` 85 个 Python 文件已格式化、
-`mypy` 85 个源文件无问题、`pyright` 0 errors / 0 warnings；Node 用例
-`tests 136 / pass 136 / fail 0`。退出码 0（`scripts/check.sh` 末行即「门禁全绿」）。
+合并集成分支最新 tip（`acc0d12`）后重跑同一入口：`ruff check` 全通过、
+`ruff format --check` 85 个 Python 文件已格式化、`mypy` 85 个源文件无问题、
+`pyright` 0 errors / 0 warnings；Node 用例 `tests 145 / pass 145 / fail 0`。
+退出码 0（`scripts/check.sh` 末行即「门禁全绿」）。
 
 ## 已知残余
 
