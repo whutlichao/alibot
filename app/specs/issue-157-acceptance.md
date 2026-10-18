@@ -257,11 +257,28 @@ v17 = 39。
 
 ```console
 $ ./scripts/check.sh
-...
+== pytest（全量）
+827 passed, 9 skipped in 359.28s (0:05:59)
+== ruff check
+All checks passed!
+== ruff format --check（只检查；不要跑 ruff format，它会整文件重排）
+207 files already formatted
+== mypy（仓库根）
+Success: no issues found in 89 source files
+== pyright
+0 errors, 0 warnings, 0 informations
+== node --test（Studio DOM 用例族：glob，新增文件自动纳入）
+ℹ tests 164
+ℹ pass 164
+ℹ fail 0
+
 门禁全绿
+$ echo $?
+0
 ```
 
-（读数见下方「门禁输出」一节。）
+（分支基线即集成 tip `0dd50f9`；`git merge --no-ff agentscope2-integration` 返回 `Already up to date`。
+退出码 `0`。）
 
 ## 演练中的观察（不阻塞本票）
 
