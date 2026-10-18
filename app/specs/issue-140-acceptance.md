@@ -143,7 +143,7 @@ cd app && ../.venv/bin/python -m pytest tests/test_agent_event_stream.py -k "mat
 scripts/check.sh
 # pytest（全量）：659 passed, 2 skipped
 # ruff check：All checks passed
-# ruff format --check：146 files already formatted
+# ruff format --check：148 files already formatted
 # mypy：Success: no issues found in 62 source files
 # pyright：0 errors, 0 warnings, 0 informations
 # node --test（Studio DOM 用例族）：全部通过
