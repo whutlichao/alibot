@@ -52,7 +52,7 @@ AgentScope 的 `LocalBackend` 用主机进程执行 Bash；`cwd=workdir` **不�
 不暴露 `BYPASS`（完全跳过安全审批）与 `DONT_ASK`（把 ASK 变成 DENY）；用户规则可以是 allow/deny/ask，
 但“默认无审批”不是一档产品能力。
 
-HITL：`RequireUserConfirmEvent` → `approval_request`（pending）→ SSE `approval_required` → 人类面
+HITL（D19 为第二轮推荐默认，待确认）：`RequireUserConfirmEvent` → `approval_request`（pending）→ SSE `approval_required` → 人类面
 `POST /api/approvals/{reply_id}` → `ApprovalBroker` 唤醒该轮 → `UserConfirmResultEvent` 回到 Agent/TeamPipeline。
 默认等待 10 分钟；超时 `failed`；进程重启把 pending 标 `expired`，该轮 `failed`。跨重启恢复不在首版（D19）。
 
