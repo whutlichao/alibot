@@ -36,6 +36,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +63,8 @@ from tests.scripted import ScriptedAgentSeam
 APP_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PRICE_SNAPSHOT = APP_DIR / "specs" / "issue-55-model-prices-2026-10-18.json"
 REMOTE_OPT_IN_ENV = "ALIBOT_MEASURE_ALLOW_REMOTE"
+# dry-run 的占位凭证：只在替身路径、且宿主环境缺该变量时临时填入；不是任何真实密钥。
+SCRIPTED_REMOTE_CREDENTIAL = "scripted-double-not-a-real-credential"
 PRICE_UNIT = "per_1m_tokens"
 
 # 2026-10-18 在仓库 `.venv`（agentscope==2.0.10）里核验到的框架默认值。它们不是产品配置；
@@ -1134,9 +1138,35 @@ def _requires_remote_opt_in(config: RunConfig) -> None:
     assert config.prices is not None, "真实测量必须有价格快照"
 
 
+@contextmanager
+def _scripted_credentials(model_id: str) -> Iterator[None]:
+    """dry-run 的凭证占位：编排仍要求远端 provider「有凭证」才让成员可用。
+
+    替身路径不读凭证、也不联网；这里只在进程环境缺少该 provider 的变量时临时填入占位值，
+    退出时逐项还原（原本就存在的变量不覆盖），真实调用路径不受影响。
+    """
+    names = PROVIDER_KEY_ENV.get(provider_of(model_id)) or ()
+    saved: dict[str, str | None] = {}
+    try:
+        for name in names:
+            if (os.environ.get(name) or "").strip():
+                continue
+            saved[name] = os.environ.get(name)
+            os.environ[name] = SCRIPTED_REMOTE_CREDENTIAL
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def run(config: RunConfig) -> dict[str, Any]:
-    validate_models(config.local_model, config.remote_model, require_credentials=not config.dry_run)
+    # opt-in / 停机阈值是独立于人机环境的前置：先判它们，测试与用户都不会因为宿主有没有
+    # 某个 provider 的 key 而得到另一条错误。
     _requires_remote_opt_in(config)
+    validate_models(config.local_model, config.remote_model, require_credentials=not config.dry_run)
     if not config.dry_run:
         assert config.prices is not None
         # 事前约束：按模型硬限制 + 最大费率算保守预估；超过人定预算就不执行。
@@ -1172,9 +1202,11 @@ def run(config: RunConfig) -> dict[str, Any]:
             timeout_seconds=config.round_timeout,
             usage_sink=guard.record,
         )
-    app = create_app(data_dir=config.data_dir, scheduler=scheduler, seam=seam)
-    with TestClient(app) as client:
-        raw = run_epoch(client, config, seam=seam, guard=guard)
+    credentials = _scripted_credentials(config.remote_model) if config.dry_run else nullcontext()
+    with credentials:
+        app = create_app(data_dir=config.data_dir, scheduler=scheduler, seam=seam)
+        with TestClient(app) as client:
+            raw = run_epoch(client, config, seam=seam, guard=guard)
     mode = "scripted-double" if config.dry_run else "real-provider"
     report = build_report(raw, config=config, guard=guard, mode=mode)
     if scheduler.blocked:

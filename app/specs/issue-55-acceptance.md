@@ -145,6 +145,46 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 `test_reminder_schema_step.py`（需 `libfaketime`）。本票没有新增 skip；dry-run 走的是独立手动入口，
 不在 pytest 收集范围内。
 
+### 6.1 PR #175 CI 修复（2026-10-18，本 worktree）
+
+原始失败：GitHub Actions run `39122684457`，`scripts/check.sh` 全量 **2 failed, 856 passed,
+2 skipped**。两个失败都在 `tests/test_budget_measure.py`，且与宿主是否配置 `DEEPSEEK_API_KEY`
+有关：
+
+| 失败用例 | 真实报错 | 根因 |
+| --- | --- | --- |
+| `test_dry_run_writes_a_desensitized_report_and_marks_no_cost_evidence` | `assert 'incomplete' == 'complete'`；`status=incomplete`、`used=1` | dry-run 虽注入 `ScriptedAgentSeam`，编排的 `availability()` 仍按真实 provider 规则检查凭证；干净进程缺 `DEEPSEEK_API_KEY` 时远端成员不可用，接力在第一轮后安静下来 |
+| `test_real_mode_requires_opt_in_and_an_explicit_cap` | 断言 stderr 含 `ALIBOT_MEASURE_ALLOW_REMOTE`，实际先报「`DEEPSEEK_API_KEY` 未设置」 | `run()` 先做 `validate_models(require_credentials=True)`，后判 opt-in；未 opt-in 的拒绝被宿主凭证状态抢先 |
+
+修复（只动测量工具与其 CLI 测试，生产编排的可用性 / 远端告知 / 凭证规则未改）：
+
+1. `run()` 先 `_requires_remote_opt_in(config)`，再 `validate_models(...)`：opt-in 与停机阈值
+   成为独立于宿主 key 的前置。
+2. dry-run 使用 `_scripted_credentials()`：只在替身路径、且进程环境缺少该 provider 变量时临时填入
+   非真实占位值，退出时逐项还原；真实路径仍走 `nullcontext()`，不读写任何伪造凭证。
+3. CLI 测试显式 `delenv("DEEPSEEK_API_KEY")`，并断言 dry-run 结束后该变量仍未出现在环境里。
+
+红绿命令（干净环境，不含真实 provider key）：
+
+```sh
+cd app
+env -u DEEPSEEK_API_KEY PYTHONDONTWRITEBYTECODE=1 ../../alibot/.venv/bin/python -m pytest \
+  tests/test_budget_measure.py::test_real_mode_requires_opt_in_and_an_explicit_cap \
+  tests/test_budget_measure.py::test_dry_run_writes_a_desensitized_report_and_marks_no_cost_evidence
+```
+
+- 修复前：两个用例各自 **1 failed**（0.09s / 1.15s），报错即上表。
+- 修复后：**2 passed in 1.05s**。
+- 受影响族：`pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` ⇒
+  **16 passed in 6.18s**。
+- fast 门禁：`scripts/check.sh --fast tests/test_budget_measure.py
+  tests/test_agent_seam_client_lifecycle.py` ⇒ **16 passed**；ruff `All checks passed!`；
+  `217 files already formatted`；mypy `Success: no issues found in 92 source files`；pyright
+  `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`；`门禁全绿`。
+
+本轮不重跑本机全量 pytest：修复后同一 head 的 GitHub CI 全量结果由 PR 页面记录。§6 表中
+`864 passed` / `115 passed` 是修复前基线的历史读数，不作为本轮最终 head 的全量结果。
+
 ## 7. 缺项、限制与未决
 
 1. **真实测量未执行**：本机 provider 不可用、远端付费授权未到；两者都需要人类环境动作，不是代码问题。

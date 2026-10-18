@@ -9,6 +9,7 @@ seam 级用例（`test_agent_seam_client_lifecycle.py`）覆盖。真实 provide
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -102,8 +103,10 @@ def test_preflight_refuses_a_price_snapshot_without_source(
 
 
 def test_dry_run_writes_a_desensitized_report_and_marks_no_cost_evidence(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # 干净进程：替身路径不借用宿主真实凭证，也不把临时占位值留在环境里。
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     out = tmp_path / "evidence.json"
     code = main(
         [
@@ -146,6 +149,8 @@ def test_dry_run_writes_a_desensitized_report_and_marks_no_cost_evidence(
     assert report["conditions"]["framework_defaults"]["agent_react_max_iters"] == 50
     assert report["conditions"]["framework_call_bound"]["derived"] is False
     assert capsys.readouterr().out
+    # dry-run 的占位凭证只活在替身路径内：退出后环境恢复原样（原本没有就仍然没有）。
+    assert "DEEPSEEK_API_KEY" not in os.environ
 
 
 def test_real_mode_requires_opt_in_and_an_explicit_cap(
@@ -164,6 +169,8 @@ def test_real_mode_requires_opt_in_and_an_explicit_cap(
     ]
 
     monkeypatch.delenv(REMOTE_OPT_IN_ENV, raising=False)
+    # 未 opt-in 的拒绝不应依赖宿主有没有 provider key：先把它拿掉，证明判据独立。
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     assert main(base) == 2
     assert REMOTE_OPT_IN_ENV in capsys.readouterr().err
     assert not out.exists()
