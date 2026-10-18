@@ -78,7 +78,7 @@
 | 命令 | 读数 |
 | --- | --- |
 | `node --test app/tests/channel_resources_ui.test.cjs` | 16 pass / 0 fail |
-| `node --test app/tests/*.test.cjs` | **173 pass / 0 fail**（新增 16 条；既有 157 条零回归） |
+| `node --test app/tests/*.test.cjs` | **173 pass / 0 fail**（merge 集成分支前；新增 16 条，既有 157 条零回归）。合并 #153 后 **180 pass / 0 fail**。 |
 | ego-browser（真实 Chromium） | 三段 × 三档视口 + 错误态截图，见 §2 |
 
 ---
@@ -162,6 +162,7 @@ $ curl -s http://127.0.0.1:8796/studio/index.html | md5 -q ; md5 -q app/alibot/s
 | `node --test app/tests/*.test.cjs` | 173 pass / 0 fail |
 | `scripts/check.sh --fast`（迭代读数） | 门禁全绿（exit 0）：`All checks passed!` / `Success: no issues found in 88 source files` / `0 errors, 0 warnings, 0 informations` / node `173 pass / 0 fail` |
 | `scripts/check.sh`（全量，merge 前） | **门禁全绿**（exit 0）：pytest `825 passed, 9 skipped in 356.32s`；ruff check `All checks passed!`；ruff format `--check` `203 files already formatted`；mypy `Success: no issues found in 88 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 173 / pass 173 / fail 0` |
+| `scripts/check.sh`（全量，merge 集成分支 tip `0dd50f9` 后） | **门禁全绿**（exit 0）：pytest `825 passed, 9 skipped in 357.73s`；ruff check `All checks passed!`；ruff format `--check` `204 files already formatted`；mypy `Success: no issues found in 88 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0` |
 
 pytest 的 9 个 skip 是本机 Docker daemon 相关用例的既有 `skipif`（#151 标注的 MCP/Docker 成功路径），
 与 #156 的前端用例无关。
