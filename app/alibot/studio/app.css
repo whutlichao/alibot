@@ -158,6 +158,15 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .chan-title { font-size: var(--fs-heading); font-weight: var(--fw-heavy); display: flex; align-items: center; gap: 7px; min-width: 0; }
 .chan-title .hash { font-family: var(--mono); color: var(--accent-deep); font-weight: var(--fw-black); flex: 0 0 auto; }
 .chan-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 频道头的**协作模式 pill**（#178：自主 / 队长制 · 队长名）。它是一条**只读状态**，不是动作
+   （真正的入口是设置按钮），所以是 `<span>` 而不是按钮；色位只取既有档位（中性面 + 边框 + 次级文字），
+   不新造色位。`flex: 0 0 auto` 让它在窄宽度下不被标题挤掉；`[hidden]` 的全局规则负责隐藏。 */
+.chan-mode-pill {
+  display: inline-flex; align-items: center; height: 22px; padding: 0 9px; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface);
+  color: var(--muted); font-size: var(--fs-caption); font-weight: var(--fw-semi);
+  white-space: nowrap;
+}
 .chan-tools { margin-left: auto; display: flex; align-items: center; gap: var(--sp-3); }
 .chan-desc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 

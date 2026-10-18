@@ -158,6 +158,13 @@
     <header class="chan-head" id="chanHead" hidden data-od-id="channel-header">
       <div class="chan-top">
       <h1 class="chan-title"><span class="hash" id="chanHash">#</span><span id="chanTitle"></span></h1>
+        <!-- 频道头的**协作模式 pill**（#178）：人打开一个频道就得看出它是「自主」还是「队长制」
+             （team 模式下带队长显示名），不必先打开设置面。文本 / `title` / `aria-label` 由
+             `renderChannelModePill()` 按 `GET /api/channels/{id}/config` 的读数铺上；配置没读回、
+             读不到或私信下由 app.js 隐藏（`[hidden]` 的全局规则负责让它消失）。
+             落点**在** `.chan-title` 之外：那条 `span` 带着 `overflow:hidden` + ellipsis，
+             pill 放进去会被标题截断。 -->
+      <span class="chan-mode-pill" id="chanModePill" data-od-id="chan-mode-pill" hidden></span>
         <div class="chan-tools">
           <!-- 频道头部的**成员入口**（原型 `alibot-app.html:573-575`）：点开**成员名册**
                ——该频道成员的**只读**全名单。它不是 dock 的**成员面板**（面板负责

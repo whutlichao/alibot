@@ -1080,6 +1080,8 @@ async function loadWorkspace(options) {
     await refreshMessages();
     await refreshOutcomes();
     await refreshChannelMembers();
+    // 频道头 pill 的读数（与任务线程同一份配置）：载入工作台时读一次，切 target 时再读一次。
+    await loadActiveChannelMode();
     await refreshStatuses();
     syncStreams();
     // 审批卡的恢复与消息流同一拍：打开视图先读 pending 快照（live 帧不补发）。
@@ -4866,6 +4868,99 @@ function channelConfigDraftFrom(config) {
   };
 }
 
+/* ─── 频道头的**协作模式 pill** ──────────────────────────────────────────
+
+   人打开一个频道就得看出它是**自主**还是 **team 模式（队长制）**，不必先打开设置面。纪律：
+
+   - **数据正本只有一处**：`GET /api/channels/{id}/config` 的 `mode` / `team_leader_member_id`，
+     缓存沿用 `state.channelConfigs`（`loadTaskChannelConfig` 是同一条读取路径）；前端不推算、
+     不自己判断词表以外的东西；
+   - 队长显示名取该频道成员表（`GET /api/channels/{id}/members`）里对应成员的 `display_name`；
+     该成员读不到就只显示模式名，**不编一个人名**出来；
+   - 读不到 / 还没读回 ⇒ pill `hidden`（沿用 `loadTaskChannelConfig` 的既有纪律：不伪造
+     team / autonomous 结论，下次切 target 或重载工作台再试）；
+   - 私信没有频道 mode，`dm` 型 target 下同样隐藏。
+
+   读取点只有两处（
+   `loadWorkspace` 载入工作台、`selectTarget` 切 target）；`renderHeader()` 只画缓存，不发请求，
+   而设置面保存成功后由 `cacheChannelConfig()` 就地重铺——于是「保存后立即更新」不需要刷新页面。 */
+
+/** 在飞的频道配置读取：**同一个频道复用同一个 promise**（与 `channelMembersInFlight` 同一条纪律：
+    早退会让频道头的 pill 与任务线程各发一次请求）。 */
+const channelConfigsInFlight = new Map();
+
+/** 频道配置缓存的**唯一写入口**：写下就按它重铺频道头的 pill（读数正本仍是后端响应）。 */
+function cacheChannelConfig(channelId, config) {
+  state.channelConfigs[channelId] = config;
+  if (state.activeChannelId === channelId) renderChannelModePill();
+}
+
+/** pill 的读数：`null` = 现在不该显示（私信 / 没有频道 / 配置还没读回 / 后端给了词表外的值）。 */
+function channelModeBadge(config) {
+  if (!config) return null;
+  if (config.mode === 'autonomous') {
+    const text = t('channelConfig.mode.autonomous');
+    return { text, label: t('channelConfig.modeBadge.title', { mode: text }) };
+  }
+  if (config.mode !== 'team') return null; // 后端词表外的取值：不猜，pill 保持隐藏。
+  const leader = channelModeLeaderName(config.team_leader_member_id);
+  const text = leader
+    ? t('channelConfig.modeBadge.teamWithLeader', { leader })
+    : t('channelConfig.mode.team');
+  return { text, label: t('channelConfig.modeBadge.title', { mode: text }) };
+}
+
+/** 队长显示名。成员表还没读回（与「读到了但没有这个人」是两件事）时给空串：先用模式名，
+    读到后重绘，不留占位名。 */
+function channelModeLeaderName(memberId) {
+  if (!memberId) return '';
+  const members = state.channelMembers[state.activeChannelId];
+  if (!members) return '';
+  const member = members.find((item) => item.id === memberId);
+  return (member && member.display_name) || '';
+}
+
+/** 按缓存（= 后端读数）重铺频道头的 pill。**不发请求**：读不回来就 hidden。 */
+function renderChannelModePill() {
+  const pill = $('#chanModePill');
+  if (!pill) return;
+  const channel = activeChannel();
+  // 私信 / 没有 target 时 `activeChannel()` 为 null，pill 随之隐藏（DM 没有频道 mode）。
+  const badge = channel ? channelModeBadge(state.channelConfigs[channel.id]) : null;
+  pill.hidden = !badge;
+  pill.textContent = badge ? badge.text : '';
+  if (badge) {
+    // 无障碍：说明它是「协作模式」及当前值（`title` 与 `aria-label` 同一句）。
+    pill.setAttribute('title', badge.label);
+    pill.setAttribute('aria-label', badge.label);
+  }
+}
+
+/** pill 的**读数入口**：把当前频道要的两份读数（配置 + 队长所在的成员表）读到，再铺 pill。
+
+    除了「载入工作台」与「切 target」两处，别处不发起读取（`renderChannelModePill()` 只画）。
+    次序是先配置后成员：先知道 mode，才知道要不要为了一个队长名去读成员表。 */
+async function loadActiveChannelMode() {
+  const channel = activeChannel();
+  if (!channel) {
+    renderChannelModePill(); // 私信 / 没 target：顺手把 pill 收回隐藏态
+    return null;
+  }
+  const config = await loadTaskChannelConfig(channel.id);
+  if (state.activeChannelId !== channel.id) return config; // 已经切走了：不用旧频道读数铺屏
+  // 队长显示名在成员表里：还没读回就补读一次（读到了但没这个人 = 只显示模式名，不编人名）。
+  if (
+    config
+    && config.mode === 'team'
+    && config.team_leader_member_id
+    && state.channelMembers[channel.id] === undefined
+  ) {
+    await refreshChannelMembers(channel.id);
+  }
+  if (state.activeChannelId === channel.id) renderChannelModePill();
+  return config;
+}
+
 /** 打开频道设置面（入口 = 频道头的设置按钮）：锁定当前频道，先显示「读取中」。 */
 async function openChannelConfigModal() {
   const channel = activeChannel();
@@ -4891,7 +4986,7 @@ async function loadChannelConfig(channelId) {
     const members = await refreshChannelMembers(channelId);
     if (state.channelConfig.channelId !== channelId) return;
     view.config = payload.config;
-    state.channelConfigs[channelId] = payload.config;
+    cacheChannelConfig(channelId, payload.config);
     view.members = (members || []).filter((member) => member.kind === 'agent');
     view.membersFailed = channelMembersFailed.has(channelId);
     view.draft = channelConfigDraftFrom(payload.config);
@@ -4913,18 +5008,29 @@ function closeChannelConfigModal() {
   if (box) box.hidden = true;
 }
 
-/** 任务视图读取所属频道的同一份配置；已缓存时直接复用（正本仍是后端）。 */
+/** 任务视图与频道头 pill 读取**同一份**配置；已缓存时直接复用（正本仍是后端）。
+    同一频道的在飞读取复用同一个 promise（见 `channelConfigsInFlight`）。 */
 async function loadTaskChannelConfig(channelId) {
   if (!channelId) return null;
   if (state.channelConfigs[channelId]) return state.channelConfigs[channelId];
+  const inFlight = channelConfigsInFlight.get(channelId);
+  if (inFlight) return inFlight;
+  const read = (async () => {
+    try {
+      const payload = await api(channelPath(channelId, '/config'));
+      cacheChannelConfig(channelId, payload.config);
+      if (state.activeTask && state.activeTask.channel_id === channelId) renderTaskThread();
+      return payload.config;
+    } catch {
+      // 读不到就保持未缓存：任务线程与频道头的 pill 都不伪造 team / autonomous 结论，下次再试。
+      return null;
+    }
+  })();
+  channelConfigsInFlight.set(channelId, read);
   try {
-    const payload = await api(channelPath(channelId, '/config'));
-    state.channelConfigs[channelId] = payload.config;
-    if (state.activeTask && state.activeTask.channel_id === channelId) renderTaskThread();
-    return payload.config;
-  } catch {
-    // 读不到就保持未缓存：任务线程不伪造 team / autonomous 结论，下次打开再试。
-    return null;
+    return await read;
+  } finally {
+    channelConfigsInFlight.delete(channelId);
   }
 }
 
@@ -5942,7 +6048,7 @@ async function submitChannelConfig() {
     const payload = await api(channelPath(channelId, '/config'), { method: 'PATCH', body });
     if (state.channelConfig.channelId !== channelId) return;
     view.config = payload.config;
-    state.channelConfigs[channelId] = payload.config;
+    cacheChannelConfig(channelId, payload.config);
     view.draft = channelConfigDraftFrom(payload.config);
     view.error = '';
     view.loading = false;
@@ -5983,6 +6089,9 @@ function renderHeader() {
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
+  // 标题右侧的**协作模式 pill**（#178）：自主 / 队长制 · 队长名。它只读缓存（不在这里发请求），
+  // 私信下与「配置还没读回」时隐藏；落点在 `.chan-title` 之外，不被标题的 ellipsis 截断。
+  renderChannelModePill();
   // desc 保持现状的写法：原型那句「懒创建会话」与 `CONTEXT.md` **私信**词条的
   // `_Avoid_`（明确否定「懒创建」）冲突，是原型的过时文案，不照抄。
   $('#chanDesc').textContent = isDm ? t('header.dmDesc', { name }) : target.description || '';
@@ -7284,6 +7393,8 @@ async function selectTarget(targetId) {
     await refreshOutcomes();
     await loadApprovalsFor(targetId);
     if (target.kind !== 'dm') await refreshChannelMembers();
+    // 切频道时按**新频道**的读数重铺 pill（缓存命中则同步返回；没有就不下结论，pill 隐藏）。
+    await loadActiveChannelMode();
     state.online = true;
   } catch (err) {
     state.online = false;
