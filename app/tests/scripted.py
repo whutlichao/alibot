@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from collections.abc import Callable
 from typing import Any
 
 from alibot.agent_seam import (
+    AgentEventRecord,
     AgentTaskAction,
     RoundMessage,
     RoundOutcome,
@@ -115,6 +117,79 @@ class ScriptedAgentSeam:
 
     # ─── AgentSeam ────────────────────────────────────────────────────────
     def run_round(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
+    ) -> RoundOutcome:
+        """兼容壳：``run_round_stream(..., emit=None)``（ADR-0020 二）。"""
+        return self.run_round_stream(
+            agent,
+            messages,
+            mentioned=mentioned,
+            target_id=target_id,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+            emit=None,
+        )
+
+    def run_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
+        emit: Callable[[AgentEventRecord], None] | None = None,
+    ) -> RoundOutcome:
+        """脚本化流式行为：结论与 :meth:`run_round` 相同，另按固定形状发事件。
+
+        替身不模拟 token 增量，只发 ``REPLY_START`` → 每个待落库正文一条 ``TEXT_BLOCK_DELTA``
+        → ``REPLY_END``；归属字段仍按真适配器的规则填（派生命中、本轮 target）。
+        """
+        outcome = self._resolve_outcome(
+            agent,
+            messages,
+            mentioned=mentioned,
+            target_id=target_id,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+        )
+        if emit is not None:
+            member_id = str(agent["id"])
+            reply_id = uuid.uuid4().hex
+            base = {"target_id": target_id, "member_id": member_id, "reply_id": reply_id}
+            emit(
+                AgentEventRecord(
+                    type="REPLY_START",
+                    payload={"role": "assistant"},
+                    **base,
+                )
+            )
+            for message in outcome.messages:
+                emit(
+                    AgentEventRecord(
+                        type="TEXT_BLOCK_DELTA",
+                        payload={"block_id": reply_id, "delta": message.body},
+                        **base,
+                    )
+                )
+            emit(
+                AgentEventRecord(
+                    type="REPLY_END",
+                    payload={"finished_reason": "error" if outcome.status == "failed" else "completed"},
+                    **base,
+                )
+            )
+        return outcome
+
+    def _resolve_outcome(
         self,
         agent: dict[str, Any],
         messages: list[dict[str, Any]],

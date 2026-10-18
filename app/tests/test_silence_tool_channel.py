@@ -172,8 +172,8 @@ class _StubTransportSeam(AgentScopeAgentSeam):
     也真的可以被抓下来读。断言仍然只落在**抓到的请求载荷**与**轮次结果**上。
     """
 
-    def _build_model(self, provider: str, model_name: str) -> Any:
-        return super()._build_model("openai", model_name)
+    def _build_model(self, provider: str, model_name: str, *, stream: bool = False) -> Any:
+        return super()._build_model("openai", model_name, stream=stream)
 
 
 # ─── 1. 支持工具调用 ⇒ 能声明 silent，且零条待落库消息 ────────────────────
