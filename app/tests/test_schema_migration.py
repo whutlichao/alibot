@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -218,6 +219,20 @@ def _seed_rows(conn: sqlite3.Connection) -> None:
         )
 
 
+def _add_historical_column(conn: sqlite3.Connection, ddl: str) -> None:
+    """按 ``ALTER TABLE … ADD COLUMN`` 补一条历史新增列；列已在表里时跳过。
+
+    ``_COLUMN_ADDITIONS`` 是「v3 基线 + 逐版补列」的留档路线；v17 起留档也能给出**整表 DDL**
+    （``agent_config_v17`` 已带 ``auto_claim``）。这条守卫让两种留档形态共存，而不必把同一列写两遍。
+    """
+    match = re.search(r'ALTER TABLE "([^"]+)" ADD COLUMN "?([A-Za-z_][A-Za-z0-9_]*)"?', ddl)
+    assert match is not None, f"认不出的列 DDL：{ddl}"
+    table, column = match.groups()
+    existing = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    if column not in existing:
+        conn.execute(ddl)
+
+
 def _build_library(data_dir: Path, version: int) -> Path:
     """在 ``data_dir`` 里搭一个「``version`` 版形态」、已有业务数据的库；返回库文件路径。
 
@@ -239,7 +254,7 @@ def _build_library(data_dir: Path, version: int) -> Path:
                 conn.execute(OBJECTS[name])
         for introduced in range(3, version + 1):
             for column in _COLUMN_ADDITIONS.get(introduced, ()):
-                conn.execute(_COLUMN_DDL[column])
+                _add_historical_column(conn, _COLUMN_DDL[column])
         for name in objects:
             if "INDEX" in OBJECTS[name].splitlines()[0]:
                 conn.execute(OBJECTS[name])

@@ -739,6 +739,47 @@ def _step_15_to_16(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ``16 → 17`` 的五张新表（规格 §4.3 / ADR-0021）：权限规则、HITL 审批、MCP 声明、Skill 元数据与
+# 远端数据面确认。它们是**纯增量**：既有表只给 ``channel`` 补 workspace 三列、给 ``agent_config``
+# 补四列。旧 ``remote_consent`` 保留作兼容面。
+WORKSPACE_PERMISSION_TABLES: tuple[str, ...] = (
+    "permission_rule",
+    "approval_request",
+    "mcp_server",
+    "skill",
+    "remote_consent_scope",
+)
+
+# 旧 ``remote_consent`` 行的**一次性**复制：每条 ``provider`` 变成 ``('model', provider,
+# acknowledged_at)``。``INSERT OR IGNORE`` 让重放幂等（复合主键已存在时不动既有确认时间）；
+# 旧表不删（ADR-0015 的兼容面纪律）。
+COPY_REMOTE_CONSENT_SCOPE_SQL = (
+    "INSERT OR IGNORE INTO remote_consent_scope (scope_kind, scope_id, acknowledged_at) "
+    "SELECT 'model', provider, acknowledged_at FROM remote_consent"
+)
+
+
+def _step_16_to_17(conn: sqlite3.Connection) -> int:
+    """workspace / permission / MCP / Skill / approval 的纯增量形态（#139 / 规格 §4.1 / §4.3）。
+
+    本步做三件事：按**当前 ``SCHEMA``** 建出五张新表、给 ``channel`` 与 ``agent_config`` 补本版新增列、
+    把旧 ``remote_consent`` 的每一行复制成 ``remote_consent_scope`` 的 ``('model', provider, ...)``。
+    索引 / 触发器 / 外键由执行器在本步之后施的 :func:`_align_to_current_schema` 按同一份 ``SCHEMA``
+    补齐。
+
+    **不重建既有表、不回填其他业务数据**：旧频道的 ``workspace_root`` 为 ``NULL``、后端 ``local``、
+    权限档 ``ask-writes``；旧 Agent 的后端 / 权限档为 ``NULL``（跟随频道默认）、本地 shell 关闭、
+    镜像未配置（规格 §4.1 的旧行语义）。复制是幂等的：已经存在的 scope 行不被覆盖，重跑改动 0 行。
+    返回的行数只统计**实际复制**的 ``remote_consent`` 行。
+    """
+    _create_missing_tables(conn, WORKSPACE_PERMISSION_TABLES)
+    _add_missing_columns(conn, "channel")
+    _add_missing_columns(conn, "agent_config")
+    if "remote_consent" not in _table_names(conn):
+        return 0
+    return max(conn.execute(COPY_REMOTE_CONSENT_SCOPE_SQL).rowcount, 0)
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -795,6 +836,12 @@ STEPS: tuple[MigrationStep, ...] = (
         _step_14_to_15,
     ),
     MigrationStep(15, 16, "agentscope-2 team/plan/sop expand", _step_15_to_16),
+    MigrationStep(
+        16,
+        17,
+        "agentscope-2 workspace/permission/mcp/skill expand",
+        _step_16_to_17,
+    ),
 )
 
 
