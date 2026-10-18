@@ -577,15 +577,39 @@ class WorkspaceService:
         # 系统提示是配置数据，不随列表返回全量正文以外的东西；这里原样带出以证明「落库即用户输入」。
         return view
 
-    def create_agent(self, name: str, role: str, model_id: str, system_prompt: str) -> dict[str, Any]:
-        """新建 Agent。任一字段不合法则整体不创建，不留半成品成员行。"""
+    def create_agent(
+        self,
+        name: str,
+        role: str,
+        model_id: str,
+        system_prompt: str,
+        *,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool = False,
+        docker_image: str | None = None,
+    ) -> dict[str, Any]:
+        """新建 Agent。任一字段不合法则整体不创建，不留半成品成员行。
+
+        Agent 级 workspace 覆盖（D14/D15）与其它配置同一条偏序：由库层校验取值，任一不合法则
+        整条创建都不发生；它们是配置事实，不落消息、不唤醒。
+        """
         locale = self._locale()
         error = model_id_error(model_id, locale)
         if error is not None:
             raise DomainError(
                 "validation_failed", render("error.agent_invalid", locale), fields={"model_id": error}
             )
-        agent = self._db.create_agent(name=name, role=role, model_id=model_id, system_prompt=system_prompt)
+        agent = self._db.create_agent(
+            name=name,
+            role=role,
+            model_id=model_id,
+            system_prompt=system_prompt,
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            allow_local_shell=allow_local_shell,
+            docker_image=docker_image,
+        )
         return self._agent_view(agent, self._db.agent_stats(agent["id"]).get(agent["id"]))
 
     def update_agent(
@@ -598,6 +622,10 @@ class WorkspaceService:
         system_prompt: str | None = None,
         enabled: bool | None = None,
         auto_claim: bool | None = None,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool | None = None,
+        docker_image: str | None = None,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -612,6 +640,11 @@ class WorkspaceService:
         ``auto_claim``（#65 / ADR-0010）就是「**自动认领任务**」开关：它写 `agent_config.auto_claim`，
         编排在**新建任务之后**读它决定要不要替这个 Agent 接手；与其它配置字段同一条纪律——不落消息、
         不唤醒、不消耗预算、不开世代。它**只**影响之后新建的任务，不回填、不改已指派的任务。
+
+        Agent 级 workspace 覆盖（D14/D15）：``workspace_backend`` / ``permission_mode`` /
+        ``allow_local_shell`` / ``docker_image`` 写进同一条 ``agent_config`` 行；取值校验在库层
+        （非法值整体拒绝）。写了任一项就清掉该成员的 Docker 失败短缓存，下一轮重新按新配置装配——
+        改 ``docker_image`` 时池里的旧镜像容器也会在装配层因镜像不一致被替换。
         """
         locale = self._locale()
         if model_id is not None:
@@ -630,7 +663,16 @@ class WorkspaceService:
             system_prompt=system_prompt,
             enabled=enabled,
             auto_claim=auto_claim,
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            allow_local_shell=allow_local_shell,
+            docker_image=docker_image,
         )
+        if any(
+            value is not None
+            for value in (workspace_backend, permission_mode, allow_local_shell, docker_image)
+        ):
+            clear_docker_failure(member_id)
         return self.agent(member_id)
 
     @staticmethod

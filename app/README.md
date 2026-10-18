@@ -401,9 +401,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
 | `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
-| `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt}`；校验失败**整体不创建**（开关缺省关闭） |
-| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim` 与 `stats`） |
-| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`。响应同形 `agent` + `agents` + `members` |
+| `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；开关缺省关闭） |
+| `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim`、Agent 级 workspace 四项与 `stats`） |
+| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录 |
@@ -418,6 +418,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `PATCH /api/mcp-servers/{id}` | 部分更新同名字段；`scope_kind` / `scope_id` 不可改；整条结果重新校验 |
 | `DELETE /api/mcp-servers/{id}` | 删除声明（配置动作；不删消息、不唤醒） |
 | `POST /api/mcp-servers/{id}/consent` | 远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认的远端声明在装配层**不连接** |
+| `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
 | `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节） |
 | `POST /api/skills` | 安装：JSON 正文 `{scope_kind, scope_id, source_path, channel_id?}` 从**本机目录**；或 `Content-Type: application/zip` 的原始字节 + query `scope_kind/scope_id/channel_id/filename` 从**上传 zip**。两者都先校验 `SKILL.md` front matter、路径与内容 hash，非法输入**整体拒绝**；同名同 scope 409；不做远端市场/下载 |
 | `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |
@@ -459,8 +460,12 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   因此不呈现。
 - **运行时页签只呈现 `agent_config` 里真实存在的字段**：`model_id`、`provider`、`is_remote`、
   远端数据流告知状态、`role`、`system_prompt`、`enabled`、`auto_claim`（外加可用性推导出的当前状态）。
+  Agent 级 workspace 覆盖（`workspace_backend` / `permission_mode` / `allow_local_shell` /
+  `docker_image`）目前**只经 API 读写**（详情/编辑 UI 尚未暴露这四个控件）；`GET` / 列表响应逐字
+  带回落库值，`null` 表示「跟随频道默认」。
 - **写路径唯一**：`PATCH /api/agents/{id}` 可写 `display_name` / `role` / `model_id` /
-  `system_prompt` / `enabled` / `auto_claim`，**任一字段不合法则整体不写**（不得部分写入）；`model_id`
+  `system_prompt` / `enabled` / `auto_claim` / `workspace_backend` / `permission_mode` /
+  `allow_local_shell` / `docker_image`，**任一字段不合法则整体不写**（不得部分写入）；`model_id`
   沿用与创建同一套校验与**远端数据流告知**语义。「自动认领任务」开关就在这个既有编辑面里
   （不另造第二个编辑面），写它只影响**之后新建**的任务。
 - **配置变更不是发言**：不落消息、不唤醒、不消耗预算、不开世代（ADR-0011 与 ADR-0007 的边界：

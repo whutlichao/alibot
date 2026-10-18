@@ -25,6 +25,8 @@ from agentscope.permission import (
     PermissionRule,
 )
 
+from .workspace import PATH_ARGUMENTS
+
 PermissionModeName: TypeAlias = Literal["read-only", "ask-writes", "trusted-writes"]
 
 #: 产品面允许的三档（顺序即文档顺序）；默认档与 ``channel.permission_mode`` 的 DDL 默认值一致。
@@ -83,7 +85,10 @@ def effective_rules(
     return list(merged.values())
 
 
-_PATH_TOOL_NAMES = frozenset({"Read", "Write", "Edit", "Glob", "Grep"})
+#: 文件工具名（单一事实源是 ``workspace.PATH_ARGUMENTS``：工具 → 它接收路径的输入键）。
+PATH_TOOL_NAMES = frozenset(PATH_ARGUMENTS)
+#: 文件工具的路径参数（同样从 ``workspace.PATH_ARGUMENTS`` 收集；只用于权限判定的归一化）。
+PATH_KEYS = tuple(dict.fromkeys(PATH_ARGUMENTS.values()))
 
 
 def _matched_pattern(rule: dict[str, str], root: str | None) -> str | None:
@@ -95,7 +100,7 @@ def _matched_pattern(rule: dict[str, str], root: str | None) -> str | None:
     pattern = rule["pattern"]
     if not pattern:
         return None
-    if root and rule["tool_name"] in _PATH_TOOL_NAMES and not os.path.isabs(pattern):
+    if root and rule["tool_name"] in PATH_TOOL_NAMES and not os.path.isabs(pattern):
         return os.path.join(root, pattern)
     return pattern
 
@@ -141,10 +146,6 @@ def build_permission_engine(
     return PermissionEngine(build_permission_context(mode, rules, root=root))
 
 
-#: 文件工具的路径参数（与 ``workspace.PATH_ARGUMENTS`` 同口径；这里只用于权限判定的归一化）。
-_PATH_KEYS = ("file_path", "path")
-
-
 class WorkspacePathPermissionMiddleware(MiddlewareBase):
     """把相对路径按项目根归一化后再做权限判定。
 
@@ -165,7 +166,7 @@ class WorkspacePathPermissionMiddleware(MiddlewareBase):
         next_handler: Any,
     ) -> Any:
         tool_input = dict(input_kwargs.get("tool_input") or {})
-        for key in _PATH_KEYS:
+        for key in PATH_KEYS:
             value = tool_input.get(key)
             if isinstance(value, str) and value and not os.path.isabs(value):
                 tool_input[key] = os.path.normpath(os.path.join(self.root, value))

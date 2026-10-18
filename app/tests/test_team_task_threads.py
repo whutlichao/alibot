@@ -274,8 +274,9 @@ def test_team_assign_in_a_task_thread_is_task_scoped_and_leaves_the_task_row_alo
     )
     member_model = _ScriptedModel([_text("成员产出")])
     seam = _BudgetSeam([leader_model, member_model])
+    scheduler = ManualScheduler()
 
-    with backend(data_dir, scheduler=ManualScheduler(), seam=seam) as client:
+    with backend(data_dir, scheduler=scheduler, seam=seam) as client:
         assert (
             client.patch(
                 f"/api/channels/{channel['id']}/config",
@@ -291,7 +292,7 @@ def test_team_assign_in_a_task_thread_is_task_scoped_and_leaves_the_task_row_alo
 
         sent = client.post(f"/api/tasks/{task['id']}/messages", json={"body": "开工", "task_ref": task["id"]})
         assert sent.status_code == 201
-        cast(Any, client.app).state.orchestrator._scheduler.drain()
+        scheduler.drain()
 
         rows = db.list_team_assignments(target_id)
         assert len(rows) == 1

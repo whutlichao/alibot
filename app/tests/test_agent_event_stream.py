@@ -27,6 +27,7 @@ from agentscope.event import (
     ReplyEndEvent,
     ReplyStartEvent,
     TextBlockDeltaEvent,
+    ThinkingBlockEndEvent,
 )
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import Msg, TextBlock, ToolCallBlock
@@ -255,6 +256,41 @@ def test_orphan_and_unknown_events_are_dropped_with_debug(
 
     debug_lines = [line for line in caplog.messages if "agent event" in line]
     assert len(debug_lines) >= 4, caplog.messages
+
+
+def test_thinking_block_end_is_whitelisted_with_block_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``THINKING_BLOCK_END`` 在 §3.2 白名单内：带 block_id（以及可用的 text 元数据）透传。"""
+    derived = "m-mem_140"
+
+    async def fake_reply_stream(
+        self: Agent,
+        inputs: Any = None,
+        structured_schema: Any = None,
+        yield_final_msg: bool = False,
+    ) -> AsyncGenerator[Any, None]:
+        yield ReplyStartEvent(session_id="s", reply_id="r-think", name=derived, role="assistant")
+        yield ThinkingBlockEndEvent(reply_id="r-think", block_id="think-1")
+        yield ReplyEndEvent(session_id="s", reply_id="r-think", finished_reason=ReplyFinishedReason.COMPLETED)
+        yield Msg(name=derived, content=[TextBlock(text="完成")], role="assistant")
+
+    monkeypatch.setattr(Agent, "reply_stream", fake_reply_stream)
+    records: list[AgentEventRecord] = []
+    seam = _StubModelSeam(_ScriptedModel(_round_script()))
+
+    outcome = seam.run_round_stream(AGENT, MESSAGES, mentioned=True, target_id="ch_140", emit=records.append)
+
+    assert [record.type for record in records] == [
+        "REPLY_START",
+        "THINKING_BLOCK_END",
+        "REPLY_END",
+    ]
+    thinking = records[1]
+    assert thinking.member_id == "mem_140"
+    assert thinking.reply_id == "r-think"
+    assert thinking.payload == {"block_id": "think-1", "text": None}
+    assert outcome.status == "replied"
 
 
 def test_run_round_delegates_to_run_round_stream(monkeypatch: pytest.MonkeyPatch) -> None:

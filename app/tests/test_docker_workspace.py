@@ -481,6 +481,67 @@ def test_db_scope_consent_gate_reaches_workspace_settings(tmp_path: Path) -> Non
         database.close()
 
 
+def test_changed_docker_image_discards_the_pooled_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """改 ``docker_image`` 后旧镜像容器不得复用：池条目被移除、容器被删除、按新配置重建。"""
+    root = tmp_path / "project"
+    root.mkdir()
+    member = _unique("mem")
+    session = session_partition_id(member, "ch_docker")
+    workspace_id = workspace_module.docker_workspace_id(
+        workspace_module.safe_partition_id(member), workspace_module.safe_partition_id(session)
+    )
+    key = (
+        workspace_module.safe_partition_id(member),
+        workspace_module.safe_partition_id(session),
+    )
+    old = workspace_module._DockerEntry(
+        key=key,
+        workspace=object(),  # type: ignore[arg-type]  # 这条用例只验证池的失效判定
+        settings=_settings(root, docker_image="old:1"),
+        root=str(root),
+        member_id=key[0],
+        session_id=key[1],
+        workspace_id=workspace_id,
+        container_name=f"as_ws_{workspace_id}",
+        last_used=0.0,
+        active=0,
+        image="old:1",
+    )
+    deleted: list[str] = []
+
+    async def fake_delete(name: str) -> None:
+        deleted.append(name)
+
+    async def absent(image_name: str) -> bool:
+        assert image_name == "new:2"
+        return False
+
+    monkeypatch.setattr(workspace_module, "_delete_container", fake_delete)
+    monkeypatch.setattr(workspace_module, "_image_present_locally", absent)
+    workspace_module.clear_docker_failure(key[0])
+    with workspace_module._pool_lock:
+        workspace_module._pool[key] = old
+    try:
+        with pytest.raises(DockerWorkspaceUnavailable):
+            _run(
+                assemble_workspace(
+                    _settings(root, docker_image="new:2", docker_image_consented=False),
+                    member_id=member,
+                    session_id=session,
+                    locale="zh-CN",
+                )
+            )
+    finally:
+        with workspace_module._pool_lock:
+            workspace_module._pool.pop(key, None)
+        workspace_module.clear_docker_failure(key[0])
+
+    assert deleted == [old.container_name], "旧镜像容器必须被删掉，而不是被复用"
+    assert key not in workspace_module._pool
+
+
 @requires_docker
 def test_env_is_an_allowlist_and_does_not_leak_process_secrets(
     docker_root: Path, monkeypatch: pytest.MonkeyPatch

@@ -27,7 +27,6 @@ from agentscope.model import ChatModelBase, ChatResponse
 from alibot.agent_seam import AgentScopeAgentSeam
 from alibot.db import open_database
 from alibot.team import member_internal_name
-from fastapi.testclient import TestClient
 
 from tests.conftest import (
     LOCAL_MODEL_ID,
@@ -220,8 +219,14 @@ def test_channel_member_output_is_visible_only_as_events_and_run_records(data_di
                         for frame in items
                     )
                     and any(frame["data"].get("type") == "round_outcome" for frame in items)
+                    and any(
+                        frame["data"].get("type") == "typing"
+                        and frame["data"].get("member_id") == leader["id"]
+                        and frame["data"].get("active") is False
+                        for frame in items
+                    )
                 ),
-                label="分派收口、队长最终消息与轮次结果",
+                label="分派收口、队长最终消息、轮次结果与队长 typing 收口",
             )
         finally:
             _stop_reader(stop, reader)
@@ -246,6 +251,15 @@ def test_channel_member_output_is_visible_only_as_events_and_run_records(data_di
         for event in member_events:
             assert event["reply_id"]
             assert event["target_id"] == channel["id"]
+
+        # §4.5：成员的 REPLY_START / REPLY_END 各发一条 typing，member_id 是成员而不是队长；
+        # 队长自己的 typing 仍按既有轮次开始/结束发，两者互不覆盖。
+        typing_frames = _sse(frames, "typing")
+        member_typing = [frame for frame in typing_frames if frame["member_id"] == member["id"]]
+        assert [frame["active"] for frame in member_typing] == [True, False]
+        assert all(frame["reason"] == "team-assignment" for frame in member_typing)
+        leader_typing = [frame for frame in typing_frames if frame["member_id"] == leader["id"]]
+        assert [frame["active"] for frame in leader_typing] == [True, False]
         for frame in frames:
             if frame["data"].get("type") in {"agent_event", "team_assignment"}:
                 assert frame["id"] is None, "live-only 事件不得推进重连游标"
@@ -363,7 +377,8 @@ def test_task_thread_member_output_is_visible_only_as_events_and_run_records(dat
 
 
 # ─── AC3：分页按时间倒序 ──────────────────────────────────────────────────
-def test_team_runs_are_paginated_newest_first(client: TestClient) -> None:
+def test_team_runs_are_paginated_newest_first(harness: dict) -> None:
+    client = harness["client"]
     leader = create_agent(client, name="队长").json()["agent"]
     member = create_agent(client, name="成员").json()["agent"]
     channel = create_channel(client, member_ids=[leader["id"], member["id"]]).json()["channel"]
@@ -374,7 +389,7 @@ def test_team_runs_are_paginated_newest_first(client: TestClient) -> None:
         ).status_code
         == 200
     )
-    scheduler = cast(Any, client.app).state.orchestrator._scheduler
+    scheduler = harness["scheduler"]
     for index in range(1, 4):
         assert send(client, channel["id"], f"第 {index} 轮").status_code == 201
         scheduler.drain()
@@ -394,7 +409,8 @@ def test_team_runs_are_paginated_newest_first(client: TestClient) -> None:
 
 
 # ─── AC4：穿透仍落频道消息，不产生 team_assignment、不再唤醒；team task 不穿透 ─
-def test_pierced_reply_lands_as_a_channel_message_without_an_assignment(client: TestClient) -> None:
+def test_pierced_reply_lands_as_a_channel_message_without_an_assignment(harness: dict) -> None:
+    client = harness["client"]
     leader = create_agent(client, name="队长").json()["agent"]
     member = create_agent(client, name="成员").json()["agent"]
     outsider = create_agent(client, name="外援").json()["agent"]
@@ -406,10 +422,10 @@ def test_pierced_reply_lands_as_a_channel_message_without_an_assignment(client: 
         ).status_code
         == 200
     )
-    seam = cast(Any, client.app).state.orchestrator._seam
+    seam = harness["seam"]
     seam.replies[leader["id"]] = LEADER_RESULT
     seam.replies[outsider["id"]] = "外援一次性答复"
-    scheduler = cast(Any, client.app).state.orchestrator._scheduler
+    scheduler = harness["scheduler"]
     db = cast(Any, client.app).state.db
 
     assert send(client, channel["id"], f"@{outsider['display_name']} 帮忙").status_code == 201
@@ -426,7 +442,8 @@ def test_pierced_reply_lands_as_a_channel_message_without_an_assignment(client: 
     assert client.get("/api/search", params={"q": "外援一次性答复"}).json()["hits"]
 
 
-def test_team_task_does_not_pierce(client: TestClient) -> None:
+def test_team_task_does_not_pierce(harness: dict) -> None:
+    client = harness["client"]
     leader = create_agent(client, name="队长").json()["agent"]
     member = create_agent(client, name="成员").json()["agent"]
     outsider = create_agent(client, name="外援").json()["agent"]
@@ -439,10 +456,10 @@ def test_team_task_does_not_pierce(client: TestClient) -> None:
         == 200
     )
     task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "整理"}).json()["task"]
-    seam = cast(Any, client.app).state.orchestrator._seam
+    seam = harness["seam"]
     seam.replies[leader["id"]] = LEADER_RESULT
     seam.replies[outsider["id"]] = "不应该出现的答复"
-    scheduler = cast(Any, client.app).state.orchestrator._scheduler
+    scheduler = harness["scheduler"]
 
     assert (
         client.post(

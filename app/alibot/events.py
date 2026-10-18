@@ -86,9 +86,18 @@ class EventBus:
                         self._subscribers.pop(target_id, None)
 
 
+def is_live_only(event: Mapping[str, Any]) -> bool:
+    """该事件是否属于 live-only 运行事件（规格 §4.5）：不发 ``id``、断线不补拉。"""
+    return event.get("type") in LIVE_EVENT_TYPES
+
+
 def is_replayable(event: Mapping[str, Any]) -> bool:
-    """该事件是否可补拉：只有它能带 ``id: <seq>``（重连游标只由这类事件推进）。"""
-    return event.get("type") in REPLAYABLE_TYPES
+    """该事件是否可补拉：只有它能带 ``id: <seq>``（重连游标只由这类事件推进）。
+
+    与 :func:`is_live_only` 互补：一个类型即使同时出现在两份词表里，也**不能**推进游标——
+    live-only 的词表优先，重连补拉永远只覆盖消息与轮次结果。
+    """
+    return event.get("type") in REPLAYABLE_TYPES and not is_live_only(event)
 
 
 def sse_frame(event: Mapping[str, Any]) -> str:

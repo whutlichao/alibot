@@ -40,6 +40,7 @@
 - ``GET/POST/DELETE /api/permission-rules``    权限规则的读写（配置动作，不落消息、不唤醒）
 - ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
 - ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
+- ``POST /api/docker-images/consent``          远端 Docker 镜像的数据面确认（幂等；未确认不拉取）
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
@@ -79,12 +80,14 @@ from .approval import APPROVAL_STATES, DEFAULT_APPROVAL_TIMEOUT_SECONDS, Approva
 from .db import (
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
+    MAX_DOCKER_IMAGE_LENGTH,
     MAX_MESSAGE_BODY_LENGTH,
     OWNER_ID,
     PLAN_RUN_RETENTION,
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
+    NotFound,
     SearchFacet,
     open_database,
 )
@@ -110,6 +113,7 @@ from .skills import (
 )
 from .sop import SOPRunner
 from .workspace import (
+    clear_docker_failure,
     docker_unavailable_reason,
     shutdown_docker_workspaces,
     start_docker_reaper,
@@ -237,6 +241,11 @@ class AgentCreate(BaseModel):
     role: str = ""
     model_id: str = ""
     system_prompt: str = ""
+    # Agent 级 workspace 覆盖（D14/D15）；缺省 = 跟随频道。取值由库层整体校验。
+    workspace_backend: str | None = None
+    permission_mode: str | None = None
+    allow_local_shell: bool = False
+    docker_image: str | None = None
 
 
 class AgentUpdate(BaseModel):
@@ -258,9 +267,25 @@ class AgentUpdate(BaseModel):
     system_prompt: str | None = None
     enabled: bool | None = None
     auto_claim: bool | None = None
+    # Agent 级 workspace 覆盖（D14/D15）：缺省 = 不提；取值由库层整体校验。``docker_image``
+    # 的空串是**显式清空**（回到内置镜像），不是「没提到」。
+    workspace_backend: str | None = None
+    permission_mode: str | None = None
+    allow_local_shell: bool | None = None
+    docker_image: str | None = None
 
     @field_validator(
-        "display_name", "role", "model_id", "system_prompt", "enabled", "auto_claim", mode="before"
+        "display_name",
+        "role",
+        "model_id",
+        "system_prompt",
+        "enabled",
+        "auto_claim",
+        "workspace_backend",
+        "permission_mode",
+        "allow_local_shell",
+        "docker_image",
+        mode="before",
     )
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
@@ -274,6 +299,14 @@ class RemoteConsent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str = ""
+
+
+class DockerConsent(BaseModel):
+    """Docker 镜像的数据面确认请求体（``image`` 是完整的镜像引用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image: str = ""
 
 
 class ChannelMemberAdd(BaseModel):
@@ -1099,8 +1132,7 @@ def create_app(
         """删除配置与工作区副本（不删用户源目录；只影响该 scope）。"""
         current = database.get_skill(skill_id)
         if current is None:
-            database.delete_skill(skill_id)  # 让库层给统一的 404（按当前语言渲染）
-            raise AssertionError("unreachable")
+            raise NotFound(_render_copy("error.skill_not_found", skill_id=skill_id))
         roots = resolve_delete_roots(
             database,
             scope_kind=current["scope_kind"],
@@ -1123,6 +1155,35 @@ def create_app(
         server, consent = database.record_mcp_consent(server_id)
         server["runtime"] = mcp_runtime_status(server["id"])
         return {"mcp_server": server, "consent": consent}
+
+    @app.post("/api/docker-images/consent")
+    def consent_docker_image(payload: DockerConsent) -> dict[str, Any]:
+        """远端 Docker 镜像的数据面确认（幂等；重复确认不覆盖首次时间）。
+
+        这条确认是 ``remote_consent_scope('docker', image)`` 的人类面唯一写路径。未确认的镜像在
+        装配层**不拉取**、不启动容器，成员以可读原因 ``offline``；确认后清掉失败短缓存，下一轮
+        重新尝试。确认只存时间，不存凭证与连接参数。
+        """
+        image = payload.image.strip()
+        if not image:
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.remote_scope_id_empty"),
+                fields={"image": _render_copy("error.remote_scope_id_empty")},
+            )
+        if len(image) > MAX_DOCKER_IMAGE_LENGTH:
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.agent_update_invalid"),
+                fields={
+                    "image": _render_copy(
+                        "error.field.agent_docker_image_too_long", limit=MAX_DOCKER_IMAGE_LENGTH
+                    )
+                },
+            )
+        consent = database.record_remote_consent_scope("docker", image)
+        clear_docker_failure()
+        return {"consent": consent}
 
     @app.get("/api/search")
     def search(
@@ -1418,6 +1479,10 @@ def create_app(
             role=payload.role,
             model_id=payload.model_id,
             system_prompt=payload.system_prompt,
+            workspace_backend=payload.workspace_backend,
+            permission_mode=payload.permission_mode,
+            allow_local_shell=payload.allow_local_shell,
+            docker_image=payload.docker_image,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
@@ -1430,7 +1495,8 @@ def create_app(
         """编辑 Agent 配置（人类面唯一写路径，ADR-0011）。
 
         可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
-        ``auto_claim``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        ``auto_claim`` / ``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` /
+        ``docker_image``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
         校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
@@ -1447,6 +1513,10 @@ def create_app(
             system_prompt=payload.system_prompt,
             enabled=payload.enabled,
             auto_claim=payload.auto_claim,
+            workspace_backend=payload.workspace_backend,
+            permission_mode=payload.permission_mode,
+            allow_local_shell=payload.allow_local_shell,
+            docker_image=payload.docker_image,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
