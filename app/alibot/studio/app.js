@@ -1251,7 +1251,21 @@ function renderTabs() {
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   $('#msgCount').textContent = target ? renderedMessages().length : 0;
-  $('#taskCount').textContent = isDm ? 0 : channelTaskCount();
+  renderTaskCount();
+}
+
+/** 「任务」页签计数的**唯一**写入点。
+
+    计数不是页签的属性，而是 `state.tasks`（未筛选的全量快照）的派生值：快照对齐了真实任务
+    集合，计数就得跟着变，与「谁顺带重渲了页签」无关。因此它由 `renderTabs()`（页签重渲）
+    与任务快照的渲染路径（`renderTaskBoard()` / `openTask()`）共同调用——别处不再写
+    `#taskCount`，否则「任务刷新了但计数没刷新」会再一次从缝里漏出来（#177）。 */
+function renderTaskCount() {
+  const node = $('#taskCount');
+  if (!node) return;
+  const target = activeTarget();
+  // DM 里没有任务板这个概念（任务恰好属于一个频道）：整个页签不出现，计数按 0 写。
+  node.textContent = target && target.kind === 'dm' ? 0 : channelTaskCount();
 }
 
 /** 当前频道的任务数（该频道 = 当前 target；与看板的频道筛选无关）。 */
@@ -1410,6 +1424,10 @@ function boardList() {
 }
 
 function renderTaskBoard() {
+  // 看板与页签计数读的是**同一份**全量快照：重铺看板的地方顺带把计数重算一遍，
+  // 于是 `state.tasks` 的就地替换路径（`markTaskRead()` / `refreshTaskDetails()`）
+  // 不必各自再记得写一次 `#taskCount`。
+  renderTaskCount();
   const columns = $('#taskColumns');
   const list = $('#taskListWrap');
   if (!columns || !list) return;
@@ -1911,6 +1929,10 @@ async function openTask(taskId) {
     const index = state.tasks.findIndex((task) => task.id === taskId);
     if (index >= 0) state.tasks[index] = thread.task;
     else state.tasks.push(thread.task);
+    // 打开的任务可能原先不在快照里（搜索）或快照已过期（卡片）：补进 `state.tasks` 之后
+    // 页签计数立刻跟着变。这里**不**重铺看板（主线还停在它上面，重铺会丢掉人的滚动与焦点），
+    // 所以计数不能指望 `renderTaskBoard()` 顺带，必须自己写一次（#177）。
+    renderTaskCount();
     setDockMode('task');
     renderTaskThread();
     connectTaskStream(taskId, taskMaxSeq());
