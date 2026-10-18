@@ -14,7 +14,9 @@
 | `app/tests/_migration_history.py` | v16 留档：`channel_v16`、六表、两索引、两触发器、`VERSION_OBJECTS[16]`、`SOURCE_COMMITS[16] = 'pending'`。 |
 | `app/tests/test_team_plan_sop_schema.py` | 新增 5 条外部可观察测试（见下）。 |
 | `app/tests/test_silent_schema_step.py` | 一处派生断言从「`14 → SCHEMA_VERSION`」改为「`14 → 15`」：原来那条在任意后续 bump 时会假红，与本票的迁移步骤无关。 |
-| `app/specs/issue-135-research.md` | 两段示例代码按 `ruff format --check` 的期望手工排版（集成 tip 上该项本已红；内容是既有引用，语义零改动）。 |
+
+> 注：`app/specs/issue-135-research.md` 的 `ruff format --check` 修正在集成 tip `8b8e0c7` 已由协调者落库；
+> 本分支 merge 该 tip 后不再包含这个文件的改动。
 
 ## 逐条判据
 
@@ -146,4 +148,3 @@ $ scripts/check.sh
 
 - `SOURCE_COMMITS[16] = 'pending'`：按该文件既有约定，合并后回填合并提交号。
 - 新表在本票只有 DDL 与约束；读写行为、保留策略（Plan 20 run/30 天、SOP 50 run/90 天）属于后续票。
-- `app/specs/issue-135-research.md` 的排版修正只发生在示例代码块的空白与括号排布上，文字证据未改。

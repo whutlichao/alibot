@@ -30,10 +30,10 @@
 
 `LocalWorkspace.list_tools()`（2.0.10）返回六个工具：
 
-```text
+```python
 # agentscope/workspace/_local_workspace.py:141-162
 backend = self.get_backend()
-shell = Bash(cwd=self.workdir, backend=backend)   # 只有 shell 拿到 workdir
+shell = Bash(cwd=self.workdir, backend=backend)  # 只有 shell 拿到 workdir
 return [
     shell,
     Edit(backend=backend),
