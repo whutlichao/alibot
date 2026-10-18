@@ -3,8 +3,10 @@
 票面正本：GitHub issue #147（Part of #131）。判据来源：`app/specs/agentscope-2-alignment.md`
 §3.5 / §4.4；契约正本：`docs/adr/0023-plan-and-sop-are-not-tasks.md`。
 
-- 分支：`issue-147-impl`（从集成分支 tip `ceb393c` 切出）
+- 分支：`issue-147-impl`（从集成分支 tip `ceb393c` 切出；完成后合并 `ca995ac`（#145））
 - 实现 + 测试 + 文档：本提交（commit SHA 见分支 HEAD）
+- 合并适配只有一处：`orchestration.py` 自动合并了 #145 的任务线程改动与本票的
+  `scheduler` 只读属性；断言与语义未改。`test_team_task_threads.py` 随集成分支进入，全量门禁已覆盖
 - 未改 D1–D23、既有 ADR 原文与 schema 形态（`SCHEMA_VERSION` 仍是 17）；`sop_definition` /
   `sop_run` 由 #138 的 15→16 迁移引入，本票只写它们的运行期数据
 - **范围边界**：运行面板的布局/交互属 #155。本票提供 `GET /api/sops*`、
@@ -123,11 +125,11 @@ cd app && ../.venv/bin/python -m pytest tests/test_sop.py -k "retention or does_
 ## 二、全量门禁
 
 ```bash
-scripts/check.sh   # 合并 agentscope2-integration 之后
-# pytest（全量）：见下方读数
+scripts/check.sh   # 合并 agentscope2-integration（ca995ac）之后
+# pytest（全量）：799 passed, 2 skipped（801 collected）
 # ruff check：All checks passed!
-# ruff format --check：全部已格式化
-# mypy：Success: no issues found
+# ruff format --check：190 files already formatted
+# mypy：Success: no issues found in 81 source files
 # pyright：0 errors, 0 warnings, 0 informations
 # node --test app/tests/*.test.cjs：136 tests / 136 pass / 0 fail
 # 最后一行「门禁全绿」，退出码 0
