@@ -36,6 +36,7 @@ agent→agent 跳恰好 +1，不因成员数变化。``round_outcome.consumed_bu
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -172,11 +173,14 @@ class WakeOrchestrator:
         seam: AgentSeam,
         events: EventBus,
         scheduler: Scheduler | None = None,
+        workspace_unavailable: Callable[[str], str | None] | None = None,
     ) -> None:
         self._db = db
         self._seam = seam
         self._events = events
         self._scheduler: Scheduler = scheduler if scheduler is not None else ThreadScheduler()
+        # Docker 工作区失败的可读原因（#150）：装配层记录、这里只读。不注入时行为不变。
+        self._workspace_unavailable = workspace_unavailable
         # in-flight 只是运行态（进程内事实）：重启后没有可重放的轮次。
         # 「最近一轮失败」不在这里 —— 它读库（见 ``status_of``），因为它是一个持久事实。
         self._in_flight: dict[str, _Turn] = {}
@@ -1192,6 +1196,10 @@ class WakeOrchestrator:
                     error=error,
                 ),
             )
+        if self._workspace_unavailable is not None:
+            workspace_reason = self._workspace_unavailable(str(agent.get("id") or ""))
+            if workspace_reason:
+                return Availability(False, workspace_reason)
         return Availability(True)
 
     # ─── 状态点（只表达后端事实） ─────────────────────────────────────────

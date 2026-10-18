@@ -39,6 +39,7 @@ from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
 from .team import TEAM_SCOPE
+from .workspace import clear_docker_failure
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
@@ -265,6 +266,8 @@ class WorkspaceService:
                 },
             )
         config = self._db.update_channel_config(channel_id, **changes)
+        # 工作区配置变了：清掉 Docker 失败短缓存，下一次轮次重新尝试（改回 local 也立即生效）。
+        clear_docker_failure()
         return self._channel_config_view(config)
 
     def _locale_copy(self, key: str, **params: Any) -> str:

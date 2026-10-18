@@ -57,7 +57,7 @@ import os
 import queue
 import threading
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -92,6 +92,12 @@ from .reminder_delivery import (
 )
 from .service import WorkspaceService
 from .sop import SOPRunner
+from .workspace import (
+    docker_unavailable_reason,
+    shutdown_docker_workspaces,
+    start_docker_reaper,
+    sweep_stale_docker_workspaces,
+)
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -520,6 +526,8 @@ def create_app(
         member_seam,
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
+        # Docker 工作区失败原因（#150）：装配层记录，成员状态点据此变 offline（不回落本地）。
+        workspace_unavailable=docker_unavailable_reason,
     )
     # **到期投递器**（ADR-0017 §四）：判定「到点」的唯一 seam。它的产物是 `system` 消息与行上的
     # `fired_at`，与唤醒编排无关——到点**不唤醒**任何人，因此这里只把 `EventBus` 交给它做广播。
@@ -544,6 +552,13 @@ def create_app(
         database.prune_plan_runs()
         # SOP 保留策略的启动那一半（ADR-0023 §三）：最近 50 个 run 或 90 天；定义不删。
         database.prune_sop_runs()
+        # Docker 工作区（#150）：启动清扫上一进程遗留的容器 + 空闲回收线程。Docker 是可选
+        # 后端：daemon 不在时这些步骤安静失败，不影响主服务启动。
+        try:
+            start_docker_reaper()
+            await sweep_stale_docker_workspaces()
+        except Exception:
+            pass
         # 开窗前先扫一次（C8 判据 3）：一条启动前就已过点且在窗口内的提醒，在「第一次读到
         # ``GET /api/reminders``」时 `fired_at` 已非空，不需要等第一轮 30 秒轮询。
         start_driver = getattr(driver, "start", None)
@@ -562,6 +577,9 @@ def create_app(
             close_scheduler = getattr(orchestrator._scheduler, "shutdown", None)
             if callable(close_scheduler):
                 close_scheduler()
+            # 容器清理是 best-effort：SIGKILL 靠下一次启动清扫兜底。
+            with suppress(Exception):
+                await shutdown_docker_workspaces()
             database.close()
 
     app = FastAPI(title="Alibot", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)

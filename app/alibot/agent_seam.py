@@ -605,7 +605,11 @@ class AgentScopeAgentSeam:
         return self._locale_of()
 
     def _workspace_settings(self, target_id: str, member_id: str) -> Any | None:
-        """本轮的项目根配置；没有装配钩子 / 未配置根 / 非 local 后端时返回 ``None``。"""
+        """本轮的项目根配置；没有装配钩子 / 未配置根时返回 ``None``。
+
+        ``local`` 与 ``docker`` 都原样返回：后端分派在 :func:`assemble_workspace` 里，本模块
+        **绝不**把 docker 静默改写成 local（ADR-0021 §二）。
+        """
         if self._workspace_of is None:
             return None
         from .workspace import WorkspaceSettings
@@ -613,9 +617,7 @@ class AgentScopeAgentSeam:
         raw = self._workspace_of(target_id, member_id)
         if raw is None:
             return None
-        settings = raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
-        # Docker 后端由 W3 装配；本模块不静默回落成“本地 Bash”（ADR-0021 §二）。
-        return settings if settings.is_local else None
+        return raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
 
     # ─── 模型构造 ─────────────────────────────────────────────────────────
     def _build_model(self, provider: str, model_name: str, *, stream: bool = False) -> Any:
@@ -776,8 +778,9 @@ class AgentScopeAgentSeam:
                     effective_rules,
                 )
                 from .workspace import (
-                    assemble_local_workspace,
+                    assemble_workspace,
                     local_shell_tool,
+                    release_workspace_mount,
                     session_partition_id,
                 )
 
@@ -799,10 +802,11 @@ class AgentScopeAgentSeam:
                     root=str(root) if root else None,
                 )
                 if settings is not None:
-                    mount = await assemble_local_workspace(
+                    mount = await assemble_workspace(
                         settings,
                         member_id=member_id,
                         session_id=session_partition_id(member_id, target_id),
+                        locale=self._locale(),
                     )
 
                 agent_options: dict[str, Any] = {
@@ -815,7 +819,11 @@ class AgentScopeAgentSeam:
                 workspace_tools = list(mount.tools) if mount is not None else []
                 # 本地 shell 默认不挂（D15）。显式开启后仍是**每次调用**审批；read-only 下不挂，
                 # 因为 EXPLORE 对非只读调用的结论是 DENY（没有“询问”这一档）。
-                if mount is not None and mount.allow_local_shell and permission_mode != "read-only":
+                if (
+                    mount is not None
+                    and getattr(mount, "allow_local_shell", False)
+                    and permission_mode != "read-only"
+                ):
                     workspace_tools.append(local_shell_tool(mount.root))
                 toolkit = _round_toolkit(
                     provider,
@@ -939,7 +947,7 @@ class AgentScopeAgentSeam:
             finally:
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
                 if mount is not None:
-                    await mount.workspace.close()
+                    await release_workspace_mount(mount)
                 await _aclose_model_client(model)
 
         try:
@@ -951,12 +959,15 @@ class AgentScopeAgentSeam:
             )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
             from .approval import ApprovalWaitTimeout
+            from .workspace import DockerWorkspaceUnavailable
 
             if isinstance(error, ApprovalWaitTimeout):
                 return RoundOutcome(
                     status="failed",
                     reason=render("seam.approval_timeout", self._locale(), seconds=f"{error.seconds:.0f}"),
                 )
+            if isinstance(error, DockerWorkspaceUnavailable):
+                return RoundOutcome(status="failed", reason=str(error))
             return RoundOutcome(
                 status="failed",
                 reason=render(
@@ -1027,8 +1038,9 @@ class AgentScopeAgentSeam:
                 effective_rules,
             )
             from .workspace import (
-                assemble_local_workspace,
+                assemble_workspace,
                 local_shell_tool,
+                release_workspace_mount,
                 session_partition_id,
             )
 
@@ -1061,10 +1073,11 @@ class AgentScopeAgentSeam:
                 settings = self._workspace_settings(target_id, member_id_value)
                 if settings is None:
                     return None
-                mount = await assemble_local_workspace(
+                mount = await assemble_workspace(
                     settings,
                     member_id=member_id_value,
                     session_id=session_partition_id(member_id_value, target_id),
+                    locale=self._locale(),
                 )
                 mounts.append(mount)
                 tools = list(mount.tools)
@@ -1073,7 +1086,7 @@ class AgentScopeAgentSeam:
                     (permission_settings or {}).get("mode")
                     or (settings.permission_mode if settings is not None else "ask-writes")
                 )
-                if mount.allow_local_shell and mode != "read-only":
+                if getattr(mount, "allow_local_shell", False) and mode != "read-only":
                     tools.append(local_shell_tool(mount.root))
                 return tools
 
@@ -1269,7 +1282,7 @@ class AgentScopeAgentSeam:
                     inputs = UserConfirmResultEvent(reply_id=reply_id, confirm_results=confirm_results)
             finally:
                 for mount in mounts:
-                    await mount.workspace.close()
+                    await release_workspace_mount(mount)
                 for model in models:
                     await _aclose_model_client(model)
 
@@ -1281,6 +1294,10 @@ class AgentScopeAgentSeam:
                 reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
             )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
+            from .workspace import DockerWorkspaceUnavailable
+
+            if isinstance(error, DockerWorkspaceUnavailable):
+                return RoundOutcome(status="failed", reason=str(error))
             return RoundOutcome(
                 status="failed",
                 reason=render(
