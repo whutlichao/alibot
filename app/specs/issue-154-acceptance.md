@@ -129,7 +129,8 @@ $ curl -s http://127.0.0.1:8797/studio/index.html | md5 -q ; md5 -q app/alibot/s
 | --- | --- |
 | `node --test app/tests/channel_config_ui.test.cjs` | 9 pass / 0 fail |
 | `node --test app/tests/*.test.cjs` | 145 pass / 0 fail |
-| `scripts/check.sh`（全量，最终文件） | **门禁全绿**（exit 0）：pytest `791 passed, 2 skipped in 342.18s`；ruff check `All checks passed!`；ruff format `--check` `188 files already formatted`；mypy `Success: no issues found in 79 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 145 / pass 145 / fail 0` |
+| `scripts/check.sh`（merge 前全量） | **门禁全绿**（exit 0）：pytest `791 passed, 2 skipped in 342.18s`；ruff check `All checks passed!`；ruff format `--check` `188 files already formatted`；mypy `Success: no issues found in 79 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 145 / pass 145 / fail 0` |
+| `scripts/check.sh`（merge 集成分支 tip `e4aa8e9` 后全量） | **门禁全绿**（exit 0）：pytest `799 passed, 2 skipped in 369.69s`；ruff check `All checks passed!`；ruff format `--check` `191 files already formatted`；mypy `Success: no issues found in 81 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 145 / pass 145 / fail 0` |
 | `scripts/check.sh --fast`（迭代读数） | `All checks passed!` / `Success: no issues found in 79 source files` / `0 errors, 0 warnings, 0 informations` / `门禁全绿` |
 
 ---
