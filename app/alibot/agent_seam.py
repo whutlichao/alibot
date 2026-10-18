@@ -18,13 +18,16 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .i18n import SOURCE_LOCALE, Locale, render
+
+_log = logging.getLogger(__name__)
 
 # provider 客户端上「可关闭入口」的候选方法名（协程）。顺序即探测顺序。
 _CLOSE_METHOD_NAMES = ("aclose", "close")
@@ -234,6 +237,215 @@ class RoundOutcome:
             raise ValueError("Agent 任务动作必须使用受支持的结构化类型")
 
 
+@dataclass(frozen=True)
+class AgentEventRecord:
+    """一条可直播的框架事件（ADR-0020）：归属完整的白名单副本，**不落库**。
+
+    事件的唯一去处是 SSE 的 ``agent_event`` 帧；它不是业务正本，断线丢失、重启消失。
+    ``member_id`` / ``reply_id`` 来自本轮的事件归属映射，``target_id`` 由本轮调用注入
+    （channel 或 task，二者对本层没有区别）。
+    """
+
+    type: str
+    target_id: str
+    member_id: str
+    reply_id: str
+    payload: dict[str, Any]
+
+
+def member_internal_name(member_id: str) -> str:
+    """D10：pipeline 内部名由 **member id** 派生（``m-<id>``），显示名不参与。
+
+    派生名只活在框架内部与事件归属映射里：不落库、不显示、不改成员身份。``display_name``
+    在频道里可以重复，唯一稳定键只能是 id。
+    """
+    return f"m-{member_id}"
+
+
+def _event_type(event: Any) -> str:
+    return str(getattr(event, "type", "") or "")
+
+
+def _enum_value(value: Any) -> Any:
+    """pydantic/Enum 字段转成可 JSON 化的原始值（``str`` / ``bool`` / ``None`` 原样返回）。"""
+    return getattr(value, "value", value)
+
+
+def _data_length(value: str | None) -> int:
+    """DataBlock 元数据只保留长度，不透传 base64 / URL 正文。"""
+    return len(value or "")
+
+
+def _hint_value(hint: Any) -> Any:
+    """``HintBlock.hint`` 是 str 或内容块列表；数据块只保留元数据。"""
+    if not isinstance(hint, list):
+        return hint
+    parts: list[Any] = []
+    for block in hint:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+            continue
+        source = getattr(block, "source", None)
+        payload = getattr(source, "data", None) or getattr(source, "url", None) or ""
+        parts.append(
+            {
+                "type": getattr(block, "type", "data"),
+                "name": getattr(block, "name", None),
+                "length": _data_length(payload if isinstance(payload, str) else ""),
+            }
+        )
+    return parts
+
+
+def _agent_event_payload(event: Any) -> dict[str, Any] | None:
+    """白名单：只返回可直播的结构字段；``None`` 表示该事件不进入事件流。
+
+    ``ReplyStart`` 的 ``name`` 是 D10 派生名——它只用于归属，不放进 payload（不显示）。
+    ``session_id`` 是框架内部 id，同样不出去。``DataBlock*`` 与 ``ToolResultDataDelta``
+    只保留 media_type / 长度，绝不透传 base64 正文。
+    """
+    kind = _event_type(event)
+    if kind == "REPLY_START":
+        return {"role": str(getattr(event, "role", ""))}
+    if kind == "REPLY_END":
+        payload: dict[str, Any] = {"finished_reason": _enum_value(getattr(event, "finished_reason", ""))}
+        error = getattr(event, "error", None)
+        if error is not None:
+            payload["error"] = {
+                "type": _enum_value(getattr(error, "type", "")),
+                "message": str(getattr(error, "message", "")),
+            }
+        return payload
+    if kind in ("TEXT_BLOCK_START", "THINKING_BLOCK_START", "DATA_BLOCK_END"):
+        return {"block_id": str(getattr(event, "block_id", ""))}
+    if kind in ("TEXT_BLOCK_DELTA", "THINKING_BLOCK_DELTA"):
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "delta": str(getattr(event, "delta", "")),
+        }
+    if kind == "TEXT_BLOCK_END":
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "text": getattr(event, "text", None),
+        }
+    if kind == "TOOL_CALL_START":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "tool_call_name": str(getattr(event, "tool_call_name", "")),
+        }
+    if kind == "TOOL_CALL_DELTA":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "delta": str(getattr(event, "delta", "")),
+        }
+    if kind == "TOOL_CALL_END":
+        return {"tool_call_id": str(getattr(event, "tool_call_id", ""))}
+    if kind == "TOOL_RESULT_START":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "tool_call_name": str(getattr(event, "tool_call_name", "")),
+        }
+    if kind == "TOOL_RESULT_TEXT_DELTA":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "delta": str(getattr(event, "delta", "")),
+        }
+    if kind == "TOOL_RESULT_DATA_DELTA":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "block_id": str(getattr(event, "block_id", "")),
+            "media_type": str(getattr(event, "media_type", "")),
+            "length": _data_length(getattr(event, "data", None) or getattr(event, "url", None)),
+        }
+    if kind == "TOOL_RESULT_END":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "state": _enum_value(getattr(event, "state", "")),
+        }
+    if kind == "HINT_BLOCK":
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "source": getattr(event, "source", None),
+            "hint": _hint_value(getattr(event, "hint", None)),
+        }
+    if kind == "REQUIRE_USER_CONFIRM":
+        return {
+            "tool_calls": [
+                {
+                    "id": str(getattr(call, "id", "")),
+                    "name": str(getattr(call, "name", "")),
+                    "input": str(getattr(call, "input", "")),
+                }
+                for call in getattr(event, "tool_calls", [])
+            ]
+        }
+    if kind == "DATA_BLOCK_START":
+        payload = {
+            "block_id": str(getattr(event, "block_id", "")),
+            "media_type": str(getattr(event, "media_type", "")),
+        }
+        name = getattr(event, "name", None)
+        if name:
+            payload["name"] = str(name)
+        return payload
+    if kind == "DATA_BLOCK_DELTA":
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "media_type": str(getattr(event, "media_type", "")),
+            "length": _data_length(getattr(event, "data", None) or getattr(event, "url", None)),
+        }
+    if kind == "CUSTOM":
+        return {
+            "name": str(getattr(event, "name", "")),
+            "value": getattr(event, "value", {}),
+        }
+    return None
+
+
+def _agent_event_record(
+    event: Any,
+    *,
+    target_id: str,
+    names: Mapping[str, str],
+    reply_members: dict[str, str],
+) -> AgentEventRecord | None:
+    """把一条 ``AgentEvent`` 归属并收窄成 :class:`AgentEventRecord`；查不到就丢弃。
+
+    归属算法（ADR-0020 三）：``ReplyStartEvent.name`` 用 **D10 派生名表**映射成 member id，
+    并写入 ``reply_id → member_id``；其余事件只按 ``reply_id`` 查表。没有 ``ReplyStart``
+    的孤儿、表里查不到的 ``reply_id``、没有 ``reply_id`` 的事件（``CustomEvent``）一律丢弃并
+    记 debug——**不猜**（猜出来的归属会把成员的事件挂到别人名下，比丢事件更糟）。
+    """
+    kind = _event_type(event)
+    reply_id = str(getattr(event, "reply_id", "") or "")
+    if not reply_id:
+        _log.debug("agent event dropped: %s has no reply_id", kind)
+        return None
+    if kind == "REPLY_START":
+        name = str(getattr(event, "name", "") or "")
+        member_id = names.get(name)
+        if member_id is None:
+            _log.debug("agent event dropped: ReplyStart name %r is not a known member", name)
+            return None
+        reply_members.setdefault(reply_id, member_id)
+    member_id = reply_members.get(reply_id)
+    if member_id is None:
+        _log.debug("agent event dropped: reply_id %s has no ReplyStart", reply_id)
+        return None
+    payload = _agent_event_payload(event)
+    if payload is None:
+        _log.debug("agent event dropped: %s is outside the whitelist", kind)
+        return None
+    return AgentEventRecord(
+        type=kind,
+        target_id=target_id,
+        member_id=member_id,
+        reply_id=reply_id,
+        payload=payload,
+    )
+
+
 @runtime_checkable
 class AgentSeam(Protocol):
     """成员面：一轮的输入与输出。
@@ -259,11 +471,29 @@ class AgentSeam(Protocol):
                 ``model_id`` / ``system_prompt`` / ``enabled``）。
             messages: 该成员**待读的新消息**（经同一个读接口取得，不含正文的第二通道）。
             mentioned: 这批新消息里是否个人提及了该成员（rubric：被点名必须回应）。
-            target_id: 频道 id。
+            target_id: 频道 id 或任务 id——这一轮的 target（事件随之带出去）。
             task_context: 仅任务线程提供的内部动作上下文；频道与 DM 不开放任务工具。
             mandatory_reply: 本轮的**回应纪律标记**（不落库）：为真时本轮必须回应，
                 由编排在投递时算好（认领唤醒）。它**不用** ``reason`` 推导——重复唤醒会被合并，
                 而合并后的 ``reason`` 取决于先到者。
+        """
+        ...
+
+    def run_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
+        emit: Callable[[AgentEventRecord], None] | None = None,
+    ) -> RoundOutcome:
+        """跑一轮并（可选地）把框架事件按白名单直播出去。
+
+        ``emit`` 是**同步**回调（编排跑在工作线程），事件仅用于直播、不落库；``emit=None``
+        与 :meth:`run_round` 完全等价。参数语义同 :meth:`run_round`。
         """
         ...
 
@@ -323,14 +553,20 @@ class AgentScopeAgentSeam:
         return self._locale_of()
 
     # ─── 模型构造 ─────────────────────────────────────────────────────────
-    def _build_model(self, provider: str, model_name: str) -> Any:
+    def _build_model(self, provider: str, model_name: str, *, stream: bool = False) -> Any:
+        """建这一轮用的模型。
+
+        ``stream`` 只在有事件观察者（``emit``）时为真：没有观察者时保持既有的非流式调用，
+        provider 请求形状与 #140 之前逐字相同；有观察者时打开流式，框架才会产出
+        ``TextBlockDelta`` / ``ToolCall*`` 这类增量事件。
+        """
         from agentscope import credential as cred
 
         if provider == "ollama":
             ollama = cred.OllamaCredential(host=os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST))
             from agentscope.model import OllamaChatModel
 
-            return OllamaChatModel(credential=ollama, model=model_name, stream=False)
+            return OllamaChatModel(credential=ollama, model=model_name, stream=stream)
 
         api_key = read_api_key(provider, self._environ, locale=self._locale())
         credential_type = PROVIDER_CREDENTIAL_TYPE[provider]
@@ -351,7 +587,7 @@ class AgentScopeAgentSeam:
             credential=credential,
             model=model_name,
             parameters=chat_model_class.Parameters(),
-            stream=False,
+            stream=stream,
         )
 
     # ─── 一轮 ─────────────────────────────────────────────────────────────
@@ -365,6 +601,34 @@ class AgentScopeAgentSeam:
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
     ) -> RoundOutcome:
+        """兼容壳：``run_round_stream(..., emit=None)``（ADR-0020 二）。"""
+        return self.run_round_stream(
+            agent,
+            messages,
+            mentioned=mentioned,
+            target_id=target_id,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+            emit=None,
+        )
+
+    def run_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
+        emit: Callable[[AgentEventRecord], None] | None = None,
+    ) -> RoundOutcome:
+        """流式一轮：消费 ``Agent.reply_stream``，按白名单直播归属完整的事件。
+
+        有 ``emit`` 时才打开模型流式（否则 provider 请求形状与 ``run_round`` 的既有形态一致）。
+        事件只是观察面：回调失败只记 debug，不改写本轮结论；``RoundOutcome`` 仍只由最终 ``Msg``
+        与结构化工具记录决定，事件也不落库。
+        """
         import asyncio
 
         provider = provider_of(str(agent.get("model_id") or ""))
@@ -380,26 +644,32 @@ class AgentScopeAgentSeam:
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
         # 它是一个进程内的事实列表，只在 ``_round`` 的 loop 里被工具线程追加，不落库。
         silence_declarations: list[None] = []
+        # 归属（ADR-0020 三）：D10 派生名 → member id 只用于 ``ReplyStartEvent.name``；
+        # 其余事件按 ``reply_id`` 查。表跨整轮存活（事件消费在同一个 loop 内）。
+        member_id = str(agent["id"])
+        member_names = {member_internal_name(member_id): member_id}
+        reply_members: dict[str, str] = {}
 
         async def _round() -> Any:
             # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
             # 两件事都在同一个 ``asyncio.run`` 的协程内完成，中间不允许跨到下一个 loop。
             # 客户端若带着活连接活过这一轮，它的 ``__del__`` 会在之后的某个 loop 里去关一个属于
             # 已关闭 loop 的 socket transport —— 那正是 issue #30 的 ``Event loop is closed``。
-            model = self._build_model(provider, model_name)
+            model = self._build_model(provider, model_name, stream=emit is not None)
             try:
                 from agentscope.agent import Agent
-                from agentscope.message import UserMsg
+                from agentscope.message import Msg, UserMsg
 
                 agent_options: dict[str, Any] = {
-                    "name": str(agent.get("display_name") or agent.get("id") or "agent"),
+                    # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
+                    "name": member_internal_name(member_id),
                     "system_prompt": system_prompt,
                     "model": model,
                 }
                 toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
-                    actor_id=str(agent["id"]),
+                    actor_id=member_id,
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                 )
@@ -409,9 +679,33 @@ class AgentScopeAgentSeam:
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
                 inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
-                return await asyncio.wait_for(
-                    instance.reply(inputs if inputs else None), timeout=self.timeout_seconds
-                )
+                reply: Any = None
+
+                async def _consume() -> Any:
+                    nonlocal reply
+                    async for item in instance.reply_stream(inputs if inputs else None, yield_final_msg=True):
+                        if isinstance(item, Msg):
+                            reply = item
+                            continue
+                        if emit is None:
+                            continue
+                        record = _agent_event_record(
+                            item,
+                            target_id=target_id,
+                            names=member_names,
+                            reply_members=reply_members,
+                        )
+                        if record is None:
+                            continue
+                        try:
+                            emit(record)
+                        except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
+                            _log.debug("agent event emit failed", exc_info=True)
+                    if reply is None:
+                        raise RuntimeError("AgentScope 未产出最终回复 Msg")
+                    return reply
+
+                return await asyncio.wait_for(_consume(), timeout=self.timeout_seconds)
             finally:
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
                 await _aclose_model_client(model)
