@@ -123,6 +123,10 @@ PERMISSION_MODES = ("read-only", "ask-writes", "trusted-writes")
 # team 运行记录的状态词（规格 §4.2）。它不是 ``round_outcome``：只描述一次队长轮次的生命周期。
 TEAM_RUN_STATUSES = ("running", "completed", "failed", "interrupted", "invalid-leader")
 
+# 一次 ``TeamAssign`` 的运行记录状态（规格 §3.4 / §4.2）。``budget-exhausted`` 是「没有运行成员」，
+# 其余四态描述「成员这一条分派」的结果；跳一旦扣减就不退款，失败/中断也保留 ``jump_consumed=1``。
+TEAM_ASSIGNMENT_STATES = ("started", "succeeded", "failed", "interrupted", "budget-exhausted")
+
 # 「这次请求没提到这个字段」与「显式清空」是两件事；只有 ``workspace_root`` 允许后者。
 _UNSET = object()
 
@@ -2814,6 +2818,132 @@ class Database:
             "finished_at": row["finished_at"],
         }
 
+    def create_team_assignment(
+        self,
+        *,
+        team_run_id: str,
+        target_id: str,
+        task_id: str | None,
+        leader_member_id: str,
+        member_id: str,
+        tool_call_id: str,
+        prompt: str,
+        state: str = "started",
+        jump_consumed: int = 1,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        """落一条分派运行记录；``state`` / ``jump_consumed`` 由裁决结果决定。
+
+        ``budget-exhausted`` 是一次**没运行成员**的分派（``jump_consumed=0``）；``started`` 是
+        已扣跳、成员正在跑的那一条，收口时由 :meth:`finish_team_assignment` 改成
+        ``succeeded`` / ``failed`` / ``interrupted``。跳一旦扣减就不退款，因此本方法**不提供**
+        把 ``jump_consumed`` 从 1 改回 0 的路径。
+        """
+        if state not in TEAM_ASSIGNMENT_STATES:
+            raise DomainError("validation_failed", self._render_copy("error.team_assignment_state_invalid"))
+        if int(jump_consumed) not in (0, 1):
+            raise DomainError("validation_failed", self._render_copy("error.team_assignment_jump_invalid"))
+        now = started_at or utc_now()
+        if finished_at is None and state != "started":
+            finished_at = now
+        assignment_id = new_id("assign")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO team_assignment(id, team_run_id, target_id, task_id, "
+                    "leader_member_id, member_id, tool_call_id, prompt, state, jump_consumed, "
+                    "started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        assignment_id,
+                        team_run_id,
+                        target_id,
+                        task_id,
+                        leader_member_id,
+                        member_id,
+                        tool_call_id,
+                        prompt,
+                        state,
+                        int(jump_consumed),
+                        now,
+                        finished_at,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_assignment(assignment_id)
+
+    def finish_team_assignment(
+        self,
+        assignment_id: str,
+        *,
+        state: str,
+        reply_excerpt: str = "",
+        error: str = "",
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        """把一条分派收口成终态；``jump_consumed`` 原样保留（不退款）。"""
+        if state not in TEAM_ASSIGNMENT_STATES or state == "started":
+            raise DomainError("validation_failed", self._render_copy("error.team_assignment_state_invalid"))
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE team_assignment SET state = ?, reply_excerpt = ?, error = ?, "
+                    "finished_at = ? WHERE id = ?",
+                    (state, reply_excerpt, error, finished_at or utc_now(), assignment_id),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(
+                        self._render_copy("error.team_assignment_not_found", assignment_id=assignment_id)
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_assignment(assignment_id)
+
+    def get_team_assignment(self, assignment_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM team_assignment WHERE id = ?", (assignment_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.team_assignment_not_found", assignment_id=assignment_id))
+        return self._team_assignment_payload(row)
+
+    def list_team_assignments(self, target_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """该 target 的分派运行记录（按开始时间；同秒内按 id 定序）。"""
+        self.get_target(target_id)  # 404 早退
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM team_assignment WHERE target_id = ? ORDER BY started_at, id LIMIT ?",
+                (target_id, int(limit)),
+            ).fetchall()
+        return [self._team_assignment_payload(row) for row in rows]
+
+    @staticmethod
+    def _team_assignment_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "team_run_id": row["team_run_id"],
+            "target_id": row["target_id"],
+            "task_id": row["task_id"],
+            "leader_member_id": row["leader_member_id"],
+            "member_id": row["member_id"],
+            "tool_call_id": row["tool_call_id"],
+            "prompt": row["prompt"],
+            "state": row["state"],
+            "jump_consumed": int(row["jump_consumed"]),
+            "reply_excerpt": row["reply_excerpt"],
+            "error": row["error"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+        }
+
     # ─── 消息（作用域键是 **target_id**） ────────────────────────────────
     def list_messages(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         self.get_target(target_id)  # 404 早退
@@ -3328,6 +3458,66 @@ class Database:
                 (target_id, int(epoch_seq), used, self._applied_limit_snapshot_locked(target_id)),
             )
         return used
+
+    def try_consume_jump(self, target_id: str) -> dict[str, Any]:
+        """team 分派的**原子**跳扣减：检查与扣减在同一条条件 UPDATE / 同一事务里。
+
+        实现约束（ADR-0019 / R1 §3）：
+
+        - ``BEGIN IMMEDIATE`` 先拿写锁，再解析当前世代的生效上界：``target_budget.applied_limit``
+          快照（``NULL`` = 内置默认 :data:`BUDGET_LIMIT`）。快照与读路径
+          （:meth:`_budget_facts_locked`）同源，不随配置漂移。
+        - ``UPDATE ... SET used = used + 1 WHERE target_id = ? AND used < ?``：受影响行数为 0
+          ⇒ 耗尽。不能先读后写——R1 的 100 并发对照证明那会越过上界。
+        - 没有预算行（这个 target 从未开世代、也没消耗过跳）时，先在同事务里惰性建行
+          （``used=0`` + 内置默认上界），否则条件 UPDATE 的 0 行会被误判成「耗尽」。
+        - 返回 ``ok`` / ``epoch_seq`` / ``used`` / ``limit``：``used`` 是**扣减后**的正本读数，
+          与 ``target_budget.used`` 一致；``ok=False`` 时 ``used`` 不变。
+
+        它不负责写 ``team_assignment``（那是 :meth:`create_team_assignment` 的落点）：预算正本
+        只有一个写点，运行记录不参与裁决。
+        """
+        self.get_target(target_id)  # 404 早退
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT epoch_seq, used, applied_limit FROM target_budget WHERE target_id = ?",
+                    (target_id,),
+                ).fetchone()
+                if row is None:
+                    # 没有行 = 还没有开世代：当前世代的有效上界是**内置默认**（NULL 快照），
+                    # 已保存的频道覆盖只作 ``pending_limit``，从下一个人类世代才生效
+                    # （与 ``_budget_facts_locked`` 的第 2 条读法同一口径）。
+                    self._conn.execute(
+                        "INSERT INTO target_budget(target_id, epoch_seq, used, applied_limit) "
+                        "VALUES (?, 0, 0, NULL) ON CONFLICT(target_id) DO NOTHING",
+                        (target_id,),
+                    )
+                    row = self._conn.execute(
+                        "SELECT epoch_seq, used, applied_limit FROM target_budget WHERE target_id = ?",
+                        (target_id,),
+                    ).fetchone()
+                if row is None:  # INSERT/ON CONFLICT 之后必有行
+                    raise RuntimeError("target_budget row missing after the lazy upsert")
+                epoch_seq = int(row["epoch_seq"])
+                used = int(row["used"])
+                limit = BUDGET_LIMIT if row["applied_limit"] is None else int(row["applied_limit"])
+                cursor = self._conn.execute(
+                    "UPDATE target_budget SET used = used + 1 WHERE target_id = ? AND used < ?",
+                    (target_id, limit),
+                )
+                consumed = cursor.rowcount > 0
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return {
+            "ok": consumed,
+            "epoch_seq": epoch_seq,
+            "used": used + (1 if consumed else 0),
+            "limit": limit,
+        }
 
     # ─── target 成员（唯一写点：人类面「加入」与穿透加入共用） ──────────────
     def is_target_member(self, target_id: str, member_id: str) -> bool:

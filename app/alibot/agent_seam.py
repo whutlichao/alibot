@@ -912,6 +912,8 @@ class AgentScopeAgentSeam:
                     members=member_agents,
                     target_id=target_id,
                     task_id=team.task_id,
+                    team_run_id=team.team_run_id,
+                    budget=team.budget,
                 )
                 inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
 
