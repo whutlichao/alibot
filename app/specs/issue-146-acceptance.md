@@ -7,6 +7,10 @@
 - 实现 + 测试 + 文档：本提交（commit SHA 见分支 HEAD）
 - 未改 D1–D23、既有 ADR 原文、schema 版本与数据库形态（`SCHEMA_VERSION` 仍是 17）；`plan_run` /
   `plan_task` 由 #138 的 15→16 迁移引入，本票只写它们的运行期数据
+- 合并了集成分支的 `cfe1dfe`（#143 team 预算 + #149 审批）。合并适配只有两处：
+  1. `PlanSession` 的发布回调改为显式 `Callable[..., None]`（mypy）；
+  2. #143 让 team 轮次必须带 `team_run_id` / `budget`，因此 #149 的团队审批用例补上这两个装配
+     字段；**断言与审批语义未改**。
 - **范围边界**：本票只做 Plan 的**运行装配 + 持久化 + 读端点**。运行面板的布局/交互属 #155；
   `team_assignment` 的展示/SSE 属 #144；SOP 属后续票。Plan 的 live-only 帧复用 #141 的
   `plan_update` 公共发布入口，不自拼帧，也不新增 SSE 类型
@@ -111,10 +115,10 @@ cd app && ../.venv/bin/python -m pytest tests/test_plan.py -k 404
 
 ```bash
 scripts/check.sh   # 合并 agentscope2-integration 之后
-# pytest（全量）：733 passed, 2 skipped
+# pytest（全量）：776 passed, 2 skipped（778 collected）
 # ruff check：All checks passed!
-# ruff format --check：174 files already formatted
-# mypy：Success: no issues found in 70 source files
+# ruff format --check：183 files already formatted
+# mypy：Success: no issues found in 77 source files
 # pyright：0 errors, 0 warnings, 0 informations
 # node --test app/tests/*.test.cjs：136 tests / 136 pass / 0 fail
 # 最后一行「门禁全绿」，退出码 0
