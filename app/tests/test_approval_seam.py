@@ -395,10 +395,15 @@ def test_team_member_approval_routes_by_reply_id_and_completes_the_round(library
         permission_of=database.permission_settings_for_target,
         approvals=broker,
     )
+    team_run = database.create_team_run(
+        target_id=channel["id"], leader_member_id=leader["id"], base_seq=1
+    )
     team = TeamRoundContext(
         target_id=channel["id"],
         leader_id=leader["id"],
         members=(member,),
+        team_run_id=str(team_run["id"]),
+        budget=database,
     )
     result: dict[str, Any] = {}
 
