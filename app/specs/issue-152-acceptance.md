@@ -146,16 +146,16 @@ cd app
 scripts/check.sh
 ```
 
-**读数**
+**读数**（合并集成分支 tip `b594859` 后重跑）
 
 ```text
-825 passed, 9 skipped in 358.96s (0:05:58)
+825 passed, 9 skipped in 377.43s (0:06:17)
 
 == ruff check
 All checks passed!
 
 == ruff format --check
-201 files already formatted
+202 files already formatted
 
 == mypy（仓库根）
 Success: no issues found in 88 source files
@@ -164,7 +164,7 @@ Success: no issues found in 88 source files
 0 errors, 0 warnings, 0 informations
 
 == node --test
-tests 145 / pass 145 / fail 0
+tests 157 / pass 157 / fail 0
 
 门禁全绿
 ```
