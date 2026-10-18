@@ -193,6 +193,23 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.permission_rule_behavior_invalid": "权限规则行为只能是 allow / deny / ask",
         "error.permission_rule_scope_unknown": "权限规则作用域不存在：{scope_id}",
         "error.permission_rule_not_found": "权限规则不存在：{rule_id}",
+        # ─── MCP 声明与装配（#151 / ADR-0021 §三） ───────────────────────
+        "error.mcp_name_invalid": "MCP 声明名只能由字母、数字、下划线或连字符组成（最长 64）",
+        "error.mcp_transport_invalid": "MCP 传输只能是 stdio、http 或 sse",
+        "error.mcp_command_required": "stdio 传输必须提供 command",
+        "error.mcp_url_required": "远端 MCP 必须提供 url",
+        "error.mcp_url_invalid": "MCP url 必须是 http 或 https 绝对地址",
+        "error.mcp_sse_url_invalid": "sse 传输的 url 必须以 /sse 或 /messages/ 结尾",
+        "error.mcp_http_url_invalid": "http 传输的 url 不能指向 /sse 或 /messages/（那是 sse 传输）",
+        "error.mcp_args_invalid": "MCP args 必须是字符串列表",
+        "error.mcp_env_names_invalid": "MCP env_names 只能包含合法的环境变量名（只存名字，不存值）",
+        "error.mcp_scope_invalid": "MCP 声明作用域只能是 channel 或 agent",
+        "error.mcp_scope_unknown": "MCP 声明作用域不存在：{scope_id}",
+        "error.mcp_server_not_found": "MCP 声明不存在：{server_id}",
+        "error.mcp_server_conflict": "同一作用域内已存在同名 MCP 声明：{name}",
+        "error.mcp_consent_local": "stdio MCP 在本机运行，不需要远端数据面确认",
+        "mcp.runtime.consent_required": "远端 MCP 尚未确认数据面告知，未连接：{name}",
+        "mcp.runtime.connect_failed": "MCP 连接失败：{name}",
         "error.approval_not_found": "审批请求不存在：{reply_id}",
         "error.approval_state_conflict": "审批请求已是 {state}，不能再提交决策",
         "error.approval_tool_call_unknown": "未知的待审批工具调用：{tool_call_id}",
@@ -516,6 +533,29 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.permission_rule_behavior_invalid": "A permission rule behavior must be allow, deny, or ask",
         "error.permission_rule_scope_unknown": "No such permission rule scope: {scope_id}",
         "error.permission_rule_not_found": "No such permission rule: {rule_id}",
+        # ─── MCP declarations and assembly (#151 / ADR-0021 §3) ──────────
+        "error.mcp_name_invalid": (
+            "An MCP declaration name may only contain letters, digits, underscores, or hyphens (max 64)"
+        ),
+        "error.mcp_transport_invalid": "An MCP transport must be stdio, http, or sse",
+        "error.mcp_command_required": "A stdio MCP needs a command",
+        "error.mcp_url_required": "A remote MCP needs a url",
+        "error.mcp_url_invalid": "An MCP url must be an absolute http or https address",
+        "error.mcp_sse_url_invalid": "An sse MCP url must end with /sse or /messages/",
+        "error.mcp_http_url_invalid": "An http MCP url must not point at /sse or /messages/ (that is the sse transport)",
+        "error.mcp_args_invalid": "MCP args must be a list of strings",
+        "error.mcp_env_names_invalid": (
+            "MCP env_names may only contain valid environment variable names (names, never values)"
+        ),
+        "error.mcp_scope_invalid": "An MCP declaration scope must be channel or agent",
+        "error.mcp_scope_unknown": "No such MCP declaration scope: {scope_id}",
+        "error.mcp_server_not_found": "No such MCP declaration: {server_id}",
+        "error.mcp_server_conflict": "An MCP declaration with that name already exists in this scope: {name}",
+        "error.mcp_consent_local": "A stdio MCP runs locally and needs no remote data-flow acknowledgement",
+        "mcp.runtime.consent_required": (
+            "The remote MCP has not been acknowledged for its data flow yet; not connected: {name}"
+        ),
+        "mcp.runtime.connect_failed": "MCP connection failed: {name}",
         "error.approval_not_found": "No such approval request: {reply_id}",
         "error.approval_state_conflict": "The approval request is already {state}; no further decisions are accepted",
         "error.approval_tool_call_unknown": "Unknown tool call awaiting approval: {tool_call_id}",
