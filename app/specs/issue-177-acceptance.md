@@ -101,7 +101,7 @@ node --test app/tests/task_count_ui.test.cjs
 ## 3. 全量门禁
 
 ```sh
-scripts/check.sh            # 默认全量，不加 --fast（在交付 tip `321cdbc` 上跑的最后一次）
+scripts/check.sh            # 默认全量，不加 --fast（在提交 `321cdbc` 上跑；此后只改了本文件里的读数行，markdown-only）
 ```
 
 ```text
