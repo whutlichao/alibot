@@ -2968,6 +2968,250 @@ class Database:
                 merged[server["name"]] = server
         return [server for server in merged.values() if server["enabled"]]
 
+    # ─── Skill（#152 / 规格 §3.6 / §4.3 / ADR-0021 §三） ─────────────────────
+
+    @staticmethod
+    def _skill_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "description": str(row["description"]),
+            "source_path": str(row["source_path"]),
+            "content_hash": str(row["content_hash"]),
+            "enabled": bool(row["enabled"]),
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def validate_skill_scope(self, scope_kind: str, scope_id: str) -> None:
+        """与 MCP / 权限规则同口径：channel 必须存在；agent 必须是未删除的 Agent。"""
+        if scope_kind not in ("channel", "agent"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.skill_scope_invalid"),
+                fields={"scope_kind": self._render_copy("error.skill_scope_invalid")},
+            )
+        if scope_kind == "channel":
+            exists = self._conn.execute("SELECT 1 FROM channel WHERE id = ?", (scope_id,)).fetchone()
+        else:
+            exists = self._conn.execute(
+                "SELECT 1 FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                (scope_id,),
+            ).fetchone()
+        if exists is None:
+            message = self._render_copy("error.skill_scope_unknown", scope_id=scope_id)
+            raise DomainError("validation_failed", message, fields={"scope_id": message})
+
+    def channel_workspace_root(self, channel_id: str) -> str:
+        """频道的 ``workspace_root``（未配置 / 不存在返回空串；不校验目录是否存在）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT workspace_root FROM channel WHERE id = ?", (channel_id,)
+            ).fetchone()
+        return str(row["workspace_root"] or "") if row is not None else ""
+
+    def is_channel_member(self, channel_id: str, member_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM target_member WHERE target_id = ? AND member_id = ?",
+                (channel_id, member_id),
+            ).fetchone()
+        return row is not None
+
+    def workspace_roots_for_member(self, member_id: str) -> list[str]:
+        """该成员所属频道里**已配置**的项目根（去重、稳定顺序；用于 Agent 级技能落点/清理）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT c.workspace_root FROM channel c "
+                "JOIN target_member cm ON cm.target_id = c.id "
+                "WHERE cm.member_id = ? AND c.workspace_root IS NOT NULL "
+                "AND TRIM(c.workspace_root) <> '' ORDER BY c.workspace_root",
+                (member_id,),
+            ).fetchall()
+        return [str(row["workspace_root"]) for row in rows]
+
+    def all_workspace_roots(self) -> list[str]:
+        """所有频道的已配置项目根（去重；删除 Agent 级技能时清掉可能遗留的副本）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT workspace_root FROM channel "
+                "WHERE workspace_root IS NOT NULL AND TRIM(workspace_root) <> '' "
+                "ORDER BY workspace_root"
+            ).fetchall()
+        return [str(row["workspace_root"]) for row in rows]
+
+    def _assert_skill_name_free_locked(
+        self, *, scope_kind: str, scope_id: str, name: str, exclude_id: str | None = None
+    ) -> None:
+        row = self._conn.execute(
+            "SELECT id FROM skill WHERE scope_kind = ? AND scope_id = ? AND name = ?",
+            (scope_kind, scope_id, name),
+        ).fetchone()
+        if row is not None and str(row["id"]) != (exclude_id or ""):
+            message = self._render_copy("error.skill_conflict", name=name)
+            raise DomainError("skill_conflict", message, status=409, fields={"name": message})
+
+    def _normalize_skill(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """校验一条技能的**完整**元数据（安装 / 写入共用；安装器已先校验过内容）。"""
+        from .skills import MAX_SKILL_DESCRIPTION_LENGTH, SKILL_NAME_PATTERN
+
+        name = str(values.get("name") or "").strip()
+        if not SKILL_NAME_PATTERN.fullmatch(name):
+            message = self._render_copy("error.skill_name_invalid")
+            raise DomainError("validation_failed", message, fields={"name": message})
+        description = str(values.get("description") or "").strip()
+        if not description:
+            message = self._render_copy("error.skill_description_missing")
+            raise DomainError("validation_failed", message, fields={"description": message})
+        if len(description) > MAX_SKILL_DESCRIPTION_LENGTH:
+            message = self._render_copy(
+                "error.skill_description_too_long", limit=MAX_SKILL_DESCRIPTION_LENGTH
+            )
+            raise DomainError("validation_failed", message, fields={"description": message})
+        source_path = str(values.get("source_path") or "").strip()
+        if not source_path:
+            message = self._render_copy("error.skill_source_invalid")
+            raise DomainError("validation_failed", message, fields={"source_path": message})
+        content_hash = str(values.get("content_hash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+            message = self._render_copy("error.skill_hash_invalid")
+            raise DomainError("validation_failed", message, fields={"content_hash": message})
+        return {
+            "name": name,
+            "description": description,
+            "source_path": source_path,
+            "content_hash": content_hash,
+            "enabled": bool(values.get("enabled", True)),
+        }
+
+    def list_skills(self, scope_kind: str | None = None, scope_id: str | None = None) -> list[dict[str, Any]]:
+        """按 scope 过滤的技能列表（只读配置；不落消息、不唤醒）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_kind is not None:
+            clauses.append("scope_kind = ?")
+            params.append(scope_kind)
+        if scope_id is not None:
+            clauses.append("scope_id = ?")
+            params.append(scope_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM skill{where} ORDER BY created_at, id", params
+            ).fetchall()
+        return [self._skill_payload(row) for row in rows]
+
+    def get_skill(self, skill_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_payload(row) if row is not None else None
+
+    def create_skill(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        name: str,
+        description: str,
+        source_path: str,
+        content_hash: str,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """写一条技能元数据；同 scope 同名冲突（不静默覆盖）。配置动作，不落消息。"""
+        metadata = self._normalize_skill(
+            {
+                "name": name,
+                "description": description,
+                "source_path": source_path,
+                "content_hash": content_hash,
+                "enabled": enabled,
+            }
+        )
+        now = utc_now()
+        skill_id = new_id("sk")
+        with self._lock:
+            self.validate_skill_scope(scope_kind, scope_id)
+            self._assert_skill_name_free_locked(
+                scope_kind=scope_kind, scope_id=scope_id, name=metadata["name"]
+            )
+            self._conn.execute(
+                "INSERT INTO skill(id, name, description, source_path, content_hash, enabled, "
+                "scope_kind, scope_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    skill_id,
+                    metadata["name"],
+                    metadata["description"],
+                    metadata["source_path"],
+                    metadata["content_hash"],
+                    1 if metadata["enabled"] else 0,
+                    scope_kind,
+                    scope_id,
+                    now,
+                    now,
+                ),
+            )
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_payload(row)
+
+    def update_skill(self, skill_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """启停（``enabled``）。scope / 内容 hash 是身份，不可改。"""
+        allowed = {"enabled"}
+        unknown = set(changes) - allowed
+        if unknown:
+            message = self._render_copy("error.field_choices", values=", ".join(sorted(allowed)))
+            raise DomainError("validation_failed", message, fields=dict.fromkeys(unknown, message))
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.skill_not_found", skill_id=skill_id))
+            enabled = bool(changes.get("enabled", row["enabled"]))
+            self._conn.execute(
+                "UPDATE skill SET enabled = ?, updated_at = ? WHERE id = ?",
+                (1 if enabled else 0, utc_now(), skill_id),
+            )
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_payload(row)
+
+    def delete_skill(self, skill_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.skill_not_found", skill_id=skill_id))
+            self._conn.execute("DELETE FROM skill WHERE id = ?", (skill_id,))
+        return self._skill_payload(row)
+
+    def skills_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """一轮装配的技能清单（频道级 + Agent 级；Agent 级同名覆盖频道级，只返回启用的）。
+
+        与 :meth:`mcp_servers_for_target` 同一 target→channel 解析口径；DM / 未知 target 没有
+        频道级技能，Agent 级仍按成员自身分区装配。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? ORDER BY created_at, id",
+                    (member_id,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM skill WHERE "
+                    "(scope_kind = 'channel' AND scope_id = ?) OR "
+                    "(scope_kind = 'agent' AND scope_id = ?) "
+                    "ORDER BY CASE scope_kind WHEN 'channel' THEN 0 ELSE 1 END, "
+                    "created_at, id",
+                    (channel_id, member_id),
+                ).fetchall()
+            merged: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                skill = self._skill_payload(row)
+                # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
+                merged[skill["name"]] = skill
+        return [skill for skill in merged.values() if skill["enabled"]]
+
     # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
     @staticmethod
     def _approval_payload(row: sqlite3.Row) -> dict[str, Any]:

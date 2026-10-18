@@ -153,7 +153,7 @@ class LocalWorkspaceMount:
         return {str(getattr(tool, "name", "")) for tool in self.tools}
 
 
-def _safe_partition_id(value: str) -> str:
+def safe_partition_id(value: str) -> str:
     """把 member / session id 收敛成一个安全的单级目录名（不允许穿越）。"""
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(value or "")).strip()
     if cleaned in ("", ".", ".."):
@@ -163,7 +163,7 @@ def _safe_partition_id(value: str) -> str:
 
 def session_partition_id(member_id: str, target_id: str) -> str:
     """``.alibot/sessions/<session_id>`` 的 session id（每成员每 target 一个稳定分区）。"""
-    return _safe_partition_id(f"{target_id}--{member_id}")
+    return safe_partition_id(f"{target_id}--{member_id}")
 
 
 def _within(real: str, root: str) -> bool:
@@ -352,7 +352,7 @@ def local_shell_tool(root: str) -> Any:
     return AskEveryTimeBash(cwd=root)
 
 
-def _ensure_partition(root: str, path: str) -> None:
+def ensure_state_partition(root: str, path: str) -> None:
     """创建 ``.alibot`` 分区，并在**创建前**拒绝根外 symlink 祖先（不产生根外状态写入）。"""
     current = root
     relative = os.path.relpath(path, root)
@@ -373,12 +373,12 @@ async def assemble_local_workspace(
 ) -> LocalWorkspaceMount:
     """按频道项目根装配一轮可用的 LocalWorkspace（文件工具受限、默认无 Bash）。"""
     root = validate_workspace_root(settings.root)
-    member = _safe_partition_id(member_id)
-    session = _safe_partition_id(session_id)
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
     agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
     session_dir = os.path.join(root, ALIBOT_DIR, SESSIONS_DIR, session)
-    _ensure_partition(root, agent_dir)
-    _ensure_partition(root, session_dir)
+    ensure_state_partition(root, agent_dir)
+    ensure_state_partition(root, session_dir)
 
     workspace = ProjectLocalWorkspace(workdir=root)
     await workspace.initialize()
@@ -404,7 +404,7 @@ def docker_workspace_id(member_id: str, session_id: str) -> str:
     不用随机 UUID：崩溃重启后同一个 id 让 ``create_or_replace`` 替换遗留容器，启动清扫也能
     按前缀识别本仓容器（研究 #134 §6.1）。
     """
-    return DOCKER_WORKSPACE_PREFIX + _safe_partition_id(f"{member_id}--{session_id}")
+    return DOCKER_WORKSPACE_PREFIX + safe_partition_id(f"{member_id}--{session_id}")
 
 
 def docker_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -612,12 +612,12 @@ def _docker_reason(error: BaseException, locale: Locale, *, timeout: float, imag
 
 
 def _ensure_layout(root: str, member_id: str, session_id: str) -> tuple[str, str]:
-    member = _safe_partition_id(member_id)
-    session = _safe_partition_id(session_id)
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
     agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
     session_dir = os.path.join(root, ALIBOT_DIR, SESSIONS_DIR, session)
-    _ensure_partition(root, agent_dir)
-    _ensure_partition(root, session_dir)
+    ensure_state_partition(root, agent_dir)
+    ensure_state_partition(root, session_dir)
     return agent_dir, session_dir
 
 
@@ -680,8 +680,8 @@ async def assemble_docker_workspace(
         raise ValueError(f"not a docker workspace: {settings.backend!r}")
 
     root = validate_workspace_root(settings.root)
-    member = _safe_partition_id(member_id)
-    session = _safe_partition_id(session_id)
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
     key = (member, session)
     workspace_id = docker_workspace_id(member, session)
     container_name = f"as_ws_{workspace_id}"
@@ -855,8 +855,8 @@ async def reset_docker_workspace(
     AgentScope 2.0.10 的 ``reset()`` 只删 ``data/skills/sessions/.mcp`` 且容器继续运行；规格
     §3.6 要的是“删容器可写层”，因此这里删除容器并清掉池条目，下一轮重新创建。
     """
-    member = _safe_partition_id(member_id)
-    session = _safe_partition_id(session_id)
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
     key = (member, session)
     with _pool_lock:
         entry = _pool.pop(key, None)

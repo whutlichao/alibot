@@ -11,6 +11,9 @@ dependencies = [
   # （2026-10-18 核对 docs.agentscope.io → /en/versions/2.0.10；PyPI 最新同为 2.0.10）。
   # 只用 2.x API（agentscope.agent.Agent / agentscope.model / agentscope.credential）。
   "agentscope==2.0.10",
+  # Skill 的 ``SKILL.md`` front matter 解析（#152）：agentcope 也依赖它，这里显式声明，
+  # 因为本仓直接 import 的依赖不应依赖别人的传递闭包。
+  "python-frontmatter>=1.1",
   # 各 provider 的 HTTP 客户端：AgentScope 把它们做成可选 extra，这里显式安装本票支持的
   # 全部 provider（DashScope / Moonshot / DeepSeek / Volcengine / MiniMax 走 openai 客户端）。
   "openai>=1.0",
