@@ -96,12 +96,17 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
-| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省关闭） | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领 |
+| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省关闭）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置） | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021 |
 | `task` | id, target_id, channel_id, 标题, 状态, 指派者, **`claimed_at`** | 任务当前态在行上；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点） |
-| `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证** |
+| `permission_rule` | id, scope_kind(`channel`/`agent`), scope_id, tool_name, pattern, behavior(`allow`/`deny`/`ask`), created_at | 权限规则是**配置**：三档行为，不暴露 BYPASS / DONT_ASK（ADR-0021 §四） |
+| `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四） |
+| `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明；`env_names` 只存变量**名**，值只从进程环境读（ADR-0021 §三） |
+| `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；字节在 `workspace_root/.alibot/skills/`，只接受本机来源 |
+| `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证**（兼容面，迁移后读路径优先读 `remote_consent_scope`） |
+| `remote_consent_scope` | scope_kind(`model`/`mcp`/`docker`), scope_id, acknowledged_at | 远端数据面的统一一次性确认；旧 `remote_consent` 行复制成 `('model', provider, …)` |
 | `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `reminder` | id, text, time(`YYYY-MM-DD HH:MM`，**一次性**), channel_id(可空 = 不归属), created_at, **`fired_at`**(可空) | **提醒**（ADR-0012 / ADR-0017）：库内对象，后端是唯一正本（不放 localStorage）。它与频道的关系是**归属**，不是 target 作用域——**不**新增 target、不计未读、不参与唤醒；增删**不落消息、不唤醒、不消耗预算**。`time` 是**一次性**到期时刻（按本机本地时间解释，**无重复字段**）；`fired_at` 非空 = 已投递（UTC），`NULL` = 还没到点 |
-| `channel` | id, 名称, 描述 | |
+| `channel` | id, 名称, 描述, **`workspace_root`**(可空 = 未配置), **workspace 后端 / 权限档默认值** | `workspace_root` 是**频道级项目边界**（ADR-0021 §一）；后端缺省 `local`、权限档缺省 `ask-writes` |
 | `channel_member` | channel_id, member_id | 每频道显式成员表 |
 | `channel_read` | member_id, channel_id, last_read_seq | 已读位置（未读的正本）。owner 的行使未读徽标；agent 的行是它自己的消费游标 |
 | `message` | id, target_id, seq, author_member_id, kind, 正文, **提及快照** | **append-only**，`UNIQUE(target_id, seq)` |
@@ -111,6 +116,8 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /
   删除这些对象的端点。
+- **备份数据目录 ≠ 备份项目文件**：`workspace_root` 指向用户的**项目目录**，不在数据目录内，也不进
+  整目录备份的复制；项目文件需要用户自己备份（ADR-0021 §五）。
 - **频道内单调 seq**：由后端在同一事务内分配，同时充当渲染顺序、重连补拉游标。
 - **提及快照随消息落库**：唤醒与前端高亮都消费同一份快照，不事后按当前成员名表重新解析。
 - **未读计数** = `last_read_seq` 之后、`kind ∈ {human, agent}` 的顶层消息条数（不计 `system`）。
