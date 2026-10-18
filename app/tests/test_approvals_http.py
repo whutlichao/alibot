@@ -44,6 +44,7 @@ class ParkingSeam:
         mandatory_reply: bool = False,
         team: Any = None,
         emit: Any = None,
+        plan: Any = None,
     ) -> RoundOutcome:
         import asyncio
         import uuid
