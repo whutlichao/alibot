@@ -173,8 +173,18 @@ $ curl -s http://127.0.0.1:8832/studio/i18n.js | md5 -q ; md5 -q app/alibot/stud
 `scripts/check.sh`（本分支全量，行为定稿，merge 前）：**门禁全绿**（exit 0）；
 前端 `node --test`：**tests 164 / pass 164 / fail 0**。
 
-合并：基线 `b594859`；`git merge --no-ff agentscope2-integration`，之后重跑全量门禁
-（读数见下）。
+合并：基线 `b594859`；集成分支 tip 仍是 `b594859`（本票从它切出后未再前进），
+`git merge --no-ff agentscope2-integration` 返回 `Already up to date`；合并后重跑全量门禁：
+
+```text
+pytest:        813 passed, 9 skipped in 365.54s
+ruff check:    All checks passed!
+ruff format:   199 files already formatted
+mypy:          Success: no issues found in 85 source files
+pyright:       0 errors, 0 warnings, 0 informations
+node --test:   tests 164 / pass 164 / fail 0
+门禁全绿（exit 0）
+```
 
 ---
 
