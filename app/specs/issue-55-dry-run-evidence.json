@@ -5,13 +5,13 @@
   "status": "complete",
   "complete": true,
   "status_reason": "预算已耗尽且所有轮次结束",
-  "started_at": "2026-10-18T10:50:30.071Z",
-  "finished_at": "2026-10-18T10:50:30.867Z",
+  "started_at": "2026-10-18T10:58:53.318Z",
+  "finished_at": "2026-10-18T10:58:54.140Z",
   "environment": {
     "python": "3.11.13",
     "platform": "macOS-26.5.1-arm64-arm-64bit",
     "cwd": "/Users/apple/orca/workspaces/alibot/issue-55-impl/app",
-    "data_dir": "/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/alibot-budget-measure-4j7vc5ct",
+    "data_dir": "/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/alibot-budget-measure-w0z1y32d",
     "isolated_data_dir": true,
     "argv": [
       "/Users/apple/orca/workspaces/alibot/issue-55-impl/app/tests/measure_budget.py",
@@ -61,10 +61,10 @@
     }
   },
   "epoch": {
-    "channel_id": "ch_262a9a847fb5",
+    "channel_id": "ch_4f2f65ba37b3",
     "human_seq": 1,
     "budget_after_patch": {
-      "channel_id": "ch_262a9a847fb5",
+      "channel_id": "ch_4f2f65ba37b3",
       "epoch_seq": 0,
       "limit": 3,
       "used": 0,
@@ -73,7 +73,7 @@
       "pending_limit": null
     },
     "budget_final": {
-      "channel_id": "ch_262a9a847fb5",
+      "channel_id": "ch_4f2f65ba37b3",
       "epoch_seq": 1,
       "limit": 3,
       "used": 3,
@@ -81,21 +81,21 @@
       "source": "channel-override",
       "pending_limit": null
     },
-    "wall_clock_ms": 796,
+    "wall_clock_ms": 822,
     "messages_total": 5,
     "agent_messages": 4,
     "rounds_total": 5,
     "initial_wake": {
       "rounds": [
         {
-          "id": "round_ab4bff68a943",
-          "member_id": "mem_a982d38e6b27",
+          "id": "round_f03bfee894f0",
+          "member_id": "mem_b146cf65f2fe",
           "base_seq": 1,
           "status": "replied",
           "reason": "脚本化替身：决定回应",
-          "started_at": "2026-10-18T10:50:30.072Z",
-          "finished_at": "2026-10-18T10:50:30.073Z",
-          "duration_ms": 1,
+          "started_at": "2026-10-18T10:58:53.319Z",
+          "finished_at": "2026-10-18T10:58:53.321Z",
+          "duration_ms": 2,
           "consumed_budget": false,
           "merged": false,
           "reply_seq": 2,
@@ -111,14 +111,14 @@
           "model_id": "ollama:qwen2.5"
         },
         {
-          "id": "round_4beabf60a8f6",
-          "member_id": "mem_5f57c2e7bae7",
+          "id": "round_0ffa92b1c86f",
+          "member_id": "mem_c1f4198024cc",
           "base_seq": 2,
           "status": "replied",
           "reason": "脚本化替身：决定回应",
-          "started_at": "2026-10-18T10:50:30.075Z",
-          "finished_at": "2026-10-18T10:50:30.076Z",
-          "duration_ms": 1,
+          "started_at": "2026-10-18T10:58:53.324Z",
+          "finished_at": "2026-10-18T10:58:53.324Z",
+          "duration_ms": 0,
           "consumed_budget": false,
           "merged": false,
           "reply_seq": 3,
@@ -142,13 +142,13 @@
         "base_seq": 3,
         "rounds": [
           {
-            "id": "round_cb07318b0d10",
-            "member_id": "mem_a982d38e6b27",
+            "id": "round_85029ca31d3a",
+            "member_id": "mem_b146cf65f2fe",
             "base_seq": 3,
             "status": "replied",
             "reason": "脚本化替身：决定回应",
-            "started_at": "2026-10-18T10:50:30.077Z",
-            "finished_at": "2026-10-18T10:50:30.077Z",
+            "started_at": "2026-10-18T10:58:53.327Z",
+            "finished_at": "2026-10-18T10:58:53.327Z",
             "duration_ms": 0,
             "consumed_budget": true,
             "merged": false,
@@ -172,13 +172,13 @@
         "base_seq": 4,
         "rounds": [
           {
-            "id": "round_59ef2bf0fb95",
-            "member_id": "mem_5f57c2e7bae7",
+            "id": "round_5aedb5a2847d",
+            "member_id": "mem_c1f4198024cc",
             "base_seq": 4,
             "status": "replied",
             "reason": "脚本化替身：决定回应",
-            "started_at": "2026-10-18T10:50:30.078Z",
-            "finished_at": "2026-10-18T10:50:30.078Z",
+            "started_at": "2026-10-18T10:58:53.328Z",
+            "finished_at": "2026-10-18T10:58:53.328Z",
             "duration_ms": 0,
             "consumed_budget": true,
             "merged": false,
@@ -201,13 +201,13 @@
     ],
     "suppressed_rounds": [
       {
-        "id": "round_ee74295f3fd2",
-        "member_id": "mem_a982d38e6b27",
+        "id": "round_570c9109b762",
+        "member_id": "mem_b146cf65f2fe",
         "base_seq": 5,
         "status": "budget-exhausted",
         "reason": "本 target 人类世代（epoch_seq=1）的 agent→agent 预算已用尽（≤3）：本条 Agent 消息照常落库，但没有投递任何唤醒",
-        "started_at": "2026-10-18T10:50:30.078Z",
-        "finished_at": "2026-10-18T10:50:30.078Z",
+        "started_at": "2026-10-18T10:58:53.329Z",
+        "finished_at": "2026-10-18T10:58:53.329Z",
         "duration_ms": 0,
         "consumed_budget": false,
         "merged": false,
@@ -231,14 +231,14 @@
       "min_ms": 0,
       "mean_ms": 0.4,
       "p50_ms": 0,
-      "max_ms": 1
+      "max_ms": 2
     },
     "initial_wake": {
       "count": 2,
-      "min_ms": 1,
+      "min_ms": 0,
       "mean_ms": 1.0,
       "p50_ms": 1,
-      "max_ms": 1
+      "max_ms": 2
     },
     "jump_rounds": {
       "count": 2,
@@ -263,26 +263,26 @@
     "accounting_complete": false,
     "unaccounted_rounds": [
       {
-        "id": "round_ab4bff68a943",
-        "member_id": "mem_a982d38e6b27",
+        "id": "round_f03bfee894f0",
+        "member_id": "mem_b146cf65f2fe",
         "status": "replied",
         "base_seq": 1
       },
       {
-        "id": "round_4beabf60a8f6",
-        "member_id": "mem_5f57c2e7bae7",
+        "id": "round_0ffa92b1c86f",
+        "member_id": "mem_c1f4198024cc",
         "status": "replied",
         "base_seq": 2
       },
       {
-        "id": "round_cb07318b0d10",
-        "member_id": "mem_a982d38e6b27",
+        "id": "round_85029ca31d3a",
+        "member_id": "mem_b146cf65f2fe",
         "status": "replied",
         "base_seq": 3
       },
       {
-        "id": "round_59ef2bf0fb95",
-        "member_id": "mem_5f57c2e7bae7",
+        "id": "round_5aedb5a2847d",
+        "member_id": "mem_c1f4198024cc",
         "status": "replied",
         "base_seq": 4
       }
@@ -350,7 +350,7 @@
       {
         "seq": 2,
         "kind": "agent",
-        "author_id": "mem_a982d38e6b27",
+        "author_id": "mem_b146cf65f2fe",
         "author_kind": "agent",
         "body_chars": 8,
         "body_sha256": "ae4bd7f6a05b2c72848f40b415c9c1972ebf30b99591479a041a57c3a91dba16"
@@ -358,7 +358,7 @@
       {
         "seq": 3,
         "kind": "agent",
-        "author_id": "mem_5f57c2e7bae7",
+        "author_id": "mem_c1f4198024cc",
         "author_kind": "agent",
         "body_chars": 8,
         "body_sha256": "7b26fefeb5ad9ccafb911e5b49dfb995bb7626b60958056a833b6eeebb21a76b"
@@ -366,7 +366,7 @@
       {
         "seq": 4,
         "kind": "agent",
-        "author_id": "mem_a982d38e6b27",
+        "author_id": "mem_b146cf65f2fe",
         "author_kind": "agent",
         "body_chars": 8,
         "body_sha256": "ae4bd7f6a05b2c72848f40b415c9c1972ebf30b99591479a041a57c3a91dba16"
@@ -374,7 +374,7 @@
       {
         "seq": 5,
         "kind": "agent",
-        "author_id": "mem_5f57c2e7bae7",
+        "author_id": "mem_c1f4198024cc",
         "author_kind": "agent",
         "body_chars": 8,
         "body_sha256": "7b26fefeb5ad9ccafb911e5b49dfb995bb7626b60958056a833b6eeebb21a76b"
@@ -382,14 +382,14 @@
     ],
     "round_outcomes": [
       {
-        "id": "round_ab4bff68a943",
-        "member_id": "mem_a982d38e6b27",
+        "id": "round_f03bfee894f0",
+        "member_id": "mem_b146cf65f2fe",
         "base_seq": 1,
         "status": "replied",
         "reason": "脚本化替身：决定回应",
-        "started_at": "2026-10-18T10:50:30.072Z",
-        "finished_at": "2026-10-18T10:50:30.073Z",
-        "duration_ms": 1,
+        "started_at": "2026-10-18T10:58:53.319Z",
+        "finished_at": "2026-10-18T10:58:53.321Z",
+        "duration_ms": 2,
         "consumed_budget": false,
         "merged": false,
         "reply_seq": 2,
@@ -405,14 +405,14 @@
         "model_id": "ollama:qwen2.5"
       },
       {
-        "id": "round_4beabf60a8f6",
-        "member_id": "mem_5f57c2e7bae7",
+        "id": "round_0ffa92b1c86f",
+        "member_id": "mem_c1f4198024cc",
         "base_seq": 2,
         "status": "replied",
         "reason": "脚本化替身：决定回应",
-        "started_at": "2026-10-18T10:50:30.075Z",
-        "finished_at": "2026-10-18T10:50:30.076Z",
-        "duration_ms": 1,
+        "started_at": "2026-10-18T10:58:53.324Z",
+        "finished_at": "2026-10-18T10:58:53.324Z",
+        "duration_ms": 0,
         "consumed_budget": false,
         "merged": false,
         "reply_seq": 3,
@@ -428,13 +428,13 @@
         "model_id": "deepseek:deepseek-flash"
       },
       {
-        "id": "round_cb07318b0d10",
-        "member_id": "mem_a982d38e6b27",
+        "id": "round_85029ca31d3a",
+        "member_id": "mem_b146cf65f2fe",
         "base_seq": 3,
         "status": "replied",
         "reason": "脚本化替身：决定回应",
-        "started_at": "2026-10-18T10:50:30.077Z",
-        "finished_at": "2026-10-18T10:50:30.077Z",
+        "started_at": "2026-10-18T10:58:53.327Z",
+        "finished_at": "2026-10-18T10:58:53.327Z",
         "duration_ms": 0,
         "consumed_budget": true,
         "merged": false,
@@ -451,13 +451,13 @@
         "model_id": "ollama:qwen2.5"
       },
       {
-        "id": "round_59ef2bf0fb95",
-        "member_id": "mem_5f57c2e7bae7",
+        "id": "round_5aedb5a2847d",
+        "member_id": "mem_c1f4198024cc",
         "base_seq": 4,
         "status": "replied",
         "reason": "脚本化替身：决定回应",
-        "started_at": "2026-10-18T10:50:30.078Z",
-        "finished_at": "2026-10-18T10:50:30.078Z",
+        "started_at": "2026-10-18T10:58:53.328Z",
+        "finished_at": "2026-10-18T10:58:53.328Z",
         "duration_ms": 0,
         "consumed_budget": true,
         "merged": false,
@@ -474,13 +474,13 @@
         "model_id": "deepseek:deepseek-flash"
       },
       {
-        "id": "round_ee74295f3fd2",
-        "member_id": "mem_a982d38e6b27",
+        "id": "round_570c9109b762",
+        "member_id": "mem_b146cf65f2fe",
         "base_seq": 5,
         "status": "budget-exhausted",
         "reason": "本 target 人类世代（epoch_seq=1）的 agent→agent 预算已用尽（≤3）：本条 Agent 消息照常落库，但没有投递任何唤醒",
-        "started_at": "2026-10-18T10:50:30.078Z",
-        "finished_at": "2026-10-18T10:50:30.078Z",
+        "started_at": "2026-10-18T10:58:53.329Z",
+        "finished_at": "2026-10-18T10:58:53.329Z",
         "duration_ms": 0,
         "consumed_budget": false,
         "merged": false,

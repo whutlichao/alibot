@@ -21,7 +21,7 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
   --remote-model deepseek:deepseek-flash \
   --tier 3 \
   --prices specs/issue-55-model-prices-2026-10-18.json \
-  --max-remote-usd 1.0 \
+  --max-remote-usd <人定阈值，且不低于预检保守值> \
   --out specs/issue-55-evidence-<date>.json
 ```
 
@@ -52,7 +52,7 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
   都可能把费用推过阈值；它只能阻止**下一轮**继续提交。远端轮次缺 usage 时费用无法归因，
   `GuardedScheduler` 同样停止提交新轮次，报告标 `aborted-usage-missing`，不把账目当完整。
   因此真实付费执行前必须先用 `preflight_cost_estimate` 按模型输入/输出硬限制、最大费率与显式假设的
-  每轮调用次数做保守预估；预估超过人定预算就拒绝执行。默认 pytest 不触网：`--dry-run` 用
+  每轮调用次数做保守预估；调用数假设必须是正整数（0 会让预检恒真），预估超过人定预算就拒绝执行。默认 pytest 不触网：`--dry-run` 用
   `ScriptedAgentSeam` 走完整编排，但报告标 `mode=scripted-double`、`usage_evidence=false`、
   `cost_evidence=false`，替身零 token 不作为成本证据。
 

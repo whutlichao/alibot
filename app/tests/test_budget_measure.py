@@ -230,6 +230,21 @@ def test_preflight_uses_model_hard_limits_and_max_rates() -> None:
     assert "不是数学上界" in estimate["not_a_hard_bound"]
 
 
+def test_preflight_refuses_a_non_positive_call_assumption() -> None:
+    """0 次调用会让预检恒真（$0），不能绕过「预估不通过即拒跑」。"""
+    estimate = preflight_cost_estimate(
+        _book(),
+        remote_model="test:model",
+        tier=3,
+        max_model_calls_per_round=0,
+        approved_usd=0.01,
+    )
+
+    assert estimate["finite"] is False
+    assert estimate["fits"] is False
+    assert "正整数" in estimate["reason"]
+
+
 def test_preflight_refuses_when_the_estimate_exceeds_the_approved_budget() -> None:
     estimate = preflight_cost_estimate(
         _book(),

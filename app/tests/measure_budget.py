@@ -364,6 +364,12 @@ def preflight_cost_estimate(
     增加调用）。因此这里给出的是「按输入/输出硬限制 + 最大费率 + 一个显式假设的每轮调用数」算出的
     保守量化值，并明确标注该假设；调用数假设被突破时真实费用会高于它。
     """
+    if max_model_calls_per_round < 1:
+        return {
+            "finite": False,
+            "reason": "每轮模型调用次数假设必须是正整数；0 会让预检恒真并绕过预算约束",
+            "fits": False,
+        }
     price = prices.price_of(remote_model)
     if price is None:
         return {"finite": False, "reason": f"价目快照没有 {remote_model}", "fits": False}
@@ -546,7 +552,6 @@ def run_epoch(client: TestClient, config: RunConfig, *, seam: Any, guard: CostGu
         "human_seq": human_seq,
         "messages": _messages(client, channel["id"]),
         "outcomes": _outcomes(client, channel["id"]),
-        "agents": _agents(client),
         "status": status,
         "status_reason": reason,
         "started_at": started_at,
@@ -573,6 +578,8 @@ def _wait_for_epoch(
                 "该阈值不保证整次实验不超过它"
             )
         if guard.accounting_incomplete:
+            if guard.stop_reason == "cost-math-error":
+                return _ABORTED, "成本换算失败：账目无法归因，停止继续提交轮次"
             return _ABORTED_USAGE, "远端轮次没有返回 usage：费用无法归因，停止继续提交轮次"
         budget = _budget(client, channel_id)
         outcomes = _outcomes(client, channel_id)

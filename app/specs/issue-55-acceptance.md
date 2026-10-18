@@ -94,9 +94,9 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | 档位 | `tier=3`，`limit=3`，`source=channel-override` |
 | 跳数正本 | `used=3`、`remaining=0`（耗尽） |
 | 轮次 | `rounds_total=5`，`jump_round_groups=2`，`suppressed_rounds=1` |
-| 初始人类唤醒 | 2 条轮次（各 1ms；第二条的 `base_seq=2`，因为单线程下它在首条回复落库后才开始） |
-| 时延 | 全部 5 轮：min 0 / mean 0.4 / p50 0 / max 1 ms（替身即时返回，**不代表真模型**）；初始唤醒 2 轮 mean 1ms |
-| 世代墙钟 | 796 ms |
+| 初始人类唤醒 | 2 条轮次（min 0 / mean 1 / p50 1 / max 2 ms；第二条的 `base_seq=2`，因为单线程下它在首条回复落库后才开始） |
+| 时延 | 全部 5 轮：min 0 / mean 0.4 / p50 0 / max 2 ms（替身即时返回，**不代表真模型**） |
+| 世代墙钟 | 822 ms |
 | usage / 成本 | `usage_records=[]`；`usage_evidence=false`、`cost_evidence=false`、`total_measured_usd=null` |
 | 结论 | 只证明「编排 → 设档 → 发人类消息 → 预算耗尽 → 轮次/时延/抑制结果采集」路径可用 |
 
@@ -127,9 +127,9 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 
 | 门禁 | 命令 | 读数 |
 | --- | --- | --- |
-| 新增行为测试 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` | **21 passed**（8.3s，review 收口后） |
-| 预算相邻族 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py tests/test_bounded_relay.py tests/test_channel_budget_limit.py tests/test_channel_budget_write.py tests/test_target_scope.py` | **118 passed in 26.62s** |
-| 全量门禁 | `scripts/check.sh` | **861 passed, 2 skipped in 384.75s**；ruff `All checks passed!`；ruff format `216 files already formatted`；mypy `Success: no issues found in 92 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`；`门禁全绿` |
+| 新增行为测试 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` | **22 passed**（7.8s，review 收口后） |
+| 预算相邻族 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py tests/test_bounded_relay.py tests/test_channel_budget_limit.py tests/test_channel_budget_write.py tests/test_target_scope.py` | **121 passed in 24.10s** |
+| 全量门禁 | `scripts/check.sh` | **864 passed, 2 skipped in 378.92s**；ruff `All checks passed!`；ruff format `217 files already formatted`；mypy `Success: no issues found in 92 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`；`门禁全绿` |
 
 两个 skip 是既有跳过：`test_agent_smoke.py`（需 `ALIBOT_SMOKE_MODEL`）与
 `test_reminder_schema_step.py`（需 `libfaketime`）。本票没有新增 skip；dry-run 走的是独立手动入口，
@@ -166,6 +166,35 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 
 **未改动**：`app/alibot/db.py`（默认 3 / 档位 3,5,10 / schema 17）、`app/alibot/orchestration.py`、
 预算读写端点、Studio 前端、迁移链。
+
+## 9. 双轴 code-review 与处理
+
+固定点 `bc6f761`，两轮都按 `/Users/apple/.agents/skills/code-review/SKILL.md` 用只读 `reviewer`
+子代理跑 Standards + Spec 两轴。
+
+**第一轮（c94d339）**
+
+| 轴 | finding | 处理 |
+| --- | --- | --- |
+| Spec | 初始唤醒按 `base_seq == human_seq` 分组，单线程下第二位成员的首轮 `base_seq=2`，成本/时延被漏算 | 改为「`consumed_budget=false` 且非 `merged` / `budget-exhausted`」；dry-run 证据现在得到 2 条初始轮次 |
+| Spec | seam 的失败/超时分支在 `_record_usage` 前返回，已计费但无 usage 的轮次可让证据仍标完整 | 失败/超时/无队长回复都发 `usage=None`；报告按 `unaccounted_rounds` / `accounting_complete` 收口，成本合计不完整时为 `null` |
+| Standards | 验收文档钉死的临时目录随机名已过期 | 改为 `alibot-budget-measure-*` 通配，不钉随机名 |
+| Standards | `utc_now` 与 `db.utc_now` 重复；`validate_models` 返回值无人用；`PriceBook.currency` / `ModelPrice.note` 未用 | 改用 `db.utc_now`；`validate_models` 返回 `None`；把 `currency` 与每模型 `price_sources`（含 `note`）写进报告 |
+| Standards | `CONTEXT.md` 的成员面适配接缝未登记 usage 观察口 | 已补一句：默认关闭、不落库、不是第三种输出 |
+| Standards | 测试直接调测量工具纯函数，与「pytest 只断言外部行为」有张力 | 在 `app/README.md` 登记第三处例外：工具无 HTTP 面，纯函数就是它的契约；完整编排仍由 dry-run 走真实 `create_app` |
+
+**第二轮（d539209）**
+
+| 轴 | finding | 处理 |
+| --- | --- | --- |
+| Spec | `--max-model-calls-per-round 0` 会让预检恒真（$0），绕过预算约束 | `preflight_cost_estimate` 要求正整数，否则 `finite=false` / `fits=false`，新增用例 |
+| Spec | 成本换算错误也走 `aborted-usage-missing`，诊断不准确 | `stop_reason=cost-math-error` 时返回独立的「成本换算失败」原因 |
+| Spec | 真实本机 + 远端读数仍缺（AC2/3/4） | **接受为未完成**：PR 保持 draft、不写 `Closes #55`、ADR/本文件如实标缺项 |
+| Standards | `run_epoch` 返回的 `agents` 字段无人读，多一次 `GET /api/agents` | 删除该返回键（`_wait_for_epoch` 自己的状态读取保留） |
+| Standards | ADR 示例 `--max-remote-usd 1.0` 低于预检值，示例必失败 | 改为占位符「人定阈值，且不低于预检保守值」 |
+
+结论：两轴均无 blocking；缺项是**外部条件**（本机模型未准备、付费授权未到、预检不通过），
+不是代码遗留。
 
 ## Answer（Status / Decisions）
 
