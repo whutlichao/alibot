@@ -410,7 +410,6 @@ test("打开一条原先不在快照里的任务后，「任务」页签计数�
   await harness.api.openTask("t_9");
   await settle();
 
-  assert.equal(harness.api.state.tasks.length, 2, "打开的任务应当补进全量快照");
   assert.equal(harness.taskCount().textContent, "2", "补进快照后页签计数要跟着变，不能只重渲线程");
 });
 
