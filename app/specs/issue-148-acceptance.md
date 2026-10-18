@@ -1,7 +1,8 @@
 # #148 验收：LocalWorkspace（频道项目根 + 文件工具根限定）
 
 - 票面：`#148`（Part of `#131`）；票型 impl；门禁 G-impl。
-- 分支：`issue-148-impl`；基线：集成分支 tip `5763122`（`SCHEMA_VERSION=17`）。
+- 分支：`issue-148-impl`；基线：集成分支 tip `5763122`（`SCHEMA_VERSION=17`），收尾时并入集成分支
+  新 tip `798b68c`（merge #141）。
 - 规格：`app/specs/agentscope-2-alignment.md` §3.6；ADR-0021；研究：`issue-135-research.md`（根检查
   伪代码与包装清单）、`issue-134-research.md`（Docker 装配建议，W3 使用）。
 - 范围：频道项目根的 LocalWorkspace 装配、五个文件工具的根限定、默认无 Bash、`.alibot` 状态分区，
@@ -94,13 +95,13 @@ $ cd app && ../.venv/bin/python -m pytest tests/test_local_workspace.py -k "seam
 ```console
 $ scripts/check.sh
 == pytest（全量）
-701 passed, 2 skipped in 313.18s (0:05:13)
+708 passed, 2 skipped in 315.63s (0:05:15)
 
 == ruff check
 All checks passed!
 
 == ruff format --check（只检查；不要跑 ruff format，它会整文件重排）
-167 files already formatted
+168 files already formatted
 
 == mypy（仓库根）
 Success: no issues found in 66 source files
@@ -109,8 +110,8 @@ Success: no issues found in 66 source files
 0 errors, 0 warnings, 0 informations
 
 == node --test（Studio DOM 用例族：glob，新增文件自动纳入）
-ℹ tests 132
-ℹ pass 132
+ℹ tests 136
+ℹ pass 136
 ℹ fail 0
 
 门禁全绿
