@@ -208,6 +208,31 @@ const state = {
   // 任务视图要读所属频道的同一份配置（#154 / 规格 §4.6）：按 channel id 缓存
   // `GET /api/channels/{id}/config` 的载荷，正本仍是后端。
   channelConfigs: {},
+  // 运行面板（#155 / 规格 §4.6）：dock 的**第四形态**，频道与任务线程都能打开。
+  // 它是**独立面**——成员过程、分派、Plan、SOP 只在这里呈现，不进消息流 / 未读 / 搜索。
+  // `runs` / `plan` / `sops` 是三个只读快照（`GET /team-runs` / `GET /plan` /
+  // `GET /sop-runs/{id}`）的镜像；live 帧（`state.liveEvents`）在渲染时按 id 合并，
+  // 于是同一分派不会因为「快照里也有一条」而出现两行。`sopIds` 只记录已经见过的
+  // `sop_run_id`——后端没有「按 target 列 SOP run」的读面，重连兜底只能按已知 id 刷新。
+  runPanel: {
+    open: false,
+    targetId: null,
+    channelId: null,
+    taskId: null,
+    loading: false,
+    error: '',
+    runs: [],
+    plan: [],
+    sops: [],
+    sopIds: [],
+    // SOP run 的 state 只有步骤下标 / phase / verifications，没有 subject（AgentScope 的
+    // 运行态不在记录里重复定义）。步骤名从 `GET /api/sops/{definition_id}` 的定义读，
+    // 按定义 id 缓存。
+    sopDefs: {},
+    // 快照完成那一刻 live 队列里的最后一条事件。Plan / SOP 的 live 覆盖只应用它**之后**
+    // 的帧：快照已经包含更早的变化，重连后再把旧帧叠上去会把状态拉回去。
+    overlayMarker: null,
+  },
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -1602,14 +1627,16 @@ function renderAssignChips(task) {
   replaceChildren(box, chips);
 }
 
-/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）↔ Agent 详情（`detail`）。
+/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）↔ Agent 详情（`detail`）
+    ↔ 运行面板（`run`，#155）。
 
     与消息流不在同一个维度：看板仍在主线（`state.mode === 'board'`），
-    而任务线程 / Agent 详情只是 dock 里显示什么。三种形态共用同一个 380px 容器，因此
-    「同时显示两件东西」在构造上不可能发生（一次只有一种为可见）。
+    而任务线程 / Agent 详情 / 运行面板只是 dock 里显示什么。四种形态共用同一个 380px
+    容器，因此「同时显示两件东西」在构造上不可能发生（一次只有一种为可见）。
 
-    形态本身**不单独存一份**：它由「现在打开着哪一个对象」推导（`activeTaskId` 优先于
-    `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类漂移没有落脚点。
+    形态本身**不单独存一份**：它由「现在打开着哪一个对象」推导（`runPanel.open` 优先于
+    `activeTaskId`，再优先于 `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类
+    漂移没有落脚点。
 
     `reveal` = 这一次是**人显式的打开**（点看板卡片 / 点左栏 Agent 行）：它清掉
     `dockDismissed`。整体重绘（`render()`）走默认的 `false`，于是人按过的收起不会被下一次
@@ -1619,12 +1646,14 @@ function setDockMode(mode, reveal) {
   if (reveal) state.dockDismissed = false;
   const isTask = mode === 'task' && state.activeTaskId;
   const isDetail = mode === 'detail' && state.activeAgentId;
-  $('#dockAgent').hidden = Boolean(isTask || isDetail);
+  const isRun = mode === 'run' && state.runPanel.open;
+  $('#dockAgent').hidden = Boolean(isTask || isDetail || isRun);
   $('#dockTask').hidden = !isTask;
   $('#dockDetail').hidden = !isDetail;
+  $('#dockRun').hidden = !isRun;
   // 滑入放在**形态定下来之后**：≤900px 打开抽屉要把焦点送进第一个可聚焦控件，
   // 而那一步要跳过 `hidden` 子树 —— 先开抽屉会把焦点送给一个还在 `hidden` 里的控件。
-  if ((isTask || isDetail) && !state.dockDismissed) setDockOpen(true);
+  if ((isTask || isDetail || isRun) && !state.dockDismissed) setDockOpen(true);
 }
 
 function setViewMode(mode) {
@@ -1816,6 +1845,8 @@ function settleDockFallback() {
     `#btnThreadClose`（以及 `openTask()` 的失败回退）与 `#btnAgentDetailClose`。 */
 function closeTaskDock() {
   closeTaskStream();
+  // 运行面板若是从任务线程打开的，它的 target 随线程一起失效（频道面板不受影响）。
+  if (state.runPanel.open && state.runPanel.taskId) resetRunPanelState();
   const hadThread = Boolean(state.activeTaskId);
   state.activeTaskId = null;
   state.activeTask = null;
@@ -1835,6 +1866,8 @@ function taskMaxSeq() {
     落点变成猜谜。 */
 async function openTask(taskId) {
   closeTaskStream();
+  // 另一条任务的运行面板不属于这条线程：打开线程时一并作废。
+  resetRunPanelState();
   state.activeAgentId = null;
   state.activeTaskId = taskId;
   state.activeTask = taskById(taskId);
@@ -1914,6 +1947,12 @@ function connectTaskStream(taskId, cursor) {
   ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {
     source.addEventListener(type, (event) => handleTaskStreamEvent(taskId, event, type));
   });
+  source.onopen = () => {
+    // 任务 target 的 live 事件同样不补拉：重连后按运行面板快照兜底。
+    if (state.activeTask && state.activeTask.id === taskId) {
+      refreshRunPanelFor(state.activeTask.target_id);
+    }
+  };
   source.onerror = () => {
     source.close();
     if (state.taskStream !== entry) return;
@@ -1961,6 +2000,636 @@ function closeTaskStream() {
   if (entry.source) entry.source.close();
   if (state.taskStreamTimer) clearTimeout(state.taskStreamTimer);
   state.taskStreamTimer = null;
+}
+
+/* ─── 运行面板（#155 / 规格 §4.6；dock 第四形态）────────────────────────
+   它是**独立面**（ADR-0020 / ADR-0023）：`agent_event` / `team_assignment` /
+   `plan_update` / `sop_event` 只在这里呈现，绝不进消息流 / 未读 / 搜索 / 看板。
+   两种数据来源严格分层：
+
+   - **live 帧**（`state.liveEvents`，按 target 归属）只活在本会话内存里，断线不补；
+   - **快照**（`GET /targets/{id}/team-runs`、`/plan`、`/sop-runs/{id}`）在打开面板与
+     重连成功后重新读取，是断线期间变化的唯一兜底。两者按后端 id 合并：分派按
+     `assignment_id` 去重，Plan 任务按 `(plan_run_id, task.id)` 去重，SOP 按
+     `sop_run_id` + `step_index` 合并。live 帧因此不会把快照里的同一行再插一遍。
+*/
+
+const RUN_PANEL_RUN_LIMIT = 20;
+const RUN_PANEL_EVENT_LIMIT = 80;
+// 分派状态的推进顺序：live 帧只能把行往前推，不能把快照里的终态降回 started
+// （重连后「先刷新快照、后收到队列里的旧帧」不能倒退）。
+const RUN_PANEL_ASSIGNMENT_RANK = { started: 0, succeeded: 1, failed: 1, interrupted: 1, 'budget-exhausted': 1 };
+const RUN_PANEL_STATE_KEYS = {
+  started: 'runPanel.state.started',
+  succeeded: 'runPanel.state.succeeded',
+  failed: 'runPanel.state.failed',
+  interrupted: 'runPanel.state.interrupted',
+  'budget-exhausted': 'runPanel.state.budgetExhausted',
+  running: 'runPanel.state.running',
+  completed: 'runPanel.state.completed',
+  'invalid-leader': 'runPanel.state.invalidLeader',
+  pending: 'runPanel.state.pending',
+  in_progress: 'runPanel.state.inProgress',
+  awaiting: 'runPanel.state.awaiting',
+};
+let runPanelRequestVersion = 0;
+
+function emptyRunPanel() {
+  return {
+    open: false,
+    targetId: null,
+    channelId: null,
+    taskId: null,
+    loading: false,
+    error: '',
+    runs: [],
+    plan: [],
+    sops: [],
+    sopIds: [],
+    sopDefs: {},
+    overlayMarker: null,
+  };
+}
+
+/** 换 target / 关任务线程时把运行面板整个作废：它的快照与 live 归属都只属于旧 target。 */
+function resetRunPanelState() {
+  state.runPanel = emptyRunPanel();
+}
+
+function runPanelStateLabel(value) {
+  const key = RUN_PANEL_STATE_KEYS[value];
+  return key ? t(key) : t('runPanel.state.unknown');
+}
+
+function runPanelStatePill(value) {
+  const pill = el('span', 'rp-state', runPanelStateLabel(value));
+  pill.dataset.state = String(value || '');
+  return pill;
+}
+
+function runPanelMemberRecord(memberId) {
+  const id = String(memberId || '');
+  const pools = [state.members, state.agents];
+  if (state.runPanel.channelId) pools.push(state.channelMembers[state.runPanel.channelId] || []);
+  for (const pool of pools) {
+    const found = (pool || []).find((member) => member && String(member.id) === id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function runPanelMemberName(memberId) {
+  const member = runPanelMemberRecord(memberId);
+  return member ? member.display_name : String(memberId || '');
+}
+
+function runPanelMemberSlot(memberId) {
+  const member = runPanelMemberRecord(memberId);
+  return member ? member.avatar_slot : 0;
+}
+
+function runPanelMemberHead(memberId, count) {
+  const row = el('div', 'rp-member-head');
+  const name = runPanelMemberName(memberId);
+  row.appendChild(avatarNode(name, runPanelMemberSlot(memberId), 'sm'));
+  row.appendChild(el('span', 'rp-member-name', name));
+  if (count !== undefined) row.appendChild(el('span', 'rp-count', String(count)));
+  return row;
+}
+
+/** 分派耗时：两个时间戳都来自后端；`finished_at` 为空是「还在跑」，不拿本地时钟假装读数。 */
+function runPanelDuration(item) {
+  if (!item.started_at) return '';
+  if (!item.finished_at) return t('runPanel.inFlight');
+  const from = Date.parse(item.started_at);
+  const to = Date.parse(item.finished_at);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return '';
+  const seconds = (to - from) / 1000;
+  const value = seconds >= 10 ? String(Math.round(seconds)) : seconds.toFixed(1);
+  return t('runPanel.duration', { seconds: value });
+}
+
+/** 成员事件的摘要只取白名单 payload 的**数据字段**，不在这里造句子。 */
+function runPanelEventSummary(event) {
+  const payload = event.payload || {};
+  const clip = (text) => {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return value.length > 120 ? value.slice(0, 120) + '…' : value;
+  };
+  if (payload.tool_call_name) return clip(payload.tool_call_name);
+  if (typeof payload.delta === 'string' && payload.delta.trim()) return clip(payload.delta);
+  if (typeof payload.text === 'string' && payload.text.trim()) return clip(payload.text);
+  if (payload.state) return String(payload.state);
+  if (payload.finished_reason) return String(payload.finished_reason);
+  if (payload.error && payload.error.message) return clip(payload.error.message);
+  if (payload.hint) return clip(typeof payload.hint === 'string' ? payload.hint : JSON.stringify(payload.hint));
+  if (payload.name) return String(payload.name);
+  return '';
+}
+
+function runPanelLiveEvents() {
+  const panel = state.runPanel;
+  if (!panel.targetId) return [];
+  return (state.liveEvents.get(panel.targetId) || []).filter(
+    (event) => event.type === 'agent_event'
+      || event.type === 'team_assignment'
+      || event.type === 'plan_update'
+      || event.type === 'sop_event',
+  );
+}
+
+/** 只保留**快照之后**到达的 Plan / SOP live 帧。
+
+    快照是它们更早变化的合并结果；把队列里的旧帧再叠一遍会让「重连刷新」把状态拉回
+    断线前。分派不在这里排除（它有状态推进的秩守卫，且 `started` → 终态是合法的直播
+    过程）；`agent_event` 本来就只活在 live 层，全部保留。 */
+function runPanelOverlayEvents(live) {
+  const marker = state.runPanel.overlayMarker;
+  if (!marker) return live;
+  const index = live.indexOf(marker);
+  if (index < 0) return live; // 有界保留把标记挤掉了：宁可全部应用，也别丢新帧
+  return live.slice(index + 1);
+}
+
+/** 快照分派 + live 分派按 `assignment_id` 合并：同一分派只有一行。 */
+function runPanelAssignments(run, live) {
+  const rows = (run.assignments || []).map((item) => ({ ...item }));
+  const byId = new Map(rows.map((item) => [String(item.id), item]));
+  live.forEach((frame) => {
+    if (frame.type !== 'team_assignment' || frame.team_run_id !== run.id) return;
+    const key = String(frame.assignment_id || '');
+    if (!key) return;
+    const existing = byId.get(key);
+    if (!existing) {
+      const row = {
+        id: key,
+        member_id: frame.member_id,
+        task_id: frame.task_id,
+        reply_id: frame.reply_id,
+        state: frame.state,
+        started_at: null,
+        finished_at: null,
+        reply_excerpt: null,
+        error: null,
+      };
+      byId.set(key, row);
+      rows.push(row);
+      return;
+    }
+    const currentRank = RUN_PANEL_ASSIGNMENT_RANK[existing.state] ?? 0;
+    const frameRank = RUN_PANEL_ASSIGNMENT_RANK[frame.state] ?? 0;
+    if (frameRank < currentRank) return; // 不把终态降回 started
+    existing.state = frame.state;
+    if (frame.member_id) existing.member_id = frame.member_id;
+    if (frame.reply_id) existing.reply_id = frame.reply_id;
+    if (frame.task_id) existing.task_id = frame.task_id;
+  });
+  return rows;
+}
+
+function runPanelAssignmentRow(item) {
+  const row = el('div', 'rp-assign');
+  row.dataset.assignment = String(item.id || '');
+  row.dataset.state = String(item.state || '');
+  const top = el('div', 'rp-assign-top');
+  top.appendChild(runPanelStatePill(item.state));
+  const duration = runPanelDuration(item);
+  if (duration) top.appendChild(el('span', 'rp-duration', duration));
+  row.appendChild(top);
+  if (item.task_id) {
+    row.appendChild(el('div', 'rp-meta', t('runPanel.taskRef', { id: String(item.task_id).slice(-6) })));
+  }
+  if (item.reply_excerpt) row.appendChild(el('div', 'rp-excerpt', item.reply_excerpt));
+  if (item.error) row.appendChild(el('div', 'rp-error-line', String(item.error)));
+  return row;
+}
+
+function runPanelRunCard(run, live) {
+  const card = el('div', 'rp-run');
+  card.dataset.odId = 'rp-run-' + run.id;
+  card.dataset.run = String(run.id);
+  const head = el('div', 'rp-run-head');
+  const leaderName = runPanelMemberName(run.leader_member_id);
+  head.appendChild(avatarNode(leaderName, runPanelMemberSlot(run.leader_member_id), 'sm'));
+  head.appendChild(el('span', 'rp-run-title', leaderName));
+  head.appendChild(runPanelStatePill(run.status));
+  if (run.started_at) head.appendChild(el('span', 'rp-time', timeLabel(run.started_at)));
+  head.appendChild(el('span', 'rp-id', '#' + String(run.id).slice(-6)));
+  card.appendChild(head);
+
+  const assignments = runPanelAssignments(run, live);
+  if (!assignments.length) {
+    card.appendChild(el('div', 'tt-note', t('runPanel.noAssignments')));
+    return card;
+  }
+  const groups = new Map();
+  assignments.forEach((item) => {
+    const memberId = String(item.member_id || '');
+    if (!groups.has(memberId)) groups.set(memberId, []);
+    groups.get(memberId).push(item);
+  });
+  groups.forEach((items, memberId) => {
+    const group = el('div', 'rp-member');
+    group.dataset.odId = 'rp-run-' + run.id + '-member-' + memberId;
+    group.appendChild(runPanelMemberHead(memberId, items.length));
+    items.forEach((item) => group.appendChild(runPanelAssignmentRow(item)));
+    card.appendChild(group);
+  });
+  return card;
+}
+
+function runPanelEventsSection(live) {
+  const section = el('div', 'd-sec');
+  section.dataset.odId = 'rp-events';
+  section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionEvents')));
+  const events = live.filter((frame) => frame.type === 'agent_event').slice(-RUN_PANEL_EVENT_LIMIT);
+  if (!events.length) {
+    section.appendChild(el('div', 'tt-empty', t('runPanel.eventsEmpty')));
+    return section;
+  }
+  const groups = new Map();
+  events.forEach((frame) => {
+    const memberId = String(frame.member_id || '');
+    if (!groups.has(memberId)) groups.set(memberId, new Map());
+    const replies = groups.get(memberId);
+    const replyId = String(frame.reply_id || '');
+    if (!replies.has(replyId)) replies.set(replyId, []);
+    replies.get(replyId).push(frame);
+  });
+  groups.forEach((replies, memberId) => {
+    const group = el('div', 'rp-member');
+    group.dataset.odId = 'rp-events-member-' + memberId;
+    group.dataset.member = memberId;
+    group.appendChild(runPanelMemberHead(memberId, replyCountLabel(replies.size)));
+    replies.forEach((frames, replyId) => {
+      const reply = el('div', 'rp-reply');
+      reply.dataset.reply = replyId;
+      reply.appendChild(el('div', 'rp-reply-id', t('runPanel.replyRef', { id: replyId.slice(-6) })));
+      frames.slice(-20).forEach((frame) => {
+        const row = el('div', 'rp-event');
+        row.dataset.eventType = String(frame.event_type || '');
+        row.appendChild(el('span', 'rp-event-type', String(frame.event_type || '')));
+        const summary = runPanelEventSummary(frame);
+        if (summary) row.appendChild(el('span', 'rp-event-summary', summary));
+        reply.appendChild(row);
+      });
+      group.appendChild(reply);
+    });
+    section.appendChild(group);
+  });
+  return section;
+}
+
+/** 一个回复内的事件条数是**计数**，进 mono 档；不把「3 条事件」写成一句话。 */
+function replyCountLabel(count) {
+  return count ? '×' + String(count) : '';
+}
+
+/** Plan：快照里每个成员最近一个 run 的清单 + live `plan_update` 覆盖（按 task id 去重）。 */
+function runPanelPlanGroups(live) {
+  const groups = new Map();
+  (state.runPanel.plan || []).forEach((member) => {
+    const latest = (member.runs || [])[0];
+    if (!latest) return;
+    groups.set(String(member.member_id), {
+      memberId: String(member.member_id),
+      runId: String(latest.id),
+      tasks: (latest.tasks || []).map((task) => ({ ...task })),
+    });
+  });
+  live.filter((frame) => frame.type === 'plan_update').forEach((frame) => {
+    const memberId = String(frame.member_id || '');
+    let group = groups.get(memberId);
+    if (!group) {
+      group = { memberId, runId: String(frame.plan_run_id || ''), tasks: [] };
+      groups.set(memberId, group);
+    }
+    if (group.runId !== String(frame.plan_run_id || '')) {
+      group.runId = String(frame.plan_run_id || '');
+      group.tasks = [];
+    }
+    const task = frame.task || {};
+    const index = group.tasks.findIndex((item) => String(item.id) === String(task.id));
+    if (task.deleted_at) {
+      if (index >= 0) group.tasks.splice(index, 1);
+      return;
+    }
+    if (index >= 0) group.tasks[index] = { ...group.tasks[index], ...task };
+    else group.tasks.push({ ...task });
+  });
+  return [...groups.values()];
+}
+
+function runPanelPlanSection(live) {
+  const section = el('div', 'd-sec');
+  section.dataset.odId = 'rp-plan';
+  section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionPlan')));
+  const groups = runPanelPlanGroups(live)
+    .map((group) => ({ ...group, tasks: group.tasks.filter((task) => !task.deleted_at) }))
+    .filter((group) => group.tasks.length);
+  if (!groups.length) {
+    section.appendChild(el('div', 'tt-empty', t('runPanel.planEmpty')));
+    return section;
+  }
+  groups.forEach((group) => {
+    const card = el('div', 'rp-member rp-plan-group');
+    card.dataset.odId = 'rp-plan-member-' + group.memberId;
+    card.dataset.member = group.memberId;
+    card.appendChild(runPanelMemberHead(group.memberId, group.tasks.length));
+    group.tasks.forEach((task) => {
+      const row = el('div', 'rp-plan-task');
+      row.dataset.planTask = String(task.id || '');
+      row.dataset.state = String(task.state || '');
+      row.appendChild(el('span', 'rp-plan-subject', String(task.subject || task.description || task.id || '')));
+      row.appendChild(runPanelStatePill(task.state));
+      card.appendChild(row);
+    });
+    section.appendChild(card);
+  });
+  return section;
+}
+
+/** `completed` / `failed` 是 SOP 的终态：快照已经收口的运行不会被迟到的 live 帧拉回。 */
+function runPanelTerminalPhase(phase) {
+  return phase === 'completed' || phase === 'failed';
+}
+
+/** SOP：快照 run 视图 + live `sop_event` 覆盖（按 run id + step_index 合并）。 */
+function runPanelSopViews(live) {
+  const views = new Map();
+  (state.runPanel.sops || []).forEach((run) => {
+    views.set(String(run.id), {
+      id: String(run.id),
+      definitionId: String(run.sop_definition_id || ''),
+      phase: run.phase,
+      started_at: run.started_at,
+      awaiting: run.awaiting || null,
+      steps: ((run.state && run.state.steps) || []).map((step, index) => ({
+        index,
+        subject: step.subject || '',
+        phase: step.phase,
+        verdicts: (step.verifications || []).slice(),
+      })),
+    });
+  });
+  live.filter((frame) => frame.type === 'sop_event').forEach((frame) => {
+    const runId = String(frame.sop_run_id || '');
+    if (!runId) return;
+    let view = views.get(runId);
+    if (!view) {
+      view = { id: runId, definitionId: '', phase: 'pending', started_at: null, awaiting: null, steps: [] };
+      views.set(runId, view);
+    }
+    const payload = frame.payload || {};
+    if (payload.run_phase && !runPanelTerminalPhase(view.phase)) view.phase = frame.phase;
+    if (payload.reply_id) view.awaiting = { reply_id: payload.reply_id };
+    const index = Number(frame.step_index) || 0;
+    let step = view.steps[index];
+    if (!step) {
+      step = { index, subject: payload.step || '', phase: 'pending', verdicts: [] };
+      view.steps[index] = step;
+    }
+    const nextPhase = payload.phase || frame.phase;
+    if (nextPhase && (!runPanelTerminalPhase(step.phase) || runPanelTerminalPhase(nextPhase))) {
+      step.phase = nextPhase;
+    }
+    if (payload.verdict) step.verdicts = step.verdicts.concat([payload.verdict]);
+  });
+  return [...views.values()];
+}
+
+function runPanelSopSection(live) {
+  const section = el('div', 'd-sec');
+  section.dataset.odId = 'rp-sop';
+  section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionSop')));
+  const views = runPanelSopViews(live);
+  if (!views.length) {
+    section.appendChild(el('div', 'tt-empty', t('runPanel.sopEmpty')));
+    return section;
+  }
+  views.forEach((run) => {
+    const card = el('div', 'rp-run rp-sop');
+    card.dataset.odId = 'rp-sop-' + run.id;
+    card.dataset.sopRun = run.id;
+    const head = el('div', 'rp-run-head');
+    head.appendChild(el('span', 'rp-run-title', '#' + run.id.slice(-6)));
+    head.appendChild(runPanelStatePill(run.phase));
+    if (run.started_at) head.appendChild(el('span', 'rp-time', timeLabel(run.started_at)));
+    card.appendChild(head);
+    if (run.awaiting && run.awaiting.reply_id) {
+      card.appendChild(
+        el('div', 'team-notice', t('runPanel.awaiting', { reply: String(run.awaiting.reply_id).slice(-6) })),
+      );
+    }
+    const steps = run.steps.slice().sort((a, b) => a.index - b.index);
+    const definitionSteps = (state.runPanel.sopDefs[run.definitionId] || {}).steps || [];
+    if (!steps.length) {
+      card.appendChild(el('div', 'tt-note', t('runPanel.noSteps')));
+    } else {
+      steps.forEach((step) => {
+        const row = el('div', 'rp-step');
+        row.dataset.step = String(step.index);
+        row.dataset.state = String(step.phase || '');
+        const top = el('div', 'rp-step-top');
+        const definitionStep = definitionSteps[step.index];
+        const subject = step.subject
+          || (definitionStep && definitionStep.subject)
+          || t('runPanel.stepIndex', { index: step.index + 1 });
+        top.appendChild(el('span', 'rp-step-name', subject));
+        top.appendChild(runPanelStatePill(step.phase));
+        row.appendChild(top);
+        if (step.verdicts.length) {
+          const verdict = step.verdicts[step.verdicts.length - 1];
+          const line = el('div', verdict.passed ? 'rp-verdict is-pass' : 'rp-verdict is-fail');
+          line.dataset.passed = verdict.passed ? 'true' : 'false';
+          line.appendChild(el('span', 'rp-verdict-state',
+            verdict.passed ? t('runPanel.verdictPassed') : t('runPanel.verdictFailed')));
+          if (verdict.message) line.appendChild(el('span', 'rp-verdict-message', String(verdict.message)));
+          row.appendChild(line);
+        }
+        card.appendChild(row);
+      });
+    }
+    section.appendChild(card);
+  });
+  return section;
+}
+
+function renderRunPanel() {
+  const panel = state.runPanel;
+  const title = $('#rpTitle');
+  if (title) {
+    if (panel.taskId) {
+      const task = taskById(panel.taskId);
+      title.textContent = task ? task.title : '#' + String(panel.taskId).slice(-6);
+    } else {
+      const channel = state.channels.find((item) => item.id === panel.channelId);
+      title.textContent = channel ? channel.name : String(panel.channelId || '');
+    }
+  }
+  const sub = $('#rpSub');
+  if (sub) sub.textContent = t('runPanel.sub');
+  const body = $('#rpBody');
+  if (!body) return;
+  if (!panel.open) {
+    replaceChildren(body, []);
+    return;
+  }
+  if (panel.error) {
+    const box = el('div', 'rp-error');
+    box.setAttribute('data-od-id', 'rp-error');
+    box.appendChild(el('div', 'rp-error-text', t('runPanel.error', { reason: panel.error })));
+    const retry = el('button', 'btn btn-sm', t('runPanel.retry'));
+    retry.type = 'button';
+    retry.dataset.runRetry = '1';
+    retry.setAttribute('data-od-id', 'rp-retry');
+    box.appendChild(retry);
+    replaceChildren(body, [box]);
+    return;
+  }
+  if (panel.loading && !panel.runs.length && !panel.plan.length && !panel.sops.length) {
+    replaceChildren(body, [el('div', 'tt-empty', t('runPanel.loading'))]);
+    return;
+  }
+  const live = runPanelLiveEvents();
+  const overlay = runPanelOverlayEvents(live);
+  const runsSection = el('div', 'd-sec');
+  runsSection.dataset.odId = 'rp-runs';
+  runsSection.appendChild(el('div', 'd-sec-title', t('runPanel.sectionRuns')));
+  if (!panel.runs.length) {
+    runsSection.appendChild(el('div', 'tt-empty', t('runPanel.runsEmpty')));
+  } else {
+    panel.runs.forEach((run) => runsSection.appendChild(runPanelRunCard(run, live)));
+  }
+  replaceChildren(body, [
+    runsSection,
+    runPanelEventsSection(live),
+    runPanelPlanSection(overlay),
+    runPanelSopSection(overlay),
+  ]);
+}
+
+/** 打开运行面板：入口在频道头（target = 频道）与任务线程头（target = 任务 target，
+    另带 `task_id` 过滤）。`reveal` 表示这是人显式的打开，压过「上次收起」那一
+    位（与 `openTask` 同一条规则）。 */
+function openRunPanel(options) {
+  const panel = state.runPanel;
+  panel.open = true;
+  panel.targetId = options.targetId;
+  panel.channelId = options.channelId || null;
+  panel.taskId = options.taskId || null;
+  panel.loading = true;
+  panel.error = '';
+  panel.runs = [];
+  panel.plan = [];
+  panel.sops = [];
+  panel.sopDefs = {};
+  panel.overlayMarker = null;
+  // 本次会话里已经见过的 SOP run：面板重开后仍要能按 id 拉快照（后端没有按 target
+  // 列 SOP run 的读面，live 帧是 id 的唯一来源）。
+  panel.sopIds = (state.liveEvents.get(panel.targetId) || [])
+    .filter((event) => event.type === 'sop_event' && event.sop_run_id)
+    .map((event) => String(event.sop_run_id))
+    .filter((id, index, ids) => ids.indexOf(id) === index);
+  setDockMode('run', true);
+  renderRunPanel();
+  if (panel.channelId && channelAgentMembers(panel.channelId) === null) {
+    refreshChannelMembers(panel.channelId).then(() => {
+      if (state.runPanel.open && state.runPanel.channelId === panel.channelId) renderRunPanel();
+    });
+  }
+  loadRunPanelSnapshot();
+}
+
+function openRunPanelForChannel() {
+  const channel = activeChannel();
+  if (!channel) return;
+  openRunPanel({ channelId: channel.id, targetId: channel.id, taskId: null });
+}
+
+function openRunPanelForTask() {
+  const task = state.activeTask;
+  if (!task) return;
+  openRunPanel({ channelId: task.channel_id, targetId: task.target_id, taskId: task.id });
+}
+
+/** 关闭运行面板：落点与其它 dock 形态共用同一份判据（从任务线程打开的回任务线程）。 */
+function closeRunPanel() {
+  const panel = state.runPanel;
+  const fromTask = Boolean(panel.taskId);
+  panel.open = false;
+  panel.loading = false;
+  panel.error = '';
+  if (fromTask && state.activeTaskId) setDockMode('task');
+  else settleDockFallback();
+}
+
+/** `sop_event` 是新 run 的唯一线索：记住 id，下一次快照刷新按 id 拉 `GET /sop-runs/{id}`。 */
+function noteRunPanelSopId(targetId, event) {
+  const panel = state.runPanel;
+  if (!panel.open || panel.targetId !== targetId) return;
+  const runId = String(event.sop_run_id || '');
+  if (runId && panel.sopIds.indexOf(runId) === -1) panel.sopIds.push(runId);
+}
+
+async function loadRunPanelSnapshot() {
+  const panel = state.runPanel;
+  if (!panel.open || !panel.targetId) return;
+  const version = ++runPanelRequestVersion;
+  const targetId = panel.targetId;
+  const taskId = panel.taskId;
+  const sopIds = panel.sopIds.slice();
+  panel.loading = true;
+  panel.error = '';
+  renderRunPanel();
+  let runsUrl = '/api/targets/' + encodeURIComponent(targetId) + '/team-runs?limit=' + RUN_PANEL_RUN_LIMIT;
+  if (taskId) runsUrl += '&task_id=' + encodeURIComponent(taskId);
+  try {
+    const [runsPayload, planPayload] = await Promise.all([
+      api(runsUrl),
+      api('/api/targets/' + encodeURIComponent(targetId) + '/plan'),
+    ]);
+    const sopPayloads = await Promise.all(
+      sopIds.map((runId) => api('/api/sop-runs/' + encodeURIComponent(runId)).catch(() => null)),
+    );
+    // 步骤名在定义里（run state 只存 phase / verdict）：按 run 的 definition id 读定义。
+    const definitionIds = sopPayloads
+      .map((payload) => payload && payload.run && payload.run.sop_definition_id)
+      .filter(Boolean)
+      .filter((id, index, ids) => ids.indexOf(id) === index);
+    const definitionPayloads = await Promise.all(
+      definitionIds.map((id) => api('/api/sops/' + encodeURIComponent(id)).catch(() => null)),
+    );
+    if (version !== runPanelRequestVersion || !panel.open || panel.targetId !== targetId) return;
+    panel.runs = runsPayload.runs || [];
+    panel.plan = (planPayload.plan && planPayload.plan.members) || [];
+    panel.sops = sopPayloads
+      .filter((payload) => payload && payload.run)
+      .map((payload) => payload.run);
+    const defs = {};
+    definitionPayloads.forEach((payload) => {
+      if (payload && payload.sop && payload.sop.id) defs[payload.sop.id] = payload.sop;
+    });
+    panel.sopDefs = defs;
+    // 快照已经合并了此刻之前的所有变化：Plan / SOP 的 live 覆盖只应用它之后的帧。
+    const events = state.liveEvents.get(targetId) || [];
+    panel.overlayMarker = events.length ? events[events.length - 1] : null;
+    panel.loading = false;
+    panel.error = '';
+  } catch (err) {
+    if (version !== runPanelRequestVersion || !panel.open || panel.targetId !== targetId) return;
+    panel.loading = false;
+    panel.error = err.message;
+  }
+  renderRunPanel();
+}
+
+/** 重连成功后刷新：只有面板开着、且这个 target 正是面板的 target 时才读。 */
+function refreshRunPanelFor(targetId) {
+  const panel = state.runPanel;
+  if (!panel.open || !panel.targetId) return;
+  if (targetId && panel.targetId !== targetId) return;
+  loadRunPanelSnapshot();
 }
 
 async function refreshTaskDetails(taskId) {
@@ -2308,6 +2977,9 @@ function recordLiveEvent(targetId, type, payload) {
   // 有界保留：live-only 事件不会补拉，保留旧事件只为本次会话的运行面板。
   if (events.length > LIVE_EVENTS_LIMIT) events.splice(0, events.length - LIVE_EVENTS_LIMIT);
   state.liveEvents.set(key, events);
+  // SOP 没有「按 target 列 run」的读面：只有 live 帧见过 run id 之后，重连兜底才能
+  // 逐个 `GET /api/sop-runs/{id}` 刷新。这里只记 id，不触发写路径。
+  if (type === 'sop_event') noteRunPanelSopId(key, payload);
   return payload;
 }
 
@@ -2367,6 +3039,9 @@ function connectStream(targetId, entry) {
       wasOffline = false;
       loadWorkspace({ silent: true, keepActive: true });
     }
+    // 运行面板的 live 事件不补拉（ADR-0020）：重连成功后按快照兜底，把断线期间
+    // 的分派 / Plan / SOP 变化读回来。面板没开或不是这个 target 时是空操作。
+    if (recovered) refreshRunPanelFor(targetId);
   };
   source.onerror = () => {
     if (entry.rotating) return; // 我们自己关的：不是错误
@@ -2568,9 +3243,14 @@ function render() {
   renderDms();
   renderMembers();
   renderTaskBoard();
-  // dock 的三种形态共用同一个 380px 容器：每次整体重绘都把形态重新同步一遍（形态由
+  // dock 的四种形态共用同一个 380px 容器：每次整体重绘都把形态重新同步一遍（形态由
   // 「现在打开着哪一个对象」推导，见 `setDockMode()`），否则某次局部重建会把形态留在上一帧。
-  setDockMode(state.activeTaskId ? 'task' : (state.activeAgentId ? 'detail' : 'agent'));
+  // 运行面板是显式打开的面：它开着时压过任务线程 / Agent 详情，关闭时再落回它们。
+  setDockMode(
+    state.runPanel.open
+      ? 'run'
+      : (state.activeTaskId ? 'task' : (state.activeAgentId ? 'detail' : 'agent')),
+  );
   if (state.activeTask) renderTaskThread();
   syncTaskViewSeg();
   renderHeader();
@@ -2584,6 +3264,9 @@ function render() {
   renderSearchResults();
   renderConnection();
   renderDock();
+  // 运行面板的成员名 / 头像色位来自成员表；整体重绘时按当前语言与成员表重建一次，
+  // 于是切语言、成员改名都不会留在旧读数上（面板关着时是空操作）。
+  renderRunPanel();
   // Agent 详情开着时它的读数（状态点 / 跑动的数字）也要跟着整体重绘刷新：它的每个数字都是
   // 后端事实的镜像，因此重建它和重建消息流是同一件事。
   if (state.activeAgentId) renderAgentDetail();
@@ -4069,6 +4752,8 @@ function renderHeader() {
   // 频道设置（#154：模式 / 队长 / 项目根 / 后端 / 权限档）同样是**频道**配置
   // （ADR-0018 / ADR-0021）：DM 没有这条面，入口随之隐藏。
   $('#btnChannelSettings').hidden = isDm;
+  // 运行面板（#155）属于协作运行的频道 / 任务线程：私信没有 team 运行，入口随之隐藏。
+  $('#btnRunPanel').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -5346,6 +6031,9 @@ async function selectTarget(targetId) {
     if (stale && stale.last_seq > stale.last_read_seq) scheduleRead(previous, stale.last_seq);
   }
   closeTaskStream();
+  // 运行面板读的是**上一个 target** 的快照与 live 归属：换 target 时整个作废，
+  // 不把旧频道的分派留在新频道旁边。
+  resetRunPanelState();
   state.mode = 'channel';
   state.activeTaskId = null;
   state.activeTask = null;
@@ -5516,6 +6204,15 @@ function bindEvents() {
   $('#channelConfigBody').addEventListener('input', (event) => {
     const root = event.target.closest('[data-config-workspace-root]');
     if (root) state.channelConfig.draft.workspaceRoot = root.value;
+  });
+  // ── 运行面板（#155）：频道头入口 + 任务线程头入口 + 刷新 / 关闭 / 错误重试 ──
+  // 正文整段重铺，因此重试按钮委派到 `#rpBody` 上（与预算 / 设置同一做法）。
+  $('#btnRunPanel').addEventListener('click', openRunPanelForChannel);
+  $('#btnThreadRunPanel').addEventListener('click', openRunPanelForTask);
+  $('#rpRefresh').addEventListener('click', () => loadRunPanelSnapshot());
+  $('#rpClose').addEventListener('click', closeRunPanel);
+  $('#rpBody').addEventListener('click', (event) => {
+    if (event.target.closest('[data-run-retry]')) loadRunPanelSnapshot();
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。
