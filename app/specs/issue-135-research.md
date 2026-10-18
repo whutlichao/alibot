@@ -30,7 +30,7 @@
 
 `LocalWorkspace.list_tools()`（2.0.10）返回六个工具：
 
-```python
+```text
 # agentscope/workspace/_local_workspace.py:141-162
 backend = self.get_backend()
 shell = Bash(cwd=self.workdir, backend=backend)   # 只有 shell 拿到 workdir
@@ -240,18 +240,20 @@ import os
 
 ROOT = os.path.realpath(channel.workspace_root)  # 只算一次；也用这个值建 LocalWorkspace
 
+
 def _within(real: str, root: str) -> bool:
     if real == root:
         return True
     try:
         return os.path.commonpath([real, root]) == root
-    except ValueError:          # Windows 跨盘
+    except ValueError:  # Windows 跨盘
         return False
+
 
 def resolve_in_root(raw: str | None, *, allow_missing: bool = False) -> str:
     """把工具输入规范化为根内绝对 realpath；根外抛 WorkspaceRootViolation。"""
     if raw is None:
-        return ROOT                              # 只允许 Glob/Grep 省略 path
+        return ROOT  # 只允许 Glob/Grep 省略 path
     candidate = raw if os.path.isabs(raw) else os.path.join(ROOT, raw)
     real = os.path.realpath(candidate)
     if not _within(real, ROOT):
@@ -278,10 +280,15 @@ class WorkspaceRootGuard(ToolMiddlewareBase):
         self.root = root
 
     async def on_tool_call(self, tool, input_kwargs, next_handler):
-        key = {"Read": "file_path", "Write": "file_path", "Edit": "file_path",
-               "Glob": "path", "Grep": "path"}[tool.name]
+        key = {
+            "Read": "file_path",
+            "Write": "file_path",
+            "Edit": "file_path",
+            "Glob": "path",
+            "Grep": "path",
+        }[tool.name]
         try:
-            real = resolve_in_root(input_kwargs.get(key))     # None -> ROOT
+            real = resolve_in_root(input_kwargs.get(key))  # None -> ROOT
             if tool.name == "Glob":
                 _reject_dotdot_segments(input_kwargs["pattern"])
         except WorkspaceRootViolation as exc:

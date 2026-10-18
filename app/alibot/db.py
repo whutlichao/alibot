@@ -67,10 +67,13 @@ AVATAR_SLOT_COUNT = 5
 # `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..14）。
 # 15 = **本票 #58**（结构化沉默信号 `silent`：`round_outcome.status` 的库级 CHECK 纳入第六个词，
 # ADR-0008）。SQLite 改表级 CHECK 只能重建表，因此多了一步 `14 → 15`（`migrate._step_14_to_15`）；
-# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号，后续票从 16 起。
-# 代价同上：被 14 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
-# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..15）。
-SCHEMA_VERSION = 15
+# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号。
+# 16 = **本票 #138**（AgentScope 2 对齐：team 模式 / Plan / SOP 的纯增量库形态，规格 §4.1 / §4.2 / ADR-0018 /
+# ADR-0022 / ADR-0023）。它只加列与表、不重建既有表、不回填业务数据；`15 → 16` 一步
+# （`migrate._step_15_to_16`）。判据同前：main 是 15、16 是满足「必须高于当前 main」的最小号。
+# 代价同上：被 15 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
+# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..16）。
+SCHEMA_VERSION = 16
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -239,8 +242,26 @@ CREATE TABLE IF NOT EXISTS channel (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  -- team 是**频道级**拓扑开关（ADR-0018 / ADR-0022）：缺省 `autonomous`，旧行按默认值解释。
+  -- team 必须有一个非空队长；这条不变量用触发器守，避免为「加约束」重建 channel 表。
+  mode        TEXT NOT NULL DEFAULT 'autonomous' CHECK (mode IN ('autonomous', 'team')),
+  team_leader_member_id TEXT REFERENCES member(id)
 );
+
+CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_insert
+BEFORE INSERT ON channel
+WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'team channel requires a leader');
+END;
+
+CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_update
+BEFORE UPDATE OF mode, team_leader_member_id ON channel
+WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'team channel requires a leader');
+END;
 
 -- target 是一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果四件事
 -- 全部挂 ``target_id``，``UNIQUE(target_id, seq)`` 因此说的是「target 内单调」。
@@ -395,6 +416,98 @@ CREATE TABLE IF NOT EXISTS channel_budget_limit (
   channel_id   TEXT PRIMARY KEY REFERENCES channel(id),
   budget_limit INTEGER NOT NULL CHECK (budget_limit IN (3, 5, 10)),
   updated_at   TEXT NOT NULL
+);
+
+-- ─── team 运行记录（ADR-0018 / ADR-0022 / 规格 §4.2） ───────────────────────
+-- team 模式经 ``task.channel_id -> channel.mode`` 解析；``task`` 表**不新增 mode 列**（ADR-0022 §一）。
+-- 因此下面两张表的 ``target_id`` 既可以是 channel 型，也可以是该频道下的 task 型；
+-- ``team_assignment.task_id`` 在 task target 上非空。它们**不是**消息、不进未读/搜索/预算。
+CREATE TABLE IF NOT EXISTS team_run (
+  id                TEXT PRIMARY KEY,
+  target_id         TEXT NOT NULL REFERENCES target(id),
+  leader_member_id  TEXT NOT NULL REFERENCES member(id),
+  base_seq          INTEGER NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN
+                      ('running', 'completed', 'failed', 'interrupted', 'invalid-leader')),
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS team_assignment (
+  id                TEXT PRIMARY KEY,
+  team_run_id       TEXT NOT NULL REFERENCES team_run(id),
+  target_id         TEXT NOT NULL REFERENCES target(id),
+  task_id           TEXT REFERENCES task(id),
+  leader_member_id  TEXT NOT NULL REFERENCES member(id),
+  member_id         TEXT NOT NULL REFERENCES member(id),
+  tool_call_id      TEXT NOT NULL,
+  prompt            TEXT NOT NULL,
+  state             TEXT NOT NULL CHECK (state IN
+                      ('started', 'succeeded', 'failed', 'interrupted', 'budget-exhausted')),
+  jump_consumed     INTEGER NOT NULL DEFAULT 0 CHECK (jump_consumed IN (0, 1)),
+  reply_excerpt     TEXT NOT NULL DEFAULT '',
+  error             TEXT NOT NULL DEFAULT '',
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_assignment_target
+ON team_assignment(target_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_team_assignment_team_run ON team_assignment(team_run_id);
+
+-- ─── Plan / SOP 运行记录（ADR-0023 / 规格 §4.2） ────────────────────────────
+-- Plan 与 SOP 各有独立状态机，**不是**任务五态：它们不进看板、未读、搜索、唤醒、预算，
+-- 也不自动改 ``task`` 行。Plan 是工作态（可更新、可按 run 级联清理），SOP 的历史由 ``sop_run`` 承载。
+CREATE TABLE IF NOT EXISTS plan_run (
+  id           TEXT PRIMARY KEY,
+  target_id    TEXT NOT NULL REFERENCES target(id),
+  member_id    TEXT NOT NULL REFERENCES member(id),
+  base_seq     INTEGER NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  started_at   TEXT NOT NULL,
+  finished_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS plan_task (
+  id           TEXT PRIMARY KEY,
+  plan_run_id  TEXT NOT NULL REFERENCES plan_run(id) ON DELETE CASCADE,
+  seq          INTEGER NOT NULL,
+  subject      TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  state        TEXT NOT NULL CHECK (state IN ('pending', 'in_progress', 'completed')),
+  owner        TEXT,
+  blocks       TEXT NOT NULL DEFAULT '[]',
+  blocked_by   TEXT NOT NULL DEFAULT '[]',
+  metadata     TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  deleted_at   TEXT,
+  UNIQUE (plan_run_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS sop_definition (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  -- JSON：executor/verifier member ids、subject、description、max_attempts（ADR-0023 §三）。
+  steps        TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sop_run (
+  id                 TEXT PRIMARY KEY,
+  sop_definition_id  TEXT NOT NULL REFERENCES sop_definition(id),
+  target_id          TEXT NOT NULL REFERENCES target(id),
+  leader_member_id   TEXT NOT NULL REFERENCES member(id),
+  -- SOPRunState.model_dump_json() 的原样快照。
+  state              TEXT NOT NULL,
+  phase              TEXT NOT NULL CHECK (phase IN
+                       ('pending', 'running', 'awaiting', 'completed', 'failed')),
+  started_at         TEXT NOT NULL,
+  finished_at        TEXT,
+  updated_at         TEXT NOT NULL
 );
 
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
