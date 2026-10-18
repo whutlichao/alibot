@@ -101,18 +101,18 @@ node --test app/tests/task_count_ui.test.cjs
 ## 3. 全量门禁
 
 ```sh
-scripts/check.sh            # 默认全量，不加 --fast
+scripts/check.sh            # 默认全量，不加 --fast（在交付 tip `321cdbc` 上跑的最后一次）
 ```
 
 ```text
 == pytest（全量）
-858 passed, 2 skipped in 393.10s (0:06:33)
+858 passed, 2 skipped in 380.02s (0:06:20)
 
 == ruff check
 All checks passed!
 
 == ruff format --check（只检查；不要跑 ruff format，它会整文件重排）
-217 files already formatted
+219 files already formatted
 
 == mypy（仓库根）
 Success: no issues found in 92 source files
