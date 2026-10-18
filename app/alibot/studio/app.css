@@ -786,6 +786,20 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .dock-member-reason { font-size: var(--fs-caption); color: var(--warn-deep); margin-top: var(--sp-2); line-height: var(--lh-snug); }
 .dock-member-foot { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); }
 
+/* ─── team 频道的事实提示（#154 / ADR-0018）──────────────────────────────
+   两处消费：频道设置弹窗（成员 auto_claim 已停用 / 任务线程只唤醒队长）与任务线程头部
+   （所属频道是 team 时只唤醒队长）。它不是错误：沿用 warn 族（soft 底 + graphic 描边 +
+   deep 墨），与 `.conn-banner` / `.remote-notice` 同一语汇；不新造色位、不硬编码 hex。 */
+.team-notice {
+  display: flex; align-items: baseline; gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5); margin: var(--sp-3) 0 0;
+  border-left: 2px solid var(--warn-graphic); border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--warn-soft); color: var(--warn-deep);
+  font-size: var(--fs-sm); line-height: var(--lh-snug);
+}
+.team-notice + .team-notice { margin-top: var(--sp-3); }
+.tt-summary .team-notice { margin-top: var(--sp-4); }
+
 /* ─── 远端数据流告知（必须在首次远端调用之前） ──────────────────────────── */
 .remote-notice {
   border: 1px solid var(--warn-graphic); background: var(--warn-soft); border-radius: var(--r-md);

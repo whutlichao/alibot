@@ -61,6 +61,14 @@
      呈现；预算耗尽写成一条明确事实，不进错误区；
    - 写控件只有固定档位 3 / 5 / 10（默认 3），提交 `{budget_limit}`；保存后按响应里的新读数重铺，
      并提示「从下一个人类世代生效」。用量（`used`）前端既不算也不提交——它是后端的正本。
+
+   本票（issue #154）新增 —— 频道设置面（规格 §4.6 / ADR-0018 / ADR-0021）：
+   - 频道头新增设置入口，打开一张弹窗：mode（autonomous / team）、队长、项目根、默认后端、
+     默认权限档；`team_scope` 是后端只读事实，固定展示 `channel+task`；
+   - `leader_available` / `leader_reason` 与频道静默时的裁决读同一份后端事实；team 模式下
+     显示「成员 auto_claim 已停用」「任务线程只唤醒队长」；
+   - 保存提交 `PATCH /api/channels/{id}/config`，成功后按响应重铺；非法字段只显示后端可读原因
+     （整体拒绝、不留下半成品）；任务视图读取所属频道的同一份配置并显示同一条唤醒提示。
    ========================================================================== */
 'use strict';
 
@@ -180,6 +188,26 @@ const state = {
   // `selected` 是**还没提交**的档位选择（呈现状态）。两者都不是业务正本——正本在后端；
   // 关闭时整个镜像作废，于是「拿旧读数当现状」这个中间态不存在。
   channelBudget: { channelId: null, budget: null, selected: null, loading: false, error: '' },
+  // 频道设置面（#154）：`config` 是 `GET /api/channels/{id}/config` 载荷的镜像，`draft` 是
+  // **还没提交**的呈现状态；两者都不是业务正本——正本在后端，保存后按响应重铺。
+  channelConfig: {
+    channelId: null,
+    config: null,
+    members: [],
+    membersFailed: false,
+    loading: false,
+    error: '',
+    draft: {
+      mode: 'autonomous',
+      leader: '',
+      workspaceRoot: '',
+      backend: 'local',
+      permission: 'ask-writes',
+    },
+  },
+  // 任务视图要读所属频道的同一份配置（#154 / 规格 §4.6）：按 channel id 缓存
+  // `GET /api/channels/{id}/config` 的载荷，正本仍是后端。
+  channelConfigs: {},
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -1409,6 +1437,17 @@ function renderTaskThread() {
   $('#ttStatusText').textContent = taskStatusLabel(task.status);
   renderAssigneePill(task);
 
+  // ── team 频道的事实提示（#154 / ADR-0018）：任务线程只唤醒队长。
+  //    配置来自 `state.channelConfigs`（`loadTaskChannelConfig` 写入，正本是后端）；
+  //    autonomous 下整块隐藏，不用一句「和平时一样」占位。
+  const teamNotice = $('#ttTeamNotice');
+  if (teamNotice) {
+    const channelConfig = state.channelConfigs[task.channel_id];
+    const team = Boolean(channelConfig && channelConfig.mode === 'team');
+    teamNotice.hidden = !team;
+    teamNotice.textContent = team ? t('task.teamNotice') : '';
+  }
+
   // ── 推进 chips：**只**出现迁移集合里的目标（`closed` 是终态 ⇒ 一个都不出）──
   const transitions = TASK_STATUS_TRANSITIONS[task.status] || [];
   if (transitions.length) {
@@ -1816,6 +1855,9 @@ async function openTask(taskId) {
     if (channelAgentMembers(thread.task.channel_id) === null) {
       await refreshChannelMembers(thread.task.channel_id);
     }
+    // 任务视图读取所属频道的**同一份**配置（#154 / 规格 §4.6）：team 频道下任务线程
+    // 只唤醒队长，这条事实与频道设置页读的是同一个端点、同一份后端正本。
+    await loadTaskChannelConfig(thread.task.channel_id);
     const index = state.tasks.findIndex((task) => task.id === taskId);
     if (index >= 0) state.tasks[index] = thread.task;
     else state.tasks.push(thread.task);
@@ -3645,6 +3687,369 @@ function renderBudgetModal() {
 }
 
 
+/* ─── 频道设置（#154 / 规格 §4.6 / ADR-0018 / ADR-0021）────────────────────────
+
+   频道头入口打开一张弹窗：mode（autonomous / team）、`team_scope`（**只读**，后端固定
+   `channel+task`）、队长、项目根、默认后端、默认权限档。纪律与回应预算 / 工作区设置一致：
+
+   - 读数全部来自 `GET /api/channels/{id}/config`，前端不推算 `leader_available`——
+     它是**编排按后端事实**算出来的（`team.leader_*` 文案也就是频道沉默时的同一份原因）；
+   - 保存提交 `PATCH /api/channels/{id}/config`，成功按**响应里的新配置**重铺；
+     失败只显示后端可读原因，不把没落库的值写回界面；
+   - 「任一字段不合法整体拒绝」由后端保证（DB `update_channel_config` 校验先于写入）；
+     前端不做第二套校验，也就不可能出现「前端放行、后端半写」的中间态；
+   - `team_scope` 不在可写字段里（后端 `extra="forbid"`），这里只显示，不提交。
+
+   任务视图消费同一个端点（见 `loadTaskChannelConfig`）：team 频道下任务线程只唤醒队长。 */
+
+/** 与后端 `CHANNEL_MODES` / `WORKSPACE_BACKENDS` / `PERMISSION_MODES` 同序同名。 */
+const CHANNEL_MODES = ['autonomous', 'team'];
+const WORKSPACE_BACKENDS = ['local', 'docker'];
+const PERMISSION_MODES = ['read-only', 'ask-writes', 'trusted-writes'];
+
+/** 弹窗的空镜像（打开 / 关闭都用它，于是「缓存了过期配置」这个中间态不存在）。 */
+function emptyChannelConfigView() {
+  return {
+    channelId: null,
+    config: null,
+    members: [],
+    membersFailed: false,
+    loading: false,
+    error: '',
+    draft: {
+      mode: 'autonomous',
+      leader: '',
+      workspaceRoot: '',
+      backend: 'local',
+      permission: 'ask-writes',
+    },
+  };
+}
+
+/** 把后端配置铺成**未提交的呈现状态**；`workspace_root=null` 在输入框里就是空串。 */
+function channelConfigDraftFrom(config) {
+  return {
+    mode: config.mode,
+    leader: config.team_leader_member_id || '',
+    workspaceRoot: config.workspace_root || '',
+    backend: config.workspace_backend,
+    permission: config.permission_mode,
+  };
+}
+
+/** 打开频道设置面（入口 = 频道头的设置按钮）：锁定当前频道，先显示「读取中」。 */
+async function openChannelConfigModal() {
+  const channel = activeChannel();
+  if (!channel) return;
+  state.channelConfig = emptyChannelConfigView();
+  state.channelConfig.channelId = channel.id;
+  state.channelConfig.loading = true;
+  $('#channelConfigOverlay').hidden = false;
+  const box = $('#channelConfigFormError');
+  if (box) box.hidden = true;
+  renderChannelConfigModal();
+  await loadChannelConfig(channel.id);
+}
+
+/** 读一次该频道的配置 + 成员表（队长候选）。读回后按**同一个频道**重铺。 */
+async function loadChannelConfig(channelId) {
+  const view = state.channelConfig;
+  try {
+    const payload = await api(channelPath(channelId, '/config'));
+    const members = await refreshChannelMembers(channelId);
+    if (state.channelConfig.channelId !== channelId) return;
+    view.config = payload.config;
+    state.channelConfigs[channelId] = payload.config;
+    view.members = (members || []).filter((member) => member.kind === 'agent');
+    view.membersFailed = channelMembersFailed.has(channelId);
+    view.draft = channelConfigDraftFrom(payload.config);
+    view.loading = false;
+    view.error = '';
+  } catch (err) {
+    if (state.channelConfig.channelId !== channelId) return;
+    view.loading = false;
+    view.error = err.message;
+  }
+  renderChannelConfigModal();
+}
+
+function closeChannelConfigModal() {
+  state.channelConfig = emptyChannelConfigView();
+  $('#channelConfigOverlay').hidden = true;
+  const box = $('#channelConfigFormError');
+  if (box) box.hidden = true;
+}
+
+/** 任务视图读取所属频道的同一份配置；已缓存时直接复用（正本仍是后端）。 */
+async function loadTaskChannelConfig(channelId) {
+  if (!channelId) return null;
+  if (state.channelConfigs[channelId]) return state.channelConfigs[channelId];
+  try {
+    const payload = await api(channelPath(channelId, '/config'));
+    state.channelConfigs[channelId] = payload.config;
+    if (state.activeTask && state.activeTask.channel_id === channelId) renderTaskThread();
+    return payload.config;
+  } catch {
+    // 读不到就保持未缓存：任务线程不伪造 team / autonomous 结论，下次打开再试。
+    return null;
+  }
+}
+
+/** 档位选择（都是**还没提交**的呈现状态；不在后端词表里的取值连选中都不成立）。 */
+function selectChannelConfigMode(mode) {
+  if (!CHANNEL_MODES.includes(mode) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.mode = mode;
+  renderChannelConfigModal();
+}
+
+function selectChannelConfigBackend(backend) {
+  if (!WORKSPACE_BACKENDS.includes(backend) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.backend = backend;
+  renderChannelConfigModal();
+}
+
+function selectChannelConfigPermission(permission) {
+  if (!PERMISSION_MODES.includes(permission) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.permission = permission;
+  renderChannelConfigModal();
+}
+
+/** 一行说明（`.field .hint` 那一档的排版，不新造样式）。 */
+function channelConfigHint(key, odId) {
+  const field = el('div', 'field');
+  const hint = el('div', 'hint', t(key));
+  if (odId) hint.setAttribute('data-od-id', odId);
+  field.appendChild(hint);
+  return field;
+}
+
+/** 一组单档位卡片：值 + 主文案 + 说明。点哪张写哪张（提交仍由保存按钮表达）。 */
+function channelConfigRadioRow(values, selected, dataKey, labelPrefix, notePrefix) {
+  const row = el('div', 'radio-row');
+  values.forEach((value) => {
+    const on = selected === value;
+    const card = el('button', 'radio-card');
+    card.type = 'button';
+    card.dataset[dataKey] = value;
+    card.setAttribute(
+      'data-od-id',
+      dataKey.replace(/[A-Z]/g, (letter) => '-' + letter.toLowerCase()) + '-' + value,
+    );
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    card.classList.toggle('is-on', on);
+    card.appendChild(el('b', null, t(labelPrefix + value)));
+    card.appendChild(el('span', null, t(notePrefix + value + 'Note')));
+    row.appendChild(card);
+  });
+  return row;
+}
+
+/** 队长的候选：该频道的 Agent 成员；已保存但不在成员表里的队长也保留一个选项，
+    以免下拉框看起来「选中的是别人」。可用性始终由后端读数说明。 */
+function channelConfigLeaderOptions(view) {
+  const options = view.members.slice();
+  const leader = view.draft.leader;
+  if (leader && !options.some((member) => member.id === leader)) {
+    const agent = state.agents.find((item) => item.id === leader);
+    options.push(agent || { id: leader, display_name: leader });
+  }
+  return options;
+}
+
+/** 弹窗的唯一渲染落点：读数与写控件都从这里出，于是两者不会各说一份。 */
+function renderChannelConfigModal() {
+  const view = state.channelConfig;
+  const body = $('#channelConfigBody');
+  if (!body) return;
+  const channel = view.channelId
+    ? state.channels.find((item) => item.id === view.channelId)
+    : null;
+  const title = $('#channelConfigTitle');
+  if (title) title.textContent = t('channelConfig.title');
+  const sub = $('#channelConfigSub');
+  if (sub) sub.textContent = t('channelConfig.sub', { name: channel ? channel.name : '' });
+  if (!view.channelId) {
+    replaceChildren(body, []);
+    return;
+  }
+  if (view.loading) {
+    replaceChildren(body, [el('div', 'rail-empty', t('channelConfig.loading'))]);
+    return;
+  }
+  if (view.error) {
+    replaceChildren(body, [
+      el('div', 'rail-empty', t('channelConfig.loadFailed', { reason: view.error })),
+    ]);
+    return;
+  }
+  const config = view.config;
+  if (!config) {
+    replaceChildren(body, []);
+    return;
+  }
+
+  const nodes = [];
+
+  // ① 协作模式。
+  const mode = el('section', 'd-sec');
+  mode.appendChild(sectionTitle('channelConfig.sectionMode', 'channel-config-section-mode'));
+  mode.appendChild(
+    channelConfigRadioRow(CHANNEL_MODES, view.draft.mode, 'configMode', 'channelConfig.mode.', 'channelConfig.mode.'),
+  );
+  nodes.push(mode);
+
+  // ② team 的生效范围：后端只读事实，前端只解释它。
+  const scope = el('section', 'd-sec');
+  scope.appendChild(sectionTitle('channelConfig.sectionScope', 'channel-config-section-scope'));
+  scope.appendChild(kvRow(t('channelConfig.teamScope'), config.team_scope, 'channel-config-team-scope'));
+  scope.appendChild(channelConfigHint('channelConfig.teamScopeNote', 'channel-config-team-scope-note'));
+  nodes.push(scope);
+
+  // ③ 队长：候选是当前频道的 Agent 成员；可用性与原因都是后端事实。
+  const leader = el('section', 'd-sec');
+  leader.appendChild(sectionTitle('channelConfig.sectionLeader', 'channel-config-section-leader'));
+  const leaderField = el('div', 'field');
+  leaderField.appendChild(el('label', null, t('channelConfig.leaderSelectLabel')));
+  const select = el('select', 'input');
+  select.dataset.configLeader = '1';
+  select.setAttribute('data-od-id', 'channel-config-leader');
+  const none = el('option', null, t('channelConfig.leaderNone'));
+  none.value = '';
+  select.appendChild(none);
+  channelConfigLeaderOptions(view).forEach((member) => {
+    const option = el('option', null, member.display_name);
+    option.value = member.id;
+    select.appendChild(option);
+  });
+  select.value = view.draft.leader;
+  leaderField.appendChild(select);
+  leader.appendChild(leaderField);
+  if (view.membersFailed) {
+    leader.appendChild(channelConfigHint('channelConfig.membersUnavailable', 'channel-config-members-failed'));
+  }
+  leader.appendChild(
+    kvRow(
+      t('channelConfig.leaderAvailability'),
+      config.leader_available
+        ? t('channelConfig.leaderAvailable')
+        : t('channelConfig.leaderUnavailable'),
+      'channel-config-leader-availability',
+    ),
+  );
+  if (config.leader_reason) {
+    const reason = el(
+      'div',
+      'dock-member-reason',
+      t('channelConfig.leaderReason', { reason: config.leader_reason }),
+    );
+    reason.setAttribute('data-od-id', 'channel-config-leader-reason');
+    leader.appendChild(reason);
+  }
+  if (view.draft.mode === 'team' && !view.draft.leader) {
+    leader.appendChild(channelConfigHint('channelConfig.leaderRequiredHint', 'channel-config-leader-hint'));
+  }
+
+  // ④ team 模式的两条停用事实（ADR-0018：成员 auto_claim / 任务线程唤醒面）。
+  if (view.draft.mode === 'team') {
+    const noticesBox = el('div');
+    noticesBox.setAttribute('data-od-id', 'channel-config-team-notices');
+    noticesBox.appendChild(el('div', 'team-notice', t('channelConfig.teamNoticeAutoClaim')));
+    noticesBox.appendChild(el('div', 'team-notice', t('channelConfig.teamNoticeWake')));
+    leader.appendChild(noticesBox);
+  }
+  nodes.push(leader);
+
+  // ⑤ 项目根与默认后端。
+  const workspace = el('section', 'd-sec');
+  workspace.appendChild(sectionTitle('channelConfig.sectionWorkspace', 'channel-config-section-workspace'));
+  const rootField = el('div', 'field');
+  rootField.appendChild(el('label', null, t('channelConfig.workspaceRootLabel')));
+  const root = el('input', 'input');
+  root.type = 'text';
+  root.dataset.configWorkspaceRoot = '1';
+  root.setAttribute('data-od-id', 'channel-config-workspace-root');
+  root.placeholder = t('channelConfig.workspaceRootPlaceholder');
+  root.value = view.draft.workspaceRoot;
+  rootField.appendChild(root);
+  workspace.appendChild(rootField);
+  workspace.appendChild(channelConfigHint('channelConfig.workspaceRootHint', 'channel-config-workspace-root-hint'));
+  const backendField = el('div', 'field');
+  backendField.appendChild(el('label', null, t('channelConfig.workspaceBackend')));
+  backendField.appendChild(
+    channelConfigRadioRow(
+      WORKSPACE_BACKENDS,
+      view.draft.backend,
+      'configBackend',
+      'channelConfig.backend.',
+      'channelConfig.backend.',
+    ),
+  );
+  workspace.appendChild(backendField);
+  nodes.push(workspace);
+
+  // ⑥ 默认权限档（三档；不暴露 BYPASS）。
+  const permission = el('section', 'd-sec');
+  permission.appendChild(sectionTitle('channelConfig.sectionPermission', 'channel-config-section-permission'));
+  permission.appendChild(
+    channelConfigRadioRow(
+      PERMISSION_MODES,
+      view.draft.permission,
+      'configPermission',
+      'channelConfig.permission.',
+      'channelConfig.permission.',
+    ),
+  );
+  nodes.push(permission);
+
+  // ⑦ 保存。失败原因写在弹窗自带的 `#channelConfigFormError` 里（重铺不会清掉它）。
+  const actions = el('div', 'agent-actions');
+  const save = el('button', 'btn btn-primary', t('channelConfig.save'));
+  save.type = 'button';
+  save.dataset.configSave = '1';
+  save.setAttribute('data-od-id', 'channel-config-save');
+  save.disabled = !state.online;
+  actions.appendChild(save);
+  nodes.push(actions);
+
+  replaceChildren(body, nodes);
+}
+
+/** 保存：提交全部可写字段（`team_scope` 不在可写面上）；成功按响应重铺，失败只报可读原因。 */
+async function submitChannelConfig() {
+  const view = state.channelConfig;
+  const channelId = view.channelId;
+  if (!channelId || !view.config) return;
+  const box = $('#channelConfigFormError');
+  if (box) box.hidden = true;
+  const root = String(view.draft.workspaceRoot || '').trim();
+  const body = {
+    mode: view.draft.mode,
+    workspace_root: root || null,
+    workspace_backend: view.draft.backend,
+    permission_mode: view.draft.permission,
+  };
+  if (view.draft.leader) body.team_leader_member_id = view.draft.leader;
+  try {
+    const payload = await api(channelPath(channelId, '/config'), { method: 'PATCH', body });
+    if (state.channelConfig.channelId !== channelId) return;
+    view.config = payload.config;
+    state.channelConfigs[channelId] = payload.config;
+    view.draft = channelConfigDraftFrom(payload.config);
+    view.error = '';
+    view.loading = false;
+    renderChannelConfigModal();
+    toast(t('channelConfig.saved'));
+  } catch (err) {
+    if (state.channelConfig.channelId !== channelId) return;
+    if (box) {
+      box.textContent = t('channelConfig.saveFailed', { reason: err.message });
+      box.hidden = false;
+    }
+    renderChannelConfigModal();
+  }
+}
+
+
 function renderHeader() {
   const target = activeTarget();
   const hasTarget = Boolean(target);
@@ -3661,6 +4066,9 @@ function renderHeader() {
   // 回应预算同样是**频道**配置（库内逐频道项，ADR-0007）：DM / 任务型 target 没有这条设置面，
   // 入口随之隐藏（预算读数的路径 `/api/channels/{id}/budget` 只认频道）。
   $('#btnChannelBudget').hidden = isDm;
+  // 频道设置（#154：模式 / 队长 / 项目根 / 后端 / 权限档）同样是**频道**配置
+  // （ADR-0018 / ADR-0021）：DM 没有这条面，入口随之隐藏。
+  $('#btnChannelSettings').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -5070,6 +5478,44 @@ function bindEvents() {
       return;
     }
     if (event.target.closest('[data-budget-save]')) submitBudgetTier();
+  });
+  // ── 频道设置（#154）：频道头入口 + 弹窗（模式 / 队长 / 项目根 / 后端 / 权限档）──
+  // 正文整段重铺，因此点击 / 选择 / 输入都委派到 `#channelConfigBody` 上（与预算 / 提醒同一做法）：
+  // 重铺不会把监听器一起换掉。
+  $('#btnChannelSettings').addEventListener('click', openChannelConfigModal);
+  $('#channelConfigClose').addEventListener('click', closeChannelConfigModal);
+  $('#channelConfigDone').addEventListener('click', closeChannelConfigModal);
+  $('#channelConfigOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'channelConfigOverlay') closeChannelConfigModal();
+  });
+  $('#channelConfigBody').addEventListener('click', (event) => {
+    const mode = event.target.closest('[data-config-mode]');
+    if (mode) {
+      selectChannelConfigMode(mode.dataset.configMode);
+      return;
+    }
+    const backend = event.target.closest('[data-config-backend]');
+    if (backend) {
+      selectChannelConfigBackend(backend.dataset.configBackend);
+      return;
+    }
+    const permission = event.target.closest('[data-config-permission]');
+    if (permission) {
+      selectChannelConfigPermission(permission.dataset.configPermission);
+      return;
+    }
+    if (event.target.closest('[data-config-save]')) submitChannelConfig();
+  });
+  $('#channelConfigBody').addEventListener('change', (event) => {
+    const leader = event.target.closest('[data-config-leader]');
+    if (!leader) return;
+    state.channelConfig.draft.leader = leader.value;
+    renderChannelConfigModal();
+  });
+  // 项目根是自由输入：只更新**未提交的呈现状态**，不逐字读后端（提交时由后端整体校验）。
+  $('#channelConfigBody').addEventListener('input', (event) => {
+    const root = event.target.closest('[data-config-workspace-root]');
+    if (root) state.channelConfig.draft.workspaceRoot = root.value;
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。
