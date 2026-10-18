@@ -565,6 +565,7 @@ class AgentScopeAgentSeam:
         skills_of: Callable[[str, str], Any] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
+        usage_sink: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
@@ -590,6 +591,11 @@ class AgentScopeAgentSeam:
         self._approvals = approvals
         # 团队运行的关联 id（#149 的审批记录列）；#142 装配点可注入，未注入时为空。
         self._team_run_of = team_run_of
+        # 用量观察口（#55 的测量工具）：一轮的最终 ``Msg.usage`` 原样交给它，**不落库、不进
+        # ``RoundOutcome``**。默认 ``None`` 时生产行为逐字不变；它不是接缝的输出形状（ADR-0010 一），
+        # 只是与 ``emit`` 同级的进程内观察面。测量工具据它区分「usage 缺失」与「usage=0」——
+        # 后者是真实读数，前者不能当零成本。
+        self._usage_sink = usage_sink
 
     def _permission_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
         """一轮的权限配置；没有 workspace 也没有注入读路径时返回 ``None``。"""
@@ -1063,6 +1069,7 @@ class AgentScopeAgentSeam:
                 ),
             )
 
+        self._record_usage(reply, agent, target_id)
         return self._outcome_from_reply(reply, task_actions, silence_declarations)
 
     def _run_team_round_stream(
@@ -1416,7 +1423,38 @@ class AgentScopeAgentSeam:
                 status="failed",
                 reason=render("seam.team_no_leader_reply", self._locale()),
             )
+        self._record_usage(reply, agent, target_id)
         return self._outcome_from_reply(reply, task_actions, silence_declarations)
+
+    def _record_usage(self, reply: Any, agent: Mapping[str, Any], target_id: str) -> None:
+        """把最终 ``Msg.usage`` 交给观察口；不落库、不改本轮结论。
+
+        ``usage is None`` 时仍然发一条记录，但四个 token 字段是 ``None``——测量工具必须能把
+        「provider 没给 usage」与「usage 真的是 0」分开，后者才可能是零成本证据。
+        """
+        sink = self._usage_sink
+        if sink is None:
+            return
+        usage = getattr(reply, "usage", None)
+        record = {
+            "member_id": str(agent.get("id") or ""),
+            "target_id": target_id,
+            "model_id": str(agent.get("model_id") or ""),
+            "input_tokens": None if usage is None else int(getattr(usage, "input_tokens", 0) or 0),
+            "output_tokens": None if usage is None else int(getattr(usage, "output_tokens", 0) or 0),
+            "cache_input_tokens": (
+                None if usage is None else int(getattr(usage, "cache_input_tokens", 0) or 0)
+            ),
+            "cache_creation_input_tokens": (
+                None if usage is None else int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            ),
+            "finished_reason": _enum_value(getattr(reply, "finished_reason", "")),
+            "error": bool(getattr(reply, "error", None)),
+        }
+        try:
+            sink(record)
+        except Exception:  # 观察面失败不能改写一轮的结论（与 ``emit`` 同一条纪律）
+            _log.debug("usage sink failed", exc_info=True)
 
     def _outcome_from_reply(
         self,

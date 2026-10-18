@@ -1,0 +1,455 @@
+{
+  "schema": 1,
+  "ticket": 55,
+  "mode": "scripted-double",
+  "status": "complete",
+  "complete": true,
+  "status_reason": "预算已耗尽且所有轮次结束",
+  "started_at": "2026-10-18T10:35:34.213Z",
+  "finished_at": "2026-10-18T10:35:35.019Z",
+  "environment": {
+    "python": "3.11.13",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "cwd": "/Users/apple/orca/workspaces/alibot/issue-55-impl/app",
+    "data_dir": "/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/alibot-budget-measure-_rqkm4oi",
+    "isolated_data_dir": true,
+    "argv": [
+      "/Users/apple/orca/workspaces/alibot/issue-55-impl/app/tests/measure_budget.py",
+      "--local-model",
+      "ollama:qwen2.5",
+      "--remote-model",
+      "deepseek:deepseek-flash",
+      "--tier",
+      "3",
+      "--dry-run",
+      "--quiet-seconds",
+      "0.3",
+      "--epoch-timeout",
+      "30",
+      "--out",
+      "specs/issue-55-dry-run-evidence.json"
+    ]
+  },
+  "conditions": {
+    "tier": 3,
+    "local_model": "ollama:qwen2.5",
+    "remote_model": "deepseek:deepseek-flash",
+    "members_per_channel": 2,
+    "scheduler_max_workers": 1,
+    "repetitions": 1,
+    "epoch_timeout_seconds": 30.0,
+    "quiet_seconds": 0.3,
+    "round_timeout_seconds": 180.0,
+    "billing_basis": "peak",
+    "max_remote_usd": null,
+    "max_remote_usd_semantics": "观测后停机阈值；不是硬费用上限",
+    "max_model_calls_per_round": 2,
+    "preflight": null,
+    "remote_opt_in": false,
+    "prices_snapshot": null,
+    "input_limits": {
+      "ollama:qwen2.5": null,
+      "deepseek:deepseek-flash": null
+    },
+    "output_limits": {
+      "ollama:qwen2.5": null,
+      "deepseek:deepseek-flash": null
+    }
+  },
+  "epoch": {
+    "channel_id": "ch_b65053cbf561",
+    "human_seq": 1,
+    "budget_after_patch": {
+      "channel_id": "ch_b65053cbf561",
+      "epoch_seq": 0,
+      "limit": 3,
+      "used": 0,
+      "remaining": 3,
+      "source": "built-in-default",
+      "pending_limit": null
+    },
+    "budget_final": {
+      "channel_id": "ch_b65053cbf561",
+      "epoch_seq": 1,
+      "limit": 3,
+      "used": 3,
+      "remaining": 0,
+      "source": "channel-override",
+      "pending_limit": null
+    },
+    "wall_clock_ms": 805,
+    "messages_total": 5,
+    "agent_messages": 4,
+    "rounds_total": 5,
+    "initial_wake": {
+      "rounds": [
+        {
+          "id": "round_34f6e7b5f35e",
+          "member_id": "mem_d01bc931886b",
+          "base_seq": 1,
+          "status": "replied",
+          "reason": "脚本化替身：决定回应",
+          "started_at": "2026-10-18T10:35:34.215Z",
+          "finished_at": "2026-10-18T10:35:34.216Z",
+          "duration_ms": 1,
+          "consumed_budget": false,
+          "merged": false,
+          "reply_seq": 2,
+          "usage_records": [],
+          "tokens": {
+            "input_tokens": null,
+            "output_tokens": null,
+            "cache_input_tokens": null,
+            "cache_creation_input_tokens": null
+          },
+          "cost_usd": null,
+          "usage_complete": false,
+          "model_id": "ollama:qwen2.5"
+        }
+      ],
+      "cost_usd": null,
+      "usage_complete": false
+    },
+    "jump_round_groups": [
+      {
+        "base_seq": 3,
+        "rounds": [
+          {
+            "id": "round_2981b61249b5",
+            "member_id": "mem_d01bc931886b",
+            "base_seq": 3,
+            "status": "replied",
+            "reason": "脚本化替身：决定回应",
+            "started_at": "2026-10-18T10:35:34.222Z",
+            "finished_at": "2026-10-18T10:35:34.222Z",
+            "duration_ms": 0,
+            "consumed_budget": true,
+            "merged": false,
+            "reply_seq": 4,
+            "usage_records": [],
+            "tokens": {
+              "input_tokens": null,
+              "output_tokens": null,
+              "cache_input_tokens": null,
+              "cache_creation_input_tokens": null
+            },
+            "cost_usd": null,
+            "usage_complete": false,
+            "model_id": "ollama:qwen2.5"
+          }
+        ],
+        "cost_usd": null,
+        "usage_complete": false
+      },
+      {
+        "base_seq": 4,
+        "rounds": [
+          {
+            "id": "round_3fb7aeb43655",
+            "member_id": "mem_0d47c7c2c56e",
+            "base_seq": 4,
+            "status": "replied",
+            "reason": "脚本化替身：决定回应",
+            "started_at": "2026-10-18T10:35:34.223Z",
+            "finished_at": "2026-10-18T10:35:34.223Z",
+            "duration_ms": 0,
+            "consumed_budget": true,
+            "merged": false,
+            "reply_seq": 5,
+            "usage_records": [],
+            "tokens": {
+              "input_tokens": null,
+              "output_tokens": null,
+              "cache_input_tokens": null,
+              "cache_creation_input_tokens": null
+            },
+            "cost_usd": null,
+            "usage_complete": false,
+            "model_id": "deepseek:deepseek-flash"
+          }
+        ],
+        "cost_usd": null,
+        "usage_complete": false
+      }
+    ],
+    "suppressed_rounds": [
+      {
+        "id": "round_bcea7104a96c",
+        "member_id": "mem_d01bc931886b",
+        "base_seq": 5,
+        "status": "budget-exhausted",
+        "reason": "本 target 人类世代（epoch_seq=1）的 agent→agent 预算已用尽（≤3）：本条 Agent 消息照常落库，但没有投递任何唤醒",
+        "started_at": "2026-10-18T10:35:34.223Z",
+        "finished_at": "2026-10-18T10:35:34.223Z",
+        "duration_ms": 0,
+        "consumed_budget": false,
+        "merged": false,
+        "reply_seq": null,
+        "usage_records": [],
+        "tokens": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_input_tokens": null,
+          "cache_creation_input_tokens": null
+        },
+        "cost_usd": null,
+        "usage_complete": false,
+        "model_id": "ollama:qwen2.5"
+      }
+    ]
+  },
+  "latency": {
+    "all_rounds": {
+      "count": 5,
+      "min_ms": 0,
+      "mean_ms": 0.4,
+      "p50_ms": 0,
+      "max_ms": 1
+    },
+    "initial_wake": {
+      "count": 1,
+      "min_ms": 1,
+      "mean_ms": 1.0,
+      "p50_ms": 1,
+      "max_ms": 1
+    },
+    "jump_rounds": {
+      "count": 2,
+      "min_ms": 0,
+      "mean_ms": 0.0,
+      "p50_ms": 0,
+      "max_ms": 0
+    }
+  },
+  "tokens": {
+    "by_model": {}
+  },
+  "usage_evidence": false,
+  "cost_evidence": false,
+  "cost": {
+    "currency": "USD",
+    "by_model": {},
+    "total_measured_usd": null,
+    "partial_total_usd": null,
+    "priced": false,
+    "usage_complete": false,
+    "unpriced_models": [],
+    "over_cost_cap": false,
+    "accounting_incomplete": false,
+    "stop_reason": null
+  },
+  "extrapolation": {
+    "basis": "measured jumps; local + remote rounds in this run",
+    "initial_wake_cost_usd": null,
+    "measured_jump_costs_usd": {
+      "max": null,
+      "mean": null,
+      "observed_round_groups": 2
+    },
+    "counts": {
+      "used_jumps": 3,
+      "rounds_total": 5,
+      "jump_round_groups": 2,
+      "note": "used 是跳数正本；一条跳可能投递多个成员，也可能因目标 in-flight 而无轮次行。"
+    },
+    "scenario_bound": {
+      "3": {
+        "worst_case_usd": null,
+        "mean_basis_usd": null
+      },
+      "5": {
+        "worst_case_usd": null,
+        "mean_basis_usd": null
+      },
+      "10": {
+        "worst_case_usd": null,
+        "mean_basis_usd": null
+      }
+    },
+    "empirical_fanout_estimate": {
+      "by_tier": {
+        "3": null,
+        "5": null,
+        "10": null
+      },
+      "assumption": "每一跳唤醒频道内其余全部成员，且每轮成本不超过本次观测到的最大单轮成本；这是经验外推，不是系统普遍最坏上界。"
+    },
+    "system_monetary_upper_bound": null,
+    "system_monetary_upper_bound_reason": "上下文增长、thinking / 工具批次 / 重试与 provider 价目调整没有有限硬约束；本工具不声称存在系统普遍金额上界。",
+    "assumptions": [
+      "场景外推：每一跳投递的成员集合与本次观测一致（本例是同一频道里的另一位 Agent）。",
+      "fan-out 经验外推：每一跳都能唤醒频道内其余全部成员，且每轮都取本次观测到的最大单轮成本；它只是经验估计，不是系统普遍最坏上界。",
+      "外推不包含上下文继续增长、provider 上限拉满、重试或工具调用增多；这些都会抬高真实成本。",
+      "跳数不等于模型轮数或 fan-out 成员数；报告同时给出 used / rounds / grouped jump 三组读数。"
+    ]
+  },
+  "raw": {
+    "messages": [
+      {
+        "seq": 1,
+        "kind": "human",
+        "author_id": "owner",
+        "author_kind": "owner",
+        "body_chars": 44,
+        "body_sha256": "d991dfb46cc686ad1d634883b5c8060387da2d903e272d48409405f423f35277"
+      },
+      {
+        "seq": 2,
+        "kind": "agent",
+        "author_id": "mem_d01bc931886b",
+        "author_kind": "agent",
+        "body_chars": 8,
+        "body_sha256": "ae4bd7f6a05b2c72848f40b415c9c1972ebf30b99591479a041a57c3a91dba16"
+      },
+      {
+        "seq": 3,
+        "kind": "agent",
+        "author_id": "mem_0d47c7c2c56e",
+        "author_kind": "agent",
+        "body_chars": 8,
+        "body_sha256": "7b26fefeb5ad9ccafb911e5b49dfb995bb7626b60958056a833b6eeebb21a76b"
+      },
+      {
+        "seq": 4,
+        "kind": "agent",
+        "author_id": "mem_d01bc931886b",
+        "author_kind": "agent",
+        "body_chars": 8,
+        "body_sha256": "ae4bd7f6a05b2c72848f40b415c9c1972ebf30b99591479a041a57c3a91dba16"
+      },
+      {
+        "seq": 5,
+        "kind": "agent",
+        "author_id": "mem_0d47c7c2c56e",
+        "author_kind": "agent",
+        "body_chars": 8,
+        "body_sha256": "7b26fefeb5ad9ccafb911e5b49dfb995bb7626b60958056a833b6eeebb21a76b"
+      }
+    ],
+    "round_outcomes": [
+      {
+        "id": "round_34f6e7b5f35e",
+        "member_id": "mem_d01bc931886b",
+        "base_seq": 1,
+        "status": "replied",
+        "reason": "脚本化替身：决定回应",
+        "started_at": "2026-10-18T10:35:34.215Z",
+        "finished_at": "2026-10-18T10:35:34.216Z",
+        "duration_ms": 1,
+        "consumed_budget": false,
+        "merged": false,
+        "reply_seq": 2,
+        "usage_records": [],
+        "tokens": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_input_tokens": null,
+          "cache_creation_input_tokens": null
+        },
+        "cost_usd": null,
+        "usage_complete": false,
+        "model_id": "ollama:qwen2.5"
+      },
+      {
+        "id": "round_cae82d0a8836",
+        "member_id": "mem_0d47c7c2c56e",
+        "base_seq": 2,
+        "status": "replied",
+        "reason": "脚本化替身：决定回应",
+        "started_at": "2026-10-18T10:35:34.218Z",
+        "finished_at": "2026-10-18T10:35:34.219Z",
+        "duration_ms": 1,
+        "consumed_budget": false,
+        "merged": false,
+        "reply_seq": 3,
+        "usage_records": [],
+        "tokens": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_input_tokens": null,
+          "cache_creation_input_tokens": null
+        },
+        "cost_usd": null,
+        "usage_complete": false,
+        "model_id": "deepseek:deepseek-flash"
+      },
+      {
+        "id": "round_2981b61249b5",
+        "member_id": "mem_d01bc931886b",
+        "base_seq": 3,
+        "status": "replied",
+        "reason": "脚本化替身：决定回应",
+        "started_at": "2026-10-18T10:35:34.222Z",
+        "finished_at": "2026-10-18T10:35:34.222Z",
+        "duration_ms": 0,
+        "consumed_budget": true,
+        "merged": false,
+        "reply_seq": 4,
+        "usage_records": [],
+        "tokens": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_input_tokens": null,
+          "cache_creation_input_tokens": null
+        },
+        "cost_usd": null,
+        "usage_complete": false,
+        "model_id": "ollama:qwen2.5"
+      },
+      {
+        "id": "round_3fb7aeb43655",
+        "member_id": "mem_0d47c7c2c56e",
+        "base_seq": 4,
+        "status": "replied",
+        "reason": "脚本化替身：决定回应",
+        "started_at": "2026-10-18T10:35:34.223Z",
+        "finished_at": "2026-10-18T10:35:34.223Z",
+        "duration_ms": 0,
+        "consumed_budget": true,
+        "merged": false,
+        "reply_seq": 5,
+        "usage_records": [],
+        "tokens": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_input_tokens": null,
+          "cache_creation_input_tokens": null
+        },
+        "cost_usd": null,
+        "usage_complete": false,
+        "model_id": "deepseek:deepseek-flash"
+      },
+      {
+        "id": "round_bcea7104a96c",
+        "member_id": "mem_d01bc931886b",
+        "base_seq": 5,
+        "status": "budget-exhausted",
+        "reason": "本 target 人类世代（epoch_seq=1）的 agent→agent 预算已用尽（≤3）：本条 Agent 消息照常落库，但没有投递任何唤醒",
+        "started_at": "2026-10-18T10:35:34.223Z",
+        "finished_at": "2026-10-18T10:35:34.223Z",
+        "duration_ms": 0,
+        "consumed_budget": false,
+        "merged": false,
+        "reply_seq": null,
+        "usage_records": [],
+        "tokens": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "cache_input_tokens": null,
+          "cache_creation_input_tokens": null
+        },
+        "cost_usd": null,
+        "usage_complete": false,
+        "model_id": "ollama:qwen2.5"
+      }
+    ],
+    "usage_records": []
+  },
+  "notes": [
+    "真实读数只来自 provider 返回的 Msg.usage；usage 缺失记为 None，绝不当成 0。",
+    "脚本化替身（dry-run）的零 usage 只用于行为验证，不构成成本证据。",
+    "成本按价目快照的 billing_basis 档换算；峰时/谷时不是同一条价。",
+    "--max-remote-usd 是观测后停机阈值，不是硬费用上限；真实执行前先看 conditions.preflight。",
+    "远端轮次缺 usage 时立即停止提交新轮次，账目不会被当作完整。"
+  ]
+}

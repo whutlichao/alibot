@@ -1,0 +1,17 @@
+{
+  "finite": true,
+  "per_call_usd": 0.7608,
+  "remote_rounds_assumed": 4,
+  "max_model_calls_per_round_assumed": 2,
+  "model_calls_assumed": 8,
+  "conservative_bound_usd": 6.0864,
+  "approved_usd": null,
+  "fits": false,
+  "assumptions": [
+    "每轮最多按一个模型的 context/output 硬限制（输入与输出同时拉满）计费。",
+    "每轮模型调用次数取显式假设值；框架内部的 thinking / 工具批次 / 重试没有硬上限。",
+    "费率取快照里输入与输出各自的最高档（峰时）。",
+    "本机 provider 的轮次按 0 成本计；只有远端模型进入金额。"
+  ],
+  "not_a_hard_bound": "它是保守的量化预估，不是数学上界；真实费用还可能因调用次数、重试与价目调整而更高。"
+}

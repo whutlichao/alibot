@@ -531,6 +531,26 @@ ALIBOT_SMOKE_MODEL=dashscope:qwen-max ALIBOT_SMOKE_ALLOW_REMOTE=1 \
   DASHSCOPE_API_KEY=... .venv/bin/python -m pytest tests/test_agent_smoke.py -q -s
 ```
 
+回应预算的实测（#55 / ADR-0024）另有一个**手动入口**，默认不触网：
+
+```sh
+cd app
+# 零成本 dry-run：脚本化替身走完整编排；报告标 usage_evidence=false
+../.venv/bin/python -m tests.measure_budget \
+  --local-model ollama:qwen2.5 --remote-model deepseek:deepseek-flash \
+  --tier 3 --dry-run --out /tmp/issue-55-dry-run.json
+
+# 真实测量：先预检（不建库、不调用模型），再显式 opt-in；--max-remote-usd 是观测后停机阈值，
+# 不是硬费用上限。预检不通过时工具拒绝执行。
+../.venv/bin/python -m tests.measure_budget \
+  --local-model ollama:qwen2.5 --remote-model deepseek:deepseek-flash \
+  --tier 3 --max-remote-usd <人定阈值> --preflight-only
+ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
+  --local-model ollama:qwen2.5 --remote-model deepseek:deepseek-flash \
+  --tier 3 --prices specs/issue-55-model-prices-2026-10-18.json \
+  --max-remote-usd <人定阈值> --out specs/issue-55-evidence-<date>.json
+```
+
 ## 文案双语（后端）
 
 后端**生成的自然语言**按**语言偏好**取值：HTTP 错误的 `message` 与 `fields` 的值、落库的
