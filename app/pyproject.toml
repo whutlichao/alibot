@@ -7,10 +7,10 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
   "pydantic>=2.7",
-  # AgentScope：进程内驱动 Agent 的框架。**pin 到 stable 文档对应的 2.0.9**
-  # （2026-10-13 核对 docs.agentscope.io/stable → /en/versions/2.0.9/；PyPI 当时最新为 2.0.10）。
+  # AgentScope：进程内驱动 Agent 的框架。**pin 到文档站点当前版本 2.0.10**
+  # （2026-10-18 核对 docs.agentscope.io → /en/versions/2.0.10；PyPI 最新同为 2.0.10）。
   # 只用 2.x API（agentscope.agent.Agent / agentscope.model / agentscope.credential）。
-  "agentscope==2.0.9",
+  "agentscope==2.0.10",
   # 各 provider 的 HTTP 客户端：AgentScope 把它们做成可选 extra，这里显式安装本票支持的
   # 全部 provider（DashScope / Moonshot / DeepSeek / Volcengine / MiniMax 走 openai 客户端）。
   "openai>=1.0",

@@ -30,7 +30,7 @@ uv pip install --python .venv/bin/python -e "./app[dev]"
 ### 模型与凭证：只从**进程环境变量**读，库里不存密钥
 
 Agent 的「模型标识」写作 `provider:model`（例如 `dashscope:qwen-max`、`openai:gpt-4.1`、
-`ollama:qwen2.5`）。`provider` 取自 AgentScope 2.0.9 的 credential 类型白名单，它决定两件事：
+`ollama:qwen2.5`）。`provider` 取自 AgentScope 2.0.10 的 credential 类型白名单，它决定两件事：
 **缺凭证时读哪个环境变量**，以及**这个模型是不是本机**（要不要先做远端数据流确认）。
 
 | provider | 需要的环境变量 | 是否离开本机 |
@@ -117,8 +117,8 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 
 ## Agent 的采用范围（AgentScope）
 
-pin 的版本是 **`agentscope==2.0.9`**（2026-10-13 核对：`docs.agentscope.io/stable` → 重定向到
-`/en/versions/2.0.9/`，PyPI 当时最新为 `2.0.10`）。
+pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope.io` 站点根重定向到
+`/en/versions/2.0.10`，PyPI 最新同为 `2.0.10`）。
 
 - 只用 2.x API：`from agentscope.agent import Agent`、`Agent(name=…, system_prompt=…, model=…)`、
   模型与凭证分模块 `agentscope.model` + `agentscope.credential`。**不**使用 1.x 的
