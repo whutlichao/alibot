@@ -63,6 +63,41 @@ DEFAULT_PRICE_SNAPSHOT = APP_DIR / "specs" / "issue-55-model-prices-2026-10-18.j
 REMOTE_OPT_IN_ENV = "ALIBOT_MEASURE_ALLOW_REMOTE"
 PRICE_UNIT = "per_1m_tokens"
 
+# 2026-10-18 在仓库 `.venv`（agentscope==2.0.10）里核验到的框架默认值。它们不是产品配置；
+# 本工具**没有**把它们完整合成为「一轮最多多少次计费调用」，所以预检里的次数仍是显式假设。
+FRAMEWORK_DEFAULTS: dict[str, Any] = {
+    "verified_with": "agentscope==2.0.10",
+    "verified_at": "2026-10-18",
+    "agent_react_max_iters": 50,
+    "agent_react_structured_output_grace_iters": 5,
+    "agent_model_config_max_retries": 0,
+    "deepseek_chat_model_max_retries": 3,
+    "deepseek_chat_model_context_size": 65536,
+    "deepseek_parameters_max_tokens": None,
+    "deepseek_parameters_thinking_enable": False,
+    "note": (
+        "候选事实（不是本工具已推导的调用界）：ReAct 默认 max_iters=50 + grace=5；"
+        "Agent 的 ModelConfig.max_retries=0；DeepSeekChatModel max_retries=3、context_size=65536；"
+        "Parameters 默认 max_tokens=None、thinking_enable=False。"
+    ),
+}
+
+
+def _framework_defaults() -> dict[str, Any]:
+    """报告当前安装版本，并标明上面的事实是否仍对应当前 pin。"""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        installed = version("agentscope")
+    except PackageNotFoundError:
+        installed = "not-installed"
+    return {
+        **FRAMEWORK_DEFAULTS,
+        "installed_version": installed,
+        "matches_verified_version": installed == FRAMEWORK_DEFAULTS["verified_with"].split("==")[-1],
+    }
+
+
 # 测量里出现的渠道 / Agent 名是**合成数据**，不是用户工作区内容；它们会随远端调用离开本机。
 CHANNEL_NAME = "回应预算测量"
 LOCAL_AGENT_NAME = "测量本机"
@@ -358,11 +393,12 @@ def preflight_cost_estimate(
     max_model_calls_per_round: int,
     approved_usd: float | None,
 ) -> dict[str, Any]:
-    """按模型硬限制与最大费率做**保守预检**；预估值超过人定预算则拒绝真实执行。
+    """按模型官方硬限制与最大费率做**保守预检**；预估值超过人定预算则拒绝真实执行。
 
-    这不是数学上界：框架一轮内部的模型调用次数没有公开硬上限（thinking / 工具批次 / 重试都可能
-    增加调用）。因此这里给出的是「按输入/输出硬限制 + 最大费率 + 一个显式假设的每轮调用数」算出的
-    保守量化值，并明确标注该假设；调用数假设被突破时真实费用会高于它。
+    这不是完整推导的金额上界：本工具尚未把框架的 ReAct ``max_iters`` / grace、Agent
+    ``ModelConfig.max_retries``、DeepSeek 客户端 ``max_retries`` 与 ``context_size`` 合成成
+    「一轮最多多少次计费调用」。这里给出的是「官方输入/输出硬限制 + 最大费率 + 一个显式假设的
+    每轮调用数」算出的量化值；调用数假设被突破时真实费用会高于它。
     """
     if max_model_calls_per_round < 1:
         return {
@@ -397,14 +433,25 @@ def preflight_cost_estimate(
         "conservative_bound_usd": round(bound, 6),
         "approved_usd": approved_usd,
         "fits": approved_usd is not None and bound <= approved_usd,
+        "framework_defaults": _framework_defaults(),
+        "framework_call_bound": {
+            "derived": False,
+            "reason": (
+                "本工具尚未把 ReAct max_iters / grace、ModelConfig.max_retries、DeepSeek "
+                "max_retries 与 context_size 合成成总调用界；次数是显式假设。"
+            ),
+        },
         "assumptions": [
-            "每轮最多按一个模型的 context/output 硬限制（输入与输出同时拉满）计费。",
-            "每轮模型调用次数取显式假设值；框架内部的 thinking / 工具批次 / 重试没有硬上限。",
+            "每轮最多按官方 context/output 硬限制（输入与输出同时拉满）计费；实际生成参数另见 "
+            "conditions.framework_defaults（max_tokens=None、thinking_enable=False 等）。",
+            "每轮模型调用次数取显式假设值；本工具尚未把 ReAct max_iters=50 + grace=5、"
+            "ModelConfig.max_retries=0、DeepSeek max_retries=3 完整合成为调用界。",
             "费率取快照里输入与输出各自的最高档（峰时）。",
             "本机 provider 的轮次按 0 成本计；只有远端模型进入金额。",
         ],
         "not_a_hard_bound": (
-            "它是保守的量化预估，不是数学上界；真实费用还可能因调用次数、重试与价目调整而更高。"
+            "它是量化预检，不是完整推导的金额上界；框架调用界未完整合成，真实费用还可能因"
+            "调用次数、重试与价目调整而更高。"
         ),
     }
 
@@ -670,19 +717,49 @@ def _message_evidence(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _match_usage_to_outcome(outcome: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    matched = []
-    for record in records:
-        if record.get("member_id") != outcome.get("member_id"):
-            continue
+def _assign_usage_records(
+    records: list[dict[str, Any]], outcomes: list[dict[str, Any]]
+) -> tuple[dict[int, list[dict[str, Any]]], set[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """把 usage 记录一一归到轮次；闭区间重叠 = 歧义，不猜、不复用。
+
+    返回 ``(outcome_index → 唯一记录, 歧义 outcome 索引, 歧义记录, 未匹配记录)``。
+    一条记录命中多个轮次（相邻轮次的闭区间在边界重叠）或一个轮次命中多条记录，都标
+    incomplete；未命中的记录同样让账目不完整——它可能是模型调用但无法归因。
+    """
+    candidates: dict[int, list[int]] = {}
+    for record_index, record in enumerate(records):
         observed = record.get("observed_at")
-        started = outcome.get("started_at")
-        finished = outcome.get("finished_at")
-        if not observed or not started or not finished:
+        if not observed:
             continue
-        if str(started) <= str(observed) <= str(finished):
-            matched.append(record)
-    return matched
+        for outcome_index, outcome in enumerate(outcomes):
+            if record.get("member_id") != outcome.get("member_id"):
+                continue
+            started = outcome.get("started_at")
+            finished = outcome.get("finished_at")
+            if not started or not finished:
+                continue
+            if str(started) <= str(observed) <= str(finished):
+                candidates.setdefault(record_index, []).append(outcome_index)
+
+    assigned: dict[int, list[dict[str, Any]]] = {}
+    ambiguous_outcomes: set[int] = set()
+    ambiguous_records: list[dict[str, Any]] = []
+    for record_index, outcome_indices in candidates.items():
+        if len(outcome_indices) == 1:
+            assigned.setdefault(outcome_indices[0], []).append(records[record_index])
+        else:
+            ambiguous_records.append(records[record_index])
+            ambiguous_outcomes.update(outcome_indices)
+
+    # 一个轮次有多条记录也不猜：把该轮与相关记录都标成歧义。
+    for outcome_index, matched in list(assigned.items()):
+        if len(matched) > 1:
+            ambiguous_outcomes.add(outcome_index)
+            ambiguous_records.extend(matched)
+            del assigned[outcome_index]
+
+    unmatched = [record for index, record in enumerate(records) if index not in candidates]
+    return assigned, ambiguous_outcomes, ambiguous_records, unmatched
 
 
 def build_report(
@@ -693,19 +770,23 @@ def build_report(
     mode: str,
 ) -> dict[str, Any]:
     records = guard.records
+    assigned, ambiguous_outcome_indices, ambiguous_records, unmatched_records = _assign_usage_records(
+        records, raw["outcomes"]
+    )
+    ambiguous_outcome_ids = {raw["outcomes"][index].get("id") for index in ambiguous_outcome_indices}
     enriched: list[dict[str, Any]] = []
-    for outcome in raw["outcomes"]:
-        matched = _match_usage_to_outcome(outcome, records)
+    for outcome_index, outcome in enumerate(raw["outcomes"]):
+        matched = assigned.get(outcome_index, [])
         token_sum = {
-            key: (
-                None
-                if not matched or any(item.get(key) is None for item in matched)
-                else sum(int(item[key]) for item in matched)
-            )
+            key: (None if len(matched) != 1 or matched[0].get(key) is None else int(matched[0][key]))
             for key in ("input_tokens", "output_tokens", "cache_input_tokens", "cache_creation_input_tokens")
         }
         costs = [item["cost_usd"] for item in matched if item.get("cost_usd") is not None]
-        usage_complete = bool(matched) and all(item.get("cost_usd") is not None for item in matched)
+        usage_complete = (
+            len(matched) == 1
+            and matched[0].get("input_tokens") is not None
+            and matched[0].get("cost_usd") is not None
+        )
         enriched.append(
             {
                 "id": outcome.get("id"),
@@ -738,7 +819,8 @@ def build_report(
     unaccounted = [
         item
         for item in enriched
-        if item["status"] not in ("merged", "budget-exhausted") and not item["usage_complete"]
+        if (item["status"] not in ("merged", "budget-exhausted") and not item["usage_complete"])
+        or item["id"] in ambiguous_outcome_ids
     ]
 
     human_seq = int(raw["human_seq"])
@@ -820,16 +902,22 @@ def build_report(
     ]
     provider_usage = [item for item in records if item.get("input_tokens") is not None]
     priced_models = {model for model in by_model if by_model[model]["priced"]}
-    models_with_usage = {model for model in by_model if by_model[model]["rounds_with_usage"] > 0}
-    accounting_complete = not unaccounted
-    all_usage_models_priced = (
-        bool(models_with_usage) and models_with_usage <= priced_models and accounting_complete
+    accounting_complete = not unaccounted and not ambiguous_records and not unmatched_records
+    all_records_priced = bool(records) and all(
+        item.get("input_tokens") is not None and item.get("cost_usd") is not None for item in records
     )
-    total_cost = round(sum(float(by_model[model]["cost_usd"]) for model in priced_models), 8)
     both_models_have_usage = all(
         by_model.get(model, {}).get("rounds_with_usage", 0) > 0
         for model in (config.local_model, config.remote_model)
     )
+    usage_complete = (
+        bool(provider_usage)
+        and both_models_have_usage
+        and accounting_complete
+        and all_records_priced
+        and not guard.unpriced
+    )
+    total_cost = round(sum(float(by_model[model]["cost_usd"]) for model in priced_models), 8)
     status = str(raw["status"])
     complete = status == _COMPLETE and int(raw["budget_final"]["remaining"]) == 0
 
@@ -864,6 +952,14 @@ def build_report(
             "max_remote_usd": config.max_remote_usd,
             "max_remote_usd_semantics": "观测后停机阈值；不是硬费用上限",
             "max_model_calls_per_round": config.max_model_calls_per_round,
+            "framework_defaults": _framework_defaults(),
+            "framework_call_bound": {
+                "derived": False,
+                "reason": (
+                    "本工具尚未把 ReAct max_iters / grace、ModelConfig.max_retries、DeepSeek "
+                    "max_retries 与 context_size 合成成总调用界；max_model_calls_per_round 是显式假设。"
+                ),
+            },
             "preflight": config.preflight,
             "remote_opt_in": os.environ.get(REMOTE_OPT_IN_ENV) == "1" and not config.dry_run,
             "prices_snapshot": None
@@ -918,20 +1014,15 @@ def build_report(
             "jump_rounds": _summarize(jump_durations),
         },
         "tokens": {"by_model": by_model},
-        "usage_evidence": (
-            mode == "real-provider"
-            and bool(provider_usage)
-            and both_models_have_usage
-            and accounting_complete
-        ),
-        "cost_evidence": mode == "real-provider" and all_usage_models_priced,
+        "usage_evidence": mode == "real-provider" and usage_complete,
+        "cost_evidence": mode == "real-provider" and usage_complete,
         "cost": {
             "currency": "USD" if config.prices is None else config.prices.currency,
             "by_model": {model: by_model[model]["cost_usd"] for model in by_model},
-            "total_measured_usd": total_cost if all_usage_models_priced else None,
+            "total_measured_usd": total_cost if usage_complete else None,
             "partial_total_usd": total_cost if priced_models else None,
-            "priced": all_usage_models_priced,
-            "usage_complete": bool(provider_usage) and both_models_have_usage,
+            "priced": usage_complete,
+            "usage_complete": usage_complete,
             "accounting_complete": accounting_complete,
             "unaccounted_rounds": [
                 {
@@ -942,6 +1033,8 @@ def build_report(
                 }
                 for item in unaccounted
             ],
+            "ambiguous_usage_records": ambiguous_records,
+            "unmatched_usage_records": unmatched_records,
             "unpriced_models": sorted(guard.unpriced),
             "over_cost_cap": guard.over_cap,
             "accounting_incomplete": guard.accounting_incomplete,
@@ -1016,8 +1109,9 @@ def _extrapolate(
         },
         "system_monetary_upper_bound": None,
         "system_monetary_upper_bound_reason": (
-            "上下文增长、thinking / 工具批次 / 重试与 provider 价目调整没有有限硬约束；"
-            "本工具不声称存在系统普遍金额上界。"
+            "本工具尚未把框架的 ReAct max_iters / grace、ModelConfig.max_retries、DeepSeek "
+            "max_retries 与 context_size 合成成计费调用界；再叠加上下文增长与价目调整，"
+            "因此不声称系统普遍金额上界。"
         ),
         "assumptions": [
             "场景外推：每一跳投递的成员集合与本次观测一致（本例是同一频道里的另一位 Agent）。",
@@ -1110,7 +1204,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-model-calls-per-round",
         type=int,
         default=2,
-        help="预检假设的每轮模型调用次数（框架内部无公开硬上限）",
+        help=(
+            "预检假设的每轮模型调用次数（显式假设；框架 ReAct max_iters=50 + grace=5、"
+            "DeepSeek max_retries=3 等尚未完整合成为调用界）"
+        ),
     )
     parser.add_argument("--data-dir", type=Path, default=None, help="全新空目录；缺省自动建临时目录")
     parser.add_argument(
@@ -1131,38 +1228,38 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.preflight_only:
-        validate_models(args.local_model, args.remote_model, require_credentials=False)
-        estimate = preflight_cost_estimate(
-            load_price_book(args.prices),
+    try:
+        if args.preflight_only:
+            validate_models(args.local_model, args.remote_model, require_credentials=False)
+            estimate = preflight_cost_estimate(
+                load_price_book(args.prices),
+                remote_model=args.remote_model,
+                tier=args.tier,
+                max_model_calls_per_round=args.max_model_calls_per_round,
+                approved_usd=args.max_remote_usd,
+            )
+            print(json.dumps(estimate, ensure_ascii=False, indent=2))
+            return 0
+        if args.out is None:
+            parser.error("--out is required unless --preflight-only is set")
+        data_dir = prepare_data_dir(args.data_dir)
+        prices = None if args.dry_run else load_price_book(args.prices)
+        config = RunConfig(
+            local_model=args.local_model,
             remote_model=args.remote_model,
             tier=args.tier,
+            data_dir=data_dir,
+            prices=prices,
+            billing_basis=args.billing_basis,
+            max_remote_usd=args.max_remote_usd,
+            epoch_timeout=args.epoch_timeout,
+            quiet_seconds=args.quiet_seconds,
+            round_timeout=args.round_timeout,
+            dry_run=args.dry_run,
+            out=args.out,
             max_model_calls_per_round=args.max_model_calls_per_round,
-            approved_usd=args.max_remote_usd,
+            argv=list(sys.argv if argv is None else argv),
         )
-        print(json.dumps(estimate, ensure_ascii=False, indent=2))
-        return 0
-    if args.out is None:
-        parser.error("--out is required unless --preflight-only is set")
-    data_dir = prepare_data_dir(args.data_dir)
-    prices = None if args.dry_run else load_price_book(args.prices)
-    config = RunConfig(
-        local_model=args.local_model,
-        remote_model=args.remote_model,
-        tier=args.tier,
-        data_dir=data_dir,
-        prices=prices,
-        billing_basis=args.billing_basis,
-        max_remote_usd=args.max_remote_usd,
-        epoch_timeout=args.epoch_timeout,
-        quiet_seconds=args.quiet_seconds,
-        round_timeout=args.round_timeout,
-        dry_run=args.dry_run,
-        out=args.out,
-        max_model_calls_per_round=args.max_model_calls_per_round,
-        argv=list(sys.argv if argv is None else argv),
-    )
-    try:
         report = run(config)
     except MeasurementError as error:
         print(f"[measure] 前置条件不满足：{error}", file=sys.stderr)

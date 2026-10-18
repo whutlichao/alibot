@@ -506,7 +506,7 @@ Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要�
 `app/tests/test_docs_vocabulary_guard.py`（状态词表与 kind 不与 README 漂移）、
 `app/tests/test_schema_version_pins_guard.py`（不把 `SCHEMA_VERSION` 钉成历史号）。
 
-**三处例外**，理由同源（被断言的东西不经 HTTP 面暴露）：
+**两处例外**，理由同源（词条表是**数据契约**，其键集不经 HTTP 面暴露）：
 
 1. `app/tests/test_backend_copy.py` 直接读 `app/alibot/i18n.py` 的两份取值——两份取值必须覆盖同一键集、
    参数位一致，且后端文案必须取自**当前语言**的那一条。
@@ -514,13 +514,9 @@ Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要�
    `i18n.CATALOGS` 与 `app/alibot/studio/i18n.js` 的文本——它验的是**越界方向**：落库的
    `system.reminder.*` 正文只许进后端那一层，前端词条表里出现同一条就是 ADR-0009 明确否掉的「第三层」。
    这条反向判据没有 HTTP 读数面（它比的是两份**词条数据**本身）。
-3. `app/tests/test_budget_measure.py` 直接断言 `tests/measure_budget.py` 的成本换算 / 预检 / 隔离目录
-   等纯函数——测量工具是**手动 CLI**，没有 HTTP 面；这些函数就是它的对外契约（命令行输出与证据 JSON）。
-   完整编排行为仍由 `--dry-run` 经真实 `create_app` 走一遍，并在报告里标 `mode=scripted-double`。
 
-三处都只读数据契约或测量工具自己的契约，**协作域行为断言仍然全部走 HTTP 面**（含
-`test_reminder_delivery.py` 里其余每一条用例：它们只经 `GET /api/reminders`、消息流、`budget`、
-`round-outcomes`、`search` 读数）。
+两处都只读数据契约，**行为断言仍然全部走 HTTP 面**（含 `test_reminder_delivery.py` 里其余每一条用例：
+它们只经 `GET /api/reminders`、消息流、`budget`、`round-outcomes`、`search` 读数）。
 
 五类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟 / 声明沉默
 （`SILENT`：经结构化通道声明本轮不说话，与「忽略」不是同一件事）。

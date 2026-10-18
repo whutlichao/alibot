@@ -52,9 +52,15 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
   都可能把费用推过阈值；它只能阻止**下一轮**继续提交。远端轮次缺 usage 时费用无法归因，
   `GuardedScheduler` 同样停止提交新轮次，报告标 `aborted-usage-missing`，不把账目当完整。
   因此真实付费执行前必须先用 `preflight_cost_estimate` 按模型输入/输出硬限制、最大费率与显式假设的
-  每轮调用次数做保守预估；调用数假设必须是正整数（0 会让预检恒真），预估超过人定预算就拒绝执行。默认 pytest 不触网：`--dry-run` 用
-  `ScriptedAgentSeam` 走完整编排，但报告标 `mode=scripted-double`、`usage_evidence=false`、
-  `cost_evidence=false`，替身零 token 不作为成本证据。
+  每轮调用次数做保守预估；调用数假设必须是正整数（0 会让预检恒真），预估超过人定预算就拒绝执行。
+  默认 pytest 不触网：`--dry-run` 用 `ScriptedAgentSeam` 走完整编排，但报告标
+  `mode=scripted-double`、`usage_evidence=false`、`cost_evidence=false`，替身零 token 不作为成本证据。
+- **框架默认（2026-10-18 在仓库 `.venv` 的 agentscope 2.0.10 核验）**：Agent 的
+  `ReActConfig.max_iters=50`、`structured_output_grace_iters=5`；`ModelConfig.max_retries=0`；
+  `DeepSeekChatModel` 的 `max_retries=3`、`context_size=65536`；`Parameters` 默认
+  `max_tokens=None`、`thinking_enable=False`。官方 1M context / 384K max output 是 provider 硬上限，
+  与这些实际生成 / 循环参数**分开记录**；本工具**尚未**把它们完整合成为「一轮最多多少次计费调用」，
+  预检里的 `--max-model-calls-per-round` 仍是显式假设。
 
 ## 二、结果（截至 2026-10-18 成文时）
 
@@ -72,7 +78,8 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 output 硬限制、峰时最高费率（input $0.3 / output $1.2 per 1M）、tier 3 下 4 个远端轮次、每轮 2 次
 模型调用的显式假设，单次调用上限 $0.7608，保守预估 **$6.0864**。当前 pending 的是人民币 5 元额度
 （尚未折算为 USD，本 ADR 不替人定做汇率换算）；在没有 USD 阈值前报告的 `approved_usd=null`、
-`fits=false`。而且框架内部调用次数没有公开硬上限，工具在预检不通过时**拒绝发起付费调用**。因此
+`fits=false`。框架有 ReAct `max_iters=50`（+ grace 5）、DeepSeek `max_retries=3` 等默认，但本工具
+尚未把它们完整合成为总调用界；预检次数仍是显式假设。工具在预检不通过时**拒绝发起付费调用**。因此
 本次没有执行真实远端测量；要执行必须先由人定确认足以覆盖保守预估的额度或收窄条件（例如降低显式
 调用数假设、限制输入/输出或只跑 tier 3 的一次受控样本），并重新预检。
 
@@ -88,8 +95,8 @@ output 硬限制、峰时最高费率（input $0.3 / output $1.2 per 1M）、tie
 3. **外推**：`scenario_bound` 假设后续每一跳的成员集合与本次观测一致，`initial + tier × max(或 mean)
    jump_cost`；`empirical_fanout_estimate` 假设每一跳唤醒频道内其余全部成员、每轮都取观测到的最大
    单轮成本：`members × max_round + tier × (members−1) × max_round`。后者是**经验 fan-out 估计，
-   不是系统普遍最坏上界**；报告同时写 `system_monetary_upper_bound=null`，理由是上下文增长、
-   thinking / 工具批次 / 重试与 provider 价目调整没有有限硬约束。
+   不是系统普遍最坏上界**；报告同时写 `system_monetary_upper_bound=null`，理由是本工具尚未把
+   框架 ReAct / retry / context 参数完整合成为计费调用界，且上下文增长与 provider 价目仍会变化。
 
 外推不包含 provider 上限（1M context × 384K output）拉满的绝对上界；报告单列模型输入/输出限制，
 并明确不包含上下文增长、重试、工具调用增多与峰谷价切换。跳数正本仍是 `target_budget.used`；
@@ -117,4 +124,5 @@ output 硬限制、峰时最高费率（input $0.3 / output $1.2 per 1M）、tie
   记录；只要远端轮出现这种记录，成本账目即标不完整并停止提交新轮次，不会把失败轮的费用漏掉。
 - 价格会变；证据文件必须同时保存快照哈希与取得日期，复跑时若价目已变，结论要重新换算。
 - `--max-remote-usd` 是观测后停机阈值，不是硬费用上限；预检里的「每轮模型调用次数」也是显式假设，
-  框架内部的 thinking / 工具批次 / 重试没有公开硬上限，因此本 ADR 不宣称系统金额上界。
+  本工具尚未把 ReAct max_iters / grace、ModelConfig.max_retries、DeepSeek max_retries 与
+  context_size 完整合成为总调用界，因此本 ADR 不宣称系统金额上界。
