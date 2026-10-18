@@ -2806,6 +2806,54 @@ class Database:
             ).fetchall()
         return [self._team_run_payload(row) for row in rows]
 
+    def list_team_runs_page(
+        self,
+        target_id: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        task_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """该 target 的运行记录页（``started_at DESC, id DESC``），各带自己的分派快照。
+
+        ``task_id`` 非空时只保留**至少含一条该 task 分派**的 run，并只返回这些分派；
+        它不是 task 行存在性的校验（不存在的 task 与「没有命中」同形，都是空页）。
+        多取一条判断 ``has_more``，因此 ``offset + limit == total`` 时不会谎报还有下一页。
+        """
+        self.get_target(target_id)  # 404 早退
+        page_size = max(1, int(limit))
+        start = max(0, int(offset))
+        where = "tr.target_id = ?"
+        params: list[Any] = [target_id]
+        if task_id is not None:
+            where += (
+                " AND EXISTS (SELECT 1 FROM team_assignment a WHERE a.team_run_id = tr.id AND a.task_id = ?)"
+            )
+            params.append(task_id)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT tr.* FROM team_run tr WHERE {where} "
+                "ORDER BY tr.started_at DESC, tr.id DESC LIMIT ? OFFSET ?",
+                (*params, page_size + 1, start),
+            ).fetchall()
+            has_more = len(rows) > page_size
+            rows = rows[:page_size]
+            runs = [self._team_run_payload(row) for row in rows]
+            if runs:
+                placeholders = ", ".join("?" for _ in runs)
+                assignment_sql = f"SELECT * FROM team_assignment WHERE team_run_id IN ({placeholders})"
+                assignment_params: list[Any] = [run["id"] for run in runs]
+                if task_id is not None:
+                    assignment_sql += " AND task_id = ?"
+                    assignment_params.append(task_id)
+                assignment_sql += " ORDER BY started_at, id"
+                grouped: dict[str, list[dict[str, Any]]] = {run["id"]: [] for run in runs}
+                for row in self._conn.execute(assignment_sql, assignment_params):
+                    grouped[str(row["team_run_id"])].append(self._team_assignment_payload(row))
+                for run in runs:
+                    run["assignments"] = grouped[run["id"]]
+        return runs, has_more
+
     @staticmethod
     def _team_run_payload(row: sqlite3.Row) -> dict[str, Any]:
         return {
