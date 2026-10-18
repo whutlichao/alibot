@@ -72,10 +72,16 @@
       </button>
       <!-- rail 的**设置入口**（原型 `alibot-app.html:515-518`：紧随提醒的第二枚 `.icon-btn`）。
            它曾按旧票面字面放在 `.rail-foot` 的「我」那一行（`#103` 起回到 head）。
-           原型 `:515` 的「圆 + 八条射线」在 15px 下读作太阳，本票改为真正的齿轮
-           （设计反馈，2026-10-18）；`aria-label` / `title` 不变。 -->
+           原型 `:515` 的「圆 + 八条射线」在 15px 下读作太阳；上一票改成齿轮，但那条 path 是
+           手绘的：齿轮体几何中心 x≈13，而中心圆是 `<circle cx="12">`，相差 1 个 viewBox 单位
+           （15px 下 0.625px），放大或高 DPI 下中心圆看起来偏心。本票换成 lucide 官方 `settings`
+           图标（lucide-static v1.59.0，ISC，
+           https://unpkg.com/lucide-static@1.59.0/icons/settings.svg）的几何：齿轮体与中心圆同心。
+           `stroke-width` 沿用相邻铃铛 `#btnReminders` 的 1.9（lucide 原文件是 2，两者同权重）；
+           `stroke-linecap` / `stroke-linejoin="round"` 是 lucide 几何的一部分。
+           `aria-label` / `title` 不变（设计反馈，2026-10-18）。 -->
       <button class="icon-btn" id="btnSettings" type="button" data-od-id="btn-settings" data-i18n-attr="aria-label:settings.open,title:settings.open" aria-label="设置" title="设置">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="3"/><path d="M19.5 12a7.5 7.5 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-2-1.2L14.6 3h-3.2l-.4 2.6a7.5 7.5 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7.5 7.5 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 2 1.2l.4 2.6h3.2l.4-2.6a7.5 7.5 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.06-.4.1-.8.1-1.2z"/></svg>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
     </div>
 
