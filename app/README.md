@@ -287,6 +287,11 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录 |
 | `POST /api/remote-data-flow/ack` | 确认一次告知 `{provider}`（幂等） |
+| `GET /api/approvals?target_id=&state=pending` | HITL 审批快照（`reply_id` / `target_id` / `member_id` / `tool_calls` / `state` / `decisions` / 时间戳）。只读；`state` 只接受 `pending` / `approved` / `denied` / `expired` |
+| `POST /api/approvals/{reply_id}` | 提交审批 `{decisions:[{tool_call_id, confirmed, rules?}]}`；只接受 `pending`，同批重试幂等，相反结论 409；决策内的 `rules` 落成该 Agent 的权限规则。批准后该轮继续，拒绝的工具结果是 `DENIED`（未执行），两者都不改动既有消息正本 |
+| `GET /api/permission-rules?scope_kind=&scope_id=` | 权限规则列表（`allow` / `deny` / `ask`；不暴露 `BYPASS` / `DONT_ASK`） |
+| `POST /api/permission-rules` | 写一条规则 `{scope_kind, scope_id, tool_name, pattern, behavior}`；同 `(scope, tool, pattern)` 覆盖；配置动作不落消息、不唤醒 |
+| `DELETE /api/permission-rules/{id}` | 删除一条规则（配置动作；不删除消息与审批历史） |
 | `GET /api/health` | 存活与数据目录 |
 
 错误统一为 `{"error": {"code", "message", "fields"?}}`。

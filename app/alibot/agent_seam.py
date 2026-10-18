@@ -22,6 +22,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 
@@ -541,6 +542,9 @@ class AgentScopeAgentSeam:
         environ: dict[str, str] | None = None,
         locale_of: Callable[[], Locale] | None = None,
         workspace_of: Callable[[str, str], Any] | None = None,
+        permission_of: Callable[[str, str], Any] | None = None,
+        approvals: Any | None = None,
+        team_run_of: Callable[[str, str], str | None] | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
@@ -552,6 +556,38 @@ class AgentScopeAgentSeam:
         # **读**路径（生产是 ``Database.workspace_settings_for_target``）。适配层仍不依赖库；
         # 不注入时这一轮不挂文件工具——未配置 workspace 的频道行为逐字不变（ADR-0021 §六）。
         self._workspace_of = workspace_of
+        # 权限读路径（#149）：档位 + 频道/Agent 规则 + 项目根；不注入时沿用 workspace 配置里的
+        # 权限档、没有用户规则（未配置 workspace 的频道没有可授权的工具，行为不变）。
+        self._permission_of = permission_of
+        # 审批代理（#149）：不注入时遇到 ASK 只能收口为失败（单 Agent 没有人类确认通道）。
+        self._approvals = approvals
+        # 团队运行的关联 id（#149 的审批记录列）；#142 装配点可注入，未注入时为空。
+        self._team_run_of = team_run_of
+
+    def _permission_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """一轮的权限配置；没有 workspace 也没有注入读路径时返回 ``None``。"""
+        if self._permission_of is not None:
+            raw = self._permission_of(target_id, member_id)
+            if raw is None:
+                return None
+            return dict(raw)
+        settings = self._workspace_settings(target_id, member_id)
+        if settings is None:
+            return None
+        return {
+            "mode": settings.permission_mode,
+            "root": settings.root,
+            "channel_rules": [],
+            "agent_rules": [],
+        }
+
+    def _team_run_for(self, target_id: str, member_id: str) -> str | None:
+        if self._team_run_of is None:
+            return None
+        try:
+            return self._team_run_of(target_id, member_id)
+        except Exception:  # 关联信息是附加列，取不到不影响审批本身
+            return None
 
     def _locale(self) -> Locale:
         """当前**语言偏好**（由装配点注入的取值方式给出；默认源语言）。"""
@@ -677,11 +713,44 @@ class AgentScopeAgentSeam:
             mount: Any | None = None
             try:
                 from agentscope.agent import Agent
-                from agentscope.message import Msg, UserMsg
+                from agentscope.event import (
+                    ConfirmResult,
+                    RequireUserConfirmEvent,
+                    UserConfirmResultEvent,
+                    UserInterruptEvent,
+                )
+                from agentscope.message import Msg, ToolCallBlock, UserMsg
+                from agentscope.state import AgentState
 
-                from .workspace import assemble_local_workspace, session_partition_id
+                from .approval import ApprovalWaitTimeout
+                from .permissions import (
+                    WorkspacePathPermissionMiddleware,
+                    build_permission_context,
+                    effective_rules,
+                )
+                from .workspace import (
+                    assemble_local_workspace,
+                    local_shell_tool,
+                    session_partition_id,
+                )
 
                 settings = self._workspace_settings(target_id, member_id)
+                permission_settings = self._permission_settings(target_id, member_id)
+                permission_mode = str(
+                    (permission_settings or {}).get("mode")
+                    or (settings.permission_mode if settings is not None else "ask-writes")
+                )
+                root = (permission_settings or {}).get("root") or (
+                    settings.root if settings is not None else None
+                )
+                context = build_permission_context(
+                    permission_mode,
+                    effective_rules(
+                        (permission_settings or {}).get("channel_rules") or [],
+                        (permission_settings or {}).get("agent_rules") or [],
+                    ),
+                    root=str(root) if root else None,
+                )
                 if settings is not None:
                     mount = await assemble_local_workspace(
                         settings,
@@ -694,48 +763,131 @@ class AgentScopeAgentSeam:
                     "name": member_internal_name(member_id),
                     "system_prompt": system_prompt,
                     "model": model,
+                    "state": AgentState(permission_context=context),
                 }
+                workspace_tools = list(mount.tools) if mount is not None else []
+                # 本地 shell 默认不挂（D15）。显式开启后仍是**每次调用**审批；read-only 下不挂，
+                # 因为 EXPLORE 对非只读调用的结论是 DENY（没有“询问”这一档）。
+                if mount is not None and mount.allow_local_shell and permission_mode != "read-only":
+                    workspace_tools.append(local_shell_tool(mount.root))
                 toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
                     actor_id=member_id,
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
-                    workspace_tools=mount.tools if mount is not None else None,
+                    workspace_tools=workspace_tools or None,
                 )
                 if toolkit is not None:
                     agent_options["toolkit"] = toolkit
+                if root:
+                    agent_options["middlewares"] = [WorkspacePathPermissionMiddleware(str(root))]
                 instance = Agent(**agent_options)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
-                inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
-                reply: Any = None
+                inputs: Any = [
+                    UserMsg(name=_author_name(item), content=_body(item)) for item in messages
+                ] or None
+                pending_reply_id: str | None = None
 
-                async def _consume() -> Any:
-                    nonlocal reply
-                    async for item in instance.reply_stream(inputs if inputs else None, yield_final_msg=True):
+                def _publish(item: Any) -> None:
+                    if emit is None:
+                        return
+                    record = _agent_event_record(
+                        item,
+                        target_id=target_id,
+                        names=member_names,
+                        reply_members=reply_members,
+                    )
+                    if record is None:
+                        return
+                    try:
+                        emit(record)
+                    except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
+                        _log.debug("agent event emit failed", exc_info=True)
+
+                async def _consume(stream_inputs: Any, *, register: bool) -> Any:
+                    """消费一段流；返回最终 Msg 或 ``None``（挂起时流自然结束）。"""
+                    nonlocal pending_reply_id
+                    reply: Any = None
+                    async for item in instance.reply_stream(stream_inputs, yield_final_msg=True):
                         if isinstance(item, Msg):
                             reply = item
                             continue
-                        if emit is None:
-                            continue
-                        record = _agent_event_record(
-                            item,
-                            target_id=target_id,
-                            names=member_names,
-                            reply_members=reply_members,
-                        )
-                        if record is None:
-                            continue
-                        try:
-                            emit(record)
-                        except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
-                            _log.debug("agent event emit failed", exc_info=True)
-                    if reply is None:
-                        raise RuntimeError("AgentScope 未产出最终回复 Msg")
+                        if register and isinstance(item, RequireUserConfirmEvent):
+                            if self._approvals is None:
+                                raise RuntimeError(
+                                    "AgentScope requires user confirmation but no ApprovalBroker is wired"
+                                )
+                            self._approvals.register(
+                                reply_id=item.reply_id,
+                                target_id=target_id,
+                                member_id=member_id,
+                                tool_calls=item.tool_calls,
+                                team_run_id=self._team_run_for(target_id, member_id),
+                            )
+                            pending_reply_id = item.reply_id
+                        _publish(item)
+                    # 挂起时 ``yield_final_msg`` 会给出「等待权限确认」的占位 Msg；它不是回复，
+                    # 不能当成本轮收口（否则审批还没发生就被记录成 replied）。
+                    if reply is not None and instance.state.has_awaiting_tool_calls(instance.name):
+                        return None
                     return reply
 
-                return await asyncio.wait_for(_consume(), timeout=self.timeout_seconds)
+                while True:
+                    # 模型调用 / 工具执行各有 120 秒上界；审批等待在**流结束之后**单独计时
+                    # （broker 的 600 秒），因此挂起不会撞上模型超时（#136 研究硬约束 3）。
+                    reply = await asyncio.wait_for(
+                        _consume(inputs, register=True), timeout=self.timeout_seconds
+                    )
+                    if reply is not None:
+                        return reply
+                    if self._approvals is None or pending_reply_id is None:
+                        raise RuntimeError("AgentScope ended the round without a final Msg")
+                    decisions = await self._approvals.wait(pending_reply_id)
+                    if decisions is None:
+                        # 超时：broker 已标 expired。AgentScope 没有内建超时，只能用
+                        # ``UserInterruptEvent`` 收口（单 Agent 的工具结果转 INTERRUPTED）。
+                        with suppress(Exception):
+                            await asyncio.wait_for(
+                                _consume(
+                                    UserInterruptEvent(reply_id=pending_reply_id),
+                                    register=False,
+                                ),
+                                timeout=self.timeout_seconds,
+                            )
+                        raise ApprovalWaitTimeout(self._approvals.timeout_seconds)
+                    if not decisions:
+                        # 没有新的可回送决策（例如并发提交已把状态推到终态）：不能再送一次
+                        # 已完成 id（框架会抛错），只能收口失败。
+                        record = self._approvals.record(pending_reply_id)
+                        if record is None or record["state"] == "pending":
+                            continue
+                        raise RuntimeError(f"approval {pending_reply_id} resolved without new decisions")
+                    stored = {
+                        str(call.get("id") or ""): call
+                        for call in self._approvals.tool_calls(pending_reply_id)
+                    }
+                    confirm_results = []
+                    for decision in decisions:
+                        raw = stored.get(str(decision.get("tool_call_id") or ""))
+                        if raw is None:
+                            raise RuntimeError(
+                                f"approval decision references an unknown tool call: {decision!r}"
+                            )
+                        confirm_results.append(
+                            ConfirmResult(
+                                confirmed=bool(decision.get("confirmed")),
+                                # 建议规则只用于展示；决策回送只需要 id/name/input。库里保存的
+                                # suggested_rules 是展示摘要，不按框架模型反序列化。
+                                tool_call=ToolCallBlock.model_validate(
+                                    {key: value for key, value in raw.items() if key != "suggested_rules"}
+                                ),
+                            )
+                        )
+                    inputs = UserConfirmResultEvent(
+                        reply_id=pending_reply_id, confirm_results=confirm_results
+                    )
             finally:
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
                 if mount is not None:
@@ -750,6 +902,13 @@ class AgentScopeAgentSeam:
                 reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
             )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
+            from .approval import ApprovalWaitTimeout
+
+            if isinstance(error, ApprovalWaitTimeout):
+                return RoundOutcome(
+                    status="failed",
+                    reason=render("seam.approval_timeout", self._locale(), seconds=f"{error.seconds:.0f}"),
+                )
             return RoundOutcome(
                 status="failed",
                 reason=render(
