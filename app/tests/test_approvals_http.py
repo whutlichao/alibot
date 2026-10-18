@@ -42,6 +42,7 @@ class ParkingSeam:
         target_id: str,
         task_context: Any = None,
         mandatory_reply: bool = False,
+        team: Any = None,
         emit: Any = None,
     ) -> RoundOutcome:
         import asyncio

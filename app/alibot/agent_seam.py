@@ -983,12 +983,50 @@ class AgentScopeAgentSeam:
 
         async def _round() -> Any:
             from agentscope.agent import Agent
-            from agentscope.message import UserMsg
+            from agentscope.event import (
+                ConfirmResult,
+                RequireUserConfirmEvent,
+                UserConfirmResultEvent,
+                UserInterruptEvent,
+            )
+            from agentscope.message import ToolCallBlock, UserMsg
+            from agentscope.state import AgentState
 
-            from .workspace import assemble_local_workspace, session_partition_id
+            from .approval import ApprovalWaitTimeout
+            from .permissions import (
+                WorkspacePathPermissionMiddleware,
+                build_permission_context,
+                effective_rules,
+            )
+            from .workspace import (
+                assemble_local_workspace,
+                local_shell_tool,
+                session_partition_id,
+            )
 
             models: list[Any] = []
             mounts: list[Any] = []
+            agents_by_id: dict[str, Any] = {}
+
+            def _permission_for(member_id_value: str) -> tuple[Any, str | None]:
+                settings = self._workspace_settings(target_id, member_id_value)
+                permission_settings = self._permission_settings(target_id, member_id_value)
+                mode = str(
+                    (permission_settings or {}).get("mode")
+                    or (settings.permission_mode if settings is not None else "ask-writes")
+                )
+                root = (permission_settings or {}).get("root") or (
+                    settings.root if settings is not None else None
+                )
+                context = build_permission_context(
+                    mode,
+                    effective_rules(
+                        (permission_settings or {}).get("channel_rules") or [],
+                        (permission_settings or {}).get("agent_rules") or [],
+                    ),
+                    root=str(root) if root else None,
+                )
+                return context, str(root) if root else None
 
             async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
                 """这一轮该成员的项目根工具（未配置 / 非 local 后端时没有；ADR-0021 §六）。"""
@@ -1001,7 +1039,15 @@ class AgentScopeAgentSeam:
                     session_id=session_partition_id(member_id_value, target_id),
                 )
                 mounts.append(mount)
-                return mount.tools
+                tools = list(mount.tools)
+                permission_settings = self._permission_settings(target_id, member_id_value)
+                mode = str(
+                    (permission_settings or {}).get("mode")
+                    or (settings.permission_mode if settings is not None else "ask-writes")
+                )
+                if mount.allow_local_shell and mode != "read-only":
+                    tools.append(local_shell_tool(mount.root))
+                return tools
 
             def _build_agent(
                 member: dict[str, Any],
@@ -1014,14 +1060,20 @@ class AgentScopeAgentSeam:
                 member_model = model_name_of(str(member.get("model_id") or ""))
                 model = self._build_model(member_provider, member_model, stream=stream)
                 models.append(model)
+                context, root = _permission_for(str(member["id"]))
                 options: dict[str, Any] = {
                     "name": member_internal_name(str(member["id"])),
                     "system_prompt": prompt,
                     "model": model,
+                    "state": AgentState(permission_context=context),
                 }
+                if root:
+                    options["middlewares"] = [WorkspacePathPermissionMiddleware(root)]
                 if toolkit is not None:
                     options["toolkit"] = toolkit
-                return Agent(**options)
+                instance = Agent(**options)
+                agents_by_id[str(member["id"])] = instance
+                return instance
 
             try:
                 leader_toolkit = _round_toolkit(
@@ -1072,10 +1124,46 @@ class AgentScopeAgentSeam:
                     target_id=target_id,
                     task_id=team.task_id,
                 )
-                inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
+                inputs: Any = [
+                    UserMsg(name=_author_name(item), content=_body(item)) for item in messages
+                ] or None
+                parked: dict[str, str] = {}
+                current_reply_id: str | None = None
 
-                async def _consume() -> Any:
-                    async for item in pipeline.reply_stream(inputs if inputs else None):
+                def _member_of(reply_id: str) -> str | None:
+                    for member_id_value, instance in agents_by_id.items():
+                        if str(getattr(instance.state, "reply_id", "")) == reply_id:
+                            return member_id_value
+                    return reply_members.get(reply_id)
+
+                def _any_awaiting() -> bool:
+                    return any(
+                        instance.state.has_awaiting_tool_calls(instance.name)
+                        for instance in agents_by_id.values()
+                    )
+
+                async def _consume(stream_inputs: Any, *, register: bool) -> Any:
+                    nonlocal current_reply_id
+                    async for item in pipeline.reply_stream(stream_inputs):
+                        if register and isinstance(item, RequireUserConfirmEvent):
+                            if self._approvals is None:
+                                raise RuntimeError(
+                                    "AgentScope requires user confirmation but no ApprovalBroker is wired"
+                                )
+                            participant = _member_of(item.reply_id)
+                            if participant is None:
+                                raise RuntimeError(
+                                    f"no participant matches approval reply_id {item.reply_id}"
+                                )
+                            self._approvals.register(
+                                reply_id=item.reply_id,
+                                target_id=target_id,
+                                member_id=participant,
+                                tool_calls=item.tool_calls,
+                                team_run_id=self._team_run_for(target_id, participant),
+                            )
+                            parked[item.reply_id] = participant
+                            current_reply_id = item.reply_id
                         if emit is None:
                             continue
                         record = _agent_event_record(
@@ -1090,9 +1178,58 @@ class AgentScopeAgentSeam:
                             emit(record)
                         except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
                             _log.debug("agent event emit failed", exc_info=True)
-                    return _final_reply_message(leader_agent)
+                    reply = _final_reply_message(leader_agent)
+                    if reply is not None and _any_awaiting():
+                        return None  # 挂起占位 Msg 不是本轮结论
+                    return reply
 
-                return await asyncio.wait_for(_consume(), timeout=self.timeout_seconds)
+                while True:
+                    reply = await asyncio.wait_for(
+                        _consume(inputs, register=True), timeout=self.timeout_seconds
+                    )
+                    if reply is not None and not _any_awaiting():
+                        return reply
+                    if self._approvals is None or not parked:
+                        raise RuntimeError("TeamPipeline ended the round without a final reply")
+                    reply_id = current_reply_id
+                    if reply_id is None or reply_id not in parked:
+                        reply_id = next(iter(parked))
+                        current_reply_id = reply_id
+                    decisions = await self._approvals.wait(reply_id)
+                    if decisions is None:
+                        with suppress(Exception):
+                            await asyncio.wait_for(
+                                _consume(UserInterruptEvent(reply_id=reply_id), register=False),
+                                timeout=self.timeout_seconds,
+                            )
+                        raise ApprovalWaitTimeout(self._approvals.timeout_seconds)
+                    if not decisions:
+                        # broker 只会在终态且没有未回送决策时返回空批：此时再送一次确认会
+                        # 打穿 Agent（框架会抛“not waiting for confirmation”），只能收口失败。
+                        raise RuntimeError(f"approval {reply_id} resolved without new decisions")
+                    stored = {
+                        str(call.get("id") or ""): call for call in self._approvals.tool_calls(reply_id)
+                    }
+                    confirm_results = []
+                    for decision in decisions:
+                        raw = stored.get(str(decision.get("tool_call_id") or ""))
+                        if raw is None:
+                            raise RuntimeError(
+                                f"approval decision references an unknown tool call: {decision!r}"
+                            )
+                        confirm_results.append(
+                            ConfirmResult(
+                                confirmed=bool(decision.get("confirmed")),
+                                tool_call=ToolCallBlock.model_validate(
+                                    {key: value for key, value in raw.items() if key != "suggested_rules"}
+                                ),
+                            )
+                        )
+                    record = self._approvals.record(reply_id)
+                    if record is not None and record["state"] != "pending":
+                        parked.pop(reply_id, None)
+                        current_reply_id = None
+                    inputs = UserConfirmResultEvent(reply_id=reply_id, confirm_results=confirm_results)
             finally:
                 for mount in mounts:
                     await mount.workspace.close()

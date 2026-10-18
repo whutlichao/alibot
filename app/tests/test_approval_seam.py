@@ -343,3 +343,92 @@ def test_approved_rules_are_persisted_as_agent_rules(library: Any) -> None:
     assert [(rule["tool_name"], rule["pattern"], rule["behavior"]) for rule in rules] == [
         ("Write", "notes.txt", "allow")
     ]
+
+
+class _SequenceModelSeam(_StubModelSeam):
+    """按构造顺序发模型：队长先建，成员随后（与 ``_run_team_round_stream`` 的装配顺序一致）。"""
+
+    def __init__(self, models: Sequence[ChatModelBase], **kwargs: Any) -> None:
+        super().__init__(models[0], **kwargs)
+        self._models = list(models)
+
+    def _build_model(self, provider: str, model_name: str, stream: bool = False) -> Any:
+        return self._models.pop(0)
+
+
+def _team_assignment(call_id: str, member: str) -> list[ChatResponse]:
+    raw = json.dumps({"member": member, "prompt": "请写入"})
+    middle = len(raw) // 2
+    return [
+        ChatResponse(
+            content=[ToolCallBlock(id=call_id, name="TeamAssign", input=raw[:middle])],
+            is_last=False,
+        ),
+        ChatResponse(
+            content=[ToolCallBlock(id=call_id, name="TeamAssign", input=raw[middle:])],
+            is_last=False,
+        ),
+        ChatResponse(content=[ToolCallBlock(id=call_id, name="TeamAssign", input=raw)], is_last=True),
+    ]
+
+
+def test_team_member_approval_routes_by_reply_id_and_completes_the_round(library: Any) -> None:
+    """TeamPipeline：成员挂起 → 按成员 reply_id 批准 → 成员写文件 → 队长收口。"""
+    from alibot.agent_seam import member_internal_name
+    from alibot.team import TeamRoundContext
+
+    database, leader, channel, root = library
+    member = database.create_agent("成员", "工程师", "openai:stub-model", "简短回复。")
+    database.add_target_member(channel["id"], member["id"])
+    broker = _broker(database)
+    leader_model = _ScriptedModel(
+        [
+            _team_assignment("call-assign", member_internal_name(member["id"])),
+            [ChatResponse(content=[TextBlock(text="leader final")], is_last=True)],
+        ]
+    )
+    member_model = _write_then_reply()
+    seam = _SequenceModelSeam(
+        [leader_model, member_model],
+        timeout_seconds=5.0,
+        workspace_of=database.workspace_settings_for_target,
+        permission_of=database.permission_settings_for_target,
+        approvals=broker,
+    )
+    team = TeamRoundContext(
+        target_id=channel["id"],
+        leader_id=leader["id"],
+        members=(member,),
+    )
+    result: dict[str, Any] = {}
+
+    def run() -> None:
+        result["outcome"] = seam.run_round_stream(
+            database.get_agent(leader["id"]),
+            [{"seq": 1, "kind": "human", "body": "请安排", "author": {"id": "owner"}}],
+            mentioned=False,
+            target_id=channel["id"],
+            team=team,
+            emit=None,
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 10
+    pending = []
+    while time.monotonic() < deadline:
+        pending = database.list_approval_requests(channel["id"], "pending")
+        if pending:
+            break
+        time.sleep(0.01)
+    assert pending, "TeamPipeline 没有登记成员审批"
+    assert pending[0]["member_id"] == member["id"]
+    broker.submit(pending[0]["reply_id"], [{"tool_call_id": "tc-write", "confirmed": True}])
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+
+    outcome = result["outcome"]
+    assert outcome.status == "replied", outcome.reason
+    assert outcome.messages[0].body == "leader final"
+    assert (root / "notes.txt").read_text(encoding="utf-8") == "approved\n"
+    assert database.list_approval_requests(channel["id"], "approved")[0]["member_id"] == member["id"]

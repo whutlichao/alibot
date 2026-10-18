@@ -20,7 +20,7 @@
 | `app/alibot/workspace.py` | `AskEveryTimeBash`：只有 `allow_local_shell=1` 才挂；每次调用 ASK 且 `bypass_immune`（allow 规则 / `trusted-writes` 不能自动放行）；read-only 档不挂。 |
 | `app/alibot/api.py` | 生产装配 broker；`GET/POST /api/approvals`、`GET/POST/DELETE /api/permission-rules`；启动过期；`seam_factory` / `approval_timeout_seconds` 测试注入点。 |
 | `app/tests/test_permissions.py`（新） | 三档行为、规则匹配、两级覆盖、不暴露 BYPASS / DONT_ASK。 |
-| `app/tests/test_approval_seam.py`（新） | 真 AgentScope Agent + 真实文件工具的批准 / 拒绝 / 超时 / 模式 / 规则闭环。 |
+| `app/tests/test_approval_seam.py`（新） | 真 AgentScope Agent + 真实文件工具的批准 / 拒绝 / 超时 / 模式 / 规则闭环；含 `TeamPipeline` 按成员 `reply_id` 的审批路由。 |
 | `app/tests/test_approvals.py`（新） | broker 状态机、部分决策、幂等 / 冲突、重启过期、不存额外字段。 |
 | `app/tests/test_approvals_http.py`（新） | 真实 HTTP + SSE：批准 / 拒绝 / 超时 / 幂等 / 重启 `/approvals` / 规则 CRUD。 |
 
@@ -44,8 +44,8 @@ $ cd app && ../.venv/bin/python -m pytest tests/test_permissions.py -q
 
 ```console
 $ cd app && ../.venv/bin/python -m pytest tests/test_approval_seam.py -q
-.........                                                                [100%]
-9 passed
+..........                                                               [100%]
+10 passed
 ```
 
 读数（真 `AgentScope Agent` + 真实 `Write` 工具，脚本模型驱动）：
@@ -59,6 +59,8 @@ $ cd app && ../.venv/bin/python -m pytest tests/test_approval_seam.py -q
   且根外文件不存在）。
 - `read-only`：写工具被 `DENY`，**不产生**审批记录，文件未写入。
 - 规则：频道 `deny` + Agent `allow`（同键）时写入成功；决策里附带的 `rules` 落成该 Agent 的规则。
+- team：`TeamPipeline` 下成员挂起，`RequireUserConfirmEvent.reply_id` 是**成员**的 id；批准后只恢复
+  该成员、写入文件，队长收口为 `replied`，审批记录的 `member_id` 是成员而不是队长。
 
 **`DENIED` 与规格 `ERROR` 的映射**：票面 / 规格 §5.1 写“拒绝后 ERROR”，实现事实（#136 研究）
 是 AgentScope 把拒绝建模为第四种工具结果 `ToolResultState.DENIED`，工具**没有执行**，模型仍可
@@ -108,7 +110,7 @@ $ cd app && ../.venv/bin/python -m pytest tests/test_approvals.py -k "timeout or
 
 ```console
 $ scripts/check.sh
-== pytest（全量；本分支共 743 条用例，含既有跳过项）
+== pytest（全量；本分支共 744 条用例，含既有跳过项）
 …（pytest 全绿）
 
 == ruff check
@@ -133,11 +135,11 @@ Success: no issues found in 72 source files
 
 ## 已知残余与边界
 
-- **team 模式**：#142 拥有 team 运行与频道配置；本票的 broker 已支持 `team_run_id` 可选注入，
-  但审批记录当前由单 Agent 轮次写入 `team_run_id=None`；`TeamPipeline` 的按成员 `reply_id` 路由
-  留待 #142 装配。
+- **team 模式的 `team_run_id`**：`TeamPipeline` 的权限上下文与审批路由已接入（按成员 `reply_id`），
+  但 `TeamRoundContext` 不携带运行 id，因此审批记录的 `team_run_id` 目前为空；装配点可通过
+  `team_run_of` 注入后续关联，不需要改审批状态机。
 - **单成员超时中止整轮**：AgentScope 2.0.10 的 `UserInterruptEvent` 在 TeamPipeline 里广播给所有
-  挂起成员与队长；本票只实现单 Agent 路径，team 下的“单成员超时只整轮失败”按 R5 语义保留。
+  挂起成员与队长；因此 team 下任一审批超时都会让整轮 `failed`（与 R5 的说明一致）。
 - **本地 shell**：只在 `allow_local_shell=1` 且非 `read-only` 档挂载；每次调用 ASK。`read-only` 下
   不挂 Bash（`EXPLORE` 没有“询问”档，只读命令与“每次审批”无法同时成立），这是比“只读命令可用”
   更窄的取舍。
