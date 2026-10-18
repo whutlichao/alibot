@@ -842,3 +842,33 @@ graph TD
 - 不改既有 ADR 原文；新增 ADR-0018–ADR-0023。
 - 不新增自动合并；H1 只设计人类手动合并。
 - 不替用户决定未覆盖的产品问题；§8.2 / §8.3 的 D13–D23 均来自用户 ask 回执，已裁定。
+
+### 8.6 决策索引（D1–D23 → 落点）
+
+本索引只做**指路**，不复制裁定原文；裁定仍以 §1 / §1.1 / §1.2 为准。
+
+| 决策 | ADR | 代码 / 数据落点 | 文档落点 |
+| --- | --- | --- | --- |
+| D1 协作拓扑双模式 | ADR-0018 | `channel.mode` / `team_leader_member_id`；`WakeOrchestrator._notify_team` | `app/README.md`「team 模式」；`CONTEXT.md` **team 模式** / **队长** |
+| D2 成员产出可见性 | ADR-0018 / ADR-0020 | `events.team_assignment` / `agent_event`；队长最终 1 条 `message` | README「team 模式」；CONTEXT **运行记录** |
+| D3 TeamAssign 计 1 跳 | ADR-0019 | `team.BudgetedTeamPipeline._run_assignments`；`team_assignment.jump_consumed` | README「team 模式」；CONTEXT **TeamAssign / 分派** |
+| D4 AgentEvent 透传 | ADR-0020 | `run_round_stream`；`events.REPLAYABLE_TYPES` / `LIVE_EVENT_TYPES` | README「实时呈现」；CONTEXT **成员面适配接缝** |
+| D5 全部三阶段 | —（§7.2 票图） | E/T/P/W/U 票 | §7.2 |
+| D6 Workspace 全部 | ADR-0021 | `workspace.py`；channel / agent_config 新列 | README「Workspace / 权限 / 审批 / MCP / Skill」 |
+| D7 agentscope 2.0.10 | —（#137） | `app/pyproject.toml` pin | README「Agent 的采用范围」 |
+| D8 单向门、人类手动合并 | —（§7.2 H1） | 无自动合并路径 | §7.2 H1 / 集成 PR |
+| D9 术语 | —（`CONTEXT.md`） | 不使用 deploy/channel、deploy/agent-team | `CONTEXT.md` 全篇 |
+| D10 内部名由 member id 派生 | ADR-0018 | `agent_seam.member_internal_name` | README「team 模式」 |
+| D11 pipeline 每轮重建 | ADR-0018 | `team.build_team_pipeline` 的调用点 | README「team 模式」 |
+| D12 既有约定标注 | ADR-0018–0023 | — | `CONTEXT.md` 各词条的「本轮扩展 / 收窄」 |
+| D13 Plan 落点 | ADR-0023 | `plan_run` / `plan_task`；`GET /api/targets/{id}/plan` | README 数据模型 + 端点；CONTEXT **Plan** |
+| D14 频道根 + Agent 后端/权限 | ADR-0021 | `channel.workspace_*` / `agent_config.workspace_*` | CONTEXT **工作区项目根** / **工作区后端** |
+| D15 本地 shell 边界 | ADR-0021 | `agent_config.allow_local_shell`；`workspace.WorkspaceRootGuard` | README「Workspace」；CONTEXT **工作区后端** |
+| D16 team 下 auto_claim | ADR-0022 | `orchestration.claim_new_task` 的 team 早退 | README「team 模式」；CONTEXT **认领** |
+| D17 穿透可见性 | ADR-0018 | `_notify_team` 的穿透候选（channel only） | README「穿透」；CONTEXT **穿透** |
+| D18 队长不可用 | ADR-0018 | `leader_status`；`team_run.status='invalid-leader'` | README「team 模式」；CONTEXT **队长** |
+| D19 HITL 持久性 | ADR-0021 §四 | `approval_request`；`DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600` | README「Workspace / 权限 / 审批」；CONTEXT **审批** |
+| D20 Plan / SOP 启动面 | ADR-0023 | Plan 工具自动装配；`POST /api/sops/{id}/runs`（owner） | CONTEXT **Plan** / **SOP** |
+| D21 MCP / Skill 来源 | ADR-0021 §三 | `mcp_server` / `skill`；`env_names` | README「Workspace」；CONTEXT **MCP 声明** / **Skill** |
+| D22 权限档位 | ADR-0021 §四 | `permissions.PERMISSION_MODES` / `map_permission_mode` | README「Workspace」；CONTEXT **权限档** / **权限规则** |
+| D23 team 作用范围（B） | ADR-0022 | `_team_config`（task → channel.mode）；`_notify_team` 的 task 分支 | README「team 模式」；CONTEXT **任务线程** / **唤醒** |
