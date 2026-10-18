@@ -540,6 +540,7 @@ class AgentScopeAgentSeam:
         timeout_seconds: float = 120.0,
         environ: dict[str, str] | None = None,
         locale_of: Callable[[], Locale] | None = None,
+        workspace_of: Callable[[str, str], Any] | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
@@ -547,10 +548,27 @@ class AgentScopeAgentSeam:
         # 取值方式由**装配点**注入（``api.create_app`` 传 ``i18n.locale_of(database)``），
         # 于是适配层自己不依赖库、也不读任何请求头（ADR-0009）。不注入时取源语言。
         self._locale_of = locale_of if locale_of is not None else (lambda: SOURCE_LOCALE)
+        # workspace 装配钩子（#148）：由装配点注入「(target_id, member_id) → 频道项目根配置」的
+        # **读**路径（生产是 ``Database.workspace_settings_for_target``）。适配层仍不依赖库；
+        # 不注入时这一轮不挂文件工具——未配置 workspace 的频道行为逐字不变（ADR-0021 §六）。
+        self._workspace_of = workspace_of
 
     def _locale(self) -> Locale:
         """当前**语言偏好**（由装配点注入的取值方式给出；默认源语言）。"""
         return self._locale_of()
+
+    def _workspace_settings(self, target_id: str, member_id: str) -> Any | None:
+        """本轮的项目根配置；没有装配钩子 / 未配置根 / 非 local 后端时返回 ``None``。"""
+        if self._workspace_of is None:
+            return None
+        from .workspace import WorkspaceSettings
+
+        raw = self._workspace_of(target_id, member_id)
+        if raw is None:
+            return None
+        settings = raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
+        # Docker 后端由 W3 装配；本模块不静默回落成“本地 Bash”（ADR-0021 §二）。
+        return settings if settings.is_local else None
 
     # ─── 模型构造 ─────────────────────────────────────────────────────────
     def _build_model(self, provider: str, model_name: str, *, stream: bool = False) -> Any:
@@ -656,9 +674,20 @@ class AgentScopeAgentSeam:
             # 客户端若带着活连接活过这一轮，它的 ``__del__`` 会在之后的某个 loop 里去关一个属于
             # 已关闭 loop 的 socket transport —— 那正是 issue #30 的 ``Event loop is closed``。
             model = self._build_model(provider, model_name, stream=emit is not None)
+            mount: Any | None = None
             try:
                 from agentscope.agent import Agent
                 from agentscope.message import Msg, UserMsg
+
+                from .workspace import assemble_local_workspace, session_partition_id
+
+                settings = self._workspace_settings(target_id, member_id)
+                if settings is not None:
+                    mount = await assemble_local_workspace(
+                        settings,
+                        member_id=member_id,
+                        session_id=session_partition_id(member_id, target_id),
+                    )
 
                 agent_options: dict[str, Any] = {
                     # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
@@ -672,6 +701,7 @@ class AgentScopeAgentSeam:
                     actor_id=member_id,
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
+                    workspace_tools=mount.tools if mount is not None else None,
                 )
                 if toolkit is not None:
                     agent_options["toolkit"] = toolkit
@@ -708,6 +738,8 @@ class AgentScopeAgentSeam:
                 return await asyncio.wait_for(_consume(), timeout=self.timeout_seconds)
             finally:
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
+                if mount is not None:
+                    await mount.workspace.close()
                 await _aclose_model_client(model)
 
         try:
@@ -893,19 +925,25 @@ def _round_toolkit(
     actor_id: str,
     task_actions: list[AgentTaskAction],
     silence_declarations: list[None],
+    workspace_tools: list[Any] | None = None,
 ) -> Any:
-    """装配这一轮的工具集：任务动作（仅任务线程）+ 沉默声明（provider 传输层能携带工具时）。
+    """装配这一轮的工具集：workspace 文件工具 + 任务动作（仅任务线程）+ 沉默声明（provider 能携带工具时）。
 
     **能力闸门在这里**：``supports_tool_calling(provider)`` 为假时**不挂**沉默工具，于是请求里没有
     ``tools``、模型无法声明沉默，这一轮只能靠正文收口成既有的 ``replied`` / ``ignored`` / ``failed``。
     退化是结构性的（不是「模型大概不会调」的侥幸），这与「不假定所有 provider 一致」是同一条纪律。
 
-    返回 ``None`` 表示这一轮不需要任何工具（频道里的非任务轮次 + 不支持工具的 provider）：此时
-    ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
+    workspace 工具（#148）不受这个闸门影响：它们是**有 workspace 配置**时的能力，不是 message 通道；
+    工具 schema 走的是同一条 provider 工具通道——provider 不能携带工具时，文件工具也送不出去。
+
+    返回 ``None`` 表示这一轮不需要任何工具（未配置 workspace 的频道 + 非任务轮次 + 不支持工具的
+    provider）：此时 ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
     """
     from agentscope.tool import Toolkit
 
     tools: list[Any] = []
+    if workspace_tools:
+        tools.extend(workspace_tools)
     if task_context is not None:
         tools.extend(_task_action_tools(task_context, actor_id, task_actions))
     if supports_tool_calling(provider):
