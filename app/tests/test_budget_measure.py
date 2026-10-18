@@ -192,6 +192,26 @@ def test_remote_usage_missing_stops_the_run_instead_of_reporting_a_partial_total
     assert guard.should_stop is True
 
 
+def test_a_cost_math_error_marks_accounting_incomplete_without_raising() -> None:
+    """sink 不能抛：seam 会吞掉回调异常；账目错误必须在 guard 内收口成「不完整」。"""
+    guard = CostGuard(_book(), basis="peak", max_usd=10.0, remote_models={"test:model"})
+
+    guard.record(
+        {
+            "model_id": "test:model",
+            "input_tokens": 100,
+            "output_tokens": 1,
+            "cache_input_tokens": 200,  # 大于 input：价格快照语义不符
+            "cache_creation_input_tokens": 0,
+        }
+    )
+
+    assert guard.accounting_incomplete is True
+    assert guard.stop_reason == "cost-math-error"
+    assert guard.records[0]["cost_usd"] is None
+    assert "MeasurementError" in str(guard.records[0]["cost_error"])
+
+
 def test_preflight_uses_model_hard_limits_and_max_rates() -> None:
     # 每调用上限：(1000 × 0.3 + 100 × 1.2) / 1e6 = 0.00042 USD；4 个远端轮次 × 2 次调用。
     estimate = preflight_cost_estimate(

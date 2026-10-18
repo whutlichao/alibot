@@ -80,8 +80,9 @@ output 硬限制、峰时最高费率（input $0.3 / output $1.2 per 1M）、tie
 
 工具把实测拆成三组，禁止把跳数与轮数混用：
 
-1. **初始人类唤醒成本**：`base_seq == human_seq` 的轮次 usage 之和。它是「人发一句话」的固定开销，
-   不是一次跳。
+1. **初始人类唤醒成本**：`consumed_budget=false` 且不是 `merged` / `budget-exhausted` 的轮次 usage
+   之和。它是「人发一句话」的固定开销，不是一次跳。判据不能写成 `base_seq == human_seq`：单线程下
+   第二位成员的这一轮可能在该消息的首条回复落库之后才开始，`base_seq` 因此是那条回复的 seq。
 2. **每次跳的成本**：`consumed_budget=true` 的轮次按 `base_seq` 分组；一次跳投递多个成员时该组有
    多条轮次，成本是组内 usage 之和。目标全部 in-flight 的零投递不产生轮次，也不计跳。
 3. **外推**：`scenario_bound` 假设后续每一跳的成员集合与本次观测一致，`initial + tier × max(或 mean)
@@ -112,7 +113,8 @@ output 硬限制、峰时最高费率（input $0.3 / output $1.2 per 1M）、tie
 - 本机 provider 的成本只记 provider 账单（0），不含电费 / 硬件折旧；不同本机模型的能力与 token
   统计口径也可能不同。
 - `usage_sink` 采集的是单 Agent 轮次的最终 `Msg` 聚合值；team 轮次只拿队长最终 `Msg`，不采集被分派
-  成员的 usage，因此 team 模式不在本次测量范围。
+  成员的 usage，因此 team 模式不在本次测量范围。失败/超时轮没有最终 `Msg`，会发一条 `usage=None`
+  记录；只要远端轮出现这种记录，成本账目即标不完整并停止提交新轮次，不会把失败轮的费用漏掉。
 - 价格会变；证据文件必须同时保存快照哈希与取得日期，复跑时若价目已变，结论要重新换算。
 - `--max-remote-usd` 是观测后停机阈值，不是硬费用上限；预检里的「每轮模型调用次数」也是显式假设，
   框架内部的 thinking / 工具批次 / 重试没有公开硬上限，因此本 ADR 不宣称系统金额上界。

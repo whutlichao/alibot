@@ -331,6 +331,22 @@ def test_usage_sink_receives_the_final_msg_usage_without_changing_the_outcome(
     assert records[0]["error"] is False
 
 
+def test_a_failed_round_emits_a_missing_usage_record(stub_provider: str) -> None:
+    """失败轮可能已经产生过费用；没有最终 ``Msg.usage`` 时必须发 ``None`` 记录，不能静默漏账。"""
+    _StubProviderHandler.fail_status = 400
+    records: list[dict[str, Any]] = []
+    agent, messages = board_inputs()
+    seam = AgentScopeAgentSeam(timeout_seconds=10.0, usage_sink=records.append)
+
+    outcome = seam.run_round(agent, messages, mentioned=True, target_id="ch_issue_30")
+
+    assert outcome.status == "failed", outcome.reason
+    assert records, "失败轮没有给 usage_sink 任何记录"
+    assert records[0]["input_tokens"] is None
+    assert records[0]["output_tokens"] is None
+    assert records[0]["member_id"] == "mem_issue_30"
+
+
 def test_a_failing_usage_sink_does_not_change_the_round(stub_provider: str) -> None:
     """观察面失败不能改写一轮结论（与 ``emit`` 同一条纪律）；默认 ``None`` 时也不建 sink。"""
 

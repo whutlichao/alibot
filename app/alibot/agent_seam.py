@@ -1044,6 +1044,9 @@ class AgentScopeAgentSeam:
         try:
             reply = asyncio.run(_round())
         except TimeoutError:
+            # 失败轮同样可能是**已计费**的一次调用：没有最终 Msg 就没有 usage，必须发一条
+            # usage=None 的记录；测量工具据此停跑，而不是把账目当完整。
+            self._record_usage(None, agent, target_id)
             return RoundOutcome(
                 status="failed",
                 reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
@@ -1052,6 +1055,7 @@ class AgentScopeAgentSeam:
             from .approval import ApprovalWaitTimeout
             from .workspace import DockerWorkspaceUnavailable
 
+            self._record_usage(None, agent, target_id)
             if isinstance(error, ApprovalWaitTimeout):
                 return RoundOutcome(
                     status="failed",
@@ -1400,6 +1404,7 @@ class AgentScopeAgentSeam:
         try:
             reply = asyncio.run(_round())
         except TimeoutError:
+            self._record_usage(None, agent, target_id)
             return RoundOutcome(
                 status="failed",
                 reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
@@ -1407,6 +1412,7 @@ class AgentScopeAgentSeam:
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
             from .workspace import DockerWorkspaceUnavailable
 
+            self._record_usage(None, agent, target_id)
             if isinstance(error, DockerWorkspaceUnavailable):
                 return RoundOutcome(status="failed", reason=str(error))
             return RoundOutcome(
@@ -1419,6 +1425,7 @@ class AgentScopeAgentSeam:
                 ),
             )
         if reply is None:
+            self._record_usage(None, agent, target_id)
             return RoundOutcome(
                 status="failed",
                 reason=render("seam.team_no_leader_reply", self._locale()),

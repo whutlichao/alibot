@@ -37,7 +37,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,7 @@ from alibot.agent_seam import (
     provider_of,
 )
 from alibot.api import create_app
-from alibot.db import BUDGET_LIMIT_TIERS, default_data_dir
+from alibot.db import BUDGET_LIMIT_TIERS, default_data_dir, utc_now
 from alibot.orchestration import ThreadScheduler
 from fastapi.testclient import TestClient
 
@@ -262,11 +262,19 @@ class CostGuard:
         record["observed_at"] = utc_now()
         price = None if self._prices is None else self._prices.price_of(record["model_id"])
         cost: float | None = None
+        cost_error = ""
         if price is not None and record.get("input_tokens") is not None:
-            cost = usage_cost_usd(price, record, basis=self._basis)
+            try:
+                cost = usage_cost_usd(price, record, basis=self._basis)
+            except Exception as error:  # sink 自身不能抛：否则 seam 会吞掉，账目静默缺失
+                cost_error = f"{type(error).__name__}: {error}"
         record["cost_usd"] = cost
+        record["cost_error"] = cost_error or None
         with self._lock:
             self._records.append(record)
+            if cost_error:
+                self.accounting_incomplete = True
+                self.stop_reason = self.stop_reason or "cost-math-error"
             if price is None:
                 self.unpriced.add(record["model_id"])
             if record.get("input_tokens") is None and record["model_id"] in self._remote_models:
@@ -308,10 +316,6 @@ class GuardedScheduler:
 
 
 # ─── 前置条件 ──────────────────────────────────────────────────────────────
-def utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
 def prepare_data_dir(path: Path | None) -> Path:
     """全新隔离目录：必须是空目录（或尚不存在）；拒绝默认用户数据目录。"""
     default = default_data_dir().resolve()
@@ -330,8 +334,8 @@ def prepare_data_dir(path: Path | None) -> Path:
     return resolved
 
 
-def validate_models(local_model: str, remote_model: str, *, require_credentials: bool = True) -> str:
-    """校验一机一远端；返回远端 provider。只检查环境变量**名**是否存在。"""
+def validate_models(local_model: str, remote_model: str, *, require_credentials: bool = True) -> None:
+    """校验一机一远端。只检查环境变量**名**是否存在，不读取、不输出值。"""
     if provider_of(local_model) not in LOCAL_PROVIDERS:
         raise MeasurementError(
             f"--local-model 必须是本机 provider（{', '.join(LOCAL_PROVIDERS)}）；收到 {local_model!r}"
@@ -344,7 +348,6 @@ def validate_models(local_model: str, remote_model: str, *, require_credentials:
     names = PROVIDER_KEY_ENV[remote_provider]
     if require_credentials and names and not any(os.environ.get(name, "").strip() for name in names):
         raise MeasurementError(f"远端 provider {remote_provider} 缺凭证：环境变量 {' / '.join(names)} 未设置")
-    return remote_provider
 
 
 def preflight_cost_estimate(
@@ -638,6 +641,15 @@ def _model_limit(prices: PriceBook | None, model_id: str, attribute: str) -> int
     return getattr(price, attribute)
 
 
+def _price_source(prices: PriceBook | None, model_id: str) -> dict[str, str] | None:
+    if prices is None:
+        return None
+    price = prices.price_of(model_id)
+    if price is None:
+        return None
+    return {"source_url": price.source_url, "retrieved_at": price.retrieved_at, "note": price.note}
+
+
 def _message_evidence(message: dict[str, Any]) -> dict[str, Any]:
     body = str(message.get("body") or "")
     author = message.get("author") or {}
@@ -714,8 +726,23 @@ def build_report(
     for item in enriched:
         item["model_id"] = member_model.get(str(item["member_id"]))
 
+    # 没有 usage 的轮次：merged 没有模型调用，budget-exhausted 是零投递；其余（replied /
+    # ignored / failed / silent）都应该有记录。缺一条，成本账目就不完整——不能只按模型聚合。
+    unaccounted = [
+        item
+        for item in enriched
+        if item["status"] not in ("merged", "budget-exhausted") and not item["usage_complete"]
+    ]
+
     human_seq = int(raw["human_seq"])
-    initial = [item for item in enriched if item["base_seq"] == human_seq]
+    # 人类消息把频道内全部成员各唤醒一次；单线程下第二位成员的这一轮可能在该消息的回复落库
+    # 之后才开始，`base_seq` 因此不等于 human_seq。判据不是 seq，而是「这次投递不消耗跳」：
+    # `consumed_budget=false` 且不是 merged（没有模型调用）/ budget-exhausted（零投递）。
+    initial = [
+        item
+        for item in enriched
+        if not item["consumed_budget"] and item["status"] not in ("merged", "budget-exhausted")
+    ]
     suppressed = [item for item in enriched if item["status"] == "budget-exhausted"]
     jumps: dict[int, list[dict[str, Any]]] = {}
     for item in enriched:
@@ -787,7 +814,10 @@ def build_report(
     provider_usage = [item for item in records if item.get("input_tokens") is not None]
     priced_models = {model for model in by_model if by_model[model]["priced"]}
     models_with_usage = {model for model in by_model if by_model[model]["rounds_with_usage"] > 0}
-    all_usage_models_priced = bool(models_with_usage) and models_with_usage <= priced_models
+    accounting_complete = not unaccounted
+    all_usage_models_priced = (
+        bool(models_with_usage) and models_with_usage <= priced_models and accounting_complete
+    )
     total_cost = round(sum(float(by_model[model]["cost_usd"]) for model in priced_models), 8)
     both_models_have_usage = all(
         by_model.get(model, {}).get("rounds_with_usage", 0) > 0
@@ -835,6 +865,11 @@ def build_report(
                 "path": config.prices.path,
                 "sha256": config.prices.sha256,
                 "retrieved_at": config.prices.retrieved_at,
+                "currency": config.prices.currency,
+            },
+            "price_sources": {
+                model: _price_source(config.prices, model)
+                for model in (config.local_model, config.remote_model)
             },
             "input_limits": {
                 model: _model_limit(config.prices, model, "context_limit_tokens")
@@ -876,15 +911,30 @@ def build_report(
             "jump_rounds": _summarize(jump_durations),
         },
         "tokens": {"by_model": by_model},
-        "usage_evidence": mode == "real-provider" and bool(provider_usage) and both_models_have_usage,
+        "usage_evidence": (
+            mode == "real-provider"
+            and bool(provider_usage)
+            and both_models_have_usage
+            and accounting_complete
+        ),
         "cost_evidence": mode == "real-provider" and all_usage_models_priced,
         "cost": {
-            "currency": "USD",
+            "currency": "USD" if config.prices is None else config.prices.currency,
             "by_model": {model: by_model[model]["cost_usd"] for model in by_model},
             "total_measured_usd": total_cost if all_usage_models_priced else None,
             "partial_total_usd": total_cost if priced_models else None,
             "priced": all_usage_models_priced,
             "usage_complete": bool(provider_usage) and both_models_have_usage,
+            "accounting_complete": accounting_complete,
+            "unaccounted_rounds": [
+                {
+                    "id": item["id"],
+                    "member_id": item["member_id"],
+                    "status": item["status"],
+                    "base_seq": item["base_seq"],
+                }
+                for item in unaccounted
+            ],
             "unpriced_models": sorted(guard.unpriced),
             "over_cost_cap": guard.over_cap,
             "accounting_incomplete": guard.accounting_incomplete,

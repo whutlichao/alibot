@@ -22,13 +22,13 @@
 | 拒绝真实用户数据 | 路径等于 `default_data_dir()`（`~/Alibot` 或 `ALIBOT_DATA_DIR`）⇒ `MeasurementError`；非空目录同样拒绝 |
 | 不读取真实应用数据 | 工具只经 `create_app(data_dir=<隔离目录>)` 建库；消息正文全部是本文件写死的合成提示 |
 | 证据脱敏 | 报告只存消息的 `seq/kind/author/body_chars/body_sha256`，不存正文；凭证值不读取、不输出；`_redact()` 兜底处理 `Bearer` / `api_key` / `sk-*` |
-| 干跑证据 | `app/specs/issue-55-dry-run-evidence.json`：`environment.data_dir` 是 `/private/var/.../alibot-budget-measure-mcw2cj8y`，`isolated_data_dir=true` |
+| 干跑证据 | `app/specs/issue-55-dry-run-evidence.json`：`environment.data_dir` 是系统临时目录下的 `alibot-budget-measure-*`，`isolated_data_dir=true`（每次运行随机名，不在文档里钉死） |
 
 ## 2. 测量实现落点
 
 | 采集项 | 实现 |
 | --- | --- |
-| `Msg.usage` token | `AgentScopeAgentSeam(usage_sink=…)`（`app/alibot/agent_seam.py`）：每轮最终 `Msg.usage` 的 `input_tokens` / `output_tokens` / `cache_input_tokens` / `cache_creation_input_tokens` 原样交出；默认 `None`，不落库、不进 `RoundOutcome`；`usage is None` 与 `0` 分开记录 |
+| `Msg.usage` token | `AgentScopeAgentSeam(usage_sink=…)`（`app/alibot/agent_seam.py`）：每轮最终 `Msg.usage` 的 `input_tokens` / `output_tokens` / `cache_input_tokens` / `cache_creation_input_tokens` 原样交出；默认 `None`，不落库、不进 `RoundOutcome`；`usage is None` 与 `0` 分开记录。失败/超时轮没有最终 `Msg`，发 `usage=None` 记录，报告 `accounting_complete=false`、`usage_evidence=false` |
 | 时延 | `GET /api/channels/{id}/round-outcomes` 的 `started_at` / `finished_at`；报告分 `initial_wake` / `jump_rounds` / `all_rounds` 三组汇总 |
 | 世代结束判定 | `budget.remaining == 0` + 无 Agent `working` + 消息/轮次/预算读数在静默期内不变；未耗尽/超时/护栏触发记 `incomplete` / `aborted-cost-cap` |
 | 成本 | `app/specs/issue-55-model-prices-2026-10-18.json`（官方 DeepSeek 价目，取得日期 2026-10-18，快照 sha256 入报告）；DeepSeek `input_tokens` 含缓存命中，按 miss/hit 分开计；本机 `ollama:*` 为 0（无 provider 账单，电费/硬件不计） |
@@ -94,9 +94,9 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | 档位 | `tier=3`，`limit=3`，`source=channel-override` |
 | 跳数正本 | `used=3`、`remaining=0`（耗尽） |
 | 轮次 | `rounds_total=5`，`jump_round_groups=2`，`suppressed_rounds=1` |
-| 初始人类唤醒 | 1 条轮次（1ms）；另一条初始轮次被既有合并语义并掉，未产生单独行 |
-| 时延 | 全部 5 轮：min 0 / mean 0.4 / p50 0 / max 1 ms（替身即时返回，**不代表真模型**） |
-| 世代墙钟 | 805 ms |
+| 初始人类唤醒 | 2 条轮次（各 1ms；第二条的 `base_seq=2`，因为单线程下它在首条回复落库后才开始） |
+| 时延 | 全部 5 轮：min 0 / mean 0.4 / p50 0 / max 1 ms（替身即时返回，**不代表真模型**）；初始唤醒 2 轮 mean 1ms |
+| 世代墙钟 | 796 ms |
 | usage / 成本 | `usage_records=[]`；`usage_evidence=false`、`cost_evidence=false`、`total_measured_usd=null` |
 | 结论 | 只证明「编排 → 设档 → 发人类消息 → 预算耗尽 → 轮次/时延/抑制结果采集」路径可用 |
 
@@ -127,7 +127,7 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 
 | 门禁 | 命令 | 读数 |
 | --- | --- | --- |
-| 新增行为测试 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` | **15 passed**（7.4s） |
+| 新增行为测试 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py` | **21 passed**（8.3s，review 收口后） |
 | 预算相邻族 | `cd app && ../.venv/bin/python -m pytest tests/test_budget_measure.py tests/test_agent_seam_client_lifecycle.py tests/test_bounded_relay.py tests/test_channel_budget_limit.py tests/test_channel_budget_write.py tests/test_target_scope.py` | **118 passed in 26.62s** |
 | 全量门禁 | `scripts/check.sh` | **861 passed, 2 skipped in 384.75s**；ruff `All checks passed!`；ruff format `216 files already formatted`；mypy `Success: no issues found in 92 source files`；pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`；`门禁全绿` |
 
@@ -159,6 +159,7 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | `app/specs/issue-55-model-prices-2026-10-18.json` | **新增**：官方价格快照（DeepSeek，带来源与日期；本机零价） |
 | `app/specs/issue-55-dry-run-evidence.json` | **新增**：脱敏 dry-run 证据 |
 | `app/specs/issue-55-preflight-deepseek-flash-2026-10-18.json` | **新增**：不调用模型的事前约束预检（保守预估 $6.0864，拒绝在 pending 预算内执行） |
+| `CONTEXT.md` | 「成员面适配接缝」补一句默认关闭的用量观察口（不是第三种输出） |
 | `app/README.md` | 「测试与检查」补一段手动实测入口（dry-run / preflight / opt-in） |
 | `app/specs/issue-55-acceptance.md` | 本文件 |
 | `docs/adr/0024-response-budget-measured-evidence-keeps-default-three.md` | **新增** ADR；不改 ADR-0002 / 0007 |
