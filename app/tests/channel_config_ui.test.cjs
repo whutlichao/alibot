@@ -1,0 +1,829 @@
+/**
+ * Studio 的**频道设置面**（#154 / 规格 §4.6 / ADR-0018 / ADR-0021）：
+ * 模式（autonomous / team）、`team_scope=channel+task`、队长、项目根、默认后端、默认权限档；
+ * team 模式下成员 `auto_claim` 已停用、任务线程只唤醒队长；任务视图读取所属频道的同一份配置。
+ *
+ * 接缝沿用既有那一套（`vm` + `fetch` 替身 + DOM 替身；与 `channel_budget_ui.test.cjs` 同款），
+ * 不新开第二套前端测试框架。
+ *
+ * 断言只落在**外部可观察行为**上：
+ * 1. 频道头入口打开设置弹窗；后端读数（mode / team_scope / 队长 / 项目根 / 后端 / 权限档）可见；
+ * 2. `team_scope` 固定展示为后端给的 `channel+task`，不是前端自己拼的；
+ * 3. `leader_available` / `leader_reason` 可见；team 模式下两条停用提示可见；
+ * 4. 保存提交 PATCH，保存后按**响应里的新配置**重铺（读回一致）；
+ * 5. 非法路径 / 非法档位 / team 无合法队长时显示后端可读原因，界面不改口；
+ * 6. 任务视图读取所属频道配置并显示「任务线程只唤醒队长」；
+ * 7. 私信没有这条面（入口隐藏）；
+ * 8. 新增词条在两份词条表里都取到值。
+ */
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+const vm = require("node:vm");
+
+const STUDIO_DIR = path.join(__dirname, "../alibot/studio");
+
+/* ─── DOM 替身（与 `channel_budget_ui.test.cjs` 同形；只实现用到的那些方法） ── */
+class FakeNode {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.children = [];
+    this.dataset = {};
+    this.attributes = {};
+    this.listeners = new Map();
+    this.hidden = false;
+    this.disabled = false;
+    this.value = "";
+    this.id = "";
+    this.type = "";
+    this.placeholder = "";
+    this.parentNode = null;
+    this.style = {};
+    this._textContent = "";
+    const classes = new Set();
+    this.classList = {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+      toggle: (name, force) => {
+        const on = force === undefined ? !classes.has(name) : Boolean(force);
+        if (on) classes.add(name);
+        else classes.delete(name);
+        return on;
+      },
+    };
+  }
+
+  set className(value) {
+    String(value)
+      .split(/\s+/)
+      .filter(Boolean)
+      .forEach((name) => this.classList.add(name));
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map((child) => child.textContent).join("");
+  }
+
+  get firstChild() {
+    return this.children[0] || null;
+  }
+
+  appendChild(child) {
+    this._textContent = "";
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index >= 0) this.children.splice(index, 1);
+    return child;
+  }
+
+  remove() {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  }
+
+  replaceChildren(...children) {
+    this._textContent = "";
+    this.children = [];
+    children.forEach((child) => this.appendChild(child));
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+  }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(listener);
+  }
+
+  async dispatchEvent(event) {
+    const listeners = this.listeners.get(event.type) || [];
+    for (const listener of listeners) await listener.call(this, event);
+  }
+
+  matches(selector) {
+    return matchesSelector(this, selector);
+  }
+
+  descendants() {
+    return [this, ...this.children.flatMap((child) => child.descendants())];
+  }
+
+  querySelectorAll(selector) {
+    return this.descendants().filter((node) => node !== this && matchesSelector(node, selector));
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (matchesSelector(node, selector)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  focus() {}
+}
+
+function matchesSelector(node, selector) {
+  const attribute = /^\[([a-zA-Z0-9_-]+)\]$/.exec(selector);
+  if (attribute) {
+    const name = attribute[1];
+    if (Object.prototype.hasOwnProperty.call(node.attributes, name)) return true;
+    if (name.startsWith("data-")) {
+      const key = name
+        .slice("data-".length)
+        .replace(/-([a-z])/g, (_whole, letter) => letter.toUpperCase());
+      return node.dataset[key] !== undefined;
+    }
+    return false;
+  }
+  if (selector.startsWith(".")) return node.classList.contains(selector.slice(1));
+  return node.tagName === selector;
+}
+
+function flush() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function descendants(node) {
+  return [node, ...node.children.flatMap(descendants)];
+}
+
+/** `index.html` 里带 `hidden` 的元素：替身的初始可见性从**同一个正本**读。 */
+const HIDDEN_IN_HTML = new Set(
+  (fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8").match(/<[a-zA-Z][^>]*>/g) || [])
+    .map((tag) => ({ id: /\bid="([^"]+)"/.exec(tag), hidden: /\shidden(\s|>|\/)/.test(tag) }))
+    .filter((entry) => entry.id && entry.hidden)
+    .map((entry) => "#" + entry.id[1]),
+);
+
+function channel(id, name) {
+  return { id, name, last_seq: 0, last_read_seq: 0, unread_count: 0 };
+}
+
+function dm(id, name) {
+  return { id, kind: "dm", peer: { display_name: name } };
+}
+
+function membersPayload() {
+  return {
+    members: [
+      { id: "m_1", kind: "agent", display_name: "Ada", avatar_slot: 1, enabled: true },
+      { id: "m_2", kind: "agent", display_name: "Bob", avatar_slot: 2, enabled: true },
+    ],
+  };
+}
+
+function configPayload(overrides) {
+  return {
+    config: Object.assign(
+      {
+        channel_id: "ch_1",
+        mode: "autonomous",
+        team_scope: "channel+task",
+        team_leader_member_id: null,
+        leader_available: false,
+        leader_reason: "",
+        workspace_root: null,
+        workspace_backend: "local",
+        permission_mode: "ask-writes",
+      },
+      overrides || {},
+    ),
+  };
+}
+
+function taskPayload() {
+  return {
+    id: "t_1",
+    channel_id: "ch_1",
+    channel_name: "设计系统重构",
+    target_id: "tg_1",
+    title: "修一处样式",
+    status: "todo",
+    assignee_member_id: null,
+    claimed_at: null,
+    unread_count: 0,
+    last_seq: 0,
+  };
+}
+
+function createHarness(options) {
+  const config = options || {};
+  const calls = [];
+  const elements = new Map();
+  const member = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+
+  class FakeEventSource {
+    constructor() {
+      this.listeners = new Map();
+      this.onerror = null;
+    }
+    addEventListener(type, listener) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(listener);
+    }
+    close() {}
+  }
+
+  function defaultFetch(url, request) {
+    const method = request.method || "GET";
+    if (url === "/api/channels/ch_1/config" && method === "GET") {
+      return { ok: true, status: 200, json: async () => configPayload() };
+    }
+    if (url === "/api/channels/ch_1/config" && method === "PATCH") {
+      return { ok: true, status: 200, json: async () => configPayload() };
+    }
+    if (url === "/api/channels/ch_1/members") {
+      return { ok: true, status: 200, json: async () => membersPayload() };
+    }
+    if (url === "/api/tasks/t_1/messages") {
+      return { ok: true, status: 200, json: async () => ({ task: taskPayload(), messages: [] }) };
+    }
+    if (url === "/api/tasks/t_1/read") {
+      return { ok: true, status: 200, json: async () => ({ task: taskPayload() }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  }
+
+  function fetchStub(url, init) {
+    const request = init || {};
+    calls.push({
+      url: String(url),
+      method: request.method || "GET",
+      body: request.body ? JSON.parse(request.body) : null,
+    });
+    if (config.fetch) return config.fetch(String(url), request);
+    return defaultFetch(String(url), request);
+  }
+
+  function buildNode(selector) {
+    const node = new FakeNode("div");
+    node.hidden = HIDDEN_IN_HTML.has(selector);
+    node.id = selector.startsWith("#") ? selector.slice(1) : "";
+    return node;
+  }
+
+  function elementFor(selector) {
+    if (!elements.has(selector)) elements.set(selector, buildNode(selector));
+    return elements.get(selector);
+  }
+
+  const documentListeners = new Map();
+  const document = {
+    documentElement: new FakeNode("html"),
+    activeElement: null,
+    querySelector: (selector) => elementFor(selector),
+    querySelectorAll: () => [],
+    createElement: (tagName) => new FakeNode(tagName),
+    createTextNode: (text) => {
+      const node = new FakeNode("#text");
+      node.textContent = text;
+      return node;
+    },
+    addEventListener(type, listener) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(listener);
+    },
+    async dispatchEvent(event) {
+      for (const listener of documentListeners.get(event.type) || []) {
+        await listener.call(document, event);
+      }
+    },
+  };
+
+  const context = vm.createContext({
+    document,
+    fetch: fetchStub,
+    EventSource: FakeEventSource,
+    URLSearchParams,
+    window: { addEventListener: () => {} },
+    console,
+    setTimeout: (fn) => setImmediate(fn),
+    clearTimeout: () => {},
+  });
+  vm.runInContext(fs.readFileSync(path.join(STUDIO_DIR, "i18n.js"), "utf8"), context, {
+    filename: "i18n.js",
+  });
+  const appPath = path.join(STUDIO_DIR, "app.js");
+  const source = fs.readFileSync(appPath, "utf8");
+  const startup = /\napplyStaticI18n\(document\);\nbindEvents\(\);\nloadWorkspace\(\);\s*$/;
+  assert.match(source, startup, "app startup calls should remain at the end of app.js");
+  vm.runInContext(
+    source.replace(
+      startup,
+      "\nglobalThis.__channelConfigTest = { state, bindEvents, renderHeader,"
+        + " openChannelConfigModal, closeChannelConfigModal, loadChannelConfig,"
+        + " renderChannelConfigModal, selectChannelConfigMode, selectChannelConfigBackend,"
+        + " selectChannelConfigPermission, submitChannelConfig, loadTaskChannelConfig,"
+        + " renderTaskThread, openTask, applySettings, t };\n",
+    ),
+    context,
+    { filename: appPath },
+  );
+
+  const api = context.__channelConfigTest;
+  api.state.member = member;
+  api.state.members = [member];
+  api.state.agents = [];
+  api.state.channels = [];
+  api.state.dms = [];
+  api.state.tasks = [];
+  api.state.online = true;
+  api.state.ready = true;
+  api.bindEvents();
+
+  const harness = {
+    api,
+    calls,
+    catalogs: context.AlibotI18n.catalogs,
+    elementFor,
+    overlay: elementFor("#channelConfigOverlay"),
+    body: elementFor("#channelConfigBody"),
+    title: elementFor("#channelConfigTitle"),
+    sub: elementFor("#channelConfigSub"),
+    formError: elementFor("#channelConfigFormError"),
+    toastWrap: elementFor("#toastWrap"),
+    entry: elementFor("#btnChannelSettings"),
+    teamNotice: elementFor("#ttTeamNotice"),
+    patches() {
+      return calls.filter((call) => call.method === "PATCH");
+    },
+    loadChannel(id, name) {
+      api.state.channels = [channel(id || "ch_1", name || "设计系统重构")];
+      api.state.dms = [];
+      api.state.activeChannelId = id || "ch_1";
+      api.renderHeader();
+    },
+    loadDm(id, name) {
+      api.state.channels = [];
+      api.state.dms = [dm(id || "dm_1", name || "小明")];
+      api.state.activeChannelId = id || "dm_1";
+      api.renderHeader();
+    },
+    async open() {
+      await harness.entry.dispatchEvent({ type: "click", target: harness.entry });
+      await flush();
+    },
+    async click(node) {
+      await harness.body.dispatchEvent({ type: "click", target: node });
+      await flush();
+    },
+    async change(node, value) {
+      node.value = value;
+      await harness.body.dispatchEvent({ type: "change", target: node });
+      await flush();
+    },
+    async input(node, value) {
+      node.value = value;
+      await harness.body.dispatchEvent({ type: "input", target: node });
+      await flush();
+    },
+    modeCard(mode) {
+      const node = byDataset(harness.body, "configMode", mode);
+      assert.ok(node, "设置面里应当有这个模式档位：" + mode);
+      return node;
+    },
+    backendCard(backend) {
+      const node = byDataset(harness.body, "configBackend", backend);
+      assert.ok(node, "设置面里应当有这个后端档位：" + backend);
+      return node;
+    },
+    permissionCard(mode) {
+      const node = byDataset(harness.body, "configPermission", mode);
+      assert.ok(node, "设置面里应当有这个权限档位：" + mode);
+      return node;
+    },
+    leaderSelect() {
+      const node = byDataset(harness.body, "configLeader", "1");
+      assert.ok(node, "设置面里应当有队长选择控件");
+      return node;
+    },
+    rootInput() {
+      const node = byDataset(harness.body, "configWorkspaceRoot", "1");
+      assert.ok(node, "设置面里应当有项目根输入框");
+      return node;
+    },
+    saveButton() {
+      const node = byDataset(harness.body, "configSave", "1");
+      assert.ok(node, "设置面里应当有保存控件");
+      return node;
+    },
+  };
+  return harness;
+}
+
+/** 按 `data-*` 找一个节点（替身的选择器不支持 `[attr="value"]` 形式）。 */
+function byDataset(root, key, value) {
+  const attribute = "data-" + key.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase());
+  return (
+    descendants(root).find((node) => {
+      if (node.dataset && node.dataset[key] === value) return true;
+      return Boolean(node.attributes && node.attributes[attribute] === value);
+    }) || null
+  );
+}
+
+function byOdId(root, id) {
+  return (
+    descendants(root).find((node) => node.attributes && node.attributes["data-od-id"] === id) || null
+  );
+}
+
+function textOf(root, id) {
+  const node = byOdId(root, id);
+  assert.ok(node, "找不到这个读数节点：" + id);
+  return node.textContent;
+}
+
+function pressed(node) {
+  return node.getAttribute("aria-pressed");
+}
+
+/* ─── 1. 入口与只读读数 ───────────────────────────────────────────────── */
+test("频道头入口打开设置面：mode / team_scope / 队长 / 项目根 / 后端 / 权限档都是后端读数", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url === "/api/channels/ch_1/config" && (request.method || "GET") === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            configPayload({
+              mode: "team",
+              team_leader_member_id: "m_1",
+              leader_available: false,
+              leader_reason: "队长已被停用",
+              workspace_root: "/Users/demo/project",
+              workspace_backend: "docker",
+              permission_mode: "read-only",
+            }),
+        };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+
+  assert.equal(harness.entry.hidden, false, "频道头的设置入口对频道可见");
+  assert.equal(harness.overlay.hidden, true, "打开前弹窗是关着的");
+
+  await harness.open();
+
+  assert.equal(harness.overlay.hidden, false, "点入口把弹窗打开");
+  assert.ok(
+    harness.calls.some((call) => call.url === "/api/channels/ch_1/config" && call.method === "GET"),
+    "打开设置面时读取频道配置",
+  );
+  assert.equal(harness.title.textContent, "频道设置");
+  assert.equal(pressed(harness.modeCard("team")), "true", "team 模式是当前档位");
+  assert.equal(pressed(harness.modeCard("autonomous")), "false");
+  assert.equal(textOf(harness.body, "channel-config-team-scope"), "channel+task");
+  assert.equal(textOf(harness.body, "channel-config-leader-availability"), "队长不可用");
+  assert.match(textOf(harness.body, "channel-config-leader-reason"), /队长已被停用/);
+  assert.equal(harness.rootInput().value, "/Users/demo/project");
+  assert.equal(pressed(harness.backendCard("docker")), "true");
+  assert.equal(pressed(harness.permissionCard("read-only")), "true");
+});
+
+test("私信没有频道设置面：入口隐藏", () => {
+  const harness = createHarness();
+  harness.loadDm();
+  assert.equal(harness.entry.hidden, true);
+});
+
+/* ─── 2. team 的停用提示 ─────────────────────────────────────────────── */
+test("team 模式下显示成员 auto_claim 已停用与任务线程只唤醒队长；切回 autonomous 后消失", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url === "/api/channels/ch_1/config" && (request.method || "GET") === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            configPayload({
+              mode: "team",
+              team_leader_member_id: "m_1",
+              leader_available: true,
+            }),
+        };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  const notices = byOdId(harness.body, "channel-config-team-notices");
+  assert.ok(notices, "team 模式下应当有停用提示区");
+  assert.match(notices.textContent, /auto_claim 已停用/);
+  assert.match(notices.textContent, /任务线程只唤醒队长/);
+  assert.equal(textOf(harness.body, "channel-config-leader-availability"), "队长可用");
+
+  await harness.click(harness.modeCard("autonomous"));
+  assert.equal(byOdId(harness.body, "channel-config-team-notices"), null, "autonomous 下不显示 team 提示");
+});
+
+/* ─── 3. 保存：PATCH 提交 + 按响应读回 ───────────────────────────────── */
+test("保存提交的是全部配置字段，保存后按响应里的新配置重铺", async () => {
+  let saved = false;
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url === "/api/channels/ch_1/config" && (request.method || "GET") === "GET") {
+        return { ok: true, status: 200, json: async () => configPayload() };
+      }
+      if (url === "/api/channels/ch_1/config" && request.method === "PATCH") {
+        saved = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            configPayload({
+              mode: "team",
+              team_leader_member_id: "m_2",
+              leader_available: true,
+              workspace_root: "/work/demo",
+              workspace_backend: "docker",
+              permission_mode: "trusted-writes",
+            }),
+        };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.click(harness.modeCard("team"));
+  await harness.change(harness.leaderSelect(), "m_2");
+  await harness.input(harness.rootInput(), "/work/demo");
+  await harness.click(harness.backendCard("docker"));
+  await harness.click(harness.permissionCard("trusted-writes"));
+  await harness.click(harness.saveButton());
+  await flush();
+
+  const patches = harness.patches();
+  assert.equal(patches.length, 1, "一次保存只发一个 PATCH");
+  assert.equal(patches[0].url, "/api/channels/ch_1/config");
+  assert.deepEqual(patches[0].body, {
+    mode: "team",
+    team_leader_member_id: "m_2",
+    workspace_root: "/work/demo",
+    workspace_backend: "docker",
+    permission_mode: "trusted-writes",
+  });
+  assert.ok(saved, "PATCH 真的发出去了");
+  assert.equal(pressed(harness.modeCard("team")), "true", "读回后 team 仍是选中档");
+  assert.equal(pressed(harness.backendCard("docker")), "true");
+  assert.equal(pressed(harness.permissionCard("trusted-writes")), "true");
+  assert.equal(harness.rootInput().value, "/work/demo");
+  assert.equal(textOf(harness.body, "channel-config-leader-availability"), "队长可用");
+  assert.equal(harness.formError.hidden, true, "成功时没有错误行");
+  assert.match(harness.toastWrap.textContent, /频道配置已保存/);
+});
+
+test("清空项目根提交 null（未配置项目根是一个合法状态）", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url === "/api/channels/ch_1/config" && (request.method || "GET") === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => configPayload({ workspace_root: "/old/root" }),
+        };
+      }
+      if (url === "/api/channels/ch_1/config" && request.method === "PATCH") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => configPayload({ workspace_root: null }),
+        };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.input(harness.rootInput(), "");
+  await harness.click(harness.saveButton());
+  await flush();
+
+  assert.equal(harness.patches()[0].body.workspace_root, null);
+  assert.equal(harness.rootInput().value, "");
+});
+
+/* ─── 4. 整体拒绝：错误可读、界面不改口 ─────────────────────────────── */
+test("非法路径被后端整体拒绝时显示可读原因，界面不改口", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url === "/api/channels/ch_1/config" && (request.method || "GET") === "GET") {
+        return { ok: true, status: 200, json: async () => configPayload() };
+      }
+      if (url === "/api/channels/ch_1/config" && request.method === "PATCH") {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({
+            error: {
+              code: "validation_failed",
+              message: "频道配置未保存：有字段不合法",
+              fields: { workspace_root: "项目根必须是绝对路径：../escape" },
+            },
+          }),
+        };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.input(harness.rootInput(), "../escape");
+  await harness.click(harness.saveButton());
+  await flush();
+
+  assert.equal(harness.formError.hidden, false, "错误行显示出来");
+  assert.match(harness.formError.textContent, /有字段不合法/);
+  assert.match(harness.formError.textContent, /项目根必须是绝对路径/);
+  // 没有待生效 / 已保存的假象：读回仍是后端那份配置。
+  assert.equal(textOf(harness.body, "channel-config-team-scope"), "channel+task");
+  assert.equal(harness.rootInput().value, "../escape", "未落库的草稿留在输入框里，界面不声称已保存");
+});
+
+test("team 没有合法队长时整体拒绝，并显示后端原因", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url === "/api/channels/ch_1/config" && (request.method || "GET") === "GET") {
+        return { ok: true, status: 200, json: async () => configPayload() };
+      }
+      if (url === "/api/channels/ch_1/config" && request.method === "PATCH") {
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(JSON.parse(request.body), "team_leader_member_id"),
+          false,
+          "没有选队长时不提交空队长字段",
+        );
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({
+            error: {
+              code: "validation_failed",
+              message: "频道配置未保存：team 模式需要队长",
+              fields: { team_leader_member_id: "team 模式必须选择一个当前频道成员作为队长" },
+            },
+          }),
+        };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.click(harness.modeCard("team"));
+  await harness.click(harness.saveButton());
+  await flush();
+
+  assert.equal(harness.formError.hidden, false);
+  assert.match(harness.formError.textContent, /team 模式需要队长/);
+  assert.match(harness.formError.textContent, /必须选择一个当前频道成员/);
+});
+
+/* ─── 5. 任务视图读取所属频道配置 ───────────────────────────────────── */
+test("任务视图读取所属频道配置并显示「任务线程只唤醒队长」", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      const method = request.method || "GET";
+      if (url === "/api/tasks/t_1/messages" && method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ task: taskPayload(), messages: [] }) };
+      }
+      if (url === "/api/tasks/t_1/read" && method === "POST") {
+        return { ok: true, status: 200, json: async () => ({ task: taskPayload() }) };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      if (url === "/api/channels/ch_1/config" && method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            configPayload({
+              mode: "team",
+              team_leader_member_id: "m_1",
+              leader_available: true,
+            }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.api.state.channels = [channel("ch_1", "设计系统重构")];
+  harness.api.state.activeChannelId = "ch_1";
+  harness.api.state.tasks = [taskPayload()];
+
+  await harness.api.openTask("t_1");
+  await flush();
+
+  assert.ok(
+    harness.calls.some((call) => call.url === "/api/channels/ch_1/config" && call.method === "GET"),
+    "打开任务线程时读取所属频道的配置",
+  );
+  assert.equal(harness.teamNotice.hidden, false, "team 频道下任务线程显示提示");
+  assert.match(harness.teamNotice.textContent, /任务线程只唤醒队长/);
+});
+
+/* ─── 6. 词条 ────────────────────────────────────────────────────────── */
+test("新增词条在 zh-CN / en 两份词条表里都取到值", () => {
+  const harness = createHarness();
+  const keys = [
+    "channelConfig.entryTitle",
+    "channelConfig.title",
+    "channelConfig.sub",
+    "channelConfig.closeAria",
+    "channelConfig.loading",
+    "channelConfig.loadFailed",
+    "channelConfig.sectionMode",
+    "channelConfig.mode.autonomous",
+    "channelConfig.mode.autonomousNote",
+    "channelConfig.mode.team",
+    "channelConfig.mode.teamNote",
+    "channelConfig.sectionScope",
+    "channelConfig.teamScope",
+    "channelConfig.teamScopeNote",
+    "channelConfig.sectionLeader",
+    "channelConfig.leaderSelectLabel",
+    "channelConfig.leaderAvailability",
+    "channelConfig.leaderNone",
+    "channelConfig.leaderAvailable",
+    "channelConfig.leaderUnavailable",
+    "channelConfig.leaderReason",
+    "channelConfig.leaderRequiredHint",
+    "channelConfig.membersUnavailable",
+    "channelConfig.teamNoticeAutoClaim",
+    "channelConfig.teamNoticeWake",
+    "channelConfig.sectionWorkspace",
+    "channelConfig.workspaceRootLabel",
+    "channelConfig.workspaceRootPlaceholder",
+    "channelConfig.workspaceRootHint",
+    "channelConfig.workspaceBackend",
+    "channelConfig.backend.local",
+    "channelConfig.backend.localNote",
+    "channelConfig.backend.docker",
+    "channelConfig.backend.dockerNote",
+    "channelConfig.sectionPermission",
+    "channelConfig.permission.read-only",
+    "channelConfig.permission.read-onlyNote",
+    "channelConfig.permission.ask-writes",
+    "channelConfig.permission.ask-writesNote",
+    "channelConfig.permission.trusted-writes",
+    "channelConfig.permission.trusted-writesNote",
+    "channelConfig.save",
+    "channelConfig.saved",
+    "channelConfig.saveFailed",
+    "task.teamNotice",
+  ];
+  for (const key of keys) {
+    assert.ok(harness.catalogs["zh-CN"][key], "zh-CN 缺词条：" + key);
+    assert.ok(harness.catalogs.en[key], "en 缺词条：" + key);
+  }
+});

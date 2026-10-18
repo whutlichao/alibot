@@ -164,6 +164,12 @@
           <button class="icon-btn" id="btnChannelMembers" type="button" data-od-id="btn-channel-members" data-i18n-attr="title:roster.entryTitle,aria-label:roster.entryTitle" title="频道成员" aria-label="频道成员">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 6M17 20a5.5 5.5 0 0 0-2.5-4.6"/></svg>
           </button>
+          <!-- 频道头部的**频道设置入口**（#154 / 规格 §4.6）：协作模式、队长、项目根、默认后端、
+               默认权限档。它只属于**频道**（频道配置是库内逐频道项，ADR-0018 / ADR-0021），
+               私信下由 app.js 隐藏。 -->
+          <button class="icon-btn" id="btnChannelSettings" type="button" data-od-id="btn-channel-settings" data-i18n-attr="title:channelConfig.entryTitle,aria-label:channelConfig.entryTitle" title="频道设置" aria-label="频道设置">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+          </button>
           <!-- 频道头部的**回应预算入口**（#54）：点开**频道设置**弹窗（只读读数 + 3 / 5 / 10 上界档位）。
                它只属于**频道**（预算配置是库内逐频道项，ADR-0007），私信下由 app.js 隐藏。 -->
           <button class="icon-btn" id="btnChannelBudget" type="button" data-od-id="btn-channel-budget" data-i18n-attr="title:budget.entryTitle,aria-label:budget.entryTitle" title="回应预算" aria-label="回应预算">
@@ -333,6 +339,9 @@
           <span class="assignee" id="ttAssignee" data-od-id="thread-assignee"></span>
           <!-- 未读数已在头部副行 `#ttHeadSub` 里给出（原型那一行的形状），不在这里再放一份。 -->
         </div>
+        <!-- team 频道的事实提示（#154 / ADR-0018）：任务线程只唤醒队长。所属频道的配置由
+             `GET /api/channels/{id}/config` 读取后写入；autonomous 下整块隐藏。 -->
+        <div class="team-notice" id="ttTeamNotice" hidden role="note" data-od-id="thread-team-notice"></div>
       </div>
       <div class="tt-actions">
         <div class="tt-actions-row">
@@ -624,6 +633,32 @@
     <div class="modal-foot">
       <span class="sep"></span>
       <button class="btn btn-primary" type="button" id="budgetDone" data-i18n="common.close" data-od-id="budget-done">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── 频道设置（#154 / 规格 §4.6 / ADR-0018 / ADR-0021）──────────────────
+     频道头入口打开；正文按 `GET /api/channels/{id}/config` 铺（mode / team_scope / 队长 /
+     项目根 / 默认后端 / 默认权限档），保存提交 `PATCH /api/channels/{id}/config`。
+     与回应预算弹窗同形：正文整段重铺，错误行在自己的容器里（重铺不会把它清掉）。 -->
+<div class="overlay" id="channelConfigOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="channelConfigTitle">
+    <div class="modal-head">
+      <div style="flex:1">
+        <h2 id="channelConfigTitle" data-i18n="channelConfig.title">频道设置</h2>
+        <div class="sub" id="channelConfigSub"></div>
+      </div>
+      <button class="icon-btn" type="button" id="channelConfigClose" data-od-id="channel-config-close" data-i18n-attr="aria-label:channelConfig.closeAria" aria-label="关闭频道设置">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="channelConfigBody" data-od-id="channel-config-body"></div>
+    <div class="modal-body">
+      <div class="form-error" id="channelConfigFormError" hidden role="alert" data-od-id="channel-config-form-error"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn btn-primary" type="button" id="channelConfigDone" data-i18n="common.close" data-od-id="channel-config-done">关闭</button>
     </div>
   </div>
 </div>
