@@ -39,7 +39,7 @@
 $ ./scripts/check.sh --fast
 pytest（--fast 且未指定文件：跳过；需要时把路径跟在 --fast 后面）
 ruff check            → All checks passed!
-ruff format --check   → 138 files already formatted
+ruff format --check   → 139 files already formatted
 mypy（仓库根）        → Success: no issues found in 61 source files
 pyright               → 0 errors, 0 warnings, 0 informations
 node --test（glob）   → tests 132 / pass 132 / fail 0
