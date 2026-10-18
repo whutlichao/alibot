@@ -116,16 +116,16 @@ scripts/check.sh
 ```text
 $ scripts/check.sh
 == pytest（全量）
-705 passed, 2 skipped in 312.98s (0:05:12)
+729 passed, 2 skipped in 316.02s (0:05:16)
 
 == ruff check
 All checks passed!
 
 == ruff format --check（只检查；不要跑 ruff format，它会整文件重排）
-168 files already formatted
+171 files already formatted
 
 == mypy（仓库根）
-Success: no issues found in 66 source files
+Success: no issues found in 68 source files
 
 == pyright
 0 errors, 0 warnings, 0 informations
