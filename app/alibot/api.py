@@ -71,6 +71,8 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.background import BackgroundTask
+from starlette.responses import Response
+from starlette.types import Scope
 
 from .agent_seam import AgentScopeAgentSeam
 from .approval import APPROVAL_STATES, DEFAULT_APPROVAL_TIMEOUT_SECONDS, ApprovalBroker
@@ -157,6 +159,20 @@ def design_system_dir() -> Path | None:
     """只读参照的设计系统目录（视觉契约的正本），不存在时返回 None。"""
     candidate = repo_root() / "alibot-design-system"
     return candidate if candidate.is_dir() else None
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """静态资源每次回源校验（``Cache-Control: no-cache``）。
+
+    没有这条头时浏览器可以按启发式缓存保留旧的 ``i18n.js``，同时拿到新的 ``index.html``：
+    新 HTML 引用的词条键在旧表里不存在，界面就回退成键名本身。``no-cache`` 只禁止**不经校验**
+    复用，ETag / Last-Modified 仍然生效——内容未变时回 304，不重复传正文。
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 class ChannelCreate(BaseModel):
@@ -1727,7 +1743,7 @@ def create_app(
         return _not_found(_render_copy("error.agent_delete_unsupported"))
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
-    app.mount("/studio", StaticFiles(directory=str(studio_dir()), html=True), name="studio")
+    app.mount("/studio", NoCacheStaticFiles(directory=str(studio_dir()), html=True), name="studio")
 
     design = design_system_dir()
     if design is not None:
