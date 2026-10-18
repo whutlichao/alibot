@@ -826,7 +826,23 @@ class AgentScopeAgentSeam:
             from agentscope.agent import Agent
             from agentscope.message import UserMsg
 
+            from .workspace import assemble_local_workspace, session_partition_id
+
             models: list[Any] = []
+            mounts: list[Any] = []
+
+            async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
+                """这一轮该成员的项目根工具（未配置 / 非 local 后端时没有；ADR-0021 §六）。"""
+                settings = self._workspace_settings(target_id, member_id_value)
+                if settings is None:
+                    return None
+                mount = await assemble_local_workspace(
+                    settings,
+                    member_id=member_id_value,
+                    session_id=session_partition_id(member_id_value, target_id),
+                )
+                mounts.append(mount)
+                return mount.tools
 
             def _build_agent(
                 member: dict[str, Any],
@@ -855,6 +871,7 @@ class AgentScopeAgentSeam:
                     actor_id=member_id,
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
+                    workspace_tools=await _workspace_tools_for(member_id),
                 )
                 leader_agent = _build_agent(
                     agent,
@@ -864,6 +881,8 @@ class AgentScopeAgentSeam:
                 )
                 member_agents: list[tuple[dict[str, Any], Any]] = []
                 for member in team.members:
+                    member_id_value = str(member["id"])
+                    workspace_tools = await _workspace_tools_for(member_id_value)
                     member_agents.append(
                         (
                             member,
@@ -871,7 +890,19 @@ class AgentScopeAgentSeam:
                                 member,
                                 _team_member_prompt(member),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
-                                toolkit=None,
+                                # 只有配置了项目根时成员才挂工具集（含受限文件工具）。
+                                toolkit=(
+                                    _round_toolkit(
+                                        provider_of(str(member.get("model_id") or "")),
+                                        task_context=None,
+                                        actor_id=member_id_value,
+                                        task_actions=[],
+                                        silence_declarations=[],
+                                        workspace_tools=workspace_tools,
+                                    )
+                                    if workspace_tools
+                                    else None
+                                ),
                             ),
                         )
                     )
@@ -904,6 +935,8 @@ class AgentScopeAgentSeam:
 
                 return await asyncio.wait_for(_consume(), timeout=self.timeout_seconds)
             finally:
+                for mount in mounts:
+                    await mount.workspace.close()
                 for model in models:
                     await _aclose_model_client(model)
 
