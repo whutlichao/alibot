@@ -192,7 +192,39 @@ Success: no issues found in 62 source files
 exit=0
 ```
 
-无既存失败需要基线对照。
+本地全量门禁在本票 diff 上无既存失败；CI 合并态的既存失败另见 §6.1。
+
+### 6.1 CI（GitHub Actions，PR #165）
+
+PR 的 `pull_request` run 在本 worktree 之外执行同一脚本。pytest 侧与本地一致：
+
+```text
+655 passed, 2 skipped in 336.13s (0:05:36)
+== ruff check
+All checks passed!
+```
+
+随后 `ruff format --check` 红在**本票未触及的** `app/specs/issue-135-research.md`（run
+[39093324729](https://github.com/whutlichao/alibot/actions/runs/39093324729)）：
+
+```text
+unformatted: File would be reformatted
+   --> app/specs/issue-135-research.md:36:50
+...
+1 file would be reformatted, 148 files already formatted
+```
+
+**这是 main 上的既存失败，不是本票 diff 引入的**：
+
+```sh
+$ cd /Users/apple/orca/alibot && .venv/bin/python -m ruff format --check app/specs/issue-135-research.md
+1 file would be reformatted
+# main 自己的 CI run 39093251823（head 71d853d）在同一文件、同一行失败
+```
+
+该文件在本票 base `de3acb5` 上不存在（由后续 main 提交引入），因此本地全量门禁在本票 diff 上是全绿；
+CI 的合并态（PR head + 当前 main）额外载入了这枚既存失败。按 ownership，本票不改别票文件，也不把
+`ruff format` 的整文件重排塞进本 PR。
 
 ---
 
@@ -233,7 +265,8 @@ exit=0
 | 代码提交 | `a15d32d` |
 | 文档提交 | `82f531c`（本文件 + PR 正文）；PR 号回填的后续提交 |
 | 远端分支 | `origin/studio-static-cache` |
-| PR | [#165](https://github.com/whutlichao/alibot/pull/165) |
+| PR | [#165](https://github.com/whutlichao/alibot/pull/165)（mergeable；CI 红项见 §6.1，属 main 既存失败） |
+| PR head | `a6ed4e3`（PR 号回填提交；本文件后续 docs 提交会推进 head） |
 | PR body 路径 | `app/specs/fix-studio-static-cache-pr-body.md` |
 
 无关联 GitHub issue，因此 PR 正文不含 `Closes #`。
