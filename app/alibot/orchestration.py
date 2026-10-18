@@ -1029,12 +1029,18 @@ class WakeOrchestrator:
             for member in self._db.list_target_agent_members(str(team["channel_id"]))
             if str(member["id"]) != str(agent["id"]) and self.availability(member).ok
         )
+
+        def publish(event: dict[str, Any]) -> None:
+            self._events.publish(target_id, event)
+
         return TeamRoundContext(
             target_id=target_id,
             leader_id=str(agent["id"]),
             members=members,
             task_id=team["task_id"],
             budget=self._db,
+            # team_assignment 是 live-only（ADR-0020）：分派开始/收口都经公共入口发到该 target。
+            publish=publish,
         )
 
     def _run_seam(

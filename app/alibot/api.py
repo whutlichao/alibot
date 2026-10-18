@@ -28,6 +28,7 @@
 - ``POST /api/channels/{id}/tasks``           在频道下新建任务与独立线程
 - ``GET/POST /api/tasks/{id}/messages``       读取 / 追加任务线程消息
 - ``GET  /api/tasks/{id}/events``             任务线程事件流（SSE，``after_seq`` 补拉）
+- ``GET  /api/targets/{id}/team-runs``        team 运行记录与分派快照（倒序分页、可按 task 过滤）
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
@@ -770,6 +771,21 @@ def create_app(
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str) -> dict[str, Any]:
         return service.task(task_id)
+
+    @app.get("/api/targets/{target_id}/team-runs")
+    def list_team_runs(
+        target_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        task_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """运行面板的快照兜底：该 target 的 team 运行（倒序）与分派记录。
+
+        ``target_id`` 可以是频道，也可以是任务线程的 target。``task_id`` 只做**命中过滤**
+        （未知 task 与空页同形）；``has_more`` 由多取一条判定，调用方按 ``offset + limit``
+        继续分页。``agent_event`` / ``team_assignment`` 是 live-only，断线后只能靠这份读面恢复。
+        """
+        return service.team_runs(target_id, limit=limit, offset=offset, task_id=task_id)
 
     @app.patch("/api/tasks/{task_id}/status")
     def update_task_status(task_id: str, payload: TaskStatusChange) -> dict[str, Any]:

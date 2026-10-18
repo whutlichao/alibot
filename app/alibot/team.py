@@ -18,11 +18,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+import logging
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from .agent_seam import member_internal_name
+from .events import team_assignment as team_assignment_event
 
 __all__ = [
     "TEAM_SCOPE",
@@ -32,6 +34,8 @@ __all__ = [
     "member_internal_name",
     "team_pipeline_class",
 ]
+
+_log = logging.getLogger(__name__)
 
 # team 模式覆盖该频道的 **channel 型 target 与全部 task target**（D23=B）。
 # 它是一份固定读数，不是可写配置：PATCH 不接受它。
@@ -55,6 +59,10 @@ class TeamRoundContext:
     #: 预算正本（生产是 :class:`alibot.db.Database`）：``try_consume_jump`` 与
     #: ``create/finish_team_assignment`` 的唯一落点。适配层只当它是窄接口，不 import 库。
     budget: Any = None
+    #: 分派运行事件的发布口（生产 = ``EventBus.publish`` 的 target 绑定）。``None`` 时不发 SSE，
+    #: 只写库——脚本化替身与既有装配用例因此不需要事件总线。事件是观察面，回调失败不能
+    #: 改写这一轮的结论（与 ``agent_event`` 的 emit 同一条纪律）。
+    publish: Callable[[dict[str, Any]], None] | None = None
 
     @property
     def name_to_member(self) -> dict[str, str]:
@@ -101,6 +109,7 @@ def team_pipeline_class() -> Any:
                 task_id: str | None = None,
                 team_run_id: str | None = None,
                 budget: Any = None,
+                publish: Callable[[dict[str, Any]], None] | None = None,
                 **kwargs: Any,
             ) -> None:
                 super().__init__(**kwargs)
@@ -109,6 +118,8 @@ def team_pipeline_class() -> Any:
                 self.team_run_id = team_run_id
                 # 预算正本由装配点注入（生产 = ``Database``）；T2 在成员运行前逐条裁决。
                 self.budget = budget
+                # 分派运行事件的发布口（#144）：``None`` 时只写库、不发 SSE。
+                self.publish = publish
                 # 公开给 T2/T3 的映射：派生名 → member id。事件归属与分派记录都读它。
                 self.name_to_member = dict(name_to_member)
                 self._name_to_member = self.name_to_member
@@ -116,6 +127,10 @@ def team_pipeline_class() -> Any:
                 # 同一轮里 call.id → 已落库的分派记录。HITL 恢复会把同一个 call 再送进来，
                 # 这张表保证**不重复扣跳**、也不重复写运行记录。
                 self._assignments: dict[str, dict[str, Any]] = {}
+                # 每个成员被授权的调用序号（0 起）：成员按调用顺序串行运行，因此
+                # ``ReplyStart`` 的到达顺序与该成员的调用顺序一一对应（#144 的 reply_id 归属）。
+                self._member_calls: dict[str, int] = {}
+                self._member_replies: dict[str, list[str]] = {}
 
             def member_of(self, tool_call: Any) -> str:
                 """把一条 ``TeamAssign`` 调用的成员名解析成 member id（不猜）。"""
@@ -214,6 +229,10 @@ def team_pipeline_class() -> Any:
             ) -> dict[str, Any]:
                 if self.team_run_id is None:
                     raise RuntimeError("team_run_id is required to record a team assignment")
+                member_seq = -1
+                if decision["ok"]:
+                    member_seq = self._member_calls.get(member_id, 0)
+                    self._member_calls[member_id] = member_seq + 1
                 row = self.budget.create_team_assignment(
                     team_run_id=self.team_run_id,
                     target_id=self.target_id,
@@ -225,7 +244,54 @@ def team_pipeline_class() -> Any:
                     state="started" if decision["ok"] else "budget-exhausted",
                     jump_consumed=1 if decision["ok"] else 0,
                 )
-                return {"id": str(row["id"]), "jump_consumed": int(row["jump_consumed"])}
+                record = {
+                    "id": str(row["id"]),
+                    "jump_consumed": int(row["jump_consumed"]),
+                    "member_id": member_id,
+                    "member_seq": member_seq,
+                    "state": str(row["state"]),
+                }
+                self._publish_assignment(record)
+                return record
+
+            def note_member_reply(self, member_id: str, reply_id: str) -> None:
+                """记录一次 ``ReplyStart`` 的回复 id（由适配层在消费事件时调用）。
+
+                成员在同一轮里的多次分派是**串行**的（``TeamPipeline`` 对同一成员的调用按
+                调用顺序等待完成），因此每个成员收到的 ``reply_id`` 顺序与它的调用顺序一致；
+                收口时按 ``member_seq`` 取回，把 SSE 的 ``team_assignment.reply_id`` 指到
+                真正跑那条分派的回复。
+                """
+                if not reply_id:
+                    return
+                replies = self._member_replies.setdefault(member_id, [])
+                if reply_id not in replies:
+                    replies.append(reply_id)
+
+            def _reply_id_for(self, record: Mapping[str, Any]) -> str:
+                replies = self._member_replies.get(str(record["member_id"]), [])
+                seq = int(record.get("member_seq", -1))
+                if 0 <= seq < len(replies):
+                    return replies[seq]
+                return ""
+
+            def _publish_assignment(self, record: Mapping[str, Any]) -> None:
+                """发布一条 ``team_assignment``（live-only；发布失败不改变运行结果）。"""
+                if self.publish is None or self.team_run_id is None:
+                    return
+                try:
+                    self.publish(
+                        team_assignment_event(
+                            team_run_id=self.team_run_id,
+                            assignment_id=str(record["id"]),
+                            member_id=str(record["member_id"]),
+                            reply_id=self._reply_id_for(record),
+                            state=str(record["state"]),
+                            task_id=self.task_id,
+                        )
+                    )
+                except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
+                    _log.debug("team assignment event emit failed", exc_info=True)
 
             @staticmethod
             def _budget_exhausted_result(tool_call: Any) -> Any:
@@ -269,6 +335,8 @@ def team_pipeline_class() -> Any:
                         reply_excerpt=excerpt,
                         error=error,
                     )
+                    record["state"] = state
+                    self._publish_assignment(record)
 
             @staticmethod
             def _state_for(result: Any, states: Any) -> str:
@@ -303,6 +371,7 @@ def build_team_pipeline(
     task_id: str | None = None,
     team_run_id: str | None = None,
     budget: Any = None,
+    publish: Callable[[dict[str, Any]], None] | None = None,
 ) -> Any:
     """把**这一轮**的队长与成员装配成 ``BudgetedTeamPipeline``（D11）。
 
@@ -328,5 +397,6 @@ def build_team_pipeline(
         task_id=task_id,
         team_run_id=team_run_id,
         budget=budget,
+        publish=publish,
         name_to_member=name_to_member,
     )
