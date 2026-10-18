@@ -251,6 +251,11 @@ class WorkspaceService:
             "messages": self._db.list_task_messages(task_id, after_seq=after_seq),
         }
 
+    def task_round_outcomes(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        """任务 target 的轮次结果（重连补拉用；与频道同一份只读事实，作用域换成 task）。"""
+        task = self._db.get_task(task_id, self._member_id)
+        return self._db.list_round_outcomes(task["target_id"], after_seq=after_seq)
+
     def task_members(self, task_id: str) -> list[dict[str, Any]]:
         task = self._db.get_task(task_id, self._member_id)
         return self._db.list_target_members(task["target_id"])

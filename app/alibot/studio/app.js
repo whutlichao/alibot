@@ -216,6 +216,10 @@ const state = {
   statuses: {},
   streams: new Map(),
   seenSeqs: new Map(),
+  // live-only 运行事件（ADR-0020 / 规格 §4.5）：按 **target_id** 归属，只活在本会话内存里。
+  // 它们不是消息正本：不进 `messages` / 未读 / 搜索 / seq 游标。运行面板（#155）从这里取；
+  // 本层只做「消费 + 有界保留 + 未知 type 忽略」。
+  liveEvents: new Map(),
   typing: {},
   // 工作区设置（**语言偏好** / **消息密度** / **主题**）：正本是后端 `GET /api/settings`，
   // 前端只镜像它；切换时写回后端，不落浏览器存储。
@@ -1865,19 +1869,46 @@ function connectTaskStream(taskId, cursor) {
     if (state.taskStream !== entry) return;
     entry.timer = setTimeout(() => connectTaskStream(taskId, taskMaxSeq()), 250);
   });
-  source.addEventListener('message', (event) => {
-    let payload;
-    try { payload = JSON.parse(event.data); } catch { return; }
-    if (payload.message && state.activeTaskId === taskId) {
-      absorbTaskMessage(payload.message);
-      refreshTaskDetails(taskId);
-    }
+  ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {
+    source.addEventListener(type, (event) => handleTaskStreamEvent(taskId, event, type));
   });
   source.onerror = () => {
     source.close();
     if (state.taskStream !== entry) return;
     entry.timer = setTimeout(() => connectTaskStream(taskId, taskMaxSeq()), 1500);
   };
+}
+
+/* 任务线程的帧消费：message 仍进线程消息流（按 seq 去重），live-only 运行事件按 target 记录，
+   typing / member_status / round_outcome 照既有语义处理。未知 type 忽略。 */
+function handleTaskStreamEvent(taskId, event, type) {
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (type === 'message') {
+    if (payload.message && state.activeTaskId === taskId) {
+      absorbTaskMessage(payload.message);
+      refreshTaskDetails(taskId);
+    }
+    return;
+  }
+  if (isLiveEventType(type)) {
+    const targetId = payload.target_id
+      || (state.activeTask && state.activeTask.target_id)
+      || taskId;
+    recordLiveEvent(targetId, type, payload);
+    return;
+  }
+  const targetId = payload.target_id
+    || (state.activeTask && state.activeTask.target_id)
+    || taskId;
+  if (type === 'typing') onStreamTyping(targetId, payload);
+  else if (type === 'member_status') onStreamStatus(targetId, payload);
+  else if (type === 'round_outcome') onStreamOutcome(targetId, payload);
+  // 未知 type：忽略（不报错、不推进任何游标）。
 }
 
 function closeTaskStream() {
@@ -2206,6 +2237,38 @@ async function deliver(pending) {
 */
 const STREAM_RETRY_MS = 1500;
 
+/* live-only 运行事件（规格 §4.5 / ADR-0020）：`agent_event` / `team_assignment` / `plan_update` /
+   `sop_event` / `approval_*`。它们没有可补拉的 seq，因此：
+   - **不**写 `seenSeqs`（那份集合同时是重连游标的上界）；
+   - **不**进消息流 / 未读 / 搜索；
+   - 由 `recordLiveEvent` 按 `target_id` 有界保留，运行面板（#155）从这里取；
+   - 未知 `type` 一律忽略：后端词表以后可能变大，旧前端不能因此报错或推进游标。 */
+const LIVE_EVENT_TYPES = [
+  'agent_event',
+  'team_assignment',
+  'plan_update',
+  'sop_event',
+  'approval_required',
+  'approval_resolved',
+];
+const LIVE_EVENTS_LIMIT = 256;
+
+function isLiveEventType(type) {
+  return LIVE_EVENT_TYPES.indexOf(type) !== -1;
+}
+
+function recordLiveEvent(targetId, type, payload) {
+  if (!isLiveEventType(type)) return null;
+  const key = targetId || payload.target_id;
+  if (!key) return null;
+  const events = state.liveEvents.get(key) || [];
+  events.push(payload);
+  // 有界保留：live-only 事件不会补拉，保留旧事件只为本次会话的运行面板。
+  if (events.length > LIVE_EVENTS_LIMIT) events.splice(0, events.length - LIVE_EVENTS_LIMIT);
+  state.liveEvents.set(key, events);
+  return payload;
+}
+
 // 是否因为后端不可达而断开（决定重连成功后要不要做一次全量重取）。
 let wasOffline = false;
 
@@ -2278,7 +2341,7 @@ function connectStream(targetId, entry) {
     if (state.streams.get(targetId) !== entry) return; // 已被换掉（频道删除等）
     entry.timer = setTimeout(() => connectStream(targetId, entry), STREAM_RETRY_MS);
   };
-  ['message', 'member_status', 'typing', 'round_outcome'].forEach((type) => {
+  ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {
     source.addEventListener(type, (event) => handleStreamEvent(targetId, event, type));
   });
 }
@@ -2290,12 +2353,21 @@ function handleStreamEvent(targetId, event, type) {
   } catch {
     return; // 解不开的帧直接丢弃：它不可能是后端发出的
   }
-  const seq = Number(payload.seq) || 0;
-  if (seq && type === 'message') {
+  // live-only 运行事件：按 target 归属记录，绝不写消息流 / 游标。
+  if (isLiveEventType(type)) {
+    recordLiveEvent(payload.target_id || targetId, type, payload);
+    return;
+  }
+  // 未知 type（词表以后可能变大）：忽略且不报错，也**不**把它记进 `seenSeqs`——
+  // 那份集合同时决定重连游标，未知事件没有可补拉的正本。
+  if (type !== 'message' && type !== 'member_status' && type !== 'typing' && type !== 'round_outcome') return;
+  if (type === 'message') {
+    if (!payload.message) return;
     // 消息的去重正本在 absorbMessage 里（按 seq 认一条消息），这里不另做一套。
     onStreamMessage(targetId, payload);
     return;
   }
+  const seq = Number(payload.seq) || 0;
   if (seq) seenSeqsFor(targetId).add(seq);
   if (type === 'member_status') onStreamStatus(targetId, payload);
   else if (type === 'typing') onStreamTyping(targetId, payload);
