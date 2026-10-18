@@ -2393,6 +2393,298 @@ class Database:
             ),
         }
 
+    def permission_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """解析一轮的权限档与规则（频道级 + Agent 级原样返回，合并由 ``permissions`` 负责）。
+
+        与 :meth:`workspace_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
+        返回 ``None``。规则只读配置，不落消息、不唤醒。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                return None
+            channel = self._conn.execute(
+                "SELECT workspace_root, permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+            if channel is None:
+                return None
+            agent = self._conn.execute(
+                "SELECT permission_mode FROM agent_config WHERE member_id = ?",
+                (member_id,),
+            ).fetchone()
+            channel_rules = self._permission_rule_rows_locked("channel", channel_id)
+            agent_rules = self._permission_rule_rows_locked("agent", member_id)
+        return {
+            "mode": str(
+                (agent["permission_mode"] if agent is not None else None)
+                or channel["permission_mode"]
+                or "ask-writes"
+            ),
+            "root": str(channel["workspace_root"]) if channel["workspace_root"] else None,
+            "channel_rules": channel_rules,
+            "agent_rules": agent_rules,
+        }
+
+    def _channel_id_for_target_locked(self, target_id: str) -> str | None:
+        """target → 频道 id（channel 型同值；task 型经 ``task.channel_id``；DM 无频道）。"""
+        target = self._conn.execute("SELECT kind FROM target WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            return None
+        if target["kind"] == "channel":
+            return target_id
+        if target["kind"] == "task":
+            task = self._conn.execute(
+                "SELECT channel_id FROM task WHERE target_id = ?", (target_id,)
+            ).fetchone()
+            return str(task["channel_id"]) if task is not None else None
+        return None
+
+    # ─── 权限规则（配置；不落消息、不唤醒） ───────────────────────────────
+    def _permission_rule_rows_locked(self, scope_kind: str, scope_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM permission_rule WHERE scope_kind = ? AND scope_id = ? ORDER BY created_at, id",
+            (scope_kind, scope_id),
+        ).fetchall()
+        return [self._permission_rule_payload(row) for row in rows]
+
+    @staticmethod
+    def _permission_rule_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "tool_name": str(row["tool_name"]),
+            "pattern": str(row["pattern"]),
+            "behavior": str(row["behavior"]),
+            "created_at": str(row["created_at"]),
+        }
+
+    def list_permission_rules(
+        self, scope_kind: str | None = None, scope_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """按 scope 过滤的规则列表；不给 scope 时返回全部（只读）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_kind is not None:
+            clauses.append("scope_kind = ?")
+            params.append(scope_kind)
+        if scope_id is not None:
+            clauses.append("scope_id = ?")
+            params.append(scope_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM permission_rule{where} ORDER BY created_at, id", params
+            ).fetchall()
+        return [self._permission_rule_payload(row) for row in rows]
+
+    def create_permission_rule(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        tool_name: str,
+        pattern: str = "",
+        behavior: str,
+    ) -> dict[str, Any]:
+        """写一条规则；同一 ``(scope, tool_name, pattern)`` 视为**覆盖**（先删后插）。
+
+        规则是配置：不落消息、不唤醒、不消耗预算。行为只接受 ``allow`` / ``deny`` / ``ask``。
+        """
+        clean_tool = str(tool_name or "").strip()
+        clean_pattern = str(pattern or "")
+        clean_behavior = str(behavior or "").strip()
+        if scope_kind not in ("channel", "agent"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.permission_rule_scope_invalid"),
+            )
+        if not clean_tool:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.permission_rule_tool_empty"),
+            )
+        if clean_behavior not in ("allow", "deny", "ask"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.permission_rule_behavior_invalid"),
+            )
+        with self._lock:
+            if scope_kind == "channel":
+                exists = self._conn.execute("SELECT 1 FROM channel WHERE id = ?", (scope_id,)).fetchone()
+            else:
+                exists = self._conn.execute(
+                    "SELECT 1 FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                    (scope_id,),
+                ).fetchone()
+            if exists is None:
+                raise NotFound(self._render_copy("error.permission_rule_scope_unknown", scope_id=scope_id))
+            self._conn.execute(
+                "DELETE FROM permission_rule WHERE scope_kind = ? AND scope_id = ? "
+                "AND tool_name = ? AND pattern = ?",
+                (scope_kind, scope_id, clean_tool, clean_pattern),
+            )
+            rule_id = new_id("prm")
+            self._conn.execute(
+                "INSERT INTO permission_rule(id, scope_kind, scope_id, tool_name, pattern, "
+                "behavior, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rule_id,
+                    scope_kind,
+                    scope_id,
+                    clean_tool,
+                    clean_pattern,
+                    clean_behavior,
+                    utc_now(),
+                ),
+            )
+            row = self._conn.execute("SELECT * FROM permission_rule WHERE id = ?", (rule_id,)).fetchone()
+        return self._permission_rule_payload(row)
+
+    def delete_permission_rule(self, rule_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM permission_rule WHERE id = ?", (rule_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.permission_rule_not_found", rule_id=rule_id))
+            self._conn.execute("DELETE FROM permission_rule WHERE id = ?", (rule_id,))
+        return self._permission_rule_payload(row)
+
+    # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
+    @staticmethod
+    def _approval_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "reply_id": str(row["reply_id"]),
+            "target_id": str(row["target_id"]),
+            "member_id": str(row["member_id"]),
+            "team_run_id": str(row["team_run_id"]) if row["team_run_id"] else None,
+            "tool_calls": json.loads(row["tool_calls"] or "[]"),
+            "state": str(row["state"]),
+            "decisions": json.loads(row["decisions"] or "[]"),
+            "requested_at": str(row["requested_at"]),
+            "resolved_at": str(row["resolved_at"]) if row["resolved_at"] else None,
+        }
+
+    def get_approval_request(self, reply_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+        return self._approval_payload(row) if row is not None else None
+
+    def list_approval_requests(
+        self, target_id: str | None = None, state: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if target_id is not None:
+            clauses.append("target_id = ?")
+            params.append(target_id)
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM approval_request{where} ORDER BY requested_at DESC",
+                params,
+            ).fetchall()
+        return [self._approval_payload(row) for row in rows]
+
+    def create_approval_request(
+        self,
+        *,
+        reply_id: str,
+        target_id: str,
+        member_id: str,
+        tool_calls: list[dict[str, Any]],
+        team_run_id: str | None = None,
+        requested_at: str | None = None,
+    ) -> dict[str, Any]:
+        """插入一条 pending；同一个 ``reply_id`` 已存在时原样返回（幂等）。"""
+        now = requested_at or utc_now()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+            if row is not None:
+                return self._approval_payload(row)
+            self._conn.execute(
+                "INSERT INTO approval_request(reply_id, target_id, member_id, team_run_id, "
+                "tool_calls, state, decisions, requested_at, resolved_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', '[]', ?, NULL)",
+                (
+                    reply_id,
+                    target_id,
+                    member_id,
+                    team_run_id,
+                    json.dumps(tool_calls, ensure_ascii=False),
+                    now,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+        return self._approval_payload(row)
+
+    def update_approval_request(
+        self,
+        reply_id: str,
+        *,
+        tool_calls: list[dict[str, Any]] | None = None,
+        decisions: list[dict[str, Any]] | None = None,
+        state: str | None = None,
+        resolved_at: str | None = None,
+    ) -> dict[str, Any]:
+        """更新审批记录的可变字段（工具调用合并、决策、终态与解决时间）。"""
+        fields: list[str] = []
+        params: list[Any] = []
+        if tool_calls is not None:
+            fields.append("tool_calls = ?")
+            params.append(json.dumps(tool_calls, ensure_ascii=False))
+        if decisions is not None:
+            fields.append("decisions = ?")
+            params.append(json.dumps(decisions, ensure_ascii=False))
+        if state is not None:
+            if state not in ("pending", "approved", "denied", "expired"):
+                raise ValueError(f"unsupported approval state: {state!r}")
+            fields.append("state = ?")
+            params.append(state)
+        if resolved_at is not None:
+            fields.append("resolved_at = ?")
+            params.append(resolved_at)
+        if not fields:
+            record = self.get_approval_request(reply_id)
+            if record is None:
+                raise NotFound(self._render_copy("error.approval_not_found", reply_id=reply_id))
+            return record
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE approval_request SET {', '.join(fields)} WHERE reply_id = ?",
+                (*params, reply_id),
+            )
+            if cursor.rowcount == 0:
+                raise NotFound(self._render_copy("error.approval_not_found", reply_id=reply_id))
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+        return self._approval_payload(row)
+
+    def expire_pending_approvals(self, *, resolved_at: str | None = None) -> list[str]:
+        """启动时把上个进程残留的 pending 全部标 expired（D19）；返回被改的 reply_id。"""
+        now = resolved_at or utc_now()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT reply_id FROM approval_request WHERE state = 'pending'"
+            ).fetchall()
+            reply_ids = [str(row["reply_id"]) for row in rows]
+            if reply_ids:
+                self._conn.execute(
+                    "UPDATE approval_request SET state = 'expired', resolved_at = ? WHERE state = 'pending'",
+                    (now,),
+                )
+        return reply_ids
+
     def create_dm(self, agent_id: str, owner_id: str = OWNER_ID) -> tuple[dict[str, Any], bool]:
         """创建或复用 owner 与单一 Agent 的两方私信，返回 (DM, 是否新建)。"""
         clean_agent_id = (agent_id or "").strip()

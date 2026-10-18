@@ -33,6 +33,9 @@
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
 - ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
 - ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）
+- ``GET  /api/approvals``                      待审批 / 历史审批快照（供运行面板恢复）
+- ``POST /api/approvals/{reply_id}``           提交决策（只接受 pending；幂等；部分决策）
+- ``GET/POST/DELETE /api/permission-rules``    权限规则的读写（配置动作，不落消息、不唤醒）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -51,7 +54,7 @@ import asyncio
 import os
 import queue
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -64,6 +67,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.background import BackgroundTask
 
 from .agent_seam import AgentScopeAgentSeam
+from .approval import APPROVAL_STATES, DEFAULT_APPROVAL_TIMEOUT_SECONDS, ApprovalBroker
 from .db import (
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
@@ -371,6 +375,34 @@ class ReminderCreate(BaseModel):
     channel_id: str | None = None
 
 
+class PermissionRuleCreate(BaseModel):
+    """写一条权限规则（配置动作；不落消息、不唤醒、不消耗预算）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str = ""
+    scope_id: str = ""
+    tool_name: str = ""
+    pattern: str = ""
+    behavior: str = ""
+
+
+class ApprovalDecision(BaseModel):
+    """一条工具调用的决策；``rules`` 是可选的后续规则建议（落成 Agent 级规则）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_call_id: str = ""
+    confirmed: bool = False
+    rules: list[PermissionRuleCreate] = Field(default_factory=list)
+
+
+class ApprovalSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[ApprovalDecision] = Field(default_factory=list)
+
+
 def create_app(
     data_dir: Path | str | None = None,
     db: Database | None = None,
@@ -378,6 +410,8 @@ def create_app(
     scheduler: Any | None = None,
     seam: Any | None = None,
     reminder_delivery: ReminderDeliveryDriverFactory | None = None,
+    approval_timeout_seconds: float | None = None,
+    seam_factory: Callable[[Any], Any] | None = None,
 ) -> FastAPI:
     """组装后端。
 
@@ -389,24 +423,45 @@ def create_app(
     ``reminder_delivery`` 收的是一个**工厂**（``ReminderDeliverer -> 驱动器``）而不是实例：到期投递器
     需要本函数刚打开的库句柄，而驱动器需要投递器——工厂把这条依赖顺序收在一处。它与 ``scheduler``
     同处一个装配点，**不开第二个**（C8）。
+
+    ``seam_factory`` 是审批测试的注入口：它接收本函数刚建好的 ``ApprovalBroker``，返回成员面实现；
+    ``approval_timeout_seconds`` 只用于把默认 10 分钟的审批等待缩短到测试可观察的尺度。
     """
     database = db if db is not None else open_database(data_dir)
     events = EventBus()
+    # 审批（#149）：进程内 broker 是等待/唤醒的唯一落点；启动时把上个进程残留的 pending 标
+    # expired（D19：跨重启恢复不在首版）。默认等待 10 分钟；测试可注入更短的上界。
+    approvals = ApprovalBroker(
+        database,
+        events,
+        timeout_seconds=(
+            approval_timeout_seconds
+            if approval_timeout_seconds is not None
+            else DEFAULT_APPROVAL_TIMEOUT_SECONDS
+        ),
+        locale_of=lambda: locale_of(database),
+    )
+    approvals.expire_pending_at_startup()
     # 优雅关停的信号：事件流是**永不自然结束**的响应，如果不主动收，进程会在 graceful shutdown
     # 里等那两个连接直到超时（表现为「进程还在、监听套接字已没、新请求全部被拒」）。
     shutting_down = threading.Event()
-    orchestrator = WakeOrchestrator(
-        database,
-        # 真实适配器按**语言偏好**渲染它自己产出的文案（轮次 reason / 凭证原因）：取值方式由
-        # 装配点注入，适配层自己不依赖库（ADR-0009 第二层）。
-        seam
-        if seam is not None
-        else AgentScopeAgentSeam(
+    if seam_factory is not None:
+        member_seam: Any = seam_factory(approvals)
+    elif seam is not None:
+        member_seam = seam
+    else:
+        member_seam = AgentScopeAgentSeam(
             locale_of=lambda: locale_of(database),
             # workspace 装配钩子（#148）：频道显式配置 ``workspace_root`` 后这一轮才挂受限文件工具；
             # 未配置时读路径返回 None，行为逐字不变。
             workspace_of=database.workspace_settings_for_target,
-        ),
+            # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
+            permission_of=database.permission_settings_for_target,
+            approvals=approvals,
+        )
+    orchestrator = WakeOrchestrator(
+        database,
+        member_seam,
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
     )
@@ -445,6 +500,7 @@ def create_app(
     app.state.service = service
     app.state.events = events
     app.state.orchestrator = orchestrator
+    app.state.approvals = approvals
     app.state.reminder_delivery = driver
     app.state.data_dir = database.data_dir
 
@@ -605,6 +661,76 @@ def create_app(
         """
         reminder = service.delete_reminder(reminder_id)
         return {"reminder": reminder, "reminders": service.reminders()}
+
+    # ─── 审批（HITL；人类面，Agent 不经 HTTP） ─────────────────────────────
+    @app.get("/api/approvals")
+    def list_approvals(
+        target_id: str | None = Query(default=None),
+        state: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """待审批 / 历史审批列表（供运行面板恢复；``state=pending`` 是最常用读数）。"""
+        if state is not None and state not in APPROVAL_STATES:
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.approval_state_invalid", states=", ".join(APPROVAL_STATES)),
+            )
+        if target_id is not None:
+            database.get_target(target_id)  # 不存在的 target ⇒ 404
+        return {"approvals": database.list_approval_requests(target_id=target_id, state=state)}
+
+    @app.post("/api/approvals/{reply_id}")
+    def submit_approval(reply_id: str, payload: ApprovalSubmit) -> dict[str, Any]:
+        """提交一批决策：只接受 pending；同批重试幂等；相反结论 409。
+
+        决策里的 ``rules`` 会落成该 Agent 的权限规则（配置动作，不落消息、不唤醒）。
+        决策回送由 broker 按 ``reply_id`` 唤醒仍在等待的那一轮；已完成 / 已过期的轮次
+        不会被重新打开。
+        """
+        record = approvals.submit(
+            reply_id,
+            [
+                {
+                    "tool_call_id": decision.tool_call_id,
+                    "confirmed": decision.confirmed,
+                    "rules": [
+                        {
+                            "tool_name": rule.tool_name,
+                            "pattern": rule.pattern,
+                            "behavior": rule.behavior,
+                        }
+                        for rule in decision.rules
+                    ],
+                }
+                for decision in payload.decisions
+            ],
+        )
+        return {"approval": record}
+
+    # ─── 权限规则（配置；不落消息、不唤醒、不消耗预算） ────────────────────
+    @app.get("/api/permission-rules")
+    def list_permission_rules(
+        scope_kind: str | None = Query(default=None),
+        scope_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        if scope_kind is not None and scope_kind not in ("channel", "agent"):
+            raise DomainError("validation_failed", _render_copy("error.permission_rule_scope_invalid"))
+        return {"permission_rules": database.list_permission_rules(scope_kind=scope_kind, scope_id=scope_id)}
+
+    @app.post("/api/permission-rules", status_code=201)
+    def create_permission_rule(payload: PermissionRuleCreate) -> dict[str, Any]:
+        rule = database.create_permission_rule(
+            scope_kind=payload.scope_kind,
+            scope_id=payload.scope_id,
+            tool_name=payload.tool_name,
+            pattern=payload.pattern,
+            behavior=payload.behavior,
+        )
+        return {"permission_rule": rule}
+
+    @app.delete("/api/permission-rules/{rule_id}")
+    def delete_permission_rule(rule_id: str) -> dict[str, Any]:
+        rule = database.delete_permission_rule(rule_id)
+        return {"permission_rule": rule}
 
     @app.get("/api/search")
     def search(
