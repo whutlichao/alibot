@@ -237,6 +237,13 @@ const state = {
     // 的帧：快照已经包含更早的变化，重连后再把旧帧叠上去会把状态拉回去。
     overlayMarker: null,
   },
+  // 审批卡（#153 / 规格 §4.6 第 4 条 / ADR-0021 §四）：按 target 缓存
+  // `GET /api/approvals?state=pending` 的镜像，再叠加本次会话的 live `approval_*` 帧。
+  // `approvalInFlight` 是提交中的幂等闸门（按钮 disabled 的同一来源）；
+  // `approvalErrors` 只存本次会话的提交错误，不写任何浏览器存储。
+  approvals: new Map(),
+  approvalInFlight: new Set(),
+  approvalErrors: new Map(),
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -1075,6 +1082,8 @@ async function loadWorkspace(options) {
     await refreshChannelMembers();
     await refreshStatuses();
     syncStreams();
+    // 审批卡的恢复与消息流同一拍：打开视图先读 pending 快照（live 帧不补发）。
+    await loadApprovalsFor(state.activeChannelId);
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -1559,6 +1568,8 @@ function renderTaskThread() {
   // 最近一次变更用 graphic 档的点标出来（原型 `.is-now`；不是新色位）。
   const last = log.lastElementChild;
   if (last && last.tagName === 'LI') last.classList.add('is-now');
+  // 任务线程的审批卡按 task target 铺；频道那份不会串进来。
+  renderTaskApprovals();
 }
 
 /** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
@@ -1895,6 +1906,8 @@ async function openTask(taskId) {
     // 任务视图读取所属频道的**同一份**配置（#154 / 规格 §4.6）：team 频道下任务线程
     // 只唤醒队长，这条事实与频道设置页读的是同一个端点、同一份后端正本。
     await loadTaskChannelConfig(thread.task.channel_id);
+    // 任务线程有自己的 target：审批卡按 task target 恢复，不借用频道那份。
+    await loadApprovalsFor(thread.task.target_id);
     const index = state.tasks.findIndex((task) => task.id === taskId);
     if (index >= 0) state.tasks[index] = thread.task;
     else state.tasks.push(thread.task);
@@ -2636,6 +2649,428 @@ function refreshRunPanelFor(targetId) {
   loadRunPanelSnapshot();
 }
 
+/* ─── 审批卡（#153 / 规格 §4.6 第 4 条 / ADR-0021 §四）───────────────────
+   人类面的 HITL：卡片只呈现后端已经收窄的 `{id, name, input}`（不存 env / 凭证），
+   允许 / 拒绝走 `POST /api/approvals/{reply_id}`（pending-only、幂等、相反结论 409）。
+   恢复路径是 `GET /api/approvals?target_id=&state=pending`；live 帧只补「本次会话内的
+   变化」，断线不补发（ADR-0020），重连后按快照兜底。
+   倒计时只由 `requested_at + 600s` 推导——这是后端的等待上界，也是 displayed `expired`
+   的唯一判据。倒计时归零只改呈现（后端会在同一上界把记录标 expired）。 */
+
+const APPROVAL_TIMEOUT_SECONDS = 600;
+const APPROVAL_REDACTED = '••••';
+// 只用于「input 里可能出现的敏感键」：凭证、令牌、口令与 cookie 一律掩码。
+const APPROVAL_SENSITIVE_KEY =
+  /(?:pass(?:word|wd)?|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key|access[-_]?key|session[-_]?id)/i;
+
+const APPROVAL_STATE_KEYS = {
+  pending: 'approval.pending',
+  approved: 'approval.approved',
+  denied: 'approval.denied',
+  expired: 'approval.expired',
+};
+
+let approvalTicker = null;
+
+function approvalMapFor(targetId) {
+  let map = state.approvals.get(targetId);
+  if (!map) {
+    map = new Map();
+    state.approvals.set(targetId, map);
+  }
+  return map;
+}
+
+/** 某个 target 的审批记录：pending 在前，其余按请求时间倒序（本次会话内的显示顺序）。 */
+function approvalRecordsFor(targetId) {
+  const map = state.approvals.get(targetId);
+  if (!map) return [];
+  const rank = (record) => (approvalDisplayState(record) === 'pending' ? 0 : 1);
+  return Array.from(map.values()).sort(
+    (left, right) =>
+      rank(left) - rank(right) ||
+      String(right.requested_at || '').localeCompare(String(left.requested_at || '')),
+  );
+}
+
+/** 剩余秒数（向上取整）；`requested_at` 不可解析时返回 `null`（不伪造倒计时）。 */
+function approvalRemainingSeconds(record, now) {
+  const requested = Date.parse(record && record.requested_at);
+  if (!Number.isFinite(requested)) return null;
+  const at = now === undefined ? Date.now() : now;
+  return Math.max(0, Math.ceil((requested + APPROVAL_TIMEOUT_SECONDS * 1000 - at) / 1000));
+}
+
+/** 呈现态：后端的终态优先；仍 pending 但已越过 600s 上界时显示 expired。 */
+function approvalDisplayState(record) {
+  if (!record) return 'expired';
+  if (record.state && record.state !== 'pending') return String(record.state);
+  const remaining = approvalRemainingSeconds(record, Date.now());
+  if (remaining !== null && remaining <= 0) return 'expired';
+  return 'pending';
+}
+
+function approvalStateLabel(value) {
+  const key = APPROVAL_STATE_KEYS[value];
+  return key ? t(key) : String(value || t('approval.stateUnknown'));
+}
+
+function approvalClockText(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+}
+
+function approvalRemainingText(record, displayState) {
+  if (displayState !== 'pending') return '';
+  const remaining = approvalRemainingSeconds(record, Date.now());
+  return t('approval.remaining', { time: remaining === null ? '--:--' : approvalClockText(remaining) });
+}
+
+function approvalMemberRecord(memberId) {
+  const id = String(memberId || '');
+  const pools = [state.members, state.agents, ...Object.values(state.channelMembers || {})];
+  for (const pool of pools) {
+    const found = (pool || []).find((member) => member && String(member.id) === id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 递归掩码：敏感键的值一律替换为 `••••`；对象最多展开三层，避免把大载荷铺进 DOM。 */
+function approvalSanitizeValue(value, key, depth) {
+  if (key && APPROVAL_SENSITIVE_KEY.test(String(key))) return APPROVAL_REDACTED;
+  if (depth > 3) return '…';
+  if (Array.isArray(value)) {
+    return value.map((item) => approvalSanitizeValue(item, '', depth + 1));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach((name) => {
+      out[name] = approvalSanitizeValue(value[name], name, depth + 1);
+    });
+    return out;
+  }
+  if (typeof value === 'string' && value.length > 120) return value.slice(0, 117) + '…';
+  return value;
+}
+
+function approvalValueText(value) {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 参数摘要：只读 `input`，敏感键掩码；总长有界，不把整份文件内容铺开。 */
+function approvalInputSummary(input) {
+  if (input === null || input === undefined) return t('approval.noInput');
+  if (typeof input !== 'object') {
+    return approvalValueText(approvalSanitizeValue(input, '', 0));
+  }
+  const keys = Object.keys(input);
+  if (!keys.length) return t('approval.noInput');
+  const text = keys
+    .map((key) => key + '=' + approvalValueText(approvalSanitizeValue(input[key], key, 0)))
+    .join(' · ');
+  return text.length > 240 ? text.slice(0, 237) + '…' : text;
+}
+
+function approvalToolNode(call) {
+  const item = el('div', 'approval-tool');
+  item.appendChild(
+    el('div', 'approval-tool-name', String((call && call.name) || t('approval.unknownTool'))),
+  );
+  item.appendChild(
+    el('div', 'approval-tool-input', approvalInputSummary(call ? call.input : null)),
+  );
+  return item;
+}
+
+function approvalActionButton(targetId, replyId, action, inFlight) {
+  const allow = action === 'allow';
+  const button = el('button', 'btn btn-sm' + (allow ? ' btn-primary' : ''), t(allow ? 'approval.allow' : 'approval.deny'));
+  button.type = 'button';
+  button.disabled = inFlight || !state.online;
+  button.dataset.approvalAction = action;
+  button.dataset.approvalReply = replyId;
+  button.dataset.approvalTarget = String(targetId);
+  return button;
+}
+
+function approvalCardNode(targetId, record) {
+  const replyId = String(record.reply_id || '');
+  const displayState = approvalDisplayState(record);
+  const card = el('div', 'approval-card');
+  card.dataset.approvalId = replyId;
+  card.dataset.approvalTarget = String(targetId);
+  card.dataset.state = displayState;
+  card.setAttribute('role', 'group');
+  const toolNames = (record.tool_calls || [])
+    .map((call) => String((call && call.name) || ''))
+    .filter(Boolean)
+    .join(', ');
+  card.setAttribute('aria-label', t('approval.cardLabel', { tools: toolNames }));
+
+  const head = el('div', 'approval-head');
+  head.appendChild(el('span', 'approval-tag', t('approval.tag')));
+  const member = approvalMemberRecord(record.member_id);
+  const memberName = member ? member.display_name : String(record.member_id || '');
+  head.appendChild(avatarNode(memberName, member ? member.avatar_slot : 0, 'sm'));
+  head.appendChild(el('span', 'approval-member', memberName));
+  const statePill = el('span', 'approval-state', approvalStateLabel(displayState));
+  statePill.dataset.state = displayState;
+  head.appendChild(statePill);
+  const remaining = el('span', 'approval-remaining', approvalRemainingText(record, displayState));
+  const remainingSeconds = approvalRemainingSeconds(record, Date.now());
+  if (displayState === 'pending' && remainingSeconds !== null) {
+    remaining.dataset.urgent = remainingSeconds <= 60 ? '1' : '0';
+  }
+  head.appendChild(remaining);
+  card.appendChild(head);
+
+  const calls = Array.isArray(record.tool_calls) ? record.tool_calls : [];
+  if (calls.length) {
+    const tools = el('div', 'approval-tools');
+    calls.forEach((call) => tools.appendChild(approvalToolNode(call)));
+    card.appendChild(tools);
+  }
+
+  if (displayState === 'pending') {
+    const inFlight = state.approvalInFlight.has(replyId);
+    const actions = el('div', 'approval-actions');
+    actions.appendChild(approvalActionButton(targetId, replyId, 'allow', inFlight));
+    actions.appendChild(approvalActionButton(targetId, replyId, 'deny', inFlight));
+    card.appendChild(actions);
+    if (inFlight) card.appendChild(el('div', 'approval-note', t('approval.submitting')));
+  }
+
+  const error = state.approvalErrors.get(replyId);
+  if (error) {
+    card.appendChild(el('div', 'approval-error', t('approval.submitFailed', { reason: error })));
+  }
+  return card;
+}
+
+function renderChannelApprovals(records, targetId) {
+  const board = $('#approvalBoard');
+  if (!board) return;
+  const id = targetId === undefined ? state.activeChannelId : targetId;
+  const target = activeTarget();
+  const visible = Boolean(target && id && target.id === id);
+  const list = records || (visible ? approvalRecordsFor(id) : []);
+  board.hidden = !list.length;
+  if (!list.length) {
+    replaceChildren(board, []);
+    return;
+  }
+  const title = el('div', 'd-sec-title', t('approval.section'));
+  replaceChildren(board, [title, ...list.map((record) => approvalCardNode(id, record))]);
+}
+
+function renderTaskApprovals() {
+  const section = $('#ttApprovalSection');
+  const list = $('#ttApprovals');
+  if (!section || !list) return;
+  const task = state.activeTask;
+  const targetId = task && task.target_id;
+  const records = targetId ? approvalRecordsFor(targetId) : [];
+  section.hidden = !records.length;
+  replaceChildren(list, records.map((record) => approvalCardNode(targetId, record)));
+}
+
+function hasPendingApprovals() {
+  for (const map of state.approvals.values()) {
+    for (const record of map.values()) {
+      if (approvalDisplayState(record) === 'pending') return true;
+    }
+  }
+  return false;
+}
+
+/** 秒级刷新只改倒计时文本，不重建卡片：重建会让正在点的按钮被换掉（点击落空）。
+    只有呈现态变化（pending → expired）时才重铺那一面。 */
+function refreshApprovalCountdowns() {
+  const surfaces = ['#approvalBoard', '#ttApprovals'];
+  let needsRender = false;
+  surfaces.forEach((selector) => {
+    const root = $(selector);
+    if (!root) return;
+    root.querySelectorAll('.approval-card').forEach((card) => {
+      const targetId = card.dataset.approvalTarget;
+      const record = approvalMapFor(targetId).get(card.dataset.approvalId);
+      if (!record) {
+        needsRender = true;
+        return;
+      }
+      const displayState = approvalDisplayState(record);
+      if (displayState !== card.dataset.state) {
+        needsRender = true;
+        return;
+      }
+      const remaining = card.querySelector('.approval-remaining');
+      if (remaining) remaining.textContent = approvalRemainingText(record, displayState);
+    });
+  });
+  if (needsRender) {
+    renderChannelApprovals();
+    renderTaskApprovals();
+  }
+}
+
+/** 倒计时是一个「只在有 pending 时存在」的秒级刷新：归零那一刻换成 expired 并停表。 */
+function syncApprovalTicker() {
+  if (!hasPendingApprovals()) {
+    if (approvalTicker !== null && typeof clearInterval === 'function') clearInterval(approvalTicker);
+    approvalTicker = null;
+    return;
+  }
+  if (approvalTicker !== null || typeof setInterval !== 'function') return;
+  approvalTicker = setInterval(() => {
+    refreshApprovalCountdowns();
+    if (!hasPendingApprovals()) {
+      if (typeof clearInterval === 'function') clearInterval(approvalTicker);
+      approvalTicker = null;
+    }
+  }, 1000);
+}
+
+function renderApprovalSurfaces() {
+  renderChannelApprovals();
+  renderTaskApprovals();
+  syncApprovalTicker();
+}
+
+function upsertApproval(targetId, record) {
+  if (!targetId || !record || !record.reply_id) return;
+  const replyId = String(record.reply_id);
+  approvalMapFor(targetId).set(replyId, { ...record, target_id: record.target_id || targetId });
+  renderApprovalSurfaces();
+}
+
+/** live `approval_required`：同一个 reply_id 的新帧只更新待办调用，不重置 requested_at。 */
+function absorbApprovalRequired(targetId, payload) {
+  const replyId = String((payload && payload.reply_id) || '');
+  if (!targetId || !replyId) return;
+  const map = approvalMapFor(targetId);
+  const existing = map.get(replyId);
+  if (existing && approvalDisplayState(existing) !== 'pending') return; // 已收口，不重新打开
+  const record = {
+    reply_id: replyId,
+    target_id: targetId,
+    member_id: String((payload && payload.member_id) || (existing && existing.member_id) || ''),
+    tool_calls: Array.isArray(payload && payload.tool_calls)
+      ? payload.tool_calls
+      : (existing && existing.tool_calls) || [],
+    state: 'pending',
+    decisions: existing ? existing.decisions : [],
+    requested_at: existing && existing.requested_at ? existing.requested_at : new Date().toISOString(),
+    resolved_at: null,
+  };
+  map.set(replyId, record);
+  renderApprovalSurfaces();
+}
+
+/** live `approval_resolved`：只更新已经出现在本会话里的卡；没有卡就不伪造一条。 */
+function absorbApprovalResolved(targetId, payload) {
+  const replyId = String((payload && payload.reply_id) || '');
+  if (!targetId || !replyId) return;
+  const map = approvalMapFor(targetId);
+  const existing = map.get(replyId);
+  if (!existing) return;
+  map.set(replyId, {
+    ...existing,
+    state: String((payload && payload.state) || 'resolved'),
+    decisions: Array.isArray(payload && payload.decisions) ? payload.decisions : existing.decisions,
+    resolved_at: existing.resolved_at || new Date().toISOString(),
+  });
+  renderApprovalSurfaces();
+}
+
+/** 打开视图 / 重连后的恢复：只读 pending 快照；本次已知但快照里消失的 pending 视为已过期
+    （进程重启会把 pending 标 expired——D19）。fetch 失败不阻塞页面打开。 */
+async function loadApprovalsFor(targetId) {
+  if (!targetId) return;
+  const map = approvalMapFor(targetId);
+  const known = new Set(map.keys());
+  let payload;
+  try {
+    payload = await api('/api/approvals?target_id=' + encodeURIComponent(targetId) + '&state=pending');
+  } catch {
+    return;
+  }
+  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+  const seen = new Set();
+  records.forEach((record) => {
+    if (!record || !record.reply_id) return;
+    const replyId = String(record.reply_id);
+    seen.add(replyId);
+    map.set(replyId, { ...record, target_id: record.target_id || targetId });
+  });
+  known.forEach((replyId) => {
+    if (seen.has(replyId)) return;
+    const record = map.get(replyId);
+    if (record && approvalDisplayState(record) === 'pending') {
+      map.set(replyId, { ...record, state: 'expired', resolved_at: new Date().toISOString() });
+    }
+  });
+  renderApprovalSurfaces();
+}
+
+/** 提交失败（例如 409：另一处已决策 / 已过期）时按 target 重读真实状态，不猜。 */
+async function reconcileApproval(targetId, replyId) {
+  if (!targetId || !replyId) return;
+  try {
+    const payload = await api('/api/approvals?target_id=' + encodeURIComponent(targetId));
+    const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+    const found = records.find((record) => String(record.reply_id) === String(replyId));
+    const map = approvalMapFor(targetId);
+    if (found) {
+      map.set(String(replyId), { ...found, target_id: found.target_id || targetId });
+    } else {
+      const record = map.get(String(replyId));
+      if (record && approvalDisplayState(record) === 'pending') {
+        map.set(String(replyId), { ...record, state: 'expired', resolved_at: new Date().toISOString() });
+      }
+    }
+  } catch {
+    // 读不到就保留本地状态；错误行已经显示在卡片上。
+  }
+  renderApprovalSurfaces();
+}
+
+async function submitApproval(targetId, replyId, confirmed) {
+  const id = String(replyId || '');
+  if (!id || state.approvalInFlight.has(id)) return;
+  const record = approvalMapFor(targetId).get(id);
+  if (!record || approvalDisplayState(record) !== 'pending') return;
+  state.approvalInFlight.add(id);
+  state.approvalErrors.delete(id);
+  renderApprovalSurfaces();
+  try {
+    const decisions = (record.tool_calls || [])
+      .map((call) => ({
+        tool_call_id: String((call && call.id) || ''),
+        confirmed: Boolean(confirmed),
+      }))
+      .filter((decision) => decision.tool_call_id);
+    const payload = await api('/api/approvals/' + encodeURIComponent(id), {
+      method: 'POST',
+      body: { decisions },
+    });
+    if (payload && payload.approval) upsertApproval(targetId, payload.approval);
+  } catch (err) {
+    state.approvalErrors.set(id, err.message);
+    await reconcileApproval(targetId, id);
+  } finally {
+    state.approvalInFlight.delete(id);
+    renderApprovalSurfaces();
+  }
+}
+
 async function refreshTaskDetails(taskId) {
   try {
     const payload = await api(taskPath(taskId));
@@ -2984,6 +3419,9 @@ function recordLiveEvent(targetId, type, payload) {
   // SOP 没有「按 target 列 run」的读面：只有 live 帧见过 run id 之后，重连兜底才能
   // 逐个 `GET /api/sop-runs/{id}` 刷新。这里只记 id，不触发写路径。
   if (type === 'sop_event') noteRunPanelSopId(key, payload);
+  // 审批卡（#153）：live 帧是「本次会话内的变化」，快照兜底由 `loadApprovalsFor` 负责。
+  if (type === 'approval_required') absorbApprovalRequired(key, payload);
+  else if (type === 'approval_resolved') absorbApprovalResolved(key, payload);
   return payload;
 }
 
@@ -3045,7 +3483,11 @@ function connectStream(targetId, entry) {
     }
     // 运行面板的 live 事件不补拉（ADR-0020）：重连成功后按快照兜底，把断线期间
     // 的分派 / Plan / SOP 变化读回来。面板没开或不是这个 target 时是空操作。
-    if (recovered) refreshRunPanelFor(targetId);
+    if (recovered) {
+      refreshRunPanelFor(targetId);
+      // 审批同理：审批帧不补发，重连后按 pending 快照恢复；消失的 pending 显示 expired。
+      loadApprovalsFor(targetId);
+    }
   };
   source.onerror = () => {
     if (entry.rotating) return; // 我们自己关的：不是错误
@@ -5579,7 +6021,11 @@ function renderMessages() {
   const targetMode = state.mode === 'channel';
   $('#emptyNoChannel').hidden = !targetMode || Boolean(target);
   const messages = targetMode && target ? renderedMessages() : [];
-  $('#emptyNoMessage').hidden = !target || messages.length > 0;
+  // 审批卡不是消息：它不占 seq / 未读，也不进搜索；但「流里只有一张审批卡」时
+  // 不该同时留着「该频道还没有消息」的空态。
+  const approvalTargetId = state.activeChannelId;
+  const approvals = targetMode && target && approvalTargetId ? approvalRecordsFor(approvalTargetId) : [];
+  $('#emptyNoMessage').hidden = !target || messages.length > 0 || approvals.length > 0;
 
   const nodes = [];
   let lastDay = null;
@@ -5607,6 +6053,7 @@ function renderMessages() {
     }
   });
   replaceChildren($('#messageList'), nodes);
+  renderChannelApprovals(approvals, approvalTargetId);
   // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
   renderTabs();
 }
@@ -6829,6 +7276,7 @@ async function selectTarget(targetId) {
   try {
     await refreshMessages();
     await refreshOutcomes();
+    await loadApprovalsFor(targetId);
     if (target.kind !== 'dm') await refreshChannelMembers();
     state.online = true;
   } catch (err) {
@@ -7059,6 +7507,19 @@ function bindEvents() {
   $('#rpClose').addEventListener('click', closeRunPanel);
   $('#rpBody').addEventListener('click', (event) => {
     if (event.target.closest('[data-run-retry]')) loadRunPanelSnapshot();
+  });
+  // ── 审批卡（#153）：频道消息流与任务线程两个容器共用同一套动作委派 ──
+  // 卡片每次重铺，监听器挂在容器上；动作只认 pending（`submitApproval` 里还有一道闸门）。
+  ['#approvalBoard', '#ttApprovals'].forEach((selector) => {
+    $(selector).addEventListener('click', (event) => {
+      const action = event.target.closest('[data-approval-action]');
+      if (!action) return;
+      submitApproval(
+        action.dataset.approvalTarget,
+        action.dataset.approvalReply,
+        action.dataset.approvalAction === 'allow',
+      );
+    });
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。

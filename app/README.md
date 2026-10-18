@@ -247,8 +247,8 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 
 **只有 `message` 与 `round_outcome` 的 SSE 帧带 `id: <seq>`**；其余事件是 **live-only**，不发 `id` 行
 （ADR-0020）。否则浏览器会把 `Last-Event-ID` 推进到库里不存在的游标，重连补拉就会与消息游标混淆。
-新事件断线不补发，运行面板以 `GET /team-runs` / `GET /plan` / `GET /sop-runs/{id}` / `GET /approvals`
-的快照兜底；`after_seq` 补拉仍只覆盖消息与轮次结果。
+新事件断线不补发，运行面板以 `GET /team-runs` / `GET /plan` / `GET /sop-runs/{id}` 的快照兜底；
+审批卡以 `GET /api/approvals?target_id=&state=pending` 兜底；`after_seq` 补拉仍只覆盖消息与轮次结果。
 
 单条连接在 `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
 `event: rotate` 帧：前端据此**区分「例行轮换」与「后端不可达」**，不会因为轮换而误报掉线，

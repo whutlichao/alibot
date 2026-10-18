@@ -312,6 +312,23 @@ const I18N_CATALOGS = {
     'runPanel.state.awaiting': '等待确认',
     'runPanel.state.unknown': '未知',
 
+    /* ─── 审批卡（#153 / 规格 §4.6 第 4 条）：HITL 的人类面动作 ─────────── */
+    'approval.section': '审批',
+    'approval.cardLabel': '待审批工具：{tools}',
+    'approval.tag': '审批',
+    'approval.pending': '待审批',
+    'approval.approved': '已批准',
+    'approval.denied': '已拒绝',
+    'approval.expired': '已过期',
+    'approval.stateUnknown': '状态未知',
+    'approval.remaining': '剩余 {time}',
+    'approval.allow': '允许',
+    'approval.deny': '拒绝',
+    'approval.submitting': '正在提交…',
+    'approval.noInput': '（无参数）',
+    'approval.unknownTool': '未知工具',
+    'approval.submitFailed': '提交失败：{reason}',
+
     /* ─── 消息行 ───────────────────────────────────────────────────── */
     'msg.systemAuthor': '系统',
     'msg.tagEvent': '事件',
@@ -1000,6 +1017,23 @@ const I18N_CATALOGS = {
     'runPanel.state.inProgress': 'In progress',
     'runPanel.state.awaiting': 'Awaiting',
     'runPanel.state.unknown': 'Unknown',
+
+    /* ─── Approval card (#153 / spec §4.6 item 4): the human-facing HITL action ─── */
+    'approval.section': 'Approvals',
+    'approval.cardLabel': 'Tools awaiting approval: {tools}',
+    'approval.tag': 'Approval',
+    'approval.pending': 'Pending',
+    'approval.approved': 'Approved',
+    'approval.denied': 'Denied',
+    'approval.expired': 'Expired',
+    'approval.stateUnknown': 'Unknown state',
+    'approval.remaining': '{time} left',
+    'approval.allow': 'Allow',
+    'approval.deny': 'Deny',
+    'approval.submitting': 'Submitting…',
+    'approval.noInput': '(no arguments)',
+    'approval.unknownTool': 'Unknown tool',
+    'approval.submitFailed': 'Could not submit: {reason}',
 
     /* ─── Message rows ─────────────────────────────────────────────── */
     'msg.systemAuthor': 'System',
