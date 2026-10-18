@@ -99,9 +99,9 @@ cd /tmp/alibot-wt/issue-144-impl && scripts/check.sh
 
 读数：`门禁全绿`。
 
-- pytest 全量：`777 passed, 2 skipped`（含本票 5 条）；
+- pytest 全量：`791 passed, 2 skipped`（含本票 5 条）；
 - `ruff check`：`All checks passed!`；
-- `ruff format --check`：`182 files already formatted`；
+- `ruff format --check`：`187 files already formatted`；
 - mypy（仓库根）：`Success: no issues found`；
 - pyright：无错误；
 - 前端 DOM 用例（Bun）：`tests 136 / pass 136 / fail 0`。
