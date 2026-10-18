@@ -645,8 +645,11 @@ test("rail 搜索入口是 .search-shell 里的 .search-btn：放大镜 + 词条
   const actions = /<div class="rail-actions">([\s\S]*?)\n    <\/div>/.exec(markup);
   assert.ok(actions, "index.html 里应有 .rail-actions");
   assert.equal((actions[1].match(/<button/g) || []).length, 2, ".rail-actions 恰好两个按钮");
-  assert.match(actions[1], /id="btnNewChannel"/);
-  assert.match(actions[1], /id="btnNewAgent"/);
+  for (const [id, key] of [["btnNewChannel", "rail.newChannel"], ["btnNewAgent", "rail.newAgent"]]) {
+    const button = new RegExp(`<button\\b[^>]*id="${id}"[^>]*>([\\s\\S]*?)</button>`).exec(actions[1]);
+    assert.ok(button, `.rail-actions 里应有 ${id}`);
+    assert.match(button[1], new RegExp(`<span\\b[^>]*data-i18n="${key.replace(".", "\\.")}"[^>]*>[^<\\s][^<]*</span>`), `${id} 应有可见的词条文案，不能只有图标`);
+  }
   assert.equal(actions[1].includes('id="btnSearch"'), false, "搜索不再待在 .rail-actions 里");
   assert.equal(actions[1].includes('id="btnNewDm"'), false, "私信不再待在 .rail-actions 里");
 });
