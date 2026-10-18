@@ -232,6 +232,8 @@ MAX_MEMBER_NAME_LENGTH = 40
 MAX_AGENT_ROLE_LENGTH = 80
 MAX_SYSTEM_PROMPT_LENGTH = 8000
 MAX_MODEL_ID_LENGTH = 120
+#: Docker 镜像引用（name[:tag|@digest]）的长度上界；只挡明显误用，不做语法解析。
+MAX_DOCKER_IMAGE_LENGTH = 255
 
 # 附件的**人类面**闸门（ADR-0014）：大小与类型都在这里被拒绝并给可读原因。
 # 单文件上限取 10 MiB——它是「一眼看出传错了东西」的闸门，不是配额策略（多附件并发上限之外的
@@ -767,7 +769,9 @@ END;
 # 加一个配置列时只改这里，不会只改到其中一两处。
 # 三处 FROM/WHERE 各自保留（起点与过滤条件本就不同）—— #3 的双轴 review 已为这个形态裁决过。
 AGENT_COLUMNS = (
-    "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.auto_claim, c.updated_at AS config_updated_at"
+    "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.auto_claim, "
+    "c.workspace_backend, c.permission_mode, c.allow_local_shell, c.docker_image, "
+    "c.updated_at AS config_updated_at"
 )
 
 # 由常量 ``AGENT_COLUMNS`` 拼出的 Agent 选取语句（**在模块级拼好**，不把拼接写进
@@ -1324,8 +1328,51 @@ class Database:
             "system_prompt": row["system_prompt"] or "",
             "enabled": bool(row["enabled"]) if row["enabled"] is not None else False,
             "auto_claim": bool(row["auto_claim"]) if row["auto_claim"] is not None else False,
+            # Agent 级 workspace 覆盖（D14/D15）。NULL = 跟随频道默认；docker_image 的确认状态
+            # 不在读路径推断（确认是 `remote_consent_scope` 的独立事实，由 workspace 读路径给出）。
+            "workspace_backend": row["workspace_backend"] if "workspace_backend" in keys else None,
+            "permission_mode": row["permission_mode"] if "permission_mode" in keys else None,
+            "allow_local_shell": (
+                bool(row["allow_local_shell"])
+                if "allow_local_shell" in keys and row["allow_local_shell"] is not None
+                else False
+            ),
+            "docker_image": row["docker_image"] if "docker_image" in keys else None,
             "config_updated_at": row["config_updated_at"] if "config_updated_at" in keys else None,
         }
+
+    def _agent_workspace_values(
+        self,
+        *,
+        workspace_backend: str | None,
+        permission_mode: str | None,
+        docker_image: str | None,
+        message_key: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        """校验 Agent 级 workspace 覆盖（D14/D15）；``None`` = 这次请求没提到这一项。
+
+        ``docker_image`` 的空串是**显式清空**（回到 AgentScope 内置镜像），归一成 ``None``；
+        这与「没提到」在调用方是两种输入，由调用方在写 SQL 时区分。
+        """
+        fields: dict[str, str] = {}
+        backend = None if workspace_backend is None else str(workspace_backend).strip()
+        if backend is not None and backend not in WORKSPACE_BACKENDS:
+            fields["workspace_backend"] = self._render_copy(
+                "error.field.agent_workspace_backend_invalid", values=", ".join(WORKSPACE_BACKENDS)
+            )
+        mode = None if permission_mode is None else str(permission_mode).strip()
+        if mode is not None and mode not in PERMISSION_MODES:
+            fields["permission_mode"] = self._render_copy(
+                "error.field.agent_permission_mode_invalid", values=", ".join(PERMISSION_MODES)
+            )
+        image = None if docker_image is None else str(docker_image).strip()
+        if image is not None and len(image) > MAX_DOCKER_IMAGE_LENGTH:
+            fields["docker_image"] = self._render_copy(
+                "error.field.agent_docker_image_too_long", limit=MAX_DOCKER_IMAGE_LENGTH
+            )
+        if fields:
+            raise DomainError("validation_failed", self._render_copy(message_key), fields=fields)
+        return backend, mode, image or None
 
     def create_agent(
         self,
@@ -1334,16 +1381,29 @@ class Database:
         model_id: str,
         system_prompt: str,
         avatar_slot: int | None = None,
+        *,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool = False,
+        docker_image: str | None = None,
     ) -> dict[str, Any]:
         """校验整体通过后才写库：任一字段不合法则**不留任何半成品行**。
 
         名称与模型标识必填；模型标识的格式（provider 白名单）由服务层校验，
-        本层只负责长度与空值这一类与持久化同构的判据。
+        本层只负责长度与空值这一类与持久化同构的判据。Agent 级 workspace 覆盖
+        （``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` / ``docker_image``）
+        与其它配置同一条偏序：任一取值不合法则整条创建都不发生（D14/D15）。
         """
         clean_name = (name or "").strip()
         clean_role = (role or "").strip()
         clean_model = (model_id or "").strip()
         clean_prompt = (system_prompt or "").strip()
+        clean_backend, clean_mode, clean_image = self._agent_workspace_values(
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            docker_image=docker_image,
+            message_key="error.agent_invalid",
+        )
 
         fields: dict[str, str] = {}
         if not clean_name:
@@ -1379,9 +1439,21 @@ class Database:
                     (member_id, clean_name, avatar_slot, now),
                 )
                 self._conn.execute(
-                    "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, created_at, "
-                    "updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                    (member_id, clean_role, clean_model, clean_prompt, now, now),
+                    "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, "
+                    "workspace_backend, permission_mode, allow_local_shell, docker_image, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                    (
+                        member_id,
+                        clean_role,
+                        clean_model,
+                        clean_prompt,
+                        clean_backend,
+                        clean_mode,
+                        1 if allow_local_shell else 0,
+                        clean_image,
+                        now,
+                        now,
+                    ),
                 )
                 self._commit()
             except Exception:
@@ -1399,19 +1471,29 @@ class Database:
         system_prompt: str | None = None,
         enabled: bool | None = None,
         auto_claim: bool | None = None,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool | None = None,
+        docker_image: str | None = None,
     ) -> dict[str, Any]:
         """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
 
         校验先于写入：**任一字段不合法则整体不改**（与 ``create_agent`` /
         ``update_workspace_settings`` 同一偏序——没有「一半新一半旧」的中间态）。``model_id`` 的
         **形状**校验（provider 白名单）由服务层在进到本层之前完成；本层只判与持久化同构的判据
-        （空值 / 长度）。
+        （空值 / 长度 / Agent 级 workspace 取值）。
 
         它只写 ``member.display_name`` 与 ``agent_config`` 那一行（后者由 ``create_agent`` 在同一
         事务里创建，因此本写路径没有「缺行」的中间态）：**不落消息、不唤醒、不消耗任何预算、
         也不开世代**——配置变更不是一次对话动作（ADR-0011）。
         """
         self.get_agent(member_id)  # 存在性 + 「必须是 Agent」：不是就抛 NotFound
+        clean_backend, clean_mode, clean_image = self._agent_workspace_values(
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            docker_image=docker_image,
+            message_key="error.agent_update_invalid",
+        )
         clean = {
             "display_name": None if display_name is None else (display_name or "").strip(),
             "role": None if role is None else (role or "").strip(),
@@ -1462,6 +1544,12 @@ class Database:
                     "system_prompt = COALESCE(?, system_prompt), "
                     "enabled = COALESCE(?, enabled), "
                     "auto_claim = COALESCE(?, auto_claim), "
+                    "workspace_backend = COALESCE(?, workspace_backend), "
+                    "permission_mode = COALESCE(?, permission_mode), "
+                    "allow_local_shell = COALESCE(?, allow_local_shell), "
+                    # 空串是**显式清空**（回到内置镜像）；「没提到」保持原值。COALESCE 无法区分
+                    # 这两种输入，因此这里用两个参数：第一个是「这次提到了吗」。
+                    "docker_image = CASE WHEN ? THEN ? ELSE docker_image END, "
                     "updated_at = ? WHERE member_id = ?",
                     (
                         clean["role"],
@@ -1469,6 +1557,11 @@ class Database:
                         clean["system_prompt"],
                         None if enabled is None else int(bool(enabled)),
                         None if auto_claim is None else int(bool(auto_claim)),
+                        clean_backend,
+                        clean_mode,
+                        None if allow_local_shell is None else int(bool(allow_local_shell)),
+                        docker_image is not None,
+                        clean_image,
                         utc_now(),
                         member_id,
                     ),
@@ -4289,29 +4382,6 @@ class Database:
         if row is None:
             raise NotFound(self._render_copy("error.sop_run_not_found", sop_run_id=run_id))
         return self._sop_run_payload(row)
-
-    def list_sop_runs(
-        self,
-        *,
-        sop_definition_id: str | None = None,
-        target_id: str | None = None,
-        limit: int = SOP_RUN_RETENTION,
-    ) -> list[dict[str, Any]]:
-        where: list[str] = []
-        params: list[Any] = []
-        if sop_definition_id is not None:
-            where.append("sop_definition_id = ?")
-            params.append(sop_definition_id)
-        if target_id is not None:
-            where.append("target_id = ?")
-            params.append(target_id)
-        clause = f"WHERE {' AND '.join(where)} " if where else ""
-        with self._lock:
-            rows = self._conn.execute(
-                f"SELECT * FROM sop_run {clause}ORDER BY started_at DESC, rowid DESC LIMIT ?",
-                (*params, max(1, int(limit))),
-            ).fetchall()
-        return [self._sop_run_payload(row) for row in rows]
 
     def prune_sop_runs(self) -> int:
         """保留最近 50 个或 90 天内的 SOP 运行；返回删除条数。

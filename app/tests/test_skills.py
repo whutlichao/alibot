@@ -302,7 +302,12 @@ def test_scope_partitions_are_isolated_and_delete_never_touches_the_source(
     assert second_source.is_dir() and (second_source / "SKILL.md").is_file()
     assert [skill["id"] for skill in _skills(client, "agent", first["id"])] == []
     assert [skill["id"] for skill in _skills(client, "agent", second["id"])] == [second_row["id"]]
-    assert client.delete(f"/api/skills/{first_row['id']}").status_code == 404
+    missing = client.delete(f"/api/skills/{first_row['id']}")
+    assert missing.status_code == 404
+    assert missing.json()["error"] == {
+        "code": "not_found",
+        "message": f"Skill 不存在：{first_row['id']}",
+    }
 
     # 频道作用域是频道自己的分区：合并进成员视图时 Agent 级同名覆盖频道级。
     channel_row = _install_local(

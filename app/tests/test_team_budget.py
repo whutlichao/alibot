@@ -489,8 +489,9 @@ def test_http_round_wires_the_budget_ledger_and_team_run(data_dir: Path) -> None
     )
     member_model = _ScriptedModel([_text("HTTP 成员结果")])
     seam = _BudgetSeam([leader_model, member_model])
+    scheduler = ManualScheduler()
 
-    with backend(data_dir, scheduler=ManualScheduler(), seam=seam) as client:
+    with backend(data_dir, scheduler=scheduler, seam=seam) as client:
         response = client.patch(
             f"/api/channels/{channel['id']}/config",
             json={"mode": "team", "team_leader_member_id": leader["id"]},
@@ -498,7 +499,7 @@ def test_http_round_wires_the_budget_ledger_and_team_run(data_dir: Path) -> None
         assert response.status_code == 200, response.json()
 
         assert send(client, channel["id"], "开工").status_code == 201
-        cast(Any, client.app).state.orchestrator._scheduler.drain()
+        scheduler.drain()
 
         db = _db(client)
         state = db.budget_state(channel["id"])

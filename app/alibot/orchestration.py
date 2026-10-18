@@ -75,6 +75,9 @@ WAKE_REASON_CHANNEL_MESSAGE = "channel-message"
 # 它与 ``mention`` 同级（都是**确定信号**），因此 `notify` 里 ``mention`` 可以覆盖它——
 # 覆盖**不削弱**判据：两者都要求必须回应（见 `CONTEXT.md` **回应判断**）。
 WAKE_REASON_CLAIM = "claim"
+# team 成员没有自己的唤醒轮次：它由队长的 TeamAssign 分派运行。typing 的 reason 只是可读标识
+# （规格 §4.5），不与预算/唤醒判定耦合。
+TYPING_REASON_TEAM_ASSIGNMENT = "team-assignment"
 
 
 class Scheduler(Protocol):
@@ -1082,10 +1085,24 @@ class WakeOrchestrator:
         team: TeamRoundContext | None = None,
         plan: PlanSession | None = None,
     ) -> RoundOutcome:
+        leader_id = str(agent["id"])
+
         def emit(record: Any) -> None:
             # 事件只直播、不落库（ADR-0020）；emit 在编排的工作线程里同步调用，
             # ``EventBus.publish`` 对满队列丢事件、不阻塞模型调用。
             self._events.publish(record.target_id, agent_event(record))
+            # 成员的「正在回复」只按它的 REPLY_START / REPLY_END 发（规格 §4.5）：队长的 typing
+            # 仍由 ``_run_round`` 自己在轮次开始/结束发，成员帧不改变那条既有语义。
+            if record.type in ("REPLY_START", "REPLY_END") and record.member_id != leader_id:
+                self._events.publish(
+                    record.target_id,
+                    {
+                        "type": "typing",
+                        "member_id": record.member_id,
+                        "active": record.type == "REPLY_START",
+                        "reason": TYPING_REASON_TEAM_ASSIGNMENT,
+                    },
+                )
 
         try:
             return self._seam.run_round_stream(

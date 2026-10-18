@@ -334,6 +334,13 @@ def _agent_event_payload(event: Any) -> dict[str, Any] | None:
             "block_id": str(getattr(event, "block_id", "")),
             "text": getattr(event, "text", None),
         }
+    if kind == "THINKING_BLOCK_END":
+        # ``ThinkingBlock*`` 属于规格 §3.2 的白名单；END 带 block_id 与可用的累计文本元数据
+        # （AgentScope 2.0.10 的 ``ThinkingBlockEndEvent`` 只有 block_id，故 ``text`` 可能为 None）。
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "text": getattr(event, "text", None),
+        }
     if kind == "TOOL_CALL_START":
         return {
             "tool_call_id": str(getattr(event, "tool_call_id", "")),
@@ -1298,7 +1305,9 @@ class AgentScopeAgentSeam:
                                 target_id=target_id,
                                 member_id=participant,
                                 tool_calls=item.tool_calls,
-                                team_run_id=self._team_run_for(target_id, participant),
+                                # 这一轮 team_run 是 pipeline/context 的正本：审批行直接挂上它，
+                                # 不依赖生产装配是否接到 ``team_run_of``（单 Agent 轮仍走那个口）。
+                                team_run_id=team.team_run_id,
                             )
                             parked[item.reply_id] = participant
                             current_reply_id = item.reply_id
@@ -1464,7 +1473,7 @@ def _team_member_prompt(member: Mapping[str, Any]) -> str:
     if role:
         parts.append(f"你的角色：{role}")
     parts.append(
-        "你是团队频道里的成员。队长会把一项具体任务分派给你；你看不到频道上下文，"
+        "你是 team 模式频道里的成员。队长会把一项具体任务分派给你；你看不到频道上下文，"
         "任务描述就是全部输入。请直接完成并在正文里给出结果。"
     )
     return "\n\n".join(parts)

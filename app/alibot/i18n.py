@@ -77,6 +77,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.member_not_agent": "初始成员只能是 Agent：{member_id}",
         "error.agent_invalid": "Agent 校验未通过，未创建任何数据",
         "error.agent_update_invalid": "Agent 配置校验未通过，未改动任何字段",
+        "error.field.agent_workspace_backend_invalid": "工作区后端只能是这些之一：{values}",
+        "error.field.agent_permission_mode_invalid": "权限档只能是这些之一：{values}",
+        "error.field.agent_docker_image_too_long": "Docker 镜像引用过长（上限 {limit} 字符）",
         "error.model_id_empty": "模型标识不能为空",
         "error.model_id_provider_prefix": "模型标识需要提供商前缀：{model_id}（应为 provider:model，例如 dashscope:qwen-max）",
         "error.model_id_unknown_provider": "未知的模型提供商：{provider}（可用：{providers}）",
@@ -403,6 +406,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.member_not_agent": "Initial members must be Agents: {member_id}",
         "error.agent_invalid": "Agent validation failed; nothing was created",
         "error.agent_update_invalid": ("Agent configuration validation failed; no field was changed"),
+        "error.field.agent_workspace_backend_invalid": ("The workspace backend must be one of: {values}"),
+        "error.field.agent_permission_mode_invalid": ("The permission mode must be one of: {values}"),
+        "error.field.agent_docker_image_too_long": (
+            "The Docker image reference is too long (limit {limit} characters)"
+        ),
         "error.model_id_empty": "The model id cannot be empty",
         "error.model_id_provider_prefix": (
             "The model id needs a provider prefix: {model_id} (expected provider:model, "

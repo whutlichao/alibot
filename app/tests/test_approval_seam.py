@@ -187,6 +187,8 @@ def test_approval_executes_the_tool_and_completes_the_round(library: Any) -> Non
     record = database.list_approval_requests(channel["id"], "approved")
     assert len(record) == 1
     assert record[0]["decisions"] == [{"tool_call_id": "tc-write", "confirmed": True, "rules": []}]
+    # 单 Agent 轮没有 team_run：审批行明确为 NULL（不是一条猜出来的关联）。
+    assert record[0]["team_run_id"] is None
 
 
 def test_denial_does_not_execute_the_tool_and_the_round_still_finishes(library: Any) -> None:
@@ -428,6 +430,8 @@ def test_team_member_approval_routes_by_reply_id_and_completes_the_round(library
         time.sleep(0.01)
     assert pending, "TeamPipeline 没有登记成员审批"
     assert pending[0]["member_id"] == member["id"]
+    # team 轮的 run id 来自 pipeline/context（不是装配可选项）：审批行必须挂上这一轮。
+    assert pending[0]["team_run_id"] == team_run["id"]
     broker.submit(pending[0]["reply_id"], [{"tool_call_id": "tc-write", "confirmed": True}])
     thread.join(timeout=15)
     assert not thread.is_alive()

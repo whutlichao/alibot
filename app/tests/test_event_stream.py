@@ -21,11 +21,15 @@ import httpx
 import pytest
 from alibot.agent_seam import AgentEventRecord
 from alibot.events import (
+    LIVE_EVENT_TYPES,
     QUEUE_LIMIT,
+    REPLAYABLE_TYPES,
     EventBus,
     agent_event,
     approval_required,
     approval_resolved,
+    is_live_only,
+    is_replayable,
     plan_update,
     sop_event,
     sse_frame,
@@ -743,6 +747,20 @@ def test_sse_frame_emits_id_only_for_replayable_events() -> None:
         frame = sse_frame({"type": type_, "payload": {}})
         assert not frame.startswith("id: "), f"{type_} 是 live-only / 快照事件，不得带 id"
         assert f"event: {type_}\n" in frame
+
+
+def test_live_event_types_and_replayable_types_are_complementary() -> None:
+    """``LIVE_EVENT_TYPES`` 真的参与判定：与可补拉词表互补，且 live-only 永不推进游标。"""
+    assert REPLAYABLE_TYPES.isdisjoint(LIVE_EVENT_TYPES)
+    for type_ in LIVE_EVENT_TYPES:
+        event = {"type": type_, "seq": 9}
+        assert is_live_only(event) is True
+        assert is_replayable(event) is False, f"{type_} 是 live-only，不得被当成可补拉"
+        assert not sse_frame(event).startswith("id: "), f"{type_} 的帧不得带 id"
+    for type_ in REPLAYABLE_TYPES:
+        event = {"type": type_, "seq": 9}
+        assert is_live_only(event) is False
+        assert is_replayable(event) is True
 
 
 def test_event_bus_queue_full_drops_events_without_blocking_the_writer() -> None:

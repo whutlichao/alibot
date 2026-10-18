@@ -156,6 +156,17 @@ def test_user_rules_match_by_tool_and_pattern(root: Path) -> None:
     )
 
 
+def test_path_tool_names_and_keys_derive_from_the_workspace_tool_map() -> None:
+    """六个工具的路径口径只有一份正本：``workspace.PATH_ARGUMENTS``（Bash 不在其中）。"""
+    from alibot.permissions import PATH_KEYS, PATH_TOOL_NAMES
+    from alibot.workspace import PATH_ARGUMENTS
+
+    assert frozenset(PATH_ARGUMENTS) == PATH_TOOL_NAMES
+    assert set(PATH_KEYS) == set(PATH_ARGUMENTS.values())
+    assert len(PATH_ARGUMENTS) == 5, "五个文件工具：Read / Write / Edit / Glob / Grep"
+    assert "Bash" not in PATH_TOOL_NAMES, "Bash 不看路径参数（D15：本地 Bash 逐次审批）"
+
+
 def test_deny_and_ask_rules_win_over_the_mode_default(root: Path) -> None:
     assert (
         asyncio.run(

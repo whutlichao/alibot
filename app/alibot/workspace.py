@@ -693,6 +693,15 @@ async def assemble_docker_workspace(
     # 复用：上一轮结束后 client 已关、容器仍在；换到当前 loop 的 client 后继续用。
     with _pool_lock:
         pooled = _pool.get(key)
+    if pooled is not None and pooled.image != settings.docker_image:
+        # 配置写路径改了镜像：池里的容器是旧镜像，不能复用（否则「改了配置却没生效」）。
+        # 删掉旧容器后按新配置重建；镜像本身不随容器删除。
+        with _pool_lock:
+            if _pool.get(key) is pooled:
+                _pool.pop(key, None)
+        with suppress(Exception):
+            await _delete_container(container_name)
+        pooled = None
     if pooled is not None:
         if await _rebind_entry(pooled):
             with _pool_lock:
