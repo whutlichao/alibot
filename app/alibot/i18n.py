@@ -85,6 +85,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field_choices": "必须是这些之一：{values}",
         "error.provider_not_remote": "{provider} 是本机模型提供商，不需要远端数据流告知",
         "error.provider_consent_not_needed": "本机提供商不需要确认",
+        "error.remote_scope_kind_invalid": "远端数据面类型只能是 model、mcp 或 docker",
+        "error.remote_scope_id_empty": "远端数据面的标识不能为空",
         "error.task_action_wrong_target": "Agent 任务动作只能操作当前任务线程",
         "error.task_action_not_member": "只有任务成员可以更新任务状态",
         "error.task_action_rejected": "Agent 任务动作被拒绝：{message}",
@@ -177,6 +179,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         "seam.approval_timeout": "审批等待超时（{seconds} 秒）：本轮失败",
+        # ─── Docker 工作区（#150 / ADR-0021 §二） ─────────────────────────
+        "workspace.docker-daemon": "Docker 不可用：{error}",
+        "workspace.docker-dependency": "Docker 后端缺少依赖：{error}（请安装 aiodocker）",
+        "workspace.docker-consent": "远端 Docker 镜像需要先确认数据面告知：{image}（未确认不拉取）",
+        "workspace.docker-timeout": "Docker 工作区初始化超时（{seconds} 秒）：{image}",
+        "workspace.docker-image-failed": "Docker 镜像拉取/构建失败：{image}：{error}",
+        "workspace.docker-mount": "Docker 工作区挂载失败（{type}）：{error}",
+        "workspace.docker-failed": "Docker 工作区启动失败（{type}）：{error}",
         # ─── 权限规则 / 审批（#149） ──────────────────────────────────────
         "error.permission_rule_scope_invalid": "权限规则作用域只能是 channel 或 agent",
         "error.permission_rule_tool_empty": "权限规则的 tool_name 不能为空",
@@ -353,6 +363,8 @@ CATALOGS: dict[str, dict[str, str]] = {
             "{provider} is a local model provider; the remote data-flow notice does not apply"
         ),
         "error.provider_consent_not_needed": "Local providers need no acknowledgement",
+        "error.remote_scope_kind_invalid": "A remote data-flow kind must be model, mcp, or docker",
+        "error.remote_scope_id_empty": "A remote data-flow identifier cannot be empty",
         "error.task_action_wrong_target": ("An Agent task action can only touch the task thread it runs in"),
         "error.task_action_not_member": "Only task members can update the task status",
         "error.task_action_rejected": "The Agent task action was rejected: {message}",
@@ -471,6 +483,16 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         "seam.approval_timeout": "Approval wait timed out ({seconds} seconds); this round failed",
+        "workspace.docker-daemon": "Docker is unavailable: {error}",
+        "workspace.docker-dependency": "The Docker backend is missing a dependency: {error} (install aiodocker)",
+        "workspace.docker-consent": (
+            "The remote Docker image needs a data-flow acknowledgement first: {image} "
+            "(nothing is pulled before it is confirmed)"
+        ),
+        "workspace.docker-timeout": "Docker workspace initialization timed out ({seconds} seconds): {image}",
+        "workspace.docker-image-failed": "Docker image pull/build failed: {image}: {error}",
+        "workspace.docker-mount": "Docker workspace mount failed ({type}): {error}",
+        "workspace.docker-failed": "Docker workspace startup failed ({type}): {error}",
         # ─── Permission rules / approvals (#149) ─────────────────────────
         "error.permission_rule_scope_invalid": "A permission rule scope must be channel or agent",
         "error.permission_rule_tool_empty": "A permission rule tool_name cannot be empty",

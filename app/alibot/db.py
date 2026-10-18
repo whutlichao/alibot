@@ -1532,6 +1532,71 @@ class Database:
             ).fetchone()
         return {"provider": row["provider"], "acknowledged_at": row["acknowledged_at"]}
 
+    # ─── 远端数据面 scope（model / mcp / docker，#139 建表 / #150 先用于 docker） ──
+    def has_remote_consent_scope(self, scope_kind: str, scope_id: str) -> bool:
+        """按 ``remote_consent_scope`` 判断一次告知是否已确认（只读）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM remote_consent_scope WHERE scope_kind = ? AND scope_id = ?",
+                (scope_kind, scope_id),
+            ).fetchone()
+        return row is not None
+
+    def record_remote_consent_scope(self, scope_kind: str, scope_id: str) -> dict[str, Any]:
+        """记一次 scope 告知确认。幂等；不存凭证、不存连接参数、不落消息/不唤醒。"""
+        if scope_kind not in ("model", "mcp", "docker"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.remote_scope_kind_invalid"),
+                fields={"scope_kind": self._render_copy("error.field_choices", values="model, mcp, docker")},
+            )
+        clean = (scope_id or "").strip()
+        if not clean:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.remote_scope_id_empty"),
+                fields={"scope_id": self._render_copy("error.remote_scope_id_empty")},
+            )
+        now = utc_now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO remote_consent_scope(scope_kind, scope_id, acknowledged_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(scope_kind, scope_id) DO NOTHING",
+                (scope_kind, clean, now),
+            )
+            row = self._conn.execute(
+                "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope "
+                "WHERE scope_kind = ? AND scope_id = ?",
+                (scope_kind, clean),
+            ).fetchone()
+        return {
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "acknowledged_at": str(row["acknowledged_at"]),
+        }
+
+    def list_remote_consent_scopes(self, scope_kind: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if scope_kind is None:
+                rows = self._conn.execute(
+                    "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope "
+                    "ORDER BY acknowledged_at, scope_kind, scope_id"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope "
+                    "WHERE scope_kind = ? ORDER BY acknowledged_at, scope_id",
+                    (scope_kind,),
+                ).fetchall()
+        return [
+            {
+                "scope_kind": str(row["scope_kind"]),
+                "scope_id": str(row["scope_id"]),
+                "acknowledged_at": str(row["acknowledged_at"]),
+            }
+            for row in rows
+        ]
+
     # ─── 工作区设置（配置类取值：人类面可写，用量类事实不可写） ─────────────
     def workspace_settings(self) -> dict[str, Any]:
         """当前工作区设置（**只读**）。行的缺省值在空库初始化时就已写入。
@@ -2382,6 +2447,15 @@ class Database:
                 "FROM agent_config WHERE member_id = ?",
                 (member_id,),
             ).fetchone()
+            docker_image = str(agent["docker_image"]) if agent is not None and agent["docker_image"] else None
+            consent = (
+                self._conn.execute(
+                    "SELECT 1 FROM remote_consent_scope WHERE scope_kind = 'docker' AND scope_id = ?",
+                    (docker_image,),
+                ).fetchone()
+                if docker_image
+                else None
+            )
 
         return {
             "root": str(channel["workspace_root"]),
@@ -2396,9 +2470,9 @@ class Database:
                 or "ask-writes"
             ),
             "allow_local_shell": bool(agent["allow_local_shell"]) if agent is not None else False,
-            "docker_image": (
-                str(agent["docker_image"]) if agent is not None and agent["docker_image"] else None
-            ),
+            "docker_image": docker_image,
+            # 远端镜像确认是**配置事实**：装配层只读，未确认时不拉取、不启动容器。
+            "docker_image_consented": consent is not None,
         }
 
     def permission_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:

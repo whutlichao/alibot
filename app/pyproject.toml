@@ -18,6 +18,10 @@ dependencies = [
   "google-genai>=1.0",
   "xai-sdk>=1.0",
   "ollama>=0.5.4",
+  # Docker 工作区后端（#150）：AgentScope 把 aiodocker 放在 extra `workspace-docker`；
+  # 这里显式 pin 研究 #134 实测过的版本，否则新机器上 DockerWorkspace.initialize() 在
+  # import 阶段就 ModuleNotFoundError。
+  "aiodocker==0.27.0",
 ]
 
 [project.optional-dependencies]
