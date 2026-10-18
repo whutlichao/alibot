@@ -554,6 +554,7 @@ class AgentScopeAgentSeam:
         locale_of: Callable[[], Locale] | None = None,
         workspace_of: Callable[[str, str], Any] | None = None,
         permission_of: Callable[[str, str], Any] | None = None,
+        mcp_of: Callable[[str, str], Any] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
     ):
@@ -570,6 +571,9 @@ class AgentScopeAgentSeam:
         # 权限读路径（#149）：档位 + 频道/Agent 规则 + 项目根；不注入时沿用 workspace 配置里的
         # 权限档、没有用户规则（未配置 workspace 的频道没有可授权的工具，行为不变）。
         self._permission_of = permission_of
+        # MCP 声明读路径（#151）：生产是 ``Database.mcp_servers_for_target``。不注入时这一轮
+        # 不挂 MCP——未配置声明的工作区行为逐字不变。
+        self._mcp_of = mcp_of
         # 审批代理（#149）：不注入时遇到 ASK 只能收口为失败（单 Agent 没有人类确认通道）。
         self._approvals = approvals
         # 团队运行的关联 id（#149 的审批记录列）；#142 装配点可注入，未注入时为空。
@@ -591,6 +595,42 @@ class AgentScopeAgentSeam:
             "channel_rules": [],
             "agent_rules": [],
         }
+
+    def _mcp_declarations(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """本轮启用的 MCP 声明；未注入读路径时为空。读路径失败只记 debug，不拖垮一轮。"""
+        if self._mcp_of is None:
+            return []
+        try:
+            return [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
+        except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
+            _log.debug("mcp declaration lookup failed", exc_info=True)
+            return []
+
+    async def _assemble_mcp(self, target_id: str, member_id: str, mount: Any, session_id: str) -> Any:
+        """把声明挂到这一轮的工作区；任何失败都只影响 MCP 工具，不改变轮次结论。"""
+        from .mcp import MCPAssembly, assemble_mcp_tools
+
+        # Local 后端的 stdio MCP 以该成员的 ``.alibot/agents/<id>`` 为 cwd（声明与状态按成员
+        # 分区）；Docker 的 stdio 在容器内由网关启动，cwd 用工作区根（``/workspace``）。
+        settings = getattr(mount, "settings", None)
+        cwd = str(mount.agent_dir) if settings is not None and settings.is_local else None
+        try:
+            return await assemble_mcp_tools(
+                mount.workspace,
+                self._mcp_declarations(target_id, member_id),
+                member_id=member_id,
+                session_id=session_id,
+                environ=self._environ,
+                locale=self._locale(),
+                cwd=cwd,
+            )
+        except Exception:  # 装配层自身的意外：没有 MCP 工具，但工作区工具照常
+            _log.warning("mcp assembly failed", exc_info=True)
+            return MCPAssembly(
+                workspace=mount.workspace,
+                member_id=member_id,
+                session_id=session_id,
+            )
 
     def _team_run_for(self, target_id: str, member_id: str) -> str | None:
         if self._team_run_of is None:
@@ -761,6 +801,7 @@ class AgentScopeAgentSeam:
             # 已关闭 loop 的 socket transport —— 那正是 issue #30 的 ``Event loop is closed``。
             model = self._build_model(provider, model_name, stream=emit is not None)
             mount: Any | None = None
+            mcp_assembly: Any | None = None
             try:
                 from agentscope.event import (
                     ConfirmResult,
@@ -802,12 +843,16 @@ class AgentScopeAgentSeam:
                     root=str(root) if root else None,
                 )
                 if settings is not None:
+                    session_id = session_partition_id(member_id, target_id)
                     mount = await assemble_workspace(
                         settings,
                         member_id=member_id,
-                        session_id=session_partition_id(member_id, target_id),
+                        session_id=session_id,
                         locale=self._locale(),
                     )
+                    # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
+                    # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
+                    mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
 
                 agent_options: dict[str, Any] = {
                     # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
@@ -817,6 +862,8 @@ class AgentScopeAgentSeam:
                     "state": AgentState(permission_context=context),
                 }
                 workspace_tools = list(mount.tools) if mount is not None else []
+                if mcp_assembly is not None:
+                    workspace_tools.extend(mcp_assembly.tools)
                 # 本地 shell 默认不挂（D15）。显式开启后仍是**每次调用**审批；read-only 下不挂，
                 # 因为 EXPLORE 对非只读调用的结论是 DENY（没有“询问”这一档）。
                 if (
@@ -946,6 +993,10 @@ class AgentScopeAgentSeam:
                     )
             finally:
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
+                # MCP 客户端先关：Local 的 workspace.close 也会兜底，Docker 的容器留在池里，
+                # transport 绑定在当前 loop 上，不能带到下一轮。
+                if mcp_assembly is not None:
+                    await mcp_assembly.close()
                 if mount is not None:
                     await release_workspace_mount(mount)
                 await _aclose_model_client(model)
@@ -1046,6 +1097,7 @@ class AgentScopeAgentSeam:
 
             models: list[Any] = []
             mounts: list[Any] = []
+            mcp_assemblies: list[Any] = []
             agents_by_id: dict[str, Any] = {}
 
             def _permission_for(member_id_value: str) -> tuple[Any, str | None]:
@@ -1073,14 +1125,18 @@ class AgentScopeAgentSeam:
                 settings = self._workspace_settings(target_id, member_id_value)
                 if settings is None:
                     return None
+                session_id = session_partition_id(member_id_value, target_id)
                 mount = await assemble_workspace(
                     settings,
                     member_id=member_id_value,
-                    session_id=session_partition_id(member_id_value, target_id),
+                    session_id=session_id,
                     locale=self._locale(),
                 )
                 mounts.append(mount)
                 tools = list(mount.tools)
+                assembly = await self._assemble_mcp(target_id, member_id_value, mount, session_id)
+                mcp_assemblies.append(assembly)
+                tools.extend(assembly.tools)
                 permission_settings = self._permission_settings(target_id, member_id_value)
                 mode = str(
                     (permission_settings or {}).get("mode")
@@ -1281,6 +1337,9 @@ class AgentScopeAgentSeam:
                         current_reply_id = None
                     inputs = UserConfirmResultEvent(reply_id=reply_id, confirm_results=confirm_results)
             finally:
+                # 后装配的先关（anyio cancel scope 按连接顺序嵌套）。
+                for assembly in reversed(mcp_assemblies):
+                    await assembly.close()
                 for mount in mounts:
                     await release_workspace_mount(mount)
                 for model in models:

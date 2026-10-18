@@ -302,6 +302,11 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 | `GET /api/permission-rules?scope_kind=&scope_id=` | 权限规则列表（`allow` / `deny` / `ask`；不暴露 `BYPASS` / `DONT_ASK`） |
 | `POST /api/permission-rules` | 写一条规则 `{scope_kind, scope_id, tool_name, pattern, behavior}`；同 `(scope, tool, pattern)` 覆盖；配置动作不落消息、不唤醒 |
 | `DELETE /api/permission-rules/{id}` | 删除一条规则（配置动作；不删除消息与审批历史） |
+| `GET /api/mcp-servers?scope_kind=&scope_id=` | MCP 声明列表；只回 `env_names`（**变量名**，永不回值）+ 进程内 `runtime` 读数（`connected` / `tools` / `error`） |
+| `POST /api/mcp-servers` | 新建声明 `{scope_kind, scope_id, name, transport, command?, args?, url?, env_names?, enabled?}`；正文出现 `env` 之类键整体拒绝（400）；同名同 scope 409 |
+| `PATCH /api/mcp-servers/{id}` | 部分更新同名字段；`scope_kind` / `scope_id` 不可改；整条结果重新校验 |
+| `DELETE /api/mcp-servers/{id}` | 删除声明（配置动作；不删消息、不唤醒） |
+| `POST /api/mcp-servers/{id}/consent` | 远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认的远端声明在装配层**不连接** |
 | `GET /api/health` | 存活与数据目录 |
 
 错误统一为 `{"error": {"code", "message", "fields"?}}`。

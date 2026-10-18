@@ -38,6 +38,8 @@
 - ``GET  /api/approvals``                      待审批 / 历史审批快照（供运行面板恢复）
 - ``POST /api/approvals/{reply_id}``           提交决策（只接受 pending；幂等；部分决策）
 - ``GET/POST/DELETE /api/permission-rules``    权限规则的读写（配置动作，不落消息、不唤醒）
+- ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
+- ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -84,6 +86,8 @@ from .db import (
 )
 from .events import EventBus, is_replayable, sse_frame
 from .i18n import locale_of, render
+from .mcp import clear_runtime as clear_mcp_runtime
+from .mcp import runtime_status as mcp_runtime_status
 from .orchestration import ThreadScheduler, WakeOrchestrator
 from .reminder_delivery import (
     ReminderDeliverer,
@@ -397,6 +401,47 @@ class PermissionRuleCreate(BaseModel):
     behavior: str = ""
 
 
+class MCPServerCreate(BaseModel):
+    """新建一条 MCP 声明。
+
+    ``extra="forbid"`` 是安全边界的一部分：正文里出现 ``env`` / ``env_values`` 之类的键会**整体
+    拒绝**，于是「把值存进库里」的路径根本不存在——只接受 ``env_names``。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str = ""
+    scope_id: str = ""
+    name: str = ""
+    transport: str = ""
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    url: str = ""
+    env_names: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class MCPServerUpdate(BaseModel):
+    """部分更新；scope 是身份的一部分，不允许改（出现即整体拒绝）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    transport: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    url: str | None = None
+    env_names: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("null is not accepted; omit the field instead")
+        return value
+
+
 class ApprovalDecision(BaseModel):
     """一条工具调用的决策；``rules`` 是可选的后续规则建议（落成 Agent 级规则）。"""
 
@@ -519,6 +564,8 @@ def create_app(
             workspace_of=database.workspace_settings_for_target,
             # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
             permission_of=database.permission_settings_for_target,
+            # MCP 声明（#151）：启用 + 已确认的远端声明由装配层物化为 MCPClient；未配置时为空。
+            mcp_of=database.mcp_servers_for_target,
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
@@ -819,6 +866,68 @@ def create_app(
     def delete_permission_rule(rule_id: str) -> dict[str, Any]:
         rule = database.delete_permission_rule(rule_id)
         return {"permission_rule": rule}
+
+    # ─── MCP 声明（配置；不落消息、不唤醒、不消耗预算） ────────────────────
+    @app.get("/api/mcp-servers")
+    def list_mcp_servers(
+        scope_kind: str | None = Query(default=None),
+        scope_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """MCP 声明列表；只回 ``env_names``（变量名），**永不**回 env 值。
+
+        ``runtime`` 是进程内的最近一次装配读数（``connected`` / ``tools`` / ``error``）；从未
+        装配过为 ``null``。它是观察面，不落库、不影响配置。
+        """
+        if scope_kind is not None and scope_kind not in ("channel", "agent"):
+            raise DomainError("validation_failed", _render_copy("error.mcp_scope_invalid"))
+        servers = database.list_mcp_servers(scope_kind=scope_kind, scope_id=scope_id)
+        for server in servers:
+            server["runtime"] = mcp_runtime_status(server["id"])
+        return {"mcp_servers": servers}
+
+    @app.post("/api/mcp-servers", status_code=201)
+    def create_mcp_server(payload: MCPServerCreate) -> dict[str, Any]:
+        """写一条 MCP 声明；同名（同 scope）409，不静默覆盖。"""
+        server = database.create_mcp_server(
+            scope_kind=payload.scope_kind,
+            scope_id=payload.scope_id,
+            name=payload.name,
+            transport=payload.transport,
+            command=payload.command,
+            args=payload.args,
+            url=payload.url,
+            env_names=payload.env_names,
+            enabled=payload.enabled,
+        )
+        server["runtime"] = mcp_runtime_status(server["id"])
+        return {"mcp_server": server}
+
+    @app.patch("/api/mcp-servers/{server_id}")
+    def update_mcp_server(server_id: str, payload: MCPServerUpdate) -> dict[str, Any]:
+        """部分更新声明；``scope_kind`` / ``scope_id`` 不可改。整条结果重新校验。"""
+        server = database.update_mcp_server(server_id, payload.model_dump(exclude_unset=True))
+        # 配置变了，上一轮的连接读数不再代表这条声明；下一轮装配会重新记录。
+        clear_mcp_runtime(server["id"])
+        server["runtime"] = None
+        return {"mcp_server": server}
+
+    @app.delete("/api/mcp-servers/{server_id}")
+    def delete_mcp_server(server_id: str) -> dict[str, Any]:
+        server = database.delete_mcp_server(server_id)
+        clear_mcp_runtime(server_id)
+        server["runtime"] = None
+        return {"mcp_server": server}
+
+    @app.post("/api/mcp-servers/{server_id}/consent")
+    def consent_mcp_server(server_id: str) -> dict[str, Any]:
+        """远端 MCP 的数据面确认（幂等；重复确认不覆盖首次时间）。
+
+        未确认的 HTTP / SSE 声明在装配层不会建连；这条确认是唯一开关。stdio 是**本机**进程，
+        不需要也不接受这条确认（400），避免把「本机」误标成远端。
+        """
+        server, consent = database.record_mcp_consent(server_id)
+        server["runtime"] = mcp_runtime_status(server["id"])
+        return {"mcp_server": server, "consent": consent}
 
     @app.get("/api/search")
     def search(

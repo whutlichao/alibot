@@ -30,6 +30,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from .i18n import SOURCE_LOCALE, locale_of, render
 from .reminder_delivery import reminder_state
@@ -41,6 +42,12 @@ OWNER_AVATAR_SLOT = 4
 # 头像色位族大小：与设计系统的 --av-0…--av-4 一一对应（色位按 slot 取模）。
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
+
+# MCP 声明名同时是 AgentScope 的 MCPClient 名（工具名 ``mcp__{name}__{tool}``），框架只接受
+# ``[a-zA-Z0-9_-]+``；这里在写路径就拒绝，避免「存得进去、装配时才炸」。
+MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# ``env_names`` 只存变量**名**：这个形状同时排除了 ``KEY=value`` 这类把值写进名字的输入。
+MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝**。
 # 迁移**不是**启动路径的一步，而是显式命令 `python -m alibot --migrate`（ADR-0015 取代 ADR-0004
@@ -2637,6 +2644,329 @@ class Database:
                 raise NotFound(self._render_copy("error.permission_rule_not_found", rule_id=rule_id))
             self._conn.execute("DELETE FROM permission_rule WHERE id = ?", (rule_id,))
         return self._permission_rule_payload(row)
+
+    # ─── MCP 声明（配置；不落消息、不唤醒、不消耗预算） ─────────────────────
+    #
+    # 库里只有声明：transport / command / args / url / ``env_names``。值只从进程环境读，
+    # 本层永远不会接受、回显或写入 env 值（ADR-0021 §三、§五）。
+    _MCP_SELECT = (
+        "SELECT ms.*, EXISTS("
+        "SELECT 1 FROM remote_consent_scope rcs "
+        "WHERE rcs.scope_kind = 'mcp' AND rcs.scope_id = ms.id"
+        ") AS consented FROM mcp_server ms"
+    )
+
+    @staticmethod
+    def _mcp_server_payload(row: sqlite3.Row) -> dict[str, Any]:
+        transport = str(row["transport"])
+        is_remote = transport in ("http", "sse")
+        raw_args = json.loads(row["args"] or "[]")
+        raw_env_names = json.loads(row["env_names"] or "[]")
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "transport": transport,
+            "command": str(row["command"]),
+            "args": [str(item) for item in raw_args] if isinstance(raw_args, list) else [],
+            "url": str(row["url"]),
+            "env_names": [str(item) for item in raw_env_names] if isinstance(raw_env_names, list) else [],
+            "enabled": bool(row["enabled"]),
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "is_remote": is_remote,
+            "consent_required": is_remote,
+            "consented": bool(row["consented"]) if is_remote else False,
+        }
+
+    def _assert_mcp_scope_locked(self, scope_kind: str, scope_id: str) -> None:
+        """与权限规则同口径：channel 必须存在；agent 必须是未删除的 Agent。"""
+        if scope_kind not in ("channel", "agent"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.mcp_scope_invalid"),
+                fields={"scope_kind": self._render_copy("error.mcp_scope_invalid")},
+            )
+        if scope_kind == "channel":
+            exists = self._conn.execute("SELECT 1 FROM channel WHERE id = ?", (scope_id,)).fetchone()
+        else:
+            exists = self._conn.execute(
+                "SELECT 1 FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                (scope_id,),
+            ).fetchone()
+        if exists is None:
+            message = self._render_copy("error.mcp_scope_unknown", scope_id=scope_id)
+            raise DomainError("validation_failed", message, fields={"scope_id": message})
+
+    def _normalize_mcp_declaration(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """校验并收敛一条声明的**完整**形态（创建与部分更新共用）。"""
+        name = str(values.get("name") or "").strip()
+        if not MCP_SERVER_NAME_PATTERN.fullmatch(name):
+            message = self._render_copy("error.mcp_name_invalid")
+            raise DomainError("validation_failed", message, fields={"name": message})
+
+        transport = str(values.get("transport") or "").strip()
+        if transport not in ("stdio", "http", "sse"):
+            message = self._render_copy("error.mcp_transport_invalid")
+            raise DomainError("validation_failed", message, fields={"transport": message})
+
+        raw_args = values.get("args")
+        if raw_args is None:
+            raw_args = []
+        if not isinstance(raw_args, (list, tuple)) or any(not isinstance(item, str) for item in raw_args):
+            message = self._render_copy("error.mcp_args_invalid")
+            raise DomainError("validation_failed", message, fields={"args": message})
+        args = list(raw_args)
+
+        raw_env_names = values.get("env_names")
+        if raw_env_names is None:
+            raw_env_names = []
+        if not isinstance(raw_env_names, (list, tuple)):
+            message = self._render_copy("error.mcp_env_names_invalid")
+            raise DomainError("validation_failed", message, fields={"env_names": message})
+        env_names: list[str] = []
+        for item in raw_env_names:
+            if not isinstance(item, str):
+                message = self._render_copy("error.mcp_env_names_invalid")
+                raise DomainError("validation_failed", message, fields={"env_names": message})
+            clean = item.strip()
+            if not MCP_ENV_NAME_PATTERN.fullmatch(clean):
+                message = self._render_copy("error.mcp_env_names_invalid")
+                raise DomainError("validation_failed", message, fields={"env_names": message})
+            if clean not in env_names:
+                env_names.append(clean)
+
+        command = str(values.get("command") or "").strip()
+        url = str(values.get("url") or "").strip()
+        if transport == "stdio":
+            if not command:
+                message = self._render_copy("error.mcp_command_required")
+                raise DomainError("validation_failed", message, fields={"command": message})
+            url = ""
+        else:
+            if not url:
+                message = self._render_copy("error.mcp_url_required")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            parts = urlsplit(url)
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                message = self._render_copy("error.mcp_url_invalid")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            looks_sse = parts.path.endswith("/sse") or parts.path.endswith("/messages/")
+            if transport == "sse" and not looks_sse:
+                message = self._render_copy("error.mcp_sse_url_invalid")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            if transport == "http" and looks_sse:
+                # AgentScope 按 URL path 选传输：http 声明指向 /sse 会被静默当成 sse。
+                # 在写路径拒绝，避免「声明一种、实际另一种」。
+                message = self._render_copy("error.mcp_http_url_invalid")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            command = ""
+
+        return {
+            "name": name,
+            "transport": transport,
+            "command": command,
+            "args": args,
+            "url": url,
+            "env_names": env_names,
+            "enabled": bool(values.get("enabled", True)),
+        }
+
+    def _assert_mcp_name_free_locked(
+        self, *, scope_kind: str, scope_id: str, name: str, exclude_id: str | None = None
+    ) -> None:
+        row = self._conn.execute(
+            "SELECT id FROM mcp_server WHERE scope_kind = ? AND scope_id = ? AND name = ?",
+            (scope_kind, scope_id, name),
+        ).fetchone()
+        if row is not None and str(row["id"]) != (exclude_id or ""):
+            message = self._render_copy("error.mcp_server_conflict", name=name)
+            raise DomainError("mcp_server_conflict", message, status=409, fields={"name": message})
+
+    @classmethod
+    def _mcp_select_sql(cls, where: str = "") -> str:
+        return f"{cls._MCP_SELECT}{where}"
+
+    def list_mcp_servers(
+        self, scope_kind: str | None = None, scope_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """按 scope 过滤的声明列表（只读；不含 env 值）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_kind is not None:
+            clauses.append("ms.scope_kind = ?")
+            params.append(scope_kind)
+        if scope_id is not None:
+            clauses.append("ms.scope_id = ?")
+            params.append(scope_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                self._mcp_select_sql(f"{where} ORDER BY ms.created_at, ms.id"), params
+            ).fetchall()
+        return [self._mcp_server_payload(row) for row in rows]
+
+    def get_mcp_server(self, server_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        return self._mcp_server_payload(row) if row is not None else None
+
+    def create_mcp_server(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        name: str,
+        transport: str,
+        command: str = "",
+        args: list[str] | None = None,
+        url: str = "",
+        env_names: list[str] | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """写一条声明；同名（同一 scope）视为冲突，不静默覆盖。
+
+        配置动作：不落消息、不唤醒、不消耗预算。
+        """
+        declaration = self._normalize_mcp_declaration(
+            {
+                "name": name,
+                "transport": transport,
+                "command": command,
+                "args": args,
+                "url": url,
+                "env_names": env_names,
+                "enabled": enabled,
+            }
+        )
+        now = utc_now()
+        server_id = new_id("mcp")
+        with self._lock:
+            self._assert_mcp_scope_locked(scope_kind, scope_id)
+            self._assert_mcp_name_free_locked(
+                scope_kind=scope_kind, scope_id=scope_id, name=declaration["name"]
+            )
+            self._conn.execute(
+                "INSERT INTO mcp_server(id, name, transport, command, args, url, env_names, "
+                "enabled, scope_kind, scope_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    server_id,
+                    declaration["name"],
+                    declaration["transport"],
+                    declaration["command"],
+                    json.dumps(declaration["args"], ensure_ascii=False),
+                    declaration["url"],
+                    json.dumps(declaration["env_names"], ensure_ascii=False),
+                    1 if declaration["enabled"] else 0,
+                    scope_kind,
+                    scope_id,
+                    now,
+                    now,
+                ),
+            )
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        return self._mcp_server_payload(row)
+
+    def update_mcp_server(self, server_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """部分更新声明；scope 是身份的一部分，不可改。整条结果重新校验。"""
+        allowed = {"name", "transport", "command", "args", "url", "env_names", "enabled"}
+        unknown = set(changes) - allowed
+        if unknown:
+            message = self._render_copy("error.field_choices", values=", ".join(sorted(allowed)))
+            raise DomainError(
+                "validation_failed",
+                message,
+                fields=dict.fromkeys(unknown, message),
+            )
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.mcp_server_not_found", server_id=server_id))
+            current = self._mcp_server_payload(row)
+            merged = {**current, **dict(changes)}
+            declaration = self._normalize_mcp_declaration(merged)
+            self._assert_mcp_name_free_locked(
+                scope_kind=current["scope_kind"],
+                scope_id=current["scope_id"],
+                name=declaration["name"],
+                exclude_id=server_id,
+            )
+            self._conn.execute(
+                "UPDATE mcp_server SET name = ?, transport = ?, command = ?, args = ?, url = ?, "
+                "env_names = ?, enabled = ?, updated_at = ? WHERE id = ?",
+                (
+                    declaration["name"],
+                    declaration["transport"],
+                    declaration["command"],
+                    json.dumps(declaration["args"], ensure_ascii=False),
+                    declaration["url"],
+                    json.dumps(declaration["env_names"], ensure_ascii=False),
+                    1 if declaration["enabled"] else 0,
+                    utc_now(),
+                    server_id,
+                ),
+            )
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        return self._mcp_server_payload(row)
+
+    def delete_mcp_server(self, server_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.mcp_server_not_found", server_id=server_id))
+            self._conn.execute("DELETE FROM mcp_server WHERE id = ?", (server_id,))
+        return self._mcp_server_payload(row)
+
+    def record_mcp_consent(self, server_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """记录一次远端 MCP 的数据面确认（幂等；不落消息、不唤醒）。
+
+        返回 ``(声明, 确认记录)``。stdio 不需要这条确认，调用即被拒绝，避免把「本机」误标成远端。
+        """
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.mcp_server_not_found", server_id=server_id))
+        server = self._mcp_server_payload(row)
+        if not server["consent_required"]:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.mcp_consent_local"),
+                fields={"transport": self._render_copy("error.mcp_consent_local")},
+            )
+        consent = self.record_remote_consent_scope("mcp", server_id)
+        refreshed = self.get_mcp_server(server_id)
+        assert refreshed is not None
+        return refreshed, consent
+
+    def mcp_servers_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """一轮装配的声明清单（频道级 + Agent 级；Agent 级同名覆盖频道级）。
+
+        只返回**启用**的声明。远端声明带 ``consented``：装配层据此决定是否连接。与
+        :meth:`permission_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
+        没有频道声明（Agent 级仍无上下文，返回空）。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                return []
+            rows = self._conn.execute(
+                self._mcp_select_sql(
+                    " WHERE (ms.scope_kind = 'channel' AND ms.scope_id = ?) "
+                    "OR (ms.scope_kind = 'agent' AND ms.scope_id = ?) "
+                    # 先频道后 Agent：同名时 Agent 覆盖频道（与权限规则同一优先级方向）。
+                    "ORDER BY CASE ms.scope_kind WHEN 'channel' THEN 0 ELSE 1 END, "
+                    "ms.created_at, ms.id"
+                ),
+                (channel_id, member_id),
+            ).fetchall()
+            merged: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                server = self._mcp_server_payload(row)
+                # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
+                merged[server["name"]] = server
+        return [server for server in merged.values() if server["enabled"]]
 
     # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
     @staticmethod
