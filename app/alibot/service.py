@@ -28,6 +28,7 @@ from .db import (
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
     OWNER_ID,
+    PLAN_RUN_RETENTION,
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
@@ -328,6 +329,14 @@ class WorkspaceService:
     def task_budget(self, task_id: str) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)
         return self._db.budget_state(task["target_id"])
+
+    def plan(self, target_id: str, limit: int = PLAN_RUN_RETENTION) -> dict[str, Any]:
+        """该 target 的 Plan 快照（按 member 分组；默认每个成员最近 20 个 run）。
+
+        这是运行面板的只读兜底面：Plan 不是消息、不进未读/搜索/看板/预算，刷新与重启后
+        仍从这里读回同一份清单（ADR-0023）。
+        """
+        return self._db.plan_view(target_id, limit=limit)
 
     def mark_task_read(self, task_id: str, seq: int) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)

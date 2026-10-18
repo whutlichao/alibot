@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_che
 from .i18n import SOURCE_LOCALE, Locale, render
 
 if TYPE_CHECKING:
+    from .plan import PlanSession
     from .team import TeamRoundContext
 
 _log = logging.getLogger(__name__)
@@ -493,12 +494,17 @@ class AgentSeam(Protocol):
         mandatory_reply: bool = False,
         team: TeamRoundContext | None = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
+        plan: PlanSession | None = None,
     ) -> RoundOutcome:
         """跑一轮并（可选地）把框架事件按白名单直播出去。
 
         ``team`` 非空时这是**队长的 team 轮次**：适配器在 ``TeamPipeline`` 里运行队长与成员，
         ``RoundOutcome`` 仍只描述队长（成员结论是分派结果，不是频道轮次）。``emit=None`` 时
         与单 Agent 轮次一样只返回结论。其它参数语义同 :meth:`run_round`。
+
+        ``plan`` 非空时这一轮（team 里则是队长与每个实际被 ``TeamAssign`` 的成员）自动获得
+        AgentScope 的 Plan 四工具；每个 Agent 的一次 ``reply_stream`` 对应一个独立 run
+        （方向与回写由 :mod:`alibot.plan` 独占）。``plan=None`` 时行为逐字不变。
         """
         ...
 
@@ -646,6 +652,7 @@ class AgentScopeAgentSeam:
         mandatory_reply: bool = False,
         team: TeamRoundContext | None = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
+        plan: PlanSession | None = None,
     ) -> RoundOutcome:
         """流式一轮：消费 ``Agent.reply_stream`` / ``TeamPipeline.reply_stream``。
 
@@ -666,6 +673,7 @@ class AgentScopeAgentSeam:
                 mandatory_reply=mandatory_reply,
                 team=team,
                 emit=emit,
+                plan=plan,
             )
         import asyncio
 
@@ -696,7 +704,6 @@ class AgentScopeAgentSeam:
             model = self._build_model(provider, model_name, stream=emit is not None)
             mount: Any | None = None
             try:
-                from agentscope.agent import Agent
                 from agentscope.message import Msg, UserMsg
 
                 from .workspace import assemble_local_workspace, session_partition_id
@@ -722,10 +729,11 @@ class AgentScopeAgentSeam:
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                     workspace_tools=mount.tools if mount is not None else None,
+                    with_plan=plan is not None,
                 )
                 if toolkit is not None:
                     agent_options["toolkit"] = toolkit
-                instance = Agent(**agent_options)
+                instance = _agent_instance(agent_options, plan=plan, member_id=member_id)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
                 inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
@@ -793,6 +801,7 @@ class AgentScopeAgentSeam:
         mandatory_reply: bool,
         team: TeamRoundContext,
         emit: Callable[[AgentEventRecord], None] | None,
+        plan: PlanSession | None = None,
     ) -> RoundOutcome:
         """队长轮次：按这一轮的成员快照重建 ``TeamPipeline`` 并消费它的事件流。
 
@@ -823,7 +832,6 @@ class AgentScopeAgentSeam:
         reply_members: dict[str, str] = {}
 
         async def _round() -> Any:
-            from agentscope.agent import Agent
             from agentscope.message import UserMsg
 
             from .workspace import assemble_local_workspace, session_partition_id
@@ -862,7 +870,7 @@ class AgentScopeAgentSeam:
                 }
                 if toolkit is not None:
                     options["toolkit"] = toolkit
-                return Agent(**options)
+                return _agent_instance(options, plan=plan, member_id=str(member["id"]))
 
             try:
                 leader_toolkit = _round_toolkit(
@@ -872,6 +880,7 @@ class AgentScopeAgentSeam:
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                     workspace_tools=await _workspace_tools_for(member_id),
+                    with_plan=plan is not None,
                 )
                 leader_agent = _build_agent(
                     agent,
@@ -890,7 +899,7 @@ class AgentScopeAgentSeam:
                                 member,
                                 _team_member_prompt(member),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
-                                # 只有配置了项目根时成员才挂工具集（含受限文件工具）。
+                                # 配置了项目根时挂受限文件工具；Plan 轮次则始终有自己的四工具。
                                 toolkit=(
                                     _round_toolkit(
                                         provider_of(str(member.get("model_id") or "")),
@@ -899,8 +908,9 @@ class AgentScopeAgentSeam:
                                         task_actions=[],
                                         silence_declarations=[],
                                         workspace_tools=workspace_tools,
+                                        with_plan=plan is not None,
                                     )
-                                    if workspace_tools
+                                    if workspace_tools or plan is not None
                                     else None
                                 ),
                             ),
@@ -1154,6 +1164,20 @@ def _system_prompt(
     return "\n\n".join(parts)
 
 
+def _agent_instance(options: dict[str, Any], *, plan: PlanSession | None, member_id: str) -> Any:
+    """按是否有 Plan 选择 Agent 类；Plan 轮次在每次回复前后开/收一个 run。"""
+    if plan is None:
+        from agentscope.agent import Agent
+
+        return Agent(**options)
+    from .plan import plan_agent_class
+
+    instance = plan_agent_class()(**options)
+    instance._plan_session = plan
+    instance._plan_member_id = member_id
+    return instance
+
+
 def _round_toolkit(
     provider: str,
     *,
@@ -1162,6 +1186,7 @@ def _round_toolkit(
     task_actions: list[AgentTaskAction],
     silence_declarations: list[None],
     workspace_tools: list[Any] | None = None,
+    with_plan: bool = False,
 ) -> Any:
     """装配这一轮的工具集：workspace 文件工具 + 任务动作（仅任务线程）+ 沉默声明（provider 能携带工具时）。
 
@@ -1182,6 +1207,12 @@ def _round_toolkit(
         tools.extend(workspace_tools)
     if task_context is not None:
         tools.extend(_task_action_tools(task_context, actor_id, task_actions))
+    if with_plan:
+        # Plan 四工具与 workspace 同属「本轮能力」，不受沉默工具的能力闸门影响；provider
+        # 不能携带工具时它们和文件工具一样送不出去，但装配层不据此改变清单。
+        from .plan import plan_tools
+
+        tools.extend(plan_tools())
     if supports_tool_calling(provider):
         tools.extend(_silence_tools(silence_declarations))
     if not tools:

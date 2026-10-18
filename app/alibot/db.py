@@ -27,7 +27,7 @@ import threading
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -122,6 +122,14 @@ PERMISSION_MODES = ("read-only", "ask-writes", "trusted-writes")
 
 # team 运行记录的状态词（规格 §4.2）。它不是 ``round_outcome``：只描述一次队长轮次的生命周期。
 TEAM_RUN_STATUSES = ("running", "completed", "failed", "interrupted", "invalid-leader")
+
+# Plan 运行记录的状态词与保留策略（ADR-0023 / 规格 §3.5）。Plan 是**成员轮次内的工作清单**，
+# 不是任务五态：每个 ``(target_id, member_id)`` 保留最近 20 个 run 或 30 天（先到者为准），
+# 更旧的 run 连同它的 ``plan_task`` 一并清理。
+PLAN_RUN_STATUSES = ("running", "completed", "failed")
+PLAN_TASK_STATES = ("pending", "in_progress", "completed")
+PLAN_RUN_RETENTION = 20
+PLAN_RETENTION_DAYS = 30
 
 # 「这次请求没提到这个字段」与「显式清空」是两件事；只有 ``workspace_root`` 允许后者。
 _UNSET = object()
@@ -2812,6 +2820,239 @@ class Database:
             "status": row["status"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
+        }
+
+    # ─── Plan 运行记录（ADR-0023 / 规格 §3.5） ────────────────────────────
+    # Plan 是成员轮次内的工作清单，不是任务五态：本组方法只写 ``plan_run`` / ``plan_task``，
+    # 从不触碰 ``task``、消息、未读、搜索、唤醒或预算。``plan_task.seq`` 与 AgentScope
+    # ``Task.id``（数字字符串）一一对应，于是重启装载回 ``AgentState.tasks`` 时任务标识稳定。
+    def start_plan_run(self, *, target_id: str, member_id: str, base_seq: int) -> dict[str, Any]:
+        """开一次成员轮次的 Plan run；状态 ``running``，结束由 :meth:`finish_plan_run` 收口。"""
+        if int(base_seq) < 0:
+            raise DomainError("validation_failed", self._render_copy("error.plan_base_seq_invalid"))
+        self.get_target(target_id)
+        self.get_member(member_id)
+        plan_run_id = new_id("planrun")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO plan_run(id, target_id, member_id, base_seq, status, started_at) "
+                    "VALUES (?, ?, ?, ?, 'running', ?)",
+                    (plan_run_id, target_id, member_id, int(base_seq), utc_now()),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_plan_run(plan_run_id)
+
+    def finish_plan_run(
+        self,
+        plan_run_id: str,
+        *,
+        status: str,
+        tasks: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """以 ``plan_run_id`` 为界回写本次 Plan 的任务并收口。
+
+        每个 run 保存的是**当前清单的一份快照**：先删掉本 run 的旧行，再按传入顺序重写。
+        ``plan_task`` 随 ``plan_run`` 级联删除；收口后应用保留策略。
+        """
+        if status not in ("completed", "failed"):
+            raise DomainError("validation_failed", self._render_copy("error.plan_run_status_invalid"))
+        prepared = [self._prepare_plan_task(task) for task in tasks]
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT status FROM plan_run WHERE id = ?", (plan_run_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound(self._render_copy("error.plan_run_not_found", plan_run_id=plan_run_id))
+                self._conn.execute("DELETE FROM plan_task WHERE plan_run_id = ?", (plan_run_id,))
+                now = utc_now()
+                for task in prepared:
+                    self._conn.execute(
+                        "INSERT INTO plan_task(id, plan_run_id, seq, subject, description, state, "
+                        "owner, blocks, blocked_by, metadata, created_at, updated_at, deleted_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                        (
+                            new_id("plantask"),
+                            plan_run_id,
+                            task["seq"],
+                            task["subject"],
+                            task["description"],
+                            task["state"],
+                            task["owner"],
+                            json.dumps(task["blocks"], ensure_ascii=False),
+                            json.dumps(task["blocked_by"], ensure_ascii=False),
+                            json.dumps(task["metadata"], ensure_ascii=False),
+                            task["created_at"],
+                            task["updated_at"] or now,
+                        ),
+                    )
+                self._conn.execute(
+                    "UPDATE plan_run SET status = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?",
+                    (status, now, plan_run_id),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        self.prune_plan_runs()
+        return self.get_plan_run(plan_run_id)
+
+    @staticmethod
+    def _prepare_plan_task(task: Mapping[str, Any]) -> dict[str, Any]:
+        """校验并归一化一条待回写的 Plan 任务（工具侧只产生这三种状态）。"""
+        state = str(task.get("state") or "pending")
+        if state not in PLAN_TASK_STATES:
+            raise DomainError("validation_failed", f"invalid plan task state: {state}")
+        subject = str(task.get("subject") or "").strip()
+        if not subject:
+            raise DomainError("validation_failed", "plan task subject is required")
+        seq = int(task.get("seq") or 0)
+        if seq < 1:
+            raise DomainError("validation_failed", "plan task seq must be positive")
+        return {
+            "seq": seq,
+            "subject": subject,
+            "description": str(task.get("description") or ""),
+            "state": state,
+            "owner": task.get("owner"),
+            "blocks": list(task.get("blocks") or []),
+            "blocked_by": list(task.get("blocked_by") or []),
+            "metadata": dict(task.get("metadata") or {}),
+            "created_at": str(task.get("created_at") or utc_now()),
+            "updated_at": str(task.get("updated_at") or ""),
+        }
+
+    def get_plan_run(self, plan_run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM plan_run WHERE id = ?", (plan_run_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.plan_run_not_found", plan_run_id=plan_run_id))
+            tasks = self._plan_tasks_locked(plan_run_id)
+        return self._plan_run_payload(row, tasks)
+
+    def latest_plan_tasks(self, *, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """该 ``(target_id, member_id)`` 最近一个 run 的任务清单（轮次开始装载用）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM plan_run WHERE target_id = ? AND member_id = ? "
+                "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (target_id, member_id),
+            ).fetchone()
+            if row is None:
+                return []
+            return self._plan_tasks_locked(str(row["id"]))
+
+    def plan_view(self, target_id: str, limit: int = PLAN_RUN_RETENTION) -> dict[str, Any]:
+        """按 member 分组的 Plan 快照（每个成员保留最近 ``limit`` 个 run）。"""
+        self.get_target(target_id)
+        limit = max(1, int(limit))
+        with self._lock:
+            member_rows = self._conn.execute(
+                "SELECT DISTINCT pr.member_id, m.display_name "
+                "FROM plan_run pr LEFT JOIN member m ON m.id = pr.member_id "
+                "WHERE pr.target_id = ? ORDER BY m.display_name, pr.member_id",
+                (target_id,),
+            ).fetchall()
+            members = []
+            for member_row in member_rows:
+                run_rows = self._conn.execute(
+                    "SELECT * FROM plan_run WHERE target_id = ? AND member_id = ? "
+                    "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+                    (target_id, str(member_row["member_id"]), limit),
+                ).fetchall()
+                runs = [
+                    self._plan_run_payload(run, self._plan_tasks_locked(str(run["id"]))) for run in run_rows
+                ]
+                members.append(
+                    {
+                        "member_id": str(member_row["member_id"]),
+                        "display_name": member_row["display_name"],
+                        "runs": runs,
+                    }
+                )
+        return {"target_id": target_id, "members": members}
+
+    def prune_plan_runs(self) -> int:
+        """应用 Plan 保留策略：每个 ``(target, member)`` 最近 20 run 或 30 天（先到者为准）。
+
+        返回被删除的 run 数；``plan_task`` 由外键级联清理。启动时与每轮收口后调用。
+        """
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=PLAN_RETENTION_DAYS))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, target_id, member_id, started_at FROM plan_run "
+                "ORDER BY target_id, member_id, started_at DESC, rowid DESC"
+            ).fetchall()
+            keep: dict[tuple[str, str], int] = {}
+            doomed: list[str] = []
+            for row in rows:
+                pair = (str(row["target_id"]), str(row["member_id"]))
+                rank = keep.get(pair, 0)
+                keep[pair] = rank + 1
+                if rank >= PLAN_RUN_RETENTION or str(row["started_at"]) < cutoff:
+                    doomed.append(str(row["id"]))
+            if not doomed:
+                return 0
+            self._begin()
+            try:
+                for start in range(0, len(doomed), 500):
+                    chunk = doomed[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    self._conn.execute(f"DELETE FROM plan_run WHERE id IN ({placeholders})", chunk)
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return len(doomed)
+
+    def _plan_task_rows_locked(self, plan_run_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM plan_task WHERE plan_run_id = ? ORDER BY seq",
+            (plan_run_id,),
+        ).fetchall()
+
+    def _plan_tasks_locked(self, plan_run_id: str) -> list[dict[str, Any]]:
+        return [self._plan_task_payload(row) for row in self._plan_task_rows_locked(plan_run_id)]
+
+    @staticmethod
+    def _plan_task_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            # AgentScope 的 ``Task.id``：装载时按 ``seq`` 还原成数字字符串。
+            "id": str(row["seq"]),
+            "seq": int(row["seq"]),
+            "subject": row["subject"],
+            "description": row["description"],
+            "state": row["state"],
+            "owner": row["owner"],
+            "blocks": json.loads(row["blocks"] or "[]"),
+            "blocked_by": json.loads(row["blocked_by"] or "[]"),
+            "metadata": json.loads(row["metadata"] or "{}"),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "deleted_at": row["deleted_at"],
+        }
+
+    @staticmethod
+    def _plan_run_payload(row: sqlite3.Row, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "target_id": row["target_id"],
+            "member_id": row["member_id"],
+            "base_seq": row["base_seq"],
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "tasks": tasks,
         }
 
     # ─── 消息（作用域键是 **target_id**） ────────────────────────────────
