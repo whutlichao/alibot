@@ -148,6 +148,7 @@ class ScriptedAgentSeam:
         mandatory_reply: bool = False,
         team: Any = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
+        plan: Any = None,
     ) -> RoundOutcome:
         """脚本化流式行为：结论与 :meth:`run_round` 相同，另按固定形状发事件。
 
@@ -166,6 +167,7 @@ class ScriptedAgentSeam:
             task_context=task_context,
             mandatory_reply=mandatory_reply,
             team=team,
+            plan=plan,
         )
         if emit is not None:
             member_id = str(agent["id"])
@@ -205,6 +207,7 @@ class ScriptedAgentSeam:
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
         team: Any = None,
+        plan: Any = None,
     ) -> RoundOutcome:
         member_id = str(agent["id"])
         # 接缝的**输入侧**全记下来：prompt 注入（S5）没有 HTTP 可观测面，因此按仓库既有做法
@@ -226,6 +229,7 @@ class ScriptedAgentSeam:
                     "task_context": task_context,
                     "mandatory_reply": mandatory_reply,
                     "team": team,
+                    "plan": plan,
                     "prompt": prompt,
                     "seqs": [message["seq"] for message in messages],
                     "bodies": [message["body"] for message in messages],
