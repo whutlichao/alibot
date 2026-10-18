@@ -222,18 +222,31 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 
 ## 实时呈现（SSE 与断线补拉）
 
-事件流按频道订阅：`GET /api/channels/{id}/events?after_seq=N`。事件类型：
+事件流按 target 订阅：频道 `GET /api/channels/{id}/events?after_seq=N`、任务线程
+`GET /api/tasks/{id}/events?after_seq=N`、私信 `GET /api/dms/{id}/events?after_seq=N`。
+三者同形；任务线程在 team 模式下还会产生 `agent_event` / `team_assignment` / `plan_update` /
+`approval_*`（见下表）。事件类型：
 
-| `type` | 含义 |
-| --- | --- |
-| `message` | 新消息落库（载荷与 `GET /messages` 的元素同形） |
-| `member_status` | 成员状态点变化（四态） |
-| `typing` | 「正在回复」指示（一轮 in-flight 时 `active=true`） |
-| `round_outcome` | 轮次结果 |
+| `type` | 含义 | 可补拉 |
+| --- | --- | --- |
+| `message` | 新消息落库（载荷与 `GET /messages` 的元素同形） | 是（读库） |
+| `member_status` | 成员状态点变化（四态） | 否（连接时快照） |
+| `typing` | 「正在回复」指示（一轮 in-flight 时 `active=true`；team 模式下成员也带 `member_id`） | 否 |
+| `round_outcome` | 轮次结果 | 是（读库） |
+| `agent_event` | `AgentEvent` 白名单透传（`event_type` / `member_id` / `reply_id` / `target_id` / `payload`；不含 secrets / base64） | 否 |
+| `team_assignment` | 一次分派的状态（`team_run_id` / `assignment_id` / `task_id` / `member_id` / `reply_id` / `state`；task target 上 `task_id` 非空） | 否（快照 `GET /team-runs`） |
+| `plan_update` | Plan 任务创建/更新/删除（`plan_run_id` / `member_id` / `task`） | 否（快照 `GET /plan`） |
+| `sop_event` | SOP 步骤开始/结束/verdict（`sop_run_id` / `step_index` / `phase` / `payload`） | 否（快照 `GET /sop-runs/{id}`） |
+| `approval_required` | 需要人类确认的工具调用（`reply_id` / `member_id` / `tool_calls`） | 否（快照 `GET /approvals`） |
+| `approval_resolved` | 审批结果回执（`reply_id` / `state` / `decisions`） | 否 |
 
 **补拉由后端读库完成**：连接建立时先发 `seq > after_seq` 的消息与轮次结果，再发一份当前状态点
 快照，然后进入实时推送。前端**带最新 `last_seq` 重连**，因此重连既不会漏也不会重复。
-每一帧的 SSE `id` 就是频道内 `seq`。
+
+**只有 `message` 与 `round_outcome` 的 SSE 帧带 `id: <seq>`**；其余事件是 **live-only**，不发 `id` 行
+（ADR-0020）。否则浏览器会把 `Last-Event-ID` 推进到库里不存在的游标，重连补拉就会与消息游标混淆。
+新事件断线不补发，运行面板以 `GET /team-runs` / `GET /plan` / `GET /sop-runs/{id}` / `GET /approvals`
+的快照兜底；`after_seq` 补拉仍只覆盖消息与轮次结果。
 
 单条连接在 `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
 `event: rotate` 帧：前端据此**区分「例行轮换」与「后端不可达」**，不会因为轮换而误报掉线，

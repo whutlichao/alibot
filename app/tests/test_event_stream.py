@@ -18,6 +18,19 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+import pytest
+from alibot.agent_seam import AgentEventRecord
+from alibot.events import (
+    QUEUE_LIMIT,
+    EventBus,
+    agent_event,
+    approval_required,
+    approval_resolved,
+    plan_update,
+    sop_event,
+    sse_frame,
+    team_assignment,
+)
 from fastapi.testclient import TestClient
 
 from tests.conftest import (
@@ -329,7 +342,11 @@ def test_events_of_other_channels_do_not_leak(live: dict) -> None:
 
 
 def test_stream_frames_use_seq_as_the_event_id(live: dict) -> None:
-    """每一帧的 SSE ``id`` 就是频道内 seq：前端重连的游标与消息顺序是同一个数。"""
+    """只有可补拉事件的 SSE ``id`` 是频道内 seq；快照 / live-only 帧没有 ``id``。
+
+    前端重连的游标由 ``message`` / ``round_outcome`` 推进（#141 / ADR-0020）；把 ``member_status``
+    这类快照帧也写成 ``id`` 会让 ``Last-Event-ID`` 落在「库里没有对应行」的位置。
+    """
     http = live["http"]
     agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
     channel = _channel_with(http, agent["id"])
@@ -337,19 +354,27 @@ def test_stream_frames_use_seq_as_the_event_id(live: dict) -> None:
 
     with http.stream("GET", f"/api/channels/{channel['id']}/events", params={"after_seq": 0}) as response:
         assert response.headers["content-type"].startswith("text/event-stream")
-        ids: list[str] = []
-        data_seqs: list[int] = []
+        frames: list[dict] = []
+        current: dict = {"id": None, "type": None}
         for line in response.iter_lines():
             text = line.decode() if isinstance(line, bytes) else line
             if text.startswith("id: "):
-                ids.append(text[len("id: ") :])
+                current["id"] = text[len("id: ") :]
+            elif text.startswith("event: "):
+                current["type"] = text[len("event: ") :]
             elif text.startswith("data: "):
-                data_seqs.append(json.loads(text[len("data: ") :])["seq"])
+                current["data"] = json.loads(text[len("data: ") :])
+                frames.append(current)
+                current = {"id": None, "type": None}
             elif text.startswith(":"):
                 break
 
-    assert ids == [str(seq) for seq in data_seqs]
-    assert "1" in ids
+    replayable = [frame for frame in frames if frame["type"] in {"message", "round_outcome"}]
+    live_only = [frame for frame in frames if frame["type"] not in {"message", "round_outcome"}]
+    assert replayable, frames
+    assert all(frame["id"] == str(frame["data"]["seq"]) for frame in replayable)
+    assert all(frame["id"] is None for frame in live_only), live_only
+    assert "1" in [frame["id"] for frame in replayable]
 
 
 def test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage(data_dir: Path, monkeypatch) -> None:
@@ -441,3 +466,337 @@ def test_budget_exhaustion_is_visible_in_the_round_outcome_event(live: dict) -> 
     # 预算端点与事件流说的是同一条事实。
     state = http.get(f"/api/channels/{channel['id']}/budget").json()["budget"]
     assert state["used"] == state["limit"] == 3 and state["remaining"] == 0
+
+
+# ─── #141：live-only 运行事件（agent_event / team_assignment / plan_update / sop_event / approval_*）───
+
+
+def _start_reader(
+    http: httpx.Client, path: str, params: dict | None = None
+) -> tuple[list[dict], threading.Event, threading.Thread]:
+    """后台逐帧读一段事件流，同时保留 SSE ``id`` 行（``sse_frames`` 只解析 data，看不到 id）。
+
+    事件流是持续的，逐帧读取必须走真 socket（``httpx.Client.stream``）；主线程负责触发事件，
+    读线程只做「把帧按到达顺序记下来」。``id`` 与 ``event`` 按 SSE 语义在 ``data`` 之前到达。
+    """
+    frames: list[dict] = []
+    stop = threading.Event()
+
+    def reader() -> None:
+        current: dict = {"id": None, "event": None}
+        with http.stream("GET", path, params=params or {}) as response:
+            for line in response.iter_lines():
+                if stop.is_set():
+                    return
+                text = line.decode() if isinstance(line, bytes) else line
+                if text.startswith("id: "):
+                    current["id"] = text[len("id: ") :]
+                elif text.startswith("event: "):
+                    current["event"] = text[len("event: ") :]
+                elif text.startswith("data: "):
+                    current["data"] = json.loads(text[len("data: ") :])
+                    frames.append(current)
+                    current = {"id": None, "event": None}
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    return frames, stop, thread
+
+
+def _wait_frames(frames: list[dict], predicate, *, label: str, timeout: float = 8.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate(list(frames)):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"等不到 {label}；已收到的帧：{frames}")
+
+
+def _stop_reader(stop: threading.Event, thread: threading.Thread) -> None:
+    stop.set()
+    thread.join(timeout=5)
+
+
+def test_agent_events_are_live_only_frames_with_attribution(live: dict) -> None:
+    """一轮运行产生 ``agent_event``：字段完整、归属到 target/成员/回复，且**不发** ``id``。
+
+    事件是直播面（ADR-0020）：它只在订阅者在线时到达，因此必须在触发那一轮**之前**连上；
+    这正是浏览器 ``EventSource`` 的时序。
+    """
+    http = live["http"]
+    agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+    live["seam"].replies[agent["id"]] = "完整回复"
+    channel = _channel_with(http, agent["id"])
+
+    frames, stop, reader = _start_reader(http, f"/api/channels/{channel['id']}/events", {"after_seq": 0})
+    try:
+        http.post(f"/api/channels/{channel['id']}/messages", json={"body": "请回答"})
+        live["scheduler"].drain()
+        _wait_frames(
+            frames,
+            lambda items: (
+                any(item["data"].get("type") == "agent_event" for item in items)
+                and any(item["data"].get("type") == "round_outcome" for item in items)
+            ),
+            label="agent_event 与 round_outcome",
+        )
+    finally:
+        _stop_reader(stop, reader)
+
+    agent_frames = [frame for frame in frames if frame["data"].get("type") == "agent_event"]
+    assert {frame["data"]["event_type"] for frame in agent_frames} == {
+        "REPLY_START",
+        "TEXT_BLOCK_DELTA",
+        "REPLY_END",
+    }
+    for frame in agent_frames:
+        data = frame["data"]
+        assert frame["event"] == "agent_event"
+        assert frame["id"] is None, "live-only 事件不得发 id 行（不能推进重连游标）"
+        assert data["member_id"] == agent["id"]
+        assert data["reply_id"]
+        assert data["target_id"] == channel["id"]
+        assert isinstance(data["payload"], dict)
+
+    message_frame = next(frame for frame in frames if frame["data"].get("type") == "message")
+    outcome_frame = next(frame for frame in frames if frame["data"].get("type") == "round_outcome")
+    assert message_frame["id"] == str(message_frame["data"]["seq"])
+    assert outcome_frame["id"] == str(outcome_frame["data"]["seq"])
+
+
+def _publish_runtime_events(
+    live: dict, target_id: str, task_id: str | None, frames: list[dict], expected: set[str]
+) -> None:
+    """经 EventBus 的公共发布入口反复推新事件，直到读线程看到全部类型。
+
+    为什么要重复：订阅发生在本进程内，但测试只能从「帧有没有到」判断它是否已经建立；
+    这里不 sleep 猜时序，而是持续发布直到可观察结果成立。重复发布本身也是幂等读法（无 id）。
+    """
+    events = live["app"].state.events
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        events.publish(
+            target_id,
+            agent_event(
+                AgentEventRecord(
+                    type="TEXT_BLOCK_DELTA",
+                    target_id=target_id,
+                    member_id="mem_live",
+                    reply_id="reply_live",
+                    payload={"block_id": "b1", "delta": "直播增量"},
+                )
+            ),
+        )
+        events.publish(
+            target_id,
+            team_assignment(
+                team_run_id="run_live",
+                assignment_id="assignment_live",
+                task_id=task_id,
+                member_id="mem_live",
+                reply_id="reply_live",
+                state="started",
+            ),
+        )
+        events.publish(
+            target_id,
+            plan_update(plan_run_id="plan_live", member_id="mem_live", task={"id": "plan_task_live"}),
+        )
+        events.publish(
+            target_id,
+            sop_event(sop_run_id="sop_live", step_index=0, phase="started", payload={"step": "verify"}),
+        )
+        events.publish(
+            target_id,
+            approval_required(
+                reply_id="reply_live",
+                member_id="mem_live",
+                tool_calls=[{"tool_call_id": "call_live", "name": "write_file"}],
+            ),
+        )
+        events.publish(
+            target_id,
+            approval_resolved(reply_id="reply_live", state="resolved", decisions=[{"confirmed": False}]),
+        )
+        seen = {frame["data"].get("type") for frame in frames}
+        if expected <= seen:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"等不到 live-only 事件 {sorted(expected)}；已收到的帧：{frames}")
+
+
+def test_task_stream_forwards_every_live_runtime_event_and_task_id(live: dict) -> None:
+    """任务线程 SSE 也透传运行记录；``team_assignment.task_id`` 在 task target 上非空。"""
+    http = live["http"]
+    channel = http.post(
+        "/api/channels", json={"name": "任务事件", "description": "", "member_ids": []}
+    ).json()["channel"]
+    task = http.post(f"/api/channels/{channel['id']}/tasks", json={"title": "整理"}).json()["task"]
+
+    frames, stop, reader = _start_reader(http, f"/api/tasks/{task['id']}/events", {"after_seq": 0})
+    try:
+        _publish_runtime_events(
+            live,
+            task["target_id"],
+            task["id"],
+            frames,
+            {
+                "agent_event",
+                "team_assignment",
+                "plan_update",
+                "sop_event",
+                "approval_required",
+                "approval_resolved",
+            },
+        )
+        _wait_frames(
+            frames,
+            lambda items: any(item["data"].get("type") == "message" for item in items),
+            label="任务线程快照消息",
+        )
+    finally:
+        _stop_reader(stop, reader)
+
+    live_frames = [
+        frame
+        for frame in frames
+        if frame["data"].get("type") in {"agent_event", "team_assignment", "plan_update", "sop_event"}
+        or frame["data"].get("type", "").startswith("approval_")
+    ]
+    assert live_frames
+    for frame in live_frames:
+        assert frame["id"] is None, "新事件不得发 id 行"
+        assert frame["data"]["target_id"] == task["target_id"]
+    assignment = next(frame["data"] for frame in live_frames if frame["data"]["type"] == "team_assignment")
+    assert assignment["task_id"] == task["id"]
+    assert assignment["state"] == "started"
+    # 既有可补拉事件在任务线程上仍带 id（重连游标只由它们推进）。
+    message_frame = next(frame for frame in frames if frame["data"].get("type") == "message")
+    assert message_frame["id"] == str(message_frame["data"]["seq"])
+
+
+@pytest.mark.parametrize("kind", ["channel", "dm"])
+def test_channel_and_dm_streams_forward_live_runtime_events_after_a_cursor(live: dict, kind: str) -> None:
+    """重连带 ``after_seq>=1`` 时，live-only 事件（没有 seq）仍必须透传。
+
+    旧实现按 ``seq < after_seq`` 丢弃队列事件；新事件没有 seq（视作 0），会在重连后的流里
+    被整批静默吞掉——这正是「运行面板只有刷新才更新」的根因。
+    """
+    http = live["http"]
+    agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+    if kind == "channel":
+        channel = _channel_with(http, agent["id"])
+        target_id = channel["id"]
+        path = f"/api/channels/{channel['id']}/events"
+        http.post(f"/api/channels/{channel['id']}/messages", json={"body": "先有一条消息"})
+    else:
+        dm = http.post("/api/dms", json={"agent_id": agent["id"]}).json()["dm"]
+        target_id = dm["id"]
+        path = f"/api/dms/{dm['id']}/events"
+        http.post(f"/api/dms/{dm['id']}/messages", json={"body": "先有一条私信"})
+    live["scheduler"].drain()
+
+    frames, stop, reader = _start_reader(http, path, {"after_seq": 1})
+    try:
+        _publish_runtime_events(
+            live,
+            target_id,
+            None,
+            frames,
+            {
+                "agent_event",
+                "team_assignment",
+                "plan_update",
+                "sop_event",
+                "approval_required",
+                "approval_resolved",
+            },
+        )
+    finally:
+        _stop_reader(stop, reader)
+
+    live_frames = [frame for frame in frames if frame["id"] is None]
+    assert {frame["data"]["type"] for frame in live_frames} >= {
+        "agent_event",
+        "team_assignment",
+        "plan_update",
+        "sop_event",
+        "approval_required",
+        "approval_resolved",
+    }
+
+
+def test_sse_frame_emits_id_only_for_replayable_events() -> None:
+    """帧形状的数据契约：只有可补拉的 message / round_outcome 带 ``id``。"""
+    assert sse_frame({"type": "message", "seq": 4, "message": {}}).startswith("id: 4\n")
+    assert sse_frame({"type": "round_outcome", "seq": 5, "outcome": {}}).startswith("id: 5\n")
+    for type_ in (
+        "agent_event",
+        "team_assignment",
+        "plan_update",
+        "sop_event",
+        "approval_required",
+        "approval_resolved",
+        "member_status",
+        "typing",
+    ):
+        frame = sse_frame({"type": type_, "payload": {}})
+        assert not frame.startswith("id: "), f"{type_} 是 live-only / 快照事件，不得带 id"
+        assert f"event: {type_}\n" in frame
+
+
+def test_event_bus_queue_full_drops_events_without_blocking_the_writer() -> None:
+    """跟不上的订阅者丢事件、不阻塞写路径；已送达的既有事件仍在队列里（先进先出）。"""
+    bus = EventBus()
+    with bus.subscribe("target-1") as subscriber:
+        for index in range(QUEUE_LIMIT * 2):
+            published = bus.publish(
+                "target-1",
+                {"type": "typing", "seq": index, "member_id": "mem", "active": True, "reason": "订阅者很慢"},
+            )
+            assert published["target_id"] == "target-1"
+
+        assert subscriber.qsize() == QUEUE_LIMIT
+        assert subscriber.get_nowait()["seq"] == 0
+        # 没订阅者的 target 照旧只做构造，不产生队列。
+        assert bus.publish("target-2", {"type": "typing"})["target_id"] == "target-2"
+
+
+def test_task_round_emits_agent_events_on_the_task_target(live: dict) -> None:
+    """真实的一轮任务线程也直播 ``agent_event``：归属是 **task target**，不是频道。
+
+    这是任务线程运行面板的数据来源；后续票的 team 分派 / Plan / 审批事件走同一条总线与同一种帧。
+    """
+    http = live["http"]
+    agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+    live["seam"].replies[agent["id"]] = "任务线程回复"
+    channel = _channel_with(http, agent["id"])
+    task = http.post(f"/api/channels/{channel['id']}/tasks", json={"title": "直播任务"}).json()["task"]
+    http.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": agent["id"]})
+    live["scheduler"].drain()
+
+    frames, stop, reader = _start_reader(http, f"/api/tasks/{task['id']}/events", {"after_seq": 0})
+    try:
+        http.post(f"/api/tasks/{task['id']}/messages", json={"body": "请处理"})
+        live["scheduler"].drain()
+        _wait_frames(
+            frames,
+            lambda items: (
+                any(item["data"].get("type") == "agent_event" for item in items)
+                and any(item["data"].get("type") == "round_outcome" for item in items)
+            ),
+            label="任务线程的 agent_event 与 round_outcome",
+        )
+    finally:
+        _stop_reader(stop, reader)
+
+    agent_frames = [frame for frame in frames if frame["data"].get("type") == "agent_event"]
+    assert agent_frames
+    for frame in agent_frames:
+        assert frame["id"] is None
+        assert frame["data"]["target_id"] == task["target_id"]
+        assert frame["data"]["member_id"] == agent["id"]
+        assert frame["data"]["reply_id"]
+    outcome_frame = next(frame for frame in frames if frame["data"].get("type") == "round_outcome")
+    assert outcome_frame["id"] == str(outcome_frame["data"]["seq"])
+    assert outcome_frame["data"]["outcome"]["target_id"] == task["target_id"]
