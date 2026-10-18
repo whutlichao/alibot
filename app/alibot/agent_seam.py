@@ -39,7 +39,7 @@ SEAM_STATUSES = ("replied", "ignored", "failed", "silent")
 
 # 「声明沉默」的结构化通道：一个**只记录意图**的工具，落在既有 toolkit 那一层。
 #
-# 为什么是工具调用而不是别的出口：AgentScope 2.0.9 的另一条结构化出口是
+# 为什么是工具调用而不是别的出口：AgentScope 2.0.10 的另一条结构化出口是
 # ``Agent.reply(..., structured_schema=…)``，它经**强制** ``tool_choice``
 # （``ToolChoice(mode="generate_structured_output")``，见 ``agentscope/model/_base.py``）实现；
 # 而强制工具选择正是各家差异最大的那一档（思考模式下会被拒绝，``OllamaChatModel._format_tools``
@@ -68,7 +68,7 @@ PROVIDER_KEY_ENV: dict[str, tuple[str, ...]] = {
     "ollama": (),
 }
 
-# provider → AgentScope 2.0.9 credential 类型的 discriminator 与它的类型白名单。
+# provider → AgentScope 2.0.10 credential 类型的 discriminator 与它的类型白名单。
 # 取自 ``agentscope.credential`` 的子类 ``type`` 字段（见 Answer 的版本核对记录）。
 PROVIDER_CREDENTIAL_TYPE: dict[str, str] = {
     "dashscope": "dashscope_credential",
@@ -624,7 +624,7 @@ def _round_toolkit(
 def _silence_tools(declarations: list[None]) -> list[Any]:
     """「声明沉默」这个结构化通道：**只记录意图**、不写任何东西（写入仍由编排决定）。
 
-    工具是**自愿**调用的、不做强制 ``tool_choice``：强制工具选择在 AgentScope 2.0.9 里是各家差异
+    工具是**自愿**调用的、不做强制 ``tool_choice``：强制工具选择在 AgentScope 2.0.10 里是各家差异
     最大的一档（思考模式会被拒绝、Ollama 传输层忽略 mode），而本通道只需要「模型想沉默时有一个
     正式的出口」——它自愿调用，我们据此落 ``silent``；不调用就完全退回既有判据。
     """
@@ -643,7 +643,7 @@ def _silence_tools(declarations: list[None]) -> list[Any]:
         behavior=PermissionBehavior.ALLOW,
         message="沉默声明只记录为本轮的结构化结果，不改写任何消息或任务。",
     )
-    # AgentScope 2.0.9 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
+    # AgentScope 2.0.10 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
     tools: list[ToolBase] = [
         FunctionTool(declare_silence, permission=permission, is_read_only=True)  # type: ignore[arg-type]
     ]
@@ -679,7 +679,7 @@ def _task_action_tools(
         behavior=PermissionBehavior.ALLOW,
         message="任务动作只记录为本轮结构化结果，执行前仍会经过服务端授权校验。",
     )
-    # AgentScope 2.0.9 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
+    # AgentScope 2.0.10 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
     tools: list[ToolBase] = [FunctionTool(set_task_status, permission=permission)]  # type: ignore[arg-type]
     if actor_id == context.assignee_member_id:
         transfer_options = context.transfer_options_for(actor_id)
