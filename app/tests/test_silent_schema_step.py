@@ -67,7 +67,7 @@ def test_a_v14_library_migrates_to_a_check_that_accepts_silent(tmp_path: Path) -
         f"v{SOURCE_VERSION} 必须被接受，实际 {completed.returncode}"
         f"（stdout={completed.stdout!r} stderr={completed.stderr!r}）"
     )
-    assert f"{SOURCE_VERSION} → {SCHEMA_VERSION}" in completed.stdout, "报告必须点明这一步"
+    assert f"{SOURCE_VERSION} → {SOURCE_VERSION + 1}" in completed.stdout, "报告必须点明这一步"
 
     conn = _connect(db_path)
     try:

@@ -67,10 +67,17 @@ AVATAR_SLOT_COUNT = 5
 # `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..14）。
 # 15 = **本票 #58**（结构化沉默信号 `silent`：`round_outcome.status` 的库级 CHECK 纳入第六个词，
 # ADR-0008）。SQLite 改表级 CHECK 只能重建表，因此多了一步 `14 → 15`（`migrate._step_14_to_15`）；
-# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号，后续票从 16 起。
-# 代价同上：被 14 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
-# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..15）。
-SCHEMA_VERSION = 15
+# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号。
+# 16 = **本票 #138**（AgentScope 2 对齐：team 模式 / Plan / SOP 的纯增量库形态，规格 §4.1 / §4.2 / ADR-0018 /
+# ADR-0022 / ADR-0023）。它只加列与表、不重建既有表、不回填业务数据；`15 → 16` 一步
+# （`migrate._step_15_to_16`）。判据同前：main 是 15、16 是满足「必须高于当前 main」的最小号。
+# 17 = **本票 #139**（AgentScope 2 对齐：workspace / permission / MCP / Skill / approval 的纯增量库形态，
+# 规格 §4.1 / §4.3 / ADR-0021）。它只加列与表、不重建既有表、不回填业务数据；旧 `remote_consent`
+# 行复制成 `remote_consent_scope` 的 `model` 行（旧表保留）；`16 → 17` 一步
+# （`migrate._step_16_to_17`）。判据同前：main 是 16、17 是满足「必须高于当前 main」的最小号。
+# 代价同上：被 16 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
+# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..17）。
+SCHEMA_VERSION = 17
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -239,8 +246,35 @@ CREATE TABLE IF NOT EXISTS channel (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  -- team 是**频道级**拓扑开关（ADR-0018 / ADR-0022）：缺省 `autonomous`，旧行按默认值解释。
+  -- team 必须有一个非空队长；这条不变量用触发器守，避免为「加约束」重建 channel 表。
+  mode        TEXT NOT NULL DEFAULT 'autonomous' CHECK (mode IN ('autonomous', 'team')),
+  team_leader_member_id TEXT REFERENCES member(id),
+  -- workspace 是**频道级项目边界**（ADR-0021 §一）：所有成员共享这个根，文件工具的相对路径从这里
+  -- 起算。``NULL`` = 未配置，沿用首版「没有文件 / shell 工具」的行为（ADR-0021 §六）。
+  -- 后端与权限档是频道的**默认值**，Agent 可在 ``agent_config`` 上覆盖；旧行按列默认值解释
+  -- （根未配置 / ``local`` / ``ask-writes``，规格 §4.1）。
+  workspace_root TEXT,
+  workspace_backend TEXT NOT NULL DEFAULT 'local'
+    CHECK (workspace_backend IN ('local', 'docker')),
+  permission_mode TEXT NOT NULL DEFAULT 'ask-writes'
+    CHECK (permission_mode IN ('read-only', 'ask-writes', 'trusted-writes'))
 );
+
+CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_insert
+BEFORE INSERT ON channel
+WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'team channel requires a leader');
+END;
+
+CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_update
+BEFORE UPDATE OF mode, team_leader_member_id ON channel
+WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'team channel requires a leader');
+END;
 
 -- target 是一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果四件事
 -- 全部挂 ``target_id``，``UNIQUE(target_id, seq)`` 因此说的是「target 内单调」。
@@ -397,6 +431,98 @@ CREATE TABLE IF NOT EXISTS channel_budget_limit (
   updated_at   TEXT NOT NULL
 );
 
+-- ─── team 运行记录（ADR-0018 / ADR-0022 / 规格 §4.2） ───────────────────────
+-- team 模式经 ``task.channel_id -> channel.mode`` 解析；``task`` 表**不新增 mode 列**（ADR-0022 §一）。
+-- 因此下面两张表的 ``target_id`` 既可以是 channel 型，也可以是该频道下的 task 型；
+-- ``team_assignment.task_id`` 在 task target 上非空。它们**不是**消息、不进未读/搜索/预算。
+CREATE TABLE IF NOT EXISTS team_run (
+  id                TEXT PRIMARY KEY,
+  target_id         TEXT NOT NULL REFERENCES target(id),
+  leader_member_id  TEXT NOT NULL REFERENCES member(id),
+  base_seq          INTEGER NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN
+                      ('running', 'completed', 'failed', 'interrupted', 'invalid-leader')),
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS team_assignment (
+  id                TEXT PRIMARY KEY,
+  team_run_id       TEXT NOT NULL REFERENCES team_run(id),
+  target_id         TEXT NOT NULL REFERENCES target(id),
+  task_id           TEXT REFERENCES task(id),
+  leader_member_id  TEXT NOT NULL REFERENCES member(id),
+  member_id         TEXT NOT NULL REFERENCES member(id),
+  tool_call_id      TEXT NOT NULL,
+  prompt            TEXT NOT NULL,
+  state             TEXT NOT NULL CHECK (state IN
+                      ('started', 'succeeded', 'failed', 'interrupted', 'budget-exhausted')),
+  jump_consumed     INTEGER NOT NULL DEFAULT 0 CHECK (jump_consumed IN (0, 1)),
+  reply_excerpt     TEXT NOT NULL DEFAULT '',
+  error             TEXT NOT NULL DEFAULT '',
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_assignment_target
+ON team_assignment(target_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_team_assignment_team_run ON team_assignment(team_run_id);
+
+-- ─── Plan / SOP 运行记录（ADR-0023 / 规格 §4.2） ────────────────────────────
+-- Plan 与 SOP 各有独立状态机，**不是**任务五态：它们不进看板、未读、搜索、唤醒、预算，
+-- 也不自动改 ``task`` 行。Plan 是工作态（可更新、可按 run 级联清理），SOP 的历史由 ``sop_run`` 承载。
+CREATE TABLE IF NOT EXISTS plan_run (
+  id           TEXT PRIMARY KEY,
+  target_id    TEXT NOT NULL REFERENCES target(id),
+  member_id    TEXT NOT NULL REFERENCES member(id),
+  base_seq     INTEGER NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  started_at   TEXT NOT NULL,
+  finished_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS plan_task (
+  id           TEXT PRIMARY KEY,
+  plan_run_id  TEXT NOT NULL REFERENCES plan_run(id) ON DELETE CASCADE,
+  seq          INTEGER NOT NULL,
+  subject      TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  state        TEXT NOT NULL CHECK (state IN ('pending', 'in_progress', 'completed')),
+  owner        TEXT,
+  blocks       TEXT NOT NULL DEFAULT '[]',
+  blocked_by   TEXT NOT NULL DEFAULT '[]',
+  metadata     TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  deleted_at   TEXT,
+  UNIQUE (plan_run_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS sop_definition (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  -- JSON：executor/verifier member ids、subject、description、max_attempts（ADR-0023 §三）。
+  steps        TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sop_run (
+  id                 TEXT PRIMARY KEY,
+  sop_definition_id  TEXT NOT NULL REFERENCES sop_definition(id),
+  target_id          TEXT NOT NULL REFERENCES target(id),
+  leader_member_id   TEXT NOT NULL REFERENCES member(id),
+  -- SOPRunState.model_dump_json() 的原样快照。
+  state              TEXT NOT NULL,
+  phase              TEXT NOT NULL CHECK (phase IN
+                       ('pending', 'running', 'awaiting', 'completed', 'failed')),
+  started_at         TEXT NOT NULL,
+  finished_at        TEXT,
+  updated_at         TEXT NOT NULL
+);
+
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
 -- role 是 Agent 的配置数据（用户输入原样落库），不是代码常量、也不折进系统提示。
 -- ``auto_claim``（#65 / ADR-0010）是「频道内新建任务后，编排要不要替它接手这张任务」的配置开关，
@@ -408,6 +534,13 @@ CREATE TABLE IF NOT EXISTS agent_config (
   system_prompt TEXT NOT NULL DEFAULT '',
   enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   auto_claim    INTEGER NOT NULL DEFAULT 0 CHECK (auto_claim IN (0, 1)),
+  -- workspace 配置（ADR-0021 §一 / §二 / §四）：后端与权限档是 Agent 级覆盖，``NULL`` = 跟随频道
+  -- 默认（旧行于是逐字保持「未配置」的语义）；``allow_local_shell`` 缺省关闭——本地 Bash 默认不挂，
+  -- 显式开启后每次调用仍走审批；``docker_image`` 缺省即 AgentScope 的内置镜像。
+  workspace_backend   TEXT CHECK (workspace_backend IN ('local', 'docker')),
+  permission_mode     TEXT CHECK (permission_mode IN ('read-only', 'ask-writes', 'trusted-writes')),
+  allow_local_shell   INTEGER NOT NULL DEFAULT 0 CHECK (allow_local_shell IN (0, 1)),
+  docker_image        TEXT,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -456,6 +589,80 @@ CREATE TABLE IF NOT EXISTS reminder (
 CREATE TABLE IF NOT EXISTS remote_consent (
   provider        TEXT PRIMARY KEY,
   acknowledged_at TEXT NOT NULL
+);
+
+-- 远端数据面的**统一**一次性确认（#139 / ADR-0021 §三）：模型 / 远端 MCP / Docker registry 三类
+-- 数据面各按 scope 记一次。它是**新**的读路径正本；旧 ``remote_consent`` 只作为兼容面保留，
+-- 迁移把它已有的 ``provider`` 行复制成 ``('model', provider, acknowledged_at)``（``16 → 17``）。
+-- 与旧表一样**只**存「何时确认过」，不存凭证、不存连接参数。
+CREATE TABLE IF NOT EXISTS remote_consent_scope (
+  scope_kind       TEXT NOT NULL CHECK (scope_kind IN ('model', 'mcp', 'docker')),
+  scope_id         TEXT NOT NULL,
+  acknowledged_at  TEXT NOT NULL,
+  PRIMARY KEY (scope_kind, scope_id)
+);
+
+-- ─── 权限规则 / 审批 / MCP / Skill（#139 / 规格 §4.3 / ADR-0021 §三 / §四） ──
+-- 权限规则是**配置**（不是消息、不是任务）：``scope_kind`` + ``scope_id`` 指向频道或 Agent，
+-- ``behavior`` 只允许三档（allow / deny / ask）——不暴露 BYPASS / DONT_ASK（ADR-0021 §四）。
+-- 规则按 ``tool_name`` + ``pattern`` 匹配；空 pattern = 该工具的全部调用。
+CREATE TABLE IF NOT EXISTS permission_rule (
+  id          TEXT PRIMARY KEY,
+  scope_kind  TEXT NOT NULL CHECK (scope_kind IN ('channel', 'agent')),
+  scope_id    TEXT NOT NULL,
+  tool_name   TEXT NOT NULL,
+  pattern     TEXT NOT NULL DEFAULT '',
+  behavior    TEXT NOT NULL CHECK (behavior IN ('allow', 'deny', 'ask')),
+  created_at  TEXT NOT NULL
+);
+
+-- HITL 审批（#139 / ADR-0021 §四）：一条待决的 ``RequireUserConfirmEvent``。``tool_calls`` 是
+-- JSON（工具调用块 + suggestions），``decisions`` 是 JSON 数组；**不存凭证**。``state`` 的
+-- ``expired`` 是进程重启时对残留 pending 的处置；跨重启恢复不在首版（D19）。
+CREATE TABLE IF NOT EXISTS approval_request (
+  reply_id     TEXT PRIMARY KEY,
+  target_id    TEXT NOT NULL REFERENCES target(id),
+  member_id    TEXT NOT NULL REFERENCES member(id),
+  team_run_id  TEXT REFERENCES team_run(id),
+  tool_calls   TEXT NOT NULL,
+  state        TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'denied', 'expired')),
+  decisions    TEXT NOT NULL DEFAULT '[]',
+  requested_at TEXT NOT NULL,
+  resolved_at  TEXT
+);
+
+-- MCP 声明（#139 / ADR-0021 §三）：只存 transport / command / args / url 与 ``env_names``
+-- （变量**名**，值只从进程环境读——库里不存密钥）。同名 server 在同一个 scope 内唯一。
+CREATE TABLE IF NOT EXISTS mcp_server (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  transport    TEXT NOT NULL CHECK (transport IN ('stdio', 'http', 'sse')),
+  command      TEXT NOT NULL DEFAULT '',
+  args         TEXT NOT NULL DEFAULT '[]',
+  url          TEXT NOT NULL DEFAULT '',
+  env_names    TEXT NOT NULL DEFAULT '[]',
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  scope_kind   TEXT NOT NULL CHECK (scope_kind IN ('channel', 'agent')),
+  scope_id     TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (scope_kind, scope_id, name)
+);
+
+-- Skill 元数据（#139 / ADR-0021 §三）：字节在 ``workspace_root/.alibot/skills/<member_id>/``，
+-- 库里只存来源路径与内容 hash；同名 skill 在同一个 scope 内唯一。安装只接受本机来源。
+CREATE TABLE IF NOT EXISTS skill (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  source_path  TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  scope_kind   TEXT NOT NULL CHECK (scope_kind IN ('channel', 'agent')),
+  scope_id     TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (scope_kind, scope_id, name)
 );
 
 -- 轮次结果（spec #1 §5）：一轮的处理结果。append-only，与消息同级的取证面。
