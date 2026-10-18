@@ -147,6 +147,21 @@ Success: no issues found in 89 source files   # mypy
 `test_docs_vocabulary_guard.py`（10 条：1 条段落存在性 + `round_outcome` 六态 + 三种消息 kind 各在
 README 里）与 `test_backend_copy.py`（14 条）逐条通过。
 
+合并集成分支 tip（`7bde01d merge(#156)`）后按纪律**复跑**：
+
+```console
+$ ./scripts/check.sh
+827 passed, 9 skipped in 354.29s (0:05:54)
+All checks passed!
+Success: no issues found in 89 source files
+ℹ tests 180
+ℹ pass 180
+ℹ fail 0
+门禁全绿
+```
+
+Node 用例从 164 增至 180 是集成分支 #156 新增的 `channel_resources_ui.test.cjs`；pytest 集不变。
+
 ## 残余与说明
 
 - **README 中 `{id}` 是本仓文档的既有占位写法**：代码里的路径参数名是 `{channel_id}` /
