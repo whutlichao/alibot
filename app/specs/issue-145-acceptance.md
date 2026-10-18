@@ -138,12 +138,12 @@ cd /tmp/alibot-wt/issue-145-impl && scripts/check.sh
 
 读数：`门禁全绿`。
 
-- pytest 全量：`787 passed, 2 skipped`（含本票 10 条；AC7 在 #144 合入后复跑）；
+- pytest 全量：`791 passed, 2 skipped`（含本票 10 条；AC7 在 #144 合入后复跑）；
 - `ruff check`：`All checks passed!`；
-- `ruff format --check`：`184 files already formatted`；
-- mypy（仓库根）：`Success: no issues found in 77 source files`；
+- `ruff format --check`：`187 files already formatted`；
+- mypy（仓库根）：`Success: no issues found in 79 source files`；
 - pyright：无错误；
 - 前端 DOM 用例（Bun）：`tests 136 / pass 136 / fail 0`。
 
-分支已 merge 集成 tip `58d10df`（含 #144 的快照端点与 #149 修复）。同一合并还修正了集成 tip 上
+分支已 merge 集成 tip `ceb393c`（含 #144 快照端点、#149 修复与 #146 Plan）。同一合并还修正了集成 tip 上
 `app/tests/test_approval_seam.py` 的一处行宽格式（`ruff format --check` 会拒绝；纯换行，无语义变化）。
