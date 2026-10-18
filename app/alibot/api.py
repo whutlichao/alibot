@@ -399,7 +399,14 @@ def create_app(
         database,
         # 真实适配器按**语言偏好**渲染它自己产出的文案（轮次 reason / 凭证原因）：取值方式由
         # 装配点注入，适配层自己不依赖库（ADR-0009 第二层）。
-        seam if seam is not None else AgentScopeAgentSeam(locale_of=lambda: locale_of(database)),
+        seam
+        if seam is not None
+        else AgentScopeAgentSeam(
+            locale_of=lambda: locale_of(database),
+            # workspace 装配钩子（#148）：频道显式配置 ``workspace_root`` 后这一轮才挂受限文件工具；
+            # 未配置时读路径返回 None，行为逐字不变。
+            workspace_of=database.workspace_settings_for_target,
+        ),
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
     )

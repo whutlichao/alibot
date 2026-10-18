@@ -2336,6 +2336,59 @@ class Database:
             raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
         return self._channel_payload(row)
 
+    def workspace_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """把 target 解析到频道的 workspace 配置，并叠加 Agent 级覆盖（#148 的装配读路径）。
+
+        返回 ``None`` 表示**未配置**（频道没有 ``workspace_root`` / 不是 channel 或 task target /
+        target 不存在）——调用方据此保持「没有文件与 shell 工具」的既有行为（ADR-0021 §六）。
+        本方法只读配置；写入仍由频道配置端点（#142）负责。
+        """
+        with self._lock:
+            target = self._conn.execute("SELECT kind FROM target WHERE id = ?", (target_id,)).fetchone()
+            if target is None:
+                return None
+            if target["kind"] == "channel":
+                channel_id = target_id
+            elif target["kind"] == "task":
+                task = self._conn.execute(
+                    "SELECT channel_id FROM task WHERE target_id = ?", (target_id,)
+                ).fetchone()
+                if task is None:
+                    return None
+                channel_id = str(task["channel_id"])
+            else:  # DM 没有项目根
+                return None
+
+            channel = self._conn.execute(
+                "SELECT workspace_root, workspace_backend, permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+            if channel is None or not str(channel["workspace_root"] or "").strip():
+                return None
+            agent = self._conn.execute(
+                "SELECT workspace_backend, permission_mode, allow_local_shell, docker_image "
+                "FROM agent_config WHERE member_id = ?",
+                (member_id,),
+            ).fetchone()
+
+        return {
+            "root": str(channel["workspace_root"]),
+            "backend": str(
+                (agent["workspace_backend"] if agent is not None else None)
+                or channel["workspace_backend"]
+                or "local"
+            ),
+            "permission_mode": str(
+                (agent["permission_mode"] if agent is not None else None)
+                or channel["permission_mode"]
+                or "ask-writes"
+            ),
+            "allow_local_shell": bool(agent["allow_local_shell"]) if agent is not None else False,
+            "docker_image": (
+                str(agent["docker_image"]) if agent is not None and agent["docker_image"] else None
+            ),
+        }
+
     def create_dm(self, agent_id: str, owner_id: str = OWNER_ID) -> tuple[dict[str, Any], bool]:
         """创建或复用 owner 与单一 Agent 的两方私信，返回 (DM, 是否新建)。"""
         clean_agent_id = (agent_id or "").strip()
