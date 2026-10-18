@@ -542,6 +542,69 @@ def test_changed_docker_image_discards_the_pooled_container(
     assert key not in workspace_module._pool
 
 
+def test_host_creates_the_alibot_layout_before_container_initialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI 回归：容器初始化会以 root 创建 ``.alibot``；host 必须先把成员分区建好。
+
+    Linux runner 上 bind mount 的属主是容器 root，host 在容器初始化后再 ``makedirs``
+    成员分区会拿到 ``PermissionError``。这里用「初始化时把 `.alibot/agents` 改成只读」
+    复现同一个形状，并断言 host 布局在 ``initialize()`` 之前已经存在。
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    member = _unique("mem")
+    session = session_partition_id(member, "ch_docker")
+    seen: dict[str, bool] = {}
+
+    class _FakeWorkspace:
+        def __init__(self, **options: Any) -> None:
+            self.options = options
+            self.env = dict(options.get("env") or {})
+            self._client = None
+            self._gateway = None
+
+        async def initialize(self) -> None:
+            seen["agent_dir_before_init"] = (root / ".alibot" / "agents" / member).is_dir()
+            seen["session_dir_before_init"] = (root / ".alibot" / "sessions" / session).is_dir()
+            agents = root / ".alibot" / "agents"
+            agents.mkdir(parents=True, exist_ok=True)
+            agents.chmod(0o555)  # 模拟容器 root 创建出的不可写祖先
+
+        async def close(self) -> None:
+            return None
+
+        def get_backend(self) -> Any:
+            return object()
+
+    monkeypatch.setattr(workspace_module, "ProjectDockerWorkspace", _FakeWorkspace)
+    try:
+        mount = _run(assemble_workspace(_settings(root), member_id=member, session_id=session))
+        assert seen == {"agent_dir_before_init": True, "session_dir_before_init": True}
+        assert Path(mount.agent_dir).is_dir()
+    finally:
+        (root / ".alibot" / "agents").chmod(0o755)
+        with workspace_module._pool_lock:
+            workspace_module._pool.clear()
+        workspace_module.clear_docker_failure(member)
+
+
+@requires_docker
+def test_release_closes_the_gateway_and_the_docker_client(docker_root: Path) -> None:
+    """一轮结束必须关掉 gateway（aiohttp UnixConnector）与 aiodocker client，避免 unraisable。"""
+    member = _unique("mem")
+    session = session_partition_id(member, "ch_docker")
+
+    async def scenario() -> None:
+        mount = await assemble_workspace(_settings(docker_root), member_id=member, session_id=session)
+        assert mount.workspace._gateway is not None
+        await release_workspace_mount(mount)
+        assert mount.workspace._gateway is None
+        assert mount.workspace._client is None
+
+    _run(scenario())
+
+
 @requires_docker
 def test_env_is_an_allowlist_and_does_not_leak_process_secrets(
     docker_root: Path, monkeypatch: pytest.MonkeyPatch

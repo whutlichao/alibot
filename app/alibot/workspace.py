@@ -686,11 +686,17 @@ async def assemble_docker_workspace(
     workspace_id = docker_workspace_id(member, session)
     container_name = f"as_ws_{workspace_id}"
 
+    # CI（Linux runner）回归：容器以 root 创建 `/workspace/.alibot/...`，bind mount 上这些
+    # 目录的属主是容器 root；host 在 initialize 之后再 `makedirs` 会拿 PermissionError。
+    # 因此 **先由 host 建好完整分区**，容器 `mkdir -p` 看到已存在的用户目录。
+    _ensure_layout(root, member, session)
+
     cached = docker_unavailable_reason(member)
     if cached is not None:
         raise DockerWorkspaceUnavailable(cached)
 
     # 复用：上一轮结束后 client 已关、容器仍在；换到当前 loop 的 client 后继续用。
+    image = settings.docker_image
     with _pool_lock:
         pooled = _pool.get(key)
     if pooled is not None and pooled.image != settings.docker_image:
@@ -708,7 +714,19 @@ async def assemble_docker_workspace(
                 pooled.active += 1
                 pooled.last_used = time.monotonic()
             clear_docker_failure(member)
-            return _new_mount(pooled, reused=True)
+            try:
+                return _new_mount(pooled, reused=True)
+            except Exception as error:
+                with suppress(Exception):
+                    await pooled.workspace.close()
+                with suppress(Exception):
+                    await _delete_container(container_name)
+                with _pool_lock:
+                    if _pool.get(key) is pooled:
+                        _pool.pop(key, None)
+                reason = _docker_reason(error, locale, timeout=DOCKER_INIT_TIMEOUT_SECONDS, image=image)
+                record_docker_failure(member, reason)
+                raise DockerWorkspaceUnavailable(reason) from error
         with _pool_lock:
             if _pool.get(key) is pooled:
                 _pool.pop(key, None)
@@ -716,7 +734,6 @@ async def assemble_docker_workspace(
             await _delete_container(container_name)
 
     # 远端镜像：本机已有则直接使用；否则必须已有 scope 确认，未确认不拉取。
-    image = settings.docker_image
     present = False
     if image:
         present = await _image_present_locally(image)
@@ -762,7 +779,19 @@ async def assemble_docker_workspace(
     with _pool_lock:
         _pool[key] = entry
     clear_docker_failure(member)
-    return _new_mount(entry, reused=False)
+    try:
+        return _new_mount(entry, reused=False)
+    except Exception as error:
+        with _pool_lock:
+            if _pool.get(key) is entry:
+                _pool.pop(key, None)
+        with suppress(Exception):
+            await workspace.close()
+        with suppress(Exception):
+            await _delete_container(container_name)
+        reason = _docker_reason(error, locale, timeout=timeout, image=image)
+        record_docker_failure(member, reason)
+        raise DockerWorkspaceUnavailable(reason) from error
 
 
 async def release_workspace_mount(mount: Any) -> None:
@@ -776,6 +805,16 @@ async def release_workspace_mount(mount: Any) -> None:
         return
 
     workspace = mount.workspace
+    # gateway 是 aiohttp 客户端（UnixConnector 指向容器内网关）；它属于当前 loop，
+    # 必须在 loop 关闭前显式 aclose，否则 pytest 会把未关闭的 socket/transport 报成
+    # unraisable。容器本身仍留在池里，下一轮由 _rebind_entry 换句柄。
+    gateway = getattr(workspace, "_gateway", None)
+    if gateway is not None:
+        with suppress(Exception):
+            await gateway.aclose()
+    workspace._gateway = None
+    workspace._mcp_instances.clear()
+    workspace._mcp_last_used.clear()
     with suppress(Exception):
         if workspace._client is not None:
             await workspace._client.close()
