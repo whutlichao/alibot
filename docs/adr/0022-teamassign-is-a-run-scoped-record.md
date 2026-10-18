@@ -4,6 +4,12 @@
 target**；该频道下的**任务线程仍按既有任务语义**（受派者/认领）唤醒，`TeamAssign` 在任务线程里只作
 **运行期分派记录**，不改任务五态。
 
+## 决策记录
+
+- **Context**：一次队长轮可多次分派给多个成员；任务五态有 actor/认领/预算纪律，不能由运行期分派改写。
+- **Decision**：`TeamAssign` 写 `team_assignment` 运行记录；task target 里可带 `task_id` 引用；不改 `task.status`/`assignee_member_id`/`claimed_at`，不写任务变更 `system` 消息。
+- **Consequences**：看板不自动反映队长分派；任务历史与运行记录分属两个视图；用户若要把分派变成任务，需显式人类动作。
+
 ## 一、两个对象，各自的状态机
 
 - **任务 (Task)**：用户可观察的工作对象，挂在 `kind='task'` 的 target 上，有五个状态

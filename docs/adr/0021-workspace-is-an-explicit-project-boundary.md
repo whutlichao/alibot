@@ -6,6 +6,12 @@
 的关系。随后两轮 ask 把粒度与边界钉死：频道配项目根，Agent 配后端与权限；本地默认只开文件工具并强制根限定，
 Bash 默认仅在 Docker 开放；MCP/Skill 只接受本机来源；权限只暴露三档，不暴露 BYPASS。
 
+## 决策记录
+
+- **Context**：`CONTEXT.md` 说 Agent 不做文件/shell；AgentScope 2.0.10 提供 Workspace/Permission/MCP/Skill；本地 Bash 是主机进程，cwd 不是沙箱。
+- **Decision**：频道配项目根、Agent 配 local/docker 后端与权限档；本地只开文件工具并强制根限定；Bash 默认仅 Docker，本地需显式开启 + 逐次审批 + 无沙箱告知；MCP/Skill 只接受本机来源；三档权限不暴露 BYPASS；HITL 进程内有界等待。
+- **Consequences**：项目文件不在数据目录备份内；Docker 是可选依赖；远端 MCP/Docker registry 扩大数据面；库仍不存密钥；Agent 仍不经 HTTP。
+
 ## 一、项目根是频道级，后端与权限是 Agent 级
 
 `channel.workspace_root` 是**频道的项目边界**：所有成员共享这个根，文件工具的相对路径从这里起算。

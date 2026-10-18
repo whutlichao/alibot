@@ -4,6 +4,12 @@
 SOP（`SOPEngine` / `SOPStep`）都进本轮票图。Plan 是**运行期工作表**，与既有「任务」五态严格分离；SOP 是
 **owner 启动的多步流程**，同样不改任务五态。两者都只在运行面板 / SSE 展示，不进看板、未读、搜索。
 
+## 决策记录
+
+- **Context**：AgentScope Plan 写 `AgentState.tasks` 三态；SOP 有 `SOPPhase` 五态；本仓“任务”是用户可观察的五态对象，带看板/线程/预算。
+- **Decision**：Plan 与 SOP 各有独立状态机与持久化（`plan_run`/`plan_task`、`sop_run.state`）；Plan 自动可用，SOP 仅 owner 启动；两者不进看板/未读/搜索/唤醒/预算，不自动改任务。
+- **Consequences**：多表与保留/清理逻辑；运行面板并列三套状态；Plan/SOP 历史与任务历史分开查询；SOP 实验性 API 变更需适配。
+
 ## 一、三套状态机并列
 
 | 对象 | 状态词 | 持久化 | 是否用户可观察的“任务对象” |

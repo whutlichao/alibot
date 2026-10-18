@@ -6,6 +6,12 @@
 频道消息只唤醒队长；队长通过进程内的 `TeamPipeline` 把任务分派给成员；**只有队长的最终回复落为频道消息**，
 成员输出走 SSE 事件流与 `team_assignment` 运行记录，不占频道消息、未读、搜索。DM 恒为 autonomous。
 
+## 决策记录
+
+- **Context**：现行 `notify` 唤醒该 target 的全部 Agent 成员；`TeamPipeline` 要求成员名唯一且不等于队长名，而本仓 `display_name` 不唯一。需要在不破坏 autonomous 的前提下引入“队长收口”的拓扑。
+- **Decision**：频道显式 `autonomous` / `team` 双模式；team 只唤醒队长、只落队长最终消息；成员产出走 SSE + `team_assignment`；每轮按当前成员重建 pipeline；内部名由 member id 派生；DM 恒 autonomous；队长不可用时不回落。
+- **Consequences**：多一个频道配置面与唤醒分支；成员过程无 `message` 行、断线不补；队长不可用时频道沉默直到人处理；ADR-0019/0020 承接预算与事件。
+
 ## 一、保留了什么
 
 - **`channel` 仍是消息容器**（D9）：team 不是新的 target kind，也不是框架的 IM `deploy/channel`；没有第二套频道概念。

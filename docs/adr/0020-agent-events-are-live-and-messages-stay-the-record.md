@@ -5,6 +5,12 @@
 成员面接缝新增**流式出口**（`run_round_stream` 或规格论证的等价物），既有 `run_round` 保留给脚本化替身与
 既有测试。SSE 新事件类型必须带 `member_id` / `reply_id` / `target_id`，便于前端归属。
 
+## 决策记录
+
+- **Context**：成员面接缝只有 `run_round`，`AgentEvent` 在 `asyncio.run()` 内被消费；数据库只有最终消息；SSE 只有 message/status/typing/round_outcome 四类。
+- **Decision**：新增 `run_round_stream` 与 `AgentEventRecord`；`run_round` 保留并委托；事件带 `member_id`/`reply_id`/`target_id`，只走 SSE 直播；数据库仍只存最终正文；只有 `message`/`round_outcome` 发 SSE `id`。
+- **Consequences**：事件不补拉、断线丢失；`EventBus` 满队列丢事件；前端要区分可补拉与 live-only；`round_outcome` 六态不受污染。
+
 ## 一、两层，不是两套正本
 
 **事件层**是运行过程的直播：token 增量、思考块、工具调用、工具结果、审批请求。它**不是**业务正本，

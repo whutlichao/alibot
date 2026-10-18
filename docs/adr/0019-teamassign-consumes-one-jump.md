@@ -4,6 +4,12 @@
 预算耗尽时给队长一个**错误 `ToolResult`**，**不运行该成员**。**每次分派前的检查与扣减必须原子。**
 队长最终回复不再唤醒成员，因此不与现有“跳”重复计数。
 
+## 决策记录
+
+- **Context**：现行“跳”只由 Agent 消息投递唤醒计数；`TeamAssign` 是 external tool，`on_acting` 看不到其执行，`_spend_jump` 也看不到。
+- **Decision**：每次 `TeamAssign` 计 1 跳；在 `_run_assignments` 前用单事务 `UPDATE ... WHERE used < limit` 原子检查并扣减；耗尽返回错误 `ToolResult`、不运行成员；失败不退款；队长最终回复不计跳。
+- **Consequences**：team 频道的一次人类世代最多 3/5/10 次分派；新增 `team_assignment` 运行记录；依赖实验性私有方法 `_run_assignments`，升级需重跑 R1。
+
 ## 一、为什么不能复用现有的 `_spend_jump`
 
 现行 **跳** 的定义（`CONTEXT.md` / ADR-0002）是“一条 **Agent 消息**投递了至少一个唤醒给其它 Agent”。
