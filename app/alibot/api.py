@@ -40,6 +40,7 @@
 - ``GET/POST/DELETE /api/permission-rules``    权限规则的读写（配置动作，不落消息、不唤醒）
 - ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
 - ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
+- ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -55,6 +56,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import queue
 import threading
@@ -95,6 +97,15 @@ from .reminder_delivery import (
     ReminderDeliveryWorker,
 )
 from .service import WorkspaceService
+from .skills import (
+    MAX_ARCHIVE_BYTES,
+    SkillValidationError,
+    install_directory,
+    install_zip,
+    resolve_delete_roots,
+    resolve_install_root,
+    uninstall,
+)
 from .sop import SOPRunner
 from .workspace import (
     docker_unavailable_reason,
@@ -442,6 +453,36 @@ class MCPServerUpdate(BaseModel):
         return value
 
 
+class SkillCreateLocal(BaseModel):
+    """从**本机目录**安装：``source_path`` 是绝对目录；其余键出现即整体拒绝。
+
+    ``channel_id`` 是解析 ``workspace_root`` 的上下文（Agent 级技能按成员分区，但成员可能属于
+    多个频道）；频道级安装可省略，此时用 ``scope_id`` 对应的频道。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str = ""
+    scope_id: str = ""
+    source_path: str = ""
+    channel_id: str | None = None
+
+
+class SkillUpdate(BaseModel):
+    """启停；scope 与内容 hash 是身份，不允许改（出现即整体拒绝）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("null is not accepted; omit the field instead")
+        return value
+
+
 class ApprovalDecision(BaseModel):
     """一条工具调用的决策；``rules`` 是可选的后续规则建议（落成 Agent 级规则）。"""
 
@@ -566,6 +607,8 @@ def create_app(
             permission_of=database.permission_settings_for_target,
             # MCP 声明（#151）：启用 + 已确认的远端声明由装配层物化为 MCPClient；未配置时为空。
             mcp_of=database.mcp_servers_for_target,
+            # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
+            skills_of=database.skills_for_target,
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
@@ -917,6 +960,142 @@ def create_app(
         clear_mcp_runtime(server_id)
         server["runtime"] = None
         return {"mcp_server": server}
+
+    def _skill_error(exc: SkillValidationError) -> DomainError:
+        """把安装器的词条异常翻成统一 HTTP 错误（正文按当前语言偏好渲染）。"""
+        message = _render_copy(exc.key, **exc.params)
+        fields = {exc.field: message} if exc.field else None
+        code = "skill_conflict" if exc.status == 409 else "validation_failed"
+        return DomainError(code, message, status=exc.status, fields=fields)
+
+    @app.get("/api/skills")
+    def list_skills(
+        scope_kind: str | None = None,
+        scope_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Skill 列表（配置只读面；不含字节，只含 hash 与启用态）。"""
+        return {"skills": database.list_skills(scope_kind=scope_kind, scope_id=scope_id)}
+
+    @app.post("/api/skills", status_code=201)
+    async def install_skill(
+        request: Request,
+        scope_kind: str = "",
+        scope_id: str = "",
+        channel_id: str = "",
+        filename: str = "",
+    ) -> dict[str, Any]:
+        """安装一个技能：JSON 正文 = 本机目录；原始 zip 字节 = 上传包。
+
+        两种来源都先校验 ``SKILL.md`` front matter、路径与内容 hash，任何一项不合法都**整体
+        拒绝**：不落库、不留半棵树。不是 multipart——与附件上传一致，原始字节走正文，元数据
+        走 query，因此后端不需要 multipart 解析依赖。
+        """
+        content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        locale = locale_of(database)
+        target_scope_kind = scope_kind
+        target_scope_id = scope_id
+        target_channel_id = channel_id or None
+        source_kind = "directory"
+        if content_type in ("application/zip", "application/x-zip-compressed", "application/octet-stream"):
+            source_kind = "zip"
+        elif content_type not in ("", "application/json"):
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.request_body_invalid"),
+                fields={"body": _render_copy("error.request_body_invalid")},
+            )
+
+        if source_kind == "directory":
+            try:
+                payload = SkillCreateLocal.model_validate(await request.json())
+            except Exception:
+                raise DomainError(
+                    "validation_failed",
+                    _render_copy("error.request_body_invalid"),
+                    fields={"body": _render_copy("error.request_body_invalid")},
+                ) from None
+            target_scope_kind = payload.scope_kind
+            target_scope_id = payload.scope_id
+            target_channel_id = payload.channel_id or None
+            source_path = payload.source_path
+        else:
+            body = await request.body()
+            if not body:
+                raise DomainError(
+                    "validation_failed",
+                    _render_copy("error.request_body_invalid"),
+                    fields={"body": _render_copy("error.request_body_invalid")},
+                )
+            if len(body) > MAX_ARCHIVE_BYTES:
+                message = _render_copy("error.skill_too_large", limit=str(MAX_ARCHIVE_BYTES))
+                raise DomainError("validation_failed", message, fields={"source": message})
+            source_path = ""
+
+        try:
+            root = resolve_install_root(
+                database,
+                scope_kind=target_scope_kind,
+                scope_id=target_scope_id,
+                channel_id=target_channel_id,
+                locale=locale,
+            )
+            if source_kind == "zip":
+                prepared = install_zip(
+                    io.BytesIO(body),
+                    filename=filename or "upload.zip",
+                    root=root,
+                    scope_id=target_scope_id,
+                    locale=locale,
+                )
+            else:
+                prepared = install_directory(
+                    source_path,
+                    root=root,
+                    scope_id=target_scope_id,
+                    locale=locale,
+                )
+        except SkillValidationError as error:
+            raise _skill_error(error) from None
+
+        try:
+            skill = database.create_skill(
+                scope_kind=target_scope_kind,
+                scope_id=target_scope_id,
+                name=prepared["name"],
+                description=prepared["description"],
+                source_path=prepared["source_path"],
+                content_hash=prepared["content_hash"],
+            )
+        except Exception:
+            # 落库失败（冲突 / 校验）与安装一起收口：删掉刚复制的工作区副本，不留半成品。
+            with suppress(OSError):
+                uninstall(root, scope_id=target_scope_id, name=prepared["name"])
+            raise
+        return {"skill": skill}
+
+    @app.patch("/api/skills/{skill_id}")
+    def update_skill(skill_id: str, payload: SkillUpdate) -> dict[str, Any]:
+        """启停一个技能（只改启用态；不落消息、不唤醒、不消耗预算）。"""
+        return {"skill": database.update_skill(skill_id, payload.model_dump(exclude_unset=True))}
+
+    @app.delete("/api/skills/{skill_id}")
+    def delete_skill(skill_id: str) -> dict[str, Any]:
+        """删除配置与工作区副本（不删用户源目录；只影响该 scope）。"""
+        current = database.get_skill(skill_id)
+        if current is None:
+            database.delete_skill(skill_id)  # 让库层给统一的 404（按当前语言渲染）
+            raise AssertionError("unreachable")
+        roots = resolve_delete_roots(
+            database,
+            scope_kind=current["scope_kind"],
+            scope_id=current["scope_id"],
+            channel_id=None,
+        )
+        deleted = database.delete_skill(skill_id)
+        for root in roots:
+            with suppress(OSError):
+                uninstall(root, scope_id=current["scope_id"], name=current["name"])
+        return {"skill": deleted}
 
     @app.post("/api/mcp-servers/{server_id}/consent")
     def consent_mcp_server(server_id: str) -> dict[str, Any]:

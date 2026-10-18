@@ -101,7 +101,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `permission_rule` | id, scope_kind(`channel`/`agent`), scope_id, tool_name, pattern, behavior(`allow`/`deny`/`ask`), created_at | 权限规则是**配置**：三档行为，不暴露 BYPASS / DONT_ASK（ADR-0021 §四） |
 | `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四） |
 | `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明；`env_names` 只存变量**名**，值只从进程环境读（ADR-0021 §三） |
-| `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；字节在 `workspace_root/.alibot/skills/`，只接受本机来源 |
+| `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；字节在 `workspace_root/.alibot/skills/<scope_id>/`（Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级），只接受本机目录/上传 zip |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证**（兼容面，迁移后读路径优先读 `remote_consent_scope`） |
 | `remote_consent_scope` | scope_kind(`model`/`mcp`/`docker`), scope_id, acknowledged_at | 远端数据面的统一一次性确认；旧 `remote_consent` 行复制成 `('model', provider, …)` |
 | `plan_run` / `plan_task` | run: id, target_id, member_id, base_seq, status, started_at, finished_at；task: plan_run_id, seq, subject, description, state(`pending`/`in_progress`/`completed`), owner, blocks/blocked_by(JSON), metadata(JSON) | **Plan** 是成员轮次内的工作清单（ADR-0023），**不是任务五态**：不进看板、未读、搜索、唤醒、预算，不新增 target。每个 `(target_id, member_id)` 保留最近 20 run 或 30 天，`plan_task` 随 run 级联删除；只进运行面板（`GET /api/targets/{id}/plan` + `plan_update`） |
@@ -307,6 +307,10 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 | `PATCH /api/mcp-servers/{id}` | 部分更新同名字段；`scope_kind` / `scope_id` 不可改；整条结果重新校验 |
 | `DELETE /api/mcp-servers/{id}` | 删除声明（配置动作；不删消息、不唤醒） |
 | `POST /api/mcp-servers/{id}/consent` | 远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认的远端声明在装配层**不连接** |
+| `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节） |
+| `POST /api/skills` | 安装：JSON 正文 `{scope_kind, scope_id, source_path, channel_id?}` 从**本机目录**；或 `Content-Type: application/zip` 的原始字节 + query `scope_kind/scope_id/channel_id/filename` 从**上传 zip**。两者都先校验 `SKILL.md` front matter、路径与内容 hash，非法输入**整体拒绝**；同名同 scope 409；不做远端市场/下载 |
+| `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |
+| `DELETE /api/skills/{id}` | 删除配置与工作区副本（不删用户源目录；只影响该 scope） |
 | `GET /api/health` | 存活与数据目录 |
 
 错误统一为 `{"error": {"code", "message", "fields"?}}`。

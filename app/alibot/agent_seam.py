@@ -555,6 +555,7 @@ class AgentScopeAgentSeam:
         workspace_of: Callable[[str, str], Any] | None = None,
         permission_of: Callable[[str, str], Any] | None = None,
         mcp_of: Callable[[str, str], Any] | None = None,
+        skills_of: Callable[[str, str], Any] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
     ):
@@ -574,6 +575,10 @@ class AgentScopeAgentSeam:
         # MCP 声明读路径（#151）：生产是 ``Database.mcp_servers_for_target``。不注入时这一轮
         # 不挂 MCP——未配置声明的工作区行为逐字不变。
         self._mcp_of = mcp_of
+        # Skill 读路径（#152）：生产是 ``Database.skills_for_target``。只返回**启用**的技能；
+        # 字节在频道项目根的 ``.alibot/skills/`` 下，装配层再核一次 hash。不注入时这一轮不挂
+        # Skill——未配置技能的工作区行为逐字不变。
+        self._skills_of = skills_of
         # 审批代理（#149）：不注入时遇到 ASK 只能收口为失败（单 Agent 没有人类确认通道）。
         self._approvals = approvals
         # 团队运行的关联 id（#149 的审批记录列）；#142 装配点可注入，未注入时为空。
@@ -631,6 +636,27 @@ class AgentScopeAgentSeam:
                 member_id=member_id,
                 session_id=session_id,
             )
+
+    def _skill_rows(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """本轮启用的技能元数据；读路径失败只记 debug，不影响其他工具。"""
+        if self._skills_of is None:
+            return []
+        try:
+            return [dict(item) for item in (self._skills_of(target_id, member_id) or [])]
+        except Exception:  # 配置读不出来等价于没有技能；不阻塞其他工具
+            _log.debug("skill lookup failed", exc_info=True)
+            return []
+
+    def _skills_for(self, target_id: str, member_id: str, settings: Any) -> list[Any]:
+        """把启用技能读成 AgentScope ``Skill``；Docker 后端的 ``dir`` 指向容器内挂载路径。"""
+        rows = self._skill_rows(target_id, member_id)
+        if not rows or settings is None:
+            return []
+        from .skills import load_skills
+        from .workspace import DOCKER_WORKDIR
+
+        container_root = DOCKER_WORKDIR if settings.is_docker else None
+        return load_skills(rows, root=settings.root, container_root=container_root)
 
     def _team_run_for(self, target_id: str, member_id: str) -> str | None:
         if self._team_run_of is None:
@@ -879,6 +905,7 @@ class AgentScopeAgentSeam:
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                     workspace_tools=workspace_tools or None,
+                    skills=self._skills_for(target_id, member_id, settings),
                     with_plan=plan is not None,
                 )
                 if toolkit is not None:
@@ -1146,6 +1173,12 @@ class AgentScopeAgentSeam:
                     tools.append(local_shell_tool(mount.root))
                 return tools
 
+            async def _skills_for_member(member_id_value: str) -> list[Any]:
+                settings = self._workspace_settings(target_id, member_id_value)
+                if settings is None:
+                    return []
+                return self._skills_for(target_id, member_id_value, settings)
+
             def _build_agent(
                 member: dict[str, Any],
                 prompt: str,
@@ -1180,6 +1213,7 @@ class AgentScopeAgentSeam:
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                     workspace_tools=await _workspace_tools_for(member_id),
+                    skills=await _skills_for_member(member_id),
                     with_plan=plan is not None,
                 )
                 leader_agent = _build_agent(
@@ -1192,6 +1226,7 @@ class AgentScopeAgentSeam:
                 for member in team.members:
                     member_id_value = str(member["id"])
                     workspace_tools = await _workspace_tools_for(member_id_value)
+                    member_skills = await _skills_for_member(member_id_value)
                     member_agents.append(
                         (
                             member,
@@ -1208,9 +1243,10 @@ class AgentScopeAgentSeam:
                                         task_actions=[],
                                         silence_declarations=[],
                                         workspace_tools=workspace_tools,
+                                        skills=member_skills,
                                         with_plan=plan is not None,
                                     )
-                                    if workspace_tools or plan is not None
+                                    if workspace_tools or member_skills or plan is not None
                                     else None
                                 ),
                             ),
@@ -1585,6 +1621,7 @@ def _round_toolkit(
     task_actions: list[AgentTaskAction],
     silence_declarations: list[None],
     workspace_tools: list[Any] | None = None,
+    skills: list[Any] | None = None,
     with_plan: bool = False,
 ) -> Any:
     """装配这一轮的工具集：workspace 文件工具 + 任务动作（仅任务线程）+ 沉默声明（provider 能携带工具时）。
@@ -1596,8 +1633,11 @@ def _round_toolkit(
     workspace 工具（#148）不受这个闸门影响：它们是**有 workspace 配置**时的能力，不是 message 通道；
     工具 schema 走的是同一条 provider 工具通道——provider 不能携带工具时，文件工具也送不出去。
 
+    Skill（#152）与 workspace 工具同属「本轮能力」：AgentScope 的 ``Toolkit`` 把技能的说明注入
+    系统提示并提供一个内置查看器；只有技能、没有工具时仍然要建 toolkit。
+
     返回 ``None`` 表示这一轮不需要任何工具（未配置 workspace 的频道 + 非任务轮次 + 不支持工具的
-    provider）：此时 ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
+    provider + 没有技能）：此时 ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
     """
     from agentscope.tool import Toolkit
 
@@ -1614,9 +1654,9 @@ def _round_toolkit(
         tools.extend(plan_tools())
     if supports_tool_calling(provider):
         tools.extend(_silence_tools(silence_declarations))
-    if not tools:
+    if not tools and not skills:
         return None
-    return Toolkit(tools=tools)
+    return Toolkit(tools=tools, skills_or_loaders=skills or [])
 
 
 def _silence_tools(declarations: list[None]) -> list[Any]:
