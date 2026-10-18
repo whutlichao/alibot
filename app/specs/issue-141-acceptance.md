@@ -5,7 +5,8 @@
 
 - 分支：`issue-141-impl`（从集成分支 tip `7f691db` 切出）
 - 实现 + 测试 + 文档：本提交（commit SHA 见分支 HEAD）
-- 未改 D1–D23、既有 ADR 原文、schema 版本、数据库形态；`SCHEMA_VERSION` 仍为 15
+- 未改 D1–D23、既有 ADR 原文、schema 版本、数据库形态；本票零 DDL（合并集成分支后
+  `SCHEMA_VERSION = 17` 由 #138 / #139 引入，不是本票的改动）
 - **范围边界**：本票只做「事件词表 + SSE 传输 + 前端消费层」。team / Plan / SOP / 审批的
   **领域生产者**分别落在后续票（#142 / #144 / #146 / #148 / #149 等）；这里提供它们的公共发布入口，
   并证明既有 channel / task / dm 三条流对同一形状的帧全部透传。运行面板布局属 #155，本票不提前做。
@@ -129,11 +130,11 @@ node --test app/tests/*.test.cjs
 ## 二、全量门禁
 
 ```bash
-scripts/check.sh
-# pytest（全量）：666 passed, 2 skipped in 308.92s
+scripts/check.sh   # 合并 agentscope2-integration (5763122) 之后
+# pytest（全量）：684 passed, 2 skipped in 313.33s
 # ruff check：All checks passed!
-# ruff format --check：156 files already formatted
-# mypy：Success: no issues found in 62 source files
+# ruff format --check：165 files already formatted
+# mypy：Success: no issues found in 64 source files
 # pyright：0 errors, 0 warnings, 0 informations
 # node --test app/tests/*.test.cjs：136 tests / 136 pass / 0 fail
 # 最后一行「门禁全绿」，退出码 0
