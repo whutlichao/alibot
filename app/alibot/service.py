@@ -32,6 +32,7 @@ from .db import (
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
+    NotFound,
     SearchFacet,
 )
 from .events import EventBus
@@ -41,6 +42,7 @@ from .team import TEAM_SCOPE
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
+    from .sop import SOPRunner
 
 # 会离开本机的数据面（spec #1 §8）：告知文案与接口载荷共用这一份，避免两处漂移。
 #
@@ -86,11 +88,13 @@ class WorkspaceService:
         member_id: str = OWNER_ID,
         orchestrator: WakeOrchestrator | None = None,
         events: EventBus | None = None,
+        sops: SOPRunner | None = None,
     ):
         self._db = db
         self._member_id = member_id
         self._orchestrator = orchestrator
         self._events = events
+        self._sops = sops
 
     # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
     def _locale(self) -> Locale:
@@ -360,6 +364,61 @@ class WorkspaceService:
         仍从这里读回同一份清单（ADR-0023）。
         """
         return self._db.plan_view(target_id, limit=limit)
+
+    # ─── SOP（owner 显式启动的多步运行；ADR-0023） ─────────────────────────
+    # 这些方法只经人类面端点到；成员面没有 SOP 工具，Agent 不能自行创建或启动。
+    def sops(self) -> list[dict[str, Any]]:
+        return self._db.list_sop_definitions()
+
+    def sop(self, definition_id: str) -> dict[str, Any]:
+        return self._db.get_sop_definition(definition_id)
+
+    def create_sop(
+        self,
+        *,
+        name: str,
+        description: str,
+        steps: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._db.create_sop_definition(name=name, description=description, steps=steps)
+
+    def update_sop(
+        self,
+        definition_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        steps: Sequence[dict[str, Any]] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        return self._db.update_sop_definition(
+            definition_id,
+            name=name,
+            description=description,
+            steps=steps,
+            enabled=enabled,
+        )
+
+    def start_sop_run(self, definition_id: str, *, target_id: str) -> dict[str, Any]:
+        if self._sops is None:
+            raise DomainError("validation_failed", render("error.sop_agent_unavailable", self._locale()))
+        return self._sops.start(definition_id, target_id=target_id)
+
+    def sop_run(self, run_id: str) -> dict[str, Any]:
+        if self._sops is None:
+            raise NotFound(render("error.sop_run_not_found", self._locale(), sop_run_id=run_id))
+        return self._sops.view(run_id)
+
+    def resume_sop_run(
+        self,
+        run_id: str,
+        *,
+        reply_id: str | None = None,
+        confirm_results: Sequence[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if self._sops is None:
+            raise NotFound(render("error.sop_run_not_found", self._locale(), sop_run_id=run_id))
+        return self._sops.resume(run_id, reply_id=reply_id, confirm_results=confirm_results or [])
 
     def mark_task_read(self, task_id: str, seq: int) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)
