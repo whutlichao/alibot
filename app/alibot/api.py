@@ -73,7 +73,7 @@ from .db import (
     SearchFacet,
     open_database,
 )
-from .events import EventBus, sse_frame
+from .events import EventBus, is_replayable, sse_frame
 from .i18n import locale_of, render
 from .orchestration import ThreadScheduler, WakeOrchestrator
 from .reminder_delivery import (
@@ -880,7 +880,8 @@ def create_app(
                         yield ": keep-alive\n\n"
                         continue
                     # 补拉与实时推送的边界：只发比连接游标更新的事件，不重复。
-                    if int(event.get("seq", 0)) < after_seq:
+                    # live-only 事件没有 seq——它们不参与游标比较，否则重连带 after_seq>0 时会被整批吞掉。
+                    if is_replayable(event) and int(event.get("seq", 0)) < after_seq:
                         continue
                     yield sse_frame(event)
 
@@ -900,12 +901,18 @@ def create_app(
         request: Request,
         after_seq: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
-        """订阅任务线程事件流；重连时从任务 target 的消息正本补拉。"""
+        """订阅任务线程事件流；重连时从任务 target 的消息正本与轮次结果补拉。
+
+        任务线程是 team 模式下运行记录的另一半载体（规格 §4.4 / §4.5）：``agent_event`` /
+        ``team_assignment`` / ``plan_update`` / ``sop_event`` / ``approval_*`` 与频道事件流同形透传；
+        它们没有 seq、不发 ``id``，``after_seq`` 补拉仍只覆盖 ``message`` 与 ``round_outcome``。
+        """
         task = service.task(task_id)["task"]  # 响应开始前做作用域校验，确保不存在的任务返回 404。
         subscription = events.subscribe(task["target_id"])
         subscriber = subscription.__enter__()
         try:
             snapshot = service.task_messages(task_id, after_seq=after_seq)["messages"]
+            snapshot_outcomes = service.task_round_outcomes(task_id, after_seq=after_seq)
         except Exception:
             subscription.__exit__(None, None, None)
             raise
@@ -914,6 +921,8 @@ def create_app(
             try:
                 for message in snapshot:
                     yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
+                for outcome in snapshot_outcomes:
+                    yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
 
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
@@ -927,7 +936,8 @@ def create_app(
                     except queue.Empty:
                         yield ": keep-alive\n\n"
                         continue
-                    if int(event.get("seq", 0)) <= after_seq:
+                    # live-only 事件没有 seq：只有可补拉事件参与游标比较（理由同频道事件流）。
+                    if is_replayable(event) and int(event.get("seq", 0)) <= after_seq:
                         continue
                     yield sse_frame(event)
             finally:
@@ -997,7 +1007,8 @@ def create_app(
                         continue
                     if event.get("type") == "message" and int(event.get("seq", 0)) <= snapshot_message_seq:
                         continue
-                    if int(event.get("seq", 0)) < after_seq:
+                    # live-only 运行事件没有 seq，不参与游标比较（理由同频道事件流）。
+                    if is_replayable(event) and int(event.get("seq", 0)) < after_seq:
                         continue
                     yield sse_frame(event)
             finally:
