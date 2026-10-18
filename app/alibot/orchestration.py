@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from .agent_seam import (
@@ -761,6 +761,8 @@ class WakeOrchestrator:
                         base_seq=base_seq,
                     )
                     team_run_id = str(team_run["id"])
+                    # 分派运行记录挂在这次 team_run 下（pipeline 由适配层按轮构建）。
+                    team_context = replace(team_context, team_run_id=team_run_id)
                 team_status = "failed"
                 try:
                     outcome = self._run_seam(
@@ -1021,6 +1023,7 @@ class WakeOrchestrator:
             leader_id=str(agent["id"]),
             members=members,
             task_id=team["task_id"],
+            budget=self._db,
         )
 
     def _run_seam(
