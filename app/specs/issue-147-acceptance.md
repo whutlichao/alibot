@@ -32,7 +32,7 @@
 - 命令与读数：
 
 ```bash
-cd app && ../.venv/bin/python -m pytest tests/test_sop.py -k "owner_runs_two_step or disabled_definition"
+cd app && ../.venv/bin/python -m pytest tests/test_sop.py -k "owner_runs_two_step or disabled_definition or validation"
 # 3 passed, 5 deselected
 ```
 
