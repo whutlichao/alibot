@@ -26,7 +26,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from agentscope.message import TextBlock, ToolResultState
-from agentscope.tool import Edit, Glob, Grep, Read, ToolChunk, ToolMiddlewareBase, Write
+from agentscope.permission import PermissionBehavior, PermissionDecision
+from agentscope.tool import Bash, Edit, Glob, Grep, Read, ToolChunk, ToolMiddlewareBase, Write
 from agentscope.workspace import LocalWorkspace, WorkspaceBase
 
 #: 本仓共享的框架状态命名空间（规格 §3.6）：与用户项目文件分开。
@@ -256,6 +257,39 @@ def _guarded_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
         Read(backend=backend, middlewares=middlewares),
         Write(backend=backend, middlewares=middlewares),
     ]
+
+
+class AskEveryTimeBash(Bash):
+    """本地 shell：**每次调用**都要人类确认（D15 / ADR-0021 §二）。
+
+    默认不挂载；只有 ``allow_local_shell=1`` 才装配。它不声称根限定——命令可以 ``cd /`` 或读任意
+    绝对路径，工具说明必须把这一点写出来。权限判定上它永远返回 ASK，且 ``bypass_immune=True``
+    使 allow 规则与 ``trusted-writes`` 都不能把它变成自动放行；``read-only`` 档不装配它
+    （``EXPLORE`` 没有“询问”这一档）。
+    """
+
+    description = (
+        Bash.description
+        + "\n\n警告：这是本机进程、没有沙箱；命令可以越过项目根（例如 cd / 或读任意绝对路径）。"
+        "每次调用都需要人类逐次审批。"
+    )
+    is_read_only = False
+
+    async def check_read_only(self, tool_input: dict[str, Any]) -> bool:
+        return False
+
+    async def check_permissions(self, tool_input: dict[str, Any], context: Any) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.ASK,
+            message="Permission required: local shell command",
+            decision_reason="Local shell is unsandboxed and runs on the host",
+            bypass_immune=True,
+        )
+
+
+def local_shell_tool(root: str) -> Any:
+    """装配一个 ``cwd=root`` 的本地 Bash；审批由权限引擎逐次发起。"""
+    return AskEveryTimeBash(cwd=root)
 
 
 def _ensure_partition(root: str, path: str) -> None:

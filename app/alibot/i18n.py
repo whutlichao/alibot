@@ -176,6 +176,19 @@ CATALOGS: dict[str, dict[str, str]] = {
             "模型声明了本轮沉默，但同时提交了结构化任务动作（本轮以动作为准，不产出正文）"
         ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
+        "seam.approval_timeout": "审批等待超时（{seconds} 秒）：本轮失败",
+        # ─── 权限规则 / 审批（#149） ──────────────────────────────────────
+        "error.permission_rule_scope_invalid": "权限规则作用域只能是 channel 或 agent",
+        "error.permission_rule_tool_empty": "权限规则的 tool_name 不能为空",
+        "error.permission_rule_behavior_invalid": "权限规则行为只能是 allow / deny / ask",
+        "error.permission_rule_scope_unknown": "权限规则作用域不存在：{scope_id}",
+        "error.permission_rule_not_found": "权限规则不存在：{rule_id}",
+        "error.approval_not_found": "审批请求不存在：{reply_id}",
+        "error.approval_state_conflict": "审批请求已是 {state}，不能再提交决策",
+        "error.approval_tool_call_unknown": "未知的待审批工具调用：{tool_call_id}",
+        "error.approval_tool_call_decided": "该工具调用已经以相反结论决策过：{tool_call_id}",
+        "error.approval_decision_duplicate": "同一请求里重复提交了工具调用：{tool_call_id}",
+        "error.approval_state_invalid": "审批状态过滤只能是：{states}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "消息正文",
         "remote.face.author": "发送者显示名",
@@ -454,6 +467,19 @@ CATALOGS: dict[str, dict[str, str]] = {
             "(the action wins and no body is stored)"
         ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
+        "seam.approval_timeout": "Approval wait timed out ({seconds} seconds); this round failed",
+        # ─── Permission rules / approvals (#149) ─────────────────────────
+        "error.permission_rule_scope_invalid": "A permission rule scope must be channel or agent",
+        "error.permission_rule_tool_empty": "A permission rule tool_name cannot be empty",
+        "error.permission_rule_behavior_invalid": "A permission rule behavior must be allow, deny, or ask",
+        "error.permission_rule_scope_unknown": "No such permission rule scope: {scope_id}",
+        "error.permission_rule_not_found": "No such permission rule: {rule_id}",
+        "error.approval_not_found": "No such approval request: {reply_id}",
+        "error.approval_state_conflict": "The approval request is already {state}; no further decisions are accepted",
+        "error.approval_tool_call_unknown": "Unknown tool call awaiting approval: {tool_call_id}",
+        "error.approval_tool_call_decided": "That tool call was already decided the other way: {tool_call_id}",
+        "error.approval_decision_duplicate": "The same tool call appears twice in one request: {tool_call_id}",
+        "error.approval_state_invalid": "Approval state filter must be one of: {states}",
         # ─── 远端数据流告知 ──────────────────────────────────────────────
         "remote.face.body": "message bodies",
         "remote.face.author": "sender display names",
