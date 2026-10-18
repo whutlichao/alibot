@@ -657,6 +657,26 @@ class AgentScopeAgentSeam:
             stream=stream,
         )
 
+    # ─── SOP 参与者（#147）：按 member id 装配一个可被 ``SOPStep`` 驱动的 Agent ──
+    def sop_agent(self, member: Mapping[str, Any], *, role: str = "executor") -> Any:
+        """SOP 的 executor / verifier：只带模型与身份提示，不挂工具（SOP 无工具面）。
+
+        参与者 AgentState 的跨重启恢复不在本票（D19）：每次运行/恢复都按当前成员行重建。
+        没有 workspace / 权限上下文是因为这里不执行工具；``SOPStep`` 交给它的是结构化
+        handover / verdict，仍由框架的 ``reply_stream`` 收口。
+        """
+        from agentscope.agent import Agent
+
+        from .sop import sop_agent_prompt
+
+        provider = provider_of(str(member.get("model_id") or ""))
+        model = self._build_model(provider, model_name_of(str(member.get("model_id") or "")))
+        return Agent(
+            name=member_internal_name(str(member["id"])),
+            system_prompt=sop_agent_prompt(member, role=role),
+            model=model,
+        )
+
     # ─── 一轮 ─────────────────────────────────────────────────────────────
     def run_round(
         self,

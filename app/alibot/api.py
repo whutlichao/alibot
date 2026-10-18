@@ -91,6 +91,7 @@ from .reminder_delivery import (
     ReminderDeliveryWorker,
 )
 from .service import WorkspaceService
+from .sop import SOPRunner
 from .workspace import (
     docker_unavailable_reason,
     shutdown_docker_workspaces,
@@ -412,6 +413,58 @@ class ApprovalSubmit(BaseModel):
     decisions: list[ApprovalDecision] = Field(default_factory=list)
 
 
+class SOPStepCreate(BaseModel):
+    """SOP 的一个步骤：executor / 可空 verifier 用 **member id** 引用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    description: str = ""
+    executor_member_id: str
+    verifier_member_id: str | None = None
+    max_attempts: int = 3
+
+
+class SOPCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    steps: list[SOPStepCreate] = Field(min_length=1)
+
+
+class SOPUpdate(BaseModel):
+    """部分更新：启停与编辑；编辑只影响后续 run。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+    steps: list[SOPStepCreate] | None = None
+    enabled: bool | None = None
+
+
+class SOPRunCreate(BaseModel):
+    """owner 启动一次运行：只指定运行归属 target；leader 恒为 owner，不接受指定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str
+
+
+class SOPResume(BaseModel):
+    """恢复 ``awaiting`` 的 SOP：送入与审批同形的结构化确认结果。
+
+    ``reply_id`` 省略时使用本进程记录的停车标识；跨重启恢复必须显式给出
+    （awaiting 详情是进程内事实，不落库）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_id: str | None = None
+    confirm_results: list[dict[str, Any]] = Field(default_factory=list)
+
+
 def create_app(
     data_dir: Path | str | None = None,
     db: Database | None = None,
@@ -482,13 +535,23 @@ def create_app(
         reminder_delivery if reminder_delivery is not None else ReminderDeliveryWorker
     )
     driver = make_driver(ReminderDeliverer(database, events))
-    service = WorkspaceService(database, orchestrator=orchestrator, events=events)
+    # SOP（#147）：owner 显式启动的多步运行复用同一个调度器；参与者按 member id 经成员面
+    # 适配器装配（脚本化替身没有 ``sop_agent`` 时，启动会给出可读的 validation_failed）。
+    sop_runner = SOPRunner(
+        database,
+        events,
+        scheduler=orchestrator.scheduler,
+        agent_factory=getattr(member_seam, "sop_agent", None),
+    )
+    service = WorkspaceService(database, orchestrator=orchestrator, events=events, sops=sop_runner)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Plan 保留策略的**启动**那一半（ADR-0023）：每个 (target, member) 只留最近 20 run
         # 或 30 天内的记录；`plan_task` 随 run 级联清理。另一半点在每轮收口后（plan.py）。
         database.prune_plan_runs()
+        # SOP 保留策略的启动那一半（ADR-0023 §三）：最近 50 个 run 或 90 天；定义不删。
+        database.prune_sop_runs()
         # Docker 工作区（#150）：启动清扫上一进程遗留的容器 + 空闲回收线程。Docker 是可选
         # 后端：daemon 不在时这些步骤安静失败，不影响主服务启动。
         try:
@@ -525,6 +588,7 @@ def create_app(
     app.state.events = events
     app.state.orchestrator = orchestrator
     app.state.approvals = approvals
+    app.state.sops = sop_runner
     app.state.reminder_delivery = driver
     app.state.data_dir = database.data_dir
 
@@ -858,6 +922,63 @@ def create_app(
         重新读这里（ADR-0023）。Plan 不是消息、不是任务，也不属于任何未读/搜索/预算面。
         """
         return {"plan": service.plan(target_id, limit=limit)}
+
+    # ─── SOP（owner 显式启动；人类面唯一入口，成员面没有 SOP 工具） ──────────
+    @app.get("/api/sops")
+    def list_sops() -> dict[str, Any]:
+        """SOP 定义列表（配置；不是运行记录，也不进看板/未读/搜索）。"""
+        return {"sops": service.sops()}
+
+    @app.post("/api/sops", status_code=201)
+    def create_sop(payload: SOPCreate) -> dict[str, Any]:
+        """新建一条 SOP 定义；`steps` 里的 executor/verifier 必须是当前 Agent 成员。"""
+        return {
+            "sop": service.create_sop(
+                name=payload.name,
+                description=payload.description,
+                steps=[step.model_dump() for step in payload.steps],
+            )
+        }
+
+    @app.get("/api/sops/{definition_id}")
+    def get_sop(definition_id: str) -> dict[str, Any]:
+        return {"sop": service.sop(definition_id)}
+
+    @app.patch("/api/sops/{definition_id}")
+    def update_sop(definition_id: str, payload: SOPUpdate) -> dict[str, Any]:
+        """启停与编辑；编辑只影响后续 run（既有 run 的 ``state`` 不重写）。"""
+        changes = payload.model_dump(exclude_unset=True)
+        steps = changes.pop("steps", None)
+        return {
+            "sop": service.update_sop(
+                definition_id,
+                name=changes.get("name"),
+                description=changes.get("description"),
+                steps=None if steps is None else [dict(step) for step in steps],
+                enabled=changes.get("enabled"),
+            )
+        }
+
+    @app.post("/api/sops/{definition_id}/runs", status_code=201)
+    def start_sop_run(definition_id: str, payload: SOPRunCreate) -> dict[str, Any]:
+        """owner 启动一次运行；`leader` 恒为 owner，请求体不接受指定。"""
+        return {"run": service.start_sop_run(definition_id, target_id=payload.target_id)}
+
+    @app.get("/api/sop-runs/{run_id}")
+    def get_sop_run(run_id: str) -> dict[str, Any]:
+        """运行快照：`phase`、逐步 verdict 与当前 `awaiting`（进程内详情，可空）。"""
+        return {"run": service.sop_run(run_id)}
+
+    @app.post("/api/sop-runs/{run_id}/resume")
+    def resume_sop_run(run_id: str, payload: SOPResume) -> dict[str, Any]:
+        """恢复 `awaiting` 的运行：送入人类确认/外部结果（与审批同形的结构化载荷）。"""
+        return {
+            "run": service.resume_sop_run(
+                run_id,
+                reply_id=payload.reply_id,
+                confirm_results=payload.confirm_results,
+            )
+        }
 
     # ─── 私信（显式创建；重复请求复用同一 target） ─────────────────────────
     @app.get("/api/dms")

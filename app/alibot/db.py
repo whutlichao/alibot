@@ -131,6 +131,12 @@ PLAN_TASK_STATES = ("pending", "in_progress", "completed")
 PLAN_RUN_RETENTION = 20
 PLAN_RETENTION_DAYS = 30
 
+# SOP 运行记录的状态词与保留策略（ADR-0023 / 规格 §3.5）。SOP 是 **owner 启动的多步运行**，
+# 不是任务五态：运行保留最近 50 个或 90 天（先到者为准），完成/失败后**不删除定义**。
+SOP_PHASES = ("pending", "running", "awaiting", "completed", "failed")
+SOP_RUN_RETENTION = 50
+SOP_RETENTION_DAYS = 90
+
 # 一次 ``TeamAssign`` 的运行记录状态（规格 §3.4 / §4.2）。``budget-exhausted`` 是「没有运行成员」，
 # 其余四态描述「成员这一条分派」的结果；跳一旦扣减就不退款，失败/中断也保留 ``jump_consumed=1``。
 TEAM_ASSIGNMENT_STATES = ("started", "succeeded", "failed", "interrupted", "budget-exhausted")
@@ -3471,6 +3477,313 @@ class Database:
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
             "tasks": tasks,
+        }
+
+    # ─── SOP 定义与运行记录（ADR-0023 / 规格 §3.5、§4.2） ──────────────────
+    # 定义是可编辑的配置；运行是只增不改的历史 + 可恢复的 ``SOPRunState``。两者都**不是**任务：
+    # 本组方法只写 ``sop_definition`` / ``sop_run``，从不触碰 ``task``、消息、未读、搜索、唤醒或预算。
+    def create_sop_definition(
+        self,
+        *,
+        name: str,
+        description: str,
+        steps: Sequence[Mapping[str, Any]],
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """新建一条 SOP 定义；``steps`` 里的成员在这里校验并归一化。"""
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            raise DomainError("validation_failed", self._render_copy("error.sop_name_required"))
+        prepared = self._prepare_sop_steps(steps)
+        now = utc_now()
+        definition_id = new_id("sop")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO sop_definition(id, name, description, steps, enabled, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        definition_id,
+                        clean_name,
+                        str(description or ""),
+                        json.dumps(prepared, ensure_ascii=False),
+                        1 if enabled else 0,
+                        now,
+                        now,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_sop_definition(definition_id)
+
+    def update_sop_definition(
+        self,
+        definition_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        steps: Sequence[Mapping[str, Any]] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """编辑定义（启停 / 名称 / 描述 / 步骤）。只影响后续 run；既有 run 的 ``state`` 不重写。"""
+        current = self.get_sop_definition(definition_id)
+        clean_name = current["name"] if name is None else str(name or "").strip()
+        if not clean_name:
+            raise DomainError("validation_failed", self._render_copy("error.sop_name_required"))
+        prepared = self._prepare_sop_steps(steps) if steps is not None else current["steps"]
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE sop_definition SET name = ?, description = ?, steps = ?, "
+                    "enabled = ?, updated_at = ? WHERE id = ?",
+                    (
+                        clean_name,
+                        current["description"] if description is None else str(description),
+                        json.dumps(prepared, ensure_ascii=False),
+                        1 if (current["enabled"] if enabled is None else bool(enabled)) else 0,
+                        utc_now(),
+                        definition_id,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(
+                        self._render_copy("error.sop_definition_not_found", definition_id=definition_id)
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_sop_definition(definition_id)
+
+    def get_sop_definition(self, definition_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM sop_definition WHERE id = ?", (definition_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.sop_definition_not_found", definition_id=definition_id))
+        return self._sop_definition_payload(row)
+
+    def list_sop_definitions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM sop_definition ORDER BY created_at, id").fetchall()
+        return [self._sop_definition_payload(row) for row in rows]
+
+    def _prepare_sop_steps(self, steps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """校验并归一化 ``steps``：subject / executor / 可空 verifier / max_attempts。
+
+        成员必须是**未删除且启用的 Agent**：SOP 的参与者是成员面的 Agent，owner 不是执行者。
+        这里一次校验整份定义，任一步非法就整体拒绝（不留半成品）。
+        """
+        if not steps:
+            raise DomainError("validation_failed", self._render_copy("error.sop_steps_required"))
+        prepared: list[dict[str, Any]] = []
+        for raw in steps:
+            subject = str(raw.get("subject") or "").strip()
+            if not subject:
+                raise DomainError("validation_failed", self._render_copy("error.sop_step_subject_required"))
+            executor_id = str(raw.get("executor_member_id") or "").strip()
+            if not executor_id:
+                raise DomainError("validation_failed", self._render_copy("error.sop_step_executor_required"))
+            self.require_sop_agent(executor_id)
+            verifier_raw = raw.get("verifier_member_id")
+            verifier_id = str(verifier_raw).strip() if verifier_raw else None
+            if verifier_id:
+                self.require_sop_agent(verifier_id)
+            max_attempts = raw.get("max_attempts", 3)
+            try:
+                attempts = int(max_attempts)
+            except (TypeError, ValueError):
+                attempts = 0
+            if attempts < 1:
+                raise DomainError("validation_failed", self._render_copy("error.sop_max_attempts_invalid"))
+            prepared.append(
+                {
+                    "subject": subject,
+                    "description": str(raw.get("description") or ""),
+                    "executor_member_id": executor_id,
+                    "verifier_member_id": verifier_id,
+                    "max_attempts": attempts,
+                }
+            )
+        return prepared
+
+    def require_sop_agent(self, member_id: str) -> dict[str, Any]:
+        agent = self.get_agent(member_id)
+        if agent.get("deleted_at") is not None:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.sop_member_unavailable", member_id=member_id),
+            )
+        if not agent.get("enabled", True):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.sop_member_disabled", member_id=member_id),
+            )
+        return agent
+
+    @staticmethod
+    def _sop_definition_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "steps": json.loads(row["steps"] or "[]"),
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_sop_run(
+        self,
+        *,
+        sop_definition_id: str,
+        target_id: str,
+        leader_member_id: str = OWNER_ID,
+        state: str,
+        phase: str = "pending",
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        """落一次 SOP 运行；``state`` 是 ``SOPRunState.model_dump_json()`` 的原样快照。"""
+        if phase not in SOP_PHASES:
+            raise DomainError("validation_failed", self._render_copy("error.sop_phase_invalid"))
+        if not state:
+            raise DomainError("validation_failed", self._render_copy("error.sop_state_required"))
+        self.get_target(target_id)
+        self.get_member(leader_member_id)
+        now = started_at or utc_now()
+        run_id = new_id("soprun")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO sop_run(id, sop_definition_id, target_id, leader_member_id, "
+                    "state, phase, started_at, finished_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        sop_definition_id,
+                        target_id,
+                        leader_member_id,
+                        state,
+                        phase,
+                        now,
+                        finished_at,
+                        now,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        self.prune_sop_runs()
+        return self.get_sop_run(run_id)
+
+    def update_sop_run_state(
+        self,
+        run_id: str,
+        *,
+        state: str,
+        phase: str,
+    ) -> dict[str, Any]:
+        """把一次运行的最新 ``SOPRunState`` 与派生 ``phase`` 写回；不改定义、不写消息。"""
+        if phase not in SOP_PHASES:
+            raise DomainError("validation_failed", self._render_copy("error.sop_phase_invalid"))
+        finished_at = utc_now() if phase in ("completed", "failed") else None
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE sop_run SET state = ?, phase = ?, updated_at = ?, "
+                    "finished_at = COALESCE(?, finished_at) WHERE id = ?",
+                    (state, phase, utc_now(), finished_at, run_id),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(self._render_copy("error.sop_run_not_found", sop_run_id=run_id))
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_sop_run(run_id)
+
+    def get_sop_run(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM sop_run WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.sop_run_not_found", sop_run_id=run_id))
+        return self._sop_run_payload(row)
+
+    def list_sop_runs(
+        self,
+        *,
+        sop_definition_id: str | None = None,
+        target_id: str | None = None,
+        limit: int = SOP_RUN_RETENTION,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if sop_definition_id is not None:
+            where.append("sop_definition_id = ?")
+            params.append(sop_definition_id)
+        if target_id is not None:
+            where.append("target_id = ?")
+            params.append(target_id)
+        clause = f"WHERE {' AND '.join(where)} " if where else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM sop_run {clause}ORDER BY started_at DESC, rowid DESC LIMIT ?",
+                (*params, max(1, int(limit))),
+            ).fetchall()
+        return [self._sop_run_payload(row) for row in rows]
+
+    def prune_sop_runs(self) -> int:
+        """保留最近 50 个或 90 天内的 SOP 运行；返回删除条数。
+
+        定义**不**参与清理：完成/失败后不自动删除定义（ADR-0023 §三）。启动时与新建 run 后调用。
+        """
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=SOP_RETENTION_DAYS))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, started_at FROM sop_run ORDER BY started_at DESC, rowid DESC"
+            ).fetchall()
+            doomed = [
+                str(row["id"])
+                for rank, row in enumerate(rows)
+                if rank >= SOP_RUN_RETENTION or str(row["started_at"]) < cutoff
+            ]
+            if not doomed:
+                return 0
+            self._begin()
+            try:
+                for start in range(0, len(doomed), 500):
+                    chunk = doomed[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    self._conn.execute(f"DELETE FROM sop_run WHERE id IN ({placeholders})", chunk)
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return len(doomed)
+
+    @staticmethod
+    def _sop_run_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sop_definition_id": row["sop_definition_id"],
+            "target_id": row["target_id"],
+            "leader_member_id": row["leader_member_id"],
+            "phase": row["phase"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "updated_at": row["updated_at"],
+            "state": json.loads(row["state"] or "{}"),
         }
 
     def create_team_assignment(

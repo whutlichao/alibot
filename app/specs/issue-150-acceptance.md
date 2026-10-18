@@ -135,5 +135,6 @@ $ scripts/check.sh
   `_mcp_file`；跨 loop 复用依赖 `_client` / `_container` / `_backend` 换绑。升级 agentscope
   必须重跑本票测试与 #134 探针。
 - **进程退出**：`SIGKILL` / 宿主崩溃不执行 atexit，依赖下一次启动清扫（只扫 `alibot-` 前缀）。
+  启动清扫假设**每个 Docker daemon 只跑一个 alibot 实例**；多实例共享 daemon 时会互删同前缀容器。
 - **失败缓存**：30 s 内同一 Agent 的后续轮次直接 offline；频道配置写入会清缓存，Agent 级
   `docker_image` 配置写入口（#154/#156）接入时也应清缓存/scope。
