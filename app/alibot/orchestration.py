@@ -183,6 +183,11 @@ class WakeOrchestrator:
         self._lock = threading.RLock()
 
     # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
+    @property
+    def scheduler(self) -> Scheduler:
+        """本轮/本进程共用的调度器（SOP 运行复用它，不新开第二个线程池）。"""
+        return self._scheduler
+
     def _locale(self) -> Locale:
         """当前**语言偏好**（库内的工作区设置）。
 
