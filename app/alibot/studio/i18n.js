@@ -48,6 +48,7 @@ const I18N_CATALOGS = {
     'rail.searchTitle': '搜索工作台',
     /* 搜索入口按钮上的提示语（原型 `:522` 的「搜索消息、任务…」，末尾的省略号是文案的一部分） */
     'rail.searchPlaceholder': '搜索消息、任务…',
+    'rail.newAgent': '新建 Agent',
     'rail.newAgentTitle': '新建 Agent',
     'rail.groupChannels': '频道',
     'rail.groupDms': '私信',
@@ -540,6 +541,7 @@ const I18N_CATALOGS = {
     'rail.newDmTitle': 'New direct message',
     'rail.searchTitle': 'Search the workspace',
     'rail.searchPlaceholder': 'Search messages, tasks…',
+    'rail.newAgent': 'New agent',
     'rail.newAgentTitle': 'New agent',
     'rail.groupChannels': 'Channels',
     'rail.groupDms': 'Direct messages',

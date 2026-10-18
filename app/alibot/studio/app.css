@@ -52,6 +52,7 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .search-btn:hover { border-color: var(--border-strong); color: var(--fg); }
 .search-btn span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-actions { display: flex; gap: var(--sp-4); padding: 0 var(--sp-5) var(--sp-5); border-bottom: 1px solid var(--border); }
+.rail-actions .btn { flex: 1; min-width: 0; gap: var(--sp-2); padding-inline: var(--sp-2); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-3);
