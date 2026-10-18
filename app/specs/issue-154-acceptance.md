@@ -144,3 +144,20 @@ $ curl -s http://127.0.0.1:8797/studio/index.html | md5 -q ; md5 -q app/alibot/s
 - 任务视图缓存 `state.channelConfigs[channelId]`：设置页保存后同步覆盖；别处改配置时不主动轮询
   （下次打开任务线程仍读同一端点，符合「读所属频道同一配置」）。
 - 截图目录只含本票证据；未修改设计系统与既有 ADR。
+
+## 5. 跟进：保存后频道设置遮罩保持滚动位置
+
+本跟进只修复 `submitChannelConfig` 收到成功 / 失败响应后的 `#channelConfigBody` 重绘：重绘前保存 `#channelConfigOverlay.scrollTop`，重绘后恢复。保存成功 toast、保存错误行与弹窗打开状态保持原行为；共享 `replaceChildren` helper 和其它调用方未改。
+
+| 判据 | 命令 / 操作 | 读数 |
+| --- | --- | --- |
+| 修复前红证据 | 独立数据目录 `/tmp/alibot-channel-config-scroll-20261018-task-c4732`；真实 Chromium，遮罩 `scrollTop=400`，真实鼠标点击保存 | 保存前 `scrollTop=400`、`scrollHeight=2037`；成功 toast「频道配置已保存。」后 `scrollTop=0`、`scrollHeight=2037`、弹窗仍打开；红断言 `scroll reset after save: expected 400, got 0` |
+| 保存成功 | 同一真实浏览器场景，更新后的代码，真实鼠标点击保存 | `400 → 400`，`scrollHeight=2037`；toast「频道配置已保存。」；弹窗仍打开 |
+| 保存失败 | 填入 `relative/path` 后，遮罩置于 `400`，真实鼠标点击保存 | `400 → 400`；遮罩 `scrollHeight=2037 → 2101`；错误行可见：「配置未保存：频道配置校验未通过，未改动任何字段：项目根必须是绝对路径：relative/path」；弹窗仍打开 |
+| 频道设置 Node 用例 | `node --test app/tests/channel_config_ui.test.cjs` | `tests 9 / pass 9 / fail 0` |
+| fast 门禁 | `scripts/check.sh --fast` | exit `0`；ruff `All checks passed!`；format `217 files already formatted`；mypy `92 source files` 无问题；pyright `0 errors, 0 warnings, 0 informations`；Node `180 pass / 0 fail` |
+
+### 永久用例 seam
+
+未增加 DOM 用例：现有 `FakeNode.focus()` 是空实现，替身也不建模 `activeElement`、`scrollTop` 或浏览器在移除焦点节点时对滚动容器的处理；在替身里模拟这一副作用不能给出真实焦点行为断言。修复前红 / 修复后绿由上述真实 Chromium 场景证明。按本票约定，未运行全量 pytest 与 schema migration 专项测试：没有 Python、API 或数据库 schema 改动。
+

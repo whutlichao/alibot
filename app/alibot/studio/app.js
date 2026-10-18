@@ -5924,6 +5924,12 @@ async function submitChannelConfig() {
   if (!channelId || !view.config) return;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
+  const renderWithScrollPreserved = () => {
+    const overlay = $('#channelConfigOverlay');
+    const scrollTop = overlay.scrollTop;
+    renderChannelConfigModal();
+    overlay.scrollTop = scrollTop;
+  };
   const root = String(view.draft.workspaceRoot || '').trim();
   const body = {
     mode: view.draft.mode,
@@ -5940,7 +5946,7 @@ async function submitChannelConfig() {
     view.draft = channelConfigDraftFrom(payload.config);
     view.error = '';
     view.loading = false;
-    renderChannelConfigModal();
+    renderWithScrollPreserved();
     toast(t('channelConfig.saved'));
   } catch (err) {
     if (state.channelConfig.channelId !== channelId) return;
@@ -5948,7 +5954,7 @@ async function submitChannelConfig() {
       box.textContent = t('channelConfig.saveFailed', { reason: err.message });
       box.hidden = false;
     }
-    renderChannelConfigModal();
+    renderWithScrollPreserved();
   }
 }
 
