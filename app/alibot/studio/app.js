@@ -208,6 +208,10 @@ const state = {
   // 任务视图要读所属频道的同一份配置（#154 / 规格 §4.6）：按 channel id 缓存
   // `GET /api/channels/{id}/config` 的载荷，正本仍是后端。
   channelConfigs: {},
+  // 资源管理（#156 / 规格 §4.6）：频道设置里的 Workspace / MCP / Skill 三段。
+  // `mcp` / `skills` 是 `GET /api/mcp-servers` / `GET /api/skills` 的镜像；`mcpDraft` 是
+  // **还没提交**的表单状态。清单里只有 `env_names`（变量名）——值从来不进这条通道。
+  resources: emptyResourcesView(),
   // 运行面板（#155 / 规格 §4.6）：dock 的**第四形态**，频道与任务线程都能打开。
   // 它是**独立面**——成员过程、分派、Plan、SOP 只在这里呈现，不进消息流 / 未读 / 搜索。
   // `runs` / `plan` / `sops` 是三个只读快照（`GET /team-runs` / `GET /plan` /
@@ -4869,11 +4873,14 @@ async function openChannelConfigModal() {
   state.channelConfig = emptyChannelConfigView();
   state.channelConfig.channelId = channel.id;
   state.channelConfig.loading = true;
+  // 资源三段（#156）与频道配置同时读：三段各有自己的错误行，一段读不到不牵连其它段。
+  state.resources = emptyResourcesView();
+  state.resources.channelId = channel.id;
   $('#channelConfigOverlay').hidden = false;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
   renderChannelConfigModal();
-  await loadChannelConfig(channel.id);
+  await Promise.all([loadChannelConfig(channel.id), loadChannelResources(channel.id)]);
 }
 
 /** 读一次该频道的配置 + 成员表（队长候选）。读回后按**同一个频道**重铺。 */
@@ -4900,6 +4907,7 @@ async function loadChannelConfig(channelId) {
 
 function closeChannelConfigModal() {
   state.channelConfig = emptyChannelConfigView();
+  state.resources = emptyResourcesView();
   $('#channelConfigOverlay').hidden = true;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
@@ -5136,7 +5144,777 @@ function renderChannelConfigModal() {
   actions.appendChild(save);
   nodes.push(actions);
 
+  // ⑧–⑩ 资源管理（#156）：工作区与数据面 / MCP / Skill。三段都只吃**后端读数**；
+  // 打开的是同一个频道时用当前镜像，否则用空镜像（不把别的频道的清单一瞬间画过来）。
+  const resources = state.resources.channelId === view.channelId
+    ? state.resources
+    : emptyResourcesView();
+  nodes.push(workspaceManagementSection(view));
+  nodes.push(mcpSection(resources));
+  nodes.push(skillSection(resources));
+
   replaceChildren(body, nodes);
+}
+
+/* ─── 资源管理（#156 / 规格 §4.6 / ADR-0021）─────────────────────────────────
+
+   频道设置内新增三段，全部追加在「频道配置」之后，不重写上面那套渲染：
+
+   ① **工作区与数据面**：项目根 / 后端是**已落库事实**（`view.config`），Docker 状态从
+      Agent 的 `enabled_reason` 读（#150 把容器失败原因记进 availability）；路径错误由
+      `PATCH /config` 整体拒绝并在保存处显示——这一段不伪造第二套校验。
+   MCP `GET/POST/PATCH/DELETE /api/mcp-servers` + `POST /{id}/consent`；Skill
+      `GET/POST/PATCH/DELETE /api/skills`（本机目录 JSON / zip 原始字节）。
+
+   两条硬边界：
+
+   - **只出现变量名**：MCP 载荷只有 `env_names`；表单也只收变量名，值没有输入口，
+     因此界面不存在「把值带进请求」的形状。
+   - **配置动作不碰消息面**：增删改 / 启停 / 确认之后只重读各自的清单，不刷新消息、
+     不模拟唤醒。后端本来就不落消息（#151 / #152），前端也不制造「好像发生了什么」的假象。 */
+
+const MCP_TRANSPORTS = ['stdio', 'http', 'sse'];
+const MCP_REMOTE_TRANSPORTS = ['http', 'sse'];
+
+function emptyMcpDraft() {
+  return {
+    name: '',
+    transport: 'stdio',
+    command: '',
+    args: '',
+    url: '',
+    envNames: '',
+    enabled: true,
+  };
+}
+
+/** 弹窗的空镜像（打开 / 关闭都用它；`mcpDraft` 里没有任何凭据）。 */
+function emptyResourcesView() {
+  return {
+    channelId: null,
+    mcpLoading: false,
+    mcpError: '',
+    mcp: [],
+    mcpDraft: emptyMcpDraft(),
+    mcpEditingId: null,
+    mcpConsentTimes: {},
+    skillLoading: false,
+    skillError: '',
+    skillInstalling: false,
+    skills: [],
+    skillSourcePath: '',
+  };
+}
+
+function isRemoteTransport(transport) {
+  return MCP_REMOTE_TRANSPORTS.includes(transport);
+}
+
+/** 表单里的变量名：逗号 / 空白分隔，去重去空。**只收名字**。 */
+function parseEnvNames(raw) {
+  const names = String(raw || '')
+    .split(/[\s,]+/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return Array.from(new Set(names));
+}
+
+/** 参数按空白分隔（与后端「逐个字符串」的 `args` 对齐；不解析引号，也没有 shell 展开）。 */
+function parseArgs(raw) {
+  const text = String(raw || '').trim();
+  return text ? text.split(/\s+/).filter(Boolean) : [];
+}
+
+/** 一条声明的变量名读数（值永远不显示、不保存）。 */
+function mcpEnvNamesText(server) {
+  const names = server.env_names || [];
+  return names.length ? names.join(', ') : t('mcp.envNone');
+}
+
+/** 进程内装配读数 → 一句可读状态（`runtime=null` = 本进程还没装配过）。 */
+function mcpRuntimeText(server) {
+  const runtime = server.runtime;
+  if (!runtime) return t('mcp.runtimeUnknown');
+  if (runtime.error) return t('mcp.runtimeFailed', { reason: runtime.error });
+  return t('mcp.runtimeConnected', { count: (runtime.tools || []).length });
+}
+
+/** 传输方式的词条（动态取值也必须落到一个**字面**键上，词条守卫才看得见）。 */
+function mcpTransportLabel(transport) {
+  if (transport === 'http') return t('mcp.transport.http');
+  if (transport === 'sse') return t('mcp.transport.sse');
+  return t('mcp.transport.stdio');
+}
+
+/** 后端词条（同上：字面键，不做字符串拼接）。 */
+function workspaceBackendLabel(backend) {
+  return backend === 'docker' ? t('channelConfig.backend.docker') : t('channelConfig.backend.local');
+}
+
+function mcpDraftFrom(server) {
+  return {
+    name: server.name || '',
+    transport: server.transport || 'stdio',
+    command: server.command || '',
+    args: (server.args || []).join(' '),
+    url: server.url || '',
+    envNames: (server.env_names || []).join(', '),
+    enabled: Boolean(server.enabled),
+  };
+}
+
+/** 频道内 Agent 的 availability 读数（`enabled_reason` 带 Docker 失败原因时就是不可用）。 */
+function channelAgentAvailability(view) {
+  const ids = new Set((view.members || []).map((member) => member.id));
+  return state.agents.filter((agent) => ids.has(agent.id));
+}
+
+/** Docker 状态只陈述**后端事实**：有失败原因就报不可用；否则按当前后端说「未报告故障」，
+    不做 daemon 探活，也不假装「可用」。 */
+function dockerStatusOf(agents, backend) {
+  const failed = (agents || []).find((agent) =>
+    String(agent.enabled_reason || '').includes('Docker'),
+  );
+  if (failed) {
+    return {
+      state: 'unavailable',
+      text: t('workspaceMgmt.dockerUnavailableAgent', {
+        name: failed.display_name || failed.id || '',
+        reason: failed.enabled_reason,
+      }),
+    };
+  }
+  if (backend === 'docker') return { state: 'reported', text: t('workspaceMgmt.dockerReported') };
+  return { state: 'unused', text: t('workspaceMgmt.dockerUnused') };
+}
+
+/** 读 MCP 声明（频道 scope）；失败只落在本段自己的错误行，不牵连其它段。 */
+async function loadMcpServers(channelId) {
+  const view = state.resources;
+  view.mcpLoading = true;
+  view.mcpError = '';
+  if (view.channelId === channelId) renderChannelConfigModal();
+  try {
+    const payload = await api(
+      '/api/mcp-servers?scope_kind=channel&scope_id=' + encodeURIComponent(channelId),
+    );
+    if (view.channelId !== channelId) return;
+    view.mcp = payload.mcp_servers || [];
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.loadFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.mcpLoading = false;
+  renderChannelConfigModal();
+}
+
+/** 读技能列表（频道 scope；只含元数据与 hash）。 */
+async function loadSkills(channelId) {
+  const view = state.resources;
+  view.skillLoading = true;
+  view.skillError = '';
+  if (view.channelId === channelId) renderChannelConfigModal();
+  try {
+    const payload = await api(
+      '/api/skills?scope_kind=channel&scope_id=' + encodeURIComponent(channelId),
+    );
+    if (view.channelId !== channelId) return;
+    view.skills = payload.skills || [];
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.loadFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.skillLoading = false;
+  renderChannelConfigModal();
+}
+
+async function loadChannelResources(channelId) {
+  await Promise.all([loadMcpServers(channelId), loadSkills(channelId)]);
+}
+
+function resourceNote(key, odId, className) {
+  const node = el('div', 'resource-meta' + (className ? ' ' + className : ''), t(key));
+  if (odId) node.setAttribute('data-od-id', odId);
+  return node;
+}
+
+function resourceErrorNode(text, odId) {
+  const node = el('div', 'form-error', text);
+  node.setAttribute('role', 'alert');
+  node.setAttribute('data-od-id', odId);
+  return node;
+}
+
+function resourceButton(labelKey, datasetKey, datasetValue, odId) {
+  const button = el('button', 'btn btn-sm', t(labelKey));
+  button.type = 'button';
+  if (datasetKey) button.dataset[datasetKey] = datasetValue;
+  if (odId) button.setAttribute('data-od-id', odId);
+  button.disabled = !state.online;
+  return button;
+}
+
+/** 标题 + 输入控件（`.field` 那一档）；`datasetKey` 是委派用的 `data-mcp-field`。 */
+function resourceTextField(labelKey, odId, datasetValue, value, placeholderKey) {
+  const field = el('div', 'field');
+  field.appendChild(el('label', null, t(labelKey)));
+  const input = el('input', 'input');
+  input.type = 'text';
+  input.dataset.mcpField = datasetValue;
+  input.setAttribute('data-od-id', odId);
+  if (placeholderKey) input.placeholder = t(placeholderKey);
+  input.value = value;
+  field.appendChild(input);
+  return field;
+}
+
+function resourceField(labelKey, control, odId) {
+  const field = el('div', 'field');
+  field.appendChild(el('label', null, t(labelKey)));
+  field.appendChild(control);
+  if (odId) field.setAttribute('data-od-id', odId);
+  return field;
+}
+
+/* ── ① 工作区与数据面（只读状态 + 说明；写控件仍在上面的频道配置段） ─────── */
+
+function workspaceManagementSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(
+    sectionTitle('workspaceMgmt.section', 'channel-config-section-workspace-mgmt'),
+  );
+  const config = view.config;
+  section.appendChild(
+    kvRow(
+      t('workspaceMgmt.root'),
+      config.workspace_root || t('workspaceMgmt.rootNone'),
+      'workspace-mgmt-root',
+    ),
+  );
+  section.appendChild(
+    kvRow(
+      t('workspaceMgmt.backend'),
+      workspaceBackendLabel(config.workspace_backend),
+      'workspace-mgmt-backend',
+    ),
+  );
+  const docker = dockerStatusOf(channelAgentAvailability(view), config.workspace_backend);
+  const row = el('div', 'kv');
+  row.appendChild(el('span', 'k', t('workspaceMgmt.dockerStatus')));
+  const cell = el('span', 'v', docker.text);
+  cell.dataset.dockerState = docker.state;
+  cell.setAttribute('data-od-id', 'workspace-mgmt-docker');
+  row.appendChild(cell);
+  section.appendChild(row);
+
+  const notes = el('div');
+  notes.setAttribute('data-od-id', 'workspace-mgmt-notes');
+  [
+    'workspaceMgmt.noteTools',
+    'workspaceMgmt.noteLocal',
+    'workspaceMgmt.noteDocker',
+    'workspaceMgmt.noteConfig',
+  ].forEach((key) => notes.appendChild(resourceNote(key, null, 'is-faint')));
+  section.appendChild(notes);
+  return section;
+}
+
+/* ── ② MCP 声明（列表 / 增删改 / 远端确认 / 运行读数） ─────────────────── */
+
+function mcpRow(server, view) {
+  const row = el('div', 'resource-row');
+  row.dataset.mcpServer = server.id;
+  row.setAttribute('data-od-id', 'mcp-row');
+  const main = el('div', 'resource-main');
+  const title = el('div', 'resource-title');
+  title.appendChild(el('b', null, server.name));
+  title.appendChild(el('span', 'badge', server.transport));
+  title.appendChild(el('span', 'badge', t(server.enabled ? 'mcp.enabled' : 'mcp.disabled')));
+  title.appendChild(el('span', 'badge', t(server.is_remote ? 'mcp.isRemote' : 'mcp.isLocal')));
+  main.appendChild(title);
+
+  const target = server.is_remote
+    ? server.url
+    : [server.command].concat(server.args || []).filter(Boolean).join(' ');
+  if (target) main.appendChild(el('div', 'resource-meta is-faint', target));
+  main.appendChild(
+    el('div', 'resource-meta', t('mcp.envLabel', { names: mcpEnvNamesText(server) })),
+  );
+
+  const runtime = server.runtime;
+  const runtimeText = el('div', 'resource-meta' + (runtime && runtime.error ? ' is-error' : ' is-faint'));
+  runtimeText.dataset.mcpRuntime = server.id;
+  runtimeText.textContent = mcpRuntimeText(server);
+  main.appendChild(runtimeText);
+
+  if (server.is_remote) {
+    if (server.consented) {
+      const acknowledged = view.mcpConsentTimes[server.id];
+      main.appendChild(
+        el(
+          'div',
+          'resource-meta is-faint',
+          acknowledged
+            ? t('mcp.consentedAt', { time: acknowledged })
+            : t('mcp.consented'),
+        ),
+      );
+    } else {
+      main.appendChild(resourceNote('mcp.consentRequired', null, 'is-error'));
+    }
+  }
+
+  const actions = el('div', 'resource-actions');
+  actions.appendChild(
+    resourceButton(
+      server.enabled ? 'mcp.disable' : 'mcp.enable',
+      'mcpToggle',
+      server.id,
+      'mcp-toggle',
+    ),
+  );
+  if (server.consent_required && !server.consented) {
+    actions.appendChild(resourceButton('mcp.consent', 'mcpConsent', server.id, 'mcp-consent'));
+  }
+  actions.appendChild(resourceButton('mcp.edit', 'mcpEdit', server.id, 'mcp-edit'));
+  actions.appendChild(resourceButton('mcp.delete', 'mcpDelete', server.id, 'mcp-delete'));
+  row.appendChild(main);
+  row.appendChild(actions);
+  return row;
+}
+
+function mcpForm(view) {
+  const editing = view.mcpEditingId
+    ? view.mcp.find((server) => server.id === view.mcpEditingId)
+    : null;
+  const draft = view.mcpDraft;
+  const box = el('div', 'resource-add');
+  box.setAttribute('data-od-id', 'mcp-form');
+  box.appendChild(el('div', 'd-sec-title', t(editing ? 'mcp.editTitle' : 'mcp.addTitle')));
+
+  const first = el('div', 'resource-form-row');
+  first.appendChild(
+    resourceTextField('mcp.name', 'mcp-name', 'name', draft.name, 'mcp.namePlaceholder'),
+  );
+  const transport = el('select', 'input');
+  transport.dataset.mcpField = 'transport';
+  transport.setAttribute('data-od-id', 'mcp-transport');
+  MCP_TRANSPORTS.forEach((value) => {
+    const option = el('option', null, mcpTransportLabel(value));
+    option.value = value;
+    transport.appendChild(option);
+  });
+  transport.value = draft.transport;
+  first.appendChild(resourceField('mcp.transport', transport, 'mcp-transport-field'));
+  box.appendChild(first);
+
+  const second = el('div', 'resource-form-row');
+  if (isRemoteTransport(draft.transport)) {
+    second.appendChild(resourceTextField('mcp.url', 'mcp-url', 'url', draft.url, 'mcp.urlPlaceholder'));
+  } else {
+    second.appendChild(
+      resourceTextField('mcp.command', 'mcp-command', 'command', draft.command, 'mcp.commandPlaceholder'),
+    );
+    second.appendChild(
+      resourceTextField('mcp.args', 'mcp-args', 'args', draft.args, 'mcp.argsPlaceholder'),
+    );
+  }
+  box.appendChild(second);
+
+  const third = el('div', 'resource-form-row');
+  third.appendChild(
+    resourceTextField(
+      'mcp.envNames',
+      'mcp-env-names',
+      'envNames',
+      draft.envNames,
+      'mcp.envNamesPlaceholder',
+    ),
+  );
+  const enabledField = el('div', 'field');
+  const enabledLabel = el('label');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.dataset.mcpEnabled = '1';
+  enabled.setAttribute('data-od-id', 'mcp-enabled');
+  enabled.checked = Boolean(draft.enabled);
+  enabledLabel.appendChild(enabled);
+  enabledLabel.appendChild(document.createTextNode(' ' + t('mcp.enabledLabel')));
+  enabledField.appendChild(enabledLabel);
+  third.appendChild(enabledField);
+  box.appendChild(third);
+  box.appendChild(resourceNote('mcp.envValuesOmitted', 'mcp-env-note', 'is-faint'));
+
+  const actions = el('div', 'agent-actions');
+  actions.appendChild(
+    resourceButton(editing ? 'mcp.save' : 'mcp.add', 'mcpSave', '1', 'mcp-save'),
+  );
+  if (editing) {
+    actions.appendChild(resourceButton('mcp.cancel', 'mcpCancelEdit', '1', 'mcp-cancel-edit'));
+  }
+  box.appendChild(actions);
+  return box;
+}
+
+function mcpSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('mcp.section', 'channel-config-section-mcp'));
+  section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
+  if (view.mcpError) {
+    section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
+  }
+  if (view.mcpLoading) {
+    section.appendChild(el('div', 'resource-empty', t('mcp.loading')));
+  } else if (!view.mcp.length) {
+    section.appendChild(el('div', 'resource-empty', t('mcp.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'mcp-list');
+    view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
+    section.appendChild(list);
+  }
+  section.appendChild(mcpForm(view));
+  return section;
+}
+
+/* ── ③ 技能（列表 / 本机目录 / zip / 启停 / 删除） ─────────────────────── */
+
+function skillRow(skill) {
+  const row = el('div', 'resource-row');
+  row.dataset.skill = skill.id;
+  row.setAttribute('data-od-id', 'skill-row');
+  const main = el('div', 'resource-main');
+  const title = el('div', 'resource-title');
+  title.appendChild(el('b', null, skill.name));
+  title.appendChild(el('span', 'badge', t(skill.enabled ? 'skill.enabled' : 'skill.disabled')));
+  main.appendChild(title);
+  if (skill.description) main.appendChild(el('div', 'resource-meta', skill.description));
+  const hash = el('div', 'resource-meta is-faint');
+  hash.appendChild(el('span', null, t('skill.hashLabel') + ' '));
+  const short = el('span', 'resource-hash', String(skill.content_hash || '').slice(0, 12));
+  short.setAttribute('title', t('skill.hashTitle', { hash: skill.content_hash || '' }));
+  hash.appendChild(short);
+  main.appendChild(hash);
+
+  const actions = el('div', 'resource-actions');
+  actions.appendChild(
+    resourceButton(
+      skill.enabled ? 'skill.disable' : 'skill.enable',
+      'skillToggle',
+      skill.id,
+      'skill-toggle',
+    ),
+  );
+  actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
+  row.appendChild(main);
+  row.appendChild(actions);
+  return row;
+}
+
+function skillSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('skill.section', 'channel-config-section-skill'));
+  section.appendChild(resourceNote('skill.scopeNote', 'skill-scope-note', 'is-faint'));
+  if (view.skillError) {
+    section.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
+  }
+  if (view.skillLoading) {
+    section.appendChild(el('div', 'resource-empty', t('skill.loading')));
+  } else if (!view.skills.length) {
+    section.appendChild(el('div', 'resource-empty', t('skill.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'skill-list');
+    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
+    section.appendChild(list);
+  }
+
+  const install = el('div', 'resource-add');
+  install.setAttribute('data-od-id', 'skill-install');
+  install.appendChild(el('div', 'd-sec-title', t('skill.installTitle')));
+
+  const dirRow = el('div', 'resource-form-row');
+  const dirField = el('div', 'field');
+  dirField.appendChild(el('label', null, t('skill.installDir')));
+  const dir = el('input', 'input');
+  dir.type = 'text';
+  dir.dataset.skillSource = '1';
+  dir.setAttribute('data-od-id', 'skill-source');
+  dir.placeholder = t('skill.installDirPlaceholder');
+  dir.value = view.skillSourcePath;
+  dirField.appendChild(dir);
+  dirRow.appendChild(dirField);
+  const dirActions = el('div', 'agent-actions');
+  dirActions.appendChild(resourceButton('skill.installDirButton', 'skillInstallDir', '1', 'skill-install-dir'));
+  dirRow.appendChild(dirActions);
+  install.appendChild(dirRow);
+  install.appendChild(resourceNote('skill.installDirHint', 'skill-install-dir-hint', 'is-faint'));
+
+  const zipRow = el('div', 'resource-form-row');
+  const zipField = el('div', 'field');
+  zipField.appendChild(el('label', null, t('skill.installZip')));
+  const zip = el('input', 'input');
+  zip.type = 'file';
+  zip.accept = '.zip,application/zip';
+  zip.dataset.skillZip = '1';
+  zip.setAttribute('data-od-id', 'skill-zip');
+  zipField.appendChild(zip);
+  zipRow.appendChild(zipField);
+  install.appendChild(zipRow);
+  install.appendChild(resourceNote('skill.installZipHint', 'skill-install-zip-hint', 'is-faint'));
+  if (view.skillInstalling) {
+    install.appendChild(el('div', 'resource-meta is-faint', t('skill.installing')));
+  }
+  section.appendChild(install);
+  return section;
+}
+
+/* ── 写路径（全部是配置动作：只重读各自的清单，不碰消息面） ─────────────── */
+
+function resetMcpDraft(view) {
+  view.mcpDraft = emptyMcpDraft();
+  view.mcpEditingId = null;
+}
+
+function beginMcpEdit(serverId) {
+  const view = state.resources;
+  const server = view.mcp.find((item) => item.id === serverId);
+  if (!server) return;
+  view.mcpEditingId = server.id;
+  view.mcpDraft = mcpDraftFrom(server);
+  view.mcpError = '';
+  renderChannelConfigModal();
+}
+
+function cancelMcpEdit() {
+  const view = state.resources;
+  view.mcpEditingId = null;
+  view.mcpDraft = emptyMcpDraft();
+  view.mcpError = '';
+  renderChannelConfigModal();
+}
+
+/** 表单字段只在**未提交**的镜像上改；transport 切换会重铺（command / url 二选一）。 */
+function updateMcpDraftField(field) {
+  const view = state.resources;
+  const key = field.dataset.mcpField;
+  if (!key || !Object.prototype.hasOwnProperty.call(view.mcpDraft, key)) return;
+  view.mcpDraft[key] = field.value;
+  if (key === 'transport') renderChannelConfigModal();
+}
+
+async function submitMcpDraft() {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!channelId || !state.online) return;
+  const draft = view.mcpDraft;
+  const remote = isRemoteTransport(draft.transport);
+  const fields = {
+    name: String(draft.name || '').trim(),
+    transport: draft.transport,
+    command: remote ? '' : String(draft.command || '').trim(),
+    args: remote ? [] : parseArgs(draft.args),
+    url: remote ? String(draft.url || '').trim() : '',
+    env_names: parseEnvNames(draft.envNames),
+    enabled: Boolean(draft.enabled),
+  };
+  const editingId = view.mcpEditingId;
+  view.mcpError = '';
+  try {
+    if (editingId) {
+      await api('/api/mcp-servers/' + encodeURIComponent(editingId), {
+        method: 'PATCH',
+        body: fields,
+      });
+    } else {
+      await api('/api/mcp-servers', {
+        method: 'POST',
+        body: Object.assign({ scope_kind: 'channel', scope_id: channelId }, fields),
+      });
+    }
+    if (view.channelId !== channelId) return;
+    resetMcpDraft(view);
+    toast(t(editingId ? 'mcp.updated' : 'mcp.created'));
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.saveFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function toggleMcpServer(serverId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  const server = view.mcp.find((item) => item.id === serverId);
+  if (!server || !state.online) return;
+  view.mcpError = '';
+  try {
+    await api('/api/mcp-servers/' + encodeURIComponent(serverId), {
+      method: 'PATCH',
+      body: { enabled: !server.enabled },
+    });
+    if (view.channelId !== channelId) return;
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.saveFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function deleteMcpServer(serverId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!state.online) return;
+  view.mcpError = '';
+  try {
+    await api('/api/mcp-servers/' + encodeURIComponent(serverId), { method: 'DELETE' });
+    if (view.channelId !== channelId) return;
+    if (view.mcpEditingId === serverId) resetMcpDraft(view);
+    toast(t('mcp.deleted'));
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.deleteFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+/** 远端 MCP 的数据面确认（**幂等**）：后端重复调用回同一个 `acknowledged_at`。 */
+async function consentMcpServer(serverId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!state.online) return;
+  view.mcpError = '';
+  try {
+    const payload = await api(
+      '/api/mcp-servers/' + encodeURIComponent(serverId) + '/consent',
+      { method: 'POST' },
+    );
+    if (view.channelId !== channelId) return;
+    const acknowledged = (payload.consent || {}).acknowledged_at || '';
+    if (acknowledged) view.mcpConsentTimes[serverId] = acknowledged;
+    toast(t('mcp.consentDone'));
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.consentFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function submitSkillDirectory() {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!channelId || !state.online) return;
+  const sourcePath = String(view.skillSourcePath || '').trim();
+  if (!sourcePath) {
+    view.skillError = t('skill.sourceRequired');
+    renderChannelConfigModal();
+    return;
+  }
+  view.skillError = '';
+  view.skillInstalling = true;
+  renderChannelConfigModal();
+  try {
+    const payload = await api('/api/skills', {
+      method: 'POST',
+      body: { scope_kind: 'channel', scope_id: channelId, source_path: sourcePath },
+    });
+    if (view.channelId !== channelId) return;
+    view.skillSourcePath = '';
+    toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.installFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.skillInstalling = false;
+  renderChannelConfigModal();
+}
+
+/** zip 安装：原始字节走正文、元数据走 query（与后端契约一致，不用 multipart）。 */
+async function uploadSkillZip(files) {
+  const file = files && files[0];
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!file || !channelId || !state.online) return;
+  view.skillError = '';
+  view.skillInstalling = true;
+  renderChannelConfigModal();
+  try {
+    const query =
+      '?scope_kind=channel&scope_id=' +
+      encodeURIComponent(channelId) +
+      '&filename=' +
+      encodeURIComponent(file.name || 'upload.zip');
+    const response = await fetch('/api/skills' + query, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file,
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const error = new Error(readError(payload, response));
+      error.status = response.status;
+      throw error;
+    }
+    if (view.channelId !== channelId) return;
+    toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.installFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.skillInstalling = false;
+  renderChannelConfigModal();
+}
+
+async function toggleSkill(skillId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  const skill = view.skills.find((item) => item.id === skillId);
+  if (!skill || !state.online) return;
+  view.skillError = '';
+  try {
+    await api('/api/skills/' + encodeURIComponent(skillId), {
+      method: 'PATCH',
+      body: { enabled: !skill.enabled },
+    });
+    if (view.channelId !== channelId) return;
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.toggleFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function deleteSkill(skillId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!state.online) return;
+  view.skillError = '';
+  try {
+    await api('/api/skills/' + encodeURIComponent(skillId), { method: 'DELETE' });
+    if (view.channelId !== channelId) return;
+    toast(t('skill.deleted'));
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.deleteFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
 }
 
 /** 保存：提交全部可写字段（`team_scope` 不在可写面上）；成功按响应重铺，失败只报可读原因。 */
@@ -6640,9 +7418,67 @@ function bindEvents() {
       selectChannelConfigPermission(permission.dataset.configPermission);
       return;
     }
-    if (event.target.closest('[data-config-save]')) submitChannelConfig();
+    if (event.target.closest('[data-config-save]')) {
+      submitChannelConfig();
+      return;
+    }
+    // ── 资源管理（#156）：四组配置动作各走自己的写路径（都不碰消息面）──
+    const mcpEdit = event.target.closest('[data-mcp-edit]');
+    if (mcpEdit) {
+      beginMcpEdit(mcpEdit.dataset.mcpEdit);
+      return;
+    }
+    if (event.target.closest('[data-mcp-cancel-edit]')) {
+      cancelMcpEdit();
+      return;
+    }
+    const mcpToggle = event.target.closest('[data-mcp-toggle]');
+    if (mcpToggle) {
+      toggleMcpServer(mcpToggle.dataset.mcpToggle);
+      return;
+    }
+    const mcpConsent = event.target.closest('[data-mcp-consent]');
+    if (mcpConsent) {
+      consentMcpServer(mcpConsent.dataset.mcpConsent);
+      return;
+    }
+    const mcpDelete = event.target.closest('[data-mcp-delete]');
+    if (mcpDelete) {
+      deleteMcpServer(mcpDelete.dataset.mcpDelete);
+      return;
+    }
+    if (event.target.closest('[data-mcp-save]')) {
+      submitMcpDraft();
+      return;
+    }
+    if (event.target.closest('[data-skill-install-dir]')) {
+      submitSkillDirectory();
+      return;
+    }
+    const skillToggle = event.target.closest('[data-skill-toggle]');
+    if (skillToggle) {
+      toggleSkill(skillToggle.dataset.skillToggle);
+      return;
+    }
+    const skillDelete = event.target.closest('[data-skill-delete]');
+    if (skillDelete) deleteSkill(skillDelete.dataset.skillDelete);
   });
   $('#channelConfigBody').addEventListener('change', (event) => {
+    const zip = event.target.closest('[data-skill-zip]');
+    if (zip) {
+      uploadSkillZip(zip.files);
+      return;
+    }
+    const field = event.target.closest('[data-mcp-field]');
+    if (field) {
+      updateMcpDraftField(field);
+      return;
+    }
+    const enabled = event.target.closest('[data-mcp-enabled]');
+    if (enabled) {
+      state.resources.mcpDraft.enabled = Boolean(enabled.checked);
+      return;
+    }
     const leader = event.target.closest('[data-config-leader]');
     if (!leader) return;
     state.channelConfig.draft.leader = leader.value;
@@ -6651,7 +7487,17 @@ function bindEvents() {
   // 项目根是自由输入：只更新**未提交的呈现状态**，不逐字读后端（提交时由后端整体校验）。
   $('#channelConfigBody').addEventListener('input', (event) => {
     const root = event.target.closest('[data-config-workspace-root]');
-    if (root) state.channelConfig.draft.workspaceRoot = root.value;
+    if (root) {
+      state.channelConfig.draft.workspaceRoot = root.value;
+      return;
+    }
+    const field = event.target.closest('[data-mcp-field]');
+    if (field) {
+      updateMcpDraftField(field);
+      return;
+    }
+    const source = event.target.closest('[data-skill-source]');
+    if (source) state.resources.skillSourcePath = source.value;
   });
   // ── 运行面板（#155）：频道头入口 + 任务线程头入口 + 刷新 / 关闭 / 错误重试 ──
   // 正文整段重铺，因此重试按钮委派到 `#rpBody` 上（与预算 / 设置同一做法）。

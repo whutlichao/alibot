@@ -1062,3 +1062,22 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
   .board-cols { flex-direction: column; }
   .col { width: 100%; flex-basis: auto; }
 }
+
+/* ─── 资源管理（#156 / 规格 §4.6）：Workspace 状态 / MCP / Skill 三段 ─────────
+   三段都追加在频道设置正文里，行形态沿用 `.reminder-row` 那一族（列表 + hairline），
+   但语义不同，因此各自命名：一行 = 「读数主体 + 动作组」。零裸色值、不新造 token 名。 */
+.resource-row { display: flex; align-items: flex-start; gap: var(--sp-5); padding: 10px 0; border-bottom: 1px solid var(--border); }
+.resource-row:last-child { border-bottom: 0; }
+.resource-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.resource-title { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; font-size: var(--fs-body); font-weight: var(--fw-semi); }
+.resource-meta { font-size: var(--fs-caption); color: var(--muted); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.resource-meta.is-faint { color: var(--faint); }
+.resource-meta.is-error { color: var(--error); }
+.resource-hash { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); letter-spacing: var(--ls-wide); }
+.resource-actions { display: flex; gap: var(--sp-3); flex-wrap: wrap; justify-content: flex-end; flex: 0 0 auto; }
+.resource-add { margin: var(--sp-5) 0 0; padding-top: var(--sp-5); border-top: 1px solid var(--border); }
+.resource-form-row { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: flex-end; }
+.resource-form-row .field { flex: 1; min-width: 160px; margin-bottom: 0; }
+.resource-form-row .agent-actions { flex: 0 0 auto; }
+.resource-form-row .agent-actions .btn { flex: 0 0 auto; }
+.resource-empty { padding: var(--sp-3) 0; font-size: var(--fs-sm); color: var(--faint); }
