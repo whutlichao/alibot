@@ -18,6 +18,7 @@ docs/adr/0024-…md                  # 结果、缺项、局限、保留默认 3
   `--preflight-only` 的保守预估。
 - 脚本化替身只用于 `--dry-run` 行为取证，报告标 `usage_evidence=false` / `cost_evidence=false`。
 
+**Head branch:** `issue-55-impl`（base `main`，diff 从 `bc6f761` 起；latest commit 见 PR 页面）。
 **状态：draft。** 真实本机 provider 与远端付费 provider 读数尚未取得：本机 Ollama 不可用；远端付费
 授权仍 pending（人民币 5 元额度），且按模型硬限制的保守预估为 **$6.0864**，预检不通过，工具拒绝执行。
 因此本 PR **不关闭 #55**，也不把 dry-run 或预检写成实测成本。
@@ -33,11 +34,14 @@ docs/adr/0024-…md                  # 结果、缺项、局限、保留默认 3
 - 预检（不建库/不调用模型）：`deepseek:deepseek-flash`、tier 3、每轮 2 次调用 ⇒ 单调用上限 `$0.7608`、
   保守预估 `$6.0864`、`fits=false`；证据
   `app/specs/issue-55-preflight-deepseek-flash-2026-10-18.json`。
-- 全量门禁 `scripts/check.sh`：**861 passed, 2 skipped in 384.75s**；ruff `All checks passed!`；
-  ruff format `216 files already formatted`；mypy `Success: no issues found in 92 source files`；
+- 全量门禁 `scripts/check.sh`：**864 passed, 2 skipped in 378.92s**；ruff `All checks passed!`；
+  ruff format `217 files already formatted`；mypy `Success: no issues found in 92 source files`；
   pyright `0 errors, 0 warnings, 0 informations`；node `tests 180 / pass 180 / fail 0`。
 - 复跑命令见 `app/specs/issue-55-acceptance.md` §4；dry-run 无需凭证、零成本。
-- 双轴 code-review（Standards / Spec）：见下方评论或本 run 报告。
+- 双轴 code-review（Standards / Spec）：两轮均只读完成。第一轮发现初始唤醒漏算、失败轮漏 usage、
+  成本证据可误标完整等已修复；第二轮确认闭合，并补了 `--max-model-calls-per-round` 正整数校验、
+  `cost-math-error` 独立诊断、删除死字段、修正 ADR 示例阈值、在 README 登记测量工具测试例外。
+  明细见 `app/specs/issue-55-acceptance.md` §9。
 
 ## Merge Danger
 
