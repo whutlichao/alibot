@@ -94,6 +94,87 @@ def test_invalid_model_id_rejects_the_whole_request_without_partial_write(client
     assert current["model_id"] == LOCAL_MODEL_ID
 
 
+def test_patch_writes_agent_workspace_fields_and_reads_them_back(client: TestClient) -> None:
+    """D14/D15 的四个 Agent 级字段有产品写路径：PATCH 后 GET/列表读回同一份持久化事实。"""
+    agent = create_agent(client, name="工作区", model_id=LOCAL_MODEL_ID).json()["agent"]
+
+    response = patch_agent(
+        client,
+        agent["id"],
+        workspace_backend="docker",
+        permission_mode="read-only",
+        allow_local_shell=True,
+        docker_image="registry.example/agent-runtime:1.2.3",
+    )
+
+    assert response.status_code == 200, response.json()
+    written = response.json()["agent"]
+    assert written["workspace_backend"] == "docker"
+    assert written["permission_mode"] == "read-only"
+    assert written["allow_local_shell"] is True
+    assert written["docker_image"] == "registry.example/agent-runtime:1.2.3"
+
+    current = detail(client, agent["id"])
+    assert current["workspace_backend"] == "docker"
+    assert current["permission_mode"] == "read-only"
+    assert current["allow_local_shell"] is True
+    assert current["docker_image"] == "registry.example/agent-runtime:1.2.3"
+    listed = agents(client)[0]
+    assert listed["workspace_backend"] == "docker"
+    assert listed["docker_image"] == "registry.example/agent-runtime:1.2.3"
+
+    # 空串是「显式清空镜像」（回到内置镜像），不是保留旧值；其它三项不动。
+    cleared = patch_agent(client, agent["id"], docker_image="").json()["agent"]
+    assert cleared["docker_image"] is None
+    assert cleared["workspace_backend"] == "docker"
+    assert cleared["allow_local_shell"] is True
+
+
+def test_create_agent_accepts_the_same_workspace_fields(client: TestClient) -> None:
+    """创建链路也写这四列（Agent 详情读面因此从第一轮起就有真实来源）。"""
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": "新工作区",
+            "role": "执行",
+            "model_id": LOCAL_MODEL_ID,
+            "system_prompt": "只做测试。",
+            "workspace_backend": "local",
+            "permission_mode": "trusted-writes",
+            "allow_local_shell": True,
+            "docker_image": "registry.example/agent-runtime:2.0.0",
+        },
+    )
+
+    assert response.status_code == 201, response.json()
+    agent = response.json()["agent"]
+    assert agent["workspace_backend"] == "local"
+    assert agent["permission_mode"] == "trusted-writes"
+    assert agent["allow_local_shell"] is True
+    assert agent["docker_image"] == "registry.example/agent-runtime:2.0.0"
+    assert detail(client, agent["id"])["docker_image"] == "registry.example/agent-runtime:2.0.0"
+
+
+def test_invalid_agent_workspace_values_reject_the_whole_request(client: TestClient) -> None:
+    """非法后端 / 权限档 / 超长镜像整体拒绝：同一请求里的合法字段也**不写**。"""
+    agent = create_agent(client, name="原名", role="原角色").json()["agent"]
+
+    for invalid in (
+        {"workspace_backend": "virtualbox"},
+        {"permission_mode": "bypass"},
+        {"docker_image": "x" * 256},
+    ):
+        response = patch_agent(client, agent["id"], role="不该写入", **invalid)
+        assert response.status_code == 400, (invalid, response.json())
+        assert response.json()["error"]["code"] == "validation_failed"
+        assert set(response.json()["error"]["fields"]) == set(invalid)
+
+    current = detail(client, agent["id"])
+    assert current["role"] == "原角色"
+    assert current["workspace_backend"] is None
+    assert current["permission_mode"] is None
+
+
 def test_unknown_and_null_fields_are_rejected_whole(client: TestClient) -> None:
     agent = create_agent(client, name="原名").json()["agent"]
 
@@ -104,7 +185,7 @@ def test_unknown_and_null_fields_are_rejected_whole(client: TestClient) -> None:
     assert unknown.json()["error"]["code"] == "validation_failed"
 
     # 显式 `null` 不是「没提到」：它既不是字段取值，也不是合法取值（`auto_claim` 同样是布尔配置）。
-    for field in ("enabled", "auto_claim"):
+    for field in ("enabled", "auto_claim", "allow_local_shell", "workspace_backend", "docker_image"):
         explicit_null = patch_agent(client, agent["id"], **{field: None})
         assert explicit_null.status_code == 400
         assert "body" in explicit_null.json()["error"]["fields"]
@@ -113,6 +194,32 @@ def test_unknown_and_null_fields_are_rejected_whole(client: TestClient) -> None:
     assert current["display_name"] == "原名"
     assert current["enabled"] is True
     assert current["auto_claim"] is False
+
+
+def test_docker_image_consent_endpoint_is_idempotent_and_validates_the_image(
+    client: TestClient,
+) -> None:
+    """Docker 镜像确认有产品写路径：幂等、只存确认时间；空值/未知键整体拒绝。"""
+    image = "registry.example/agent-runtime:1.2.3"
+
+    first = client.post("/api/docker-images/consent", json={"image": image})
+    assert first.status_code == 200, first.json()
+    consent = first.json()["consent"]
+    assert consent["scope_kind"] == "docker"
+    assert consent["scope_id"] == image
+    assert consent["acknowledged_at"]
+
+    second = client.post("/api/docker-images/consent", json={"image": f"  {image}  "})
+    assert second.status_code == 200, second.json()
+    assert second.json()["consent"] == consent, "重复确认不覆盖首次时间"
+
+    empty = client.post("/api/docker-images/consent", json={"image": "   "})
+    assert empty.status_code == 400
+    assert empty.json()["error"]["code"] == "validation_failed"
+    assert "image" in empty.json()["error"]["fields"]
+
+    unknown = client.post("/api/docker-images/consent", json={"image": image, "scope": "x"})
+    assert unknown.status_code == 400
 
 
 def test_pause_writes_enabled_zero_with_a_readable_reason_and_resume_restores(client: TestClient) -> None:

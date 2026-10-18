@@ -17,6 +17,8 @@
 - ``POST /api/channels/{id}/messages``        发送人类消息（同事务分配频道内单调 seq）
 - ``GET  /api/channels/{id}/members``         频道成员
 - ``POST /api/channels/{id}/members``         把 Agent 成员加入频道（幂等，只接受 Agent）
+- ``GET  /api/channels/{id}/config``          频道配置（mode / team_scope / 队长 / workspace / 权限）
+- ``PATCH /api/channels/{id}/config``         写频道配置（team 需合法队长；任一字段不合法整体拒绝）
 - ``GET  /api/channels/{id}/round-outcomes``  轮次结果（只读，无 UI）
 - ``GET  /api/channels/{id}/budget``          有界响应预算的读数（当前世代 + 来源 + 待生效值）
 - ``PATCH /api/channels/{id}/budget``         保存回应预算**上界**（固定档位 3 / 5 / 10；用量不可写）
@@ -26,11 +28,20 @@
 - ``POST /api/channels/{id}/tasks``           在频道下新建任务与独立线程
 - ``GET/POST /api/tasks/{id}/messages``       读取 / 追加任务线程消息
 - ``GET  /api/tasks/{id}/events``             任务线程事件流（SSE，``after_seq`` 补拉）
+- ``GET  /api/targets/{id}/team-runs``        team 运行记录与分派快照（倒序分页、可按 task 过滤）
+- ``GET  /api/targets/{id}/plan``             Plan 快照（按 member 分组；运行面板的只读兜底）
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
 - ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
 - ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）
+- ``GET  /api/approvals``                      待审批 / 历史审批快照（供运行面板恢复）
+- ``POST /api/approvals/{reply_id}``           提交决策（只接受 pending；幂等；部分决策）
+- ``GET/POST/DELETE /api/permission-rules``    权限规则的读写（配置动作，不落消息、不唤醒）
+- ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
+- ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
+- ``POST /api/docker-images/consent``          远端 Docker 镜像的数据面确认（幂等；未确认不拉取）
+- ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -46,11 +57,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import queue
 import threading
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -64,19 +76,25 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from .agent_seam import AgentScopeAgentSeam
+from .approval import APPROVAL_STATES, DEFAULT_APPROVAL_TIMEOUT_SECONDS, ApprovalBroker
 from .db import (
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
+    MAX_DOCKER_IMAGE_LENGTH,
     MAX_MESSAGE_BODY_LENGTH,
     OWNER_ID,
+    PLAN_RUN_RETENTION,
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
+    NotFound,
     SearchFacet,
     open_database,
 )
-from .events import EventBus, sse_frame
+from .events import EventBus, is_replayable, sse_frame
 from .i18n import locale_of, render
+from .mcp import clear_runtime as clear_mcp_runtime
+from .mcp import runtime_status as mcp_runtime_status
 from .orchestration import ThreadScheduler, WakeOrchestrator
 from .reminder_delivery import (
     ReminderDeliverer,
@@ -84,6 +102,23 @@ from .reminder_delivery import (
     ReminderDeliveryWorker,
 )
 from .service import WorkspaceService
+from .skills import (
+    MAX_ARCHIVE_BYTES,
+    SkillValidationError,
+    install_directory,
+    install_zip,
+    resolve_delete_roots,
+    resolve_install_root,
+    uninstall,
+)
+from .sop import SOPRunner
+from .workspace import (
+    clear_docker_failure,
+    docker_unavailable_reason,
+    shutdown_docker_workspaces,
+    start_docker_reaper,
+    sweep_stale_docker_workspaces,
+)
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -206,6 +241,11 @@ class AgentCreate(BaseModel):
     role: str = ""
     model_id: str = ""
     system_prompt: str = ""
+    # Agent 级 workspace 覆盖（D14/D15）；缺省 = 跟随频道。取值由库层整体校验。
+    workspace_backend: str | None = None
+    permission_mode: str | None = None
+    allow_local_shell: bool = False
+    docker_image: str | None = None
 
 
 class AgentUpdate(BaseModel):
@@ -227,9 +267,25 @@ class AgentUpdate(BaseModel):
     system_prompt: str | None = None
     enabled: bool | None = None
     auto_claim: bool | None = None
+    # Agent 级 workspace 覆盖（D14/D15）：缺省 = 不提；取值由库层整体校验。``docker_image``
+    # 的空串是**显式清空**（回到内置镜像），不是「没提到」。
+    workspace_backend: str | None = None
+    permission_mode: str | None = None
+    allow_local_shell: bool | None = None
+    docker_image: str | None = None
 
     @field_validator(
-        "display_name", "role", "model_id", "system_prompt", "enabled", "auto_claim", mode="before"
+        "display_name",
+        "role",
+        "model_id",
+        "system_prompt",
+        "enabled",
+        "auto_claim",
+        "workspace_backend",
+        "permission_mode",
+        "allow_local_shell",
+        "docker_image",
+        mode="before",
     )
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
@@ -245,12 +301,47 @@ class RemoteConsent(BaseModel):
     provider: str = ""
 
 
+class DockerConsent(BaseModel):
+    """Docker 镜像的数据面确认请求体（``image`` 是完整的镜像引用）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image: str = ""
+
+
 class ChannelMemberAdd(BaseModel):
     """把一个 Agent 成员加入频道（人类面动作）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     member_id: str = ""
+
+
+class ChannelConfigUpdate(BaseModel):
+    """频道配置的**部分**更新（规格 §4.4 / ADR-0018 / ADR-0021）。
+
+    未知键由 ``extra="forbid"`` 整体拒绝；字段缺省 = 这次请求没提到它（保持原值）。
+    ``workspace_root`` 是唯一允许显式 ``null`` 的字段（``null`` = 清空项目根，即回到「未配置」
+    的既有默认行为）；其余字段的显式 ``null`` 既不是合法取值、也不是「没提到」，整体拒绝。
+
+    ``team_scope`` 是只读事实（固定 ``channel+task``），不在可写字段里：提交它会被
+    ``extra="forbid"`` 拒绝，而不是被静默忽略。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str | None = None
+    team_leader_member_id: str | None = None
+    workspace_root: str | None = None
+    workspace_backend: str | None = None
+    permission_mode: str | None = None
+
+    @field_validator("mode", "team_leader_member_id", "workspace_backend", "permission_mode", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise _TierValueError("error.field.channel_config_field_null")
+        return value
 
 
 class MarkRead(BaseModel):
@@ -358,6 +449,157 @@ class ReminderCreate(BaseModel):
     channel_id: str | None = None
 
 
+class PermissionRuleCreate(BaseModel):
+    """写一条权限规则（配置动作；不落消息、不唤醒、不消耗预算）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str = ""
+    scope_id: str = ""
+    tool_name: str = ""
+    pattern: str = ""
+    behavior: str = ""
+
+
+class MCPServerCreate(BaseModel):
+    """新建一条 MCP 声明。
+
+    ``extra="forbid"`` 是安全边界的一部分：正文里出现 ``env`` / ``env_values`` 之类的键会**整体
+    拒绝**，于是「把值存进库里」的路径根本不存在——只接受 ``env_names``。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str = ""
+    scope_id: str = ""
+    name: str = ""
+    transport: str = ""
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    url: str = ""
+    env_names: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class MCPServerUpdate(BaseModel):
+    """部分更新；scope 是身份的一部分，不允许改（出现即整体拒绝）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    transport: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    url: str | None = None
+    env_names: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("null is not accepted; omit the field instead")
+        return value
+
+
+class SkillCreateLocal(BaseModel):
+    """从**本机目录**安装：``source_path`` 是绝对目录；其余键出现即整体拒绝。
+
+    ``channel_id`` 是解析 ``workspace_root`` 的上下文（Agent 级技能按成员分区，但成员可能属于
+    多个频道）；频道级安装可省略，此时用 ``scope_id`` 对应的频道。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: str = ""
+    scope_id: str = ""
+    source_path: str = ""
+    channel_id: str | None = None
+
+
+class SkillUpdate(BaseModel):
+    """启停；scope 与内容 hash 是身份，不允许改（出现即整体拒绝）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("null is not accepted; omit the field instead")
+        return value
+
+
+class ApprovalDecision(BaseModel):
+    """一条工具调用的决策；``rules`` 是可选的后续规则建议（落成 Agent 级规则）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_call_id: str = ""
+    confirmed: bool = False
+    rules: list[PermissionRuleCreate] = Field(default_factory=list)
+
+
+class ApprovalSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[ApprovalDecision] = Field(default_factory=list)
+
+
+class SOPStepCreate(BaseModel):
+    """SOP 的一个步骤：executor / 可空 verifier 用 **member id** 引用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    description: str = ""
+    executor_member_id: str
+    verifier_member_id: str | None = None
+    max_attempts: int = 3
+
+
+class SOPCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    steps: list[SOPStepCreate] = Field(min_length=1)
+
+
+class SOPUpdate(BaseModel):
+    """部分更新：启停与编辑；编辑只影响后续 run。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+    steps: list[SOPStepCreate] | None = None
+    enabled: bool | None = None
+
+
+class SOPRunCreate(BaseModel):
+    """owner 启动一次运行：只指定运行归属 target；leader 恒为 owner，不接受指定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str
+
+
+class SOPResume(BaseModel):
+    """恢复 ``awaiting`` 的 SOP：送入与审批同形的结构化确认结果。
+
+    ``reply_id`` 省略时使用本进程记录的停车标识；跨重启恢复必须显式给出
+    （awaiting 详情是进程内事实，不落库）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_id: str | None = None
+    confirm_results: list[dict[str, Any]] = Field(default_factory=list)
+
+
 def create_app(
     data_dir: Path | str | None = None,
     db: Database | None = None,
@@ -365,6 +607,8 @@ def create_app(
     scheduler: Any | None = None,
     seam: Any | None = None,
     reminder_delivery: ReminderDeliveryDriverFactory | None = None,
+    approval_timeout_seconds: float | None = None,
+    seam_factory: Callable[[Any], Any] | None = None,
 ) -> FastAPI:
     """组装后端。
 
@@ -376,19 +620,53 @@ def create_app(
     ``reminder_delivery`` 收的是一个**工厂**（``ReminderDeliverer -> 驱动器``）而不是实例：到期投递器
     需要本函数刚打开的库句柄，而驱动器需要投递器——工厂把这条依赖顺序收在一处。它与 ``scheduler``
     同处一个装配点，**不开第二个**（C8）。
+
+    ``seam_factory`` 是审批测试的注入口：它接收本函数刚建好的 ``ApprovalBroker``，返回成员面实现；
+    ``approval_timeout_seconds`` 只用于把默认 10 分钟的审批等待缩短到测试可观察的尺度。
     """
     database = db if db is not None else open_database(data_dir)
     events = EventBus()
+    # 审批（#149）：进程内 broker 是等待/唤醒的唯一落点；启动时把上个进程残留的 pending 标
+    # expired（D19：跨重启恢复不在首版）。默认等待 10 分钟；测试可注入更短的上界。
+    approvals = ApprovalBroker(
+        database,
+        events,
+        timeout_seconds=(
+            approval_timeout_seconds
+            if approval_timeout_seconds is not None
+            else DEFAULT_APPROVAL_TIMEOUT_SECONDS
+        ),
+        locale_of=lambda: locale_of(database),
+    )
+    approvals.expire_pending_at_startup()
     # 优雅关停的信号：事件流是**永不自然结束**的响应，如果不主动收，进程会在 graceful shutdown
     # 里等那两个连接直到超时（表现为「进程还在、监听套接字已没、新请求全部被拒」）。
     shutting_down = threading.Event()
+    if seam_factory is not None:
+        member_seam: Any = seam_factory(approvals)
+    elif seam is not None:
+        member_seam = seam
+    else:
+        member_seam = AgentScopeAgentSeam(
+            locale_of=lambda: locale_of(database),
+            # workspace 装配钩子（#148）：频道显式配置 ``workspace_root`` 后这一轮才挂受限文件工具；
+            # 未配置时读路径返回 None，行为逐字不变。
+            workspace_of=database.workspace_settings_for_target,
+            # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
+            permission_of=database.permission_settings_for_target,
+            # MCP 声明（#151）：启用 + 已确认的远端声明由装配层物化为 MCPClient；未配置时为空。
+            mcp_of=database.mcp_servers_for_target,
+            # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
+            skills_of=database.skills_for_target,
+            approvals=approvals,
+        )
     orchestrator = WakeOrchestrator(
         database,
-        # 真实适配器按**语言偏好**渲染它自己产出的文案（轮次 reason / 凭证原因）：取值方式由
-        # 装配点注入，适配层自己不依赖库（ADR-0009 第二层）。
-        seam if seam is not None else AgentScopeAgentSeam(locale_of=lambda: locale_of(database)),
+        member_seam,
         events,
         scheduler if scheduler is not None else ThreadScheduler(),
+        # Docker 工作区失败原因（#150）：装配层记录，成员状态点据此变 offline（不回落本地）。
+        workspace_unavailable=docker_unavailable_reason,
     )
     # **到期投递器**（ADR-0017 §四）：判定「到点」的唯一 seam。它的产物是 `system` 消息与行上的
     # `fired_at`，与唤醒编排无关——到点**不唤醒**任何人，因此这里只把 `EventBus` 交给它做广播。
@@ -396,10 +674,30 @@ def create_app(
         reminder_delivery if reminder_delivery is not None else ReminderDeliveryWorker
     )
     driver = make_driver(ReminderDeliverer(database, events))
-    service = WorkspaceService(database, orchestrator=orchestrator, events=events)
+    # SOP（#147）：owner 显式启动的多步运行复用同一个调度器；参与者按 member id 经成员面
+    # 适配器装配（脚本化替身没有 ``sop_agent`` 时，启动会给出可读的 validation_failed）。
+    sop_runner = SOPRunner(
+        database,
+        events,
+        scheduler=orchestrator.scheduler,
+        agent_factory=getattr(member_seam, "sop_agent", None),
+    )
+    service = WorkspaceService(database, orchestrator=orchestrator, events=events, sops=sop_runner)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Plan 保留策略的**启动**那一半（ADR-0023）：每个 (target, member) 只留最近 20 run
+        # 或 30 天内的记录；`plan_task` 随 run 级联清理。另一半点在每轮收口后（plan.py）。
+        database.prune_plan_runs()
+        # SOP 保留策略的启动那一半（ADR-0023 §三）：最近 50 个 run 或 90 天；定义不删。
+        database.prune_sop_runs()
+        # Docker 工作区（#150）：启动清扫上一进程遗留的容器 + 空闲回收线程。Docker 是可选
+        # 后端：daemon 不在时这些步骤安静失败，不影响主服务启动。
+        try:
+            start_docker_reaper()
+            await sweep_stale_docker_workspaces()
+        except Exception:
+            pass
         # 开窗前先扫一次（C8 判据 3）：一条启动前就已过点且在窗口内的提醒，在「第一次读到
         # ``GET /api/reminders``」时 `fired_at` 已非空，不需要等第一轮 30 秒轮询。
         start_driver = getattr(driver, "start", None)
@@ -418,6 +716,9 @@ def create_app(
             close_scheduler = getattr(orchestrator._scheduler, "shutdown", None)
             if callable(close_scheduler):
                 close_scheduler()
+            # 容器清理是 best-effort：SIGKILL 靠下一次启动清扫兜底。
+            with suppress(Exception):
+                await shutdown_docker_workspaces()
             database.close()
 
     app = FastAPI(title="Alibot", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -425,6 +726,8 @@ def create_app(
     app.state.service = service
     app.state.events = events
     app.state.orchestrator = orchestrator
+    app.state.approvals = approvals
+    app.state.sops = sop_runner
     app.state.reminder_delivery = driver
     app.state.data_dir = database.data_dir
 
@@ -586,6 +889,302 @@ def create_app(
         reminder = service.delete_reminder(reminder_id)
         return {"reminder": reminder, "reminders": service.reminders()}
 
+    # ─── 审批（HITL；人类面，Agent 不经 HTTP） ─────────────────────────────
+    @app.get("/api/approvals")
+    def list_approvals(
+        target_id: str | None = Query(default=None),
+        state: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """待审批 / 历史审批列表（供运行面板恢复；``state=pending`` 是最常用读数）。"""
+        if state is not None and state not in APPROVAL_STATES:
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.approval_state_invalid", states=", ".join(APPROVAL_STATES)),
+            )
+        if target_id is not None:
+            database.get_target(target_id)  # 不存在的 target ⇒ 404
+        return {"approvals": database.list_approval_requests(target_id=target_id, state=state)}
+
+    @app.post("/api/approvals/{reply_id}")
+    def submit_approval(reply_id: str, payload: ApprovalSubmit) -> dict[str, Any]:
+        """提交一批决策：只接受 pending；同批重试幂等；相反结论 409。
+
+        决策里的 ``rules`` 会落成该 Agent 的权限规则（配置动作，不落消息、不唤醒）。
+        决策回送由 broker 按 ``reply_id`` 唤醒仍在等待的那一轮；已完成 / 已过期的轮次
+        不会被重新打开。
+        """
+        record = approvals.submit(
+            reply_id,
+            [
+                {
+                    "tool_call_id": decision.tool_call_id,
+                    "confirmed": decision.confirmed,
+                    "rules": [
+                        {
+                            "tool_name": rule.tool_name,
+                            "pattern": rule.pattern,
+                            "behavior": rule.behavior,
+                        }
+                        for rule in decision.rules
+                    ],
+                }
+                for decision in payload.decisions
+            ],
+        )
+        return {"approval": record}
+
+    # ─── 权限规则（配置；不落消息、不唤醒、不消耗预算） ────────────────────
+    @app.get("/api/permission-rules")
+    def list_permission_rules(
+        scope_kind: str | None = Query(default=None),
+        scope_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        if scope_kind is not None and scope_kind not in ("channel", "agent"):
+            raise DomainError("validation_failed", _render_copy("error.permission_rule_scope_invalid"))
+        return {"permission_rules": database.list_permission_rules(scope_kind=scope_kind, scope_id=scope_id)}
+
+    @app.post("/api/permission-rules", status_code=201)
+    def create_permission_rule(payload: PermissionRuleCreate) -> dict[str, Any]:
+        rule = database.create_permission_rule(
+            scope_kind=payload.scope_kind,
+            scope_id=payload.scope_id,
+            tool_name=payload.tool_name,
+            pattern=payload.pattern,
+            behavior=payload.behavior,
+        )
+        return {"permission_rule": rule}
+
+    @app.delete("/api/permission-rules/{rule_id}")
+    def delete_permission_rule(rule_id: str) -> dict[str, Any]:
+        rule = database.delete_permission_rule(rule_id)
+        return {"permission_rule": rule}
+
+    # ─── MCP 声明（配置；不落消息、不唤醒、不消耗预算） ────────────────────
+    @app.get("/api/mcp-servers")
+    def list_mcp_servers(
+        scope_kind: str | None = Query(default=None),
+        scope_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """MCP 声明列表；只回 ``env_names``（变量名），**永不**回 env 值。
+
+        ``runtime`` 是进程内的最近一次装配读数（``connected`` / ``tools`` / ``error``）；从未
+        装配过为 ``null``。它是观察面，不落库、不影响配置。
+        """
+        if scope_kind is not None and scope_kind not in ("channel", "agent"):
+            raise DomainError("validation_failed", _render_copy("error.mcp_scope_invalid"))
+        servers = database.list_mcp_servers(scope_kind=scope_kind, scope_id=scope_id)
+        for server in servers:
+            server["runtime"] = mcp_runtime_status(server["id"])
+        return {"mcp_servers": servers}
+
+    @app.post("/api/mcp-servers", status_code=201)
+    def create_mcp_server(payload: MCPServerCreate) -> dict[str, Any]:
+        """写一条 MCP 声明；同名（同 scope）409，不静默覆盖。"""
+        server = database.create_mcp_server(
+            scope_kind=payload.scope_kind,
+            scope_id=payload.scope_id,
+            name=payload.name,
+            transport=payload.transport,
+            command=payload.command,
+            args=payload.args,
+            url=payload.url,
+            env_names=payload.env_names,
+            enabled=payload.enabled,
+        )
+        server["runtime"] = mcp_runtime_status(server["id"])
+        return {"mcp_server": server}
+
+    @app.patch("/api/mcp-servers/{server_id}")
+    def update_mcp_server(server_id: str, payload: MCPServerUpdate) -> dict[str, Any]:
+        """部分更新声明；``scope_kind`` / ``scope_id`` 不可改。整条结果重新校验。"""
+        server = database.update_mcp_server(server_id, payload.model_dump(exclude_unset=True))
+        # 配置变了，上一轮的连接读数不再代表这条声明；下一轮装配会重新记录。
+        clear_mcp_runtime(server["id"])
+        server["runtime"] = None
+        return {"mcp_server": server}
+
+    @app.delete("/api/mcp-servers/{server_id}")
+    def delete_mcp_server(server_id: str) -> dict[str, Any]:
+        server = database.delete_mcp_server(server_id)
+        clear_mcp_runtime(server_id)
+        server["runtime"] = None
+        return {"mcp_server": server}
+
+    def _skill_error(exc: SkillValidationError) -> DomainError:
+        """把安装器的词条异常翻成统一 HTTP 错误（正文按当前语言偏好渲染）。"""
+        message = _render_copy(exc.key, **exc.params)
+        fields = {exc.field: message} if exc.field else None
+        code = "skill_conflict" if exc.status == 409 else "validation_failed"
+        return DomainError(code, message, status=exc.status, fields=fields)
+
+    @app.get("/api/skills")
+    def list_skills(
+        scope_kind: str | None = None,
+        scope_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Skill 列表（配置只读面；不含字节，只含 hash 与启用态）。"""
+        return {"skills": database.list_skills(scope_kind=scope_kind, scope_id=scope_id)}
+
+    @app.post("/api/skills", status_code=201)
+    async def install_skill(
+        request: Request,
+        scope_kind: str = "",
+        scope_id: str = "",
+        channel_id: str = "",
+        filename: str = "",
+    ) -> dict[str, Any]:
+        """安装一个技能：JSON 正文 = 本机目录；原始 zip 字节 = 上传包。
+
+        两种来源都先校验 ``SKILL.md`` front matter、路径与内容 hash，任何一项不合法都**整体
+        拒绝**：不落库、不留半棵树。不是 multipart——与附件上传一致，原始字节走正文，元数据
+        走 query，因此后端不需要 multipart 解析依赖。
+        """
+        content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        locale = locale_of(database)
+        target_scope_kind = scope_kind
+        target_scope_id = scope_id
+        target_channel_id = channel_id or None
+        source_kind = "directory"
+        if content_type in ("application/zip", "application/x-zip-compressed", "application/octet-stream"):
+            source_kind = "zip"
+        elif content_type not in ("", "application/json"):
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.request_body_invalid"),
+                fields={"body": _render_copy("error.request_body_invalid")},
+            )
+
+        if source_kind == "directory":
+            try:
+                payload = SkillCreateLocal.model_validate(await request.json())
+            except Exception:
+                raise DomainError(
+                    "validation_failed",
+                    _render_copy("error.request_body_invalid"),
+                    fields={"body": _render_copy("error.request_body_invalid")},
+                ) from None
+            target_scope_kind = payload.scope_kind
+            target_scope_id = payload.scope_id
+            target_channel_id = payload.channel_id or None
+            source_path = payload.source_path
+        else:
+            body = await request.body()
+            if not body:
+                raise DomainError(
+                    "validation_failed",
+                    _render_copy("error.request_body_invalid"),
+                    fields={"body": _render_copy("error.request_body_invalid")},
+                )
+            if len(body) > MAX_ARCHIVE_BYTES:
+                message = _render_copy("error.skill_too_large", limit=str(MAX_ARCHIVE_BYTES))
+                raise DomainError("validation_failed", message, fields={"source": message})
+            source_path = ""
+
+        try:
+            root = resolve_install_root(
+                database,
+                scope_kind=target_scope_kind,
+                scope_id=target_scope_id,
+                channel_id=target_channel_id,
+                locale=locale,
+            )
+            if source_kind == "zip":
+                prepared = install_zip(
+                    io.BytesIO(body),
+                    filename=filename or "upload.zip",
+                    root=root,
+                    scope_id=target_scope_id,
+                    locale=locale,
+                )
+            else:
+                prepared = install_directory(
+                    source_path,
+                    root=root,
+                    scope_id=target_scope_id,
+                    locale=locale,
+                )
+        except SkillValidationError as error:
+            raise _skill_error(error) from None
+
+        try:
+            skill = database.create_skill(
+                scope_kind=target_scope_kind,
+                scope_id=target_scope_id,
+                name=prepared["name"],
+                description=prepared["description"],
+                source_path=prepared["source_path"],
+                content_hash=prepared["content_hash"],
+            )
+        except Exception:
+            # 落库失败（冲突 / 校验）与安装一起收口：删掉刚复制的工作区副本，不留半成品。
+            with suppress(OSError):
+                uninstall(root, scope_id=target_scope_id, name=prepared["name"])
+            raise
+        return {"skill": skill}
+
+    @app.patch("/api/skills/{skill_id}")
+    def update_skill(skill_id: str, payload: SkillUpdate) -> dict[str, Any]:
+        """启停一个技能（只改启用态；不落消息、不唤醒、不消耗预算）。"""
+        return {"skill": database.update_skill(skill_id, payload.model_dump(exclude_unset=True))}
+
+    @app.delete("/api/skills/{skill_id}")
+    def delete_skill(skill_id: str) -> dict[str, Any]:
+        """删除配置与工作区副本（不删用户源目录；只影响该 scope）。"""
+        current = database.get_skill(skill_id)
+        if current is None:
+            raise NotFound(_render_copy("error.skill_not_found", skill_id=skill_id))
+        roots = resolve_delete_roots(
+            database,
+            scope_kind=current["scope_kind"],
+            scope_id=current["scope_id"],
+            channel_id=None,
+        )
+        deleted = database.delete_skill(skill_id)
+        for root in roots:
+            with suppress(OSError):
+                uninstall(root, scope_id=current["scope_id"], name=current["name"])
+        return {"skill": deleted}
+
+    @app.post("/api/mcp-servers/{server_id}/consent")
+    def consent_mcp_server(server_id: str) -> dict[str, Any]:
+        """远端 MCP 的数据面确认（幂等；重复确认不覆盖首次时间）。
+
+        未确认的 HTTP / SSE 声明在装配层不会建连；这条确认是唯一开关。stdio 是**本机**进程，
+        不需要也不接受这条确认（400），避免把「本机」误标成远端。
+        """
+        server, consent = database.record_mcp_consent(server_id)
+        server["runtime"] = mcp_runtime_status(server["id"])
+        return {"mcp_server": server, "consent": consent}
+
+    @app.post("/api/docker-images/consent")
+    def consent_docker_image(payload: DockerConsent) -> dict[str, Any]:
+        """远端 Docker 镜像的数据面确认（幂等；重复确认不覆盖首次时间）。
+
+        这条确认是 ``remote_consent_scope('docker', image)`` 的人类面唯一写路径。未确认的镜像在
+        装配层**不拉取**、不启动容器，成员以可读原因 ``offline``；确认后清掉失败短缓存，下一轮
+        重新尝试。确认只存时间，不存凭证与连接参数。
+        """
+        image = payload.image.strip()
+        if not image:
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.remote_scope_id_empty"),
+                fields={"image": _render_copy("error.remote_scope_id_empty")},
+            )
+        if len(image) > MAX_DOCKER_IMAGE_LENGTH:
+            raise DomainError(
+                "validation_failed",
+                _render_copy("error.agent_update_invalid"),
+                fields={
+                    "image": _render_copy(
+                        "error.field.agent_docker_image_too_long", limit=MAX_DOCKER_IMAGE_LENGTH
+                    )
+                },
+            )
+        consent = database.record_remote_consent_scope("docker", image)
+        clear_docker_failure()
+        return {"consent": consent}
+
     @app.get("/api/search")
     def search(
         q: Annotated[str, Query(min_length=1, max_length=MAX_MESSAGE_BODY_LENGTH)],
@@ -625,6 +1224,21 @@ def create_app(
     def get_task(task_id: str) -> dict[str, Any]:
         return service.task(task_id)
 
+    @app.get("/api/targets/{target_id}/team-runs")
+    def list_team_runs(
+        target_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        task_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """运行面板的快照兜底：该 target 的 team 运行（倒序）与分派记录。
+
+        ``target_id`` 可以是频道，也可以是任务线程的 target。``task_id`` 只做**命中过滤**
+        （未知 task 与空页同形）；``has_more`` 由多取一条判定，调用方按 ``offset + limit``
+        继续分页。``agent_event`` / ``team_assignment`` 是 live-only，断线后只能靠这份读面恢复。
+        """
+        return service.team_runs(target_id, limit=limit, offset=offset, task_id=task_id)
+
     @app.patch("/api/tasks/{task_id}/status")
     def update_task_status(task_id: str, payload: TaskStatusChange) -> dict[str, Any]:
         return service.update_task_status(task_id, payload.status)
@@ -658,6 +1272,76 @@ def create_app(
         return {
             "message": service.send_task_message(
                 task_id, payload.body, payload.task_ref, payload.attachment_ids
+            )
+        }
+
+    # ─── Plan 快照（运行面板的只读兜底；不落消息、不计未读/搜索/预算） ─────
+    @app.get("/api/targets/{target_id}/plan")
+    def get_plan(
+        target_id: str,
+        limit: int = Query(default=PLAN_RUN_RETENTION, ge=1, le=100),
+    ) -> dict[str, Any]:
+        """该 target 的 Plan（按 member 分组，默认最近 20 个 run）。
+
+        这是运行面板的兜底面：``plan_update`` 是 live-only 事件，断线不补；刷新/重启后前端
+        重新读这里（ADR-0023）。Plan 不是消息、不是任务，也不属于任何未读/搜索/预算面。
+        """
+        return {"plan": service.plan(target_id, limit=limit)}
+
+    # ─── SOP（owner 显式启动；人类面唯一入口，成员面没有 SOP 工具） ──────────
+    @app.get("/api/sops")
+    def list_sops() -> dict[str, Any]:
+        """SOP 定义列表（配置；不是运行记录，也不进看板/未读/搜索）。"""
+        return {"sops": service.sops()}
+
+    @app.post("/api/sops", status_code=201)
+    def create_sop(payload: SOPCreate) -> dict[str, Any]:
+        """新建一条 SOP 定义；`steps` 里的 executor/verifier 必须是当前 Agent 成员。"""
+        return {
+            "sop": service.create_sop(
+                name=payload.name,
+                description=payload.description,
+                steps=[step.model_dump() for step in payload.steps],
+            )
+        }
+
+    @app.get("/api/sops/{definition_id}")
+    def get_sop(definition_id: str) -> dict[str, Any]:
+        return {"sop": service.sop(definition_id)}
+
+    @app.patch("/api/sops/{definition_id}")
+    def update_sop(definition_id: str, payload: SOPUpdate) -> dict[str, Any]:
+        """启停与编辑；编辑只影响后续 run（既有 run 的 ``state`` 不重写）。"""
+        changes = payload.model_dump(exclude_unset=True)
+        steps = changes.pop("steps", None)
+        return {
+            "sop": service.update_sop(
+                definition_id,
+                name=changes.get("name"),
+                description=changes.get("description"),
+                steps=None if steps is None else [dict(step) for step in steps],
+                enabled=changes.get("enabled"),
+            )
+        }
+
+    @app.post("/api/sops/{definition_id}/runs", status_code=201)
+    def start_sop_run(definition_id: str, payload: SOPRunCreate) -> dict[str, Any]:
+        """owner 启动一次运行；`leader` 恒为 owner，请求体不接受指定。"""
+        return {"run": service.start_sop_run(definition_id, target_id=payload.target_id)}
+
+    @app.get("/api/sop-runs/{run_id}")
+    def get_sop_run(run_id: str) -> dict[str, Any]:
+        """运行快照：`phase`、逐步 verdict 与当前 `awaiting`（进程内详情，可空）。"""
+        return {"run": service.sop_run(run_id)}
+
+    @app.post("/api/sop-runs/{run_id}/resume")
+    def resume_sop_run(run_id: str, payload: SOPResume) -> dict[str, Any]:
+        """恢复 `awaiting` 的运行：送入人类确认/外部结果（与审批同形的结构化载荷）。"""
+        return {
+            "run": service.resume_sop_run(
+                run_id,
+                reply_id=payload.reply_id,
+                confirm_results=payload.confirm_results,
             )
         }
 
@@ -703,6 +1387,24 @@ def create_app(
     @app.get("/api/channels/{channel_id}/members")
     def list_channel_members(channel_id: str) -> dict[str, Any]:
         return {"members": service.channel_members(channel_id)}
+
+    @app.get("/api/channels/{channel_id}/config")
+    def get_channel_config(channel_id: str) -> dict[str, Any]:
+        """频道配置：mode / ``team_scope=channel+task`` / 队长 / workspace / 权限档。
+
+        ``leader_available`` / ``leader_reason`` 与唤醒裁决读**同一个**后端事实（D18）：队长被停用
+        或删除时设置页给出可读原因，频道消息照常落库但不唤醒任何人，不回落 autonomous。
+        """
+        return {"config": service.channel_config(channel_id)}
+
+    @app.patch("/api/channels/{channel_id}/config")
+    def update_channel_config(channel_id: str, payload: ChannelConfigUpdate) -> dict[str, Any]:
+        """写频道配置（人类面动作）：任一字段不合法**整体拒绝**、不留下半成品。
+
+        ``mode=team`` 要求队长是当前频道成员且非 deleted；它同时覆盖该频道 target 与全部 task
+        target（读路径解析，不复制到 task 行）。本端点**不**改 ``auto_claim``（D16 是读路径规则）。
+        """
+        return {"config": service.update_channel_config(channel_id, payload.model_dump(exclude_unset=True))}
 
     @app.post("/api/channels/{channel_id}/members")
     def add_channel_member(channel_id: str, payload: ChannelMemberAdd) -> dict[str, Any]:
@@ -777,6 +1479,10 @@ def create_app(
             role=payload.role,
             model_id=payload.model_id,
             system_prompt=payload.system_prompt,
+            workspace_backend=payload.workspace_backend,
+            permission_mode=payload.permission_mode,
+            allow_local_shell=payload.allow_local_shell,
+            docker_image=payload.docker_image,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
@@ -789,7 +1495,8 @@ def create_app(
         """编辑 Agent 配置（人类面唯一写路径，ADR-0011）。
 
         可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
-        ``auto_claim``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        ``auto_claim`` / ``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` /
+        ``docker_image``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
         校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
@@ -806,6 +1513,10 @@ def create_app(
             system_prompt=payload.system_prompt,
             enabled=payload.enabled,
             auto_claim=payload.auto_claim,
+            workspace_backend=payload.workspace_backend,
+            permission_mode=payload.permission_mode,
+            allow_local_shell=payload.allow_local_shell,
+            docker_image=payload.docker_image,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
@@ -896,7 +1607,8 @@ def create_app(
                         yield ": keep-alive\n\n"
                         continue
                     # 补拉与实时推送的边界：只发比连接游标更新的事件，不重复。
-                    if int(event.get("seq", 0)) < after_seq:
+                    # live-only 事件没有 seq——它们不参与游标比较，否则重连带 after_seq>0 时会被整批吞掉。
+                    if is_replayable(event) and int(event.get("seq", 0)) < after_seq:
                         continue
                     yield sse_frame(event)
 
@@ -916,12 +1628,18 @@ def create_app(
         request: Request,
         after_seq: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
-        """订阅任务线程事件流；重连时从任务 target 的消息正本补拉。"""
+        """订阅任务线程事件流；重连时从任务 target 的消息正本与轮次结果补拉。
+
+        任务线程是 team 模式下运行记录的另一半载体（规格 §4.4 / §4.5）：``agent_event`` /
+        ``team_assignment`` / ``plan_update`` / ``sop_event`` / ``approval_*`` 与频道事件流同形透传；
+        它们没有 seq、不发 ``id``，``after_seq`` 补拉仍只覆盖 ``message`` 与 ``round_outcome``。
+        """
         task = service.task(task_id)["task"]  # 响应开始前做作用域校验，确保不存在的任务返回 404。
         subscription = events.subscribe(task["target_id"])
         subscriber = subscription.__enter__()
         try:
             snapshot = service.task_messages(task_id, after_seq=after_seq)["messages"]
+            snapshot_outcomes = service.task_round_outcomes(task_id, after_seq=after_seq)
         except Exception:
             subscription.__exit__(None, None, None)
             raise
@@ -930,6 +1648,8 @@ def create_app(
             try:
                 for message in snapshot:
                     yield sse_frame({"type": "message", "seq": message["seq"], "message": message})
+                for outcome in snapshot_outcomes:
+                    yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
 
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
@@ -943,7 +1663,8 @@ def create_app(
                     except queue.Empty:
                         yield ": keep-alive\n\n"
                         continue
-                    if int(event.get("seq", 0)) <= after_seq:
+                    # live-only 事件没有 seq：只有可补拉事件参与游标比较（理由同频道事件流）。
+                    if is_replayable(event) and int(event.get("seq", 0)) <= after_seq:
                         continue
                     yield sse_frame(event)
             finally:
@@ -1013,7 +1734,8 @@ def create_app(
                         continue
                     if event.get("type") == "message" and int(event.get("seq", 0)) <= snapshot_message_seq:
                         continue
-                    if int(event.get("seq", 0)) < after_seq:
+                    # live-only 运行事件没有 seq，不参与游标比较（理由同频道事件流）。
+                    if is_replayable(event) and int(event.get("seq", 0)) < after_seq:
                         continue
                     yield sse_frame(event)
             finally:

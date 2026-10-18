@@ -37,6 +37,14 @@ jobs:
         with:
           node-version: "20"
 
+      # AgentScope 的 Grep/Glob 走真实 `rg`；runner 默认没有它，工具会返回 code 127。
+      # 门禁测真实工具，所以在这里装，而不是在测试里 skip 或替换成替身。
+      - name: 安装 ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          rg --version
+
       # 运行依赖 + dev extra（pytest / ruff / mypy / httpx2）；agentscope 已 pin 在 pyproject。
       - name: 安装依赖
         run: |

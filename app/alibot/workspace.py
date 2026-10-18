@@ -1,0 +1,968 @@
+"""LocalWorkspace 的装配层：频道项目根、文件工具根限定与 ``.alibot`` 状态分区。
+
+AgentScope 2.0.10 的内置文件工具**没有**“必须落在工作区根内”的准入闸门（#135 实测：
+Read/Glob/Grep 完全不检查；Write/Edit 的 realpath 只影响 ``ACCEPT_EDITS`` 下是否自动放行）。
+规格 §3.6 / ADR-0021 因此把根检查放在**装配层**：
+
+- 五个文件工具（Read / Write / Edit / Glob / Grep）各自挂一层 :class:`WorkspaceRootGuard`；
+- 每个输入路径先锚到根（相对路径不再落到进程 cwd），再 ``realpath``，必须落在根内；
+- ``..``、根外绝对路径、指向根外的 symlink 一律返回 ``ToolResultState.ERROR``；
+- 默认工具集**不含 Bash**（D15）：本地 Bash 是主机进程、cwd 不是沙箱。``allow_local_shell``
+  只作为标记暴露给权限/审批层（W2），本模块不在那里绕过审批。
+
+AgentScope 自己的 ``data/`` / ``skills/`` / ``sessions/`` / ``.mcp`` 被收进 ``<root>/.alibot``，
+于是“同一个项目根”与“每个 Agent 的技能 / MCP / 会话状态隔离”同时成立，项目根不被框架文件污染。
+
+已知残余（#135 §四）：根内 hardlink 指向根外 inode、检查与执行之间的 TOCTOU，都不是基于路径
+的检查能识别的；本模块只承诺“路径 realpath 落在根内”。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import atexit
+import os
+import posixpath
+import re
+import threading
+import time
+from collections.abc import AsyncGenerator, Callable, Mapping
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any
+
+from agentscope.message import TextBlock, ToolResultState
+from agentscope.permission import PermissionBehavior, PermissionDecision
+from agentscope.tool import Bash, Edit, Glob, Grep, Read, ToolChunk, ToolMiddlewareBase, Write
+from agentscope.workspace import DockerBackend, DockerWorkspace, LocalWorkspace, WorkspaceBase
+
+from .i18n import SOURCE_LOCALE, Locale, render
+
+#: 本仓共享的框架状态命名空间（规格 §3.6）：与用户项目文件分开。
+ALIBOT_DIR = ".alibot"
+AGENTS_DIR = "agents"
+SESSIONS_DIR = "sessions"
+
+#: Docker 工作区在容器内的固定根（AgentScope ``DockerWorkspace.workdir``）。
+DOCKER_WORKDIR = "/workspace"
+
+#: 本仓创建的 Docker 工作区 id 前缀；启动清扫只处理这一前缀，不碰其它 AgentScope 工作区。
+DOCKER_WORKSPACE_PREFIX = "alibot-"
+
+#: 容器空闲多久后回收（规格 §3.6“空闲回收”）。容器保留时下一轮 ~0 冷启动；镜像永不随容器删除。
+DOCKER_IDLE_TTL_SECONDS = 600.0
+
+#: 启动/初始化失败的短 TTL 缓存：避免每轮重试 30 s gateway 等待把轮次堆起来。
+DOCKER_FAILURE_TTL_SECONDS = 30.0
+
+#: 初始化超时：镜像已存在时一条容器启动路径；需要构建/拉取时给足网络与 apt/PyPI 时间。
+DOCKER_INIT_TIMEOUT_SECONDS = 30.0
+DOCKER_BUILD_TIMEOUT_SECONDS = 180.0
+
+#: 容器 env 白名单（ADR-0021 §五：库不存密钥，也不把整个进程环境倒进容器）。
+DOCKER_ENV_ALLOWLIST = ("LANG", "LC_ALL", "TZ")
+
+#: 文件工具 → 它接收路径的输入键。Bash 不在这张表里：本模块默认不挂 Bash。
+PATH_ARGUMENTS = {
+    "Read": "file_path",
+    "Write": "file_path",
+    "Edit": "file_path",
+    "Glob": "path",
+    "Grep": "path",
+}
+
+
+class WorkspaceRootViolation(Exception):
+    """一个工具输入在 ``realpath`` 后落在项目根之外。"""
+
+    def __init__(self, raw: Any, root: str) -> None:
+        self.raw = raw
+        self.root = root
+        super().__init__(f"path escapes workspace root: {raw!r}")
+
+
+class WorkspaceConfigError(Exception):
+    """频道配置的项目根不可用（不是绝对路径 / 不存在 / 不是目录）。"""
+
+
+class DockerWorkspaceUnavailable(Exception):
+    """Docker 后端不可用；``str(exc)`` 就是给用户看的可读原因（不回落本地）。"""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class WorkspaceSettings:
+    """一个频道 + 成员解析出来的 workspace 配置。
+
+    ``root`` 是**频道**的项目边界；后端 / 权限档 / 本地 shell 开关是 Agent 级覆盖（缺省跟随
+    频道）。``docker_image_consented`` 是 DB 读路径按 ``remote_consent_scope('docker', image)``
+    算出的**配置事实**：本模块只消费它，不在装配时写库。
+    """
+
+    root: str
+    backend: str = "local"
+    permission_mode: str = "ask-writes"
+    allow_local_shell: bool = False
+    docker_image: str | None = None
+    docker_image_consented: bool = False
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> WorkspaceSettings:
+        """从 DB 读路径返回的原始行构造（未知键忽略，空值走默认）。"""
+        return cls(
+            root=str(raw.get("root") or ""),
+            backend=str(raw.get("backend") or "local"),
+            permission_mode=str(raw.get("permission_mode") or "ask-writes"),
+            allow_local_shell=bool(raw.get("allow_local_shell") or False),
+            docker_image=(str(raw["docker_image"]) if raw.get("docker_image") else None),
+            docker_image_consented=bool(raw.get("docker_image_consented") or False),
+        )
+
+    @property
+    def is_local(self) -> bool:
+        return self.backend == "local"
+
+    @property
+    def is_docker(self) -> bool:
+        return self.backend == "docker"
+
+
+@dataclass
+class LocalWorkspaceMount:
+    """一轮可用的本地工作区：根、分区、AgentScope 实例与受限工具集。"""
+
+    settings: WorkspaceSettings
+    root: str
+    member_id: str
+    session_id: str
+    workspace: WorkspaceBase
+    tools: list[Any]
+    agent_dir: str
+    session_dir: str
+
+    @property
+    def allow_local_shell(self) -> bool:
+        """``allow_local_shell=1`` 的标记本身（审批仍由权限层负责，不在这里绕过）。"""
+        return self.settings.allow_local_shell
+
+    @property
+    def tool_names(self) -> set[str]:
+        return {str(getattr(tool, "name", "")) for tool in self.tools}
+
+
+def safe_partition_id(value: str) -> str:
+    """把 member / session id 收敛成一个安全的单级目录名（不允许穿越）。"""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(value or "")).strip()
+    if cleaned in ("", ".", ".."):
+        return "default"
+    return cleaned
+
+
+def session_partition_id(member_id: str, target_id: str) -> str:
+    """``.alibot/sessions/<session_id>`` 的 session id（每成员每 target 一个稳定分区）。"""
+    return safe_partition_id(f"{target_id}--{member_id}")
+
+
+def _within(real: str, root: str) -> bool:
+    if real == root:
+        return True
+    try:
+        return os.path.commonpath([real, root]) == root
+    except ValueError:  # Windows 跨盘
+        return False
+
+
+def validate_workspace_root(raw: str) -> str:
+    """校验并返回 **realpath** 后的项目根。
+
+    ``LocalWorkspace.workdir`` 用的是 ``abspath``；根本身是 symlink 时两者会不同，导致根内路径
+    被误拒。因此本模块只保留一个规范形态：``realpath``。
+    """
+    if not raw or not os.path.isabs(raw):
+        raise WorkspaceConfigError(f"workspace_root must be an absolute path: {raw!r}")
+    root = os.path.realpath(raw)
+    if not os.path.isdir(root):
+        raise WorkspaceConfigError(f"workspace_root is not a directory: {raw!r}")
+    return root
+
+
+def resolve_in_root(raw: Any, root: str) -> str:
+    """把工具输入规范化为根内绝对 ``realpath``；根外抛 :class:`WorkspaceRootViolation`。
+
+    相对路径**锚到根**（不是进程 cwd）；``None`` / 空串表示根（只对可选的 Glob/Grep ``path``
+    有意义，Read/Write/Edit 传空会被工具自己当作目录/非法路径拒绝）。
+    """
+    if raw is None or raw == "":
+        return root
+    if not isinstance(raw, str):
+        raise WorkspaceRootViolation(raw, root)
+    candidate = raw if os.path.isabs(raw) else os.path.join(root, raw)
+    real = os.path.realpath(candidate)
+    if not _within(real, root):
+        raise WorkspaceRootViolation(raw, root)
+    return real
+
+
+def _reject_dotdot_segments(pattern: Any, root: str) -> None:
+    """Glob 的 pattern 是名字匹配，不是路径；仍拒绝 ``..`` 段做纵深防御。"""
+    if not isinstance(pattern, str):
+        return
+    if any(segment == ".." for segment in re.split(r"[\\/]", pattern)):
+        raise WorkspaceRootViolation(pattern, root)
+
+
+class WorkspaceRootGuard(ToolMiddlewareBase):
+    """调用前把路径锚到根并做 ``realpath`` 根检查；根外直接产出 ERROR chunk。"""
+
+    def __init__(self, root: str) -> None:
+        self.root = root
+
+    def resolve(self, raw: Any) -> str:
+        """把工具输入规范化为根内绝对路径；根外抛 :class:`WorkspaceRootViolation`。"""
+        return resolve_in_root(raw, self.root)
+
+    async def on_tool_call(  # type: ignore[override]  # 框架基类把它标成协程，实际按异步生成器消费
+        self,
+        tool: Any,
+        input_kwargs: dict[str, Any],
+        next_handler: Callable[..., AsyncGenerator[ToolChunk, None]],
+    ) -> AsyncGenerator[ToolChunk, None]:
+        key = PATH_ARGUMENTS.get(str(getattr(tool, "name", "")))
+        if key is None:  # 不在文件工具清单里：不改变行为（本模块也不挂 Bash）
+            async for chunk in next_handler(**input_kwargs):
+                yield chunk
+            return
+
+        try:
+            real = self.resolve(input_kwargs.get(key))
+            if tool.name == "Glob":
+                _reject_dotdot_segments(input_kwargs.get("pattern"), self.root)
+        except WorkspaceRootViolation as error:
+            yield ToolChunk(
+                content=[
+                    TextBlock(
+                        text=f"Error: path escapes workspace root: {error.raw!r}",
+                    )
+                ],
+                state=ToolResultState.ERROR,
+                is_last=True,
+            )
+            return
+
+        rewritten = dict(input_kwargs)
+        rewritten[key] = real
+        async for chunk in next_handler(**rewritten):
+            yield chunk
+
+
+class _AlibotLayoutMixin:
+    """把 AgentScope 的根级状态目录收进 ``<workdir>/.alibot``。
+
+    ``LocalWorkspace`` / ``DockerWorkspace`` 默认把 ``data/`` / ``skills/`` / ``sessions/`` /
+    ``.mcp`` 直接放在 ``workdir`` 根；那会污染用户项目。这里只改派生路径，不复制框架逻辑：
+
+    - ``skills/`` → ``.alibot/agents/``（技能分区 = ``.alibot/agents/<member_id>/``）
+    - ``sessions/`` → ``.alibot/sessions/``
+    - ``data/`` → ``.alibot/data/``
+    - ``.mcp`` → ``.alibot/mcp.json``
+
+    依赖上游 2.0.10 的四个私有 property（研究 #134 §6.2 方案 1）；升级 agentscope 时重跑
+    ``test_docker_workspace.py`` / ``test_local_workspace.py``。
+    """
+
+    #: 由 ``LocalWorkspace`` / ``DockerWorkspace.__init__`` 赋值（本地是项目根，Docker 是 /workspace）。
+    workdir: str
+
+    @property
+    def _alibot_dir(self) -> str:
+        return os.path.join(self.workdir, ALIBOT_DIR)
+
+    @property
+    def _data_dir(self) -> str:
+        return os.path.join(self._alibot_dir, "data")
+
+    @property
+    def _skills_dir(self) -> str:
+        return os.path.join(self._alibot_dir, AGENTS_DIR)
+
+    @property
+    def _sessions_dir(self) -> str:
+        return os.path.join(self._alibot_dir, SESSIONS_DIR)
+
+    @property
+    def _mcp_file(self) -> str:
+        return os.path.join(self._alibot_dir, "mcp.json")
+
+
+class ProjectLocalWorkspace(_AlibotLayoutMixin, LocalWorkspace):
+    """本地后端：项目根共享，框架状态在 ``<root>/.alibot``。"""
+
+
+class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
+    """Docker 后端：``/workspace`` 挂到频道根，框架状态同样收进 ``.alibot``。"""
+
+
+def _guarded_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
+    """五个文件工具各挂根检查；**刻意不调用** ``workspace.list_tools()``，因为后者无条件含 Bash。"""
+    backend = workspace.get_backend()
+    guard = WorkspaceRootGuard(root)
+    middlewares: list[ToolMiddlewareBase] = [guard]
+    return [
+        Edit(backend=backend, middlewares=middlewares),
+        Glob(backend=backend, middlewares=middlewares),
+        Grep(backend=backend, middlewares=middlewares),
+        Read(backend=backend, middlewares=middlewares),
+        Write(backend=backend, middlewares=middlewares),
+    ]
+
+
+class AskEveryTimeBash(Bash):
+    """本地 shell：**每次调用**都要人类确认（D15 / ADR-0021 §二）。
+
+    默认不挂载；只有 ``allow_local_shell=1`` 才装配。它不声称根限定——命令可以 ``cd /`` 或读任意
+    绝对路径，工具说明必须把这一点写出来。权限判定上它永远返回 ASK，且 ``bypass_immune=True``
+    使 allow 规则与 ``trusted-writes`` 都不能把它变成自动放行；``read-only`` 档不装配它
+    （``EXPLORE`` 没有“询问”这一档）。
+    """
+
+    description = (
+        Bash.description
+        + "\n\n警告：这是本机进程、没有沙箱；命令可以越过项目根（例如 cd / 或读任意绝对路径）。"
+        "每次调用都需要人类逐次审批。"
+    )
+    is_read_only = False
+
+    async def check_read_only(self, tool_input: dict[str, Any]) -> bool:
+        return False
+
+    async def check_permissions(self, tool_input: dict[str, Any], context: Any) -> PermissionDecision:
+        return PermissionDecision(
+            behavior=PermissionBehavior.ASK,
+            message="Permission required: local shell command",
+            decision_reason="Local shell is unsandboxed and runs on the host",
+            bypass_immune=True,
+        )
+
+
+def local_shell_tool(root: str) -> Any:
+    """装配一个 ``cwd=root`` 的本地 Bash；审批由权限引擎逐次发起。"""
+    return AskEveryTimeBash(cwd=root)
+
+
+def ensure_state_partition(root: str, path: str) -> None:
+    """创建 ``.alibot`` 分区，并在**创建前**拒绝根外 symlink 祖先（不产生根外状态写入）。"""
+    current = root
+    relative = os.path.relpath(path, root)
+    for part in relative.split(os.sep):
+        current = os.path.join(current, part)
+        if os.path.lexists(current) and not _within(os.path.realpath(current), root):
+            raise WorkspaceConfigError(f"workspace state partition escapes root: {current!r}")
+    os.makedirs(path, exist_ok=True)
+    if not _within(os.path.realpath(path), root):
+        raise WorkspaceConfigError(f"workspace state partition escapes root: {path!r}")
+
+
+async def assemble_local_workspace(
+    settings: WorkspaceSettings,
+    *,
+    member_id: str,
+    session_id: str,
+) -> LocalWorkspaceMount:
+    """按频道项目根装配一轮可用的 LocalWorkspace（文件工具受限、默认无 Bash）。"""
+    root = validate_workspace_root(settings.root)
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
+    agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
+    session_dir = os.path.join(root, ALIBOT_DIR, SESSIONS_DIR, session)
+    ensure_state_partition(root, agent_dir)
+    ensure_state_partition(root, session_dir)
+
+    workspace = ProjectLocalWorkspace(workdir=root)
+    await workspace.initialize()
+
+    return LocalWorkspaceMount(
+        settings=settings,
+        root=root,
+        member_id=member,
+        session_id=session,
+        workspace=workspace,
+        tools=_guarded_tools(workspace, root),
+        agent_dir=agent_dir,
+        session_dir=session_dir,
+    )
+
+
+# ─── Docker 后端（#150） ────────────────────────────────────────────────────
+
+
+def docker_workspace_id(member_id: str, session_id: str) -> str:
+    """稳定的容器工作区 id（容器名 = ``as_ws_<id>``）。
+
+    不用随机 UUID：崩溃重启后同一个 id 让 ``create_or_replace`` 替换遗留容器，启动清扫也能
+    按前缀识别本仓容器（研究 #134 §6.1）。
+    """
+    return DOCKER_WORKSPACE_PREFIX + safe_partition_id(f"{member_id}--{session_id}")
+
+
+def docker_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """只挑白名单里的进程环境值；绝不透传整个 ``os.environ``（ADR-0021 §五）。"""
+    source = os.environ if environ is None else environ
+    return {name: source[name] for name in DOCKER_ENV_ALLOWLIST if source.get(name)}
+
+
+def resolve_in_container_root(raw: Any, root: str) -> str:
+    """把工具输入锚到容器 ``/workspace``，并用**主机侧** realpath 做根检查。
+
+    容器内工具本身可以读写 ``/etc``、``/root``（研究 #134 §3.1），所以装配层必须：
+
+    - 绝对路径只接受 ``/workspace`` 及其子路径；
+    - 相对路径锚到 ``/workspace``（不是容器进程 cwd 之外的任何位置）；
+    - 映射到 ``host_workdir`` 后 ``realpath``，根外 symlink 同样拒绝；
+    - 返回容器内路径（工具在容器里执行）。
+    """
+    if raw is None or raw == "":
+        return DOCKER_WORKDIR
+    if not isinstance(raw, str):
+        raise WorkspaceRootViolation(raw, DOCKER_WORKDIR)
+
+    if raw.startswith("/"):
+        if raw != DOCKER_WORKDIR and not raw.startswith(DOCKER_WORKDIR + "/"):
+            raise WorkspaceRootViolation(raw, DOCKER_WORKDIR)
+        relative = raw[len(DOCKER_WORKDIR) :].lstrip("/")
+    else:
+        relative = raw
+
+    if any(segment == ".." for segment in re.split(r"[\\/]", relative)):
+        raise WorkspaceRootViolation(raw, DOCKER_WORKDIR)
+
+    host_candidate = os.path.join(root, relative) if relative else root
+    real = os.path.realpath(host_candidate)
+    if not _within(real, root):
+        raise WorkspaceRootViolation(raw, DOCKER_WORKDIR)
+
+    relative_real = os.path.relpath(real, root)
+    if relative_real == ".":
+        return DOCKER_WORKDIR
+    return posixpath.join(DOCKER_WORKDIR, relative_real.replace(os.sep, "/"))
+
+
+class ContainerRootGuard(WorkspaceRootGuard):
+    """Docker 文件工具的根检查：容器路径先映射到 host_workdir 再 ``realpath``。"""
+
+    def __init__(self, root: str) -> None:
+        super().__init__(DOCKER_WORKDIR)
+        self.host_root = root
+
+    def resolve(self, raw: Any) -> str:
+        return resolve_in_container_root(raw, self.host_root)
+
+
+def _docker_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
+    """容器内六个工具：Bash 默认开放（ADR-0021 §二），五个文件工具仍做 ``/workspace`` 根检查。"""
+    backend = workspace.get_backend()
+    guard = ContainerRootGuard(root)
+    middlewares: list[ToolMiddlewareBase] = [guard]
+    return [
+        Bash(backend=backend),
+        Edit(backend=backend, middlewares=middlewares),
+        Glob(backend=backend, middlewares=middlewares),
+        Grep(backend=backend, middlewares=middlewares),
+        Read(backend=backend, middlewares=middlewares),
+        Write(backend=backend, middlewares=middlewares),
+    ]
+
+
+@dataclass
+class DockerWorkspaceMount:
+    """一轮可用的 Docker 工作区；``release`` 只归还池条目，不删除容器。"""
+
+    settings: WorkspaceSettings
+    root: str
+    member_id: str
+    session_id: str
+    workspace: ProjectDockerWorkspace
+    tools: list[Any]
+    agent_dir: str
+    session_dir: str
+    workspace_id: str
+    container_name: str
+    reused: bool
+    entry: _DockerEntry
+
+    @property
+    def allow_local_shell(self) -> bool:
+        """Docker 后端不使用本地 shell 通道（Bash 已在容器里）。"""
+        return False
+
+    @property
+    def tool_names(self) -> set[str]:
+        return {str(getattr(tool, "name", "")) for tool in self.tools}
+
+
+@dataclass
+class _DockerEntry:
+    """进程内池条目：一个 (member, session) 对一个容器。"""
+
+    key: tuple[str, str]
+    workspace: ProjectDockerWorkspace
+    settings: WorkspaceSettings
+    root: str
+    member_id: str
+    session_id: str
+    workspace_id: str
+    container_name: str
+    last_used: float
+    active: int = 0
+    image: str | None = None
+
+
+_pool: dict[tuple[str, str], _DockerEntry] = {}
+_pool_lock = threading.Lock()
+_failures: dict[str, tuple[str, float]] = {}
+_failure_lock = threading.Lock()
+_reaper_started = False
+_reaper_lock = threading.Lock()
+
+
+def record_docker_failure(member_id: str, reason: str) -> None:
+    """记下可读原因（短 TTL）；``WakeOrchestrator.availability`` 经它把成员标 offline。"""
+    with _failure_lock:
+        _failures[str(member_id)] = (reason, time.monotonic())
+
+
+def clear_docker_failure(member_id: str | None = None) -> None:
+    with _failure_lock:
+        if member_id is None:
+            _failures.clear()
+        else:
+            _failures.pop(str(member_id), None)
+
+
+def docker_unavailable_reason(member_id: str) -> str | None:
+    """失败缓存里的可读原因；过期条目在读取时清掉（不是后台计时器）。"""
+    now = time.monotonic()
+    with _failure_lock:
+        record = _failures.get(str(member_id))
+        if record is None:
+            return None
+        reason, recorded_at = record
+        if now - recorded_at >= DOCKER_FAILURE_TTL_SECONDS:
+            _failures.pop(str(member_id), None)
+            return None
+        return reason
+
+
+async def _image_present_locally(image: str) -> bool:
+    """镜像是否已在本机（含已构建的 agentscope 镜像 tag）。探活失败按“不存在”处理。"""
+    import aiodocker
+
+    client = aiodocker.Docker()
+    try:
+        await client.images.inspect(image)
+        return True
+    except Exception:
+        return False
+    finally:
+        with suppress(Exception):
+            await client.close()
+
+
+async def _delete_container(name: str) -> bool:
+    """用**当前 loop** 的新 client 删除容器；不假设旧 client 还活着。"""
+    import aiodocker
+
+    client = aiodocker.Docker()
+    try:
+        container = await client.containers.get(name)
+        await container.delete(force=True)
+        return True
+    except Exception:
+        return False
+    finally:
+        with suppress(Exception):
+            await client.close()
+
+
+def _docker_reason(error: BaseException, locale: Locale, *, timeout: float, image: str | None) -> str:
+    """把实测的五类失败形状（研究 #134 §五）映射成一句可读原因。"""
+    label = image or "AgentScope 默认镜像"
+    if isinstance(error, TimeoutError):
+        return render("workspace.docker-timeout", locale, seconds=f"{timeout:.0f}", image=label)
+    if isinstance(error, ModuleNotFoundError):
+        return render("workspace.docker-dependency", locale, error=error)
+    try:
+        from aiodocker.exceptions import DockerError, DockerStreamError
+    except Exception:  # 依赖缺失时不能掩盖原始错误
+        return render("workspace.docker-failed", locale, type=type(error).__name__, error=error)
+    if isinstance(error, DockerStreamError):
+        return render("workspace.docker-image-failed", locale, image=label, error=str(error))
+    if isinstance(error, DockerError):
+        if error.status == 900:
+            return render("workspace.docker-daemon", locale, error=str(error))
+        return render("workspace.docker-failed", locale, type=type(error).__name__, error=error)
+    if isinstance(error, (FileExistsError, PermissionError)):
+        return render("workspace.docker-mount", locale, type=type(error).__name__, error=error)
+    if isinstance(error, RuntimeError):
+        # gateway 健康等待失败：消息已含 gateway.log 尾部。
+        return render("workspace.docker-failed", locale, type=type(error).__name__, error=error)
+    return render("workspace.docker-failed", locale, type=type(error).__name__, error=error)
+
+
+def _ensure_layout(root: str, member_id: str, session_id: str) -> tuple[str, str]:
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
+    agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
+    session_dir = os.path.join(root, ALIBOT_DIR, SESSIONS_DIR, session)
+    ensure_state_partition(root, agent_dir)
+    ensure_state_partition(root, session_dir)
+    return agent_dir, session_dir
+
+
+async def _rebind_entry(entry: _DockerEntry) -> bool:
+    """把池里的容器重新绑到当前 round 的 event loop。
+
+    AgentScope 的 ``DockerWorkspace`` 把 aiodocker client 建在创建它的 loop 上；seam 每轮用
+    ``asyncio.run``。跨 loop 复用必须换 client + 容器句柄 + backend（研究 #134 §6.1 的
+    “每轮复用”在 AgentScope 的 loop 语义下需要这一层）。
+    """
+    import aiodocker
+
+    client = aiodocker.Docker()
+    try:
+        container = await client.containers.get(entry.container_name)
+        info = await container.show()
+        if not bool((info.get("State") or {}).get("Running")):
+            with suppress(Exception):
+                await client.close()
+            return False
+        workspace = entry.workspace
+        workspace._client = client
+        workspace._container = container
+        workspace._backend = DockerBackend(container, DOCKER_WORKDIR)
+        workspace.is_alive = True
+        return True
+    except Exception:
+        with suppress(Exception):
+            await client.close()
+        return False
+
+
+def _new_mount(entry: _DockerEntry, *, reused: bool) -> DockerWorkspaceMount:
+    agent_dir, session_dir = _ensure_layout(entry.root, entry.member_id, entry.session_id)
+    return DockerWorkspaceMount(
+        settings=entry.settings,
+        root=entry.root,
+        member_id=entry.member_id,
+        session_id=entry.session_id,
+        workspace=entry.workspace,
+        tools=_docker_tools(entry.workspace, entry.root),
+        agent_dir=agent_dir,
+        session_dir=session_dir,
+        workspace_id=entry.workspace_id,
+        container_name=entry.container_name,
+        reused=reused,
+        entry=entry,
+    )
+
+
+async def assemble_docker_workspace(
+    settings: WorkspaceSettings,
+    *,
+    member_id: str,
+    session_id: str,
+    locale: Locale = SOURCE_LOCALE,
+) -> DockerWorkspaceMount:
+    """按 Agent/会话装配 DockerWorkspace（稳定 id、挂载频道根、env 白名单、失败即离线）。"""
+    if not settings.is_docker:
+        raise ValueError(f"not a docker workspace: {settings.backend!r}")
+
+    root = validate_workspace_root(settings.root)
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
+    key = (member, session)
+    workspace_id = docker_workspace_id(member, session)
+    container_name = f"as_ws_{workspace_id}"
+
+    # CI（Linux runner）回归：容器以 root 创建 `/workspace/.alibot/...`，bind mount 上这些
+    # 目录的属主是容器 root；host 在 initialize 之后再 `makedirs` 会拿 PermissionError。
+    # 因此 **先由 host 建好完整分区**，容器 `mkdir -p` 看到已存在的用户目录。
+    _ensure_layout(root, member, session)
+
+    cached = docker_unavailable_reason(member)
+    if cached is not None:
+        raise DockerWorkspaceUnavailable(cached)
+
+    # 复用：上一轮结束后 client 已关、容器仍在；换到当前 loop 的 client 后继续用。
+    image = settings.docker_image
+    with _pool_lock:
+        pooled = _pool.get(key)
+    if pooled is not None and pooled.image != settings.docker_image:
+        # 配置写路径改了镜像：池里的容器是旧镜像，不能复用（否则「改了配置却没生效」）。
+        # 删掉旧容器后按新配置重建；镜像本身不随容器删除。
+        with _pool_lock:
+            if _pool.get(key) is pooled:
+                _pool.pop(key, None)
+        with suppress(Exception):
+            await _delete_container(container_name)
+        pooled = None
+    if pooled is not None:
+        if await _rebind_entry(pooled):
+            with _pool_lock:
+                pooled.active += 1
+                pooled.last_used = time.monotonic()
+            clear_docker_failure(member)
+            try:
+                return _new_mount(pooled, reused=True)
+            except Exception as error:
+                with suppress(Exception):
+                    await pooled.workspace.close()
+                with suppress(Exception):
+                    await _delete_container(container_name)
+                with _pool_lock:
+                    if _pool.get(key) is pooled:
+                        _pool.pop(key, None)
+                reason = _docker_reason(error, locale, timeout=DOCKER_INIT_TIMEOUT_SECONDS, image=image)
+                record_docker_failure(member, reason)
+                raise DockerWorkspaceUnavailable(reason) from error
+        with _pool_lock:
+            if _pool.get(key) is pooled:
+                _pool.pop(key, None)
+        with suppress(Exception):
+            await _delete_container(container_name)
+
+    # 远端镜像：本机已有则直接使用；否则必须已有 scope 确认，未确认不拉取。
+    present = False
+    if image:
+        present = await _image_present_locally(image)
+        if not present and not settings.docker_image_consented:
+            reason = render("workspace.docker-consent", locale, image=image)
+            record_docker_failure(member, reason)
+            raise DockerWorkspaceUnavailable(reason)
+
+    timeout = DOCKER_BUILD_TIMEOUT_SECONDS if image is None or not present else DOCKER_INIT_TIMEOUT_SECONDS
+    options: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "host_workdir": root,
+        "env": docker_env(),
+    }
+    if image:
+        options["base_image"] = image
+
+    workspace = ProjectDockerWorkspace(**options)
+    try:
+        await asyncio.wait_for(workspace.initialize(), timeout=timeout)
+    except Exception as error:
+        with suppress(Exception):
+            await asyncio.wait_for(workspace.close(), timeout=10)
+        with suppress(Exception):
+            await _delete_container(container_name)
+        reason = _docker_reason(error, locale, timeout=timeout, image=image)
+        record_docker_failure(member, reason)
+        raise DockerWorkspaceUnavailable(reason) from error
+
+    entry = _DockerEntry(
+        key=key,
+        workspace=workspace,
+        settings=settings,
+        root=root,
+        member_id=member,
+        session_id=session,
+        workspace_id=workspace_id,
+        container_name=container_name,
+        last_used=time.monotonic(),
+        active=1,
+        image=image,
+    )
+    with _pool_lock:
+        _pool[key] = entry
+    clear_docker_failure(member)
+    try:
+        return _new_mount(entry, reused=False)
+    except Exception as error:
+        with _pool_lock:
+            if _pool.get(key) is entry:
+                _pool.pop(key, None)
+        with suppress(Exception):
+            await workspace.close()
+        with suppress(Exception):
+            await _delete_container(container_name)
+        reason = _docker_reason(error, locale, timeout=timeout, image=image)
+        record_docker_failure(member, reason)
+        raise DockerWorkspaceUnavailable(reason) from error
+
+
+async def release_workspace_mount(mount: Any) -> None:
+    """一轮结束：本地立即 close；Docker 只归还池（容器留到空闲 TTL 或进程退出）。
+
+    关闭 aiodocker client 必须在**创建它的 loop**里做，所以 release 就在这一轮的 loop 内完成；
+    容器本身不属于任何 loop，下一轮由 :func:`_rebind_entry` 换句柄。
+    """
+    if not isinstance(mount, DockerWorkspaceMount):
+        await mount.workspace.close()
+        return
+
+    workspace = mount.workspace
+    # gateway 是 aiohttp 客户端（UnixConnector 指向容器内网关）；它属于当前 loop，
+    # 必须在 loop 关闭前显式 aclose，否则 pytest 会把未关闭的 socket/transport 报成
+    # unraisable。容器本身仍留在池里，下一轮由 _rebind_entry 换句柄。
+    gateway = getattr(workspace, "_gateway", None)
+    if gateway is not None:
+        with suppress(Exception):
+            await gateway.aclose()
+    workspace._gateway = None
+    workspace._mcp_instances.clear()
+    workspace._mcp_last_used.clear()
+    with suppress(Exception):
+        if workspace._client is not None:
+            await workspace._client.close()
+    workspace._client = None
+    workspace._container = None
+    workspace._backend = None
+    workspace.is_alive = False
+
+    with _pool_lock:
+        entry = _pool.get(mount.entry.key)
+        if entry is not None and entry is mount.entry:
+            entry.active = max(0, entry.active - 1)
+            entry.last_used = time.monotonic()
+
+
+async def sweep_idle_docker_workspaces(*, now: float | None = None) -> list[str]:
+    """回收空闲超过 TTL 的容器（镜像保留）；返回被删除的容器名。"""
+    moment = time.monotonic() if now is None else now
+    with _pool_lock:
+        expired = [
+            entry
+            for entry in _pool.values()
+            if entry.active == 0 and moment - entry.last_used >= DOCKER_IDLE_TTL_SECONDS
+        ]
+        for entry in expired:
+            if _pool.get(entry.key) is entry:
+                _pool.pop(entry.key, None)
+    for entry in expired:
+        await _delete_container(entry.container_name)
+    return [entry.container_name for entry in expired]
+
+
+async def sweep_stale_docker_workspaces() -> list[str]:
+    """启动清扫：删除本仓前缀、当前池里不再登记的遗留容器（``os._exit`` / 宿主崩溃）。"""
+    import aiodocker
+
+    with _pool_lock:
+        active_names = {entry.container_name for entry in _pool.values()}
+
+    client = aiodocker.Docker()
+    removed: list[str] = []
+    try:
+        containers = await client.containers.list(all=True, filters={"label": ["agentscope.workspace=true"]})
+        for container in containers:
+            # aiodocker 的 list() 返回 DockerContainer；原始 JSON 在 ``_container``。
+            info = getattr(container, "_container", {}) or {}
+            labels = info.get("Labels") or {}
+            workspace_id = str(labels.get("agentscope.workspace.id") or "")
+            if not workspace_id.startswith(DOCKER_WORKSPACE_PREFIX):
+                continue
+            names = info.get("Names") or []
+            name = str(names[0]).lstrip("/") if names else f"as_ws_{workspace_id}"
+            if name in active_names:
+                continue
+            try:
+                await container.delete(force=True)
+                removed.append(name)
+            except Exception:
+                continue
+    except Exception:
+        return []
+    finally:
+        with suppress(Exception):
+            await client.close()
+    return removed
+
+
+async def shutdown_docker_workspaces() -> list[str]:
+    """删掉本进程登记的全部容器（进程退出/优雅关停的 best-effort 清理）。"""
+    with _pool_lock:
+        entries = list(_pool.values())
+        _pool.clear()
+    for entry in entries:
+        await _delete_container(entry.container_name)
+    return [entry.container_name for entry in entries]
+
+
+async def reset_docker_workspace(
+    settings: WorkspaceSettings,
+    *,
+    member_id: str,
+    session_id: str,
+) -> bool:
+    """``reset``：删容器可写层（容器本身），保留 ``host_workdir`` 与项目文件。
+
+    AgentScope 2.0.10 的 ``reset()`` 只删 ``data/skills/sessions/.mcp`` 且容器继续运行；规格
+    §3.6 要的是“删容器可写层”，因此这里删除容器并清掉池条目，下一轮重新创建。
+    """
+    member = safe_partition_id(member_id)
+    session = safe_partition_id(session_id)
+    key = (member, session)
+    with _pool_lock:
+        entry = _pool.pop(key, None)
+    clear_docker_failure(member)
+    if entry is None:
+        return False
+    await _delete_container(entry.container_name)
+    return True
+
+
+def _reaper_loop() -> None:
+    while True:
+        time.sleep(30.0)
+        try:
+            asyncio.run(sweep_idle_docker_workspaces())
+        except Exception:
+            continue
+
+
+def start_docker_reaper() -> None:
+    """启动空闲回收线程（幂等；Docker 不可用时线程只是空转）。"""
+    global _reaper_started
+    with _reaper_lock:
+        if _reaper_started:
+            return
+        _reaper_started = True
+    thread = threading.Thread(target=_reaper_loop, name="alibot-docker-reaper", daemon=True)
+    thread.start()
+
+
+def _shutdown_docker_at_exit() -> None:
+    """atexit 兜底：SIGKILL 无法覆盖，但正常退出/未捕获异常会走到这里。"""
+    try:
+        asyncio.run(shutdown_docker_workspaces())
+    except Exception:
+        return
+
+
+atexit.register(_shutdown_docker_at_exit)
+
+
+async def assemble_workspace(
+    settings: WorkspaceSettings,
+    *,
+    member_id: str,
+    session_id: str,
+    locale: Locale = SOURCE_LOCALE,
+) -> Any:
+    """按后端分派装配；**不静默回落**（local 与 docker 各自失败即失败）。"""
+    if settings.is_docker:
+        return await assemble_docker_workspace(
+            settings,
+            member_id=member_id,
+            session_id=session_id,
+            locale=locale,
+        )
+    return await assemble_local_workspace(
+        settings,
+        member_id=member_id,
+        session_id=session_id,
+    )

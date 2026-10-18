@@ -18,13 +18,21 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .i18n import SOURCE_LOCALE, Locale, render
+
+if TYPE_CHECKING:
+    from .plan import PlanSession
+    from .team import TeamRoundContext
+
+_log = logging.getLogger(__name__)
 
 # provider 客户端上「可关闭入口」的候选方法名（协程）。顺序即探测顺序。
 _CLOSE_METHOD_NAMES = ("aclose", "close")
@@ -234,6 +242,222 @@ class RoundOutcome:
             raise ValueError("Agent 任务动作必须使用受支持的结构化类型")
 
 
+@dataclass(frozen=True)
+class AgentEventRecord:
+    """一条可直播的框架事件（ADR-0020）：归属完整的白名单副本，**不落库**。
+
+    事件的唯一去处是 SSE 的 ``agent_event`` 帧；它不是业务正本，断线丢失、重启消失。
+    ``member_id`` / ``reply_id`` 来自本轮的事件归属映射，``target_id`` 由本轮调用注入
+    （channel 或 task，二者对本层没有区别）。
+    """
+
+    type: str
+    target_id: str
+    member_id: str
+    reply_id: str
+    payload: dict[str, Any]
+
+
+def member_internal_name(member_id: str) -> str:
+    """D10：pipeline 内部名由 **member id** 派生（``m-<id>``），显示名不参与。
+
+    派生名只活在框架内部与事件归属映射里：不落库、不显示、不改成员身份。``display_name``
+    在频道里可以重复，唯一稳定键只能是 id。
+    """
+    return f"m-{member_id}"
+
+
+def _event_type(event: Any) -> str:
+    return str(getattr(event, "type", "") or "")
+
+
+def _enum_value(value: Any) -> Any:
+    """pydantic/Enum 字段转成可 JSON 化的原始值（``str`` / ``bool`` / ``None`` 原样返回）。"""
+    return getattr(value, "value", value)
+
+
+def _data_length(value: str | None) -> int:
+    """DataBlock 元数据只保留长度，不透传 base64 / URL 正文。"""
+    return len(value or "")
+
+
+def _hint_value(hint: Any) -> Any:
+    """``HintBlock.hint`` 是 str 或内容块列表；数据块只保留元数据。"""
+    if not isinstance(hint, list):
+        return hint
+    parts: list[Any] = []
+    for block in hint:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+            continue
+        source = getattr(block, "source", None)
+        payload = getattr(source, "data", None) or getattr(source, "url", None) or ""
+        parts.append(
+            {
+                "type": getattr(block, "type", "data"),
+                "name": getattr(block, "name", None),
+                "length": _data_length(payload if isinstance(payload, str) else ""),
+            }
+        )
+    return parts
+
+
+def _agent_event_payload(event: Any) -> dict[str, Any] | None:
+    """白名单：只返回可直播的结构字段；``None`` 表示该事件不进入事件流。
+
+    ``ReplyStart`` 的 ``name`` 是 D10 派生名——它只用于归属，不放进 payload（不显示）。
+    ``session_id`` 是框架内部 id，同样不出去。``DataBlock*`` 与 ``ToolResultDataDelta``
+    只保留 media_type / 长度，绝不透传 base64 正文。
+    """
+    kind = _event_type(event)
+    if kind == "REPLY_START":
+        return {"role": str(getattr(event, "role", ""))}
+    if kind == "REPLY_END":
+        payload: dict[str, Any] = {"finished_reason": _enum_value(getattr(event, "finished_reason", ""))}
+        error = getattr(event, "error", None)
+        if error is not None:
+            payload["error"] = {
+                "type": _enum_value(getattr(error, "type", "")),
+                "message": str(getattr(error, "message", "")),
+            }
+        return payload
+    if kind in ("TEXT_BLOCK_START", "THINKING_BLOCK_START", "DATA_BLOCK_END"):
+        return {"block_id": str(getattr(event, "block_id", ""))}
+    if kind in ("TEXT_BLOCK_DELTA", "THINKING_BLOCK_DELTA"):
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "delta": str(getattr(event, "delta", "")),
+        }
+    if kind == "TEXT_BLOCK_END":
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "text": getattr(event, "text", None),
+        }
+    if kind == "THINKING_BLOCK_END":
+        # ``ThinkingBlock*`` 属于规格 §3.2 的白名单；END 带 block_id 与可用的累计文本元数据
+        # （AgentScope 2.0.10 的 ``ThinkingBlockEndEvent`` 只有 block_id，故 ``text`` 可能为 None）。
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "text": getattr(event, "text", None),
+        }
+    if kind == "TOOL_CALL_START":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "tool_call_name": str(getattr(event, "tool_call_name", "")),
+        }
+    if kind == "TOOL_CALL_DELTA":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "delta": str(getattr(event, "delta", "")),
+        }
+    if kind == "TOOL_CALL_END":
+        return {"tool_call_id": str(getattr(event, "tool_call_id", ""))}
+    if kind == "TOOL_RESULT_START":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "tool_call_name": str(getattr(event, "tool_call_name", "")),
+        }
+    if kind == "TOOL_RESULT_TEXT_DELTA":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "delta": str(getattr(event, "delta", "")),
+        }
+    if kind == "TOOL_RESULT_DATA_DELTA":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "block_id": str(getattr(event, "block_id", "")),
+            "media_type": str(getattr(event, "media_type", "")),
+            "length": _data_length(getattr(event, "data", None) or getattr(event, "url", None)),
+        }
+    if kind == "TOOL_RESULT_END":
+        return {
+            "tool_call_id": str(getattr(event, "tool_call_id", "")),
+            "state": _enum_value(getattr(event, "state", "")),
+        }
+    if kind == "HINT_BLOCK":
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "source": getattr(event, "source", None),
+            "hint": _hint_value(getattr(event, "hint", None)),
+        }
+    if kind == "REQUIRE_USER_CONFIRM":
+        return {
+            "tool_calls": [
+                {
+                    "id": str(getattr(call, "id", "")),
+                    "name": str(getattr(call, "name", "")),
+                    "input": str(getattr(call, "input", "")),
+                }
+                for call in getattr(event, "tool_calls", [])
+            ]
+        }
+    if kind == "DATA_BLOCK_START":
+        payload = {
+            "block_id": str(getattr(event, "block_id", "")),
+            "media_type": str(getattr(event, "media_type", "")),
+        }
+        name = getattr(event, "name", None)
+        if name:
+            payload["name"] = str(name)
+        return payload
+    if kind == "DATA_BLOCK_DELTA":
+        return {
+            "block_id": str(getattr(event, "block_id", "")),
+            "media_type": str(getattr(event, "media_type", "")),
+            "length": _data_length(getattr(event, "data", None) or getattr(event, "url", None)),
+        }
+    if kind == "CUSTOM":
+        return {
+            "name": str(getattr(event, "name", "")),
+            "value": getattr(event, "value", {}),
+        }
+    return None
+
+
+def _agent_event_record(
+    event: Any,
+    *,
+    target_id: str,
+    names: Mapping[str, str],
+    reply_members: dict[str, str],
+) -> AgentEventRecord | None:
+    """把一条 ``AgentEvent`` 归属并收窄成 :class:`AgentEventRecord`；查不到就丢弃。
+
+    归属算法（ADR-0020 三）：``ReplyStartEvent.name`` 用 **D10 派生名表**映射成 member id，
+    并写入 ``reply_id → member_id``；其余事件只按 ``reply_id`` 查表。没有 ``ReplyStart``
+    的孤儿、表里查不到的 ``reply_id``、没有 ``reply_id`` 的事件（``CustomEvent``）一律丢弃并
+    记 debug——**不猜**（猜出来的归属会把成员的事件挂到别人名下，比丢事件更糟）。
+    """
+    kind = _event_type(event)
+    reply_id = str(getattr(event, "reply_id", "") or "")
+    if not reply_id:
+        _log.debug("agent event dropped: %s has no reply_id", kind)
+        return None
+    if kind == "REPLY_START":
+        name = str(getattr(event, "name", "") or "")
+        member_id = names.get(name)
+        if member_id is None:
+            _log.debug("agent event dropped: ReplyStart name %r is not a known member", name)
+            return None
+        reply_members.setdefault(reply_id, member_id)
+    member_id = reply_members.get(reply_id)
+    if member_id is None:
+        _log.debug("agent event dropped: reply_id %s has no ReplyStart", reply_id)
+        return None
+    payload = _agent_event_payload(event)
+    if payload is None:
+        _log.debug("agent event dropped: %s is outside the whitelist", kind)
+        return None
+    return AgentEventRecord(
+        type=kind,
+        target_id=target_id,
+        member_id=member_id,
+        reply_id=reply_id,
+        payload=payload,
+    )
+
+
 @runtime_checkable
 class AgentSeam(Protocol):
     """成员面：一轮的输入与输出。
@@ -259,11 +483,36 @@ class AgentSeam(Protocol):
                 ``model_id`` / ``system_prompt`` / ``enabled``）。
             messages: 该成员**待读的新消息**（经同一个读接口取得，不含正文的第二通道）。
             mentioned: 这批新消息里是否个人提及了该成员（rubric：被点名必须回应）。
-            target_id: 频道 id。
+            target_id: 频道 id 或任务 id——这一轮的 target（事件随之带出去）。
             task_context: 仅任务线程提供的内部动作上下文；频道与 DM 不开放任务工具。
             mandatory_reply: 本轮的**回应纪律标记**（不落库）：为真时本轮必须回应，
                 由编排在投递时算好（认领唤醒）。它**不用** ``reason`` 推导——重复唤醒会被合并，
                 而合并后的 ``reason`` 取决于先到者。
+        """
+        ...
+
+    def run_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
+        team: TeamRoundContext | None = None,
+        emit: Callable[[AgentEventRecord], None] | None = None,
+        plan: PlanSession | None = None,
+    ) -> RoundOutcome:
+        """跑一轮并（可选地）把框架事件按白名单直播出去。
+
+        ``team`` 非空时这是**队长的 team 轮次**：适配器在 ``TeamPipeline`` 里运行队长与成员，
+        ``RoundOutcome`` 仍只描述队长（成员结论是分派结果，不是频道轮次）。``emit=None`` 时
+        与单 Agent 轮次一样只返回结论。其它参数语义同 :meth:`run_round`。
+
+        ``plan`` 非空时这一轮（team 里则是队长与每个实际被 ``TeamAssign`` 的成员）自动获得
+        AgentScope 的 Plan 四工具；每个 Agent 的一次 ``reply_stream`` 对应一个独立 run
+        （方向与回写由 :mod:`alibot.plan` 独占）。``plan=None`` 时行为逐字不变。
         """
         ...
 
@@ -310,6 +559,12 @@ class AgentScopeAgentSeam:
         timeout_seconds: float = 120.0,
         environ: dict[str, str] | None = None,
         locale_of: Callable[[], Locale] | None = None,
+        workspace_of: Callable[[str, str], Any] | None = None,
+        permission_of: Callable[[str, str], Any] | None = None,
+        mcp_of: Callable[[str, str], Any] | None = None,
+        skills_of: Callable[[str, str], Any] | None = None,
+        approvals: Any | None = None,
+        team_run_of: Callable[[str, str], str | None] | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
@@ -317,20 +572,141 @@ class AgentScopeAgentSeam:
         # 取值方式由**装配点**注入（``api.create_app`` 传 ``i18n.locale_of(database)``），
         # 于是适配层自己不依赖库、也不读任何请求头（ADR-0009）。不注入时取源语言。
         self._locale_of = locale_of if locale_of is not None else (lambda: SOURCE_LOCALE)
+        # workspace 装配钩子（#148）：由装配点注入「(target_id, member_id) → 频道项目根配置」的
+        # **读**路径（生产是 ``Database.workspace_settings_for_target``）。适配层仍不依赖库；
+        # 不注入时这一轮不挂文件工具——未配置 workspace 的频道行为逐字不变（ADR-0021 §六）。
+        self._workspace_of = workspace_of
+        # 权限读路径（#149）：档位 + 频道/Agent 规则 + 项目根；不注入时沿用 workspace 配置里的
+        # 权限档、没有用户规则（未配置 workspace 的频道没有可授权的工具，行为不变）。
+        self._permission_of = permission_of
+        # MCP 声明读路径（#151）：生产是 ``Database.mcp_servers_for_target``。不注入时这一轮
+        # 不挂 MCP——未配置声明的工作区行为逐字不变。
+        self._mcp_of = mcp_of
+        # Skill 读路径（#152）：生产是 ``Database.skills_for_target``。只返回**启用**的技能；
+        # 字节在频道项目根的 ``.alibot/skills/`` 下，装配层再核一次 hash。不注入时这一轮不挂
+        # Skill——未配置技能的工作区行为逐字不变。
+        self._skills_of = skills_of
+        # 审批代理（#149）：不注入时遇到 ASK 只能收口为失败（单 Agent 没有人类确认通道）。
+        self._approvals = approvals
+        # 团队运行的关联 id（#149 的审批记录列）；#142 装配点可注入，未注入时为空。
+        self._team_run_of = team_run_of
+
+    def _permission_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """一轮的权限配置；没有 workspace 也没有注入读路径时返回 ``None``。"""
+        if self._permission_of is not None:
+            raw = self._permission_of(target_id, member_id)
+            if raw is None:
+                return None
+            return dict(raw)
+        settings = self._workspace_settings(target_id, member_id)
+        if settings is None:
+            return None
+        return {
+            "mode": settings.permission_mode,
+            "root": settings.root,
+            "channel_rules": [],
+            "agent_rules": [],
+        }
+
+    def _mcp_declarations(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """本轮启用的 MCP 声明；未注入读路径时为空。读路径失败只记 debug，不拖垮一轮。"""
+        if self._mcp_of is None:
+            return []
+        try:
+            return [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
+        except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
+            _log.debug("mcp declaration lookup failed", exc_info=True)
+            return []
+
+    async def _assemble_mcp(self, target_id: str, member_id: str, mount: Any, session_id: str) -> Any:
+        """把声明挂到这一轮的工作区；任何失败都只影响 MCP 工具，不改变轮次结论。"""
+        from .mcp import MCPAssembly, assemble_mcp_tools
+
+        # Local 后端的 stdio MCP 以该成员的 ``.alibot/agents/<id>`` 为 cwd（声明与状态按成员
+        # 分区）；Docker 的 stdio 在容器内由网关启动，cwd 用工作区根（``/workspace``）。
+        settings = getattr(mount, "settings", None)
+        cwd = str(mount.agent_dir) if settings is not None and settings.is_local else None
+        try:
+            return await assemble_mcp_tools(
+                mount.workspace,
+                self._mcp_declarations(target_id, member_id),
+                member_id=member_id,
+                session_id=session_id,
+                environ=self._environ,
+                locale=self._locale(),
+                cwd=cwd,
+            )
+        except Exception:  # 装配层自身的意外：没有 MCP 工具，但工作区工具照常
+            _log.warning("mcp assembly failed", exc_info=True)
+            return MCPAssembly(
+                workspace=mount.workspace,
+                member_id=member_id,
+                session_id=session_id,
+            )
+
+    def _skill_rows(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """本轮启用的技能元数据；读路径失败只记 debug，不影响其他工具。"""
+        if self._skills_of is None:
+            return []
+        try:
+            return [dict(item) for item in (self._skills_of(target_id, member_id) or [])]
+        except Exception:  # 配置读不出来等价于没有技能；不阻塞其他工具
+            _log.debug("skill lookup failed", exc_info=True)
+            return []
+
+    def _skills_for(self, target_id: str, member_id: str, settings: Any) -> list[Any]:
+        """把启用技能读成 AgentScope ``Skill``；Docker 后端的 ``dir`` 指向容器内挂载路径。"""
+        rows = self._skill_rows(target_id, member_id)
+        if not rows or settings is None:
+            return []
+        from .skills import load_skills
+        from .workspace import DOCKER_WORKDIR
+
+        container_root = DOCKER_WORKDIR if settings.is_docker else None
+        return load_skills(rows, root=settings.root, container_root=container_root)
+
+    def _team_run_for(self, target_id: str, member_id: str) -> str | None:
+        if self._team_run_of is None:
+            return None
+        try:
+            return self._team_run_of(target_id, member_id)
+        except Exception:  # 关联信息是附加列，取不到不影响审批本身
+            return None
 
     def _locale(self) -> Locale:
         """当前**语言偏好**（由装配点注入的取值方式给出；默认源语言）。"""
         return self._locale_of()
 
+    def _workspace_settings(self, target_id: str, member_id: str) -> Any | None:
+        """本轮的项目根配置；没有装配钩子 / 未配置根时返回 ``None``。
+
+        ``local`` 与 ``docker`` 都原样返回：后端分派在 :func:`assemble_workspace` 里，本模块
+        **绝不**把 docker 静默改写成 local（ADR-0021 §二）。
+        """
+        if self._workspace_of is None:
+            return None
+        from .workspace import WorkspaceSettings
+
+        raw = self._workspace_of(target_id, member_id)
+        if raw is None:
+            return None
+        return raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
+
     # ─── 模型构造 ─────────────────────────────────────────────────────────
-    def _build_model(self, provider: str, model_name: str) -> Any:
+    def _build_model(self, provider: str, model_name: str, *, stream: bool = False) -> Any:
+        """建这一轮用的模型。
+
+        ``stream`` 只在有事件观察者（``emit``）时为真：没有观察者时保持既有的非流式调用，
+        provider 请求形状与 #140 之前逐字相同；有观察者时打开流式，框架才会产出
+        ``TextBlockDelta`` / ``ToolCall*`` 这类增量事件。
+        """
         from agentscope import credential as cred
 
         if provider == "ollama":
             ollama = cred.OllamaCredential(host=os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST))
             from agentscope.model import OllamaChatModel
 
-            return OllamaChatModel(credential=ollama, model=model_name, stream=False)
+            return OllamaChatModel(credential=ollama, model=model_name, stream=stream)
 
         api_key = read_api_key(provider, self._environ, locale=self._locale())
         credential_type = PROVIDER_CREDENTIAL_TYPE[provider]
@@ -351,7 +727,27 @@ class AgentScopeAgentSeam:
             credential=credential,
             model=model_name,
             parameters=chat_model_class.Parameters(),
-            stream=False,
+            stream=stream,
+        )
+
+    # ─── SOP 参与者（#147）：按 member id 装配一个可被 ``SOPStep`` 驱动的 Agent ──
+    def sop_agent(self, member: Mapping[str, Any], *, role: str = "executor") -> Any:
+        """SOP 的 executor / verifier：只带模型与身份提示，不挂工具（SOP 无工具面）。
+
+        参与者 AgentState 的跨重启恢复不在本票（D19）：每次运行/恢复都按当前成员行重建。
+        没有 workspace / 权限上下文是因为这里不执行工具；``SOPStep`` 交给它的是结构化
+        handover / verdict，仍由框架的 ``reply_stream`` 收口。
+        """
+        from agentscope.agent import Agent
+
+        from .sop import sop_agent_prompt
+
+        provider = provider_of(str(member.get("model_id") or ""))
+        model = self._build_model(provider, model_name_of(str(member.get("model_id") or "")))
+        return Agent(
+            name=member_internal_name(str(member["id"])),
+            system_prompt=sop_agent_prompt(member, role=role),
+            model=model,
         )
 
     # ─── 一轮 ─────────────────────────────────────────────────────────────
@@ -365,6 +761,51 @@ class AgentScopeAgentSeam:
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
     ) -> RoundOutcome:
+        """兼容壳：``run_round_stream(..., emit=None)``（ADR-0020 二）。"""
+        return self.run_round_stream(
+            agent,
+            messages,
+            mentioned=mentioned,
+            target_id=target_id,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+            emit=None,
+        )
+
+    def run_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None = None,
+        mandatory_reply: bool = False,
+        team: TeamRoundContext | None = None,
+        emit: Callable[[AgentEventRecord], None] | None = None,
+        plan: PlanSession | None = None,
+    ) -> RoundOutcome:
+        """流式一轮：消费 ``Agent.reply_stream`` / ``TeamPipeline.reply_stream``。
+
+        有 ``emit`` 时才打开模型流式（否则 provider 请求形状与 ``run_round`` 的既有形态一致）。
+        事件只是观察面：回调失败只记 debug，不改写本轮结论；``RoundOutcome`` 仍只由最终 ``Msg``
+        与结构化工具记录决定，事件也不落库。
+
+        ``team`` 非空时走队长轮次：同一轮里按 ``TeamContext`` 的成员快照重建 ``TeamPipeline``
+        （D11），队长与成员的事件都按 D10 派生名归属后直播；队长最终回复才是本轮的结论。
+        """
+        if team is not None:
+            return self._run_team_round_stream(
+                agent,
+                messages,
+                mentioned=mentioned,
+                target_id=target_id,
+                task_context=task_context,
+                mandatory_reply=mandatory_reply,
+                team=team,
+                emit=emit,
+                plan=plan,
+            )
         import asyncio
 
         provider = provider_of(str(agent.get("model_id") or ""))
@@ -380,40 +821,218 @@ class AgentScopeAgentSeam:
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
         # 它是一个进程内的事实列表，只在 ``_round`` 的 loop 里被工具线程追加，不落库。
         silence_declarations: list[None] = []
+        # 归属（ADR-0020 三）：D10 派生名 → member id 只用于 ``ReplyStartEvent.name``；
+        # 其余事件按 ``reply_id`` 查。表跨整轮存活（事件消费在同一个 loop 内）。
+        member_id = str(agent["id"])
+        member_names = {member_internal_name(member_id): member_id}
+        reply_members: dict[str, str] = {}
 
         async def _round() -> Any:
             # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
             # 两件事都在同一个 ``asyncio.run`` 的协程内完成，中间不允许跨到下一个 loop。
             # 客户端若带着活连接活过这一轮，它的 ``__del__`` 会在之后的某个 loop 里去关一个属于
             # 已关闭 loop 的 socket transport —— 那正是 issue #30 的 ``Event loop is closed``。
-            model = self._build_model(provider, model_name)
+            model = self._build_model(provider, model_name, stream=emit is not None)
+            mount: Any | None = None
+            mcp_assembly: Any | None = None
             try:
-                from agentscope.agent import Agent
-                from agentscope.message import UserMsg
+                from agentscope.event import (
+                    ConfirmResult,
+                    RequireUserConfirmEvent,
+                    UserConfirmResultEvent,
+                    UserInterruptEvent,
+                )
+                from agentscope.message import Msg, ToolCallBlock, UserMsg
+                from agentscope.state import AgentState
+
+                from .approval import ApprovalWaitTimeout
+                from .permissions import (
+                    WorkspacePathPermissionMiddleware,
+                    build_permission_context,
+                    effective_rules,
+                )
+                from .workspace import (
+                    assemble_workspace,
+                    local_shell_tool,
+                    release_workspace_mount,
+                    session_partition_id,
+                )
+
+                settings = self._workspace_settings(target_id, member_id)
+                permission_settings = self._permission_settings(target_id, member_id)
+                permission_mode = str(
+                    (permission_settings or {}).get("mode")
+                    or (settings.permission_mode if settings is not None else "ask-writes")
+                )
+                root = (permission_settings or {}).get("root") or (
+                    settings.root if settings is not None else None
+                )
+                context = build_permission_context(
+                    permission_mode,
+                    effective_rules(
+                        (permission_settings or {}).get("channel_rules") or [],
+                        (permission_settings or {}).get("agent_rules") or [],
+                    ),
+                    root=str(root) if root else None,
+                )
+                if settings is not None:
+                    session_id = session_partition_id(member_id, target_id)
+                    mount = await assemble_workspace(
+                        settings,
+                        member_id=member_id,
+                        session_id=session_id,
+                        locale=self._locale(),
+                    )
+                    # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
+                    # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
+                    mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
 
                 agent_options: dict[str, Any] = {
-                    "name": str(agent.get("display_name") or agent.get("id") or "agent"),
+                    # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
+                    "name": member_internal_name(member_id),
                     "system_prompt": system_prompt,
                     "model": model,
+                    "state": AgentState(permission_context=context),
                 }
+                workspace_tools = list(mount.tools) if mount is not None else []
+                if mcp_assembly is not None:
+                    workspace_tools.extend(mcp_assembly.tools)
+                # 本地 shell 默认不挂（D15）。显式开启后仍是**每次调用**审批；read-only 下不挂，
+                # 因为 EXPLORE 对非只读调用的结论是 DENY（没有“询问”这一档）。
+                if (
+                    mount is not None
+                    and getattr(mount, "allow_local_shell", False)
+                    and permission_mode != "read-only"
+                ):
+                    workspace_tools.append(local_shell_tool(mount.root))
                 toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
-                    actor_id=str(agent["id"]),
+                    actor_id=member_id,
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
+                    workspace_tools=workspace_tools or None,
+                    skills=self._skills_for(target_id, member_id, settings),
+                    with_plan=plan is not None,
                 )
                 if toolkit is not None:
                     agent_options["toolkit"] = toolkit
-                instance = Agent(**agent_options)
+                if root:
+                    agent_options["middlewares"] = [WorkspacePathPermissionMiddleware(str(root))]
+                instance = _agent_instance(agent_options, plan=plan, member_id=member_id)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
-                inputs = [UserMsg(name=_author_name(item), content=_body(item)) for item in messages]
-                return await asyncio.wait_for(
-                    instance.reply(inputs if inputs else None), timeout=self.timeout_seconds
-                )
+                inputs: Any = [
+                    UserMsg(name=_author_name(item), content=_body(item)) for item in messages
+                ] or None
+                pending_reply_id: str | None = None
+
+                def _publish(item: Any) -> None:
+                    if emit is None:
+                        return
+                    record = _agent_event_record(
+                        item,
+                        target_id=target_id,
+                        names=member_names,
+                        reply_members=reply_members,
+                    )
+                    if record is None:
+                        return
+                    try:
+                        emit(record)
+                    except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
+                        _log.debug("agent event emit failed", exc_info=True)
+
+                async def _consume(stream_inputs: Any, *, register: bool) -> Any:
+                    """消费一段流；返回最终 Msg 或 ``None``（挂起时流自然结束）。"""
+                    nonlocal pending_reply_id
+                    reply: Any = None
+                    async for item in instance.reply_stream(stream_inputs, yield_final_msg=True):
+                        if isinstance(item, Msg):
+                            reply = item
+                            continue
+                        if register and isinstance(item, RequireUserConfirmEvent):
+                            if self._approvals is None:
+                                raise RuntimeError(
+                                    "AgentScope requires user confirmation but no ApprovalBroker is wired"
+                                )
+                            self._approvals.register(
+                                reply_id=item.reply_id,
+                                target_id=target_id,
+                                member_id=member_id,
+                                tool_calls=item.tool_calls,
+                                team_run_id=self._team_run_for(target_id, member_id),
+                            )
+                            pending_reply_id = item.reply_id
+                        _publish(item)
+                    # 挂起时 ``yield_final_msg`` 会给出「等待权限确认」的占位 Msg；它不是回复，
+                    # 不能当成本轮收口（否则审批还没发生就被记录成 replied）。
+                    if reply is not None and instance.state.has_awaiting_tool_calls(instance.name):
+                        return None
+                    return reply
+
+                while True:
+                    # 模型调用 / 工具执行各有 120 秒上界；审批等待在**流结束之后**单独计时
+                    # （broker 的 600 秒），因此挂起不会撞上模型超时（#136 研究硬约束 3）。
+                    reply = await asyncio.wait_for(
+                        _consume(inputs, register=True), timeout=self.timeout_seconds
+                    )
+                    if reply is not None:
+                        return reply
+                    if self._approvals is None or pending_reply_id is None:
+                        raise RuntimeError("AgentScope ended the round without a final Msg")
+                    decisions = await self._approvals.wait(pending_reply_id)
+                    if decisions is None:
+                        # 超时：broker 已标 expired。AgentScope 没有内建超时，只能用
+                        # ``UserInterruptEvent`` 收口（单 Agent 的工具结果转 INTERRUPTED）。
+                        with suppress(Exception):
+                            await asyncio.wait_for(
+                                _consume(
+                                    UserInterruptEvent(reply_id=pending_reply_id),
+                                    register=False,
+                                ),
+                                timeout=self.timeout_seconds,
+                            )
+                        raise ApprovalWaitTimeout(self._approvals.timeout_seconds)
+                    if not decisions:
+                        # 没有新的可回送决策（例如并发提交已把状态推到终态）：不能再送一次
+                        # 已完成 id（框架会抛错），只能收口失败。
+                        record = self._approvals.record(pending_reply_id)
+                        if record is None or record["state"] == "pending":
+                            continue
+                        raise RuntimeError(f"approval {pending_reply_id} resolved without new decisions")
+                    stored = {
+                        str(call.get("id") or ""): call
+                        for call in self._approvals.tool_calls(pending_reply_id)
+                    }
+                    confirm_results = []
+                    for decision in decisions:
+                        raw = stored.get(str(decision.get("tool_call_id") or ""))
+                        if raw is None:
+                            raise RuntimeError(
+                                f"approval decision references an unknown tool call: {decision!r}"
+                            )
+                        confirm_results.append(
+                            ConfirmResult(
+                                confirmed=bool(decision.get("confirmed")),
+                                # 建议规则只用于展示；决策回送只需要 id/name/input。库里保存的
+                                # suggested_rules 是展示摘要，不按框架模型反序列化。
+                                tool_call=ToolCallBlock.model_validate(
+                                    {key: value for key, value in raw.items() if key != "suggested_rules"}
+                                ),
+                            )
+                        )
+                    inputs = UserConfirmResultEvent(
+                        reply_id=pending_reply_id, confirm_results=confirm_results
+                    )
             finally:
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
+                # MCP 客户端先关：Local 的 workspace.close 也会兜底，Docker 的容器留在池里，
+                # transport 绑定在当前 loop 上，不能带到下一轮。
+                if mcp_assembly is not None:
+                    await mcp_assembly.close()
+                if mount is not None:
+                    await release_workspace_mount(mount)
                 await _aclose_model_client(model)
 
         try:
@@ -424,6 +1043,16 @@ class AgentScopeAgentSeam:
                 reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
             )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
+            from .approval import ApprovalWaitTimeout
+            from .workspace import DockerWorkspaceUnavailable
+
+            if isinstance(error, ApprovalWaitTimeout):
+                return RoundOutcome(
+                    status="failed",
+                    reason=render("seam.approval_timeout", self._locale(), seconds=f"{error.seconds:.0f}"),
+                )
+            if isinstance(error, DockerWorkspaceUnavailable):
+                return RoundOutcome(status="failed", reason=str(error))
             return RoundOutcome(
                 status="failed",
                 reason=render(
@@ -434,6 +1063,368 @@ class AgentScopeAgentSeam:
                 ),
             )
 
+        return self._outcome_from_reply(reply, task_actions, silence_declarations)
+
+    def _run_team_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        mentioned: bool,
+        target_id: str,
+        task_context: TaskActionContext | None,
+        mandatory_reply: bool,
+        team: TeamRoundContext,
+        emit: Callable[[AgentEventRecord], None] | None,
+        plan: PlanSession | None = None,
+    ) -> RoundOutcome:
+        """队长轮次：按这一轮的成员快照重建 ``TeamPipeline`` 并消费它的事件流。
+
+        - **D11**：pipeline 在每次调用里重建，成员来自 ``team.members``（编排每轮从库里读）；
+          进程不缓存成员表。
+        - **D10**：队长与成员都用 ``m-<member id>`` 作为框架内部名；``display_name`` 只进工具
+          描述，因此重名不会撞名。事件归属表同时含队长与成员。
+        - **D2**：只有队长的最终回复进入本轮的 ``RoundOutcome``；成员结论是队长看到的
+          ``ToolResult``，不落 target 消息。
+        """
+        import asyncio
+
+        from .team import build_team_pipeline, member_internal_name
+
+        provider = provider_of(str(agent.get("model_id") or ""))
+        system_prompt = _system_prompt(
+            agent,
+            mentioned=mentioned,
+            task_context=task_context,
+            mandatory_reply=mandatory_reply,
+            structured_silence=supports_tool_calling(provider),
+        )
+        task_actions: list[AgentTaskAction] = []
+        silence_declarations: list[None] = []
+        member_id = str(agent["id"])
+        names = dict(team.name_to_member)
+        names.setdefault(member_internal_name(member_id), member_id)
+        reply_members: dict[str, str] = {}
+
+        async def _round() -> Any:
+            from agentscope.event import (
+                ConfirmResult,
+                RequireUserConfirmEvent,
+                UserConfirmResultEvent,
+                UserInterruptEvent,
+            )
+            from agentscope.message import ToolCallBlock, UserMsg
+            from agentscope.state import AgentState
+
+            from .approval import ApprovalWaitTimeout
+            from .permissions import (
+                WorkspacePathPermissionMiddleware,
+                build_permission_context,
+                effective_rules,
+            )
+            from .workspace import (
+                assemble_workspace,
+                local_shell_tool,
+                release_workspace_mount,
+                session_partition_id,
+            )
+
+            models: list[Any] = []
+            mounts: list[Any] = []
+            mcp_assemblies: list[Any] = []
+            agents_by_id: dict[str, Any] = {}
+
+            def _permission_for(member_id_value: str) -> tuple[Any, str | None]:
+                settings = self._workspace_settings(target_id, member_id_value)
+                permission_settings = self._permission_settings(target_id, member_id_value)
+                mode = str(
+                    (permission_settings or {}).get("mode")
+                    or (settings.permission_mode if settings is not None else "ask-writes")
+                )
+                root = (permission_settings or {}).get("root") or (
+                    settings.root if settings is not None else None
+                )
+                context = build_permission_context(
+                    mode,
+                    effective_rules(
+                        (permission_settings or {}).get("channel_rules") or [],
+                        (permission_settings or {}).get("agent_rules") or [],
+                    ),
+                    root=str(root) if root else None,
+                )
+                return context, str(root) if root else None
+
+            async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
+                """这一轮该成员的项目根工具（未配置 / 非 local 后端时没有；ADR-0021 §六）。"""
+                settings = self._workspace_settings(target_id, member_id_value)
+                if settings is None:
+                    return None
+                session_id = session_partition_id(member_id_value, target_id)
+                mount = await assemble_workspace(
+                    settings,
+                    member_id=member_id_value,
+                    session_id=session_id,
+                    locale=self._locale(),
+                )
+                mounts.append(mount)
+                tools = list(mount.tools)
+                assembly = await self._assemble_mcp(target_id, member_id_value, mount, session_id)
+                mcp_assemblies.append(assembly)
+                tools.extend(assembly.tools)
+                permission_settings = self._permission_settings(target_id, member_id_value)
+                mode = str(
+                    (permission_settings or {}).get("mode")
+                    or (settings.permission_mode if settings is not None else "ask-writes")
+                )
+                if getattr(mount, "allow_local_shell", False) and mode != "read-only":
+                    tools.append(local_shell_tool(mount.root))
+                return tools
+
+            async def _skills_for_member(member_id_value: str) -> list[Any]:
+                settings = self._workspace_settings(target_id, member_id_value)
+                if settings is None:
+                    return []
+                return self._skills_for(target_id, member_id_value, settings)
+
+            def _build_agent(
+                member: dict[str, Any],
+                prompt: str,
+                *,
+                toolkit: Any = None,
+                stream: bool = False,
+            ) -> Any:
+                member_provider = provider_of(str(member.get("model_id") or ""))
+                member_model = model_name_of(str(member.get("model_id") or ""))
+                model = self._build_model(member_provider, member_model, stream=stream)
+                models.append(model)
+                context, root = _permission_for(str(member["id"]))
+                options: dict[str, Any] = {
+                    "name": member_internal_name(str(member["id"])),
+                    "system_prompt": prompt,
+                    "model": model,
+                    "state": AgentState(permission_context=context),
+                }
+                if root:
+                    options["middlewares"] = [WorkspacePathPermissionMiddleware(root)]
+                if toolkit is not None:
+                    options["toolkit"] = toolkit
+                instance = _agent_instance(options, plan=plan, member_id=str(member["id"]))
+                agents_by_id[str(member["id"])] = instance
+                return instance
+
+            try:
+                leader_toolkit = _round_toolkit(
+                    provider,
+                    task_context=task_context,
+                    actor_id=member_id,
+                    task_actions=task_actions,
+                    silence_declarations=silence_declarations,
+                    workspace_tools=await _workspace_tools_for(member_id),
+                    skills=await _skills_for_member(member_id),
+                    with_plan=plan is not None,
+                )
+                leader_agent = _build_agent(
+                    agent,
+                    system_prompt,
+                    toolkit=leader_toolkit,
+                    stream=emit is not None,
+                )
+                member_agents: list[tuple[dict[str, Any], Any]] = []
+                for member in team.members:
+                    member_id_value = str(member["id"])
+                    workspace_tools = await _workspace_tools_for(member_id_value)
+                    member_skills = await _skills_for_member(member_id_value)
+                    member_agents.append(
+                        (
+                            member,
+                            _build_agent(
+                                member,
+                                _team_member_prompt(member),
+                                # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
+                                # 配置了项目根时挂受限文件工具；Plan 轮次则始终有自己的四工具。
+                                toolkit=(
+                                    _round_toolkit(
+                                        provider_of(str(member.get("model_id") or "")),
+                                        task_context=None,
+                                        actor_id=member_id_value,
+                                        task_actions=[],
+                                        silence_declarations=[],
+                                        workspace_tools=workspace_tools,
+                                        skills=member_skills,
+                                        with_plan=plan is not None,
+                                    )
+                                    if workspace_tools or member_skills or plan is not None
+                                    else None
+                                ),
+                            ),
+                        )
+                    )
+                pipeline = build_team_pipeline(
+                    leader_agent=leader_agent,
+                    leader_id=member_id,
+                    members=member_agents,
+                    target_id=target_id,
+                    task_id=team.task_id,
+                    team_run_id=team.team_run_id,
+                    budget=team.budget,
+                    publish=team.publish,
+                )
+                inputs: Any = [
+                    UserMsg(name=_author_name(item), content=_body(item)) for item in messages
+                ] or None
+                parked: dict[str, str] = {}
+                current_reply_id: str | None = None
+
+                def _member_of(reply_id: str) -> str | None:
+                    for member_id_value, instance in agents_by_id.items():
+                        if str(getattr(instance.state, "reply_id", "")) == reply_id:
+                            return member_id_value
+                    return reply_members.get(reply_id)
+
+                def _any_awaiting() -> bool:
+                    return any(
+                        instance.state.has_awaiting_tool_calls(instance.name)
+                        for instance in agents_by_id.values()
+                    )
+
+                async def _consume(stream_inputs: Any, *, register: bool) -> Any:
+                    nonlocal current_reply_id
+                    async for item in pipeline.reply_stream(stream_inputs):
+                        if register and isinstance(item, RequireUserConfirmEvent):
+                            if self._approvals is None:
+                                raise RuntimeError(
+                                    "AgentScope requires user confirmation but no ApprovalBroker is wired"
+                                )
+                            participant = _member_of(item.reply_id)
+                            if participant is None:
+                                raise RuntimeError(
+                                    f"no participant matches approval reply_id {item.reply_id}"
+                                )
+                            self._approvals.register(
+                                reply_id=item.reply_id,
+                                target_id=target_id,
+                                member_id=participant,
+                                tool_calls=item.tool_calls,
+                                # 这一轮 team_run 是 pipeline/context 的正本：审批行直接挂上它，
+                                # 不依赖生产装配是否接到 ``team_run_of``（单 Agent 轮仍走那个口）。
+                                team_run_id=team.team_run_id,
+                            )
+                            parked[item.reply_id] = participant
+                            current_reply_id = item.reply_id
+                        if emit is None:
+                            continue
+                        record = _agent_event_record(
+                            item,
+                            target_id=target_id,
+                            names=names,
+                            reply_members=reply_members,
+                        )
+                        if record is None:
+                            continue
+                        if record.type == "REPLY_START":
+                            # 分派 SSE 的 reply_id 归属（#144）：成员按调用顺序串行运行，
+                            # ReplyStart 的到达顺序即该成员的分派顺序。
+                            pipeline.note_member_reply(record.member_id, record.reply_id)
+                        try:
+                            emit(record)
+                        except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
+                            _log.debug("agent event emit failed", exc_info=True)
+                    reply = _final_reply_message(leader_agent)
+                    if reply is not None and _any_awaiting():
+                        return None  # 挂起占位 Msg 不是本轮结论
+                    return reply
+
+                while True:
+                    reply = await asyncio.wait_for(
+                        _consume(inputs, register=True), timeout=self.timeout_seconds
+                    )
+                    if reply is not None and not _any_awaiting():
+                        return reply
+                    if self._approvals is None or not parked:
+                        raise RuntimeError("TeamPipeline ended the round without a final reply")
+                    reply_id = current_reply_id
+                    if reply_id is None or reply_id not in parked:
+                        reply_id = next(iter(parked))
+                        current_reply_id = reply_id
+                    decisions = await self._approvals.wait(reply_id)
+                    if decisions is None:
+                        with suppress(Exception):
+                            await asyncio.wait_for(
+                                _consume(UserInterruptEvent(reply_id=reply_id), register=False),
+                                timeout=self.timeout_seconds,
+                            )
+                        raise ApprovalWaitTimeout(self._approvals.timeout_seconds)
+                    if not decisions:
+                        # broker 只会在终态且没有未回送决策时返回空批：此时再送一次确认会
+                        # 打穿 Agent（框架会抛“not waiting for confirmation”），只能收口失败。
+                        raise RuntimeError(f"approval {reply_id} resolved without new decisions")
+                    stored = {
+                        str(call.get("id") or ""): call for call in self._approvals.tool_calls(reply_id)
+                    }
+                    confirm_results = []
+                    for decision in decisions:
+                        raw = stored.get(str(decision.get("tool_call_id") or ""))
+                        if raw is None:
+                            raise RuntimeError(
+                                f"approval decision references an unknown tool call: {decision!r}"
+                            )
+                        confirm_results.append(
+                            ConfirmResult(
+                                confirmed=bool(decision.get("confirmed")),
+                                tool_call=ToolCallBlock.model_validate(
+                                    {key: value for key, value in raw.items() if key != "suggested_rules"}
+                                ),
+                            )
+                        )
+                    record = self._approvals.record(reply_id)
+                    if record is not None and record["state"] != "pending":
+                        parked.pop(reply_id, None)
+                        current_reply_id = None
+                    inputs = UserConfirmResultEvent(reply_id=reply_id, confirm_results=confirm_results)
+            finally:
+                # 后装配的先关（anyio cancel scope 按连接顺序嵌套）。
+                for assembly in reversed(mcp_assemblies):
+                    await assembly.close()
+                for mount in mounts:
+                    await release_workspace_mount(mount)
+                for model in models:
+                    await _aclose_model_client(model)
+
+        try:
+            reply = asyncio.run(_round())
+        except TimeoutError:
+            return RoundOutcome(
+                status="failed",
+                reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
+            )
+        except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
+            from .workspace import DockerWorkspaceUnavailable
+
+            if isinstance(error, DockerWorkspaceUnavailable):
+                return RoundOutcome(status="failed", reason=str(error))
+            return RoundOutcome(
+                status="failed",
+                reason=render(
+                    "seam.call_failed",
+                    self._locale(),
+                    type=type(error).__name__,
+                    error=error,
+                ),
+            )
+        if reply is None:
+            return RoundOutcome(
+                status="failed",
+                reason=render("seam.team_no_leader_reply", self._locale()),
+            )
+        return self._outcome_from_reply(reply, task_actions, silence_declarations)
+
+    def _outcome_from_reply(
+        self,
+        reply: Any,
+        task_actions: list[AgentTaskAction],
+        silence_declarations: list[None],
+    ) -> RoundOutcome:
+        """把最终 ``Msg`` 与结构化工具记录收口成一轮的结论（单 Agent / 队长共用）。"""
         reply_error = getattr(reply, "error", None)
         if reply_error:
             return RoundOutcome(
@@ -470,6 +1461,31 @@ class AgentScopeAgentSeam:
             messages=[RoundMessage(body=text)],
             task_action=task_action,
         )
+
+
+def _team_member_prompt(member: Mapping[str, Any]) -> str:
+    """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。"""
+    parts: list[str] = []
+    base = str(member.get("system_prompt") or "").strip()
+    if base:
+        parts.append(base)
+    role = str(member.get("role") or "").strip()
+    if role:
+        parts.append(f"你的角色：{role}")
+    parts.append(
+        "你是 team 模式频道里的成员。队长会把一项具体任务分派给你；你看不到频道上下文，"
+        "任务描述就是全部输入。请直接完成并在正文里给出结果。"
+    )
+    return "\n\n".join(parts)
+
+
+def _final_reply_message(agent: Any) -> Any:
+    """队长这一轮的最终回复：``TeamPipeline`` 不返回 ``Msg``，它留在 Agent 的上下文尾部。"""
+    context = getattr(getattr(agent, "state", None), "context", None) or []
+    for message in reversed(context):
+        if getattr(message, "role", "") == "assistant" and getattr(message, "name", "") == agent.name:
+            return message
+    return None
 
 
 def _client_closer(client: Any) -> Any:
@@ -592,6 +1608,20 @@ def _system_prompt(
     return "\n\n".join(parts)
 
 
+def _agent_instance(options: dict[str, Any], *, plan: PlanSession | None, member_id: str) -> Any:
+    """按是否有 Plan 选择 Agent 类；Plan 轮次在每次回复前后开/收一个 run。"""
+    if plan is None:
+        from agentscope.agent import Agent
+
+        return Agent(**options)
+    from .plan import plan_agent_class
+
+    instance = plan_agent_class()(**options)
+    instance._plan_session = plan
+    instance._plan_member_id = member_id
+    return instance
+
+
 def _round_toolkit(
     provider: str,
     *,
@@ -599,26 +1629,43 @@ def _round_toolkit(
     actor_id: str,
     task_actions: list[AgentTaskAction],
     silence_declarations: list[None],
+    workspace_tools: list[Any] | None = None,
+    skills: list[Any] | None = None,
+    with_plan: bool = False,
 ) -> Any:
-    """装配这一轮的工具集：任务动作（仅任务线程）+ 沉默声明（provider 传输层能携带工具时）。
+    """装配这一轮的工具集：workspace 文件工具 + 任务动作（仅任务线程）+ 沉默声明（provider 能携带工具时）。
 
     **能力闸门在这里**：``supports_tool_calling(provider)`` 为假时**不挂**沉默工具，于是请求里没有
     ``tools``、模型无法声明沉默，这一轮只能靠正文收口成既有的 ``replied`` / ``ignored`` / ``failed``。
     退化是结构性的（不是「模型大概不会调」的侥幸），这与「不假定所有 provider 一致」是同一条纪律。
 
-    返回 ``None`` 表示这一轮不需要任何工具（频道里的非任务轮次 + 不支持工具的 provider）：此时
-    ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
+    workspace 工具（#148）不受这个闸门影响：它们是**有 workspace 配置**时的能力，不是 message 通道；
+    工具 schema 走的是同一条 provider 工具通道——provider 不能携带工具时，文件工具也送不出去。
+
+    Skill（#152）与 workspace 工具同属「本轮能力」：AgentScope 的 ``Toolkit`` 把技能的说明注入
+    系统提示并提供一个内置查看器；只有技能、没有工具时仍然要建 toolkit。
+
+    返回 ``None`` 表示这一轮不需要任何工具（未配置 workspace 的频道 + 非任务轮次 + 不支持工具的
+    provider + 没有技能）：此时 ``Agent`` 不带 ``toolkit``，与 #58 之前的形态逐字相同。
     """
     from agentscope.tool import Toolkit
 
     tools: list[Any] = []
+    if workspace_tools:
+        tools.extend(workspace_tools)
     if task_context is not None:
         tools.extend(_task_action_tools(task_context, actor_id, task_actions))
+    if with_plan:
+        # Plan 四工具与 workspace 同属「本轮能力」，不受沉默工具的能力闸门影响；provider
+        # 不能携带工具时它们和文件工具一样送不出去，但装配层不据此改变清单。
+        from .plan import plan_tools
+
+        tools.extend(plan_tools())
     if supports_tool_calling(provider):
         tools.extend(_silence_tools(silence_declarations))
-    if not tools:
+    if not tools and not skills:
         return None
-    return Toolkit(tools=tools)
+    return Toolkit(tools=tools, skills_or_loaders=skills or [])
 
 
 def _silence_tools(declarations: list[None]) -> list[Any]:

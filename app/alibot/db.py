@@ -27,9 +27,10 @@ import threading
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from .i18n import SOURCE_LOCALE, locale_of, render
 from .reminder_delivery import reminder_state
@@ -41,6 +42,12 @@ OWNER_AVATAR_SLOT = 4
 # 头像色位族大小：与设计系统的 --av-0…--av-4 一一对应（色位按 slot 取模）。
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
+
+# MCP 声明名同时是 AgentScope 的 MCPClient 名（工具名 ``mcp__{name}__{tool}``），框架只接受
+# ``[a-zA-Z0-9_-]+``；这里在写路径就拒绝，避免「存得进去、装配时才炸」。
+MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# ``env_names`` 只存变量**名**：这个形状同时排除了 ``KEY=value`` 这类把值写进名字的输入。
+MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝**。
 # 迁移**不是**启动路径的一步，而是显式命令 `python -m alibot --migrate`（ADR-0015 取代 ADR-0004
@@ -67,10 +74,17 @@ AVATAR_SLOT_COUNT = 5
 # `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..14）。
 # 15 = **本票 #58**（结构化沉默信号 `silent`：`round_outcome.status` 的库级 CHECK 纳入第六个词，
 # ADR-0008）。SQLite 改表级 CHECK 只能重建表，因此多了一步 `14 → 15`（`migrate._step_14_to_15`）；
-# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号，后续票从 16 起。
-# 代价同上：被 14 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
-# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..15）。
-SCHEMA_VERSION = 15
+# 判据同前：main 是 14、15 是满足「必须高于当前 main」的最小号。
+# 16 = **本票 #138**（AgentScope 2 对齐：team 模式 / Plan / SOP 的纯增量库形态，规格 §4.1 / §4.2 / ADR-0018 /
+# ADR-0022 / ADR-0023）。它只加列与表、不重建既有表、不回填业务数据；`15 → 16` 一步
+# （`migrate._step_15_to_16`）。判据同前：main 是 15、16 是满足「必须高于当前 main」的最小号。
+# 17 = **本票 #139**（AgentScope 2 对齐：workspace / permission / MCP / Skill / approval 的纯增量库形态，
+# 规格 §4.1 / §4.3 / ADR-0021）。它只加列与表、不重建既有表、不回填业务数据；旧 `remote_consent`
+# 行复制成 `remote_consent_scope` 的 `model` 行（旧表保留）；`16 → 17` 一步
+# （`migrate._step_16_to_17`）。判据同前：main 是 16、17 是满足「必须高于当前 main」的最小号。
+# 代价同上：被 16 及更早代码创建过的库在本版下会被闸门拒绝，处置是备份整个数据目录后用
+# `python -m alibot --migrate` 逐版推进（迁移链覆盖 3..17）。
+SCHEMA_VERSION = 17
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -104,6 +118,38 @@ MESSAGE_KINDS = ("human", "agent", "system")
 # target 的三种 kind（ADR-0004 / 规格 #23 §1）：channel 型复用 channel.id（影子行），
 # dm / task 由各自的服务路径创建与管理；本表统一承载三种 target 作用域。
 TARGET_KINDS = ("channel", "dm", "task")
+
+# team 模式（D1 / ADR-0018）：频道级拓扑开关。缺省 autonomous；team 必须有一个队长（由库内
+# 触发器守不变量，写入路径在 :meth:`Database.update_channel_config` 再做可读校验）。
+CHANNEL_MODES = ("autonomous", "team")
+
+# 频道级 workspace 默认值（ADR-0021）：``workspace_root`` 可空，后端与权限档是默认值。
+WORKSPACE_BACKENDS = ("local", "docker")
+PERMISSION_MODES = ("read-only", "ask-writes", "trusted-writes")
+
+# team 运行记录的状态词（规格 §4.2）。它不是 ``round_outcome``：只描述一次队长轮次的生命周期。
+TEAM_RUN_STATUSES = ("running", "completed", "failed", "interrupted", "invalid-leader")
+
+# Plan 运行记录的状态词与保留策略（ADR-0023 / 规格 §3.5）。Plan 是**成员轮次内的工作清单**，
+# 不是任务五态：每个 ``(target_id, member_id)`` 保留最近 20 个 run 或 30 天（先到者为准），
+# 更旧的 run 连同它的 ``plan_task`` 一并清理。
+PLAN_RUN_STATUSES = ("running", "completed", "failed")
+PLAN_TASK_STATES = ("pending", "in_progress", "completed")
+PLAN_RUN_RETENTION = 20
+PLAN_RETENTION_DAYS = 30
+
+# SOP 运行记录的状态词与保留策略（ADR-0023 / 规格 §3.5）。SOP 是 **owner 启动的多步运行**，
+# 不是任务五态：运行保留最近 50 个或 90 天（先到者为准），完成/失败后**不删除定义**。
+SOP_PHASES = ("pending", "running", "awaiting", "completed", "failed")
+SOP_RUN_RETENTION = 50
+SOP_RETENTION_DAYS = 90
+
+# 一次 ``TeamAssign`` 的运行记录状态（规格 §3.4 / §4.2）。``budget-exhausted`` 是「没有运行成员」，
+# 其余四态描述「成员这一条分派」的结果；跳一旦扣减就不退款，失败/中断也保留 ``jump_consumed=1``。
+TEAM_ASSIGNMENT_STATES = ("started", "succeeded", "failed", "interrupted", "budget-exhausted")
+
+# 「这次请求没提到这个字段」与「显式清空」是两件事；只有 ``workspace_root`` 允许后者。
+_UNSET = object()
 
 # 计入工作台快照 ``unread_total`` 的 kind（规格 §2 / 决策 G5）：channel 型 + dm 型之和。
 # **task 型不进** ``unread_total``（看板卡片自带徽标，各自读它）。
@@ -186,6 +232,8 @@ MAX_MEMBER_NAME_LENGTH = 40
 MAX_AGENT_ROLE_LENGTH = 80
 MAX_SYSTEM_PROMPT_LENGTH = 8000
 MAX_MODEL_ID_LENGTH = 120
+#: Docker 镜像引用（name[:tag|@digest]）的长度上界；只挡明显误用，不做语法解析。
+MAX_DOCKER_IMAGE_LENGTH = 255
 
 # 附件的**人类面**闸门（ADR-0014）：大小与类型都在这里被拒绝并给可读原因。
 # 单文件上限取 10 MiB——它是「一眼看出传错了东西」的闸门，不是配额策略（多附件并发上限之外的
@@ -239,8 +287,35 @@ CREATE TABLE IF NOT EXISTS channel (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  -- team 是**频道级**拓扑开关（ADR-0018 / ADR-0022）：缺省 `autonomous`，旧行按默认值解释。
+  -- team 必须有一个非空队长；这条不变量用触发器守，避免为「加约束」重建 channel 表。
+  mode        TEXT NOT NULL DEFAULT 'autonomous' CHECK (mode IN ('autonomous', 'team')),
+  team_leader_member_id TEXT REFERENCES member(id),
+  -- workspace 是**频道级项目边界**（ADR-0021 §一）：所有成员共享这个根，文件工具的相对路径从这里
+  -- 起算。``NULL`` = 未配置，沿用首版「没有文件 / shell 工具」的行为（ADR-0021 §六）。
+  -- 后端与权限档是频道的**默认值**，Agent 可在 ``agent_config`` 上覆盖；旧行按列默认值解释
+  -- （根未配置 / ``local`` / ``ask-writes``，规格 §4.1）。
+  workspace_root TEXT,
+  workspace_backend TEXT NOT NULL DEFAULT 'local'
+    CHECK (workspace_backend IN ('local', 'docker')),
+  permission_mode TEXT NOT NULL DEFAULT 'ask-writes'
+    CHECK (permission_mode IN ('read-only', 'ask-writes', 'trusted-writes'))
 );
+
+CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_insert
+BEFORE INSERT ON channel
+WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'team channel requires a leader');
+END;
+
+CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_update
+BEFORE UPDATE OF mode, team_leader_member_id ON channel
+WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'team channel requires a leader');
+END;
 
 -- target 是一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果四件事
 -- 全部挂 ``target_id``，``UNIQUE(target_id, seq)`` 因此说的是「target 内单调」。
@@ -397,6 +472,98 @@ CREATE TABLE IF NOT EXISTS channel_budget_limit (
   updated_at   TEXT NOT NULL
 );
 
+-- ─── team 运行记录（ADR-0018 / ADR-0022 / 规格 §4.2） ───────────────────────
+-- team 模式经 ``task.channel_id -> channel.mode`` 解析；``task`` 表**不新增 mode 列**（ADR-0022 §一）。
+-- 因此下面两张表的 ``target_id`` 既可以是 channel 型，也可以是该频道下的 task 型；
+-- ``team_assignment.task_id`` 在 task target 上非空。它们**不是**消息、不进未读/搜索/预算。
+CREATE TABLE IF NOT EXISTS team_run (
+  id                TEXT PRIMARY KEY,
+  target_id         TEXT NOT NULL REFERENCES target(id),
+  leader_member_id  TEXT NOT NULL REFERENCES member(id),
+  base_seq          INTEGER NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN
+                      ('running', 'completed', 'failed', 'interrupted', 'invalid-leader')),
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS team_assignment (
+  id                TEXT PRIMARY KEY,
+  team_run_id       TEXT NOT NULL REFERENCES team_run(id),
+  target_id         TEXT NOT NULL REFERENCES target(id),
+  task_id           TEXT REFERENCES task(id),
+  leader_member_id  TEXT NOT NULL REFERENCES member(id),
+  member_id         TEXT NOT NULL REFERENCES member(id),
+  tool_call_id      TEXT NOT NULL,
+  prompt            TEXT NOT NULL,
+  state             TEXT NOT NULL CHECK (state IN
+                      ('started', 'succeeded', 'failed', 'interrupted', 'budget-exhausted')),
+  jump_consumed     INTEGER NOT NULL DEFAULT 0 CHECK (jump_consumed IN (0, 1)),
+  reply_excerpt     TEXT NOT NULL DEFAULT '',
+  error             TEXT NOT NULL DEFAULT '',
+  started_at        TEXT NOT NULL,
+  finished_at       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_assignment_target
+ON team_assignment(target_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_team_assignment_team_run ON team_assignment(team_run_id);
+
+-- ─── Plan / SOP 运行记录（ADR-0023 / 规格 §4.2） ────────────────────────────
+-- Plan 与 SOP 各有独立状态机，**不是**任务五态：它们不进看板、未读、搜索、唤醒、预算，
+-- 也不自动改 ``task`` 行。Plan 是工作态（可更新、可按 run 级联清理），SOP 的历史由 ``sop_run`` 承载。
+CREATE TABLE IF NOT EXISTS plan_run (
+  id           TEXT PRIMARY KEY,
+  target_id    TEXT NOT NULL REFERENCES target(id),
+  member_id    TEXT NOT NULL REFERENCES member(id),
+  base_seq     INTEGER NOT NULL,
+  status       TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+  started_at   TEXT NOT NULL,
+  finished_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS plan_task (
+  id           TEXT PRIMARY KEY,
+  plan_run_id  TEXT NOT NULL REFERENCES plan_run(id) ON DELETE CASCADE,
+  seq          INTEGER NOT NULL,
+  subject      TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  state        TEXT NOT NULL CHECK (state IN ('pending', 'in_progress', 'completed')),
+  owner        TEXT,
+  blocks       TEXT NOT NULL DEFAULT '[]',
+  blocked_by   TEXT NOT NULL DEFAULT '[]',
+  metadata     TEXT NOT NULL DEFAULT '{}',
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  deleted_at   TEXT,
+  UNIQUE (plan_run_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS sop_definition (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  -- JSON：executor/verifier member ids、subject、description、max_attempts（ADR-0023 §三）。
+  steps        TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sop_run (
+  id                 TEXT PRIMARY KEY,
+  sop_definition_id  TEXT NOT NULL REFERENCES sop_definition(id),
+  target_id          TEXT NOT NULL REFERENCES target(id),
+  leader_member_id   TEXT NOT NULL REFERENCES member(id),
+  -- SOPRunState.model_dump_json() 的原样快照。
+  state              TEXT NOT NULL,
+  phase              TEXT NOT NULL CHECK (phase IN
+                       ('pending', 'running', 'awaiting', 'completed', 'failed')),
+  started_at         TEXT NOT NULL,
+  finished_at        TEXT,
+  updated_at         TEXT NOT NULL
+);
+
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
 -- role 是 Agent 的配置数据（用户输入原样落库），不是代码常量、也不折进系统提示。
 -- ``auto_claim``（#65 / ADR-0010）是「频道内新建任务后，编排要不要替它接手这张任务」的配置开关，
@@ -408,6 +575,13 @@ CREATE TABLE IF NOT EXISTS agent_config (
   system_prompt TEXT NOT NULL DEFAULT '',
   enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   auto_claim    INTEGER NOT NULL DEFAULT 0 CHECK (auto_claim IN (0, 1)),
+  -- workspace 配置（ADR-0021 §一 / §二 / §四）：后端与权限档是 Agent 级覆盖，``NULL`` = 跟随频道
+  -- 默认（旧行于是逐字保持「未配置」的语义）；``allow_local_shell`` 缺省关闭——本地 Bash 默认不挂，
+  -- 显式开启后每次调用仍走审批；``docker_image`` 缺省即 AgentScope 的内置镜像。
+  workspace_backend   TEXT CHECK (workspace_backend IN ('local', 'docker')),
+  permission_mode     TEXT CHECK (permission_mode IN ('read-only', 'ask-writes', 'trusted-writes')),
+  allow_local_shell   INTEGER NOT NULL DEFAULT 0 CHECK (allow_local_shell IN (0, 1)),
+  docker_image        TEXT,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -456,6 +630,80 @@ CREATE TABLE IF NOT EXISTS reminder (
 CREATE TABLE IF NOT EXISTS remote_consent (
   provider        TEXT PRIMARY KEY,
   acknowledged_at TEXT NOT NULL
+);
+
+-- 远端数据面的**统一**一次性确认（#139 / ADR-0021 §三）：模型 / 远端 MCP / Docker registry 三类
+-- 数据面各按 scope 记一次。它是**新**的读路径正本；旧 ``remote_consent`` 只作为兼容面保留，
+-- 迁移把它已有的 ``provider`` 行复制成 ``('model', provider, acknowledged_at)``（``16 → 17``）。
+-- 与旧表一样**只**存「何时确认过」，不存凭证、不存连接参数。
+CREATE TABLE IF NOT EXISTS remote_consent_scope (
+  scope_kind       TEXT NOT NULL CHECK (scope_kind IN ('model', 'mcp', 'docker')),
+  scope_id         TEXT NOT NULL,
+  acknowledged_at  TEXT NOT NULL,
+  PRIMARY KEY (scope_kind, scope_id)
+);
+
+-- ─── 权限规则 / 审批 / MCP / Skill（#139 / 规格 §4.3 / ADR-0021 §三 / §四） ──
+-- 权限规则是**配置**（不是消息、不是任务）：``scope_kind`` + ``scope_id`` 指向频道或 Agent，
+-- ``behavior`` 只允许三档（allow / deny / ask）——不暴露 BYPASS / DONT_ASK（ADR-0021 §四）。
+-- 规则按 ``tool_name`` + ``pattern`` 匹配；空 pattern = 该工具的全部调用。
+CREATE TABLE IF NOT EXISTS permission_rule (
+  id          TEXT PRIMARY KEY,
+  scope_kind  TEXT NOT NULL CHECK (scope_kind IN ('channel', 'agent')),
+  scope_id    TEXT NOT NULL,
+  tool_name   TEXT NOT NULL,
+  pattern     TEXT NOT NULL DEFAULT '',
+  behavior    TEXT NOT NULL CHECK (behavior IN ('allow', 'deny', 'ask')),
+  created_at  TEXT NOT NULL
+);
+
+-- HITL 审批（#139 / ADR-0021 §四）：一条待决的 ``RequireUserConfirmEvent``。``tool_calls`` 是
+-- JSON（工具调用块 + suggestions），``decisions`` 是 JSON 数组；**不存凭证**。``state`` 的
+-- ``expired`` 是进程重启时对残留 pending 的处置；跨重启恢复不在首版（D19）。
+CREATE TABLE IF NOT EXISTS approval_request (
+  reply_id     TEXT PRIMARY KEY,
+  target_id    TEXT NOT NULL REFERENCES target(id),
+  member_id    TEXT NOT NULL REFERENCES member(id),
+  team_run_id  TEXT REFERENCES team_run(id),
+  tool_calls   TEXT NOT NULL,
+  state        TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'denied', 'expired')),
+  decisions    TEXT NOT NULL DEFAULT '[]',
+  requested_at TEXT NOT NULL,
+  resolved_at  TEXT
+);
+
+-- MCP 声明（#139 / ADR-0021 §三）：只存 transport / command / args / url 与 ``env_names``
+-- （变量**名**，值只从进程环境读——库里不存密钥）。同名 server 在同一个 scope 内唯一。
+CREATE TABLE IF NOT EXISTS mcp_server (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  transport    TEXT NOT NULL CHECK (transport IN ('stdio', 'http', 'sse')),
+  command      TEXT NOT NULL DEFAULT '',
+  args         TEXT NOT NULL DEFAULT '[]',
+  url          TEXT NOT NULL DEFAULT '',
+  env_names    TEXT NOT NULL DEFAULT '[]',
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  scope_kind   TEXT NOT NULL CHECK (scope_kind IN ('channel', 'agent')),
+  scope_id     TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (scope_kind, scope_id, name)
+);
+
+-- Skill 元数据（#139 / ADR-0021 §三）：字节在 ``workspace_root/.alibot/skills/<member_id>/``，
+-- 库里只存来源路径与内容 hash；同名 skill 在同一个 scope 内唯一。安装只接受本机来源。
+CREATE TABLE IF NOT EXISTS skill (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  source_path  TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  scope_kind   TEXT NOT NULL CHECK (scope_kind IN ('channel', 'agent')),
+  scope_id     TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (scope_kind, scope_id, name)
 );
 
 -- 轮次结果（spec #1 §5）：一轮的处理结果。append-only，与消息同级的取证面。
@@ -521,7 +769,9 @@ END;
 # 加一个配置列时只改这里，不会只改到其中一两处。
 # 三处 FROM/WHERE 各自保留（起点与过滤条件本就不同）—— #3 的双轴 review 已为这个形态裁决过。
 AGENT_COLUMNS = (
-    "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.auto_claim, c.updated_at AS config_updated_at"
+    "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.auto_claim, "
+    "c.workspace_backend, c.permission_mode, c.allow_local_shell, c.docker_image, "
+    "c.updated_at AS config_updated_at"
 )
 
 # 由常量 ``AGENT_COLUMNS`` 拼出的 Agent 选取语句（**在模块级拼好**，不把拼接写进
@@ -1078,8 +1328,51 @@ class Database:
             "system_prompt": row["system_prompt"] or "",
             "enabled": bool(row["enabled"]) if row["enabled"] is not None else False,
             "auto_claim": bool(row["auto_claim"]) if row["auto_claim"] is not None else False,
+            # Agent 级 workspace 覆盖（D14/D15）。NULL = 跟随频道默认；docker_image 的确认状态
+            # 不在读路径推断（确认是 `remote_consent_scope` 的独立事实，由 workspace 读路径给出）。
+            "workspace_backend": row["workspace_backend"] if "workspace_backend" in keys else None,
+            "permission_mode": row["permission_mode"] if "permission_mode" in keys else None,
+            "allow_local_shell": (
+                bool(row["allow_local_shell"])
+                if "allow_local_shell" in keys and row["allow_local_shell"] is not None
+                else False
+            ),
+            "docker_image": row["docker_image"] if "docker_image" in keys else None,
             "config_updated_at": row["config_updated_at"] if "config_updated_at" in keys else None,
         }
+
+    def _agent_workspace_values(
+        self,
+        *,
+        workspace_backend: str | None,
+        permission_mode: str | None,
+        docker_image: str | None,
+        message_key: str,
+    ) -> tuple[str | None, str | None, str | None]:
+        """校验 Agent 级 workspace 覆盖（D14/D15）；``None`` = 这次请求没提到这一项。
+
+        ``docker_image`` 的空串是**显式清空**（回到 AgentScope 内置镜像），归一成 ``None``；
+        这与「没提到」在调用方是两种输入，由调用方在写 SQL 时区分。
+        """
+        fields: dict[str, str] = {}
+        backend = None if workspace_backend is None else str(workspace_backend).strip()
+        if backend is not None and backend not in WORKSPACE_BACKENDS:
+            fields["workspace_backend"] = self._render_copy(
+                "error.field.agent_workspace_backend_invalid", values=", ".join(WORKSPACE_BACKENDS)
+            )
+        mode = None if permission_mode is None else str(permission_mode).strip()
+        if mode is not None and mode not in PERMISSION_MODES:
+            fields["permission_mode"] = self._render_copy(
+                "error.field.agent_permission_mode_invalid", values=", ".join(PERMISSION_MODES)
+            )
+        image = None if docker_image is None else str(docker_image).strip()
+        if image is not None and len(image) > MAX_DOCKER_IMAGE_LENGTH:
+            fields["docker_image"] = self._render_copy(
+                "error.field.agent_docker_image_too_long", limit=MAX_DOCKER_IMAGE_LENGTH
+            )
+        if fields:
+            raise DomainError("validation_failed", self._render_copy(message_key), fields=fields)
+        return backend, mode, image or None
 
     def create_agent(
         self,
@@ -1088,16 +1381,29 @@ class Database:
         model_id: str,
         system_prompt: str,
         avatar_slot: int | None = None,
+        *,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool = False,
+        docker_image: str | None = None,
     ) -> dict[str, Any]:
         """校验整体通过后才写库：任一字段不合法则**不留任何半成品行**。
 
         名称与模型标识必填；模型标识的格式（provider 白名单）由服务层校验，
-        本层只负责长度与空值这一类与持久化同构的判据。
+        本层只负责长度与空值这一类与持久化同构的判据。Agent 级 workspace 覆盖
+        （``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` / ``docker_image``）
+        与其它配置同一条偏序：任一取值不合法则整条创建都不发生（D14/D15）。
         """
         clean_name = (name or "").strip()
         clean_role = (role or "").strip()
         clean_model = (model_id or "").strip()
         clean_prompt = (system_prompt or "").strip()
+        clean_backend, clean_mode, clean_image = self._agent_workspace_values(
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            docker_image=docker_image,
+            message_key="error.agent_invalid",
+        )
 
         fields: dict[str, str] = {}
         if not clean_name:
@@ -1133,9 +1439,21 @@ class Database:
                     (member_id, clean_name, avatar_slot, now),
                 )
                 self._conn.execute(
-                    "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, created_at, "
-                    "updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                    (member_id, clean_role, clean_model, clean_prompt, now, now),
+                    "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, "
+                    "workspace_backend, permission_mode, allow_local_shell, docker_image, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                    (
+                        member_id,
+                        clean_role,
+                        clean_model,
+                        clean_prompt,
+                        clean_backend,
+                        clean_mode,
+                        1 if allow_local_shell else 0,
+                        clean_image,
+                        now,
+                        now,
+                    ),
                 )
                 self._commit()
             except Exception:
@@ -1153,19 +1471,29 @@ class Database:
         system_prompt: str | None = None,
         enabled: bool | None = None,
         auto_claim: bool | None = None,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool | None = None,
+        docker_image: str | None = None,
     ) -> dict[str, Any]:
         """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
 
         校验先于写入：**任一字段不合法则整体不改**（与 ``create_agent`` /
         ``update_workspace_settings`` 同一偏序——没有「一半新一半旧」的中间态）。``model_id`` 的
         **形状**校验（provider 白名单）由服务层在进到本层之前完成；本层只判与持久化同构的判据
-        （空值 / 长度）。
+        （空值 / 长度 / Agent 级 workspace 取值）。
 
         它只写 ``member.display_name`` 与 ``agent_config`` 那一行（后者由 ``create_agent`` 在同一
         事务里创建，因此本写路径没有「缺行」的中间态）：**不落消息、不唤醒、不消耗任何预算、
         也不开世代**——配置变更不是一次对话动作（ADR-0011）。
         """
         self.get_agent(member_id)  # 存在性 + 「必须是 Agent」：不是就抛 NotFound
+        clean_backend, clean_mode, clean_image = self._agent_workspace_values(
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            docker_image=docker_image,
+            message_key="error.agent_update_invalid",
+        )
         clean = {
             "display_name": None if display_name is None else (display_name or "").strip(),
             "role": None if role is None else (role or "").strip(),
@@ -1216,6 +1544,12 @@ class Database:
                     "system_prompt = COALESCE(?, system_prompt), "
                     "enabled = COALESCE(?, enabled), "
                     "auto_claim = COALESCE(?, auto_claim), "
+                    "workspace_backend = COALESCE(?, workspace_backend), "
+                    "permission_mode = COALESCE(?, permission_mode), "
+                    "allow_local_shell = COALESCE(?, allow_local_shell), "
+                    # 空串是**显式清空**（回到内置镜像）；「没提到」保持原值。COALESCE 无法区分
+                    # 这两种输入，因此这里用两个参数：第一个是「这次提到了吗」。
+                    "docker_image = CASE WHEN ? THEN ? ELSE docker_image END, "
                     "updated_at = ? WHERE member_id = ?",
                     (
                         clean["role"],
@@ -1223,6 +1557,11 @@ class Database:
                         clean["system_prompt"],
                         None if enabled is None else int(bool(enabled)),
                         None if auto_claim is None else int(bool(auto_claim)),
+                        clean_backend,
+                        clean_mode,
+                        None if allow_local_shell is None else int(bool(allow_local_shell)),
+                        docker_image is not None,
+                        clean_image,
                         utc_now(),
                         member_id,
                     ),
@@ -1298,6 +1637,71 @@ class Database:
                 "SELECT provider, acknowledged_at FROM remote_consent WHERE provider = ?", (clean,)
             ).fetchone()
         return {"provider": row["provider"], "acknowledged_at": row["acknowledged_at"]}
+
+    # ─── 远端数据面 scope（model / mcp / docker，#139 建表 / #150 先用于 docker） ──
+    def has_remote_consent_scope(self, scope_kind: str, scope_id: str) -> bool:
+        """按 ``remote_consent_scope`` 判断一次告知是否已确认（只读）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM remote_consent_scope WHERE scope_kind = ? AND scope_id = ?",
+                (scope_kind, scope_id),
+            ).fetchone()
+        return row is not None
+
+    def record_remote_consent_scope(self, scope_kind: str, scope_id: str) -> dict[str, Any]:
+        """记一次 scope 告知确认。幂等；不存凭证、不存连接参数、不落消息/不唤醒。"""
+        if scope_kind not in ("model", "mcp", "docker"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.remote_scope_kind_invalid"),
+                fields={"scope_kind": self._render_copy("error.field_choices", values="model, mcp, docker")},
+            )
+        clean = (scope_id or "").strip()
+        if not clean:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.remote_scope_id_empty"),
+                fields={"scope_id": self._render_copy("error.remote_scope_id_empty")},
+            )
+        now = utc_now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO remote_consent_scope(scope_kind, scope_id, acknowledged_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(scope_kind, scope_id) DO NOTHING",
+                (scope_kind, clean, now),
+            )
+            row = self._conn.execute(
+                "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope "
+                "WHERE scope_kind = ? AND scope_id = ?",
+                (scope_kind, clean),
+            ).fetchone()
+        return {
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "acknowledged_at": str(row["acknowledged_at"]),
+        }
+
+    def list_remote_consent_scopes(self, scope_kind: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if scope_kind is None:
+                rows = self._conn.execute(
+                    "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope "
+                    "ORDER BY acknowledged_at, scope_kind, scope_id"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope "
+                    "WHERE scope_kind = ? ORDER BY acknowledged_at, scope_id",
+                    (scope_kind,),
+                ).fetchall()
+        return [
+            {
+                "scope_kind": str(row["scope_kind"]),
+                "scope_id": str(row["scope_id"]),
+                "acknowledged_at": str(row["acknowledged_at"]),
+            }
+            for row in rows
+        ]
 
     # ─── 工作区设置（配置类取值：人类面可写，用量类事实不可写） ─────────────
     def workspace_settings(self) -> dict[str, Any]:
@@ -2115,6 +2519,927 @@ class Database:
             raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
         return self._channel_payload(row)
 
+    def workspace_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """把 target 解析到频道的 workspace 配置，并叠加 Agent 级覆盖（#148 的装配读路径）。
+
+        返回 ``None`` 表示**未配置**（频道没有 ``workspace_root`` / 不是 channel 或 task target /
+        target 不存在）——调用方据此保持「没有文件与 shell 工具」的既有行为（ADR-0021 §六）。
+        本方法只读配置；写入仍由频道配置端点（#142）负责。
+        """
+        with self._lock:
+            target = self._conn.execute("SELECT kind FROM target WHERE id = ?", (target_id,)).fetchone()
+            if target is None:
+                return None
+            if target["kind"] == "channel":
+                channel_id = target_id
+            elif target["kind"] == "task":
+                task = self._conn.execute(
+                    "SELECT channel_id FROM task WHERE target_id = ?", (target_id,)
+                ).fetchone()
+                if task is None:
+                    return None
+                channel_id = str(task["channel_id"])
+            else:  # DM 没有项目根
+                return None
+
+            channel = self._conn.execute(
+                "SELECT workspace_root, workspace_backend, permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+            if channel is None or not str(channel["workspace_root"] or "").strip():
+                return None
+            agent = self._conn.execute(
+                "SELECT workspace_backend, permission_mode, allow_local_shell, docker_image "
+                "FROM agent_config WHERE member_id = ?",
+                (member_id,),
+            ).fetchone()
+            docker_image = str(agent["docker_image"]) if agent is not None and agent["docker_image"] else None
+            consent = (
+                self._conn.execute(
+                    "SELECT 1 FROM remote_consent_scope WHERE scope_kind = 'docker' AND scope_id = ?",
+                    (docker_image,),
+                ).fetchone()
+                if docker_image
+                else None
+            )
+
+        return {
+            "root": str(channel["workspace_root"]),
+            "backend": str(
+                (agent["workspace_backend"] if agent is not None else None)
+                or channel["workspace_backend"]
+                or "local"
+            ),
+            "permission_mode": str(
+                (agent["permission_mode"] if agent is not None else None)
+                or channel["permission_mode"]
+                or "ask-writes"
+            ),
+            "allow_local_shell": bool(agent["allow_local_shell"]) if agent is not None else False,
+            "docker_image": docker_image,
+            # 远端镜像确认是**配置事实**：装配层只读，未确认时不拉取、不启动容器。
+            "docker_image_consented": consent is not None,
+        }
+
+    def permission_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """解析一轮的权限档与规则（频道级 + Agent 级原样返回，合并由 ``permissions`` 负责）。
+
+        与 :meth:`workspace_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
+        返回 ``None``。规则只读配置，不落消息、不唤醒。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                return None
+            channel = self._conn.execute(
+                "SELECT workspace_root, permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+            if channel is None:
+                return None
+            agent = self._conn.execute(
+                "SELECT permission_mode FROM agent_config WHERE member_id = ?",
+                (member_id,),
+            ).fetchone()
+            channel_rules = self._permission_rule_rows_locked("channel", channel_id)
+            agent_rules = self._permission_rule_rows_locked("agent", member_id)
+        return {
+            "mode": str(
+                (agent["permission_mode"] if agent is not None else None)
+                or channel["permission_mode"]
+                or "ask-writes"
+            ),
+            "root": str(channel["workspace_root"]) if channel["workspace_root"] else None,
+            "channel_rules": channel_rules,
+            "agent_rules": agent_rules,
+        }
+
+    def _channel_id_for_target_locked(self, target_id: str) -> str | None:
+        """target → 频道 id（channel 型同值；task 型经 ``task.channel_id``；DM 无频道）。"""
+        target = self._conn.execute("SELECT kind FROM target WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            return None
+        if target["kind"] == "channel":
+            return target_id
+        if target["kind"] == "task":
+            task = self._conn.execute(
+                "SELECT channel_id FROM task WHERE target_id = ?", (target_id,)
+            ).fetchone()
+            return str(task["channel_id"]) if task is not None else None
+        return None
+
+    # ─── 权限规则（配置；不落消息、不唤醒） ───────────────────────────────
+    def _permission_rule_rows_locked(self, scope_kind: str, scope_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM permission_rule WHERE scope_kind = ? AND scope_id = ? ORDER BY created_at, id",
+            (scope_kind, scope_id),
+        ).fetchall()
+        return [self._permission_rule_payload(row) for row in rows]
+
+    @staticmethod
+    def _permission_rule_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "tool_name": str(row["tool_name"]),
+            "pattern": str(row["pattern"]),
+            "behavior": str(row["behavior"]),
+            "created_at": str(row["created_at"]),
+        }
+
+    def list_permission_rules(
+        self, scope_kind: str | None = None, scope_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """按 scope 过滤的规则列表；不给 scope 时返回全部（只读）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_kind is not None:
+            clauses.append("scope_kind = ?")
+            params.append(scope_kind)
+        if scope_id is not None:
+            clauses.append("scope_id = ?")
+            params.append(scope_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM permission_rule{where} ORDER BY created_at, id", params
+            ).fetchall()
+        return [self._permission_rule_payload(row) for row in rows]
+
+    def create_permission_rule(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        tool_name: str,
+        pattern: str = "",
+        behavior: str,
+    ) -> dict[str, Any]:
+        """写一条规则；同一 ``(scope, tool_name, pattern)`` 视为**覆盖**（先删后插）。
+
+        规则是配置：不落消息、不唤醒、不消耗预算。行为只接受 ``allow`` / ``deny`` / ``ask``。
+        """
+        clean_tool = str(tool_name or "").strip()
+        clean_pattern = str(pattern or "")
+        clean_behavior = str(behavior or "").strip()
+        if scope_kind not in ("channel", "agent"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.permission_rule_scope_invalid"),
+            )
+        if not clean_tool:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.permission_rule_tool_empty"),
+            )
+        if clean_behavior not in ("allow", "deny", "ask"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.permission_rule_behavior_invalid"),
+            )
+        with self._lock:
+            if scope_kind == "channel":
+                exists = self._conn.execute("SELECT 1 FROM channel WHERE id = ?", (scope_id,)).fetchone()
+            else:
+                exists = self._conn.execute(
+                    "SELECT 1 FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                    (scope_id,),
+                ).fetchone()
+            if exists is None:
+                raise NotFound(self._render_copy("error.permission_rule_scope_unknown", scope_id=scope_id))
+            self._conn.execute(
+                "DELETE FROM permission_rule WHERE scope_kind = ? AND scope_id = ? "
+                "AND tool_name = ? AND pattern = ?",
+                (scope_kind, scope_id, clean_tool, clean_pattern),
+            )
+            rule_id = new_id("prm")
+            self._conn.execute(
+                "INSERT INTO permission_rule(id, scope_kind, scope_id, tool_name, pattern, "
+                "behavior, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rule_id,
+                    scope_kind,
+                    scope_id,
+                    clean_tool,
+                    clean_pattern,
+                    clean_behavior,
+                    utc_now(),
+                ),
+            )
+            row = self._conn.execute("SELECT * FROM permission_rule WHERE id = ?", (rule_id,)).fetchone()
+        return self._permission_rule_payload(row)
+
+    def delete_permission_rule(self, rule_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM permission_rule WHERE id = ?", (rule_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.permission_rule_not_found", rule_id=rule_id))
+            self._conn.execute("DELETE FROM permission_rule WHERE id = ?", (rule_id,))
+        return self._permission_rule_payload(row)
+
+    # ─── MCP 声明（配置；不落消息、不唤醒、不消耗预算） ─────────────────────
+    #
+    # 库里只有声明：transport / command / args / url / ``env_names``。值只从进程环境读，
+    # 本层永远不会接受、回显或写入 env 值（ADR-0021 §三、§五）。
+    _MCP_SELECT = (
+        "SELECT ms.*, EXISTS("
+        "SELECT 1 FROM remote_consent_scope rcs "
+        "WHERE rcs.scope_kind = 'mcp' AND rcs.scope_id = ms.id"
+        ") AS consented FROM mcp_server ms"
+    )
+
+    @staticmethod
+    def _mcp_server_payload(row: sqlite3.Row) -> dict[str, Any]:
+        transport = str(row["transport"])
+        is_remote = transport in ("http", "sse")
+        raw_args = json.loads(row["args"] or "[]")
+        raw_env_names = json.loads(row["env_names"] or "[]")
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "transport": transport,
+            "command": str(row["command"]),
+            "args": [str(item) for item in raw_args] if isinstance(raw_args, list) else [],
+            "url": str(row["url"]),
+            "env_names": [str(item) for item in raw_env_names] if isinstance(raw_env_names, list) else [],
+            "enabled": bool(row["enabled"]),
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "is_remote": is_remote,
+            "consent_required": is_remote,
+            "consented": bool(row["consented"]) if is_remote else False,
+        }
+
+    def _assert_mcp_scope_locked(self, scope_kind: str, scope_id: str) -> None:
+        """与权限规则同口径：channel 必须存在；agent 必须是未删除的 Agent。"""
+        if scope_kind not in ("channel", "agent"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.mcp_scope_invalid"),
+                fields={"scope_kind": self._render_copy("error.mcp_scope_invalid")},
+            )
+        if scope_kind == "channel":
+            exists = self._conn.execute("SELECT 1 FROM channel WHERE id = ?", (scope_id,)).fetchone()
+        else:
+            exists = self._conn.execute(
+                "SELECT 1 FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                (scope_id,),
+            ).fetchone()
+        if exists is None:
+            message = self._render_copy("error.mcp_scope_unknown", scope_id=scope_id)
+            raise DomainError("validation_failed", message, fields={"scope_id": message})
+
+    def _normalize_mcp_declaration(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """校验并收敛一条声明的**完整**形态（创建与部分更新共用）。"""
+        name = str(values.get("name") or "").strip()
+        if not MCP_SERVER_NAME_PATTERN.fullmatch(name):
+            message = self._render_copy("error.mcp_name_invalid")
+            raise DomainError("validation_failed", message, fields={"name": message})
+
+        transport = str(values.get("transport") or "").strip()
+        if transport not in ("stdio", "http", "sse"):
+            message = self._render_copy("error.mcp_transport_invalid")
+            raise DomainError("validation_failed", message, fields={"transport": message})
+
+        raw_args = values.get("args")
+        if raw_args is None:
+            raw_args = []
+        if not isinstance(raw_args, (list, tuple)) or any(not isinstance(item, str) for item in raw_args):
+            message = self._render_copy("error.mcp_args_invalid")
+            raise DomainError("validation_failed", message, fields={"args": message})
+        args = list(raw_args)
+
+        raw_env_names = values.get("env_names")
+        if raw_env_names is None:
+            raw_env_names = []
+        if not isinstance(raw_env_names, (list, tuple)):
+            message = self._render_copy("error.mcp_env_names_invalid")
+            raise DomainError("validation_failed", message, fields={"env_names": message})
+        env_names: list[str] = []
+        for item in raw_env_names:
+            if not isinstance(item, str):
+                message = self._render_copy("error.mcp_env_names_invalid")
+                raise DomainError("validation_failed", message, fields={"env_names": message})
+            clean = item.strip()
+            if not MCP_ENV_NAME_PATTERN.fullmatch(clean):
+                message = self._render_copy("error.mcp_env_names_invalid")
+                raise DomainError("validation_failed", message, fields={"env_names": message})
+            if clean not in env_names:
+                env_names.append(clean)
+
+        command = str(values.get("command") or "").strip()
+        url = str(values.get("url") or "").strip()
+        if transport == "stdio":
+            if not command:
+                message = self._render_copy("error.mcp_command_required")
+                raise DomainError("validation_failed", message, fields={"command": message})
+            url = ""
+        else:
+            if not url:
+                message = self._render_copy("error.mcp_url_required")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            parts = urlsplit(url)
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                message = self._render_copy("error.mcp_url_invalid")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            looks_sse = parts.path.endswith("/sse") or parts.path.endswith("/messages/")
+            if transport == "sse" and not looks_sse:
+                message = self._render_copy("error.mcp_sse_url_invalid")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            if transport == "http" and looks_sse:
+                # AgentScope 按 URL path 选传输：http 声明指向 /sse 会被静默当成 sse。
+                # 在写路径拒绝，避免「声明一种、实际另一种」。
+                message = self._render_copy("error.mcp_http_url_invalid")
+                raise DomainError("validation_failed", message, fields={"url": message})
+            command = ""
+
+        return {
+            "name": name,
+            "transport": transport,
+            "command": command,
+            "args": args,
+            "url": url,
+            "env_names": env_names,
+            "enabled": bool(values.get("enabled", True)),
+        }
+
+    def _assert_mcp_name_free_locked(
+        self, *, scope_kind: str, scope_id: str, name: str, exclude_id: str | None = None
+    ) -> None:
+        row = self._conn.execute(
+            "SELECT id FROM mcp_server WHERE scope_kind = ? AND scope_id = ? AND name = ?",
+            (scope_kind, scope_id, name),
+        ).fetchone()
+        if row is not None and str(row["id"]) != (exclude_id or ""):
+            message = self._render_copy("error.mcp_server_conflict", name=name)
+            raise DomainError("mcp_server_conflict", message, status=409, fields={"name": message})
+
+    @classmethod
+    def _mcp_select_sql(cls, where: str = "") -> str:
+        return f"{cls._MCP_SELECT}{where}"
+
+    def list_mcp_servers(
+        self, scope_kind: str | None = None, scope_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """按 scope 过滤的声明列表（只读；不含 env 值）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_kind is not None:
+            clauses.append("ms.scope_kind = ?")
+            params.append(scope_kind)
+        if scope_id is not None:
+            clauses.append("ms.scope_id = ?")
+            params.append(scope_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                self._mcp_select_sql(f"{where} ORDER BY ms.created_at, ms.id"), params
+            ).fetchall()
+        return [self._mcp_server_payload(row) for row in rows]
+
+    def get_mcp_server(self, server_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        return self._mcp_server_payload(row) if row is not None else None
+
+    def create_mcp_server(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        name: str,
+        transport: str,
+        command: str = "",
+        args: list[str] | None = None,
+        url: str = "",
+        env_names: list[str] | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """写一条声明；同名（同一 scope）视为冲突，不静默覆盖。
+
+        配置动作：不落消息、不唤醒、不消耗预算。
+        """
+        declaration = self._normalize_mcp_declaration(
+            {
+                "name": name,
+                "transport": transport,
+                "command": command,
+                "args": args,
+                "url": url,
+                "env_names": env_names,
+                "enabled": enabled,
+            }
+        )
+        now = utc_now()
+        server_id = new_id("mcp")
+        with self._lock:
+            self._assert_mcp_scope_locked(scope_kind, scope_id)
+            self._assert_mcp_name_free_locked(
+                scope_kind=scope_kind, scope_id=scope_id, name=declaration["name"]
+            )
+            self._conn.execute(
+                "INSERT INTO mcp_server(id, name, transport, command, args, url, env_names, "
+                "enabled, scope_kind, scope_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    server_id,
+                    declaration["name"],
+                    declaration["transport"],
+                    declaration["command"],
+                    json.dumps(declaration["args"], ensure_ascii=False),
+                    declaration["url"],
+                    json.dumps(declaration["env_names"], ensure_ascii=False),
+                    1 if declaration["enabled"] else 0,
+                    scope_kind,
+                    scope_id,
+                    now,
+                    now,
+                ),
+            )
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        return self._mcp_server_payload(row)
+
+    def update_mcp_server(self, server_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """部分更新声明；scope 是身份的一部分，不可改。整条结果重新校验。"""
+        allowed = {"name", "transport", "command", "args", "url", "env_names", "enabled"}
+        unknown = set(changes) - allowed
+        if unknown:
+            message = self._render_copy("error.field_choices", values=", ".join(sorted(allowed)))
+            raise DomainError(
+                "validation_failed",
+                message,
+                fields=dict.fromkeys(unknown, message),
+            )
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.mcp_server_not_found", server_id=server_id))
+            current = self._mcp_server_payload(row)
+            merged = {**current, **dict(changes)}
+            declaration = self._normalize_mcp_declaration(merged)
+            self._assert_mcp_name_free_locked(
+                scope_kind=current["scope_kind"],
+                scope_id=current["scope_id"],
+                name=declaration["name"],
+                exclude_id=server_id,
+            )
+            self._conn.execute(
+                "UPDATE mcp_server SET name = ?, transport = ?, command = ?, args = ?, url = ?, "
+                "env_names = ?, enabled = ?, updated_at = ? WHERE id = ?",
+                (
+                    declaration["name"],
+                    declaration["transport"],
+                    declaration["command"],
+                    json.dumps(declaration["args"], ensure_ascii=False),
+                    declaration["url"],
+                    json.dumps(declaration["env_names"], ensure_ascii=False),
+                    1 if declaration["enabled"] else 0,
+                    utc_now(),
+                    server_id,
+                ),
+            )
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        return self._mcp_server_payload(row)
+
+    def delete_mcp_server(self, server_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.mcp_server_not_found", server_id=server_id))
+            self._conn.execute("DELETE FROM mcp_server WHERE id = ?", (server_id,))
+        return self._mcp_server_payload(row)
+
+    def record_mcp_consent(self, server_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """记录一次远端 MCP 的数据面确认（幂等；不落消息、不唤醒）。
+
+        返回 ``(声明, 确认记录)``。stdio 不需要这条确认，调用即被拒绝，避免把「本机」误标成远端。
+        """
+        with self._lock:
+            row = self._conn.execute(self._mcp_select_sql(" WHERE ms.id = ?"), (server_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.mcp_server_not_found", server_id=server_id))
+        server = self._mcp_server_payload(row)
+        if not server["consent_required"]:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.mcp_consent_local"),
+                fields={"transport": self._render_copy("error.mcp_consent_local")},
+            )
+        consent = self.record_remote_consent_scope("mcp", server_id)
+        refreshed = self.get_mcp_server(server_id)
+        assert refreshed is not None
+        return refreshed, consent
+
+    def mcp_servers_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """一轮装配的声明清单（频道级 + Agent 级；Agent 级同名覆盖频道级）。
+
+        只返回**启用**的声明。远端声明带 ``consented``：装配层据此决定是否连接。与
+        :meth:`permission_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
+        没有频道声明（Agent 级仍无上下文，返回空）。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                return []
+            rows = self._conn.execute(
+                self._mcp_select_sql(
+                    " WHERE (ms.scope_kind = 'channel' AND ms.scope_id = ?) "
+                    "OR (ms.scope_kind = 'agent' AND ms.scope_id = ?) "
+                    # 先频道后 Agent：同名时 Agent 覆盖频道（与权限规则同一优先级方向）。
+                    "ORDER BY CASE ms.scope_kind WHEN 'channel' THEN 0 ELSE 1 END, "
+                    "ms.created_at, ms.id"
+                ),
+                (channel_id, member_id),
+            ).fetchall()
+            merged: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                server = self._mcp_server_payload(row)
+                # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
+                merged[server["name"]] = server
+        return [server for server in merged.values() if server["enabled"]]
+
+    # ─── Skill（#152 / 规格 §3.6 / §4.3 / ADR-0021 §三） ─────────────────────
+
+    @staticmethod
+    def _skill_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "description": str(row["description"]),
+            "source_path": str(row["source_path"]),
+            "content_hash": str(row["content_hash"]),
+            "enabled": bool(row["enabled"]),
+            "scope_kind": str(row["scope_kind"]),
+            "scope_id": str(row["scope_id"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def validate_skill_scope(self, scope_kind: str, scope_id: str) -> None:
+        """与 MCP / 权限规则同口径：channel 必须存在；agent 必须是未删除的 Agent。"""
+        if scope_kind not in ("channel", "agent"):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.skill_scope_invalid"),
+                fields={"scope_kind": self._render_copy("error.skill_scope_invalid")},
+            )
+        if scope_kind == "channel":
+            exists = self._conn.execute("SELECT 1 FROM channel WHERE id = ?", (scope_id,)).fetchone()
+        else:
+            exists = self._conn.execute(
+                "SELECT 1 FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                (scope_id,),
+            ).fetchone()
+        if exists is None:
+            message = self._render_copy("error.skill_scope_unknown", scope_id=scope_id)
+            raise DomainError("validation_failed", message, fields={"scope_id": message})
+
+    def channel_workspace_root(self, channel_id: str) -> str:
+        """频道的 ``workspace_root``（未配置 / 不存在返回空串；不校验目录是否存在）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT workspace_root FROM channel WHERE id = ?", (channel_id,)
+            ).fetchone()
+        return str(row["workspace_root"] or "") if row is not None else ""
+
+    def is_channel_member(self, channel_id: str, member_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM target_member WHERE target_id = ? AND member_id = ?",
+                (channel_id, member_id),
+            ).fetchone()
+        return row is not None
+
+    def workspace_roots_for_member(self, member_id: str) -> list[str]:
+        """该成员所属频道里**已配置**的项目根（去重、稳定顺序；用于 Agent 级技能落点/清理）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT c.workspace_root FROM channel c "
+                "JOIN target_member cm ON cm.target_id = c.id "
+                "WHERE cm.member_id = ? AND c.workspace_root IS NOT NULL "
+                "AND TRIM(c.workspace_root) <> '' ORDER BY c.workspace_root",
+                (member_id,),
+            ).fetchall()
+        return [str(row["workspace_root"]) for row in rows]
+
+    def all_workspace_roots(self) -> list[str]:
+        """所有频道的已配置项目根（去重；删除 Agent 级技能时清掉可能遗留的副本）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT workspace_root FROM channel "
+                "WHERE workspace_root IS NOT NULL AND TRIM(workspace_root) <> '' "
+                "ORDER BY workspace_root"
+            ).fetchall()
+        return [str(row["workspace_root"]) for row in rows]
+
+    def _assert_skill_name_free_locked(
+        self, *, scope_kind: str, scope_id: str, name: str, exclude_id: str | None = None
+    ) -> None:
+        row = self._conn.execute(
+            "SELECT id FROM skill WHERE scope_kind = ? AND scope_id = ? AND name = ?",
+            (scope_kind, scope_id, name),
+        ).fetchone()
+        if row is not None and str(row["id"]) != (exclude_id or ""):
+            message = self._render_copy("error.skill_conflict", name=name)
+            raise DomainError("skill_conflict", message, status=409, fields={"name": message})
+
+    def _normalize_skill(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """校验一条技能的**完整**元数据（安装 / 写入共用；安装器已先校验过内容）。"""
+        from .skills import MAX_SKILL_DESCRIPTION_LENGTH, SKILL_NAME_PATTERN
+
+        name = str(values.get("name") or "").strip()
+        if not SKILL_NAME_PATTERN.fullmatch(name):
+            message = self._render_copy("error.skill_name_invalid")
+            raise DomainError("validation_failed", message, fields={"name": message})
+        description = str(values.get("description") or "").strip()
+        if not description:
+            message = self._render_copy("error.skill_description_missing")
+            raise DomainError("validation_failed", message, fields={"description": message})
+        if len(description) > MAX_SKILL_DESCRIPTION_LENGTH:
+            message = self._render_copy(
+                "error.skill_description_too_long", limit=MAX_SKILL_DESCRIPTION_LENGTH
+            )
+            raise DomainError("validation_failed", message, fields={"description": message})
+        source_path = str(values.get("source_path") or "").strip()
+        if not source_path:
+            message = self._render_copy("error.skill_source_invalid")
+            raise DomainError("validation_failed", message, fields={"source_path": message})
+        content_hash = str(values.get("content_hash") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+            message = self._render_copy("error.skill_hash_invalid")
+            raise DomainError("validation_failed", message, fields={"content_hash": message})
+        return {
+            "name": name,
+            "description": description,
+            "source_path": source_path,
+            "content_hash": content_hash,
+            "enabled": bool(values.get("enabled", True)),
+        }
+
+    def list_skills(self, scope_kind: str | None = None, scope_id: str | None = None) -> list[dict[str, Any]]:
+        """按 scope 过滤的技能列表（只读配置；不落消息、不唤醒）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scope_kind is not None:
+            clauses.append("scope_kind = ?")
+            params.append(scope_kind)
+        if scope_id is not None:
+            clauses.append("scope_id = ?")
+            params.append(scope_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM skill{where} ORDER BY created_at, id", params
+            ).fetchall()
+        return [self._skill_payload(row) for row in rows]
+
+    def get_skill(self, skill_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_payload(row) if row is not None else None
+
+    def create_skill(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        name: str,
+        description: str,
+        source_path: str,
+        content_hash: str,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """写一条技能元数据；同 scope 同名冲突（不静默覆盖）。配置动作，不落消息。"""
+        metadata = self._normalize_skill(
+            {
+                "name": name,
+                "description": description,
+                "source_path": source_path,
+                "content_hash": content_hash,
+                "enabled": enabled,
+            }
+        )
+        now = utc_now()
+        skill_id = new_id("sk")
+        with self._lock:
+            self.validate_skill_scope(scope_kind, scope_id)
+            self._assert_skill_name_free_locked(
+                scope_kind=scope_kind, scope_id=scope_id, name=metadata["name"]
+            )
+            self._conn.execute(
+                "INSERT INTO skill(id, name, description, source_path, content_hash, enabled, "
+                "scope_kind, scope_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    skill_id,
+                    metadata["name"],
+                    metadata["description"],
+                    metadata["source_path"],
+                    metadata["content_hash"],
+                    1 if metadata["enabled"] else 0,
+                    scope_kind,
+                    scope_id,
+                    now,
+                    now,
+                ),
+            )
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_payload(row)
+
+    def update_skill(self, skill_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """启停（``enabled``）。scope / 内容 hash 是身份，不可改。"""
+        allowed = {"enabled"}
+        unknown = set(changes) - allowed
+        if unknown:
+            message = self._render_copy("error.field_choices", values=", ".join(sorted(allowed)))
+            raise DomainError("validation_failed", message, fields=dict.fromkeys(unknown, message))
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.skill_not_found", skill_id=skill_id))
+            enabled = bool(changes.get("enabled", row["enabled"]))
+            self._conn.execute(
+                "UPDATE skill SET enabled = ?, updated_at = ? WHERE id = ?",
+                (1 if enabled else 0, utc_now(), skill_id),
+            )
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+        return self._skill_payload(row)
+
+    def delete_skill(self, skill_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skill WHERE id = ?", (skill_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.skill_not_found", skill_id=skill_id))
+            self._conn.execute("DELETE FROM skill WHERE id = ?", (skill_id,))
+        return self._skill_payload(row)
+
+    def skills_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """一轮装配的技能清单（频道级 + Agent 级；Agent 级同名覆盖频道级，只返回启用的）。
+
+        与 :meth:`mcp_servers_for_target` 同一 target→channel 解析口径；DM / 未知 target 没有
+        频道级技能，Agent 级仍按成员自身分区装配。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? ORDER BY created_at, id",
+                    (member_id,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM skill WHERE "
+                    "(scope_kind = 'channel' AND scope_id = ?) OR "
+                    "(scope_kind = 'agent' AND scope_id = ?) "
+                    "ORDER BY CASE scope_kind WHEN 'channel' THEN 0 ELSE 1 END, "
+                    "created_at, id",
+                    (channel_id, member_id),
+                ).fetchall()
+            merged: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                skill = self._skill_payload(row)
+                # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
+                merged[skill["name"]] = skill
+        return [skill for skill in merged.values() if skill["enabled"]]
+
+    # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
+    @staticmethod
+    def _approval_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "reply_id": str(row["reply_id"]),
+            "target_id": str(row["target_id"]),
+            "member_id": str(row["member_id"]),
+            "team_run_id": str(row["team_run_id"]) if row["team_run_id"] else None,
+            "tool_calls": json.loads(row["tool_calls"] or "[]"),
+            "state": str(row["state"]),
+            "decisions": json.loads(row["decisions"] or "[]"),
+            "requested_at": str(row["requested_at"]),
+            "resolved_at": str(row["resolved_at"]) if row["resolved_at"] else None,
+        }
+
+    def get_approval_request(self, reply_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+        return self._approval_payload(row) if row is not None else None
+
+    def list_approval_requests(
+        self, target_id: str | None = None, state: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if target_id is not None:
+            clauses.append("target_id = ?")
+            params.append(target_id)
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM approval_request{where} ORDER BY requested_at DESC",
+                params,
+            ).fetchall()
+        return [self._approval_payload(row) for row in rows]
+
+    def create_approval_request(
+        self,
+        *,
+        reply_id: str,
+        target_id: str,
+        member_id: str,
+        tool_calls: list[dict[str, Any]],
+        team_run_id: str | None = None,
+        requested_at: str | None = None,
+    ) -> dict[str, Any]:
+        """插入一条 pending；同一个 ``reply_id`` 已存在时原样返回（幂等）。"""
+        now = requested_at or utc_now()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+            if row is not None:
+                return self._approval_payload(row)
+            self._conn.execute(
+                "INSERT INTO approval_request(reply_id, target_id, member_id, team_run_id, "
+                "tool_calls, state, decisions, requested_at, resolved_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', '[]', ?, NULL)",
+                (
+                    reply_id,
+                    target_id,
+                    member_id,
+                    team_run_id,
+                    json.dumps(tool_calls, ensure_ascii=False),
+                    now,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+        return self._approval_payload(row)
+
+    def update_approval_request(
+        self,
+        reply_id: str,
+        *,
+        tool_calls: list[dict[str, Any]] | None = None,
+        decisions: list[dict[str, Any]] | None = None,
+        state: str | None = None,
+        resolved_at: str | None = None,
+    ) -> dict[str, Any]:
+        """更新审批记录的可变字段（工具调用合并、决策、终态与解决时间）。"""
+        fields: list[str] = []
+        params: list[Any] = []
+        if tool_calls is not None:
+            fields.append("tool_calls = ?")
+            params.append(json.dumps(tool_calls, ensure_ascii=False))
+        if decisions is not None:
+            fields.append("decisions = ?")
+            params.append(json.dumps(decisions, ensure_ascii=False))
+        if state is not None:
+            if state not in ("pending", "approved", "denied", "expired"):
+                raise ValueError(f"unsupported approval state: {state!r}")
+            fields.append("state = ?")
+            params.append(state)
+        if resolved_at is not None:
+            fields.append("resolved_at = ?")
+            params.append(resolved_at)
+        if not fields:
+            record = self.get_approval_request(reply_id)
+            if record is None:
+                raise NotFound(self._render_copy("error.approval_not_found", reply_id=reply_id))
+            return record
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE approval_request SET {', '.join(fields)} WHERE reply_id = ?",
+                (*params, reply_id),
+            )
+            if cursor.rowcount == 0:
+                raise NotFound(self._render_copy("error.approval_not_found", reply_id=reply_id))
+            row = self._conn.execute(
+                "SELECT * FROM approval_request WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+        return self._approval_payload(row)
+
+    def expire_pending_approvals(self, *, resolved_at: str | None = None) -> list[str]:
+        """启动时把上个进程残留的 pending 全部标 expired（D19）；返回被改的 reply_id。"""
+        now = resolved_at or utc_now()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT reply_id FROM approval_request WHERE state = 'pending'"
+            ).fetchall()
+            reply_ids = [str(row["reply_id"]) for row in rows]
+            if reply_ids:
+                self._conn.execute(
+                    "UPDATE approval_request SET state = 'expired', resolved_at = ? WHERE state = 'pending'",
+                    (now,),
+                )
+        return reply_ids
+
     def create_dm(self, agent_id: str, owner_id: str = OWNER_ID) -> tuple[dict[str, Any], bool]:
         """创建或复用 owner 与单一 Agent 的两方私信，返回 (DM, 是否新建)。"""
         clean_agent_id = (agent_id or "").strip()
@@ -2311,6 +3636,925 @@ class Database:
                 self._rollback()
                 raise
         return self.get_channel(channel_id, creator_id)
+
+    # ─── 频道配置（team / workspace；人类面唯一写路径是 PATCH config） ─────
+    def get_channel_config(self, channel_id: str) -> dict[str, Any]:
+        """频道配置的库内正本；不存在则 404。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, mode, team_leader_member_id, workspace_root, workspace_backend, "
+                "permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
+        return {
+            "channel_id": row["id"],
+            "mode": row["mode"],
+            "team_leader_member_id": row["team_leader_member_id"],
+            "workspace_root": row["workspace_root"],
+            "workspace_backend": row["workspace_backend"],
+            "permission_mode": row["permission_mode"],
+        }
+
+    def update_channel_config(
+        self,
+        channel_id: str,
+        *,
+        mode: str | None = None,
+        team_leader_member_id: str | None = None,
+        workspace_root: Any = _UNSET,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """写频道配置：**任一字段不合法整体拒绝**（校验先于写入，事务内一次 UPDATE）。
+
+        ``None`` 在这些参数上表示「这次请求没提到它」（与 ``update_agent`` 同一条纪律）；
+        ``workspace_root`` 是唯一允许显式清空的字段（``_UNSET`` 区分「没提到」与「清空」），
+        因为「未配置项目根」本身是一个合法状态（ADR-0021 §六）。
+
+        team 的队长校验（规格 §4.4）：必须是**当前频道成员**里未删除的 Agent。库内触发器还守着
+        「team 不能没有队长」这条不变量；这里先给出可读的字段错误，而不是让 SQL 的 ABORT 文案
+        露给用户。``mode=team`` 作用于该频道 target 与它的全部 task target，写路径不复制任何
+        状态到 task 行（解析在读路径 ``task.channel_id -> channel.mode``）。
+        """
+        current = self.get_channel_config(channel_id)
+        fields: dict[str, str] = {}
+
+        resolved_mode = current["mode"] if mode is None else mode
+        if resolved_mode not in CHANNEL_MODES:
+            fields["mode"] = self._render_copy(
+                "error.field.channel_mode_invalid", values=", ".join(CHANNEL_MODES)
+            )
+        resolved_leader = (
+            current["team_leader_member_id"] if team_leader_member_id is None else team_leader_member_id
+        )
+        leader_error = None
+        if resolved_mode == "team" or team_leader_member_id is not None:
+            leader_error = self._channel_leader_error(
+                channel_id,
+                resolved_leader,
+                require_member=resolved_mode == "team",
+            )
+        if leader_error is not None:
+            fields["team_leader_member_id"] = leader_error
+        if resolved_mode == "team" and not resolved_leader:
+            fields["team_leader_member_id"] = self._render_copy("error.field.channel_leader_required")
+
+        if workspace_backend is not None and workspace_backend not in WORKSPACE_BACKENDS:
+            fields["workspace_backend"] = self._render_copy(
+                "error.field.channel_workspace_backend_invalid",
+                values=", ".join(WORKSPACE_BACKENDS),
+            )
+        if permission_mode is not None and permission_mode not in PERMISSION_MODES:
+            fields["permission_mode"] = self._render_copy(
+                "error.field.channel_permission_mode_invalid",
+                values=", ".join(PERMISSION_MODES),
+            )
+
+        resolved_root: Any
+        if workspace_root is _UNSET:
+            resolved_root = current["workspace_root"]
+        elif workspace_root is None:
+            resolved_root = None
+        else:
+            candidate = str(workspace_root).strip()
+            if not candidate or not os.path.isabs(candidate):
+                fields["workspace_root"] = self._render_copy(
+                    "error.field.channel_workspace_root_not_absolute",
+                    path=candidate or str(workspace_root),
+                )
+            else:
+                resolved_root = candidate
+
+        if fields:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.channel_config_invalid"),
+                fields=fields,
+            )
+
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "UPDATE channel SET mode = ?, team_leader_member_id = ?, workspace_root = ?, "
+                    "workspace_backend = ?, permission_mode = ? WHERE id = ?",
+                    (
+                        resolved_mode,
+                        resolved_leader,
+                        resolved_root,
+                        current["workspace_backend"] if workspace_backend is None else workspace_backend,
+                        current["permission_mode"] if permission_mode is None else permission_mode,
+                        channel_id,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_channel_config(channel_id)
+
+    def _channel_leader_error(
+        self, channel_id: str, leader_member_id: str | None, *, require_member: bool
+    ) -> str | None:
+        """队长的可读校验；返回字段错误文案（通过则 ``None``）。"""
+        if not leader_member_id:
+            return (
+                None
+                if leader_member_id is None
+                else self._render_copy("error.field.channel_leader_unavailable", member_id=leader_member_id)
+            )
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT kind, deleted_at FROM member WHERE id = ?", (leader_member_id,)
+            ).fetchone()
+            if row is None or row["kind"] != "agent" or row["deleted_at"] is not None:
+                return self._render_copy("error.field.channel_leader_unavailable", member_id=leader_member_id)
+            if not require_member:
+                return None
+            member = self._conn.execute(
+                "SELECT 1 FROM target_member WHERE target_id = ? AND member_id = ?",
+                (channel_id, leader_member_id),
+            ).fetchone()
+        if member is None:
+            return self._render_copy("error.field.channel_leader_unavailable", member_id=leader_member_id)
+        return None
+
+    # ─── team 运行记录（ADR-0018 / ADR-0022；不是消息、不进未读/搜索） ─────
+    def create_team_run(
+        self,
+        *,
+        target_id: str,
+        leader_member_id: str,
+        base_seq: int,
+        status: str = "running",
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in TEAM_RUN_STATUSES:
+            raise DomainError("validation_failed", self._render_copy("error.team_run_status_invalid"))
+        self.get_target(target_id)
+        now = started_at or utc_now()
+        team_run_id = new_id("teamrun")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO team_run(id, target_id, leader_member_id, base_seq, status, "
+                    "started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        team_run_id,
+                        target_id,
+                        leader_member_id,
+                        int(base_seq),
+                        status,
+                        now,
+                        finished_at,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_run(team_run_id)
+
+    def finish_team_run(self, team_run_id: str, status: str) -> dict[str, Any]:
+        if status not in TEAM_RUN_STATUSES:
+            raise DomainError("validation_failed", self._render_copy("error.team_run_status_invalid"))
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE team_run SET status = ?, finished_at = ? WHERE id = ?",
+                    (status, utc_now(), team_run_id),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(self._render_copy("error.team_run_not_found", team_run_id=team_run_id))
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_run(team_run_id)
+
+    def get_team_run(self, team_run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM team_run WHERE id = ?", (team_run_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.team_run_not_found", team_run_id=team_run_id))
+        return self._team_run_payload(row)
+
+    def list_team_runs(self, target_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        self.get_target(target_id)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM team_run WHERE target_id = ? ORDER BY started_at DESC, id DESC LIMIT ?",
+                (target_id, int(limit)),
+            ).fetchall()
+        return [self._team_run_payload(row) for row in rows]
+
+    def list_team_runs_page(
+        self,
+        target_id: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        task_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """该 target 的运行记录页（``started_at DESC, id DESC``），各带自己的分派快照。
+
+        ``task_id`` 非空时只保留**至少含一条该 task 分派**的 run，并只返回这些分派；
+        它不是 task 行存在性的校验（不存在的 task 与「没有命中」同形，都是空页）。
+        多取一条判断 ``has_more``，因此 ``offset + limit == total`` 时不会谎报还有下一页。
+        """
+        self.get_target(target_id)  # 404 早退
+        page_size = max(1, int(limit))
+        start = max(0, int(offset))
+        where = "tr.target_id = ?"
+        params: list[Any] = [target_id]
+        if task_id is not None:
+            where += (
+                " AND EXISTS (SELECT 1 FROM team_assignment a WHERE a.team_run_id = tr.id AND a.task_id = ?)"
+            )
+            params.append(task_id)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT tr.* FROM team_run tr WHERE {where} "
+                "ORDER BY tr.started_at DESC, tr.id DESC LIMIT ? OFFSET ?",
+                (*params, page_size + 1, start),
+            ).fetchall()
+            has_more = len(rows) > page_size
+            rows = rows[:page_size]
+            runs = [self._team_run_payload(row) for row in rows]
+            if runs:
+                placeholders = ", ".join("?" for _ in runs)
+                assignment_sql = f"SELECT * FROM team_assignment WHERE team_run_id IN ({placeholders})"
+                assignment_params: list[Any] = [run["id"] for run in runs]
+                if task_id is not None:
+                    assignment_sql += " AND task_id = ?"
+                    assignment_params.append(task_id)
+                assignment_sql += " ORDER BY started_at, id"
+                grouped: dict[str, list[dict[str, Any]]] = {run["id"]: [] for run in runs}
+                for row in self._conn.execute(assignment_sql, assignment_params):
+                    grouped[str(row["team_run_id"])].append(self._team_assignment_payload(row))
+                for run in runs:
+                    run["assignments"] = grouped[run["id"]]
+        return runs, has_more
+
+    @staticmethod
+    def _team_run_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "target_id": row["target_id"],
+            "leader_member_id": row["leader_member_id"],
+            "base_seq": row["base_seq"],
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+        }
+
+    # ─── Plan 运行记录（ADR-0023 / 规格 §3.5） ────────────────────────────
+    # Plan 是成员轮次内的工作清单，不是任务五态：本组方法只写 ``plan_run`` / ``plan_task``，
+    # 从不触碰 ``task``、消息、未读、搜索、唤醒或预算。``plan_task.seq`` 与 AgentScope
+    # ``Task.id``（数字字符串）一一对应，于是重启装载回 ``AgentState.tasks`` 时任务标识稳定。
+    def start_plan_run(self, *, target_id: str, member_id: str, base_seq: int) -> dict[str, Any]:
+        """开一次成员轮次的 Plan run；状态 ``running``，结束由 :meth:`finish_plan_run` 收口。"""
+        if int(base_seq) < 0:
+            raise DomainError("validation_failed", self._render_copy("error.plan_base_seq_invalid"))
+        self.get_target(target_id)
+        self.get_member(member_id)
+        plan_run_id = new_id("planrun")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO plan_run(id, target_id, member_id, base_seq, status, started_at) "
+                    "VALUES (?, ?, ?, ?, 'running', ?)",
+                    (plan_run_id, target_id, member_id, int(base_seq), utc_now()),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_plan_run(plan_run_id)
+
+    def finish_plan_run(
+        self,
+        plan_run_id: str,
+        *,
+        status: str,
+        tasks: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """以 ``plan_run_id`` 为界回写本次 Plan 的任务并收口。
+
+        每个 run 保存的是**当前清单的一份快照**：先删掉本 run 的旧行，再按传入顺序重写。
+        ``plan_task`` 随 ``plan_run`` 级联删除；收口后应用保留策略。
+        """
+        if status not in ("completed", "failed"):
+            raise DomainError("validation_failed", self._render_copy("error.plan_run_status_invalid"))
+        prepared = [self._prepare_plan_task(task) for task in tasks]
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT status FROM plan_run WHERE id = ?", (plan_run_id,)
+                ).fetchone()
+                if row is None:
+                    raise NotFound(self._render_copy("error.plan_run_not_found", plan_run_id=plan_run_id))
+                self._conn.execute("DELETE FROM plan_task WHERE plan_run_id = ?", (plan_run_id,))
+                now = utc_now()
+                for task in prepared:
+                    self._conn.execute(
+                        "INSERT INTO plan_task(id, plan_run_id, seq, subject, description, state, "
+                        "owner, blocks, blocked_by, metadata, created_at, updated_at, deleted_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                        (
+                            new_id("plantask"),
+                            plan_run_id,
+                            task["seq"],
+                            task["subject"],
+                            task["description"],
+                            task["state"],
+                            task["owner"],
+                            json.dumps(task["blocks"], ensure_ascii=False),
+                            json.dumps(task["blocked_by"], ensure_ascii=False),
+                            json.dumps(task["metadata"], ensure_ascii=False),
+                            task["created_at"],
+                            task["updated_at"] or now,
+                        ),
+                    )
+                self._conn.execute(
+                    "UPDATE plan_run SET status = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?",
+                    (status, now, plan_run_id),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        self.prune_plan_runs()
+        return self.get_plan_run(plan_run_id)
+
+    @staticmethod
+    def _prepare_plan_task(task: Mapping[str, Any]) -> dict[str, Any]:
+        """校验并归一化一条待回写的 Plan 任务（工具侧只产生这三种状态）。"""
+        state = str(task.get("state") or "pending")
+        if state not in PLAN_TASK_STATES:
+            raise DomainError("validation_failed", f"invalid plan task state: {state}")
+        subject = str(task.get("subject") or "").strip()
+        if not subject:
+            raise DomainError("validation_failed", "plan task subject is required")
+        seq = int(task.get("seq") or 0)
+        if seq < 1:
+            raise DomainError("validation_failed", "plan task seq must be positive")
+        return {
+            "seq": seq,
+            "subject": subject,
+            "description": str(task.get("description") or ""),
+            "state": state,
+            "owner": task.get("owner"),
+            "blocks": list(task.get("blocks") or []),
+            "blocked_by": list(task.get("blocked_by") or []),
+            "metadata": dict(task.get("metadata") or {}),
+            "created_at": str(task.get("created_at") or utc_now()),
+            "updated_at": str(task.get("updated_at") or ""),
+        }
+
+    def get_plan_run(self, plan_run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM plan_run WHERE id = ?", (plan_run_id,)).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.plan_run_not_found", plan_run_id=plan_run_id))
+            tasks = self._plan_tasks_locked(plan_run_id)
+        return self._plan_run_payload(row, tasks)
+
+    def latest_plan_tasks(self, *, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """该 ``(target_id, member_id)`` 最近一个 run 的任务清单（轮次开始装载用）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM plan_run WHERE target_id = ? AND member_id = ? "
+                "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (target_id, member_id),
+            ).fetchone()
+            if row is None:
+                return []
+            return self._plan_tasks_locked(str(row["id"]))
+
+    def plan_view(self, target_id: str, limit: int = PLAN_RUN_RETENTION) -> dict[str, Any]:
+        """按 member 分组的 Plan 快照（每个成员保留最近 ``limit`` 个 run）。"""
+        self.get_target(target_id)
+        limit = max(1, int(limit))
+        with self._lock:
+            member_rows = self._conn.execute(
+                "SELECT DISTINCT pr.member_id, m.display_name "
+                "FROM plan_run pr LEFT JOIN member m ON m.id = pr.member_id "
+                "WHERE pr.target_id = ? ORDER BY m.display_name, pr.member_id",
+                (target_id,),
+            ).fetchall()
+            members = []
+            for member_row in member_rows:
+                run_rows = self._conn.execute(
+                    "SELECT * FROM plan_run WHERE target_id = ? AND member_id = ? "
+                    "ORDER BY started_at DESC, rowid DESC LIMIT ?",
+                    (target_id, str(member_row["member_id"]), limit),
+                ).fetchall()
+                runs = [
+                    self._plan_run_payload(run, self._plan_tasks_locked(str(run["id"]))) for run in run_rows
+                ]
+                members.append(
+                    {
+                        "member_id": str(member_row["member_id"]),
+                        "display_name": member_row["display_name"],
+                        "runs": runs,
+                    }
+                )
+        return {"target_id": target_id, "members": members}
+
+    def prune_plan_runs(self) -> int:
+        """应用 Plan 保留策略：每个 ``(target, member)`` 最近 20 run 或 30 天（先到者为准）。
+
+        返回被删除的 run 数；``plan_task`` 由外键级联清理。启动时与每轮收口后调用。
+        """
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=PLAN_RETENTION_DAYS))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, target_id, member_id, started_at FROM plan_run "
+                "ORDER BY target_id, member_id, started_at DESC, rowid DESC"
+            ).fetchall()
+            keep: dict[tuple[str, str], int] = {}
+            doomed: list[str] = []
+            for row in rows:
+                pair = (str(row["target_id"]), str(row["member_id"]))
+                rank = keep.get(pair, 0)
+                keep[pair] = rank + 1
+                if rank >= PLAN_RUN_RETENTION or str(row["started_at"]) < cutoff:
+                    doomed.append(str(row["id"]))
+            if not doomed:
+                return 0
+            self._begin()
+            try:
+                for start in range(0, len(doomed), 500):
+                    chunk = doomed[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    self._conn.execute(f"DELETE FROM plan_run WHERE id IN ({placeholders})", chunk)
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return len(doomed)
+
+    def _plan_task_rows_locked(self, plan_run_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM plan_task WHERE plan_run_id = ? ORDER BY seq",
+            (plan_run_id,),
+        ).fetchall()
+
+    def _plan_tasks_locked(self, plan_run_id: str) -> list[dict[str, Any]]:
+        return [self._plan_task_payload(row) for row in self._plan_task_rows_locked(plan_run_id)]
+
+    @staticmethod
+    def _plan_task_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            # AgentScope 的 ``Task.id``：装载时按 ``seq`` 还原成数字字符串。
+            "id": str(row["seq"]),
+            "seq": int(row["seq"]),
+            "subject": row["subject"],
+            "description": row["description"],
+            "state": row["state"],
+            "owner": row["owner"],
+            "blocks": json.loads(row["blocks"] or "[]"),
+            "blocked_by": json.loads(row["blocked_by"] or "[]"),
+            "metadata": json.loads(row["metadata"] or "{}"),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "deleted_at": row["deleted_at"],
+        }
+
+    @staticmethod
+    def _plan_run_payload(row: sqlite3.Row, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "target_id": row["target_id"],
+            "member_id": row["member_id"],
+            "base_seq": row["base_seq"],
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "tasks": tasks,
+        }
+
+    # ─── SOP 定义与运行记录（ADR-0023 / 规格 §3.5、§4.2） ──────────────────
+    # 定义是可编辑的配置；运行是只增不改的历史 + 可恢复的 ``SOPRunState``。两者都**不是**任务：
+    # 本组方法只写 ``sop_definition`` / ``sop_run``，从不触碰 ``task``、消息、未读、搜索、唤醒或预算。
+    def create_sop_definition(
+        self,
+        *,
+        name: str,
+        description: str,
+        steps: Sequence[Mapping[str, Any]],
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """新建一条 SOP 定义；``steps`` 里的成员在这里校验并归一化。"""
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            raise DomainError("validation_failed", self._render_copy("error.sop_name_required"))
+        prepared = self._prepare_sop_steps(steps)
+        now = utc_now()
+        definition_id = new_id("sop")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO sop_definition(id, name, description, steps, enabled, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        definition_id,
+                        clean_name,
+                        str(description or ""),
+                        json.dumps(prepared, ensure_ascii=False),
+                        1 if enabled else 0,
+                        now,
+                        now,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_sop_definition(definition_id)
+
+    def update_sop_definition(
+        self,
+        definition_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        steps: Sequence[Mapping[str, Any]] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        """编辑定义（启停 / 名称 / 描述 / 步骤）。只影响后续 run；既有 run 的 ``state`` 不重写。"""
+        current = self.get_sop_definition(definition_id)
+        clean_name = current["name"] if name is None else str(name or "").strip()
+        if not clean_name:
+            raise DomainError("validation_failed", self._render_copy("error.sop_name_required"))
+        prepared = self._prepare_sop_steps(steps) if steps is not None else current["steps"]
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE sop_definition SET name = ?, description = ?, steps = ?, "
+                    "enabled = ?, updated_at = ? WHERE id = ?",
+                    (
+                        clean_name,
+                        current["description"] if description is None else str(description),
+                        json.dumps(prepared, ensure_ascii=False),
+                        1 if (current["enabled"] if enabled is None else bool(enabled)) else 0,
+                        utc_now(),
+                        definition_id,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(
+                        self._render_copy("error.sop_definition_not_found", definition_id=definition_id)
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_sop_definition(definition_id)
+
+    def get_sop_definition(self, definition_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM sop_definition WHERE id = ?", (definition_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.sop_definition_not_found", definition_id=definition_id))
+        return self._sop_definition_payload(row)
+
+    def list_sop_definitions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM sop_definition ORDER BY created_at, id").fetchall()
+        return [self._sop_definition_payload(row) for row in rows]
+
+    def _prepare_sop_steps(self, steps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """校验并归一化 ``steps``：subject / executor / 可空 verifier / max_attempts。
+
+        成员必须是**未删除且启用的 Agent**：SOP 的参与者是成员面的 Agent，owner 不是执行者。
+        这里一次校验整份定义，任一步非法就整体拒绝（不留半成品）。
+        """
+        if not steps:
+            raise DomainError("validation_failed", self._render_copy("error.sop_steps_required"))
+        prepared: list[dict[str, Any]] = []
+        for raw in steps:
+            subject = str(raw.get("subject") or "").strip()
+            if not subject:
+                raise DomainError("validation_failed", self._render_copy("error.sop_step_subject_required"))
+            executor_id = str(raw.get("executor_member_id") or "").strip()
+            if not executor_id:
+                raise DomainError("validation_failed", self._render_copy("error.sop_step_executor_required"))
+            self.require_sop_agent(executor_id)
+            verifier_raw = raw.get("verifier_member_id")
+            verifier_id = str(verifier_raw).strip() if verifier_raw else None
+            if verifier_id:
+                self.require_sop_agent(verifier_id)
+            max_attempts = raw.get("max_attempts", 3)
+            try:
+                attempts = int(max_attempts)
+            except (TypeError, ValueError):
+                attempts = 0
+            if attempts < 1:
+                raise DomainError("validation_failed", self._render_copy("error.sop_max_attempts_invalid"))
+            prepared.append(
+                {
+                    "subject": subject,
+                    "description": str(raw.get("description") or ""),
+                    "executor_member_id": executor_id,
+                    "verifier_member_id": verifier_id,
+                    "max_attempts": attempts,
+                }
+            )
+        return prepared
+
+    def require_sop_agent(self, member_id: str) -> dict[str, Any]:
+        agent = self.get_agent(member_id)
+        if agent.get("deleted_at") is not None:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.sop_member_unavailable", member_id=member_id),
+            )
+        if not agent.get("enabled", True):
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.sop_member_disabled", member_id=member_id),
+            )
+        return agent
+
+    @staticmethod
+    def _sop_definition_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "steps": json.loads(row["steps"] or "[]"),
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_sop_run(
+        self,
+        *,
+        sop_definition_id: str,
+        target_id: str,
+        leader_member_id: str = OWNER_ID,
+        state: str,
+        phase: str = "pending",
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        """落一次 SOP 运行；``state`` 是 ``SOPRunState.model_dump_json()`` 的原样快照。"""
+        if phase not in SOP_PHASES:
+            raise DomainError("validation_failed", self._render_copy("error.sop_phase_invalid"))
+        if not state:
+            raise DomainError("validation_failed", self._render_copy("error.sop_state_required"))
+        self.get_target(target_id)
+        self.get_member(leader_member_id)
+        now = started_at or utc_now()
+        run_id = new_id("soprun")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO sop_run(id, sop_definition_id, target_id, leader_member_id, "
+                    "state, phase, started_at, finished_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        run_id,
+                        sop_definition_id,
+                        target_id,
+                        leader_member_id,
+                        state,
+                        phase,
+                        now,
+                        finished_at,
+                        now,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        self.prune_sop_runs()
+        return self.get_sop_run(run_id)
+
+    def update_sop_run_state(
+        self,
+        run_id: str,
+        *,
+        state: str,
+        phase: str,
+    ) -> dict[str, Any]:
+        """把一次运行的最新 ``SOPRunState`` 与派生 ``phase`` 写回；不改定义、不写消息。"""
+        if phase not in SOP_PHASES:
+            raise DomainError("validation_failed", self._render_copy("error.sop_phase_invalid"))
+        finished_at = utc_now() if phase in ("completed", "failed") else None
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE sop_run SET state = ?, phase = ?, updated_at = ?, "
+                    "finished_at = COALESCE(?, finished_at) WHERE id = ?",
+                    (state, phase, utc_now(), finished_at, run_id),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(self._render_copy("error.sop_run_not_found", sop_run_id=run_id))
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_sop_run(run_id)
+
+    def get_sop_run(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM sop_run WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.sop_run_not_found", sop_run_id=run_id))
+        return self._sop_run_payload(row)
+
+    def prune_sop_runs(self) -> int:
+        """保留最近 50 个或 90 天内的 SOP 运行；返回删除条数。
+
+        定义**不**参与清理：完成/失败后不自动删除定义（ADR-0023 §三）。启动时与新建 run 后调用。
+        """
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=SOP_RETENTION_DAYS))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, started_at FROM sop_run ORDER BY started_at DESC, rowid DESC"
+            ).fetchall()
+            doomed = [
+                str(row["id"])
+                for rank, row in enumerate(rows)
+                if rank >= SOP_RUN_RETENTION or str(row["started_at"]) < cutoff
+            ]
+            if not doomed:
+                return 0
+            self._begin()
+            try:
+                for start in range(0, len(doomed), 500):
+                    chunk = doomed[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    self._conn.execute(f"DELETE FROM sop_run WHERE id IN ({placeholders})", chunk)
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return len(doomed)
+
+    @staticmethod
+    def _sop_run_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sop_definition_id": row["sop_definition_id"],
+            "target_id": row["target_id"],
+            "leader_member_id": row["leader_member_id"],
+            "phase": row["phase"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "updated_at": row["updated_at"],
+            "state": json.loads(row["state"] or "{}"),
+        }
+
+    def create_team_assignment(
+        self,
+        *,
+        team_run_id: str,
+        target_id: str,
+        task_id: str | None,
+        leader_member_id: str,
+        member_id: str,
+        tool_call_id: str,
+        prompt: str,
+        state: str = "started",
+        jump_consumed: int = 1,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        """落一条分派运行记录；``state`` / ``jump_consumed`` 由裁决结果决定。
+
+        ``budget-exhausted`` 是一次**没运行成员**的分派（``jump_consumed=0``）；``started`` 是
+        已扣跳、成员正在跑的那一条，收口时由 :meth:`finish_team_assignment` 改成
+        ``succeeded`` / ``failed`` / ``interrupted``。跳一旦扣减就不退款，因此本方法**不提供**
+        把 ``jump_consumed`` 从 1 改回 0 的路径。
+        """
+        if state not in TEAM_ASSIGNMENT_STATES:
+            raise DomainError("validation_failed", self._render_copy("error.team_assignment_state_invalid"))
+        if int(jump_consumed) not in (0, 1):
+            raise DomainError("validation_failed", self._render_copy("error.team_assignment_jump_invalid"))
+        now = started_at or utc_now()
+        if finished_at is None and state != "started":
+            finished_at = now
+        assignment_id = new_id("assign")
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute(
+                    "INSERT INTO team_assignment(id, team_run_id, target_id, task_id, "
+                    "leader_member_id, member_id, tool_call_id, prompt, state, jump_consumed, "
+                    "started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        assignment_id,
+                        team_run_id,
+                        target_id,
+                        task_id,
+                        leader_member_id,
+                        member_id,
+                        tool_call_id,
+                        prompt,
+                        state,
+                        int(jump_consumed),
+                        now,
+                        finished_at,
+                    ),
+                )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_assignment(assignment_id)
+
+    def finish_team_assignment(
+        self,
+        assignment_id: str,
+        *,
+        state: str,
+        reply_excerpt: str = "",
+        error: str = "",
+        finished_at: str | None = None,
+    ) -> dict[str, Any]:
+        """把一条分派收口成终态；``jump_consumed`` 原样保留（不退款）。"""
+        if state not in TEAM_ASSIGNMENT_STATES or state == "started":
+            raise DomainError("validation_failed", self._render_copy("error.team_assignment_state_invalid"))
+        with self._lock:
+            self._begin()
+            try:
+                cursor = self._conn.execute(
+                    "UPDATE team_assignment SET state = ?, reply_excerpt = ?, error = ?, "
+                    "finished_at = ? WHERE id = ?",
+                    (state, reply_excerpt, error, finished_at or utc_now(), assignment_id),
+                )
+                if cursor.rowcount == 0:
+                    raise NotFound(
+                        self._render_copy("error.team_assignment_not_found", assignment_id=assignment_id)
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return self.get_team_assignment(assignment_id)
+
+    def get_team_assignment(self, assignment_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM team_assignment WHERE id = ?", (assignment_id,)
+            ).fetchone()
+        if row is None:
+            raise NotFound(self._render_copy("error.team_assignment_not_found", assignment_id=assignment_id))
+        return self._team_assignment_payload(row)
+
+    def list_team_assignments(self, target_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """该 target 的分派运行记录（按开始时间；同秒内按 id 定序）。"""
+        self.get_target(target_id)  # 404 早退
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM team_assignment WHERE target_id = ? ORDER BY started_at, id LIMIT ?",
+                (target_id, int(limit)),
+            ).fetchall()
+        return [self._team_assignment_payload(row) for row in rows]
+
+    @staticmethod
+    def _team_assignment_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "team_run_id": row["team_run_id"],
+            "target_id": row["target_id"],
+            "task_id": row["task_id"],
+            "leader_member_id": row["leader_member_id"],
+            "member_id": row["member_id"],
+            "tool_call_id": row["tool_call_id"],
+            "prompt": row["prompt"],
+            "state": row["state"],
+            "jump_consumed": int(row["jump_consumed"]),
+            "reply_excerpt": row["reply_excerpt"],
+            "error": row["error"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+        }
 
     # ─── 消息（作用域键是 **target_id**） ────────────────────────────────
     def list_messages(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
@@ -2826,6 +5070,66 @@ class Database:
                 (target_id, int(epoch_seq), used, self._applied_limit_snapshot_locked(target_id)),
             )
         return used
+
+    def try_consume_jump(self, target_id: str) -> dict[str, Any]:
+        """team 分派的**原子**跳扣减：检查与扣减在同一条条件 UPDATE / 同一事务里。
+
+        实现约束（ADR-0019 / R1 §3）：
+
+        - ``BEGIN IMMEDIATE`` 先拿写锁，再解析当前世代的生效上界：``target_budget.applied_limit``
+          快照（``NULL`` = 内置默认 :data:`BUDGET_LIMIT`）。快照与读路径
+          （:meth:`_budget_facts_locked`）同源，不随配置漂移。
+        - ``UPDATE ... SET used = used + 1 WHERE target_id = ? AND used < ?``：受影响行数为 0
+          ⇒ 耗尽。不能先读后写——R1 的 100 并发对照证明那会越过上界。
+        - 没有预算行（这个 target 从未开世代、也没消耗过跳）时，先在同事务里惰性建行
+          （``used=0`` + 内置默认上界），否则条件 UPDATE 的 0 行会被误判成「耗尽」。
+        - 返回 ``ok`` / ``epoch_seq`` / ``used`` / ``limit``：``used`` 是**扣减后**的正本读数，
+          与 ``target_budget.used`` 一致；``ok=False`` 时 ``used`` 不变。
+
+        它不负责写 ``team_assignment``（那是 :meth:`create_team_assignment` 的落点）：预算正本
+        只有一个写点，运行记录不参与裁决。
+        """
+        self.get_target(target_id)  # 404 早退
+        with self._lock:
+            self._begin()
+            try:
+                row = self._conn.execute(
+                    "SELECT epoch_seq, used, applied_limit FROM target_budget WHERE target_id = ?",
+                    (target_id,),
+                ).fetchone()
+                if row is None:
+                    # 没有行 = 还没有开世代：当前世代的有效上界是**内置默认**（NULL 快照），
+                    # 已保存的频道覆盖只作 ``pending_limit``，从下一个人类世代才生效
+                    # （与 ``_budget_facts_locked`` 的第 2 条读法同一口径）。
+                    self._conn.execute(
+                        "INSERT INTO target_budget(target_id, epoch_seq, used, applied_limit) "
+                        "VALUES (?, 0, 0, NULL) ON CONFLICT(target_id) DO NOTHING",
+                        (target_id,),
+                    )
+                    row = self._conn.execute(
+                        "SELECT epoch_seq, used, applied_limit FROM target_budget WHERE target_id = ?",
+                        (target_id,),
+                    ).fetchone()
+                if row is None:  # INSERT/ON CONFLICT 之后必有行
+                    raise RuntimeError("target_budget row missing after the lazy upsert")
+                epoch_seq = int(row["epoch_seq"])
+                used = int(row["used"])
+                limit = BUDGET_LIMIT if row["applied_limit"] is None else int(row["applied_limit"])
+                cursor = self._conn.execute(
+                    "UPDATE target_budget SET used = used + 1 WHERE target_id = ? AND used < ?",
+                    (target_id, limit),
+                )
+                consumed = cursor.rowcount > 0
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return {
+            "ok": consumed,
+            "epoch_seq": epoch_seq,
+            "used": used + (1 if consumed else 0),
+            "limit": limit,
+        }
 
     # ─── target 成员（唯一写点：人类面「加入」与穿透加入共用） ──────────────
     def is_target_member(self, target_id: str, member_id: str) -> bool:

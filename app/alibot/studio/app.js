@@ -61,6 +61,14 @@
      呈现；预算耗尽写成一条明确事实，不进错误区；
    - 写控件只有固定档位 3 / 5 / 10（默认 3），提交 `{budget_limit}`；保存后按响应里的新读数重铺，
      并提示「从下一个人类世代生效」。用量（`used`）前端既不算也不提交——它是后端的正本。
+
+   本票（issue #154）新增 —— 频道设置面（规格 §4.6 / ADR-0018 / ADR-0021）：
+   - 频道头新增设置入口，打开一张弹窗：mode（autonomous / team）、队长、项目根、默认后端、
+     默认权限档；`team_scope` 是后端只读事实，固定展示 `channel+task`；
+   - `leader_available` / `leader_reason` 与频道静默时的裁决读同一份后端事实；team 模式下
+     显示「成员 auto_claim 已停用」「任务线程只唤醒队长」；
+   - 保存提交 `PATCH /api/channels/{id}/config`，成功后按响应重铺；非法字段只显示后端可读原因
+     （整体拒绝、不留下半成品）；任务视图读取所属频道的同一份配置并显示同一条唤醒提示。
    ========================================================================== */
 'use strict';
 
@@ -180,6 +188,62 @@ const state = {
   // `selected` 是**还没提交**的档位选择（呈现状态）。两者都不是业务正本——正本在后端；
   // 关闭时整个镜像作废，于是「拿旧读数当现状」这个中间态不存在。
   channelBudget: { channelId: null, budget: null, selected: null, loading: false, error: '' },
+  // 频道设置面（#154）：`config` 是 `GET /api/channels/{id}/config` 载荷的镜像，`draft` 是
+  // **还没提交**的呈现状态；两者都不是业务正本——正本在后端，保存后按响应重铺。
+  channelConfig: {
+    channelId: null,
+    config: null,
+    members: [],
+    membersFailed: false,
+    loading: false,
+    error: '',
+    draft: {
+      mode: 'autonomous',
+      leader: '',
+      workspaceRoot: '',
+      backend: 'local',
+      permission: 'ask-writes',
+    },
+  },
+  // 任务视图要读所属频道的同一份配置（#154 / 规格 §4.6）：按 channel id 缓存
+  // `GET /api/channels/{id}/config` 的载荷，正本仍是后端。
+  channelConfigs: {},
+  // 资源管理（#156 / 规格 §4.6）：频道设置里的 Workspace / MCP / Skill 三段。
+  // `mcp` / `skills` 是 `GET /api/mcp-servers` / `GET /api/skills` 的镜像；`mcpDraft` 是
+  // **还没提交**的表单状态。清单里只有 `env_names`（变量名）——值从来不进这条通道。
+  resources: emptyResourcesView(),
+  // 运行面板（#155 / 规格 §4.6）：dock 的**第四形态**，频道与任务线程都能打开。
+  // 它是**独立面**——成员过程、分派、Plan、SOP 只在这里呈现，不进消息流 / 未读 / 搜索。
+  // `runs` / `plan` / `sops` 是三个只读快照（`GET /team-runs` / `GET /plan` /
+  // `GET /sop-runs/{id}`）的镜像；live 帧（`state.liveEvents`）在渲染时按 id 合并，
+  // 于是同一分派不会因为「快照里也有一条」而出现两行。`sopIds` 只记录已经见过的
+  // `sop_run_id`——后端没有「按 target 列 SOP run」的读面，重连兜底只能按已知 id 刷新。
+  runPanel: {
+    open: false,
+    targetId: null,
+    channelId: null,
+    taskId: null,
+    loading: false,
+    error: '',
+    runs: [],
+    plan: [],
+    sops: [],
+    sopIds: [],
+    // SOP run 的 state 只有步骤下标 / phase / verifications，没有 subject（AgentScope 的
+    // 运行态不在记录里重复定义）。步骤名从 `GET /api/sops/{definition_id}` 的定义读，
+    // 按定义 id 缓存。
+    sopDefs: {},
+    // 快照完成那一刻 live 队列里的最后一条事件。Plan / SOP 的 live 覆盖只应用它**之后**
+    // 的帧：快照已经包含更早的变化，重连后再把旧帧叠上去会把状态拉回去。
+    overlayMarker: null,
+  },
+  // 审批卡（#153 / 规格 §4.6 第 4 条 / ADR-0021 §四）：按 target 缓存
+  // `GET /api/approvals?state=pending` 的镜像，再叠加本次会话的 live `approval_*` 帧。
+  // `approvalInFlight` 是提交中的幂等闸门（按钮 disabled 的同一来源）；
+  // `approvalErrors` 只存本次会话的提交错误，不写任何浏览器存储。
+  approvals: new Map(),
+  approvalInFlight: new Set(),
+  approvalErrors: new Map(),
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
@@ -216,6 +280,10 @@ const state = {
   statuses: {},
   streams: new Map(),
   seenSeqs: new Map(),
+  // live-only 运行事件（ADR-0020 / 规格 §4.5）：按 **target_id** 归属，只活在本会话内存里。
+  // 它们不是消息正本：不进 `messages` / 未读 / 搜索 / seq 游标。运行面板（#155）从这里取；
+  // 本层只做「消费 + 有界保留 + 未知 type 忽略」。
+  liveEvents: new Map(),
   typing: {},
   // 工作区设置（**语言偏好** / **消息密度** / **主题**）：正本是后端 `GET /api/settings`，
   // 前端只镜像它；切换时写回后端，不落浏览器存储。
@@ -1014,6 +1082,8 @@ async function loadWorkspace(options) {
     await refreshChannelMembers();
     await refreshStatuses();
     syncStreams();
+    // 审批卡的恢复与消息流同一拍：打开视图先读 pending 快照（live 帧不补发）。
+    await loadApprovalsFor(state.activeChannelId);
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -1405,6 +1475,17 @@ function renderTaskThread() {
   $('#ttStatusText').textContent = taskStatusLabel(task.status);
   renderAssigneePill(task);
 
+  // ── team 频道的事实提示（#154 / ADR-0018）：任务线程只唤醒队长。
+  //    配置来自 `state.channelConfigs`（`loadTaskChannelConfig` 写入，正本是后端）；
+  //    autonomous 下整块隐藏，不用一句「和平时一样」占位。
+  const teamNotice = $('#ttTeamNotice');
+  if (teamNotice) {
+    const channelConfig = state.channelConfigs[task.channel_id];
+    const team = Boolean(channelConfig && channelConfig.mode === 'team');
+    teamNotice.hidden = !team;
+    teamNotice.textContent = team ? t('task.teamNotice') : '';
+  }
+
   // ── 推进 chips：**只**出现迁移集合里的目标（`closed` 是终态 ⇒ 一个都不出）──
   const transitions = TASK_STATUS_TRANSITIONS[task.status] || [];
   if (transitions.length) {
@@ -1487,6 +1568,8 @@ function renderTaskThread() {
   // 最近一次变更用 graphic 档的点标出来（原型 `.is-now`；不是新色位）。
   const last = log.lastElementChild;
   if (last && last.tagName === 'LI') last.classList.add('is-now');
+  // 任务线程的审批卡按 task target 铺；频道那份不会串进来。
+  renderTaskApprovals();
 }
 
 /** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
@@ -1559,14 +1642,16 @@ function renderAssignChips(task) {
   replaceChildren(box, chips);
 }
 
-/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）↔ Agent 详情（`detail`）。
+/** dock 形态切换：频道成员（`agent`）↔ 任务线程（`task`）↔ Agent 详情（`detail`）
+    ↔ 运行面板（`run`，#155）。
 
     与消息流不在同一个维度：看板仍在主线（`state.mode === 'board'`），
-    而任务线程 / Agent 详情只是 dock 里显示什么。三种形态共用同一个 380px 容器，因此
-    「同时显示两件东西」在构造上不可能发生（一次只有一种为可见）。
+    而任务线程 / Agent 详情 / 运行面板只是 dock 里显示什么。四种形态共用同一个 380px
+    容器，因此「同时显示两件东西」在构造上不可能发生（一次只有一种为可见）。
 
-    形态本身**不单独存一份**：它由「现在打开着哪一个对象」推导（`activeTaskId` 优先于
-    `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类漂移没有落脚点。
+    形态本身**不单独存一份**：它由「现在打开着哪一个对象」推导（`runPanel.open` 优先于
+    `activeTaskId`，再优先于 `activeAgentId`），于是「关闭了但 dock 还停在旧形态」这类
+    漂移没有落脚点。
 
     `reveal` = 这一次是**人显式的打开**（点看板卡片 / 点左栏 Agent 行）：它清掉
     `dockDismissed`。整体重绘（`render()`）走默认的 `false`，于是人按过的收起不会被下一次
@@ -1576,12 +1661,14 @@ function setDockMode(mode, reveal) {
   if (reveal) state.dockDismissed = false;
   const isTask = mode === 'task' && state.activeTaskId;
   const isDetail = mode === 'detail' && state.activeAgentId;
-  $('#dockAgent').hidden = Boolean(isTask || isDetail);
+  const isRun = mode === 'run' && state.runPanel.open;
+  $('#dockAgent').hidden = Boolean(isTask || isDetail || isRun);
   $('#dockTask').hidden = !isTask;
   $('#dockDetail').hidden = !isDetail;
+  $('#dockRun').hidden = !isRun;
   // 滑入放在**形态定下来之后**：≤900px 打开抽屉要把焦点送进第一个可聚焦控件，
   // 而那一步要跳过 `hidden` 子树 —— 先开抽屉会把焦点送给一个还在 `hidden` 里的控件。
-  if ((isTask || isDetail) && !state.dockDismissed) setDockOpen(true);
+  if ((isTask || isDetail || isRun) && !state.dockDismissed) setDockOpen(true);
 }
 
 function setViewMode(mode) {
@@ -1773,6 +1860,8 @@ function settleDockFallback() {
     `#btnThreadClose`（以及 `openTask()` 的失败回退）与 `#btnAgentDetailClose`。 */
 function closeTaskDock() {
   closeTaskStream();
+  // 运行面板若是从任务线程打开的，它的 target 随线程一起失效（频道面板不受影响）。
+  if (state.runPanel.open && state.runPanel.taskId) resetRunPanelState();
   const hadThread = Boolean(state.activeTaskId);
   state.activeTaskId = null;
   state.activeTask = null;
@@ -1792,6 +1881,8 @@ function taskMaxSeq() {
     落点变成猜谜。 */
 async function openTask(taskId) {
   closeTaskStream();
+  // 另一条任务的运行面板不属于这条线程：打开线程时一并作废。
+  resetRunPanelState();
   state.activeAgentId = null;
   state.activeTaskId = taskId;
   state.activeTask = taskById(taskId);
@@ -1812,6 +1903,11 @@ async function openTask(taskId) {
     if (channelAgentMembers(thread.task.channel_id) === null) {
       await refreshChannelMembers(thread.task.channel_id);
     }
+    // 任务视图读取所属频道的**同一份**配置（#154 / 规格 §4.6）：team 频道下任务线程
+    // 只唤醒队长，这条事实与频道设置页读的是同一个端点、同一份后端正本。
+    await loadTaskChannelConfig(thread.task.channel_id);
+    // 任务线程有自己的 target：审批卡按 task target 恢复，不借用频道那份。
+    await loadApprovalsFor(thread.task.target_id);
     const index = state.tasks.findIndex((task) => task.id === taskId);
     if (index >= 0) state.tasks[index] = thread.task;
     else state.tasks.push(thread.task);
@@ -1865,19 +1961,52 @@ function connectTaskStream(taskId, cursor) {
     if (state.taskStream !== entry) return;
     entry.timer = setTimeout(() => connectTaskStream(taskId, taskMaxSeq()), 250);
   });
-  source.addEventListener('message', (event) => {
-    let payload;
-    try { payload = JSON.parse(event.data); } catch { return; }
-    if (payload.message && state.activeTaskId === taskId) {
-      absorbTaskMessage(payload.message);
-      refreshTaskDetails(taskId);
-    }
+  ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {
+    source.addEventListener(type, (event) => handleTaskStreamEvent(taskId, event, type));
   });
+  source.onopen = () => {
+    // 任务 target 的 live 事件同样不补拉：重连后按运行面板快照兜底。
+    if (state.activeTask && state.activeTask.id === taskId) {
+      refreshRunPanelFor(state.activeTask.target_id);
+    }
+  };
   source.onerror = () => {
     source.close();
     if (state.taskStream !== entry) return;
     entry.timer = setTimeout(() => connectTaskStream(taskId, taskMaxSeq()), 1500);
   };
+}
+
+/* 任务线程的帧消费：message 仍进线程消息流（按 seq 去重），live-only 运行事件按 target 记录，
+   typing / member_status / round_outcome 照既有语义处理。未知 type 忽略。 */
+function handleTaskStreamEvent(taskId, event, type) {
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (type === 'message') {
+    if (payload.message && state.activeTaskId === taskId) {
+      absorbTaskMessage(payload.message);
+      refreshTaskDetails(taskId);
+    }
+    return;
+  }
+  if (isLiveEventType(type)) {
+    const targetId = payload.target_id
+      || (state.activeTask && state.activeTask.target_id)
+      || taskId;
+    recordLiveEvent(targetId, type, payload);
+    return;
+  }
+  const targetId = payload.target_id
+    || (state.activeTask && state.activeTask.target_id)
+    || taskId;
+  if (type === 'typing') onStreamTyping(targetId, payload);
+  else if (type === 'member_status') onStreamStatus(targetId, payload);
+  else if (type === 'round_outcome') onStreamOutcome(targetId, payload);
+  // 未知 type：忽略（不报错、不推进任何游标）。
 }
 
 function closeTaskStream() {
@@ -1888,6 +2017,1058 @@ function closeTaskStream() {
   if (entry.source) entry.source.close();
   if (state.taskStreamTimer) clearTimeout(state.taskStreamTimer);
   state.taskStreamTimer = null;
+}
+
+/* ─── 运行面板（#155 / 规格 §4.6；dock 第四形态）────────────────────────
+   它是**独立面**（ADR-0020 / ADR-0023）：`agent_event` / `team_assignment` /
+   `plan_update` / `sop_event` 只在这里呈现，绝不进消息流 / 未读 / 搜索 / 看板。
+   两种数据来源严格分层：
+
+   - **live 帧**（`state.liveEvents`，按 target 归属）只活在本会话内存里，断线不补；
+   - **快照**（`GET /targets/{id}/team-runs`、`/plan`、`/sop-runs/{id}`）在打开面板与
+     重连成功后重新读取，是断线期间变化的唯一兜底。两者按后端 id 合并：分派按
+     `assignment_id` 去重，Plan 任务按 `(plan_run_id, task.id)` 去重，SOP 按
+     `sop_run_id` + `step_index` 合并。live 帧因此不会把快照里的同一行再插一遍。
+*/
+
+const RUN_PANEL_RUN_LIMIT = 20;
+const RUN_PANEL_EVENT_LIMIT = 80;
+// 分派状态的推进顺序：live 帧只能把行往前推，不能把快照里的终态降回 started
+// （重连后「先刷新快照、后收到队列里的旧帧」不能倒退）。
+const RUN_PANEL_ASSIGNMENT_RANK = { started: 0, succeeded: 1, failed: 1, interrupted: 1, 'budget-exhausted': 1 };
+const RUN_PANEL_STATE_KEYS = {
+  started: 'runPanel.state.started',
+  succeeded: 'runPanel.state.succeeded',
+  failed: 'runPanel.state.failed',
+  interrupted: 'runPanel.state.interrupted',
+  'budget-exhausted': 'runPanel.state.budgetExhausted',
+  running: 'runPanel.state.running',
+  completed: 'runPanel.state.completed',
+  'invalid-leader': 'runPanel.state.invalidLeader',
+  pending: 'runPanel.state.pending',
+  in_progress: 'runPanel.state.inProgress',
+  awaiting: 'runPanel.state.awaiting',
+};
+let runPanelRequestVersion = 0;
+
+function emptyRunPanel() {
+  return {
+    open: false,
+    targetId: null,
+    channelId: null,
+    taskId: null,
+    loading: false,
+    error: '',
+    runs: [],
+    plan: [],
+    sops: [],
+    sopIds: [],
+    sopDefs: {},
+    overlayMarker: null,
+  };
+}
+
+/** 换 target / 关任务线程时把运行面板整个作废：它的快照与 live 归属都只属于旧 target。 */
+function resetRunPanelState() {
+  state.runPanel = emptyRunPanel();
+}
+
+function runPanelStateLabel(value) {
+  const key = RUN_PANEL_STATE_KEYS[value];
+  return key ? t(key) : t('runPanel.state.unknown');
+}
+
+function runPanelStatePill(value) {
+  const pill = el('span', 'rp-state', runPanelStateLabel(value));
+  pill.dataset.state = String(value || '');
+  return pill;
+}
+
+function runPanelMemberRecord(memberId) {
+  const id = String(memberId || '');
+  const pools = [state.members, state.agents];
+  if (state.runPanel.channelId) pools.push(state.channelMembers[state.runPanel.channelId] || []);
+  for (const pool of pools) {
+    const found = (pool || []).find((member) => member && String(member.id) === id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function runPanelMemberName(memberId) {
+  const member = runPanelMemberRecord(memberId);
+  return member ? member.display_name : String(memberId || '');
+}
+
+function runPanelMemberSlot(memberId) {
+  const member = runPanelMemberRecord(memberId);
+  return member ? member.avatar_slot : 0;
+}
+
+function runPanelMemberHead(memberId, count) {
+  const row = el('div', 'rp-member-head');
+  const name = runPanelMemberName(memberId);
+  row.appendChild(avatarNode(name, runPanelMemberSlot(memberId), 'sm'));
+  row.appendChild(el('span', 'rp-member-name', name));
+  if (count !== undefined) row.appendChild(el('span', 'rp-count', String(count)));
+  return row;
+}
+
+/** 分派耗时：两个时间戳都来自后端；`finished_at` 为空是「还在跑」，不拿本地时钟假装读数。 */
+function runPanelDuration(item) {
+  if (!item.started_at) return '';
+  if (!item.finished_at) return t('runPanel.inFlight');
+  const from = Date.parse(item.started_at);
+  const to = Date.parse(item.finished_at);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return '';
+  const seconds = (to - from) / 1000;
+  const value = seconds >= 10 ? String(Math.round(seconds)) : seconds.toFixed(1);
+  return t('runPanel.duration', { seconds: value });
+}
+
+/** 成员事件的摘要只取白名单 payload 的**数据字段**，不在这里造句子。 */
+function runPanelEventSummary(event) {
+  const payload = event.payload || {};
+  const clip = (text) => {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return value.length > 120 ? value.slice(0, 120) + '…' : value;
+  };
+  if (payload.tool_call_name) return clip(payload.tool_call_name);
+  if (typeof payload.delta === 'string' && payload.delta.trim()) return clip(payload.delta);
+  if (typeof payload.text === 'string' && payload.text.trim()) return clip(payload.text);
+  if (payload.state) return String(payload.state);
+  if (payload.finished_reason) return String(payload.finished_reason);
+  if (payload.error && payload.error.message) return clip(payload.error.message);
+  if (payload.hint) return clip(typeof payload.hint === 'string' ? payload.hint : JSON.stringify(payload.hint));
+  if (payload.name) return String(payload.name);
+  return '';
+}
+
+function runPanelLiveEvents() {
+  const panel = state.runPanel;
+  if (!panel.targetId) return [];
+  return (state.liveEvents.get(panel.targetId) || []).filter(
+    (event) => event.type === 'agent_event'
+      || event.type === 'team_assignment'
+      || event.type === 'plan_update'
+      || event.type === 'sop_event',
+  );
+}
+
+/** 只保留**快照之后**到达的 Plan / SOP live 帧。
+
+    快照是它们更早变化的合并结果；把队列里的旧帧再叠一遍会让「重连刷新」把状态拉回
+    断线前。分派不在这里排除（它有状态推进的秩守卫，且 `started` → 终态是合法的直播
+    过程）；`agent_event` 本来就只活在 live 层，全部保留。 */
+function runPanelOverlayEvents(live) {
+  const marker = state.runPanel.overlayMarker;
+  if (!marker) return live;
+  const index = live.indexOf(marker);
+  if (index < 0) return live; // 有界保留把标记挤掉了：宁可全部应用，也别丢新帧
+  return live.slice(index + 1);
+}
+
+/** 快照分派 + live 分派按 `assignment_id` 合并：同一分派只有一行。 */
+function runPanelAssignments(run, live) {
+  const rows = (run.assignments || []).map((item) => ({ ...item }));
+  const byId = new Map(rows.map((item) => [String(item.id), item]));
+  live.forEach((frame) => {
+    if (frame.type !== 'team_assignment' || frame.team_run_id !== run.id) return;
+    const key = String(frame.assignment_id || '');
+    if (!key) return;
+    const existing = byId.get(key);
+    if (!existing) {
+      const row = {
+        id: key,
+        member_id: frame.member_id,
+        task_id: frame.task_id,
+        reply_id: frame.reply_id,
+        state: frame.state,
+        started_at: null,
+        finished_at: null,
+        reply_excerpt: null,
+        error: null,
+      };
+      byId.set(key, row);
+      rows.push(row);
+      return;
+    }
+    const currentRank = RUN_PANEL_ASSIGNMENT_RANK[existing.state] ?? 0;
+    const frameRank = RUN_PANEL_ASSIGNMENT_RANK[frame.state] ?? 0;
+    if (frameRank < currentRank) return; // 不把终态降回 started
+    existing.state = frame.state;
+    if (frame.member_id) existing.member_id = frame.member_id;
+    if (frame.reply_id) existing.reply_id = frame.reply_id;
+    if (frame.task_id) existing.task_id = frame.task_id;
+  });
+  return rows;
+}
+
+function runPanelAssignmentRow(item) {
+  const row = el('div', 'rp-assign');
+  row.dataset.assignment = String(item.id || '');
+  row.dataset.state = String(item.state || '');
+  const top = el('div', 'rp-assign-top');
+  top.appendChild(runPanelStatePill(item.state));
+  const duration = runPanelDuration(item);
+  if (duration) top.appendChild(el('span', 'rp-duration', duration));
+  row.appendChild(top);
+  if (item.task_id) {
+    row.appendChild(el('div', 'rp-meta', t('runPanel.taskRef', { id: String(item.task_id).slice(-6) })));
+  }
+  if (item.reply_excerpt) row.appendChild(el('div', 'rp-excerpt', item.reply_excerpt));
+  if (item.error) row.appendChild(el('div', 'rp-error-line', String(item.error)));
+  return row;
+}
+
+function runPanelRunCard(run, live) {
+  const card = el('div', 'rp-run');
+  card.dataset.odId = 'rp-run-' + run.id;
+  card.dataset.run = String(run.id);
+  const head = el('div', 'rp-run-head');
+  const leaderName = runPanelMemberName(run.leader_member_id);
+  head.appendChild(avatarNode(leaderName, runPanelMemberSlot(run.leader_member_id), 'sm'));
+  head.appendChild(el('span', 'rp-run-title', leaderName));
+  head.appendChild(runPanelStatePill(run.status));
+  if (run.started_at) head.appendChild(el('span', 'rp-time', timeLabel(run.started_at)));
+  head.appendChild(el('span', 'rp-id', '#' + String(run.id).slice(-6)));
+  card.appendChild(head);
+
+  const assignments = runPanelAssignments(run, live);
+  if (!assignments.length) {
+    card.appendChild(el('div', 'tt-note', t('runPanel.noAssignments')));
+    return card;
+  }
+  const groups = new Map();
+  assignments.forEach((item) => {
+    const memberId = String(item.member_id || '');
+    if (!groups.has(memberId)) groups.set(memberId, []);
+    groups.get(memberId).push(item);
+  });
+  groups.forEach((items, memberId) => {
+    const group = el('div', 'rp-member');
+    group.dataset.odId = 'rp-run-' + run.id + '-member-' + memberId;
+    group.appendChild(runPanelMemberHead(memberId, items.length));
+    items.forEach((item) => group.appendChild(runPanelAssignmentRow(item)));
+    card.appendChild(group);
+  });
+  return card;
+}
+
+function runPanelEventsSection(live) {
+  const section = el('div', 'd-sec');
+  section.dataset.odId = 'rp-events';
+  section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionEvents')));
+  const events = live.filter((frame) => frame.type === 'agent_event').slice(-RUN_PANEL_EVENT_LIMIT);
+  if (!events.length) {
+    section.appendChild(el('div', 'tt-empty', t('runPanel.eventsEmpty')));
+    return section;
+  }
+  const groups = new Map();
+  events.forEach((frame) => {
+    const memberId = String(frame.member_id || '');
+    if (!groups.has(memberId)) groups.set(memberId, new Map());
+    const replies = groups.get(memberId);
+    const replyId = String(frame.reply_id || '');
+    if (!replies.has(replyId)) replies.set(replyId, []);
+    replies.get(replyId).push(frame);
+  });
+  groups.forEach((replies, memberId) => {
+    const group = el('div', 'rp-member');
+    group.dataset.odId = 'rp-events-member-' + memberId;
+    group.dataset.member = memberId;
+    group.appendChild(runPanelMemberHead(memberId, replyCountLabel(replies.size)));
+    replies.forEach((frames, replyId) => {
+      const reply = el('div', 'rp-reply');
+      reply.dataset.reply = replyId;
+      reply.appendChild(el('div', 'rp-reply-id', t('runPanel.replyRef', { id: replyId.slice(-6) })));
+      frames.slice(-20).forEach((frame) => {
+        const row = el('div', 'rp-event');
+        row.dataset.eventType = String(frame.event_type || '');
+        row.appendChild(el('span', 'rp-event-type', String(frame.event_type || '')));
+        const summary = runPanelEventSummary(frame);
+        if (summary) row.appendChild(el('span', 'rp-event-summary', summary));
+        reply.appendChild(row);
+      });
+      group.appendChild(reply);
+    });
+    section.appendChild(group);
+  });
+  return section;
+}
+
+/** 一个回复内的事件条数是**计数**，进 mono 档；不把「3 条事件」写成一句话。 */
+function replyCountLabel(count) {
+  return count ? '×' + String(count) : '';
+}
+
+/** Plan：快照里每个成员最近一个 run 的清单 + live `plan_update` 覆盖（按 task id 去重）。 */
+function runPanelPlanGroups(live) {
+  const groups = new Map();
+  (state.runPanel.plan || []).forEach((member) => {
+    const latest = (member.runs || [])[0];
+    if (!latest) return;
+    groups.set(String(member.member_id), {
+      memberId: String(member.member_id),
+      runId: String(latest.id),
+      tasks: (latest.tasks || []).map((task) => ({ ...task })),
+    });
+  });
+  live.filter((frame) => frame.type === 'plan_update').forEach((frame) => {
+    const memberId = String(frame.member_id || '');
+    let group = groups.get(memberId);
+    if (!group) {
+      group = { memberId, runId: String(frame.plan_run_id || ''), tasks: [] };
+      groups.set(memberId, group);
+    }
+    if (group.runId !== String(frame.plan_run_id || '')) {
+      group.runId = String(frame.plan_run_id || '');
+      group.tasks = [];
+    }
+    const task = frame.task || {};
+    const index = group.tasks.findIndex((item) => String(item.id) === String(task.id));
+    if (task.deleted_at) {
+      if (index >= 0) group.tasks.splice(index, 1);
+      return;
+    }
+    if (index >= 0) group.tasks[index] = { ...group.tasks[index], ...task };
+    else group.tasks.push({ ...task });
+  });
+  return [...groups.values()];
+}
+
+function runPanelPlanSection(live) {
+  const section = el('div', 'd-sec');
+  section.dataset.odId = 'rp-plan';
+  section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionPlan')));
+  const groups = runPanelPlanGroups(live)
+    .map((group) => ({ ...group, tasks: group.tasks.filter((task) => !task.deleted_at) }))
+    .filter((group) => group.tasks.length);
+  if (!groups.length) {
+    section.appendChild(el('div', 'tt-empty', t('runPanel.planEmpty')));
+    return section;
+  }
+  groups.forEach((group) => {
+    const card = el('div', 'rp-member rp-plan-group');
+    card.dataset.odId = 'rp-plan-member-' + group.memberId;
+    card.dataset.member = group.memberId;
+    card.appendChild(runPanelMemberHead(group.memberId, group.tasks.length));
+    group.tasks.forEach((task) => {
+      const row = el('div', 'rp-plan-task');
+      row.dataset.planTask = String(task.id || '');
+      row.dataset.state = String(task.state || '');
+      row.appendChild(el('span', 'rp-plan-subject', String(task.subject || task.description || task.id || '')));
+      row.appendChild(runPanelStatePill(task.state));
+      card.appendChild(row);
+    });
+    section.appendChild(card);
+  });
+  return section;
+}
+
+/** `completed` / `failed` 是 SOP 的终态：快照已经收口的运行不会被迟到的 live 帧拉回。 */
+function runPanelTerminalPhase(phase) {
+  return phase === 'completed' || phase === 'failed';
+}
+
+/** SOP：快照 run 视图 + live `sop_event` 覆盖（按 run id + step_index 合并）。 */
+function runPanelSopViews(live) {
+  const views = new Map();
+  (state.runPanel.sops || []).forEach((run) => {
+    views.set(String(run.id), {
+      id: String(run.id),
+      definitionId: String(run.sop_definition_id || ''),
+      phase: run.phase,
+      started_at: run.started_at,
+      awaiting: run.awaiting || null,
+      steps: ((run.state && run.state.steps) || []).map((step, index) => ({
+        index,
+        subject: step.subject || '',
+        phase: step.phase,
+        verdicts: (step.verifications || []).slice(),
+      })),
+    });
+  });
+  live.filter((frame) => frame.type === 'sop_event').forEach((frame) => {
+    const runId = String(frame.sop_run_id || '');
+    if (!runId) return;
+    let view = views.get(runId);
+    if (!view) {
+      view = { id: runId, definitionId: '', phase: 'pending', started_at: null, awaiting: null, steps: [] };
+      views.set(runId, view);
+    }
+    const payload = frame.payload || {};
+    if (payload.run_phase && !runPanelTerminalPhase(view.phase)) view.phase = frame.phase;
+    if (payload.reply_id) view.awaiting = { reply_id: payload.reply_id };
+    const index = Number(frame.step_index) || 0;
+    let step = view.steps[index];
+    if (!step) {
+      step = { index, subject: payload.step || '', phase: 'pending', verdicts: [] };
+      view.steps[index] = step;
+    }
+    const nextPhase = payload.phase || frame.phase;
+    if (nextPhase && (!runPanelTerminalPhase(step.phase) || runPanelTerminalPhase(nextPhase))) {
+      step.phase = nextPhase;
+    }
+    if (payload.verdict) step.verdicts = step.verdicts.concat([payload.verdict]);
+  });
+  return [...views.values()];
+}
+
+function runPanelSopSection(live) {
+  const section = el('div', 'd-sec');
+  section.dataset.odId = 'rp-sop';
+  section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionSop')));
+  const views = runPanelSopViews(live);
+  if (!views.length) {
+    section.appendChild(el('div', 'tt-empty', t('runPanel.sopEmpty')));
+    return section;
+  }
+  views.forEach((run) => {
+    const card = el('div', 'rp-run rp-sop');
+    card.dataset.odId = 'rp-sop-' + run.id;
+    card.dataset.sopRun = run.id;
+    const head = el('div', 'rp-run-head');
+    head.appendChild(el('span', 'rp-run-title', '#' + run.id.slice(-6)));
+    head.appendChild(runPanelStatePill(run.phase));
+    if (run.started_at) head.appendChild(el('span', 'rp-time', timeLabel(run.started_at)));
+    card.appendChild(head);
+    if (run.awaiting && run.awaiting.reply_id) {
+      card.appendChild(
+        el('div', 'team-notice', t('runPanel.awaiting', { reply: String(run.awaiting.reply_id).slice(-6) })),
+      );
+    }
+    const steps = run.steps.slice().sort((a, b) => a.index - b.index);
+    const definitionSteps = (state.runPanel.sopDefs[run.definitionId] || {}).steps || [];
+    if (!steps.length) {
+      card.appendChild(el('div', 'tt-note', t('runPanel.noSteps')));
+    } else {
+      steps.forEach((step) => {
+        const row = el('div', 'rp-step');
+        row.dataset.step = String(step.index);
+        row.dataset.state = String(step.phase || '');
+        const top = el('div', 'rp-step-top');
+        const definitionStep = definitionSteps[step.index];
+        const subject = step.subject
+          || (definitionStep && definitionStep.subject)
+          || t('runPanel.stepIndex', { index: step.index + 1 });
+        top.appendChild(el('span', 'rp-step-name', subject));
+        top.appendChild(runPanelStatePill(step.phase));
+        row.appendChild(top);
+        if (step.verdicts.length) {
+          const verdict = step.verdicts[step.verdicts.length - 1];
+          const line = el('div', verdict.passed ? 'rp-verdict is-pass' : 'rp-verdict is-fail');
+          line.dataset.passed = verdict.passed ? 'true' : 'false';
+          line.appendChild(el('span', 'rp-verdict-state',
+            verdict.passed ? t('runPanel.verdictPassed') : t('runPanel.verdictFailed')));
+          if (verdict.message) line.appendChild(el('span', 'rp-verdict-message', String(verdict.message)));
+          row.appendChild(line);
+        }
+        card.appendChild(row);
+      });
+    }
+    section.appendChild(card);
+  });
+  return section;
+}
+
+function renderRunPanel() {
+  const panel = state.runPanel;
+  const title = $('#rpTitle');
+  if (title) {
+    if (panel.taskId) {
+      const task = taskById(panel.taskId);
+      title.textContent = task ? task.title : '#' + String(panel.taskId).slice(-6);
+    } else {
+      const channel = state.channels.find((item) => item.id === panel.channelId);
+      title.textContent = channel ? channel.name : String(panel.channelId || '');
+    }
+  }
+  const sub = $('#rpSub');
+  if (sub) sub.textContent = t('runPanel.sub');
+  const body = $('#rpBody');
+  if (!body) return;
+  if (!panel.open) {
+    replaceChildren(body, []);
+    return;
+  }
+  if (panel.error) {
+    const box = el('div', 'rp-error');
+    box.setAttribute('data-od-id', 'rp-error');
+    box.appendChild(el('div', 'rp-error-text', t('runPanel.error', { reason: panel.error })));
+    const retry = el('button', 'btn btn-sm', t('runPanel.retry'));
+    retry.type = 'button';
+    retry.dataset.runRetry = '1';
+    retry.setAttribute('data-od-id', 'rp-retry');
+    box.appendChild(retry);
+    replaceChildren(body, [box]);
+    return;
+  }
+  if (panel.loading && !panel.runs.length && !panel.plan.length && !panel.sops.length) {
+    replaceChildren(body, [el('div', 'tt-empty', t('runPanel.loading'))]);
+    return;
+  }
+  const live = runPanelLiveEvents();
+  const overlay = runPanelOverlayEvents(live);
+  const runsSection = el('div', 'd-sec');
+  runsSection.dataset.odId = 'rp-runs';
+  runsSection.appendChild(el('div', 'd-sec-title', t('runPanel.sectionRuns')));
+  if (!panel.runs.length) {
+    runsSection.appendChild(el('div', 'tt-empty', t('runPanel.runsEmpty')));
+  } else {
+    panel.runs.forEach((run) => runsSection.appendChild(runPanelRunCard(run, live)));
+  }
+  replaceChildren(body, [
+    runsSection,
+    runPanelEventsSection(live),
+    runPanelPlanSection(overlay),
+    runPanelSopSection(overlay),
+  ]);
+}
+
+/** 打开运行面板：入口在频道头（target = 频道）与任务线程头（target = 任务 target，
+    另带 `task_id` 过滤）。`reveal` 表示这是人显式的打开，压过「上次收起」那一
+    位（与 `openTask` 同一条规则）。 */
+function openRunPanel(options) {
+  const panel = state.runPanel;
+  panel.open = true;
+  panel.targetId = options.targetId;
+  panel.channelId = options.channelId || null;
+  panel.taskId = options.taskId || null;
+  panel.loading = true;
+  panel.error = '';
+  panel.runs = [];
+  panel.plan = [];
+  panel.sops = [];
+  panel.sopDefs = {};
+  panel.overlayMarker = null;
+  // 本次会话里已经见过的 SOP run：面板重开后仍要能按 id 拉快照（后端没有按 target
+  // 列 SOP run 的读面，live 帧是 id 的唯一来源）。
+  panel.sopIds = (state.liveEvents.get(panel.targetId) || [])
+    .filter((event) => event.type === 'sop_event' && event.sop_run_id)
+    .map((event) => String(event.sop_run_id))
+    .filter((id, index, ids) => ids.indexOf(id) === index);
+  setDockMode('run', true);
+  renderRunPanel();
+  if (panel.channelId && channelAgentMembers(panel.channelId) === null) {
+    refreshChannelMembers(panel.channelId).then(() => {
+      if (state.runPanel.open && state.runPanel.channelId === panel.channelId) renderRunPanel();
+    });
+  }
+  loadRunPanelSnapshot();
+}
+
+function openRunPanelForChannel() {
+  const channel = activeChannel();
+  if (!channel) return;
+  openRunPanel({ channelId: channel.id, targetId: channel.id, taskId: null });
+}
+
+function openRunPanelForTask() {
+  const task = state.activeTask;
+  if (!task) return;
+  openRunPanel({ channelId: task.channel_id, targetId: task.target_id, taskId: task.id });
+}
+
+/** 关闭运行面板：落点与其它 dock 形态共用同一份判据（从任务线程打开的回任务线程）。 */
+function closeRunPanel() {
+  const panel = state.runPanel;
+  const fromTask = Boolean(panel.taskId);
+  panel.open = false;
+  panel.loading = false;
+  panel.error = '';
+  if (fromTask && state.activeTaskId) setDockMode('task');
+  else settleDockFallback();
+}
+
+/** `sop_event` 是新 run 的唯一线索：记住 id，下一次快照刷新按 id 拉 `GET /sop-runs/{id}`。 */
+function noteRunPanelSopId(targetId, event) {
+  const panel = state.runPanel;
+  if (!panel.open || panel.targetId !== targetId) return;
+  const runId = String(event.sop_run_id || '');
+  if (runId && panel.sopIds.indexOf(runId) === -1) panel.sopIds.push(runId);
+}
+
+async function loadRunPanelSnapshot() {
+  const panel = state.runPanel;
+  if (!panel.open || !panel.targetId) return;
+  const version = ++runPanelRequestVersion;
+  const targetId = panel.targetId;
+  const taskId = panel.taskId;
+  const sopIds = panel.sopIds.slice();
+  panel.loading = true;
+  panel.error = '';
+  renderRunPanel();
+  let runsUrl = '/api/targets/' + encodeURIComponent(targetId) + '/team-runs?limit=' + RUN_PANEL_RUN_LIMIT;
+  if (taskId) runsUrl += '&task_id=' + encodeURIComponent(taskId);
+  try {
+    const [runsPayload, planPayload] = await Promise.all([
+      api(runsUrl),
+      api('/api/targets/' + encodeURIComponent(targetId) + '/plan'),
+    ]);
+    const sopPayloads = await Promise.all(
+      sopIds.map((runId) => api('/api/sop-runs/' + encodeURIComponent(runId)).catch(() => null)),
+    );
+    // 步骤名在定义里（run state 只存 phase / verdict）：按 run 的 definition id 读定义。
+    const definitionIds = sopPayloads
+      .map((payload) => payload && payload.run && payload.run.sop_definition_id)
+      .filter(Boolean)
+      .filter((id, index, ids) => ids.indexOf(id) === index);
+    const definitionPayloads = await Promise.all(
+      definitionIds.map((id) => api('/api/sops/' + encodeURIComponent(id)).catch(() => null)),
+    );
+    if (version !== runPanelRequestVersion || !panel.open || panel.targetId !== targetId) return;
+    panel.runs = runsPayload.runs || [];
+    panel.plan = (planPayload.plan && planPayload.plan.members) || [];
+    panel.sops = sopPayloads
+      .filter((payload) => payload && payload.run)
+      .map((payload) => payload.run);
+    const defs = {};
+    definitionPayloads.forEach((payload) => {
+      if (payload && payload.sop && payload.sop.id) defs[payload.sop.id] = payload.sop;
+    });
+    panel.sopDefs = defs;
+    // 快照已经合并了此刻之前的所有变化：Plan / SOP 的 live 覆盖只应用它之后的帧。
+    const events = state.liveEvents.get(targetId) || [];
+    panel.overlayMarker = events.length ? events[events.length - 1] : null;
+    panel.loading = false;
+    panel.error = '';
+  } catch (err) {
+    if (version !== runPanelRequestVersion || !panel.open || panel.targetId !== targetId) return;
+    panel.loading = false;
+    panel.error = err.message;
+  }
+  renderRunPanel();
+}
+
+/** 重连成功后刷新：只有面板开着、且这个 target 正是面板的 target 时才读。 */
+function refreshRunPanelFor(targetId) {
+  const panel = state.runPanel;
+  if (!panel.open || !panel.targetId) return;
+  if (targetId && panel.targetId !== targetId) return;
+  loadRunPanelSnapshot();
+}
+
+/* ─── 审批卡（#153 / 规格 §4.6 第 4 条 / ADR-0021 §四）───────────────────
+   人类面的 HITL：卡片只呈现后端已经收窄的 `{id, name, input}`（不存 env / 凭证），
+   允许 / 拒绝走 `POST /api/approvals/{reply_id}`（pending-only、幂等、相反结论 409）。
+   恢复路径是 `GET /api/approvals?target_id=&state=pending`；live 帧只补「本次会话内的
+   变化」，断线不补发（ADR-0020），重连后按快照兜底。
+   倒计时只由 `requested_at + 600s` 推导——这是后端的等待上界，也是 displayed `expired`
+   的唯一判据。倒计时归零只改呈现（后端会在同一上界把记录标 expired）。 */
+
+const APPROVAL_TIMEOUT_SECONDS = 600;
+const APPROVAL_REDACTED = '••••';
+// 只用于「input 里可能出现的敏感键」：凭证、令牌、口令与 cookie 一律掩码。
+const APPROVAL_SENSITIVE_KEY =
+  /(?:pass(?:word|wd)?|secret|token|api[-_]?key|authorization|cookie|credential|private[-_]?key|access[-_]?key|session[-_]?id)/i;
+
+const APPROVAL_STATE_KEYS = {
+  pending: 'approval.pending',
+  approved: 'approval.approved',
+  denied: 'approval.denied',
+  expired: 'approval.expired',
+};
+
+let approvalTicker = null;
+
+function approvalMapFor(targetId) {
+  let map = state.approvals.get(targetId);
+  if (!map) {
+    map = new Map();
+    state.approvals.set(targetId, map);
+  }
+  return map;
+}
+
+/** 某个 target 的审批记录：pending 在前，其余按请求时间倒序（本次会话内的显示顺序）。 */
+function approvalRecordsFor(targetId) {
+  const map = state.approvals.get(targetId);
+  if (!map) return [];
+  const rank = (record) => (approvalDisplayState(record) === 'pending' ? 0 : 1);
+  return Array.from(map.values()).sort(
+    (left, right) =>
+      rank(left) - rank(right) ||
+      String(right.requested_at || '').localeCompare(String(left.requested_at || '')),
+  );
+}
+
+/** 剩余秒数（向上取整）；`requested_at` 不可解析时返回 `null`（不伪造倒计时）。 */
+function approvalRemainingSeconds(record, now) {
+  const requested = Date.parse(record && record.requested_at);
+  if (!Number.isFinite(requested)) return null;
+  const at = now === undefined ? Date.now() : now;
+  return Math.max(0, Math.ceil((requested + APPROVAL_TIMEOUT_SECONDS * 1000 - at) / 1000));
+}
+
+/** 呈现态：后端的终态优先；仍 pending 但已越过 600s 上界时显示 expired。 */
+function approvalDisplayState(record) {
+  if (!record) return 'expired';
+  if (record.state && record.state !== 'pending') return String(record.state);
+  const remaining = approvalRemainingSeconds(record, Date.now());
+  if (remaining !== null && remaining <= 0) return 'expired';
+  return 'pending';
+}
+
+function approvalStateLabel(value) {
+  const key = APPROVAL_STATE_KEYS[value];
+  return key ? t(key) : String(value || t('approval.stateUnknown'));
+}
+
+function approvalClockText(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  return String(Math.floor(total / 60)).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
+}
+
+function approvalRemainingText(record, displayState) {
+  if (displayState !== 'pending') return '';
+  const remaining = approvalRemainingSeconds(record, Date.now());
+  return t('approval.remaining', { time: remaining === null ? '--:--' : approvalClockText(remaining) });
+}
+
+function approvalMemberRecord(memberId) {
+  const id = String(memberId || '');
+  const pools = [state.members, state.agents, ...Object.values(state.channelMembers || {})];
+  for (const pool of pools) {
+    const found = (pool || []).find((member) => member && String(member.id) === id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 递归掩码：敏感键的值一律替换为 `••••`；对象最多展开三层，避免把大载荷铺进 DOM。 */
+function approvalSanitizeValue(value, key, depth) {
+  if (key && APPROVAL_SENSITIVE_KEY.test(String(key))) return APPROVAL_REDACTED;
+  if (depth > 3) return '…';
+  if (Array.isArray(value)) {
+    return value.map((item) => approvalSanitizeValue(item, '', depth + 1));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach((name) => {
+      out[name] = approvalSanitizeValue(value[name], name, depth + 1);
+    });
+    return out;
+  }
+  if (typeof value === 'string' && value.length > 120) return value.slice(0, 117) + '…';
+  return value;
+}
+
+function approvalValueText(value) {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 参数摘要：只读 `input`，敏感键掩码；总长有界，不把整份文件内容铺开。 */
+function approvalInputSummary(input) {
+  if (input === null || input === undefined) return t('approval.noInput');
+  if (typeof input !== 'object') {
+    return approvalValueText(approvalSanitizeValue(input, '', 0));
+  }
+  const keys = Object.keys(input);
+  if (!keys.length) return t('approval.noInput');
+  const text = keys
+    .map((key) => key + '=' + approvalValueText(approvalSanitizeValue(input[key], key, 0)))
+    .join(' · ');
+  return text.length > 240 ? text.slice(0, 237) + '…' : text;
+}
+
+function approvalToolNode(call) {
+  const item = el('div', 'approval-tool');
+  item.appendChild(
+    el('div', 'approval-tool-name', String((call && call.name) || t('approval.unknownTool'))),
+  );
+  item.appendChild(
+    el('div', 'approval-tool-input', approvalInputSummary(call ? call.input : null)),
+  );
+  return item;
+}
+
+function approvalActionButton(targetId, replyId, action, inFlight) {
+  const allow = action === 'allow';
+  const button = el('button', 'btn btn-sm' + (allow ? ' btn-primary' : ''), t(allow ? 'approval.allow' : 'approval.deny'));
+  button.type = 'button';
+  button.disabled = inFlight || !state.online;
+  button.dataset.approvalAction = action;
+  button.dataset.approvalReply = replyId;
+  button.dataset.approvalTarget = String(targetId);
+  return button;
+}
+
+function approvalCardNode(targetId, record) {
+  const replyId = String(record.reply_id || '');
+  const displayState = approvalDisplayState(record);
+  const card = el('div', 'approval-card');
+  card.dataset.approvalId = replyId;
+  card.dataset.approvalTarget = String(targetId);
+  card.dataset.state = displayState;
+  card.setAttribute('role', 'group');
+  const toolNames = (record.tool_calls || [])
+    .map((call) => String((call && call.name) || ''))
+    .filter(Boolean)
+    .join(', ');
+  card.setAttribute('aria-label', t('approval.cardLabel', { tools: toolNames }));
+
+  const head = el('div', 'approval-head');
+  head.appendChild(el('span', 'approval-tag', t('approval.tag')));
+  const member = approvalMemberRecord(record.member_id);
+  const memberName = member ? member.display_name : String(record.member_id || '');
+  head.appendChild(avatarNode(memberName, member ? member.avatar_slot : 0, 'sm'));
+  head.appendChild(el('span', 'approval-member', memberName));
+  const statePill = el('span', 'approval-state', approvalStateLabel(displayState));
+  statePill.dataset.state = displayState;
+  head.appendChild(statePill);
+  const remaining = el('span', 'approval-remaining', approvalRemainingText(record, displayState));
+  const remainingSeconds = approvalRemainingSeconds(record, Date.now());
+  if (displayState === 'pending' && remainingSeconds !== null) {
+    remaining.dataset.urgent = remainingSeconds <= 60 ? '1' : '0';
+  }
+  head.appendChild(remaining);
+  card.appendChild(head);
+
+  const calls = Array.isArray(record.tool_calls) ? record.tool_calls : [];
+  if (calls.length) {
+    const tools = el('div', 'approval-tools');
+    calls.forEach((call) => tools.appendChild(approvalToolNode(call)));
+    card.appendChild(tools);
+  }
+
+  if (displayState === 'pending') {
+    const inFlight = state.approvalInFlight.has(replyId);
+    const actions = el('div', 'approval-actions');
+    actions.appendChild(approvalActionButton(targetId, replyId, 'allow', inFlight));
+    actions.appendChild(approvalActionButton(targetId, replyId, 'deny', inFlight));
+    card.appendChild(actions);
+    if (inFlight) card.appendChild(el('div', 'approval-note', t('approval.submitting')));
+  }
+
+  const error = state.approvalErrors.get(replyId);
+  if (error) {
+    card.appendChild(el('div', 'approval-error', t('approval.submitFailed', { reason: error })));
+  }
+  return card;
+}
+
+function renderChannelApprovals(records, targetId) {
+  const board = $('#approvalBoard');
+  if (!board) return;
+  const id = targetId === undefined ? state.activeChannelId : targetId;
+  const target = activeTarget();
+  const visible = Boolean(target && id && target.id === id);
+  const list = records || (visible ? approvalRecordsFor(id) : []);
+  board.hidden = !list.length;
+  if (!list.length) {
+    replaceChildren(board, []);
+    return;
+  }
+  const title = el('div', 'd-sec-title', t('approval.section'));
+  replaceChildren(board, [title, ...list.map((record) => approvalCardNode(id, record))]);
+}
+
+function renderTaskApprovals() {
+  const section = $('#ttApprovalSection');
+  const list = $('#ttApprovals');
+  if (!section || !list) return;
+  const task = state.activeTask;
+  const targetId = task && task.target_id;
+  const records = targetId ? approvalRecordsFor(targetId) : [];
+  section.hidden = !records.length;
+  replaceChildren(list, records.map((record) => approvalCardNode(targetId, record)));
+}
+
+function hasPendingApprovals() {
+  for (const map of state.approvals.values()) {
+    for (const record of map.values()) {
+      if (approvalDisplayState(record) === 'pending') return true;
+    }
+  }
+  return false;
+}
+
+/** 秒级刷新只改倒计时文本，不重建卡片：重建会让正在点的按钮被换掉（点击落空）。
+    只有呈现态变化（pending → expired）时才重铺那一面。 */
+function refreshApprovalCountdowns() {
+  const surfaces = ['#approvalBoard', '#ttApprovals'];
+  let needsRender = false;
+  surfaces.forEach((selector) => {
+    const root = $(selector);
+    if (!root) return;
+    root.querySelectorAll('.approval-card').forEach((card) => {
+      const targetId = card.dataset.approvalTarget;
+      const record = approvalMapFor(targetId).get(card.dataset.approvalId);
+      if (!record) {
+        needsRender = true;
+        return;
+      }
+      const displayState = approvalDisplayState(record);
+      if (displayState !== card.dataset.state) {
+        needsRender = true;
+        return;
+      }
+      const remaining = card.querySelector('.approval-remaining');
+      if (remaining) remaining.textContent = approvalRemainingText(record, displayState);
+    });
+  });
+  if (needsRender) {
+    renderChannelApprovals();
+    renderTaskApprovals();
+  }
+}
+
+/** 倒计时是一个「只在有 pending 时存在」的秒级刷新：归零那一刻换成 expired 并停表。 */
+function syncApprovalTicker() {
+  if (!hasPendingApprovals()) {
+    if (approvalTicker !== null && typeof clearInterval === 'function') clearInterval(approvalTicker);
+    approvalTicker = null;
+    return;
+  }
+  if (approvalTicker !== null || typeof setInterval !== 'function') return;
+  approvalTicker = setInterval(() => {
+    refreshApprovalCountdowns();
+    if (!hasPendingApprovals()) {
+      if (typeof clearInterval === 'function') clearInterval(approvalTicker);
+      approvalTicker = null;
+    }
+  }, 1000);
+}
+
+function renderApprovalSurfaces() {
+  renderChannelApprovals();
+  renderTaskApprovals();
+  syncApprovalTicker();
+}
+
+function upsertApproval(targetId, record) {
+  if (!targetId || !record || !record.reply_id) return;
+  const replyId = String(record.reply_id);
+  approvalMapFor(targetId).set(replyId, { ...record, target_id: record.target_id || targetId });
+  renderApprovalSurfaces();
+}
+
+/** live `approval_required`：同一个 reply_id 的新帧只更新待办调用，不重置 requested_at。 */
+function absorbApprovalRequired(targetId, payload) {
+  const replyId = String((payload && payload.reply_id) || '');
+  if (!targetId || !replyId) return;
+  const map = approvalMapFor(targetId);
+  const existing = map.get(replyId);
+  if (existing && approvalDisplayState(existing) !== 'pending') return; // 已收口，不重新打开
+  const record = {
+    reply_id: replyId,
+    target_id: targetId,
+    member_id: String((payload && payload.member_id) || (existing && existing.member_id) || ''),
+    tool_calls: Array.isArray(payload && payload.tool_calls)
+      ? payload.tool_calls
+      : (existing && existing.tool_calls) || [],
+    state: 'pending',
+    decisions: existing ? existing.decisions : [],
+    requested_at: existing && existing.requested_at ? existing.requested_at : new Date().toISOString(),
+    resolved_at: null,
+  };
+  map.set(replyId, record);
+  renderApprovalSurfaces();
+}
+
+/** live `approval_resolved`：只更新已经出现在本会话里的卡；没有卡就不伪造一条。 */
+function absorbApprovalResolved(targetId, payload) {
+  const replyId = String((payload && payload.reply_id) || '');
+  if (!targetId || !replyId) return;
+  const map = approvalMapFor(targetId);
+  const existing = map.get(replyId);
+  if (!existing) return;
+  map.set(replyId, {
+    ...existing,
+    state: String((payload && payload.state) || 'resolved'),
+    decisions: Array.isArray(payload && payload.decisions) ? payload.decisions : existing.decisions,
+    resolved_at: existing.resolved_at || new Date().toISOString(),
+  });
+  renderApprovalSurfaces();
+}
+
+/** 打开视图 / 重连后的恢复：只读 pending 快照；本次已知但快照里消失的 pending 视为已过期
+    （进程重启会把 pending 标 expired——D19）。fetch 失败不阻塞页面打开。 */
+async function loadApprovalsFor(targetId) {
+  if (!targetId) return;
+  const map = approvalMapFor(targetId);
+  const known = new Set(map.keys());
+  let payload;
+  try {
+    payload = await api('/api/approvals?target_id=' + encodeURIComponent(targetId) + '&state=pending');
+  } catch {
+    return;
+  }
+  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+  const seen = new Set();
+  records.forEach((record) => {
+    if (!record || !record.reply_id) return;
+    const replyId = String(record.reply_id);
+    seen.add(replyId);
+    map.set(replyId, { ...record, target_id: record.target_id || targetId });
+  });
+  known.forEach((replyId) => {
+    if (seen.has(replyId)) return;
+    const record = map.get(replyId);
+    if (record && approvalDisplayState(record) === 'pending') {
+      map.set(replyId, { ...record, state: 'expired', resolved_at: new Date().toISOString() });
+    }
+  });
+  renderApprovalSurfaces();
+}
+
+/** 提交失败（例如 409：另一处已决策 / 已过期）时按 target 重读真实状态，不猜。 */
+async function reconcileApproval(targetId, replyId) {
+  if (!targetId || !replyId) return;
+  try {
+    const payload = await api('/api/approvals?target_id=' + encodeURIComponent(targetId));
+    const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+    const found = records.find((record) => String(record.reply_id) === String(replyId));
+    const map = approvalMapFor(targetId);
+    if (found) {
+      map.set(String(replyId), { ...found, target_id: found.target_id || targetId });
+    } else {
+      const record = map.get(String(replyId));
+      if (record && approvalDisplayState(record) === 'pending') {
+        map.set(String(replyId), { ...record, state: 'expired', resolved_at: new Date().toISOString() });
+      }
+    }
+  } catch {
+    // 读不到就保留本地状态；错误行已经显示在卡片上。
+  }
+  renderApprovalSurfaces();
+}
+
+async function submitApproval(targetId, replyId, confirmed) {
+  const id = String(replyId || '');
+  if (!id || state.approvalInFlight.has(id)) return;
+  const record = approvalMapFor(targetId).get(id);
+  if (!record || approvalDisplayState(record) !== 'pending') return;
+  state.approvalInFlight.add(id);
+  state.approvalErrors.delete(id);
+  renderApprovalSurfaces();
+  try {
+    const decisions = (record.tool_calls || [])
+      .map((call) => ({
+        tool_call_id: String((call && call.id) || ''),
+        confirmed: Boolean(confirmed),
+      }))
+      .filter((decision) => decision.tool_call_id);
+    const payload = await api('/api/approvals/' + encodeURIComponent(id), {
+      method: 'POST',
+      body: { decisions },
+    });
+    if (payload && payload.approval) upsertApproval(targetId, payload.approval);
+  } catch (err) {
+    state.approvalErrors.set(id, err.message);
+    await reconcileApproval(targetId, id);
+  } finally {
+    state.approvalInFlight.delete(id);
+    renderApprovalSurfaces();
+  }
 }
 
 async function refreshTaskDetails(taskId) {
@@ -2206,6 +3387,44 @@ async function deliver(pending) {
 */
 const STREAM_RETRY_MS = 1500;
 
+/* live-only 运行事件（规格 §4.5 / ADR-0020）：`agent_event` / `team_assignment` / `plan_update` /
+   `sop_event` / `approval_*`。它们没有可补拉的 seq，因此：
+   - **不**写 `seenSeqs`（那份集合同时是重连游标的上界）；
+   - **不**进消息流 / 未读 / 搜索；
+   - 由 `recordLiveEvent` 按 `target_id` 有界保留，运行面板（#155）从这里取；
+   - 未知 `type` 一律忽略：后端词表以后可能变大，旧前端不能因此报错或推进游标。 */
+const LIVE_EVENT_TYPES = [
+  'agent_event',
+  'team_assignment',
+  'plan_update',
+  'sop_event',
+  'approval_required',
+  'approval_resolved',
+];
+const LIVE_EVENTS_LIMIT = 256;
+
+function isLiveEventType(type) {
+  return LIVE_EVENT_TYPES.indexOf(type) !== -1;
+}
+
+function recordLiveEvent(targetId, type, payload) {
+  if (!isLiveEventType(type)) return null;
+  const key = targetId || payload.target_id;
+  if (!key) return null;
+  const events = state.liveEvents.get(key) || [];
+  events.push(payload);
+  // 有界保留：live-only 事件不会补拉，保留旧事件只为本次会话的运行面板。
+  if (events.length > LIVE_EVENTS_LIMIT) events.splice(0, events.length - LIVE_EVENTS_LIMIT);
+  state.liveEvents.set(key, events);
+  // SOP 没有「按 target 列 run」的读面：只有 live 帧见过 run id 之后，重连兜底才能
+  // 逐个 `GET /api/sop-runs/{id}` 刷新。这里只记 id，不触发写路径。
+  if (type === 'sop_event') noteRunPanelSopId(key, payload);
+  // 审批卡（#153）：live 帧是「本次会话内的变化」，快照兜底由 `loadApprovalsFor` 负责。
+  if (type === 'approval_required') absorbApprovalRequired(key, payload);
+  else if (type === 'approval_resolved') absorbApprovalResolved(key, payload);
+  return payload;
+}
+
 // 是否因为后端不可达而断开（决定重连成功后要不要做一次全量重取）。
 let wasOffline = false;
 
@@ -2262,6 +3481,13 @@ function connectStream(targetId, entry) {
       wasOffline = false;
       loadWorkspace({ silent: true, keepActive: true });
     }
+    // 运行面板的 live 事件不补拉（ADR-0020）：重连成功后按快照兜底，把断线期间
+    // 的分派 / Plan / SOP 变化读回来。面板没开或不是这个 target 时是空操作。
+    if (recovered) {
+      refreshRunPanelFor(targetId);
+      // 审批同理：审批帧不补发，重连后按 pending 快照恢复；消失的 pending 显示 expired。
+      loadApprovalsFor(targetId);
+    }
   };
   source.onerror = () => {
     if (entry.rotating) return; // 我们自己关的：不是错误
@@ -2278,7 +3504,7 @@ function connectStream(targetId, entry) {
     if (state.streams.get(targetId) !== entry) return; // 已被换掉（频道删除等）
     entry.timer = setTimeout(() => connectStream(targetId, entry), STREAM_RETRY_MS);
   };
-  ['message', 'member_status', 'typing', 'round_outcome'].forEach((type) => {
+  ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {
     source.addEventListener(type, (event) => handleStreamEvent(targetId, event, type));
   });
 }
@@ -2290,12 +3516,21 @@ function handleStreamEvent(targetId, event, type) {
   } catch {
     return; // 解不开的帧直接丢弃：它不可能是后端发出的
   }
-  const seq = Number(payload.seq) || 0;
-  if (seq && type === 'message') {
+  // live-only 运行事件：按 target 归属记录，绝不写消息流 / 游标。
+  if (isLiveEventType(type)) {
+    recordLiveEvent(payload.target_id || targetId, type, payload);
+    return;
+  }
+  // 未知 type（词表以后可能变大）：忽略且不报错，也**不**把它记进 `seenSeqs`——
+  // 那份集合同时决定重连游标，未知事件没有可补拉的正本。
+  if (type !== 'message' && type !== 'member_status' && type !== 'typing' && type !== 'round_outcome') return;
+  if (type === 'message') {
+    if (!payload.message) return;
     // 消息的去重正本在 absorbMessage 里（按 seq 认一条消息），这里不另做一套。
     onStreamMessage(targetId, payload);
     return;
   }
+  const seq = Number(payload.seq) || 0;
   if (seq) seenSeqsFor(targetId).add(seq);
   if (type === 'member_status') onStreamStatus(targetId, payload);
   else if (type === 'typing') onStreamTyping(targetId, payload);
@@ -2454,9 +3689,14 @@ function render() {
   renderDms();
   renderMembers();
   renderTaskBoard();
-  // dock 的三种形态共用同一个 380px 容器：每次整体重绘都把形态重新同步一遍（形态由
+  // dock 的四种形态共用同一个 380px 容器：每次整体重绘都把形态重新同步一遍（形态由
   // 「现在打开着哪一个对象」推导，见 `setDockMode()`），否则某次局部重建会把形态留在上一帧。
-  setDockMode(state.activeTaskId ? 'task' : (state.activeAgentId ? 'detail' : 'agent'));
+  // 运行面板是显式打开的面：它开着时压过任务线程 / Agent 详情，关闭时再落回它们。
+  setDockMode(
+    state.runPanel.open
+      ? 'run'
+      : (state.activeTaskId ? 'task' : (state.activeAgentId ? 'detail' : 'agent')),
+  );
   if (state.activeTask) renderTaskThread();
   syncTaskViewSeg();
   renderHeader();
@@ -2470,6 +3710,9 @@ function render() {
   renderSearchResults();
   renderConnection();
   renderDock();
+  // 运行面板的成员名 / 头像色位来自成员表；整体重绘时按当前语言与成员表重建一次，
+  // 于是切语言、成员改名都不会留在旧读数上（面板关着时是空操作）。
+  renderRunPanel();
   // Agent 详情开着时它的读数（状态点 / 跑动的数字）也要跟着整体重绘刷新：它的每个数字都是
   // 后端事实的镜像，因此重建它和重建消息流是同一件事。
   if (state.activeAgentId) renderAgentDetail();
@@ -3573,6 +4816,1143 @@ function renderBudgetModal() {
 }
 
 
+/* ─── 频道设置（#154 / 规格 §4.6 / ADR-0018 / ADR-0021）────────────────────────
+
+   频道头入口打开一张弹窗：mode（autonomous / team）、`team_scope`（**只读**，后端固定
+   `channel+task`）、队长、项目根、默认后端、默认权限档。纪律与回应预算 / 工作区设置一致：
+
+   - 读数全部来自 `GET /api/channels/{id}/config`，前端不推算 `leader_available`——
+     它是**编排按后端事实**算出来的（`team.leader_*` 文案也就是频道沉默时的同一份原因）；
+   - 保存提交 `PATCH /api/channels/{id}/config`，成功按**响应里的新配置**重铺；
+     失败只显示后端可读原因，不把没落库的值写回界面；
+   - 「任一字段不合法整体拒绝」由后端保证（DB `update_channel_config` 校验先于写入）；
+     前端不做第二套校验，也就不可能出现「前端放行、后端半写」的中间态；
+   - `team_scope` 不在可写字段里（后端 `extra="forbid"`），这里只显示，不提交。
+
+   任务视图消费同一个端点（见 `loadTaskChannelConfig`）：team 频道下任务线程只唤醒队长。 */
+
+/** 与后端 `CHANNEL_MODES` / `WORKSPACE_BACKENDS` / `PERMISSION_MODES` 同序同名。 */
+const CHANNEL_MODES = ['autonomous', 'team'];
+const WORKSPACE_BACKENDS = ['local', 'docker'];
+const PERMISSION_MODES = ['read-only', 'ask-writes', 'trusted-writes'];
+
+/** 弹窗的空镜像（打开 / 关闭都用它，于是「缓存了过期配置」这个中间态不存在）。 */
+function emptyChannelConfigView() {
+  return {
+    channelId: null,
+    config: null,
+    members: [],
+    membersFailed: false,
+    loading: false,
+    error: '',
+    draft: {
+      mode: 'autonomous',
+      leader: '',
+      workspaceRoot: '',
+      backend: 'local',
+      permission: 'ask-writes',
+    },
+  };
+}
+
+/** 把后端配置铺成**未提交的呈现状态**；`workspace_root=null` 在输入框里就是空串。 */
+function channelConfigDraftFrom(config) {
+  return {
+    mode: config.mode,
+    leader: config.team_leader_member_id || '',
+    workspaceRoot: config.workspace_root || '',
+    backend: config.workspace_backend,
+    permission: config.permission_mode,
+  };
+}
+
+/** 打开频道设置面（入口 = 频道头的设置按钮）：锁定当前频道，先显示「读取中」。 */
+async function openChannelConfigModal() {
+  const channel = activeChannel();
+  if (!channel) return;
+  state.channelConfig = emptyChannelConfigView();
+  state.channelConfig.channelId = channel.id;
+  state.channelConfig.loading = true;
+  // 资源三段（#156）与频道配置同时读：三段各有自己的错误行，一段读不到不牵连其它段。
+  state.resources = emptyResourcesView();
+  state.resources.channelId = channel.id;
+  $('#channelConfigOverlay').hidden = false;
+  const box = $('#channelConfigFormError');
+  if (box) box.hidden = true;
+  renderChannelConfigModal();
+  await Promise.all([loadChannelConfig(channel.id), loadChannelResources(channel.id)]);
+}
+
+/** 读一次该频道的配置 + 成员表（队长候选）。读回后按**同一个频道**重铺。 */
+async function loadChannelConfig(channelId) {
+  const view = state.channelConfig;
+  try {
+    const payload = await api(channelPath(channelId, '/config'));
+    const members = await refreshChannelMembers(channelId);
+    if (state.channelConfig.channelId !== channelId) return;
+    view.config = payload.config;
+    state.channelConfigs[channelId] = payload.config;
+    view.members = (members || []).filter((member) => member.kind === 'agent');
+    view.membersFailed = channelMembersFailed.has(channelId);
+    view.draft = channelConfigDraftFrom(payload.config);
+    view.loading = false;
+    view.error = '';
+  } catch (err) {
+    if (state.channelConfig.channelId !== channelId) return;
+    view.loading = false;
+    view.error = err.message;
+  }
+  renderChannelConfigModal();
+}
+
+function closeChannelConfigModal() {
+  state.channelConfig = emptyChannelConfigView();
+  state.resources = emptyResourcesView();
+  $('#channelConfigOverlay').hidden = true;
+  const box = $('#channelConfigFormError');
+  if (box) box.hidden = true;
+}
+
+/** 任务视图读取所属频道的同一份配置；已缓存时直接复用（正本仍是后端）。 */
+async function loadTaskChannelConfig(channelId) {
+  if (!channelId) return null;
+  if (state.channelConfigs[channelId]) return state.channelConfigs[channelId];
+  try {
+    const payload = await api(channelPath(channelId, '/config'));
+    state.channelConfigs[channelId] = payload.config;
+    if (state.activeTask && state.activeTask.channel_id === channelId) renderTaskThread();
+    return payload.config;
+  } catch {
+    // 读不到就保持未缓存：任务线程不伪造 team / autonomous 结论，下次打开再试。
+    return null;
+  }
+}
+
+/** 档位选择（都是**还没提交**的呈现状态；不在后端词表里的取值连选中都不成立）。 */
+function selectChannelConfigMode(mode) {
+  if (!CHANNEL_MODES.includes(mode) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.mode = mode;
+  renderChannelConfigModal();
+}
+
+function selectChannelConfigBackend(backend) {
+  if (!WORKSPACE_BACKENDS.includes(backend) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.backend = backend;
+  renderChannelConfigModal();
+}
+
+function selectChannelConfigPermission(permission) {
+  if (!PERMISSION_MODES.includes(permission) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.permission = permission;
+  renderChannelConfigModal();
+}
+
+/** 一行说明（`.field .hint` 那一档的排版，不新造样式）。 */
+function channelConfigHint(key, odId) {
+  const field = el('div', 'field');
+  const hint = el('div', 'hint', t(key));
+  if (odId) hint.setAttribute('data-od-id', odId);
+  field.appendChild(hint);
+  return field;
+}
+
+/** 一组单档位卡片：值 + 主文案 + 说明。点哪张写哪张（提交仍由保存按钮表达）。 */
+function channelConfigRadioRow(values, selected, dataKey, labelPrefix, notePrefix) {
+  const row = el('div', 'radio-row');
+  values.forEach((value) => {
+    const on = selected === value;
+    const card = el('button', 'radio-card');
+    card.type = 'button';
+    card.dataset[dataKey] = value;
+    card.setAttribute(
+      'data-od-id',
+      dataKey.replace(/[A-Z]/g, (letter) => '-' + letter.toLowerCase()) + '-' + value,
+    );
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+    card.classList.toggle('is-on', on);
+    card.appendChild(el('b', null, t(labelPrefix + value)));
+    card.appendChild(el('span', null, t(notePrefix + value + 'Note')));
+    row.appendChild(card);
+  });
+  return row;
+}
+
+/** 队长的候选：该频道的 Agent 成员；已保存但不在成员表里的队长也保留一个选项，
+    以免下拉框看起来「选中的是别人」。可用性始终由后端读数说明。 */
+function channelConfigLeaderOptions(view) {
+  const options = view.members.slice();
+  const leader = view.draft.leader;
+  if (leader && !options.some((member) => member.id === leader)) {
+    const agent = state.agents.find((item) => item.id === leader);
+    options.push(agent || { id: leader, display_name: leader });
+  }
+  return options;
+}
+
+/** 弹窗的唯一渲染落点：读数与写控件都从这里出，于是两者不会各说一份。 */
+function renderChannelConfigModal() {
+  const view = state.channelConfig;
+  const body = $('#channelConfigBody');
+  if (!body) return;
+  const channel = view.channelId
+    ? state.channels.find((item) => item.id === view.channelId)
+    : null;
+  const title = $('#channelConfigTitle');
+  if (title) title.textContent = t('channelConfig.title');
+  const sub = $('#channelConfigSub');
+  if (sub) sub.textContent = t('channelConfig.sub', { name: channel ? channel.name : '' });
+  if (!view.channelId) {
+    replaceChildren(body, []);
+    return;
+  }
+  if (view.loading) {
+    replaceChildren(body, [el('div', 'rail-empty', t('channelConfig.loading'))]);
+    return;
+  }
+  if (view.error) {
+    replaceChildren(body, [
+      el('div', 'rail-empty', t('channelConfig.loadFailed', { reason: view.error })),
+    ]);
+    return;
+  }
+  const config = view.config;
+  if (!config) {
+    replaceChildren(body, []);
+    return;
+  }
+
+  const nodes = [];
+
+  // ① 协作模式。
+  const mode = el('section', 'd-sec');
+  mode.appendChild(sectionTitle('channelConfig.sectionMode', 'channel-config-section-mode'));
+  mode.appendChild(
+    channelConfigRadioRow(CHANNEL_MODES, view.draft.mode, 'configMode', 'channelConfig.mode.', 'channelConfig.mode.'),
+  );
+  nodes.push(mode);
+
+  // ② team 的生效范围：后端只读事实，前端只解释它。
+  const scope = el('section', 'd-sec');
+  scope.appendChild(sectionTitle('channelConfig.sectionScope', 'channel-config-section-scope'));
+  scope.appendChild(kvRow(t('channelConfig.teamScope'), config.team_scope, 'channel-config-team-scope'));
+  scope.appendChild(channelConfigHint('channelConfig.teamScopeNote', 'channel-config-team-scope-note'));
+  nodes.push(scope);
+
+  // ③ 队长：候选是当前频道的 Agent 成员；可用性与原因都是后端事实。
+  const leader = el('section', 'd-sec');
+  leader.appendChild(sectionTitle('channelConfig.sectionLeader', 'channel-config-section-leader'));
+  const leaderField = el('div', 'field');
+  leaderField.appendChild(el('label', null, t('channelConfig.leaderSelectLabel')));
+  const select = el('select', 'input');
+  select.dataset.configLeader = '1';
+  select.setAttribute('data-od-id', 'channel-config-leader');
+  const none = el('option', null, t('channelConfig.leaderNone'));
+  none.value = '';
+  select.appendChild(none);
+  channelConfigLeaderOptions(view).forEach((member) => {
+    const option = el('option', null, member.display_name);
+    option.value = member.id;
+    select.appendChild(option);
+  });
+  select.value = view.draft.leader;
+  leaderField.appendChild(select);
+  leader.appendChild(leaderField);
+  if (view.membersFailed) {
+    leader.appendChild(channelConfigHint('channelConfig.membersUnavailable', 'channel-config-members-failed'));
+  }
+  leader.appendChild(
+    kvRow(
+      t('channelConfig.leaderAvailability'),
+      config.leader_available
+        ? t('channelConfig.leaderAvailable')
+        : t('channelConfig.leaderUnavailable'),
+      'channel-config-leader-availability',
+    ),
+  );
+  if (config.leader_reason) {
+    const reason = el(
+      'div',
+      'dock-member-reason',
+      t('channelConfig.leaderReason', { reason: config.leader_reason }),
+    );
+    reason.setAttribute('data-od-id', 'channel-config-leader-reason');
+    leader.appendChild(reason);
+  }
+  if (view.draft.mode === 'team' && !view.draft.leader) {
+    leader.appendChild(channelConfigHint('channelConfig.leaderRequiredHint', 'channel-config-leader-hint'));
+  }
+
+  // ④ team 模式的两条停用事实（ADR-0018：成员 auto_claim / 任务线程唤醒面）。
+  if (view.draft.mode === 'team') {
+    const noticesBox = el('div');
+    noticesBox.setAttribute('data-od-id', 'channel-config-team-notices');
+    noticesBox.appendChild(el('div', 'team-notice', t('channelConfig.teamNoticeAutoClaim')));
+    noticesBox.appendChild(el('div', 'team-notice', t('channelConfig.teamNoticeWake')));
+    leader.appendChild(noticesBox);
+  }
+  nodes.push(leader);
+
+  // ⑤ 项目根与默认后端。
+  const workspace = el('section', 'd-sec');
+  workspace.appendChild(sectionTitle('channelConfig.sectionWorkspace', 'channel-config-section-workspace'));
+  const rootField = el('div', 'field');
+  rootField.appendChild(el('label', null, t('channelConfig.workspaceRootLabel')));
+  const root = el('input', 'input');
+  root.type = 'text';
+  root.dataset.configWorkspaceRoot = '1';
+  root.setAttribute('data-od-id', 'channel-config-workspace-root');
+  root.placeholder = t('channelConfig.workspaceRootPlaceholder');
+  root.value = view.draft.workspaceRoot;
+  rootField.appendChild(root);
+  workspace.appendChild(rootField);
+  workspace.appendChild(channelConfigHint('channelConfig.workspaceRootHint', 'channel-config-workspace-root-hint'));
+  const backendField = el('div', 'field');
+  backendField.appendChild(el('label', null, t('channelConfig.workspaceBackend')));
+  backendField.appendChild(
+    channelConfigRadioRow(
+      WORKSPACE_BACKENDS,
+      view.draft.backend,
+      'configBackend',
+      'channelConfig.backend.',
+      'channelConfig.backend.',
+    ),
+  );
+  workspace.appendChild(backendField);
+  nodes.push(workspace);
+
+  // ⑥ 默认权限档（三档；不暴露 BYPASS）。
+  const permission = el('section', 'd-sec');
+  permission.appendChild(sectionTitle('channelConfig.sectionPermission', 'channel-config-section-permission'));
+  permission.appendChild(
+    channelConfigRadioRow(
+      PERMISSION_MODES,
+      view.draft.permission,
+      'configPermission',
+      'channelConfig.permission.',
+      'channelConfig.permission.',
+    ),
+  );
+  nodes.push(permission);
+
+  // ⑦ 保存。失败原因写在弹窗自带的 `#channelConfigFormError` 里（重铺不会清掉它）。
+  const actions = el('div', 'agent-actions');
+  const save = el('button', 'btn btn-primary', t('channelConfig.save'));
+  save.type = 'button';
+  save.dataset.configSave = '1';
+  save.setAttribute('data-od-id', 'channel-config-save');
+  save.disabled = !state.online;
+  actions.appendChild(save);
+  nodes.push(actions);
+
+  // ⑧–⑩ 资源管理（#156）：工作区与数据面 / MCP / Skill。三段都只吃**后端读数**；
+  // 打开的是同一个频道时用当前镜像，否则用空镜像（不把别的频道的清单一瞬间画过来）。
+  const resources = state.resources.channelId === view.channelId
+    ? state.resources
+    : emptyResourcesView();
+  nodes.push(workspaceManagementSection(view));
+  nodes.push(mcpSection(resources));
+  nodes.push(skillSection(resources));
+
+  replaceChildren(body, nodes);
+}
+
+/* ─── 资源管理（#156 / 规格 §4.6 / ADR-0021）─────────────────────────────────
+
+   频道设置内新增三段，全部追加在「频道配置」之后，不重写上面那套渲染：
+
+   ① **工作区与数据面**：项目根 / 后端是**已落库事实**（`view.config`），Docker 状态从
+      Agent 的 `enabled_reason` 读（#150 把容器失败原因记进 availability）；路径错误由
+      `PATCH /config` 整体拒绝并在保存处显示——这一段不伪造第二套校验。
+   MCP `GET/POST/PATCH/DELETE /api/mcp-servers` + `POST /{id}/consent`；Skill
+      `GET/POST/PATCH/DELETE /api/skills`（本机目录 JSON / zip 原始字节）。
+
+   两条硬边界：
+
+   - **只出现变量名**：MCP 载荷只有 `env_names`；表单也只收变量名，值没有输入口，
+     因此界面不存在「把值带进请求」的形状。
+   - **配置动作不碰消息面**：增删改 / 启停 / 确认之后只重读各自的清单，不刷新消息、
+     不模拟唤醒。后端本来就不落消息（#151 / #152），前端也不制造「好像发生了什么」的假象。 */
+
+const MCP_TRANSPORTS = ['stdio', 'http', 'sse'];
+const MCP_REMOTE_TRANSPORTS = ['http', 'sse'];
+
+function emptyMcpDraft() {
+  return {
+    name: '',
+    transport: 'stdio',
+    command: '',
+    args: '',
+    url: '',
+    envNames: '',
+    enabled: true,
+  };
+}
+
+/** 弹窗的空镜像（打开 / 关闭都用它；`mcpDraft` 里没有任何凭据）。 */
+function emptyResourcesView() {
+  return {
+    channelId: null,
+    mcpLoading: false,
+    mcpError: '',
+    mcp: [],
+    mcpDraft: emptyMcpDraft(),
+    mcpEditingId: null,
+    mcpConsentTimes: {},
+    skillLoading: false,
+    skillError: '',
+    skillInstalling: false,
+    skills: [],
+    skillSourcePath: '',
+  };
+}
+
+function isRemoteTransport(transport) {
+  return MCP_REMOTE_TRANSPORTS.includes(transport);
+}
+
+/** 表单里的变量名：逗号 / 空白分隔，去重去空。**只收名字**。 */
+function parseEnvNames(raw) {
+  const names = String(raw || '')
+    .split(/[\s,]+/)
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return Array.from(new Set(names));
+}
+
+/** 参数按空白分隔（与后端「逐个字符串」的 `args` 对齐；不解析引号，也没有 shell 展开）。 */
+function parseArgs(raw) {
+  const text = String(raw || '').trim();
+  return text ? text.split(/\s+/).filter(Boolean) : [];
+}
+
+/** 一条声明的变量名读数（值永远不显示、不保存）。 */
+function mcpEnvNamesText(server) {
+  const names = server.env_names || [];
+  return names.length ? names.join(', ') : t('mcp.envNone');
+}
+
+/** 进程内装配读数 → 一句可读状态（`runtime=null` = 本进程还没装配过）。 */
+function mcpRuntimeText(server) {
+  const runtime = server.runtime;
+  if (!runtime) return t('mcp.runtimeUnknown');
+  if (runtime.error) return t('mcp.runtimeFailed', { reason: runtime.error });
+  return t('mcp.runtimeConnected', { count: (runtime.tools || []).length });
+}
+
+/** 传输方式的词条（动态取值也必须落到一个**字面**键上，词条守卫才看得见）。 */
+function mcpTransportLabel(transport) {
+  if (transport === 'http') return t('mcp.transport.http');
+  if (transport === 'sse') return t('mcp.transport.sse');
+  return t('mcp.transport.stdio');
+}
+
+/** 后端词条（同上：字面键，不做字符串拼接）。 */
+function workspaceBackendLabel(backend) {
+  return backend === 'docker' ? t('channelConfig.backend.docker') : t('channelConfig.backend.local');
+}
+
+function mcpDraftFrom(server) {
+  return {
+    name: server.name || '',
+    transport: server.transport || 'stdio',
+    command: server.command || '',
+    args: (server.args || []).join(' '),
+    url: server.url || '',
+    envNames: (server.env_names || []).join(', '),
+    enabled: Boolean(server.enabled),
+  };
+}
+
+/** 频道内 Agent 的 availability 读数（`enabled_reason` 带 Docker 失败原因时就是不可用）。 */
+function channelAgentAvailability(view) {
+  const ids = new Set((view.members || []).map((member) => member.id));
+  return state.agents.filter((agent) => ids.has(agent.id));
+}
+
+/** Docker 状态只陈述**后端事实**：有失败原因就报不可用；否则按当前后端说「未报告故障」，
+    不做 daemon 探活，也不假装「可用」。 */
+function dockerStatusOf(agents, backend) {
+  const failed = (agents || []).find((agent) =>
+    String(agent.enabled_reason || '').includes('Docker'),
+  );
+  if (failed) {
+    return {
+      state: 'unavailable',
+      text: t('workspaceMgmt.dockerUnavailableAgent', {
+        name: failed.display_name || failed.id || '',
+        reason: failed.enabled_reason,
+      }),
+    };
+  }
+  if (backend === 'docker') return { state: 'reported', text: t('workspaceMgmt.dockerReported') };
+  return { state: 'unused', text: t('workspaceMgmt.dockerUnused') };
+}
+
+/** 读 MCP 声明（频道 scope）；失败只落在本段自己的错误行，不牵连其它段。 */
+async function loadMcpServers(channelId) {
+  const view = state.resources;
+  view.mcpLoading = true;
+  view.mcpError = '';
+  if (view.channelId === channelId) renderChannelConfigModal();
+  try {
+    const payload = await api(
+      '/api/mcp-servers?scope_kind=channel&scope_id=' + encodeURIComponent(channelId),
+    );
+    if (view.channelId !== channelId) return;
+    view.mcp = payload.mcp_servers || [];
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.loadFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.mcpLoading = false;
+  renderChannelConfigModal();
+}
+
+/** 读技能列表（频道 scope；只含元数据与 hash）。 */
+async function loadSkills(channelId) {
+  const view = state.resources;
+  view.skillLoading = true;
+  view.skillError = '';
+  if (view.channelId === channelId) renderChannelConfigModal();
+  try {
+    const payload = await api(
+      '/api/skills?scope_kind=channel&scope_id=' + encodeURIComponent(channelId),
+    );
+    if (view.channelId !== channelId) return;
+    view.skills = payload.skills || [];
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.loadFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.skillLoading = false;
+  renderChannelConfigModal();
+}
+
+async function loadChannelResources(channelId) {
+  await Promise.all([loadMcpServers(channelId), loadSkills(channelId)]);
+}
+
+function resourceNote(key, odId, className) {
+  const node = el('div', 'resource-meta' + (className ? ' ' + className : ''), t(key));
+  if (odId) node.setAttribute('data-od-id', odId);
+  return node;
+}
+
+function resourceErrorNode(text, odId) {
+  const node = el('div', 'form-error', text);
+  node.setAttribute('role', 'alert');
+  node.setAttribute('data-od-id', odId);
+  return node;
+}
+
+function resourceButton(labelKey, datasetKey, datasetValue, odId) {
+  const button = el('button', 'btn btn-sm', t(labelKey));
+  button.type = 'button';
+  if (datasetKey) button.dataset[datasetKey] = datasetValue;
+  if (odId) button.setAttribute('data-od-id', odId);
+  button.disabled = !state.online;
+  return button;
+}
+
+/** 标题 + 输入控件（`.field` 那一档）；`datasetKey` 是委派用的 `data-mcp-field`。 */
+function resourceTextField(labelKey, odId, datasetValue, value, placeholderKey) {
+  const field = el('div', 'field');
+  field.appendChild(el('label', null, t(labelKey)));
+  const input = el('input', 'input');
+  input.type = 'text';
+  input.dataset.mcpField = datasetValue;
+  input.setAttribute('data-od-id', odId);
+  if (placeholderKey) input.placeholder = t(placeholderKey);
+  input.value = value;
+  field.appendChild(input);
+  return field;
+}
+
+function resourceField(labelKey, control, odId) {
+  const field = el('div', 'field');
+  field.appendChild(el('label', null, t(labelKey)));
+  field.appendChild(control);
+  if (odId) field.setAttribute('data-od-id', odId);
+  return field;
+}
+
+/* ── ① 工作区与数据面（只读状态 + 说明；写控件仍在上面的频道配置段） ─────── */
+
+function workspaceManagementSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(
+    sectionTitle('workspaceMgmt.section', 'channel-config-section-workspace-mgmt'),
+  );
+  const config = view.config;
+  section.appendChild(
+    kvRow(
+      t('workspaceMgmt.root'),
+      config.workspace_root || t('workspaceMgmt.rootNone'),
+      'workspace-mgmt-root',
+    ),
+  );
+  section.appendChild(
+    kvRow(
+      t('workspaceMgmt.backend'),
+      workspaceBackendLabel(config.workspace_backend),
+      'workspace-mgmt-backend',
+    ),
+  );
+  const docker = dockerStatusOf(channelAgentAvailability(view), config.workspace_backend);
+  const row = el('div', 'kv');
+  row.appendChild(el('span', 'k', t('workspaceMgmt.dockerStatus')));
+  const cell = el('span', 'v', docker.text);
+  cell.dataset.dockerState = docker.state;
+  cell.setAttribute('data-od-id', 'workspace-mgmt-docker');
+  row.appendChild(cell);
+  section.appendChild(row);
+
+  const notes = el('div');
+  notes.setAttribute('data-od-id', 'workspace-mgmt-notes');
+  [
+    'workspaceMgmt.noteTools',
+    'workspaceMgmt.noteLocal',
+    'workspaceMgmt.noteDocker',
+    'workspaceMgmt.noteConfig',
+  ].forEach((key) => notes.appendChild(resourceNote(key, null, 'is-faint')));
+  section.appendChild(notes);
+  return section;
+}
+
+/* ── ② MCP 声明（列表 / 增删改 / 远端确认 / 运行读数） ─────────────────── */
+
+function mcpRow(server, view) {
+  const row = el('div', 'resource-row');
+  row.dataset.mcpServer = server.id;
+  row.setAttribute('data-od-id', 'mcp-row');
+  const main = el('div', 'resource-main');
+  const title = el('div', 'resource-title');
+  title.appendChild(el('b', null, server.name));
+  title.appendChild(el('span', 'badge', server.transport));
+  title.appendChild(el('span', 'badge', t(server.enabled ? 'mcp.enabled' : 'mcp.disabled')));
+  title.appendChild(el('span', 'badge', t(server.is_remote ? 'mcp.isRemote' : 'mcp.isLocal')));
+  main.appendChild(title);
+
+  const target = server.is_remote
+    ? server.url
+    : [server.command].concat(server.args || []).filter(Boolean).join(' ');
+  if (target) main.appendChild(el('div', 'resource-meta is-faint', target));
+  main.appendChild(
+    el('div', 'resource-meta', t('mcp.envLabel', { names: mcpEnvNamesText(server) })),
+  );
+
+  const runtime = server.runtime;
+  const runtimeText = el('div', 'resource-meta' + (runtime && runtime.error ? ' is-error' : ' is-faint'));
+  runtimeText.dataset.mcpRuntime = server.id;
+  runtimeText.textContent = mcpRuntimeText(server);
+  main.appendChild(runtimeText);
+
+  if (server.is_remote) {
+    if (server.consented) {
+      const acknowledged = view.mcpConsentTimes[server.id];
+      main.appendChild(
+        el(
+          'div',
+          'resource-meta is-faint',
+          acknowledged
+            ? t('mcp.consentedAt', { time: acknowledged })
+            : t('mcp.consented'),
+        ),
+      );
+    } else {
+      main.appendChild(resourceNote('mcp.consentRequired', null, 'is-error'));
+    }
+  }
+
+  const actions = el('div', 'resource-actions');
+  actions.appendChild(
+    resourceButton(
+      server.enabled ? 'mcp.disable' : 'mcp.enable',
+      'mcpToggle',
+      server.id,
+      'mcp-toggle',
+    ),
+  );
+  if (server.consent_required && !server.consented) {
+    actions.appendChild(resourceButton('mcp.consent', 'mcpConsent', server.id, 'mcp-consent'));
+  }
+  actions.appendChild(resourceButton('mcp.edit', 'mcpEdit', server.id, 'mcp-edit'));
+  actions.appendChild(resourceButton('mcp.delete', 'mcpDelete', server.id, 'mcp-delete'));
+  row.appendChild(main);
+  row.appendChild(actions);
+  return row;
+}
+
+function mcpForm(view) {
+  const editing = view.mcpEditingId
+    ? view.mcp.find((server) => server.id === view.mcpEditingId)
+    : null;
+  const draft = view.mcpDraft;
+  const box = el('div', 'resource-add');
+  box.setAttribute('data-od-id', 'mcp-form');
+  box.appendChild(el('div', 'd-sec-title', t(editing ? 'mcp.editTitle' : 'mcp.addTitle')));
+
+  const first = el('div', 'resource-form-row');
+  first.appendChild(
+    resourceTextField('mcp.name', 'mcp-name', 'name', draft.name, 'mcp.namePlaceholder'),
+  );
+  const transport = el('select', 'input');
+  transport.dataset.mcpField = 'transport';
+  transport.setAttribute('data-od-id', 'mcp-transport');
+  MCP_TRANSPORTS.forEach((value) => {
+    const option = el('option', null, mcpTransportLabel(value));
+    option.value = value;
+    transport.appendChild(option);
+  });
+  transport.value = draft.transport;
+  first.appendChild(resourceField('mcp.transport', transport, 'mcp-transport-field'));
+  box.appendChild(first);
+
+  const second = el('div', 'resource-form-row');
+  if (isRemoteTransport(draft.transport)) {
+    second.appendChild(resourceTextField('mcp.url', 'mcp-url', 'url', draft.url, 'mcp.urlPlaceholder'));
+  } else {
+    second.appendChild(
+      resourceTextField('mcp.command', 'mcp-command', 'command', draft.command, 'mcp.commandPlaceholder'),
+    );
+    second.appendChild(
+      resourceTextField('mcp.args', 'mcp-args', 'args', draft.args, 'mcp.argsPlaceholder'),
+    );
+  }
+  box.appendChild(second);
+
+  const third = el('div', 'resource-form-row');
+  third.appendChild(
+    resourceTextField(
+      'mcp.envNames',
+      'mcp-env-names',
+      'envNames',
+      draft.envNames,
+      'mcp.envNamesPlaceholder',
+    ),
+  );
+  const enabledField = el('div', 'field');
+  const enabledLabel = el('label');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.dataset.mcpEnabled = '1';
+  enabled.setAttribute('data-od-id', 'mcp-enabled');
+  enabled.checked = Boolean(draft.enabled);
+  enabledLabel.appendChild(enabled);
+  enabledLabel.appendChild(document.createTextNode(' ' + t('mcp.enabledLabel')));
+  enabledField.appendChild(enabledLabel);
+  third.appendChild(enabledField);
+  box.appendChild(third);
+  box.appendChild(resourceNote('mcp.envValuesOmitted', 'mcp-env-note', 'is-faint'));
+
+  const actions = el('div', 'agent-actions');
+  actions.appendChild(
+    resourceButton(editing ? 'mcp.save' : 'mcp.add', 'mcpSave', '1', 'mcp-save'),
+  );
+  if (editing) {
+    actions.appendChild(resourceButton('mcp.cancel', 'mcpCancelEdit', '1', 'mcp-cancel-edit'));
+  }
+  box.appendChild(actions);
+  return box;
+}
+
+function mcpSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('mcp.section', 'channel-config-section-mcp'));
+  section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
+  if (view.mcpError) {
+    section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
+  }
+  if (view.mcpLoading) {
+    section.appendChild(el('div', 'resource-empty', t('mcp.loading')));
+  } else if (!view.mcp.length) {
+    section.appendChild(el('div', 'resource-empty', t('mcp.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'mcp-list');
+    view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
+    section.appendChild(list);
+  }
+  section.appendChild(mcpForm(view));
+  return section;
+}
+
+/* ── ③ 技能（列表 / 本机目录 / zip / 启停 / 删除） ─────────────────────── */
+
+function skillRow(skill) {
+  const row = el('div', 'resource-row');
+  row.dataset.skill = skill.id;
+  row.setAttribute('data-od-id', 'skill-row');
+  const main = el('div', 'resource-main');
+  const title = el('div', 'resource-title');
+  title.appendChild(el('b', null, skill.name));
+  title.appendChild(el('span', 'badge', t(skill.enabled ? 'skill.enabled' : 'skill.disabled')));
+  main.appendChild(title);
+  if (skill.description) main.appendChild(el('div', 'resource-meta', skill.description));
+  const hash = el('div', 'resource-meta is-faint');
+  hash.appendChild(el('span', null, t('skill.hashLabel') + ' '));
+  const short = el('span', 'resource-hash', String(skill.content_hash || '').slice(0, 12));
+  short.setAttribute('title', t('skill.hashTitle', { hash: skill.content_hash || '' }));
+  hash.appendChild(short);
+  main.appendChild(hash);
+
+  const actions = el('div', 'resource-actions');
+  actions.appendChild(
+    resourceButton(
+      skill.enabled ? 'skill.disable' : 'skill.enable',
+      'skillToggle',
+      skill.id,
+      'skill-toggle',
+    ),
+  );
+  actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
+  row.appendChild(main);
+  row.appendChild(actions);
+  return row;
+}
+
+function skillSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('skill.section', 'channel-config-section-skill'));
+  section.appendChild(resourceNote('skill.scopeNote', 'skill-scope-note', 'is-faint'));
+  if (view.skillError) {
+    section.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
+  }
+  if (view.skillLoading) {
+    section.appendChild(el('div', 'resource-empty', t('skill.loading')));
+  } else if (!view.skills.length) {
+    section.appendChild(el('div', 'resource-empty', t('skill.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'skill-list');
+    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
+    section.appendChild(list);
+  }
+
+  const install = el('div', 'resource-add');
+  install.setAttribute('data-od-id', 'skill-install');
+  install.appendChild(el('div', 'd-sec-title', t('skill.installTitle')));
+
+  const dirRow = el('div', 'resource-form-row');
+  const dirField = el('div', 'field');
+  dirField.appendChild(el('label', null, t('skill.installDir')));
+  const dir = el('input', 'input');
+  dir.type = 'text';
+  dir.dataset.skillSource = '1';
+  dir.setAttribute('data-od-id', 'skill-source');
+  dir.placeholder = t('skill.installDirPlaceholder');
+  dir.value = view.skillSourcePath;
+  dirField.appendChild(dir);
+  dirRow.appendChild(dirField);
+  const dirActions = el('div', 'agent-actions');
+  dirActions.appendChild(resourceButton('skill.installDirButton', 'skillInstallDir', '1', 'skill-install-dir'));
+  dirRow.appendChild(dirActions);
+  install.appendChild(dirRow);
+  install.appendChild(resourceNote('skill.installDirHint', 'skill-install-dir-hint', 'is-faint'));
+
+  const zipRow = el('div', 'resource-form-row');
+  const zipField = el('div', 'field');
+  zipField.appendChild(el('label', null, t('skill.installZip')));
+  const zip = el('input', 'input');
+  zip.type = 'file';
+  zip.accept = '.zip,application/zip';
+  zip.dataset.skillZip = '1';
+  zip.setAttribute('data-od-id', 'skill-zip');
+  zipField.appendChild(zip);
+  zipRow.appendChild(zipField);
+  install.appendChild(zipRow);
+  install.appendChild(resourceNote('skill.installZipHint', 'skill-install-zip-hint', 'is-faint'));
+  if (view.skillInstalling) {
+    install.appendChild(el('div', 'resource-meta is-faint', t('skill.installing')));
+  }
+  section.appendChild(install);
+  return section;
+}
+
+/* ── 写路径（全部是配置动作：只重读各自的清单，不碰消息面） ─────────────── */
+
+function resetMcpDraft(view) {
+  view.mcpDraft = emptyMcpDraft();
+  view.mcpEditingId = null;
+}
+
+function beginMcpEdit(serverId) {
+  const view = state.resources;
+  const server = view.mcp.find((item) => item.id === serverId);
+  if (!server) return;
+  view.mcpEditingId = server.id;
+  view.mcpDraft = mcpDraftFrom(server);
+  view.mcpError = '';
+  renderChannelConfigModal();
+}
+
+function cancelMcpEdit() {
+  const view = state.resources;
+  view.mcpEditingId = null;
+  view.mcpDraft = emptyMcpDraft();
+  view.mcpError = '';
+  renderChannelConfigModal();
+}
+
+/** 表单字段只在**未提交**的镜像上改；transport 切换会重铺（command / url 二选一）。 */
+function updateMcpDraftField(field) {
+  const view = state.resources;
+  const key = field.dataset.mcpField;
+  if (!key || !Object.prototype.hasOwnProperty.call(view.mcpDraft, key)) return;
+  view.mcpDraft[key] = field.value;
+  if (key === 'transport') renderChannelConfigModal();
+}
+
+async function submitMcpDraft() {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!channelId || !state.online) return;
+  const draft = view.mcpDraft;
+  const remote = isRemoteTransport(draft.transport);
+  const fields = {
+    name: String(draft.name || '').trim(),
+    transport: draft.transport,
+    command: remote ? '' : String(draft.command || '').trim(),
+    args: remote ? [] : parseArgs(draft.args),
+    url: remote ? String(draft.url || '').trim() : '',
+    env_names: parseEnvNames(draft.envNames),
+    enabled: Boolean(draft.enabled),
+  };
+  const editingId = view.mcpEditingId;
+  view.mcpError = '';
+  try {
+    if (editingId) {
+      await api('/api/mcp-servers/' + encodeURIComponent(editingId), {
+        method: 'PATCH',
+        body: fields,
+      });
+    } else {
+      await api('/api/mcp-servers', {
+        method: 'POST',
+        body: Object.assign({ scope_kind: 'channel', scope_id: channelId }, fields),
+      });
+    }
+    if (view.channelId !== channelId) return;
+    resetMcpDraft(view);
+    toast(t(editingId ? 'mcp.updated' : 'mcp.created'));
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.saveFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function toggleMcpServer(serverId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  const server = view.mcp.find((item) => item.id === serverId);
+  if (!server || !state.online) return;
+  view.mcpError = '';
+  try {
+    await api('/api/mcp-servers/' + encodeURIComponent(serverId), {
+      method: 'PATCH',
+      body: { enabled: !server.enabled },
+    });
+    if (view.channelId !== channelId) return;
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.saveFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function deleteMcpServer(serverId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!state.online) return;
+  view.mcpError = '';
+  try {
+    await api('/api/mcp-servers/' + encodeURIComponent(serverId), { method: 'DELETE' });
+    if (view.channelId !== channelId) return;
+    if (view.mcpEditingId === serverId) resetMcpDraft(view);
+    toast(t('mcp.deleted'));
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.deleteFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+/** 远端 MCP 的数据面确认（**幂等**）：后端重复调用回同一个 `acknowledged_at`。 */
+async function consentMcpServer(serverId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!state.online) return;
+  view.mcpError = '';
+  try {
+    const payload = await api(
+      '/api/mcp-servers/' + encodeURIComponent(serverId) + '/consent',
+      { method: 'POST' },
+    );
+    if (view.channelId !== channelId) return;
+    const acknowledged = (payload.consent || {}).acknowledged_at || '';
+    if (acknowledged) view.mcpConsentTimes[serverId] = acknowledged;
+    toast(t('mcp.consentDone'));
+    await loadMcpServers(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.mcpError = t('mcp.consentFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function submitSkillDirectory() {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!channelId || !state.online) return;
+  const sourcePath = String(view.skillSourcePath || '').trim();
+  if (!sourcePath) {
+    view.skillError = t('skill.sourceRequired');
+    renderChannelConfigModal();
+    return;
+  }
+  view.skillError = '';
+  view.skillInstalling = true;
+  renderChannelConfigModal();
+  try {
+    const payload = await api('/api/skills', {
+      method: 'POST',
+      body: { scope_kind: 'channel', scope_id: channelId, source_path: sourcePath },
+    });
+    if (view.channelId !== channelId) return;
+    view.skillSourcePath = '';
+    toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.installFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.skillInstalling = false;
+  renderChannelConfigModal();
+}
+
+/** zip 安装：原始字节走正文、元数据走 query（与后端契约一致，不用 multipart）。 */
+async function uploadSkillZip(files) {
+  const file = files && files[0];
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!file || !channelId || !state.online) return;
+  view.skillError = '';
+  view.skillInstalling = true;
+  renderChannelConfigModal();
+  try {
+    const query =
+      '?scope_kind=channel&scope_id=' +
+      encodeURIComponent(channelId) +
+      '&filename=' +
+      encodeURIComponent(file.name || 'upload.zip');
+    const response = await fetch('/api/skills' + query, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file,
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const error = new Error(readError(payload, response));
+      error.status = response.status;
+      throw error;
+    }
+    if (view.channelId !== channelId) return;
+    toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.installFailed', { reason: err.message });
+  }
+  if (view.channelId !== channelId) return;
+  view.skillInstalling = false;
+  renderChannelConfigModal();
+}
+
+async function toggleSkill(skillId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  const skill = view.skills.find((item) => item.id === skillId);
+  if (!skill || !state.online) return;
+  view.skillError = '';
+  try {
+    await api('/api/skills/' + encodeURIComponent(skillId), {
+      method: 'PATCH',
+      body: { enabled: !skill.enabled },
+    });
+    if (view.channelId !== channelId) return;
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.toggleFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+async function deleteSkill(skillId) {
+  const view = state.resources;
+  const channelId = view.channelId;
+  if (!state.online) return;
+  view.skillError = '';
+  try {
+    await api('/api/skills/' + encodeURIComponent(skillId), { method: 'DELETE' });
+    if (view.channelId !== channelId) return;
+    toast(t('skill.deleted'));
+    await loadSkills(channelId);
+  } catch (err) {
+    if (view.channelId !== channelId) return;
+    view.skillError = t('skill.deleteFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+/** 保存：提交全部可写字段（`team_scope` 不在可写面上）；成功按响应重铺，失败只报可读原因。 */
+async function submitChannelConfig() {
+  const view = state.channelConfig;
+  const channelId = view.channelId;
+  if (!channelId || !view.config) return;
+  const box = $('#channelConfigFormError');
+  if (box) box.hidden = true;
+  const root = String(view.draft.workspaceRoot || '').trim();
+  const body = {
+    mode: view.draft.mode,
+    workspace_root: root || null,
+    workspace_backend: view.draft.backend,
+    permission_mode: view.draft.permission,
+  };
+  if (view.draft.leader) body.team_leader_member_id = view.draft.leader;
+  try {
+    const payload = await api(channelPath(channelId, '/config'), { method: 'PATCH', body });
+    if (state.channelConfig.channelId !== channelId) return;
+    view.config = payload.config;
+    state.channelConfigs[channelId] = payload.config;
+    view.draft = channelConfigDraftFrom(payload.config);
+    view.error = '';
+    view.loading = false;
+    renderChannelConfigModal();
+    toast(t('channelConfig.saved'));
+  } catch (err) {
+    if (state.channelConfig.channelId !== channelId) return;
+    if (box) {
+      box.textContent = t('channelConfig.saveFailed', { reason: err.message });
+      box.hidden = false;
+    }
+    renderChannelConfigModal();
+  }
+}
+
+
 function renderHeader() {
   const target = activeTarget();
   const hasTarget = Boolean(target);
@@ -3589,6 +5969,11 @@ function renderHeader() {
   // 回应预算同样是**频道**配置（库内逐频道项，ADR-0007）：DM / 任务型 target 没有这条设置面，
   // 入口随之隐藏（预算读数的路径 `/api/channels/{id}/budget` 只认频道）。
   $('#btnChannelBudget').hidden = isDm;
+  // 频道设置（#154：模式 / 队长 / 项目根 / 后端 / 权限档）同样是**频道**配置
+  // （ADR-0018 / ADR-0021）：DM 没有这条面，入口随之隐藏。
+  $('#btnChannelSettings').hidden = isDm;
+  // 运行面板（#155）属于协作运行的频道 / 任务线程：私信没有 team 运行，入口随之隐藏。
+  $('#btnRunPanel').hidden = isDm;
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
@@ -3636,7 +6021,11 @@ function renderMessages() {
   const targetMode = state.mode === 'channel';
   $('#emptyNoChannel').hidden = !targetMode || Boolean(target);
   const messages = targetMode && target ? renderedMessages() : [];
-  $('#emptyNoMessage').hidden = !target || messages.length > 0;
+  // 审批卡不是消息：它不占 seq / 未读，也不进搜索；但「流里只有一张审批卡」时
+  // 不该同时留着「该频道还没有消息」的空态。
+  const approvalTargetId = state.activeChannelId;
+  const approvals = targetMode && target && approvalTargetId ? approvalRecordsFor(approvalTargetId) : [];
+  $('#emptyNoMessage').hidden = !target || messages.length > 0 || approvals.length > 0;
 
   const nodes = [];
   let lastDay = null;
@@ -3664,6 +6053,7 @@ function renderMessages() {
     }
   });
   replaceChildren($('#messageList'), nodes);
+  renderChannelApprovals(approvals, approvalTargetId);
   // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
   renderTabs();
 }
@@ -4866,6 +7256,9 @@ async function selectTarget(targetId) {
     if (stale && stale.last_seq > stale.last_read_seq) scheduleRead(previous, stale.last_seq);
   }
   closeTaskStream();
+  // 运行面板读的是**上一个 target** 的快照与 live 归属：换 target 时整个作废，
+  // 不把旧频道的分派留在新频道旁边。
+  resetRunPanelState();
   state.mode = 'channel';
   state.activeTaskId = null;
   state.activeTask = null;
@@ -4883,6 +7276,7 @@ async function selectTarget(targetId) {
   try {
     await refreshMessages();
     await refreshOutcomes();
+    await loadApprovalsFor(targetId);
     if (target.kind !== 'dm') await refreshChannelMembers();
     state.online = true;
   } catch (err) {
@@ -4998,6 +7392,134 @@ function bindEvents() {
       return;
     }
     if (event.target.closest('[data-budget-save]')) submitBudgetTier();
+  });
+  // ── 频道设置（#154）：频道头入口 + 弹窗（模式 / 队长 / 项目根 / 后端 / 权限档）──
+  // 正文整段重铺，因此点击 / 选择 / 输入都委派到 `#channelConfigBody` 上（与预算 / 提醒同一做法）：
+  // 重铺不会把监听器一起换掉。
+  $('#btnChannelSettings').addEventListener('click', openChannelConfigModal);
+  $('#channelConfigClose').addEventListener('click', closeChannelConfigModal);
+  $('#channelConfigDone').addEventListener('click', closeChannelConfigModal);
+  $('#channelConfigOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'channelConfigOverlay') closeChannelConfigModal();
+  });
+  $('#channelConfigBody').addEventListener('click', (event) => {
+    const mode = event.target.closest('[data-config-mode]');
+    if (mode) {
+      selectChannelConfigMode(mode.dataset.configMode);
+      return;
+    }
+    const backend = event.target.closest('[data-config-backend]');
+    if (backend) {
+      selectChannelConfigBackend(backend.dataset.configBackend);
+      return;
+    }
+    const permission = event.target.closest('[data-config-permission]');
+    if (permission) {
+      selectChannelConfigPermission(permission.dataset.configPermission);
+      return;
+    }
+    if (event.target.closest('[data-config-save]')) {
+      submitChannelConfig();
+      return;
+    }
+    // ── 资源管理（#156）：四组配置动作各走自己的写路径（都不碰消息面）──
+    const mcpEdit = event.target.closest('[data-mcp-edit]');
+    if (mcpEdit) {
+      beginMcpEdit(mcpEdit.dataset.mcpEdit);
+      return;
+    }
+    if (event.target.closest('[data-mcp-cancel-edit]')) {
+      cancelMcpEdit();
+      return;
+    }
+    const mcpToggle = event.target.closest('[data-mcp-toggle]');
+    if (mcpToggle) {
+      toggleMcpServer(mcpToggle.dataset.mcpToggle);
+      return;
+    }
+    const mcpConsent = event.target.closest('[data-mcp-consent]');
+    if (mcpConsent) {
+      consentMcpServer(mcpConsent.dataset.mcpConsent);
+      return;
+    }
+    const mcpDelete = event.target.closest('[data-mcp-delete]');
+    if (mcpDelete) {
+      deleteMcpServer(mcpDelete.dataset.mcpDelete);
+      return;
+    }
+    if (event.target.closest('[data-mcp-save]')) {
+      submitMcpDraft();
+      return;
+    }
+    if (event.target.closest('[data-skill-install-dir]')) {
+      submitSkillDirectory();
+      return;
+    }
+    const skillToggle = event.target.closest('[data-skill-toggle]');
+    if (skillToggle) {
+      toggleSkill(skillToggle.dataset.skillToggle);
+      return;
+    }
+    const skillDelete = event.target.closest('[data-skill-delete]');
+    if (skillDelete) deleteSkill(skillDelete.dataset.skillDelete);
+  });
+  $('#channelConfigBody').addEventListener('change', (event) => {
+    const zip = event.target.closest('[data-skill-zip]');
+    if (zip) {
+      uploadSkillZip(zip.files);
+      return;
+    }
+    const field = event.target.closest('[data-mcp-field]');
+    if (field) {
+      updateMcpDraftField(field);
+      return;
+    }
+    const enabled = event.target.closest('[data-mcp-enabled]');
+    if (enabled) {
+      state.resources.mcpDraft.enabled = Boolean(enabled.checked);
+      return;
+    }
+    const leader = event.target.closest('[data-config-leader]');
+    if (!leader) return;
+    state.channelConfig.draft.leader = leader.value;
+    renderChannelConfigModal();
+  });
+  // 项目根是自由输入：只更新**未提交的呈现状态**，不逐字读后端（提交时由后端整体校验）。
+  $('#channelConfigBody').addEventListener('input', (event) => {
+    const root = event.target.closest('[data-config-workspace-root]');
+    if (root) {
+      state.channelConfig.draft.workspaceRoot = root.value;
+      return;
+    }
+    const field = event.target.closest('[data-mcp-field]');
+    if (field) {
+      updateMcpDraftField(field);
+      return;
+    }
+    const source = event.target.closest('[data-skill-source]');
+    if (source) state.resources.skillSourcePath = source.value;
+  });
+  // ── 运行面板（#155）：频道头入口 + 任务线程头入口 + 刷新 / 关闭 / 错误重试 ──
+  // 正文整段重铺，因此重试按钮委派到 `#rpBody` 上（与预算 / 设置同一做法）。
+  $('#btnRunPanel').addEventListener('click', openRunPanelForChannel);
+  $('#btnThreadRunPanel').addEventListener('click', openRunPanelForTask);
+  $('#rpRefresh').addEventListener('click', () => loadRunPanelSnapshot());
+  $('#rpClose').addEventListener('click', closeRunPanel);
+  $('#rpBody').addEventListener('click', (event) => {
+    if (event.target.closest('[data-run-retry]')) loadRunPanelSnapshot();
+  });
+  // ── 审批卡（#153）：频道消息流与任务线程两个容器共用同一套动作委派 ──
+  // 卡片每次重铺，监听器挂在容器上；动作只认 pending（`submitApproval` 里还有一道闸门）。
+  ['#approvalBoard', '#ttApprovals'].forEach((selector) => {
+    $(selector).addEventListener('click', (event) => {
+      const action = event.target.closest('[data-approval-action]');
+      if (!action) return;
+      submitApproval(
+        action.dataset.approvalTarget,
+        action.dataset.approvalReply,
+        action.dataset.approvalAction === 'allow',
+      );
+    });
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
   // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。

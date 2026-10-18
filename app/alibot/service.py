@@ -28,17 +28,22 @@ from .db import (
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
     OWNER_ID,
+    PLAN_RUN_RETENTION,
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
+    NotFound,
     SearchFacet,
 )
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
+from .team import TEAM_SCOPE
+from .workspace import clear_docker_failure
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
+    from .sop import SOPRunner
 
 # 会离开本机的数据面（spec #1 §8）：告知文案与接口载荷共用这一份，避免两处漂移。
 #
@@ -84,11 +89,13 @@ class WorkspaceService:
         member_id: str = OWNER_ID,
         orchestrator: WakeOrchestrator | None = None,
         events: EventBus | None = None,
+        sops: SOPRunner | None = None,
     ):
         self._db = db
         self._member_id = member_id
         self._orchestrator = orchestrator
         self._events = events
+        self._sops = sops
 
     # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
     def _locale(self) -> Locale:
@@ -222,6 +229,72 @@ class WorkspaceService:
             name=name, description=description, member_ids=member_ids, creator_id=self._member_id
         )
 
+    # ─── 频道配置（team / workspace；规格 §4.4） ──────────────────────────
+    def channel_config(self, channel_id: str) -> dict[str, Any]:
+        """频道配置读数（含队长的可读可用性）。
+
+        读的是库内正本（``channel.mode`` / ``team_leader_member_id`` / workspace 三列）；队长的
+        ``enabled`` / 凭证 / 成员关系由**编排**按后端事实推导，于是设置页看到的原因与真正唤醒
+        裁决读的是同一份事实（D18 的「配置无效」不是另一套判断）。
+        """
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        config = self._db.get_channel_config(channel_id)
+        return self._channel_config_view(config)
+
+    def update_channel_config(self, channel_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """写频道配置（人类面动作）：**任一字段不合法整体拒绝**。
+
+        它是配置写路径，与 ``PATCH /api/agents/{id}`` 同一纪律：**不落消息、不唤醒、不消耗预算、
+        不开世代**。``mode=team`` 只在读路径生效（覆盖该频道 target 与全部 task target），
+        不复制到 task 行；``auto_claim`` 不在本方法里被改写（D16 是读路径规则）。
+        """
+        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        allowed = {
+            "mode",
+            "team_leader_member_id",
+            "workspace_root",
+            "workspace_backend",
+            "permission_mode",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise DomainError(
+                "validation_failed",
+                self._locale_copy("error.channel_config_invalid"),
+                fields={
+                    key: self._locale_copy("error.field.channel_config_unknown") for key in sorted(unknown)
+                },
+            )
+        config = self._db.update_channel_config(channel_id, **changes)
+        # 工作区配置变了：清掉 Docker 失败短缓存，下一次轮次重新尝试（改回 local 也立即生效）。
+        clear_docker_failure()
+        return self._channel_config_view(config)
+
+    def _locale_copy(self, key: str, **params: Any) -> str:
+        return render(key, self._locale(), **params)
+
+    def _channel_config_view(self, config: dict[str, Any]) -> dict[str, Any]:
+        """配置载荷：库内字段 + 固定 ``team_scope`` + 队长的后端事实。"""
+        if self._orchestrator is not None:
+            availability = self._orchestrator.leader_status(config)
+            leader_available = availability.ok
+            leader_reason = "" if availability.ok else availability.reason
+        else:  # pragma: no cover - 生产装配总有编排；没有时给出最保守的可读事实
+            leader_available = False
+            leader_reason = self._locale_copy("availability.orchestrator_absent")
+        return {
+            "channel_id": config["channel_id"],
+            "mode": config["mode"],
+            # team 覆盖 channel 型 target 与全部 task target（D23=B）；它不是可写字段。
+            "team_scope": TEAM_SCOPE,
+            "team_leader_member_id": config["team_leader_member_id"],
+            "leader_available": leader_available,
+            "leader_reason": leader_reason,
+            "workspace_root": config["workspace_root"],
+            "workspace_backend": config["workspace_backend"],
+            "permission_mode": config["permission_mode"],
+        }
+
     # ─── 任务看板与任务线程 ───────────────────────────────────────────────
     def tasks(self, channel_id: str | None = None) -> list[dict[str, Any]]:
         return self._db.list_tasks(channel_id=channel_id, member_id=self._member_id)
@@ -251,6 +324,11 @@ class WorkspaceService:
             "messages": self._db.list_task_messages(task_id, after_seq=after_seq),
         }
 
+    def task_round_outcomes(self, task_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
+        """任务 target 的轮次结果（重连补拉用；与频道同一份只读事实，作用域换成 task）。"""
+        task = self._db.get_task(task_id, self._member_id)
+        return self._db.list_round_outcomes(task["target_id"], after_seq=after_seq)
+
     def task_members(self, task_id: str) -> list[dict[str, Any]]:
         task = self._db.get_task(task_id, self._member_id)
         return self._db.list_target_members(task["target_id"])
@@ -258,6 +336,92 @@ class WorkspaceService:
     def task_budget(self, task_id: str) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)
         return self._db.budget_state(task["target_id"])
+
+    def team_runs(
+        self,
+        target_id: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """该 target 的运行记录（倒序分页）与各自的分派快照。
+
+        这是运行面板断线后的快照兜底（ADR-0020 四）：``agent_event`` / ``team_assignment``
+        是 live-only，重连后只能靠这份读面恢复。``target_id`` 既可以是频道，也可以是任务
+        线程的 target；未知 target 由库层 404。
+        """
+        runs, has_more = self._db.list_team_runs_page(target_id, limit=limit, offset=offset, task_id=task_id)
+        return {
+            "target_id": target_id,
+            "runs": runs,
+            "limit": limit,
+            "offset": offset,
+            "has_more": has_more,
+        }
+
+    def plan(self, target_id: str, limit: int = PLAN_RUN_RETENTION) -> dict[str, Any]:
+        """该 target 的 Plan 快照（按 member 分组；默认每个成员最近 20 个 run）。
+
+        这是运行面板的只读兜底面：Plan 不是消息、不进未读/搜索/看板/预算，刷新与重启后
+        仍从这里读回同一份清单（ADR-0023）。
+        """
+        return self._db.plan_view(target_id, limit=limit)
+
+    # ─── SOP（owner 显式启动的多步运行；ADR-0023） ─────────────────────────
+    # 这些方法只经人类面端点到；成员面没有 SOP 工具，Agent 不能自行创建或启动。
+    def sops(self) -> list[dict[str, Any]]:
+        return self._db.list_sop_definitions()
+
+    def sop(self, definition_id: str) -> dict[str, Any]:
+        return self._db.get_sop_definition(definition_id)
+
+    def create_sop(
+        self,
+        *,
+        name: str,
+        description: str,
+        steps: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._db.create_sop_definition(name=name, description=description, steps=steps)
+
+    def update_sop(
+        self,
+        definition_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        steps: Sequence[dict[str, Any]] | None = None,
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        return self._db.update_sop_definition(
+            definition_id,
+            name=name,
+            description=description,
+            steps=steps,
+            enabled=enabled,
+        )
+
+    def start_sop_run(self, definition_id: str, *, target_id: str) -> dict[str, Any]:
+        if self._sops is None:
+            raise DomainError("validation_failed", render("error.sop_agent_unavailable", self._locale()))
+        return self._sops.start(definition_id, target_id=target_id)
+
+    def sop_run(self, run_id: str) -> dict[str, Any]:
+        if self._sops is None:
+            raise NotFound(render("error.sop_run_not_found", self._locale(), sop_run_id=run_id))
+        return self._sops.view(run_id)
+
+    def resume_sop_run(
+        self,
+        run_id: str,
+        *,
+        reply_id: str | None = None,
+        confirm_results: Sequence[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if self._sops is None:
+            raise NotFound(render("error.sop_run_not_found", self._locale(), sop_run_id=run_id))
+        return self._sops.resume(run_id, reply_id=reply_id, confirm_results=confirm_results or [])
 
     def mark_task_read(self, task_id: str, seq: int) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)
@@ -293,9 +457,13 @@ class WorkspaceService:
             )
         if message is not None and member_id is not None and self._orchestrator is not None:
             if actor["kind"] == "owner":
-                self._orchestrator.notify_task_assignment(task["target_id"], message["seq"], member_id)
+                self._orchestrator.notify_task_assignment(
+                    task["target_id"], message["seq"], member_id, actor_member_id=actor["id"]
+                )
             else:
-                self._orchestrator.notify_task_reassignment(task["target_id"], message["seq"], member_id)
+                self._orchestrator.notify_task_reassignment(
+                    task["target_id"], message["seq"], member_id, actor_member_id=actor["id"]
+                )
         return {"task": task, "message": message}
 
     def channel_messages(self, channel_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
@@ -409,15 +577,39 @@ class WorkspaceService:
         # 系统提示是配置数据，不随列表返回全量正文以外的东西；这里原样带出以证明「落库即用户输入」。
         return view
 
-    def create_agent(self, name: str, role: str, model_id: str, system_prompt: str) -> dict[str, Any]:
-        """新建 Agent。任一字段不合法则整体不创建，不留半成品成员行。"""
+    def create_agent(
+        self,
+        name: str,
+        role: str,
+        model_id: str,
+        system_prompt: str,
+        *,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool = False,
+        docker_image: str | None = None,
+    ) -> dict[str, Any]:
+        """新建 Agent。任一字段不合法则整体不创建，不留半成品成员行。
+
+        Agent 级 workspace 覆盖（D14/D15）与其它配置同一条偏序：由库层校验取值，任一不合法则
+        整条创建都不发生；它们是配置事实，不落消息、不唤醒。
+        """
         locale = self._locale()
         error = model_id_error(model_id, locale)
         if error is not None:
             raise DomainError(
                 "validation_failed", render("error.agent_invalid", locale), fields={"model_id": error}
             )
-        agent = self._db.create_agent(name=name, role=role, model_id=model_id, system_prompt=system_prompt)
+        agent = self._db.create_agent(
+            name=name,
+            role=role,
+            model_id=model_id,
+            system_prompt=system_prompt,
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            allow_local_shell=allow_local_shell,
+            docker_image=docker_image,
+        )
         return self._agent_view(agent, self._db.agent_stats(agent["id"]).get(agent["id"]))
 
     def update_agent(
@@ -430,6 +622,10 @@ class WorkspaceService:
         system_prompt: str | None = None,
         enabled: bool | None = None,
         auto_claim: bool | None = None,
+        workspace_backend: str | None = None,
+        permission_mode: str | None = None,
+        allow_local_shell: bool | None = None,
+        docker_image: str | None = None,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -444,6 +640,11 @@ class WorkspaceService:
         ``auto_claim``（#65 / ADR-0010）就是「**自动认领任务**」开关：它写 `agent_config.auto_claim`，
         编排在**新建任务之后**读它决定要不要替这个 Agent 接手；与其它配置字段同一条纪律——不落消息、
         不唤醒、不消耗预算、不开世代。它**只**影响之后新建的任务，不回填、不改已指派的任务。
+
+        Agent 级 workspace 覆盖（D14/D15）：``workspace_backend`` / ``permission_mode`` /
+        ``allow_local_shell`` / ``docker_image`` 写进同一条 ``agent_config`` 行；取值校验在库层
+        （非法值整体拒绝）。写了任一项就清掉该成员的 Docker 失败短缓存，下一轮重新按新配置装配——
+        改 ``docker_image`` 时池里的旧镜像容器也会在装配层因镜像不一致被替换。
         """
         locale = self._locale()
         if model_id is not None:
@@ -462,7 +663,16 @@ class WorkspaceService:
             system_prompt=system_prompt,
             enabled=enabled,
             auto_claim=auto_claim,
+            workspace_backend=workspace_backend,
+            permission_mode=permission_mode,
+            allow_local_shell=allow_local_shell,
+            docker_image=docker_image,
         )
+        if any(
+            value is not None
+            for value in (workspace_backend, permission_mode, allow_local_shell, docker_image)
+        ):
+            clear_docker_failure(member_id)
         return self.agent(member_id)
 
     @staticmethod

@@ -71,16 +71,24 @@ def _sanitize_proxy_environment() -> Iterator[None]:
 
 
 def build_app(
-    data_dir: Path, scheduler: ManualScheduler | None = None, seam: ScriptedAgentSeam | None = None
+    data_dir: Path,
+    scheduler: ManualScheduler | None = None,
+    seam: ScriptedAgentSeam | None = None,
+    **kwargs: Any,
 ):
+    """默认注入脚本化替身 + 手动调度器；``seam_factory`` 存在时交给 factory 决定成员面。"""
+    provided_seam = seam
+    if provided_seam is None and kwargs.get("seam_factory") is None:
+        provided_seam = ScriptedAgentSeam()
     return create_app(
         data_dir=data_dir,
         scheduler=scheduler if scheduler is not None else ManualScheduler(),
-        seam=seam if seam is not None else ScriptedAgentSeam(),
+        seam=provided_seam,
         # 到期投递器同样默认注入一个**惰性替身**（同 ManualScheduler 的理由）：行为测试必须确定，
         # 不能因为「今天恰巧过了某条提醒的到期时刻」而多出系统事件消息。真实后台轮询由
         # ``test_reminder_delivery.py`` 自己在**单独的**用例里注入（那两条恰好要验证启动先扫与关停）。
         reminder_delivery=InertReminderDeliveryDriver,
+        **kwargs,
     )
 
 
@@ -178,7 +186,7 @@ def launched(harness: dict) -> dict:
 
 
 @contextmanager
-def live_backend(data_dir: Path, **kwargs) -> Iterator[str]:
+def live_backend(data_dir: Path, *, state: dict | None = None, **kwargs) -> Iterator[str]:
     """在**真实 HTTP 服务**上启动后端，返回 ``base_url``。
 
     为什么事件流测试需要真 socket：``TestClient`` 会把整个响应体读完才返回，而事件流是持续的。
@@ -190,9 +198,12 @@ def live_backend(data_dir: Path, **kwargs) -> Iterator[str]:
 
     import uvicorn
 
-    config = uvicorn.Config(
-        build_app(data_dir, **kwargs), host="127.0.0.1", port=0, log_level="warning", lifespan="on"
-    )
+    app = build_app(data_dir, **kwargs)
+    # 需要「从后端进程内发布一条 live-only 事件」的用例（事件总线是唯一发布面）用这个句柄；
+    # 生产代码里没有对应 HTTP 写路径，这正是 ADR-0020 的分层：事件只经进程内总线广播。
+    if state is not None:
+        state["app"] = app
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -216,7 +227,7 @@ def live(data_dir: Path) -> Iterator[dict]:
     scheduler = ManualScheduler()
     seam = ScriptedAgentSeam()
     state: dict = {"data_dir": data_dir, "scheduler": scheduler, "seam": seam}
-    with live_backend(data_dir, scheduler=scheduler, seam=seam) as base_url:
+    with live_backend(data_dir, scheduler=scheduler, seam=seam, state=state) as base_url:
         state["base_url"] = base_url
         # ``trust_env=False``：测试只跟 127.0.0.1 说话，绝不让进程环境里的 HTTP(S)_PROXY /
         # ALL_PROXY 把本地请求劫持到代理上（那会让「读本地事件流」变成一个环境相关的偶然）。

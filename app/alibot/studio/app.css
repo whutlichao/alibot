@@ -786,6 +786,20 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .dock-member-reason { font-size: var(--fs-caption); color: var(--warn-deep); margin-top: var(--sp-2); line-height: var(--lh-snug); }
 .dock-member-foot { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); }
 
+/* ─── team 频道的事实提示（#154 / ADR-0018）──────────────────────────────
+   两处消费：频道设置弹窗（成员 auto_claim 已停用 / 任务线程只唤醒队长）与任务线程头部
+   （所属频道是 team 时只唤醒队长）。它不是错误：沿用 warn 族（soft 底 + graphic 描边 +
+   deep 墨），与 `.conn-banner` / `.remote-notice` 同一语汇；不新造色位、不硬编码 hex。 */
+.team-notice {
+  display: flex; align-items: baseline; gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5); margin: var(--sp-3) 0 0;
+  border-left: 2px solid var(--warn-graphic); border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--warn-soft); color: var(--warn-deep);
+  font-size: var(--fs-sm); line-height: var(--lh-snug);
+}
+.team-notice + .team-notice { margin-top: var(--sp-3); }
+.tt-summary .team-notice { margin-top: var(--sp-4); }
+
 /* ─── 远端数据流告知（必须在首次远端调用之前） ──────────────────────────── */
 .remote-notice {
   border: 1px solid var(--warn-graphic); background: var(--warn-soft); border-radius: var(--r-md);
@@ -953,6 +967,92 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .tt-reply { border-top: 1px solid var(--border); padding: 11px var(--sp-7) var(--sp-6); background: var(--surface); }
 .tt-reply .composer-box { box-shadow: none; }
 .tt-reply textarea { min-height: 38px; max-height: 140px; }
+/* ─── dock 形态 D：运行面板（#155 / 规格 §4.6）───────────────────────────
+   与 `.task-thread` / `.agent-detail` 同构（竖直 flex 撑满 380px 容器）。
+   零裸色值：状态 pill 的色位只走 `--online-text` / `--working-text` / `--error`
+   （与既有状态点同一张词表），卡片与分隔线走 `--border` / `--panel` 族。 */
+.run-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.run-panel[hidden] { display: none; }
+.rp-run { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); margin-bottom: var(--sp-4); background: var(--surface); }
+.rp-run-head { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); flex-wrap: wrap; }
+.rp-run-title { font-weight: var(--fw-semi); color: var(--fg); overflow-wrap: anywhere; }
+.rp-time, .rp-id, .rp-count, .rp-duration, .rp-reply-id {
+  font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint);
+}
+.rp-id, .rp-duration { margin-left: auto; }
+.rp-member { border-top: 1px dashed var(--border); margin-top: var(--sp-4); padding-top: var(--sp-4); }
+.rp-member-head { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); }
+.rp-member-name { font-weight: var(--fw-semi); color: var(--fg); overflow-wrap: anywhere; }
+.rp-count { margin-left: auto; }
+.rp-state {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 7px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--panel-2); color: var(--muted);
+  font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide);
+}
+.rp-state[data-state="succeeded"], .rp-state[data-state="completed"] { color: var(--online-text); border-color: var(--online); }
+.rp-state[data-state="started"], .rp-state[data-state="running"], .rp-state[data-state="pending"],
+.rp-state[data-state="in_progress"], .rp-state[data-state="awaiting"] { color: var(--working-text); border-color: var(--working); }
+.rp-state[data-state="failed"], .rp-state[data-state="budget-exhausted"],
+.rp-state[data-state="interrupted"], .rp-state[data-state="invalid-leader"] { color: var(--error); border-color: var(--error); }
+.rp-assign { padding: var(--sp-3) 0 0; }
+.rp-assign-top { display: flex; align-items: center; gap: var(--sp-3); }
+.rp-meta { margin-top: var(--sp-2); font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
+.rp-excerpt { margin-top: var(--sp-2); font-size: var(--fs-caption); color: var(--fg); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.rp-error-line { margin-top: var(--sp-2); font-size: var(--fs-caption); color: var(--error); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.rp-reply { margin-top: var(--sp-3); padding-left: var(--sp-4); border-left: 2px solid var(--border); }
+.rp-event { display: flex; gap: var(--sp-3); align-items: baseline; padding: 2px 0; font-size: var(--fs-caption); min-width: 0; }
+.rp-event-type { flex: 0 0 auto; font-family: var(--mono); font-size: var(--fs-mono-micro); color: var(--faint); letter-spacing: var(--ls-wide); }
+.rp-event-summary { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.rp-plan-task { display: flex; align-items: baseline; gap: var(--sp-3); padding: var(--sp-3) 0 0; font-size: var(--fs-caption); }
+.rp-plan-subject { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
+.rp-step { padding: var(--sp-3) 0 0; }
+.rp-step-top { display: flex; align-items: center; gap: var(--sp-3); }
+.rp-step-name { flex: 1; min-width: 0; font-size: var(--fs-caption); color: var(--fg); overflow-wrap: anywhere; }
+.rp-verdict { margin-top: var(--sp-2); font-size: var(--fs-caption); line-height: var(--lh-snug); }
+.rp-verdict.is-pass { color: var(--online-text); }
+.rp-verdict.is-fail { color: var(--error); }
+.rp-verdict-message { margin-left: var(--sp-3); color: var(--muted); overflow-wrap: anywhere; }
+.rp-error { border: 1px solid var(--error); border-radius: var(--r-md); padding: var(--sp-4); margin-bottom: var(--sp-4); }
+.rp-error-text { font-size: var(--fs-sm); color: var(--error); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.rp-error .btn { margin-top: var(--sp-4); }
+/* ─── 审批卡（#153 / 规格 §4.6 第 4 条 / ADR-0021 §四）────────────────────
+   消息流与任务线程共用同一张卡：工具调用摘要 + 请求成员 + 倒计时 + 允许/拒绝。
+   零裸色值：状态色位只走既有的 `--working-text` / `--online-text` / `--error` 词表。 */
+.approval-board { display: flex; flex-direction: column; gap: var(--sp-4); margin: 0 0 var(--sp-6); }
+.approval-board[hidden] { display: none; }
+.approval-card {
+  border: 1px solid var(--border-strong); border-left: 3px solid var(--working);
+  border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5);
+  background: var(--surface);
+}
+.approval-card[data-state="approved"] { border-left-color: var(--online); }
+.approval-card[data-state="denied"], .approval-card[data-state="expired"] { border-left-color: var(--error); }
+.approval-head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.approval-tag {
+  font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider);
+  text-transform: uppercase; color: var(--working-text); font-weight: var(--fw-semi);
+}
+.approval-member { font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--fg); overflow-wrap: anywhere; }
+.approval-state {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 7px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--panel-2); color: var(--muted);
+  font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide);
+}
+.approval-state[data-state="pending"] { color: var(--working-text); border-color: var(--working); }
+.approval-state[data-state="approved"] { color: var(--online-text); border-color: var(--online); }
+.approval-state[data-state="denied"], .approval-state[data-state="expired"] { color: var(--error); border-color: var(--error); }
+.approval-remaining { margin-left: auto; font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted); }
+.approval-remaining[data-urgent="1"] { color: var(--error); }
+.approval-tools { display: flex; flex-direction: column; gap: var(--sp-3); margin-top: var(--sp-4); }
+.approval-tool { border: 1px solid var(--border); border-radius: var(--r-sm); padding: var(--sp-3) var(--sp-4); background: var(--panel); }
+.approval-tool-name { font-family: var(--mono); font-size: var(--fs-caption); font-weight: var(--fw-semi); color: var(--fg); overflow-wrap: anywhere; }
+.approval-tool-input { margin-top: 2px; font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--muted); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.approval-actions { display: flex; gap: var(--sp-3); margin-top: var(--sp-4); }
+.approval-note, .approval-error { margin-top: var(--sp-3); font-size: var(--fs-caption); line-height: var(--lh-snug); }
+.approval-note { color: var(--faint); }
+.approval-error { color: var(--error); overflow-wrap: anywhere; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 900px) {
   .board-toolbar { flex-wrap: wrap; padding-left: var(--sp-6); padding-right: var(--sp-6); }
@@ -962,3 +1062,22 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
   .board-cols { flex-direction: column; }
   .col { width: 100%; flex-basis: auto; }
 }
+
+/* ─── 资源管理（#156 / 规格 §4.6）：Workspace 状态 / MCP / Skill 三段 ─────────
+   三段都追加在频道设置正文里，行形态沿用 `.reminder-row` 那一族（列表 + hairline），
+   但语义不同，因此各自命名：一行 = 「读数主体 + 动作组」。零裸色值、不新造 token 名。 */
+.resource-row { display: flex; align-items: flex-start; gap: var(--sp-5); padding: 10px 0; border-bottom: 1px solid var(--border); }
+.resource-row:last-child { border-bottom: 0; }
+.resource-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.resource-title { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; font-size: var(--fs-body); font-weight: var(--fw-semi); }
+.resource-meta { font-size: var(--fs-caption); color: var(--muted); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.resource-meta.is-faint { color: var(--faint); }
+.resource-meta.is-error { color: var(--error); }
+.resource-hash { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); letter-spacing: var(--ls-wide); }
+.resource-actions { display: flex; gap: var(--sp-3); flex-wrap: wrap; justify-content: flex-end; flex: 0 0 auto; }
+.resource-add { margin: var(--sp-5) 0 0; padding-top: var(--sp-5); border-top: 1px solid var(--border); }
+.resource-form-row { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: flex-end; }
+.resource-form-row .field { flex: 1; min-width: 160px; margin-bottom: 0; }
+.resource-form-row .agent-actions { flex: 0 0 auto; }
+.resource-form-row .agent-actions .btn { flex: 0 0 auto; }
+.resource-empty { padding: var(--sp-3) 0; font-size: var(--fs-sm); color: var(--faint); }
