@@ -175,6 +175,12 @@
           <button class="icon-btn" id="btnChannelBudget" type="button" data-od-id="btn-channel-budget" data-i18n-attr="title:budget.entryTitle,aria-label:budget.entryTitle" title="回应预算" aria-label="回应预算">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 18V6"/><path d="M4 18h16"/><path d="M7.5 15.5V11M12 15.5V8M16.5 15.5v-2.5"/></svg>
           </button>
+          <!-- 频道头部的**运行面板入口**（#155 / 规格 §4.6）：成员过程 / 分派 / Plan / SOP 的
+               只读过程面。它是右侧 dock 的**第四形态**（与成员面板 / 任务线程 / Agent 详情
+               共用同一个 380px 容器），频道与任务线程都能打开；私信下由 app.js 隐藏。 -->
+          <button class="icon-btn" id="btnRunPanel" type="button" data-od-id="btn-run-panel" data-i18n-attr="title:runPanel.entryTitle,aria-label:runPanel.entryTitle" title="运行面板" aria-label="运行面板">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </button>
           <button class="icon-btn" id="btnDockToggle" data-i18n-attr="title:dock.toggle,aria-label:dock.toggle" title="切换详情面板" aria-label="切换详情面板" aria-controls="dock" aria-expanded="false">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
           </button>
@@ -317,6 +323,11 @@
             <div class="dock-name"><span class="dock-tag" data-i18n="task.threadTag">任务线程</span> <span class="dock-task-id" id="ttHeadId"></span></div>
             <div class="dock-role"><span id="ttHeadSub"></span></div>
           </div>
+          <!-- 任务线程头的运行面板入口（#155）：把 task target 的分派 / 成员过程 / Plan / SOP
+               在同一 dock 里打开（`task_id` 过滤同一份 `GET /team-runs`）。 -->
+          <button class="icon-btn" type="button" id="btnThreadRunPanel" data-od-id="btn-thread-run-panel" data-i18n-attr="title:runPanel.taskEntryTitle,aria-label:runPanel.taskEntryTitle" title="任务运行面板" aria-label="任务运行面板">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </button>
           <button class="icon-btn" type="button" id="btnThreadClose" data-i18n-attr="aria-label:dock.threadClose" aria-label="关闭任务线程" data-od-id="btn-thread-close">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
           </button>
@@ -379,6 +390,28 @@
           </div>
         </div>
       </div>
+    </div>
+    <!-- dock 形态 D：**运行面板**（#155 / 规格 §4.6）——与「频道成员」「任务线程」「Agent 详情」
+         共用同一个 380px 容器。频道与任务线程都能打开（入口分别是频道头的 `#btnRunPanel`
+         与任务线程头的 `#btnThreadRunPanel`）。正文整段由 app.js 铺：按 team_run / member
+         分组的分派与耗时、live `agent_event` 流、Plan 三态、SOP 步骤与 verdict。
+         它**不**把成员过程混进消息流 / 未读 / 搜索（ADR-0020 / ADR-0023）。 -->
+    <div class="run-panel" id="dockRun" hidden data-od-id="run-panel">
+      <div class="dock-head" data-od-id="run-panel-head">
+        <div class="dock-id">
+          <div class="meta">
+            <div class="dock-name"><span class="dock-tag" data-i18n="runPanel.tag">运行面板</span> <span class="dock-task-id" id="rpTitle"></span></div>
+            <div class="dock-role"><span id="rpSub"></span></div>
+          </div>
+          <button class="icon-btn" type="button" id="rpRefresh" data-od-id="run-panel-refresh" data-i18n-attr="title:runPanel.refresh,aria-label:runPanel.refresh" title="刷新快照" aria-label="刷新快照">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+          </button>
+          <button class="icon-btn" type="button" id="rpClose" data-od-id="run-panel-close" data-i18n-attr="aria-label:runPanel.closeAria" aria-label="关闭运行面板">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="dock-scroll" id="rpBody" data-od-id="run-panel-body"></div>
     </div>
     <!-- dock 形态 C：**Agent 详情**（本票）——与「频道成员」「任务线程」共用同一个 380px 容器。
          只有「概览」「运行时」两个页签：**日志页签不做**（用户人定 D24，另立 backlog 票 #72）。
