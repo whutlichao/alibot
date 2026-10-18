@@ -711,6 +711,34 @@ def _step_14_to_15(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ``15 → 16`` 的六张新表（规格 §4.2 / ADR-0018 / ADR-0022 / ADR-0023）：team 运行与分派、
+# Plan 运行与事项、SOP 定义与运行。它们是**纯增量**：既有表只给 ``channel`` 补两列。
+TEAM_PLAN_SOP_TABLES: tuple[str, ...] = (
+    "team_run",
+    "team_assignment",
+    "plan_run",
+    "plan_task",
+    "sop_definition",
+    "sop_run",
+)
+
+
+def _step_15_to_16(conn: sqlite3.Connection) -> int:
+    """team 模式 / Plan / SOP 的纯增量形态（#138 / 规格 §4.1 / §4.2）。
+
+    本步只做两件事：按**当前 ``SCHEMA``** 建出六张新表、给 ``channel`` 补 ``mode`` /
+    ``team_leader_member_id`` 两列。索引与两条「team 必须有队长」触发器由执行器在本步之后施的
+    :func:`_align_to_current_schema` 按同一份 ``SCHEMA`` 创建（那条路径既有、已有测试覆盖）。
+
+    **不重建既有表、不回填业务数据**：旧频道的 ``mode`` 由列默认值 ``'autonomous'`` 解释，
+    ``team_leader_member_id`` 为 ``NULL``（规格 §4.1 的旧行语义）。``ADD COLUMN`` 连列级 ``CHECK``
+    与 ``REFERENCES`` 一起落库，因此不触发「缺外键就重建」的对齐路径。
+    """
+    _create_missing_tables(conn, TEAM_PLAN_SOP_TABLES)
+    _add_missing_columns(conn, "channel")
+    return 0
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -766,6 +794,7 @@ STEPS: tuple[MigrationStep, ...] = (
         "结构化沉默状态（round_outcome.status 的库级 CHECK 重建，纳入 silent）",
         _step_14_to_15,
     ),
+    MigrationStep(15, 16, "agentscope-2 team/plan/sop expand", _step_15_to_16),
 )
 
 
