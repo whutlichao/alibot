@@ -19,7 +19,8 @@ docs/adr/0024-…md                  # 结果、缺项、局限、保留默认 3
 - 脚本化替身只用于 `--dry-run` 行为取证，报告标 `usage_evidence=false` / `cost_evidence=false`。
 
 **Head branch:** `issue-55-impl`（base `main`，diff 从 `bc6f761` 起；latest commit 见 PR 页面）。
-**状态：draft。** 真实本机 provider 与远端付费 provider 读数尚未取得：本机 Ollama 不可用；远端付费
+**Worker:** `task_f7818420888e` / dispatch `ctx_a9be1af651e0`（`worker_done` 在交付结尾发送，回执由
+coordinator 的 Run 记录核对）。**状态：draft。** 真实本机 provider 与远端付费 provider 读数尚未取得：本机 Ollama 不可用；远端付费
 授权仍 pending（人民币 5 元额度），且按模型硬限制的保守预估为 **$6.0864**，预检不通过，工具拒绝执行。
 因此本 PR **不关闭 #55**，也不把 dry-run 或预检写成实测成本。
 

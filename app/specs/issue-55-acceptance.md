@@ -162,6 +162,7 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
 | `CONTEXT.md` | 「成员面适配接缝」补一句默认关闭的用量观察口（不是第三种输出） |
 | `app/README.md` | 「测试与检查」补一段手动实测入口（dry-run / preflight / opt-in） |
 | `app/specs/issue-55-acceptance.md` | 本文件 |
+| `app/specs/issue-55-pr-body.md` | PR #175 正文正本 |
 | `docs/adr/0024-response-budget-measured-evidence-keeps-default-three.md` | **新增** ADR；不改 ADR-0002 / 0007 |
 
 **未改动**：`app/alibot/db.py`（默认 3 / 档位 3,5,10 / schema 17）、`app/alibot/orchestration.py`、
@@ -209,5 +210,7 @@ ALIBOT_MEASURE_ALLOW_REMOTE=1 ../.venv/bin/python -m tests.measure_budget \
   4. 外推只给 `scenario_bound` 与 `empirical_fanout_estimate`；不声称系统普遍金额上界（调用/重试/
      上下文增长无有限硬约束）。
   5. 替身 dry-run 只作行为证据，报告与 ADR 都显式标 `usage_evidence=false` / `cost_evidence=false`。
+- **PR**：[#175](https://github.com/whutlichao/alibot/pull/175)（draft，base `main`，head branch
+  `issue-55-impl`；正文正本 `app/specs/issue-55-pr-body.md`）。PR 不含 `Closes #55`。
 - **Next**：人定提高预算/收窄条件后，在人类环境启动 Ollama 并准备本机模型、按 §4 先预检再跑；把本机
   与远端两组读数补进 ADR-0024 与本节，再转 ready、执行 `Closes #55`。
