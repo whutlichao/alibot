@@ -4,7 +4,7 @@
 >
 > Part of #1（首版规格锚点）｜ 规格 issue：**#131** ｜ 规格 PR：**#160**（子票为 #132–#159）。
 >
-> **待确认**：D1–D17 已由用户裁定；**D18–D23 是第二轮 ask 的推荐默认（A），两次 ask 超时未收到回执**（messageId `msg_2e2c47de1dcf`）。实施前必须由 owner 确认；若回执不同，按回执改写本文件与相关票。
+> **决策状态**：D1–D23 均已由用户裁定（D13–D23 的 ask 回执见 §8.2 / §8.3）。D23 = **B**：team 模式覆盖该频道的 **channel 型 target 与全部 task target**；任务线程只唤醒队长。
 >
 > **票型**：规格票 + 票据拆分 ｜ **门禁**：G-spec + G-tickets ｜ **本票不跑**：源码实施测试、双轴源码 review、浏览器 UI 验证。
 >
@@ -39,18 +39,18 @@
 | **D16** | **team 模式下 `auto_claim`。** 关闭该频道**全部成员**的 `auto_claim`；任务只能由 **owner 指派**或**队长经 `TeamAssign` 分派**。 | `auto_claim` 是配置，不在 team 模式下被读取；不删除既有列、不改 autonomous 行为。队长分派仍走 `TeamAssign` 预算，不产生“认领”。 |
 | **D17** | **穿透的可见性。** 穿透是 **pipeline 外的一次性直答**：其回复照常落为**频道消息**；**D2 只约束 pipeline 成员输出**。 | 穿透回复会占用一条频道消息与未读（既有语义），但不进入 team pipeline、不产生 `team_assignment`、不再唤醒任何人。 |
 
-### 1.2 第二轮 ask 推荐默认（D18–D23，待 owner 确认）
+### 1.2 第二轮 ask 追加裁定（D18–D23，已由用户裁定）
 
-> Q6–Q11 的 ask 两次超时（最近 messageId `msg_2e2c47de1dcf`，900s 与 600s 均无回执）。下表是**规格的推荐默认 A**，不是已收到的用户裁定；实施前必须确认。
+> Q6–Q11 的用户最终回执见 §8.3（messageId `msg_b065b796831b` / `msg_2e2c47de1dcf`）。下表是**已裁定**的决策；**不得改写 D1–D22**。
 
 | 编号 | 决策 | 代价 / 边界 |
 | --- | --- | --- |
-| **D18**（推荐 A，待确认） | **队长不可用。** 队长被禁用/软删除时**不回落 autonomous**：该频道进入「配置无效」状态，消息照常落库但**不唤醒任何人**；频道设置与状态点给出可读原因，owner 必须启用或改选队长。 | 这是**显式失败面**，不是静默降级；不会把 team 频道偷偷变成全员唤醒。 |
-| **D19**（推荐 A，待确认） | **HITL 持久性。** 首版进程内**有界等待**（默认 10 分钟，超时收口 `failed`）；审批请求**落库**供 UI 展示；进程重启后未决审批标为 `expired`、该轮 `failed`，**不支持跨重启恢复**。 | 跨重启恢复（持久化参与者 `AgentState` 并重建 `TeamPipeline`）另开后续票；首版不承诺。 |
-| **D20**（推荐 A，待确认） | **Plan / SOP 启动面。** Plan 在每个**任务/team 轮次**自动可用并持久化；SOP 只能由 **owner 显式启动**（或队长在 `TeamAssign` 中建议、由 owner 确认），Agent **不能自行创建并运行 SOP**。 | Plan 是轮次内建能力；SOP 是 owner 的运行编排，不是模型的自由动作。 |
-| **D21**（推荐 A，待确认） | **MCP / Skill 来源。** 本轮只支持**本机目录 / 上传 zip / 本机 stdio 与 HTTP MCP**，不做远程市场或自动下载。 | 不引入第三方内容市场、远程注册表、自动更新；远端 MCP 只按用户显式配置的连接串访问，并单独做数据面告知。 |
-| **D22**（推荐 A，待确认） | **权限档位。** 对外只暴露 `read-only` / `ask-writes`（默认）/ `trusted-writes`（工作目录内自动写）；框架的 `DEFAULT`/`EXPLORE` 映射到前两档，**不暴露 `BYPASS`**；`DONT_ASK` 不暴露。 | 没有“完全跳过安全审批”的 UI 档位；`trusted-writes` 仍只限工作目录内，越界写仍要审批。 |
-| **D23**（推荐 A，待确认） | **team 模式作用范围。** 只作用于 **channel 型 target**；该频道下的**任务线程仍按既有任务语义**（受派者/认领）唤醒。`TeamAssign` 在任务线程里只作**运行期分派记录**，不改任务五态。 | 任务线程不会被 team 模式“队长化”；任务看板、五态、认领、预算世代全部不变。 |
+| **D18** | **队长不可用。** 队长被禁用/软删除时**不回落 autonomous**：该频道进入「配置无效」状态，消息照常落库但**不唤醒任何人**；频道设置与状态点给出可读原因，owner 必须启用或改选队长。 | 这是**显式失败面**，不是静默降级；不会把 team 频道偷偷变成全员唤醒。 |
+| **D19** | **HITL 持久性。** 首版进程内**有界等待**（默认 10 分钟，超时收口 `failed`）；审批请求**落库**供 UI 展示；进程重启后未决审批标为 `expired`、该轮 `failed`，**不支持跨重启恢复**。 | 跨重启恢复（持久化参与者 `AgentState` 并重建 `TeamPipeline`）另开后续票；首版不承诺。 |
+| **D20** | **Plan / SOP 启动面。** Plan 在每个**任务/team 轮次**自动可用并持久化；SOP 只能由 **owner 显式启动**（或队长在 `TeamAssign` 中建议、由 owner 确认），Agent **不能自行创建并运行 SOP**。 | Plan 是轮次内建能力；SOP 是 owner 的运行编排，不是模型的自由动作。 |
+| **D21** | **MCP / Skill 来源。** 本轮只支持**本机目录 / 上传 zip / 本机 stdio 与 HTTP MCP**，不做远程市场或自动下载。 | 不引入第三方内容市场、远程注册表、自动更新；远端 MCP 只按用户显式配置的连接串访问，并单独做数据面告知。 |
+| **D22** | **权限档位。** 对外只暴露 `read-only` / `ask-writes`（默认）/ `trusted-writes`（工作目录内自动写）；框架的 `DEFAULT`/`EXPLORE` 映射到前两档，**不暴露 `BYPASS`**；`DONT_ASK` 不暴露。 | 没有“完全跳过安全审批”的 UI 档位；`trusted-writes` 仍只限工作目录内，越界写仍要审批。 |
+| **D23** | **team 模式作用范围（Q11 = B）。** team 模式覆盖该频道的 **channel 型 target 与全部 task target**；**任务线程也只唤醒队长**。既有任务五态保留（owner 与成员的结构化工具维护；队长可分派），但**认领与受派者唤醒在 team 模式任务线程中不再是唤醒路径**；`auto_claim` 已按 D16 全关；`TeamAssign` 在任务线程可用并记入运行期分派。 | 非队长的任务受派者不会被任务消息唤醒；任务线程的协调权集中到队长，`in_review → done` 仍保留“受派者不能批准自己、owner 恒可”，队长为受派者时只能由 owner 批准。任务五态本身、`task` 行、看板、任务线程消息流与任务 target 预算都保留。 |
 
 ## 2. 现状与 gap
 
@@ -59,7 +59,7 @@
 ### 2.1 唤醒面是“全成员”，没有模式与队长
 
 - `app/alibot/orchestration.py:193` 的 `WakeOrchestrator.notify()` 在消息落库后读取 target 与消息，`app/alibot/orchestration.py:355` 的 `_wake_targets()` 返回**该 target 全部 Agent 成员（排除作者）+ 被点名的穿透候选**。没有“只唤醒队长”的分支。
-- `app/alibot/orchestration.py:219` 对 DM 的 Agent 作者消息直接 `return 0`；频道/任务没有对应分支。
+- `app/alibot/orchestration.py:219` 对 DM 的 Agent 作者消息直接 `return 0`；频道/任务没有“只唤醒队长”的分支。任务 target 另有两条显式路径：`notify_task_assignment()`（owner 改派）与 `notify_task_reassignment()`（Agent 转派）都只唤醒**新受派者**，`claim_new_task()` 走认领唤醒；这三条都没有 team 分支。
 - `app/alibot/orchestration.py:230` 的 `jump_delivered = author_kind == "agent" and target["kind"] != "dm"` 把“Agent 消息投递唤醒”作为一次跳的唯一来源；team pipeline 的 `TeamAssign` 不经过这条路径。
 - `CONTEXT.md` 第 19 行明写 Agent “不做文件与 shell 操作（首版没有家目录、项目目录与沙箱）”；`CONTEXT.md` 的**成员 (Member)** / **唤醒 (Wake)** / **轮次 (Round)** 词条把“成员平等自主”“一轮至多一条 target 消息”作为现行协议。
 
@@ -97,6 +97,7 @@
 
 - `app/alibot/db.py:269` 的 `task.status` 是五态 `todo` / `in_progress` / `in_review` / `done` / `closed`；`CONTEXT.md` 的**任务状态**与 ADR-0006 规定“当前态在行上、变更史在消息流里”。
 - `app/alibot/orchestration.py:681` 的 `_apply_task_action()` 只接受 `TransferTaskAction` / `SetTaskStatusAction`；没有“TeamAssign 分派给某成员”的记录。
+- 任务 target 的唤醒有三条既有路径：`notify()` 的通用全成员唤醒、`notify_task_assignment()` / `notify_task_reassignment()` 的受派者唤醒、`claim_new_task()` 的认领唤醒。Q11=B 要把前两条在 team 模式改成“只唤醒队长”，并让认领不再成为唤醒路径；今天三者都没有 team 分支。
 - 直接后果：team 模式下队长分派了谁、分派了什么、成员回了什么，今天**没有可查的运行记录**；看板只反映任务行，不能替代运行记录。
 
 ### 2.8 与既有 ADR 的关系（原文不改，只登记扩展/收窄）
@@ -104,22 +105,22 @@
 | 既有 ADR | 现行结论 | 本规格的处置 |
 | --- | --- | --- |
 | **ADR-0002**（回应预算 ≤ 3） | 每个 target 每个**人类世代**最多 3 次 agent→agent 跳；耗尽零投递；跳数正本是 `target_budget.used` | **扩展**：team 模式的 `TeamAssign` 也计 1 跳（ADR-0019）；上界语义、零投递/不运行的构造性保证不变；原文不改 |
-| **ADR-0005**（派任务是人的发言） | 唤醒的载体是“指派”这个动作；owner 改派 = 人类世代，Agent 转派 = 1 跳；改状态/标题不唤醒 | **保留**：owner 指派与 Agent 转派语义不变；`TeamAssign` 是**运行期分派**，不改任务行、不写任务变更记录（ADR-0022） |
-| **ADR-0010 / ADR-0016**（认领） | 认领由编排发起、不是跳、每任务至多一次、首次认领开世代、认领即开工 | **收窄**：team 模式关闭该频道全部成员的 `auto_claim`（D16）；task 型 target 仍按既有认领语义（D23 推荐默认）；认领的预算与世代规则不变 |
-| **ADR-0006**（任务态在行上、变更史在流里） | 任务行可变；每次变更追加 `system` 消息 | **保留**：Plan/SOP/TeamAssign 都不改任务行、不写任务变更消息；任务历史仍只有任务 target 的消息流（ADR-0022 / ADR-0023） |
+| **ADR-0005**（派任务是人的发言） | 唤醒的载体是“指派”这个动作；owner 改派 = 人类世代，Agent 转派 = 1 跳；改状态/标题不唤醒 | **team 模式下收窄**：任务 target 的 owner 改派仍写任务行/开世代，但唤醒对象改为**队长**；Agent 转派同样只唤醒队长（队长是作者时零唤醒）。`TeamAssign` 是**运行期分派**，不改任务行、不写任务变更记录（ADR-0022） |
+| **ADR-0010 / ADR-0016**（认领） | 认领由编排发起、不是跳、每任务至多一次、首次认领开世代、认领即开工 | **team 模式下停用**：`auto_claim` 全关（D16），`claim_new_task()` 在 team 频道不再认领；认领与受派者唤醒不再是任务线程的唤醒路径（D23=B）。autonomous 频道的认领规则不变 |
+| **ADR-0006**（任务态在行上、变更史在流里） | 任务行可变；每次变更追加 `system` 消息 | **保留**：Plan/SOP/TeamAssign 都不改任务行、不写任务变更消息；任务五态仍由 owner 与队长/成员的结构化任务工具按既有 actor 规则维护；任务历史仍只有任务 target 的消息流（ADR-0022 / ADR-0023） |
 | **ADR-0003**（结构身份） | Agent 不经 HTTP，身份由调用点决定 | **保留**：Workspace/MCP/Skill/审批回传都在进程内或容器内；不新增 Agent 令牌（ADR-0021） |
 
 ### 2.9 Gap → 票（索引）
 
 | Gap | 证据 | 对应票 |
 | --- | --- | --- |
-| 无 team 模式 / 队长 / 只唤醒队长 | §2.1 | T1 |
-| TeamAssign 不计跳、无法在分派前原子扣减 | §2.2 | T2 |
+| 无 team 模式 / 队长 / 只唤醒队长（channel 与 task target） | §2.1 / §2.7 | T1 |
+| TeamAssign 不计跳、无法在分派前原子扣减（含 task target 预算） | §2.2 | T2 |
 | 事件流没有 AgentEvent 出口与归属 | §2.3 | E3 / E4 |
 | 成员输出缺少等价运行记录 | §2.4 | T3 |
 | Plan / SOP 无持久化与 UI | §2.4 / §2.6 | P1 / P2 |
 | Workspace / MCP / Skill / 权限 / HITL 未装配 | §2.5 | W1–W6 |
-| 任务与运行期分派无映射 | §2.7 | T4 |
+| 任务与运行期分派无映射；task target 的受派者/认领唤醒未收口 | §2.7 | T4 |
 | 2.0.10 未升级 | §2.6 | V1 |
 | schema 与迁移未扩展 | §2.4 | E1 / E2 / M1 |
 
@@ -177,35 +178,49 @@ class AgentSeam(Protocol):
 - **白名单**：只透传 `ReplyStart` / `ReplyEnd` / `TextBlock*` / `ThinkingBlock*` / `ToolCall*` / `ToolResult*` / `HintBlock` / `RequireUserConfirm` / `CustomEvent`；`DataBlock*` 只透传元数据（media_type / 长度），不透传 base64 正文。
 - `RoundOutcome` 仍是**队长的**轮次结论；成员结论写 `team_assignment`，不写 `round_outcome`。
 
-### 3.3 team 模式的生命周期
+### 3.3 team 模式的生命周期（channel + task target）
 
 ```text
-人类消息落库（channel 型 target，mode=team）
-  → notify(target_id, seq)
-      → 读取 channel.mode / team_leader_member_id
-      → 唤醒集合 = {队长}（若队长可用）+ 被点名的穿透候选（一次性，不进 pipeline）
+消息落库（channel 型 target，或该频道下的 task 型 target；mode=team）
+  → notify(target_id, seq) / notify_task_assignment / notify_task_reassignment
+      → 解析 team 配置：channel target 自身；task target 经 task.channel_id 查所属频道
+      → 唤醒集合 = {队长}（若队长可用；task target 不做穿透）
       → 队长不可用 ⇒ 零投递，记录可读原因（D18）
   → 队长轮次：run_round_stream
       → 按当前频道成员重建 BudgetedTeamPipeline（D11）
       → 队长可调用 TeamAssign
-          → 原子扣 1 跳；耗尽 ⇒ 错误 ToolResult，不运行成员（D3）
+          → 原子扣 1 跳（task target 用该 task 的 target_budget）；耗尽 ⇒ 错误 ToolResult，不运行成员（D3）
           → 运行成员；成员事件带 member_id / reply_id / target_id 进 SSE
           → 成员最终回复作为 ToolResult 回队长；不落 message
-      → 队长最终回复落 message（唯一一条）
-  → notify 对队长最终回复返回 0（D2）
+      → 队长最终回复落 target 的 message（channel 或 task 线程，唯一一条）
+  → notify 对队长最终回复返回 0（D2 在 task target 上读作“任务线程消息”）
 ```
+
+任务 target 的额外规则：
+
+- **创建**：owner 在 team 频道创建任务后**不认领**（D16 / Q11=B）；任务停在 `todo`，不唤醒任何人。
+- **owner 改派**：`update_task_assignee` 仍写任务行、追加 `system` 记录（ADR-0005）；`notify_task_assignment` 在 team 模式唤醒**队长**，不唤醒新受派者。若新受派者就是队长，等价于唤醒队长。
+- **Agent 转派**：`notify_task_reassignment` 在 team 模式唤醒**队长**；若 actor 就是队长，则不自我唤醒（`system` 记录仍落库）。
+- **认领**：`claim_new_task()` 在 team 频道直接返回 0；`claim_task` 不成为唤醒路径；`claimed_at` 保持既有列与 autonomous 语义。
+- **任务五态**：仍由 `update_task_status` / `update_task_assignee` / `claim_task`（autonomous）维护；team 任务线程中只有队长会跑任务轮次，因此只有队长能通过成员面结构化工具提交 `SetTaskStatusAction` / `TransferTaskAction`，owner 仍可经 HTTP 维护。`in_review → done` 保留“受派者不能批准自己、owner 恒可”：队长不是受派者时可由队长批准；队长是受派者时只能由 owner 批准。
+- **穿透**：task target 在 team 模式下**不做穿透**——只唤醒队长；@ 未加入成员不会得到一次性送达。channel target 仍按 D17 穿透。
 
 运行矩阵（只列 team 相关；未列组合沿用现行）：
 
-| target kind | mode | 消息作者 | 结果 |
+| target kind | mode | 消息/动作 | 结果 |
 | --- | --- | --- | --- |
 | channel | team | human | 只唤醒队长；穿透候选一次性送达 |
 | channel | team | agent（队长） | **零唤醒**（D2） |
 | channel | team | agent（穿透成员） | **零唤醒**；回复已按 D17 落为频道消息 |
 | channel | team | system | 零唤醒 |
-| channel | autonomous | 任意 | 既有 `notify` 不变 |
+| task | team | human | 只唤醒队长；不穿透 |
+| task | team | agent（队长） | **零唤醒** |
+| task | team | agent（非队长） | 只唤醒队长（若队长不是作者） |
+| task | team | owner 改派 / Agent 转派 | 只唤醒队长；不唤醒新受派者；actor 是队长时零唤醒 |
+| task | team | 创建 / 认领 | 零唤醒；创建后不认领 |
+| task | team | system（其它） | 零唤醒 |
+| channel / task | autonomous | 任意 | 既有 `notify` 不变 |
 | dm | autonomous | 任意 | 既有 `notify` 不变 |
-| task | 任意 | 任意 | 既有任务唤醒；team 模式不覆盖（D23） |
 
 ### 3.4 预算裁决点
 
@@ -227,6 +242,7 @@ class BudgetedTeamPipeline(TeamPipeline):
 ```
 
 - `try_consume_jump(target_id)` 是**新的 DB 原语**：在 `BEGIN IMMEDIATE` 事务里解析当前世代的上界（`applied_limit` 或内置默认），执行 `UPDATE target_budget SET used = used + 1 WHERE target_id = ? AND used < ?`，受影响行数为 0 ⇒ 耗尽；否则返回 `epoch_seq` / `used` / `limit`。检查与扣减在**同一 SQL/事务**里，因此并发分派不会越过上界。
+- **task target 用自己的 `target_budget`**：team 任务线程的每次 `TeamAssign` 推进该 task 的 `used`，不推进频道 target 的 `used`；人类任务消息或 owner 改派按既有规则开该 task 的世代。频道与任务预算互不影响（ADR-0004 的 per-target 语义）。
 - 耗尽时的 `ToolResultBlock`：`id=call.id`、`name="TeamAssign"`、`state=ERROR`、`output=[TextBlock("预算耗尽：本次分派未运行成员")]`。队长继续推理，可以自己回答或减少分派。
 - 每次分派写一条 `team_assignment`：`state ∈ {started, succeeded, failed, interrupted, budget-exhausted}`；`jump_consumed` 仅在真正扣减时为 1；`budget-exhausted` 为 0。**不退款**：成员失败时跳已消耗。
 - 队长最终回复不扣跳；`round_outcome.consumed_budget` 在 team 模式下为 0（队长轮由人类消息唤醒，不由跳送来）。
@@ -241,9 +257,9 @@ class BudgetedTeamPipeline(TeamPipeline):
 | **Plan** | `pending` / `in_progress` / `completed`（+ `deleted` 仅作删除标记） | `plan_run` + `plan_task` | 否 | 成员**轮次内**的工作清单；可带 `task_id` 引用，但不改任务 |
 | **SOP** | `pending` / `running` / `awaiting` / `completed` / `failed` | `sop_run.state`（JSON） | 否 | owner 启动的**多步运行**；可带 `task_id` 引用，但不改任务 |
 
-- Plan 在每个任务/team 轮次自动可用（D20）；`TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` 由 seam 注入，工具操作 `AgentState.tasks`，轮次开始前从 `plan_task` 装载、收口后回写。回写以 `plan_run_id` 为界；同一 `(target_id, member_id)` 只保留**最近 20 个 run 或 30 天**（先到者为准），启动时与每轮收口后清理；`plan_task` 随 `plan_run` 级联删除。Plan 不是 append-only（它是工作态），但没有人类面编辑入口。
-- SOP 只由 owner 启动（D20）；`sop_definition.steps` 保存 executor/verifier 的 member id、描述与 `max_attempts`；`sop_run.state` 保存 `SOPRunState.model_dump()`，重启后可恢复。SOP 运行保留**最近 50 个或 90 天**；完成/失败后不自动删除定义。
-- **不允许** Plan/SOP 直接写 `task.status` / `assignee_member_id`。若用户要把 Plan 项升级为任务，那是显式的人类动作（本规格不提供自动升级）。
+- Plan 在每个任务/team 轮次自动可用（D20），包括 **team 模式的任务线程**：队长轮次有 Plan；被 `TeamAssign` 的成员在自己的上下文里也有 Plan，但**不获得任务上下文**。`TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` 由 seam 注入，工具操作 `AgentState.tasks`，轮次开始前从 `plan_task` 装载、收口后回写。回写以 `plan_run_id` 为界；同一 `(target_id, member_id)` 只保留**最近 20 个 run 或 30 天**（先到者为准），启动时与每轮收口后清理；`plan_task` 随 `plan_run` 级联删除。Plan 不是 append-only（它是工作态），但没有人类面编辑入口。
+- SOP 只由 owner 启动（D20）；`sop_definition.steps` 保存 executor/verifier 的 member id、描述与 `max_attempts`；`sop_run.state` 保存 `SOPRunState.model_dump()`，重启后可恢复。SOP 可以挂在 task target 上，但它**不是**任务轮次：它的 executor/verifier 由 SOP 运行驱动，不受“任务线程只唤醒队长”的 `notify` 分支影响；SOP 的步骤事件走 `sop_event`。SOP 运行保留**最近 50 个或 90 天**；完成/失败后不自动删除定义。
+- **不允许** Plan/SOP 直接写 `task.status` / `assignee_member_id`。team 任务线程里只有队长轮次拿到任务上下文与结构化任务工具；`TeamAssign` 的成员没有任务上下文，因此不能用 Plan/SOP 或正文代替任务状态迁移。若用户要把 Plan 项升级为任务，那是显式的人类动作（本规格不提供自动升级）。
 
 ### 3.6 Workspace / 权限 / HITL 的边界
 
@@ -282,8 +298,8 @@ class BudgetedTeamPipeline(TeamPipeline):
 | 数据目录可整体备份 | 数据目录仍只含 `alibot.db` + `attachments/` + 迁移台账；**workspace_root 不在数据目录内**，需要用户单独备份。README 必须写明。 |
 | 库里不存密钥 | `mcp_server` 只存 `env_names`；Docker env / MCP 值只从进程环境读；`agent_config` 仍只有 model_id。 |
 | Agent 不经 HTTP（ADR-0003） | Workspace 工具、MCP、Skill、审批回传都在进程内/容器内；Agent 没有 HTTP 身份。 |
-| 成员平等自主（CONTEXT） | autonomous 保留；team 是频道级显式模式；成员在 team 下不再直接响应频道消息，但仍是独立成员。ADR-0018 说明扩展/保留/取代。 |
-| 一轮一消息（CONTEXT） | 队长仍一轮至多一条频道消息；成员产出不是消息，走运行记录（ADR-0020）。 |
+| 成员平等自主（CONTEXT） | autonomous 保留；team 是频道级显式模式，覆盖该频道的 channel 与全部 task target；成员在 team 下不再直接响应频道消息或任务线程消息，但仍是独立成员。ADR-0018 说明扩展/保留/取代。 |
+| 一轮一消息（CONTEXT） | 队长仍一轮至多一条 target 消息（频道或任务线程）；成员产出不是消息，走运行记录（ADR-0020）。 |
 | Agent 不做文件与 shell（CONTEXT） | 在 workspace 配置启用后扩展：文件工具与（Docker/显式开启的）shell 成为能力；默认无 workspace 的 Agent 行为不变。ADR-0021 说明。 |
 
 ## 4. 数据与协议
@@ -316,6 +332,8 @@ BEFORE UPDATE OF mode, team_leader_member_id ON channel
 WHEN NEW.mode = 'team' AND NEW.team_leader_member_id IS NULL
 BEGIN SELECT RAISE(ABORT, 'team channel requires a leader'); END;
 
+-- team_run / team_assignment 的 target_id 可以是 channel 型，也可以是该频道下的 task 型；
+-- team 模式经 task.channel_id -> channel.mode 解析，task 表不新增 mode 列。
 CREATE TABLE team_run (
   id                TEXT PRIMARY KEY,
   target_id         TEXT NOT NULL REFERENCES target(id),
@@ -331,7 +349,7 @@ CREATE TABLE team_assignment (
   id                TEXT PRIMARY KEY,
   team_run_id       TEXT NOT NULL REFERENCES team_run(id),
   target_id         TEXT NOT NULL REFERENCES target(id),
-  task_id           TEXT REFERENCES task(id),          -- D23：仅当 target 是 task 时非空
+  task_id           TEXT REFERENCES task(id),          -- target 是 task 时非空；team 模式覆盖 channel + 全部 task target
   leader_member_id  TEXT NOT NULL REFERENCES member(id),
   member_id         TEXT NOT NULL REFERENCES member(id),
   tool_call_id      TEXT NOT NULL,
@@ -485,8 +503,8 @@ CREATE TABLE remote_consent_scope (
 
 | 方法与路径 | 作用 |
 | --- | --- |
-| `GET /api/channels/{id}/config` | 频道配置：`mode` / `team_leader_member_id` / `leader_available` / `leader_reason` / `workspace_root` / `workspace_backend` / `permission_mode` |
-| `PATCH /api/channels/{id}/config` | 写频道配置 `{mode?, team_leader_member_id?, workspace_root?, workspace_backend?, permission_mode?}`；任一字段不合法整体拒绝。team 模式要求队长是当前频道成员且非 deleted；不自动改 `auto_claim`（D16 是读路径规则） |
+| `GET /api/channels/{id}/config` | 频道配置：`mode` / `team_scope`（固定 `channel+task`）/ `team_leader_member_id` / `leader_available` / `leader_reason` / `workspace_root` / `workspace_backend` / `permission_mode` |
+| `PATCH /api/channels/{id}/config` | 写频道配置 `{mode?, team_leader_member_id?, workspace_root?, workspace_backend?, permission_mode?}`；任一字段不合法整体拒绝。team 模式要求队长是当前频道成员且非 deleted；`mode=team` **同时作用于该频道 target 与其全部 task target**；不自动改 `auto_claim`（D16 是读路径规则） |
 | `GET /api/targets/{id}/team-runs` | 该 target 的 team 运行与分派记录（分页、按时间倒序） |
 | `GET /api/targets/{id}/plan` | 当前/最近的 Plan（按 member 分组；默认最近 20 个 run） |
 | `GET /api/sops` / `POST /api/sops` | SOP 定义列表 / 新建（owner；`steps` 含 executor/verifier member id） |
@@ -503,7 +521,7 @@ CREATE TABLE remote_consent_scope (
 | `GET /api/approvals?target_id=&state=pending` | 待审批列表（供运行面板恢复） |
 | `POST /api/approvals/{reply_id}` | 提交审批 `{decisions:[{tool_call_id, confirmed, rules?}]}`；只接受 `pending`；幂等 |
 | `GET /api/channels/{id}/events` | 既有 SSE；新增事件类型见 §4.5 |
-| `GET /api/tasks/{id}/events` / `GET /api/dms/{id}/events` | 既有 SSE；task target 不产生 team 事件（D23），但保留 approval/plan 事件 |
+| `GET /api/tasks/{id}/events` / `GET /api/dms/{id}/events` | 既有 SSE；task target 在 team 模式下会产生 `agent_event` / `team_assignment` / `plan_update` / `approval_*`，并保留既有 `message` / `round_outcome` / `typing` |
 
 错误统一沿用 `{"error": {"code", "message", "fields"?}}`。
 
@@ -511,12 +529,12 @@ CREATE TABLE remote_consent_scope (
 
 | `type` | 关键字段 | 是否可补拉 | 说明 |
 | --- | --- | --- | --- |
-| `message` | `seq`, `message` | 是（读库） | 既有；队长最终回复、穿透回复、system 记录 |
+| `message` | `seq`, `message` | 是（读库） | 既有；队长最终回复（channel 或 task 线程）、穿透回复（仅 channel）、system 记录 |
 | `member_status` | `member_id`, `status` | 否（快照） | 既有四态 |
 | `typing` | `member_id`, `active`, `reason` | 否 | 既有；team 模式下队长与成员都可发，成员带 `member_id` |
 | `round_outcome` | `seq`, `outcome` | 是（读库） | 既有；只记录队长轮次 |
-| `agent_event` | `event_type`, `member_id`, `reply_id`, `target_id`, `payload` | 否 | `AgentEvent` 白名单透传；`payload` 不含 secrets/base64 |
-| `team_assignment` | `team_run_id`, `assignment_id`, `member_id`, `reply_id`, `state` | 否（快照 `GET /team-runs`） | 分派开始/成功/失败/预算耗尽 |
+| `agent_event` | `event_type`, `member_id`, `reply_id`, `target_id`, `payload` | 否 | `AgentEvent` 白名单透传；`target_id` 可以是 channel 或 task；`payload` 不含 secrets/base64 |
+| `team_assignment` | `team_run_id`, `assignment_id`, `task_id`, `member_id`, `reply_id`, `state` | 否（快照 `GET /team-runs`） | 分派开始/成功/失败/预算耗尽；`task_id` 在 task target 上非空 |
 | `plan_update` | `plan_run_id`, `member_id`, `task` | 否（快照 `GET /plan`） | Plan 任务创建/更新/删除 |
 | `sop_event` | `sop_run_id`, `step_index`, `phase`, `payload` | 否（快照 `GET /sop-runs/{id}`） | SOP 步骤开始/结束/verdict |
 | `approval_required` | `reply_id`, `member_id`, `tool_calls` | 否（快照 `GET /approvals`） | 需要人类确认 |
@@ -528,10 +546,10 @@ CREATE TABLE remote_consent_scope (
 
 ### 4.6 前端新视图
 
-1. **频道设置（新增页签/弹窗）**：模式（autonomous/team）、队长选择、项目根路径、默认后端（local/docker）、默认权限档；显示 `leader_available` 与原因；team 模式下显示“成员 `auto_claim` 已停用”。
-2. **运行面板（频道/任务 dock 第四形态）**：按 `team_run` 分组显示队长与成员的 `agent_event` 流、`team_assignment` 状态与耗时、Plan 清单、SOP 步骤与 verdict；每个事件带成员显示名与头像色位。
+1. **频道设置（新增页签/弹窗）**：模式（autonomous/team）、队长选择、项目根路径、默认后端（local/docker）、默认权限档；显示 `team_scope`（channel+task）、`leader_available` 与原因；team 模式下显示“成员 `auto_claim` 已停用、任务线程只唤醒队长”。任务视图读取所属频道的同一份配置。
+2. **运行面板（频道/任务 dock 第四形态）**：按 `team_run` 分组显示队长与成员的 `agent_event` 流、`team_assignment` 状态与耗时、Plan 清单、SOP 步骤与 verdict；频道与**任务线程**都可打开；每个事件带成员显示名与头像色位。
 3. **Workspace / MCP / Skill 管理**：频道设置内三段；MCP 只显示 env 变量名；Skill 显示 hash 与启用态；远端 MCP 显示数据面确认。
-4. **审批卡**：在消息流/运行面板内显示待审批工具、参数摘要、允许/拒绝、超时倒计时；提交后显示 resolved。
+4. **审批卡**：在消息流/运行面板内显示待审批工具、参数摘要、允许/拒绝、超时倒计时；频道与任务线程都可出现；提交后显示 resolved。
 5. 既有视图（消息流、看板、搜索、未读、成员面板）**不新增** team/plan 内容；运行面板是独立面。
 
 ### 4.7 纯增量 / 破坏性变更
@@ -547,7 +565,7 @@ CREATE TABLE remote_consent_scope (
 - `agentscope` 2.0.9 → 2.0.10：依赖升级，API 差异见 D7 票。
 - Plan 工具加入每轮工具集：模型可见工具变多，可能改变回复/工具调用分布；Plan 自动可用是 D20 的结果。
 - workspace 启用后 Agent 获得文件工具（及 Docker/显式本地 shell）能力；默认未配置根的频道行为不变。
-- team 模式改变唤醒面、消息落库面与预算口径；只在显式 team 频道生效。
+- team 模式改变唤醒面、消息落库面与预算口径；只在显式 team 频道生效，并**覆盖该频道的全部 task target**：任务线程只唤醒队长、owner 改派/Agent 转派不再唤醒新受派者、认领不再发生、非队长受派者不会收到任务轮次。任务五态与 `task` 行仍保留，但维护路径收窄为 owner HTTP 与队长轮次的结构化任务工具。
 - 新 SSE 事件不发 `id`：前端若用 `Last-Event-ID` 推进游标，必须只把 `message`/`round_outcome` 当游标。
 - 审批等待会让一轮在 10 分钟内保持 in-flight；超时 failed；重启后 pending 审批 expired。
 
@@ -557,10 +575,12 @@ CREATE TABLE remote_consent_scope (
 
 | 改动类 | 测试层 | 可观察判据 | 既有先例 |
 | --- | --- | --- | --- |
-| team 唤醒 / 队长 / 模式 | pytest + HTTP 黑盒 + `ManualScheduler` + scripted seam | 人类消息后只有队长 `round_outcome`；成员无 `round_outcome`；队长最终只有 1 条 `message`；成员事件带 `member_id` | `test_send_message.py`、`test_bounded_relay.py` |
-| TeamAssign 预算 | pytest + 并发脚本 | 每次分派 `target_budget.used` +1；第 N+1 次得到 `ToolResult.state=ERROR` 且成员未跑；`team_assignment.jump_consumed` 正确；并发不越界 | `test_bounded_relay.py`、`test_channel_budget_limit.py` |
-| SSE 事件 | pytest 流式读取 + DOM 用例 | 帧顺序、字段、`id` 只出现在可补拉事件；未知 type 前端忽略；重连不重复消息 | `test_event_stream.py`、`*_ui.test.cjs` |
-| Plan | pytest + HTTP + DOM | 创建/列出/更新/完成；重启后仍在；看板/未读/搜索无 Plan；保留策略删除旧 run | `test_tasks.py` |
+| team 唤醒 / 队长 / 模式（channel + task） | pytest + HTTP 黑盒 + `ManualScheduler` + scripted seam | channel 人类消息后只有队长 `round_outcome`；task 人类消息后也只有队长；非队长受派者无 `round_outcome`；队长最终只有 1 条 `message`；task target 不穿透 | `test_send_message.py`、`test_tasks.py`、`test_bounded_relay.py` |
+| team 任务线程的指派/认领路径 | pytest + HTTP 黑盒 | owner 改派只唤醒队长、不唤醒新受派者；Agent 转派只唤醒队长（actor=队长时零唤醒）；team 频道创建任务不认领、`claimed_at` 保持 NULL；任务五态仍可由 owner/队长工具维护 | `test_auto_claim.py`、`test_tasks.py` |
+| TeamAssign 预算（含 task target） | pytest + 并发脚本 | 每次分派对应 target 的 `target_budget.used` +1；task target 用 task 预算、不推进频道预算；第 N+1 次得到 `ToolResult.state=ERROR` 且成员未跑；`team_assignment.jump_consumed` 正确；并发不越界 | `test_bounded_relay.py`、`test_channel_budget_limit.py`、`test_tasks.py` |
+| 任务五态与自审规则 | pytest + HTTP + scripted seam | TeamAssign 不改 `task.status/assignee/claimed_at`；队长非受派者可 `in_review→done`；队长是受派者时只能 owner 批准；非队长成员无任务轮次 | `test_tasks.py`、`test_auto_claim.py` |
+| SSE 事件（channel + task） | pytest 流式读取 + DOM 用例 | 任务 SSE 也出现 `agent_event`/`team_assignment`/`plan_update`/`approval_*`；帧顺序、字段、`id` 只出现在可补拉事件；未知 type 前端忽略；重连不重复消息 | `test_event_stream.py`、`*_ui.test.cjs` |
+| Plan | pytest + HTTP + DOM | channel 与 task 的 team 轮次都可创建/列出/更新/完成；重启后仍在；看板/未读/搜索无 Plan；保留策略删除旧 run | `test_tasks.py` |
 | SOP | pytest + HTTP + 手动调度 | 两步流程、verifier 拒绝一次后重试成功；`awaiting` 可恢复；重启后 `SOPRunState` 恢复；不产生任务行 | `test_auto_claim.py` 的流程型断言 |
 | LocalWorkspace / 路径限定 | pytest + 真实临时目录 | `../`、绝对路径、根外 symlink 均 ERROR；根内读写成功；默认无 Bash | `test_agent_seam_client_lifecycle.py` |
 | Docker | 人工验收（无 CI） | 容器启动、`host_workdir` 挂载、容器内 Bash/Read/Write、清理、无 Docker 时 `offline` 可读 | 无；R3 研究票提供脚本 |
@@ -603,7 +623,9 @@ CREATE TABLE remote_consent_scope (
 | **性能与成本** | team 模式一次队长轮可触发多次成员模型调用；`target_budget` 只计跳，不计 token/金额 | UI 显示 `team_assignment` 次数与耗时；预算上限沿用 3/5/10；R2 记录成本读数 | 预算不是成本上限；需要用户自控 |
 | **事件量 / 丢帧** | `EventBus.QUEUE_LIMIT=256`，跟不上的订阅者丢事件 | 运行面板快照兜底；事件不是正本 | 断开/慢消费者会漏过程 |
 | **HITL 重启** | 进程内 `ApprovalBroker`；重启后 pending → expired | D19 明确；UI 显示 expired；后续票做持久化恢复 | 首版不保证跨重启 |
-| **队长不可用** | 队长禁用/软删除 | D18：不唤醒、配置无效可读；owner 修复 | team 频道会沉默，直到人处理 |
+| **队长不可用** | 队长禁用/软删除 | D18：不唤醒、配置无效可读；owner 修复 | team 频道与任务线程都会沉默，直到人处理 |
+| **team 任务线程只唤醒队长** | 非队长受派者不再收到任务消息；owner 改派/Agent 转派不唤醒新受派者；认领停用 | D16/D23=B：任务五态仍由 owner 与队长轮次的结构化工具维护；UI 显示“任务线程只唤醒队长” | 非队长受派者需要队长经 `TeamAssign` 转达；队长是受派者时 `in_review→done` 只能由 owner 批准 |
+| **任务线程的穿透被关闭** | task target 在 team 模式不做穿透（Q11=B） | 规格明确：task 线程只唤醒队长；@ 未加入成员不送达 | 与 channel target 的穿透语义不同，UI/文档要写清 |
 | **动态成员** | 轮次开始后成员变化 | D11：下一轮生效 | 同一轮中途加入不参与 |
 | **Plan/SOP 存储增长** | 每轮 Plan、每次 SOP run | 保留策略（Plan 20 run/30 天；SOP 50 run/90 天）；启动与收口清理 | 清理失败会占空间；日志可查 |
 | **迁移单向** | 15→17；旧代码不能打开新库 | 备份/回滚演练；`--dry-run`；M1 | 只能恢复备份，不能降级 |
@@ -611,11 +633,9 @@ CREATE TABLE remote_consent_scope (
 
 **未决项（明确不在本轮）**
 
-- **D18–D23 尚未收到 owner 回执**：它们是第二轮 ask 的推荐默认（A），实施前必须确认；若回执不同，先改规格与相关票。
 - 跨重启的 HITL 恢复（D19 后续票）。
 - 远程 Skill 市场 / MCP 目录（D21）。
 - 本地 OS 级沙箱（除 Docker 外）；本地 Bash 的强隔离。
-- team 模式覆盖任务线程（D23 明确不覆盖）。
 - 任务五态与 Plan/SOP 的自动同步（本规格明确不自动）。
 - AgentScope 2.0.10 之外的升级；未来版本另立票。
 
@@ -641,12 +661,12 @@ CREATE TABLE remote_consent_scope (
 | **V1** (#137) | 升版：agentscope 2.0.9 → 2.0.10 | 实施 | G-impl | 无（frontier） | pin 改 2.0.10；逐项核对 §2.6 的 API 差异；`scripts/check.sh` 全绿；现有行为不变；报告列出差异与回归读数 |
 | **E1** (#138) | schema 15→16：team / Plan / SOP 表与触发器 | 实施 | G-migration | R1, R4 | `MigrationStep(15,16)`；`channel.mode/team_leader_member_id` + 触发器；`team_run/team_assignment/plan_run/plan_task/sop_definition/sop_run`；旧行默认 `autonomous`；`--dry-run` 原库 sha256 不变；链连续 |
 | **E2** (#139) | schema 16→17：workspace / permission / MCP / Skill / approval | 实施 | G-migration | E1, R3, R4 | `MigrationStep(16,17)`；channel/agent_config 新列；`permission_rule/approval_request/mcp_server/skill/remote_consent_scope`；旧 `remote_consent` 复制；旧行默认值正确；链连续 |
-| **E3** (#140) | 流式 seam：`run_round_stream` + 事件归属 | 实施 | G-impl | R1 | `AgentSeam.run_round_stream` 与 `AgentEventRecord`；`run_round` 保留并委托；scripted seam 支持流；单 Agent 事件带 member/reply/target；既有测试不改语义 |
-| **E4** (#141) | SSE：事件词表、live-only 帧与前端消费 | 实施 | G-impl | E3 | `agent_event`/`team_assignment`/`plan_update`/`sop_event`/`approval_*`；只有可补拉事件发 `id`；未知 type 忽略；重连不重复消息；DOM 用例 |
-| **T1** (#142) | team 模式：频道配置、队长、只唤醒队长、pipeline 重建 | 实施 | G-impl | E1, E3, E4 | `GET/PATCH /api/channels/{id}/config`；team 需合法队长；人类消息只唤醒队长；队长最终零唤醒；pipeline 按当前成员重建（D11）；内部名由 member id 派生（D10）；autonomous/DM/task 不变 |
-| **T2** (#143) | `TeamAssign` 预算：原子扣减、耗尽错误 `ToolResult` | 实施 | G-impl | T1, R1, R2 | `BudgetedTeamPipeline` 覆写 `_run_assignments`；每次分派 `used` +1；耗尽不跑成员、返回 ERROR；`team_assignment.jump_consumed` 正确；并发不越界；队长最终不计跳 |
-| **T3** (#144) | 成员产出可见性：运行记录 + SSE，不占消息/未读/搜索 | 实施 | G-impl | T2, E4 | 成员输出只出现在 `agent_event` 与 `team_assignment`；频道 `message` 只有队长最终 1 条；未读/搜索无成员过程；运行面板可按 member 归属 |
-| **T4** (#145) | 任务指派映射：`team_assignment` ↔ task target | 实施 | G-impl | T2, E1 | task 线程里的 `TeamAssign` 写 `team_assignment.task_id`；不改 `task.status/assignee`；看板五态不变；`GET /targets/{id}/team-runs` 可按 task 过滤 |
+| **E3** (#140) | 流式 seam：`run_round_stream` + 事件归属（channel + task） | 实施 | G-impl | R1 | `AgentSeam.run_round_stream` 与 `AgentEventRecord`；`run_round` 保留并委托；scripted seam 支持流；单 Agent 事件带 member/reply/target（target 可为 task）；既有测试不改语义 |
+| **E4** (#141) | SSE：事件词表、live-only 帧与前端消费（channel + task） | 实施 | G-impl | E3 | `agent_event`/`team_assignment`（含 `task_id`）/`plan_update`/`sop_event`/`approval_*`；task SSE 也输出这些事件；只有可补拉事件发 `id`；未知 type 忽略；重连不重复消息；DOM 用例 |
+| **T1** (#142) | team 模式：channel + task target、队长、只唤醒队长、pipeline 重建 | 实施 | G-impl | E1, E3, E4 | `GET/PATCH /api/channels/{id}/config`（含 `team_scope=channel+task`）；team 需合法队长；channel 与 task 的人类消息都只唤醒队长；task 线程不穿透；队长最终零唤醒；pipeline 按当前成员重建（D11）；内部名由 member id 派生（D10）；autonomous/DM 不变 |
+| **T2** (#143) | `TeamAssign` 预算：原子扣减、耗尽错误 `ToolResult`（channel + task） | 实施 | G-impl | T1, R1, R2 | `BudgetedTeamPipeline` 覆写 `_run_assignments`；每次分派对应 target 的 `used` +1；task target 用 task 预算、不推进频道预算；耗尽不跑成员、返回 ERROR；`team_assignment.jump_consumed` 正确；并发不越界；队长最终不计跳 |
+| **T3** (#144) | 成员产出可见性：运行记录 + SSE，不占消息/未读/搜索（channel + task） | 实施 | G-impl | T2, E4 | 成员输出只出现在 `agent_event` 与 `team_assignment`；channel/task 的 `message` 都只有队长最终 1 条；未读/搜索无成员过程；运行面板可按 member 归属 |
+| **T4** (#145) | team 任务线程：只唤醒队长、TeamAssign 可用、五态仍由既有工具维护 | 实施 | G-impl | T2, E1 | task 线程 human/agent 消息只唤醒队长；owner 改派/Agent 转派只唤醒队长、不唤醒新受派者；team 频道创建任务不认领；`TeamAssign` 在 task 线程写 `team_assignment.task_id`；不改 `task.status/assignee`；队长非受派者可 `in_review→done`，队长是受派者时只能 owner 批准 |
 | **P1** (#146) | Plan：四工具 + 持久化 + 运行面板 | 实施 | G-impl | E1, E3, E4 | `TaskCreate/Get/List/Update` 在任务/team 轮次可用；`plan_run/plan_task` 持久化；重启可见；保留策略（20 run/30 天）生效；看板/未读/搜索无 Plan |
 | **P2** (#147) | SOP：定义、运行、状态持久化与面板 | 实施 | G-impl | P1, E4 | owner 创建/启动 SOP；`SOPEngine` 两步执行、verifier 拒绝一次后重试成功；`awaiting` 可恢复；重启后 `SOPRunState` 恢复；不产生任务行 |
 | **W1** (#148) | LocalWorkspace：频道项目根 + 文件工具根限定 | 实施 | G-impl | E2, R4 | 频道设置根；LocalWorkspace 装配；Read/Write/Edit/Glob/Grep 根内成功、根外/`../`/symlink ERROR；默认无 Bash（D15）；`.alibot` 状态分区 |
@@ -655,11 +675,11 @@ CREATE TABLE remote_consent_scope (
 | **W4** (#151) | MCP：配置、装配、远端告知 | 实施 | G-impl | W1, W3 | `mcp_server` 增删改；Local/Docker 装配；env 只从进程环境读；远端 MCP 未确认不连接；配置不落消息/不唤醒 |
 | **W5** (#152) | Skill：安装、启停、分区 | 实施 | G-impl | W1 | 本机目录/zip 安装；`SKILL.md` + hash 校验；按 member 分区；启停/删除；不做远程市场 |
 | **W6** (#153) | 审批 UI：审批卡、倒计时、resolved | 实施 | G-ui | W2, U1 | 运行面板/消息流显示审批卡；允许/拒绝；超时与 expired 可读；DOM + 真实浏览器证据 |
-| **U1** (#154) | 频道设置 UI：team/队长/项目根/后端/权限 | 实施 | G-ui | T1, W1, W2 | 设置页读写；team 需队长；leader 不可用原因；成员 `auto_claim` 停用提示；读回一致 |
-| **U2** (#155) | 运行面板 UI：成员事件、指派、Plan、SOP | 实施 | G-ui | T3, P1, P2, E4 | 按 team_run/member 分组；事件流、分派状态、Plan 清单、SOP 步骤；实时帧 + 快照兜底 |
+| **U1** (#154) | 频道设置 UI：team/队长/项目根/后端/权限（task 视图共用） | 实施 | G-ui | T1, W1, W2 | 设置页读写；team 需队长；`team_scope=channel+task`；task 视图读取同一配置；leader 不可用原因；成员 `auto_claim` 停用、任务线程只唤醒队长提示；读回一致 |
+| **U2** (#155) | 运行面板 UI：成员事件、指派、Plan、SOP（channel + task） | 实施 | G-ui | T3, P1, P2, E4 | 频道与任务线程都可打开；按 team_run/member 分组；事件流、分派状态、Plan 清单、SOP 步骤；实时帧 + 快照兜底 |
 | **U3** (#156) | Workspace/MCP/Skill 管理 UI | 实施 | G-ui | W4, W5 | 三段管理面；env 只显示变量名；远端 MCP 确认；错误可读 |
 | **M1** (#157) | 迁移与回滚演练：15→16→17 | 实施 | G-migration | E1, E2, T3, P2, W6 | 隔离副本 dry-run；真迁移；备份/恢复；各新表行数与旧行默认值；回滚到备份后旧代码可打开；报告命令与读数 |
-| **DOC1** (#158) | 文档同步：README / CONTEXT / 术语与 D1–D23 索引 | 文档 | G-docs | T3, P2, W2, W4, W5, M1 | README 数据模型/端点/SSE/workspace 段更新；CONTEXT 团队/计划/SOP/工作区词条与 `_Avoid_`；词表守卫；D1–D23 可检索 |
+| **DOC1** (#158) | 文档同步：README / CONTEXT / 术语与 D1–D23 索引 | 文档 | G-docs | T3, P2, W2, W4, W5, M1 | README 数据模型/端点/SSE/workspace 段更新；CONTEXT 团队/计划/SOP/工作区词条与 `_Avoid_`；写清 team 覆盖 channel+task、任务线程只唤醒队长；词表守卫；D1–D23 可检索 |
 | **H1** (#159) | 集成门：集成分支、PR 保持 open、人类手动合并 | 门 | G-merge | 所有实施/文档票 | 集成分支合并全部票；PR 按 Summary/Evidence/Merge Danger 写；Merge Danger 明写“单向门，需人类手动合并”；无自动合并 |
 
 ### 7.3 Frontier 与建议顺序
@@ -794,18 +814,18 @@ graph TD
 | Q4 team auto_claim | **A**：team 模式关闭全部成员 auto_claim；任务只能 owner 指派或队长 TeamAssign | D16 |
 | Q5 穿透可见性 | **A**：穿透是 pipeline 外一次性直答，回复照常落频道消息；D2 只约束 pipeline 成员 | D17 |
 
-### 8.3 第二轮 ask（2026-10-18；两次超时，未收到回执）
+### 8.3 第二轮 ask（2026-10-18，用户最终裁定）
 
-> 截至本规格交付，Q6–Q11 的 ask 两次超时（messageId `msg_2e2c47de1dcf`）。下表是**推荐默认 A**，不是已收到的用户裁定；实施前必须由 owner 确认，若回执不同按回执改写。
+> 用户最终回执：messageId `msg_b065b796831b` / `msg_2e2c47de1dcf`。Q6–Q10 = **A**；Q11 = **B**（覆盖原推荐 A）。下表是**已裁定**，不得再改写。
 
-| 问题 | 推荐默认（待确认） | 落点 |
+| 问题 | 用户选择 | 落点 |
 | --- | --- | --- |
-| Q6 队长不可用 | **A（推荐）**：不回落 autonomous；消息落库但不唤醒；配置/状态点给原因 | D18 |
-| Q7 HITL 持久性 | **A（推荐）**：进程内有界等待；审批落库；重启 pending → expired；跨重启另开票 | D19 |
-| Q8 Plan/SOP 启动面 | **A（推荐）**：Plan 自动可用；SOP 仅 owner 显式启动 | D20 |
-| Q9 MCP/Skill 来源 | **A（推荐）**：本机目录/zip/本机 stdio 与 HTTP MCP；不做远程市场 | D21 |
-| Q10 权限档位 | **A（推荐）**：read-only / ask-writes / trusted-writes；不暴露 BYPASS/DONT_ASK | D22 |
-| Q11 team 作用范围 | **A（推荐）**：只作用于 channel target；task 线程沿用既有任务语义 | D23 |
+| Q6 队长不可用 | **A**：不回落 autonomous；消息落库但不唤醒；配置/状态点给原因 | D18 |
+| Q7 HITL 持久性 | **A**：进程内有界等待；审批落库；重启 pending → expired；跨重启另开票 | D19 |
+| Q8 Plan/SOP 启动面 | **A**：Plan 自动可用；SOP 仅 owner 显式启动 | D20 |
+| Q9 MCP/Skill 来源 | **A**：本机目录/zip/本机 stdio 与 HTTP MCP；不做远程市场 | D21 |
+| Q10 权限档位 | **A**：read-only / ask-writes / trusted-writes；不暴露 BYPASS/DONT_ASK | D22 |
+| Q11 team 作用范围 | **B**：覆盖 channel **与全部 task target**；任务线程只唤醒队长；五态保留，认领/受派者唤醒不生效；TeamAssign 在任务线程可用 | D23 |
 
 ### 8.4 事实与版本来源
 
@@ -821,4 +841,4 @@ graph TD
 - 不把 TeamPipeline / SOP 写成稳定承诺；实验状态登记在 §2.6、ADR-0020、ADR-0023。
 - 不改既有 ADR 原文；新增 ADR-0018–ADR-0023。
 - 不新增自动合并；H1 只设计人类手动合并。
-- 不替用户决定未覆盖的产品问题；§8.2 的新增裁定来自第一轮 ask 回执；§8.3 的 D18–D23 是第二轮 ask 的**推荐默认**，截至交付未收到回执，实施前必须确认。
+- 不替用户决定未覆盖的产品问题；§8.2 / §8.3 的 D13–D23 均来自用户 ask 回执，已裁定。

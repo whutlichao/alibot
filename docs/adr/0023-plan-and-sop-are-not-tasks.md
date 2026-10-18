@@ -1,6 +1,6 @@
 # Plan 与 SOP 各有自己的状态机：它们不是任务五态，也不进看板、未读、搜索或预算
 
-用户于 2026-10-18 人定（D5(b) / D13）；D20 是第二轮 ask 的推荐默认（待确认）：Plan（`TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate`）与
+用户于 2026-10-18 人定（D5(b) / D13 / D20）：Plan（`TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate`）与
 SOP（`SOPEngine` / `SOPStep`）都进本轮票图。Plan 是**运行期工作表**，与既有「任务」五态严格分离；SOP 是
 **owner 启动的多步流程**，同样不改任务五态。两者都只在运行面板 / SSE 展示，不进看板、未读、搜索。
 

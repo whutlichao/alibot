@@ -58,6 +58,8 @@ BudgetedTeamPipeline._run_assignments(tool_calls, results, resumed=None)
   `jump_consumed=1`。预算是“分派发生过”的会计，不是“成员成功”的退款单。
 - **队长最终回复**：不扣跳，也不唤醒成员（D2）。team 模式下队长的 `round_outcome.consumed_budget=0`；
   它由人类消息或任务指派唤醒，不由跳送来。
+- **task target 用自己的预算**：team 任务线程的每次 `TeamAssign` 推进该 task 的 `target_budget.used`，不推进频道 target 的 `used`；
+  人类任务消息或 owner 改派按既有规则开该 task 的世代。频道与任务预算互不影响（ADR-0004 的 per-target 语义）。
 - **与现行 `notify` 的关系**：team 频道的人类消息唤醒队长不扣跳（唤醒载体是 human 消息）；队长最终消息
   `notify` 返回 0；穿透回复在 team 频道也不唤醒任何人（D17）。因此同一个 `target_budget.used` 不会
   因为“队长最终消息”再 +1。
@@ -68,8 +70,8 @@ BudgetedTeamPipeline._run_assignments(tool_calls, results, resumed=None)
   TeamAssign 次数**受这个上界约束。一次队长轮最多 3/5/10 次分派；耗尽后队长只能自己总结。原文不改。
 - **ADR-0005（派任务是人的发言）**：owner 改指派仍是一次人类世代；Agent 转派仍是跳。team 的 `TeamAssign`
   是**运行期分派**，不是任务行改派；它计跳，但不改 `task.assignee_member_id`（ADR-0022）。
-- **ADR-0010 / ADR-0016（认领）**：team 模式关闭该频道全部成员的 `auto_claim`（D16），所以认领不会与
-  TeamAssign 抢同一张任务；task 型 target 仍按既有认领语义（D23），但 team 模式不覆盖 task。
+- **ADR-0010 / ADR-0016（认领）**：team 模式关闭该频道全部成员的 `auto_claim`（D16），`claim_new_task()` 在 team 频道不再认领；
+  team 任务线程只唤醒队长，认领与受派者唤醒不再是唤醒路径（D23=B）；autonomous 频道的认领规则不变。
 - **“跳”的词条**：本 ADR 扩展了跳的**载体**（从“Agent 消息投递”扩到“team 轮次内的 TeamAssign”），
   但**没有**改变“一次分派计 1、不按成员数重复计”的会计口径。`CONTEXT.md` 的**跳**词条需要补一句
   “team 模式下 TeamAssign 也是一次跳”，但不改写 autonomous 的定义。
