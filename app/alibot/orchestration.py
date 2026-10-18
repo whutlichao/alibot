@@ -57,6 +57,7 @@ from .db import Database, DomainError, utc_now
 from .events import EventBus, agent_event
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
+from .plan import PlanSession
 from .service import WorkspaceService, remote_data_faces
 from .team import TeamRoundContext
 
@@ -753,6 +754,22 @@ class WakeOrchestrator:
             else:
                 task_context = self._task_action_context(target_id)
                 team_context = self._team_round_context(target_id, agent)
+
+                # Plan 只在**任务 / team 轮次**自动可用（规格 §3.5）：频道与 DM 的自主轮次
+                # 既不装载也不回写。会话本身不写消息、不扣预算；事件仍走 #141 的公共发布入口。
+                def publish_plan(event: dict[str, Any]) -> None:
+                    self._events.publish(target_id, event)
+
+                plan_session = (
+                    PlanSession(
+                        self._db,
+                        target_id=target_id,
+                        base_seq=base_seq,
+                        publish=publish_plan,
+                    )
+                    if task_context is not None or team_context is not None
+                    else None
+                )
                 team_run_id: str | None = None
                 if team_context is not None:
                     team_run = self._db.create_team_run(
@@ -773,6 +790,7 @@ class WakeOrchestrator:
                         task_context=task_context,
                         mandatory_reply=mandatory_reply,
                         team=team_context,
+                        plan=plan_session,
                     )
                     team_status = "completed" if outcome.status != "failed" else "failed"
                 finally:
@@ -1053,6 +1071,7 @@ class WakeOrchestrator:
         task_context: TaskActionContext | None = None,
         mandatory_reply: bool = False,
         team: TeamRoundContext | None = None,
+        plan: PlanSession | None = None,
     ) -> RoundOutcome:
         def emit(record: Any) -> None:
             # 事件只直播、不落库（ADR-0020）；emit 在编排的工作线程里同步调用，
@@ -1069,6 +1088,7 @@ class WakeOrchestrator:
                 mandatory_reply=mandatory_reply,
                 team=team,
                 emit=emit,
+                plan=plan,
             )
         except Exception as error:  # 适配层的任何异常都收口成该轮 failed，不影响别的轮次
             return RoundOutcome(

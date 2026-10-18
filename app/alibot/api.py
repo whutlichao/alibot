@@ -29,6 +29,7 @@
 - ``GET/POST /api/tasks/{id}/messages``       读取 / 追加任务线程消息
 - ``GET  /api/tasks/{id}/events``             任务线程事件流（SSE，``after_seq`` 补拉）
 - ``GET  /api/targets/{id}/team-runs``        team 运行记录与分派快照（倒序分页、可按 task 过滤）
+- ``GET  /api/targets/{id}/plan``             Plan 快照（按 member 分组；运行面板的只读兜底）
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
@@ -74,6 +75,7 @@ from .db import (
     MAX_ATTACHMENT_NAME_LENGTH,
     MAX_MESSAGE_BODY_LENGTH,
     OWNER_ID,
+    PLAN_RUN_RETENTION,
     SEARCH_RESULT_LIMIT,
     Database,
     DomainError,
@@ -476,6 +478,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Plan 保留策略的**启动**那一半（ADR-0023）：每个 (target, member) 只留最近 20 run
+        # 或 30 天内的记录；`plan_task` 随 run 级联清理。另一半点在每轮收口后（plan.py）。
+        database.prune_plan_runs()
         # 开窗前先扫一次（C8 判据 3）：一条启动前就已过点且在窗口内的提醒，在「第一次读到
         # ``GET /api/reminders``」时 `fired_at` 已非空，不需要等第一轮 30 秒轮询。
         start_driver = getattr(driver, "start", None)
@@ -822,6 +827,19 @@ def create_app(
                 task_id, payload.body, payload.task_ref, payload.attachment_ids
             )
         }
+
+    # ─── Plan 快照（运行面板的只读兜底；不落消息、不计未读/搜索/预算） ─────
+    @app.get("/api/targets/{target_id}/plan")
+    def get_plan(
+        target_id: str,
+        limit: int = Query(default=PLAN_RUN_RETENTION, ge=1, le=100),
+    ) -> dict[str, Any]:
+        """该 target 的 Plan（按 member 分组，默认最近 20 个 run）。
+
+        这是运行面板的兜底面：``plan_update`` 是 live-only 事件，断线不补；刷新/重启后前端
+        重新读这里（ADR-0023）。Plan 不是消息、不是任务，也不属于任何未读/搜索/预算面。
+        """
+        return {"plan": service.plan(target_id, limit=limit)}
 
     # ─── 私信（显式创建；重复请求复用同一 target） ─────────────────────────
     @app.get("/api/dms")
