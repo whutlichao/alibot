@@ -5,7 +5,8 @@
 （沿 `app/specs/fix-dock-fallback-no-channel-acceptance.md` 先例）。
 **base**：`de3acb5`（= 派活时 `main`）｜**branch**：`studio-static-cache`
 **代码提交**：`a15d32d`（修复 + 回归用例）｜本文件与 PR 正文随后续提交入 PR
-**PR**：待回填（推送后创建）｜**PR body**：`app/specs/fix-studio-static-cache-pr-body.md`
+**PR**：[#165](https://github.com/whutlichao/alibot/pull/165)（base `main`，head `studio-static-cache`）
+｜**PR body**：`app/specs/fix-studio-static-cache-pr-body.md`
 **采集时间**：2026-10-18｜**环境**：macOS（aarch64）、Python 3.11.13（仓库根 `.venv`）、Node v25.0.0
 **改动面**：`app/alibot/api.py`（+17 / −1）、`app/tests/test_studio_static_cache.py`（新增，2 条用例）
 
@@ -230,8 +231,9 @@ exit=0
 | 项 | 值 |
 | --- | --- |
 | 代码提交 | `a15d32d` |
+| 文档提交 | `82f531c`（本文件 + PR 正文）；PR 号回填的后续提交 |
 | 远端分支 | `origin/studio-static-cache` |
-| PR | 待回填 |
+| PR | [#165](https://github.com/whutlichao/alibot/pull/165) |
 | PR body 路径 | `app/specs/fix-studio-static-cache-pr-body.md` |
 
 无关联 GitHub issue，因此 PR 正文不含 `Closes #`。
