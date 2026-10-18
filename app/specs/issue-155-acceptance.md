@@ -159,16 +159,22 @@ e12dcc9600bff7a8052748a5496f1906
 | `scripts/check.sh`（merge 前全量） | 见下 |
 | `scripts/check.sh`（merge 集成分支 tip 后全量） | 见下 |
 
-`scripts/check.sh`（本分支全量，行为定稿）：**门禁全绿**（exit 0）。读数：pytest 全量（含本票
-新增 DOM 用例不影响的 pytest 面）、`ruff check` / `ruff format --check` / mypy / pyright 全绿；
+`scripts/check.sh`（本分支全量，行为定稿，merge 前）：**门禁全绿**（exit 0）；
 前端 `node --test`：**tests 157 / pass 157 / fail 0**。
 
-删除两处未使用字段（`fromSnapshot` / `runCount`）与更新 dock docstring 后，再跑
-`scripts/check.sh --fast`：**门禁全绿**（exit 0），`node --test` 仍是 **157 pass / 0 fail**。
-这两处是纯清理（无行为变化），全量门禁已在行为代码定稿时跑过。
+`scripts/check.sh`（merge 集成分支 tip `eccda9c` 后全量）：**门禁全绿**（exit 0）。读数：
 
-合并：本分支基线就是集成分支 tip `acc0d12`；`git merge --no-ff agentscope2-integration`
-无新提交可合（`Already up to date`）。
+```text
+pytest:        813 passed, 9 skipped in 352.04s
+ruff check:    All checks passed!
+ruff format:   198 files already formatted
+mypy:          Success: no issues found in 85 source files
+pyright:       0 errors, 0 warnings, 0 informations
+node --test:   tests 157 / pass 157 / fail 0
+```
+
+合并：基线 `acc0d12`；`git merge --no-ff agentscope2-integration` 合入集成分支 tip `eccda9c`
+（含 #151 MCP），merge commit `020c304`，之后全量门禁如上。
 
 ---
 
