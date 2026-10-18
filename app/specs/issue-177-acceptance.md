@@ -10,10 +10,11 @@
 | 项 | 值 |
 | --- | --- |
 | 分支 | `issue-177-taskcount`（Orca 建好的 worktree 分支；派发文里写的 `issue-177-impl` 是计划名，实际分支以此为准） |
-| 提交 | `1fa2795` fix（`renderTaskCount()` 抽成唯一写入点 + 三个调用点）/ `+本文件与 PR 正文的 docs 提交` / `+双轴 review 收口提交` |
-| 本票 base | `c606b4a`（`main`，#176 合并后的读数） |
+| 提交 | `1fa2795` fix（`renderTaskCount()` 抽成唯一写入点 + 三个调用点）/ `84e3756` test+docs（双轴 review 收口 + 本文件 + PR 正文）/ `+本提交：回填 PR 号` |
+| 本票 base | `c606b4a`（`main`，#176 合并后的读数；`origin/main` 与之一致，无需再 merge 集成分支） |
 | 新增用例 | `app/tests/task_count_ui.test.cjs`（3 条；`vm` + fetch 替身 + DOM 替身，沿用既有接缝） |
-| PR | 见 §5（号与 body 路径回填于此） |
+| PR | [#178](https://github.com/whutlichao/alibot/pull/178)（base `main`，head `issue-177-taskcount`） |
+| PR body | `app/specs/issue-177-pr-body.md`（`--body-file` 用） |
 
 ---
 
@@ -170,10 +171,10 @@ exit=0
 
 | 项 | 值 |
 | --- | --- |
-| 提交 | `1fa2795` fix(studio) + docs（本文件与 PR 正文）+ review 收口提交 |
-| 分支推送 | `issue-177-taskcount` → `origin` |
-| PR | #TBD（body 路径 `app/specs/issue-177-pr-body.md`） |
-| worktree | `git status --porcelain` 为空（`.venv` 是本地符号链接，已在 `.gitignore`） |
+| 提交 | `1fa2795` fix(studio) + `84e3756` test/docs（review 收口 + 本文件 + PR 正文）+ docs（回填 PR 号） |
+| 分支推送 | `issue-177-taskcount` → `origin`（`git push -u`，本地与远端同一 tip） |
+| PR | [#178](https://github.com/whutlichao/alibot/pull/178)；body 路径 `app/specs/issue-177-pr-body.md` |
+| worktree | `git status --porcelain` 为空（`.venv` 是本地符号链接，已被 `.gitignore` 覆盖；临时读数目录 `.evidence/` 已删除） |
 
 PR 的 `Door` 如实声明 **two-way**（纯前端渲染逻辑，无 schema / 迁移 / API 语义变更、无新增依赖、
 回滚就是 revert 一个函数抽取）；`Blast Radius` 写清 `renderTabs()` / `renderTaskBoard()` / `openTask()`
