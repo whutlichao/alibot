@@ -601,6 +601,7 @@ CREATE TABLE remote_consent_scope (
 
 **未决项（明确不在本轮）**
 
+- **D18–D23 尚未收到 owner 回执**：它们是第二轮 ask 的推荐默认（A），实施前必须确认；若回执不同，先改规格与相关票。
 - 跨重启的 HITL 恢复（D19 后续票）。
 - 远程 Skill 市场 / MCP 目录（D21）。
 - 本地 OS 级沙箱（除 Docker 外）；本地 Bash 的强隔离。
