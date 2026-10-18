@@ -230,6 +230,11 @@
           <b data-i18n="empty.noMessageTitle">该频道还没有消息</b>
           <p data-i18n="empty.noMessageBody">这里的消息不可编辑、不可删除，是永久记录。</p>
         </div>
+        <!-- 审批卡（#153 / 规格 §4.6）：消息流里的行动面。它不是消息——不占 seq / 未读，
+             不进搜索；内容与倒计时全部由 app.js 按 `GET /api/approvals?state=pending`
+             与 live `approval_*` 帧铺开。 -->
+        <div class="approval-board" id="approvalBoard" hidden role="region"
+             data-i18n-attr="aria-label:approval.section" aria-label="审批" data-od-id="approval-board"></div>
         <div id="messageList"></div>
         <div class="typing-line" id="typingLine" hidden data-od-id="typing-line"></div>
       </div>
@@ -365,6 +370,11 @@
         </div>
       </div>
       <div class="tt-scroll" id="ttScroll">
+        <!-- 任务线程的审批卡（#153）：task target 自己的 pending 集；空时整段隐藏。 -->
+        <div class="d-sec" id="ttApprovalSection" hidden data-od-id="thread-approvals">
+          <div class="d-sec-title" data-i18n="approval.section">审批</div>
+          <div class="approval-board" id="ttApprovals"></div>
+        </div>
         <div class="d-sec">
           <div class="d-sec-title" data-i18n="dock.linked">关联消息</div>
           <div id="ttLinked"></div>
