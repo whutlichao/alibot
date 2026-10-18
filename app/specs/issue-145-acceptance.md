@@ -2,7 +2,7 @@
 
 - 票型：impl（G-impl）
 - 分支：`issue-145-impl`
-- 基线：集成分支 tip `ecf6501`（含 #142/#143 team + budget）
+- 基线：集成分支 tip `ecf6501`（含 #142/#143 team + budget）；收尾合并至最新集成 tip（含 #149 修复与 #144 快照端点）
 - 落点：`app/alibot/orchestration.py`（队长轮次的结构化任务动作 actor 校验）；测试
   `app/tests/test_team_task_threads.py`
 - 不动：D1–D23、既有 ADR 原文、`organization` 之外的模块形状；`TeamAssign` 的写入/预算由
@@ -112,7 +112,7 @@ cd app && ../.venv/bin/python -m pytest tests/test_team_task_threads.py -o addop
 cd app && ../.venv/bin/python -m pytest tests/test_team_task_threads.py -o addopts="" -q -k "snapshot_can_be_filtered or owner_http"
 ```
 
-读数：`2 passed, 6 deselected`。
+读数：`2 passed, 8 deselected`（#144 合入集成后复跑）。
 
 - `GET /api/targets/{task_target_id}/team-runs?task_id=<task_id>` 返回该 task target 的 run，
   `runs[0].assignments[0].task_id == task.id`（端点形状由 #144 提供：`{target_id, runs, offset, limit, has_more}`）；
@@ -132,4 +132,18 @@ cd app && ../.venv/bin/python -m pytest tests/test_team_task_threads.py -o addop
 
 ## 4. 门禁
 
-（收尾时补全量 `scripts/check.sh` 读数。）
+```bash
+cd /tmp/alibot-wt/issue-145-impl && scripts/check.sh
+```
+
+读数：`门禁全绿`。
+
+- pytest 全量：`787 passed, 2 skipped`（含本票 10 条；AC7 在 #144 合入后复跑）；
+- `ruff check`：`All checks passed!`；
+- `ruff format --check`：`184 files already formatted`；
+- mypy（仓库根）：`Success: no issues found in 77 source files`；
+- pyright：无错误；
+- 前端 DOM 用例（Bun）：`tests 136 / pass 136 / fail 0`。
+
+分支已 merge 集成 tip `58d10df`（含 #144 的快照端点与 #149 修复）。同一合并还修正了集成 tip 上
+`app/tests/test_approval_seam.py` 的一处行宽格式（`ruff format --check` 会拒绝；纯换行，无语义变化）。
