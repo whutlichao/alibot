@@ -934,8 +934,9 @@ class WakeOrchestrator:
                 raise DomainError(
                     "validation_failed", render("error.task_action_wrong_target", self._locale())
                 )
-            if isinstance(action, SetTaskStatusAction) and not self._db.is_target_member(
-                target_id, str(agent["id"])
+            if isinstance(action, SetTaskStatusAction) and not (
+                self._db.is_target_member(target_id, str(agent["id"]))
+                or self._is_team_leader(target_id, str(agent["id"]))
             ):
                 raise DomainError("validation_failed", render("error.task_action_not_member", self._locale()))
             service = WorkspaceService(
@@ -951,6 +952,16 @@ class WakeOrchestrator:
         except DomainError as error:
             return render("error.task_action_rejected", self._locale(), message=error.message)
         return None
+
+    def _is_team_leader(self, target_id: str, member_id: str) -> bool:
+        """该成员是否是此 target 所属 team 的队长。
+
+        team 任务线程里只有队长会跑任务轮次（ADR-0022 §五），因此结构化任务工具的把关从
+        「任务成员」扩到「任务成员 **或** 该频道队长」：队长不是受派者时也能批准
+        ``in_review → done``；自审禁令与迁移表仍由 ``Database.update_task_status`` 执行。
+        """
+        team = self._team_config(target_id)
+        return team is not None and str(team["team_leader_member_id"]) == member_id
 
     def _record_merged(
         self,
