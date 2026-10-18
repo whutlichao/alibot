@@ -90,6 +90,9 @@ grep -n "usage.model_copy()"                                $V/message/_base.py
 
 合并集成分支 tip（`7f691db`，含 #140 的事件流用例）后**重跑同一门禁**：`659 passed, 2 skipped`
 （多出的 6 条来自 #140），ruff / format / mypy / pyright 仍全绿，node 仍 `132 pass`。
+随后把集成分支刷新到 `b63bfb7`（含 #138 的 schema 用例）再跑一次：`668 passed, 2 skipped`，
+其余读数不变（ruff / `157 → 159 files` format / mypy `62 → 63` files / pyright 0 errors / node `132 pass`），
+**门禁全绿**。
 
 **没有回归，因此没有为适配而改任何业务代码**——唯一的代码文件 diff 是 `agent_seam.py` 的注释版本号。
 
@@ -100,7 +103,7 @@ grep -n "usage.model_copy()"                                $V/message/_base.py
 - 其余 7 项在本仓**没有调用点**：`grep -rn "TeamPipeline\|SOPEngine\|WorkspaceBase\|LocalWorkspace\|MCPClient"
   app/alibot app/tests` 无命中；`append_usage` / `.usage` 也无命中。它们只约束后续 T/P/W/M 票的装配。
 - 本票不新增测试：升版没有新行为；把框架内部源码钉进测试会越过既有测试分层（见 §3 方法说明）。
-  既有 pytest（本票基线上 `653` 条；合入 #140 后 `659` 条）与 `132` 个 DOM 用例就是这次升版的回归面。
+  既有 pytest（本票基线上 `653` 条；合入 #140 / #138 后 `668` 条）与 `132` 个 DOM 用例就是这次升版的回归面。
 
 ### 清单之外、但属于本仓会用到的模块
 
