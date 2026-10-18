@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "currency": "USD",
+  "unit": "per_1m_tokens",
+  "retrieved_at": "2026-10-18T00:00:00Z",
+  "models": {
+    "ollama:*": {
+      "input": {"peak": 0.0, "off_peak": 0.0},
+      "output": {"peak": 0.0, "off_peak": 0.0},
+      "cache_input": {"peak": 0.0, "off_peak": 0.0},
+      "cache_creation": {"peak": 0.0, "off_peak": 0.0},
+      "cache_input_included_in_input": true,
+      "context_limit_tokens": null,
+      "output_limit_tokens": null,
+      "source_url": "local runtime (Ollama); no per-token billing",
+      "retrieved_at": "2026-10-18",
+      "note": "本机运行没有 provider 账单；电费与硬件折旧不计入 provider 成本。"
+    },
+    "deepseek:deepseek-flash": {
+      "input": {"peak": 0.3, "off_peak": 0.15},
+      "output": {"peak": 1.2, "off_peak": 0.6},
+      "cache_input": {"peak": 0.006, "off_peak": 0.003},
+      "cache_creation": {"peak": 0.0, "off_peak": 0.0},
+      "cache_input_included_in_input": true,
+      "context_limit_tokens": 1000000,
+      "output_limit_tokens": 384000,
+      "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "retrieved_at": "2026-10-18",
+      "note": "官方页 1M tokens 价目；峰时 01:00-04:00 与 06:00-10:00 UTC 周一至周五（中国法定节假日除外），其余为谷时。模型版本 DeepSeek-V4.1-Flash-1017。"
+    },
+    "deepseek:deepseek-v4-pro": {
+      "input": {"peak": 1.32, "off_peak": 0.66},
+      "output": {"peak": 3.96, "off_peak": 1.98},
+      "cache_input": {"peak": 0.044, "off_peak": 0.022},
+      "cache_creation": {"peak": 0.0, "off_peak": 0.0},
+      "cache_input_included_in_input": true,
+      "context_limit_tokens": 1000000,
+      "output_limit_tokens": 384000,
+      "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "retrieved_at": "2026-10-18",
+      "note": "官方页 1M tokens 价目；峰时规则同 deepseek-flash。模型版本 DeepSeek-V4-Pro-0813。"
+    }
+  }
+}

@@ -307,6 +307,61 @@ def test_round_closes_provider_client_within_its_own_event_loop(stub_provider: s
     assert CLOSED_LOOP_MARKER not in transcript, f"轮次结束后仍出现跨 loop 回收失败：\n{transcript}"
 
 
+def test_usage_sink_receives_the_final_msg_usage_without_changing_the_outcome(
+    stub_provider: str,
+) -> None:
+    """#55 的采集口：最终 ``Msg.usage`` 原样交给观察者，轮次结论一字不变。
+
+    stub provider 在响应里声明 ``usage={prompt_tokens: 1, completion_tokens: 1}``，因此这条
+    用例证明的是「真的从 ``Msg`` 读到了 provider 的 usage」，而不是用一个本地常量冒充。
+    """
+    records: list[dict[str, Any]] = []
+    agent, messages = board_inputs()
+    seam = AgentScopeAgentSeam(timeout_seconds=10.0, usage_sink=records.append)
+
+    outcome = seam.run_round(agent, messages, mentioned=True, target_id="ch_issue_30")
+
+    assert outcome.status == "replied", outcome.reason
+    assert records, "usage_sink 没有收到任何记录"
+    assert records[0]["member_id"] == "mem_issue_30"
+    assert records[0]["target_id"] == "ch_issue_30"
+    assert records[0]["model_id"] == "openai:stub-model"
+    assert records[0]["input_tokens"] == 1
+    assert records[0]["output_tokens"] == 1
+    assert records[0]["error"] is False
+
+
+def test_a_failed_round_emits_a_missing_usage_record(stub_provider: str) -> None:
+    """失败轮可能已经产生过费用；没有最终 ``Msg.usage`` 时必须发 ``None`` 记录，不能静默漏账。"""
+    _StubProviderHandler.fail_status = 400
+    records: list[dict[str, Any]] = []
+    agent, messages = board_inputs()
+    seam = AgentScopeAgentSeam(timeout_seconds=10.0, usage_sink=records.append)
+
+    outcome = seam.run_round(agent, messages, mentioned=True, target_id="ch_issue_30")
+
+    assert outcome.status == "failed", outcome.reason
+    assert records, "失败轮没有给 usage_sink 任何记录"
+    assert records[0]["input_tokens"] is None
+    assert records[0]["output_tokens"] is None
+    assert records[0]["member_id"] == "mem_issue_30"
+
+
+def test_a_failing_usage_sink_does_not_change_the_round(stub_provider: str) -> None:
+    """观察面失败不能改写一轮结论（与 ``emit`` 同一条纪律）；默认 ``None`` 时也不建 sink。"""
+
+    def boom(_record: dict[str, Any]) -> None:
+        raise RuntimeError("sink 坏了")
+
+    agent, messages = board_inputs()
+    seam = AgentScopeAgentSeam(timeout_seconds=10.0, usage_sink=boom)
+
+    outcome = seam.run_round(agent, messages, mentioned=True, target_id="ch_issue_30")
+
+    assert outcome.status == "replied", outcome.reason
+    assert STUB_REPLY in outcome.messages[0].body
+
+
 def test_failed_round_also_closes_provider_client(
     stub_provider: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
