@@ -236,8 +236,9 @@ _Avoid_: 内网 / 外网（那是网络位置，不是调用者类别）；私�
 产品文案不声称 E2EE。
 **本轮扩展（ADR-0021 §三 / ADR-0026 §四）**：同一张 `remote_consent_scope` 还记**远端 MCP**（`('mcp', …)`）、
 **Docker registry/镜像**（`('docker', …)`）与**联网 provider**（`('web', provider)`）的一次性确认；四类都只存
-「何时确认过」，不存凭证与连接参数。`web` 档目前只有**读路径**（装配闸门读它），人类面的确认端点还没开——
-见 `app/specs/issue-186-acceptance.md` §4.3。
+「何时确认过」，不存凭证与连接参数。`web` 档的人类面写路径是 `POST /api/web-providers/{provider}/consent`
+（只接受 `brave` / `tavily`，幂等）：未确认时装配层不挂联网工具且零请求，确认后下一轮按配置装配；已确认的
+provider 由 `GET /api/remote-data-flow` 的 `web_consents` 读回（D6，见 `app/specs/issue-186-acceptance.md` §4.3）。
 _Avoid_: 隐私协议（它是运行时的一次确认，不是一份文档）；密钥录入（库里没有密钥字段，凭证只从进程环境变量读）
 
 **联网档 (Web Access)**:

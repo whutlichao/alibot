@@ -41,6 +41,7 @@
 - ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
 - ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
 - ``POST /api/docker-images/consent``          远端 Docker 镜像的数据面确认（幂等；未确认不拉取）
+- ``POST /api/web-providers/{provider}/consent`` 联网 provider 的数据面确认（幂等；未确认不装配联网工具）
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
@@ -1201,6 +1202,18 @@ def create_app(
         consent = database.record_remote_consent_scope("docker", image)
         clear_docker_failure()
         return {"consent": consent}
+
+    @app.post("/api/web-providers/{provider}/consent")
+    def consent_web_provider(provider: str) -> dict[str, Any]:
+        """联网 provider 的数据面确认（#186 / D6；幂等；重复确认不覆盖首次时间）。
+
+        这条确认是 ``remote_consent_scope('web', provider)`` 的人类面**唯一**写路径，也是 ADR-0026 §四
+        那条闸门的可开启点：未确认时装配层**不挂** ``web_search`` / ``fetch``、且不发起任何请求；
+        确认之后，下一轮按 ``web_access`` 与权限档装配。``provider`` 只接受工具面自己的枚举
+        （``brave`` / ``tavily``），其它取值整条 400、不写入任何行——与 ``POST /api/docker-images/consent``
+        同形，不扩出 provider 配置或凭据管理面。确认只存时间，不存凭证与连接参数。
+        """
+        return {"consent": service.confirm_web_provider(provider)}
 
     @app.get("/api/search")
     def search(

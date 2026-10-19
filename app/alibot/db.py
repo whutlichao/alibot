@@ -142,6 +142,11 @@ PERMISSION_MODES = ("read-only", "ask-writes", "trusted-writes")
 # 它与 ``allow_local_shell`` 是两个开关：那个的风险面是本机任意进程，这个是数据出网。
 WEB_ACCESS_LEVELS = ("search", "search+fetch")
 
+#: ``remote_consent_scope`` 的 scope 档位（ADR-0021 §三 / ADR-0026 §四）。``web`` 档（#186 / D6）与另三档
+#: 同一纪律：**只存「何时确认过」**，不存凭证、不存连接参数；确认单位是 provider，host 级粒度归
+#: ``permission_rule``。
+REMOTE_CONSENT_SCOPE_KINDS = ("model", "mcp", "docker", "web")
+
 # team 运行记录的状态词（规格 §4.2）。它不是 ``round_outcome``：只描述一次队长轮次的生命周期。
 TEAM_RUN_STATUSES = ("running", "completed", "failed", "interrupted", "invalid-leader")
 
@@ -1687,7 +1692,7 @@ class Database:
             ).fetchone()
         return {"provider": row["provider"], "acknowledged_at": row["acknowledged_at"]}
 
-    # ─── 远端数据面 scope（model / mcp / docker，#139 建表 / #150 先用于 docker） ──
+    # ─── 远端数据面 scope（model / mcp / docker / web；#139 建表 / #150 先用于 docker / #186 D6 补 web）───
     def has_remote_consent_scope(self, scope_kind: str, scope_id: str) -> bool:
         """按 ``remote_consent_scope`` 判断一次告知是否已确认（只读）。"""
         with self._lock:
@@ -1698,12 +1703,20 @@ class Database:
         return row is not None
 
     def record_remote_consent_scope(self, scope_kind: str, scope_id: str) -> dict[str, Any]:
-        """记一次 scope 告知确认。幂等；不存凭证、不存连接参数、不落消息/不唤醒。"""
-        if scope_kind not in ("model", "mcp", "docker"):
+        """记一次 scope 告知确认。幂等；不存凭证、不存连接参数、不落消息/不唤醒。
+
+        ``web`` 档（#186 / D6）与另三档同一纪律：确认单位是 **provider**（``brave`` / ``tavily``），
+        人类面写入口是 ``POST /api/web-providers/{provider}/consent``；装配层读它决定挂不挂联网工具。
+        """
+        if scope_kind not in REMOTE_CONSENT_SCOPE_KINDS:
             raise DomainError(
                 "validation_failed",
                 self._render_copy("error.remote_scope_kind_invalid"),
-                fields={"scope_kind": self._render_copy("error.field_choices", values="model, mcp, docker")},
+                fields={
+                    "scope_kind": self._render_copy(
+                        "error.field_choices", values=", ".join(REMOTE_CONSENT_SCOPE_KINDS)
+                    )
+                },
             )
         clean = (scope_id or "").strip()
         if not clean:

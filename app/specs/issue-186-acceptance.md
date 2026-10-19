@@ -222,15 +222,53 @@ scripts/check.sh
 4. **团队成员联网工具没有专门用例**：三处装配点的成员侧（`_web_tools(target_id, member_id_value)`）
    由代码审查与 `test_team_mode.py` 的既有工具集读数覆盖，没有「成员自己开、队长没开」的用例。
 
-### 4.3 待协调者决策
+### 4.3 原缺口已由人定 D6 补齐（本节保留原缺口描述作为决策背景）
 
-> 协调者已收到这两条（orchestration ask），截至合并时**未回**。按「不越出票面授权范围」的默认，
-> 本票**不加**新端点：缺口如实记在此处、`#186` 的 issue 评论与集成 PR 的 Merge Danger 里。
-> 若裁定改为「本票补最小 consent 端点」，落点是：`db.record_remote_consent_scope` 的 allowlist
-> 加 `web` + 一个形状照 `POST /api/docker-images/consent` 的幂等端点 + 1 条 HTTP 用例。
+**原缺口（合并时的状态）**：ADR-0026 §四 要求出网前按 provider 取得一次性确认
+（`remote_consent_scope('web', provider)`），本票的装配闸门也按它判；但四票图里没有任何一张票提供
+写这条确认行的人类面入口——`db.record_remote_consent_scope` 的 allowlist 只有 `model / mcp / docker`，
+HTTP 面也只有 `/api/remote-data-flow/ack`（`model`）、`/api/mcp-servers/{id}/consent`、
+`/api/docker-images/consent`。于是 schema 18 能存 `web` 行、闸门会读它，人类面却写不进去 ⇒
+联网工具在生产里装配不起来，ADR-0026 §四 的闸门成了死代码。
 
-1. **web 数据面确认的人类面入口**（谁来写 `remote_consent_scope('web', provider)`：
-   `record_remote_consent_scope` 扩 allowlist + 新端点，还是并入 #187 的 Docker 出网确认流程）。
-2. **`fetch` 是否应当独立于搜索 provider 做确认**：今天「只开 fetch、没有搜索 key」会因 provider
-   解析失败而两个工具都不装（D4 只给了一个 provider 概念）。若要放开，需要一个新的 provider 身份
-   （或允许 `('web', 'fetch')` 这样的第二个确认单位）。
+**人定 D6（打回补做）**：本票内补齐，形态是**最小落点**（不是新产品面设计）：
+
+| 落点 | 改动 |
+| --- | --- |
+| `db.record_remote_consent_scope` 的 allowlist | `("model", "mcp", "docker")` → `REMOTE_CONSENT_SCOPE_KINDS = ("model", "mcp", "docker", "web")`；同一条纪律：只存「何时确认过」，不存凭证/连接参数 |
+| 字段错误文案 | `error.remote_scope_kind_invalid` 两语言补 `web`；新增 `error.web_provider_invalid`（两语言） |
+| 新端点 | `POST /api/web-providers/{provider}/consent`（`app/alibot/api.py`），形状照 docker/mcp 两个 consent 端点：幂等、重复确认不覆盖首次时间、非法 provider 整条 400 且**零写入**；`provider` 只接受工具面枚举 `web.SEARCH_PROVIDERS`（`brave` / `tavily`） |
+| 服务层 | `WorkspaceService.confirm_web_provider()`（校验 + 落 `('web', provider)`） |
+| 读回 | `GET /api/remote-data-flow` 新增 `web_consents`（`db.list_remote_consent_scopes("web")`），让「已确认哪个 provider」有一条可观察的读路径 |
+| 文档 | `app/README.md` 端点表 + 远端数据面确认段、`CONTEXT.md` 的 **远端数据流告知** 词条 |
+
+**用例落点**（既有测试族，不新开 seam）：
+
+- `app/tests/test_web_consent.py`（新增，HTTP 黑盒）：确认幂等 + 只存时间 + 两家 provider 各自一行；
+  词表外 provider → 400 且 `web_consents` 仍为空（不部分写入）。
+- `app/tests/test_web_assembly.py::test_the_consent_endpoint_unlocks_the_tools_for_the_same_scope`：
+  同一个库、同一个 provider、同一份 `web_access`，**唯一差别**是那次 `POST`——确认前工具集不含
+  `web_search` / `fetch` 且出网 stub 记到 0 条请求；确认后同一 scope 立刻装配
+  （`{"web_search", "fetch"} <= tools`、系统提示自陈风险）且仍零请求（没有调用就不出网）。
+
+**红 → 绿读数**（先写用例、在未改实现的树上跑）：
+
+```text
+# 红（实现前：端点还不存在）
+E       KeyError: 'web_consents'                       # test_web_consent.py:21
+E       AssertionError: {"detail":"Not Found"}          # assert 404 == 400（非法 provider）
+E       AssertionError: {"detail":"Not Found"}          # assert 404 == 200（确认解锁装配）
+FAILED tests/test_web_consent.py::test_confirming_a_web_provider_is_idempotent_and_stores_only_the_time
+FAILED tests/test_web_consent.py::test_an_unknown_web_provider_is_rejected_and_writes_nothing
+FAILED tests/test_web_assembly.py::test_the_consent_endpoint_unlocks_the_tools_for_the_same_scope
+3 failed in 0.81s
+
+# 绿（实现后）
+3 passed in 1.09s
+```
+
+**门禁**：`scripts/check.sh` 全量读数见 PR #188 的 Evidence 段（本次补做的提交之后重跑）。
+
+**仍未解的第二条**（原 §4.3 第 2 项，不属于 D6）：`fetch` 是否应当独立于搜索 provider 做确认——
+今天「只开 fetch、没有搜索 key」会因 provider 解析失败而两个工具都不装（D4 只给了一个 provider 概念）。
+若要放开，需要一个新的 provider 身份（或允许 `('web', 'fetch')` 这样的第二个确认单位）。

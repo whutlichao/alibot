@@ -23,17 +23,19 @@ import time
 from collections.abc import Iterator, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import TextBlock, ToolCallBlock
 from agentscope.model import ChatModelBase, ChatResponse
 from alibot.agent_seam import AgentScopeAgentSeam
+from alibot.api import create_app
 from alibot.approval import ApprovalBroker
 from alibot.db import open_database
 from alibot.events import EventBus
 from alibot.web import HttpRequest, HttpResponse
+from fastapi.testclient import TestClient
 
 AGENT_NAME = "联网成员"
 STUB_REPLY = "已处理。"
@@ -300,6 +302,34 @@ def test_missing_web_consent_mounts_nothing_and_sends_zero_requests(
     assert database.list_approval_requests(channel["id"]) == [], "没挂工具就不会有审批"
 
 
+def test_the_consent_endpoint_unlocks_the_tools_for_the_same_scope(
+    library: Any, stub_provider: str, no_outbound_requests: _RecordingTransport
+) -> None:
+    """D6：确认行只能由人类面写——调端点前工具不装配，调完同一 scope **立刻**装配。
+
+    这是「ADR-0026 §四 的闸门不是死代码」的可观察判据：同一个库、同一个 provider、同一份
+    ``web_access``，唯一的差别是一次 ``POST /api/web-providers/brave/consent``。
+    """
+    database, agent, channel = library
+    _configure(database, channel, web_access="search+fetch", mode="ask-writes")
+
+    _run_round(_seam(database), database, agent, channel)
+    assert not ({"web_search", "fetch"} & _tool_names()), "未确认时不该挂任何联网工具"
+    assert no_outbound_requests.requests == []
+
+    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+        confirmed = client.post("/api/web-providers/brave/consent")
+        assert confirmed.status_code == 200, confirmed.text
+
+    _StubProviderHandler.request_bodies.clear()
+    outcome = _run_round(_seam(database), database, agent, channel)
+
+    assert outcome.status == "replied", outcome.reason
+    assert {"web_search", "fetch"} <= _tool_names()
+    assert "暴露给第三方" in _system_prompt()
+    assert no_outbound_requests.requests == [], "只装配、没有调用就不该出网"
+
+
 def test_a_consented_provider_mounts_the_tools_and_the_probe_is_live(
     library: Any, stub_provider: str, no_outbound_requests: _RecordingTransport
 ) -> None:
@@ -426,7 +456,7 @@ class _ScriptedModel(ChatModelBase):
 
     def __init__(self, script: Sequence[Sequence[ChatResponse]] | None = None) -> None:
         super().__init__(
-            credential=None,  # type: ignore[arg-type]
+            credential=cast(Any, None),
             model="stub-model",
             parameters=ChatModelBase.Parameters(),
         )

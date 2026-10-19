@@ -348,9 +348,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   的 host 发请求（开关关闭 ⇒ 工具返回说明容器网络策略的可读错误、零请求）。本地后端不受影响。
 - **远端数据面确认**：`remote_consent_scope(scope_kind ∈ {model, mcp, docker, web}, scope_id)` 是统一的一次性
   确认；旧 `remote_consent` 行保留为兼容面（迁移复制成 `('model', provider, …)`）。四类都**只存确认时间**。
-  `web` 档目前只有**读路径**（装配闸门读它）：`POST /api/remote-data-flow/ack`（`model`）、
-  `POST /api/mcp-servers/{id}/consent`、`POST /api/docker-images/consent` 之外**没有** web 的确认端点，
-  所以联网工具在人类面还开不起来——这是已知缺口，见 `app/specs/issue-186-acceptance.md` §4.3。
+  `web` 档的人类面写路径是 `POST /api/web-providers/{provider}/consent`（只接受 `brave` / `tavily`，
+  幂等、只存确认时间）：未确认时装配层**不挂** `web_search` / `fetch` 且零请求，确认后下一轮按
+  `web_access` 与权限档装配。已确认的 web provider 由 `GET /api/remote-data-flow` 的 `web_consents` 读回。
 
 ## 实时呈现（SSE 与断线补拉）
 
@@ -426,7 +426,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
-| `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录 |
+| `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
 | `POST /api/remote-data-flow/ack` | 确认一次告知 `{provider}`（幂等） |
 | `GET /api/approvals?target_id=&state=pending` | HITL 审批快照（`reply_id` / `target_id` / `member_id` / `tool_calls` / `state` / `decisions` / 时间戳）。只读；`state` 只接受 `pending` / `approved` / `denied` / `expired` |
 | `POST /api/approvals/{reply_id}` | 提交审批 `{decisions:[{tool_call_id, confirmed, rules?}]}`；只接受 `pending`，同批重试幂等，相反结论 409；决策内的 `rules` 落成该 Agent 的权限规则。批准后该轮继续，拒绝的工具结果是 `DENIED`（未执行），两者都不改动既有消息正本 |
@@ -439,6 +439,8 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `DELETE /api/mcp-servers/{id}` | 删除声明（配置动作；不删消息、不唤醒） |
 | `POST /api/mcp-servers/{id}/consent` | 远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认的远端声明在装配层**不连接** |
 | `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
+| `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
+| `POST /api/web-providers/{provider}/consent` | 联网 provider 的数据面确认（幂等；写 `remote_consent_scope('web', provider)`，只存确认时间）。只接受 `brave` / `tavily`；未确认时装配层**不挂** `web_search` / `fetch` 且**零请求** |
 | `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节） |
 | `POST /api/skills` | 安装：JSON 正文 `{scope_kind, scope_id, source_path, channel_id?}` 从**本机目录**；或 `Content-Type: application/zip` 的原始字节 + query `scope_kind/scope_id/channel_id/filename` 从**上传 zip**。两者都先校验 `SKILL.md` front matter、路径与内容 hash，非法输入**整体拒绝**；同名同 scope 409；不做远端市场/下载 |
 | `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |
