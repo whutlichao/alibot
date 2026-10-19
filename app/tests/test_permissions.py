@@ -207,3 +207,142 @@ def test_agent_rules_override_channel_rules_for_the_same_key() -> None:
         ("Write", "src/**", "deny"),
         ("Read", "**/*.env", "deny"),
     ]
+
+
+# ─── #186：fetch 的 host 归一化（ADR-0026 §三） ───────────────────────────────
+#
+# ``fetch`` 的输入是**完整 URL**，而人类配置的 pattern 是 **host**（「允许抓取这个 host」）。
+# 框架的 ``match_rule`` 默认只认工具名级规则（``rule_content is None``），因此两个落点必须成对：
+# ``permissions._matched_pattern`` 把规则侧收成 host，``web`` 的 fetch 工具把输入侧收成 host。
+# host 提取只有一份实现（``web.url_host``），#187 的容器出网白名单复用同一份。下面这组用例是
+# 本票点名「最容易漏」的那条判据的取证面。
+
+
+def _web_decide(
+    mode: str,
+    tool: Any,
+    tool_input: dict[str, Any],
+    rules: list[dict[str, str]] | None = None,
+) -> PermissionBehavior:
+    """用**真实的**权限引擎判一次联网工具调用（联网工具不看项目根，因此不挂 workspace）。"""
+    engine = build_permission_engine(mode, rules or [])
+    return asyncio.run(engine.check_permission(tool, tool_input)).behavior
+
+
+def _fetch_rule(pattern: str, behavior: str = "allow") -> list[dict[str, str]]:
+    return [{"tool_name": "fetch", "pattern": pattern, "behavior": behavior}]
+
+
+def test_a_fetch_host_rule_matches_the_full_url_input() -> None:
+    """``pattern='api.example.com'`` 必须匹配该 host 的完整 URL：大小写 / 端口 / 路径 / query 全归一。"""
+    from alibot.web import fetch_tool
+
+    tool = fetch_tool()
+    rules = _fetch_rule("api.example.com")
+
+    for url in (
+        "https://api.example.com/x",
+        "https://api.example.com",
+        "HTTPS://API.Example.COM:8443/a/b?token=1#frag",
+        "http://api.example.com:80/query?a=1",
+        "api.example.com/relative-form",
+    ):
+        assert _web_decide("ask-writes", tool, {"url": url}, rules) is PermissionBehavior.ALLOW, url
+
+    # 其他 host 仍 ASK：规则是 host 级的，不是「fetch 的全部调用」。
+    for url in ("https://other.example.net/", "https://example.com/", "https://api.example.com.evil.test/"):
+        assert _web_decide("ask-writes", tool, {"url": url}, rules) is PermissionBehavior.ASK, url
+
+
+def test_a_fetch_host_rule_written_as_a_url_normalizes_the_same_way() -> None:
+    """规则侧也归一：写成完整 URL 的 pattern 与写成裸 host 的 pattern 等价。"""
+    from alibot.web import fetch_tool
+
+    tool = fetch_tool()
+    rules = _fetch_rule("HTTPS://API.Example.com:8443/docs?x=1")
+
+    assert (
+        _web_decide("ask-writes", tool, {"url": "https://api.example.com/a"}, rules)
+        is PermissionBehavior.ALLOW
+    )
+    assert (
+        _web_decide("ask-writes", tool, {"url": "https://api.example.com.evil.test/a"}, rules)
+        is PermissionBehavior.ASK
+    )
+
+
+def test_fetch_asks_in_both_write_modes_and_is_denied_in_read_only() -> None:
+    """``ask-writes`` / ``trusted-writes`` 都逐次 ASK；``read-only`` 没有「询问」这一档 ⇒ DENY。"""
+    from alibot.web import fetch_tool
+
+    tool = fetch_tool()
+    url = {"url": "https://api.example.com/x"}
+
+    assert _web_decide("ask-writes", tool, url) is PermissionBehavior.ASK
+    assert _web_decide("trusted-writes", tool, url) is PermissionBehavior.ASK
+    assert _web_decide("read-only", tool, url) is PermissionBehavior.DENY
+
+
+def test_fetch_has_no_bypass_immune_so_the_host_rule_can_allow_it() -> None:
+    """ADR-0026 §三：``fetch`` **不设** ``bypass_immune``（与本地 shell 刻意相反）。
+
+    判据形状是「allow 规则能不能把它变成自动放行」：``fetch`` 能（人类可以一次配好常用域名），
+    ``AskEveryTimeBash`` 不能。
+    """
+    from alibot.web import fetch_tool
+    from alibot.workspace import local_shell_tool
+
+    url = {"url": "https://api.example.com/x"}
+
+    assert (
+        _web_decide("ask-writes", fetch_tool(), url, _fetch_rule("api.example.com"))
+        is PermissionBehavior.ALLOW
+    )
+    assert (
+        _web_decide("ask-writes", local_shell_tool("/tmp"), {"command": "ls"}, _fetch_rule(""))
+        is PermissionBehavior.ASK
+    )
+
+
+def test_deny_and_ask_rules_also_match_a_fetch_host() -> None:
+    """三种行为都在 host 上判定：deny 优先于 allow，ask 把该 host 强制回到审批。"""
+    from alibot.web import fetch_tool
+
+    tool = fetch_tool()
+    url = {"url": "https://api.example.com/x"}
+
+    assert _web_decide("trusted-writes", tool, url, _fetch_rule("api.example.com", "deny")) is (
+        PermissionBehavior.DENY
+    )
+    assert (
+        _web_decide(
+            "ask-writes",
+            tool,
+            url,
+            _fetch_rule("api.example.com", "allow") + _fetch_rule("api.example.com", "ask"),
+        )
+        is PermissionBehavior.ASK
+    )
+
+
+def test_web_search_is_a_read_only_tool_in_every_mode() -> None:
+    """``web_search`` 按只读处理（ADR-0026 §一）：三档都放行，不需要任何规则。"""
+    from alibot.web import search_tool
+
+    tool = search_tool(provider="brave", environ={"BRAVE_API_KEY": "key"})
+    query = {"query": "agent framework", "count": 3}
+
+    for mode in PERMISSION_MODES:
+        assert _web_decide(mode, tool, query) is PermissionBehavior.ALLOW, mode
+
+
+def test_a_pattern_that_yields_no_host_does_not_match_everything() -> None:
+    """取不出 host 的 pattern（通配也不是本票的能力）只匹配不到，绝不退化成「全部调用」。"""
+    from alibot.web import fetch_tool
+
+    assert (
+        _web_decide(
+            "ask-writes", fetch_tool(), {"url": "https://api.example.com/x"}, _fetch_rule("*.example.com")
+        )
+        is PermissionBehavior.ASK
+    )

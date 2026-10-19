@@ -25,6 +25,7 @@ from agentscope.permission import (
     PermissionRule,
 )
 
+from .web import FETCH_TOOL_NAME, url_host
 from .workspace import PATH_ARGUMENTS
 
 PermissionModeName: TypeAlias = Literal["read-only", "ask-writes", "trusted-writes"]
@@ -90,16 +91,25 @@ PATH_TOOL_NAMES = frozenset(PATH_ARGUMENTS)
 #: 文件工具的路径参数（同样从 ``workspace.PATH_ARGUMENTS`` 收集；只用于权限判定的归一化）。
 PATH_KEYS = tuple(dict.fromkeys(PATH_ARGUMENTS.values()))
 
+#: pattern 是 **host** 而不是路径的工具（#186 / ADR-0026 §三）：它们的输入是完整 URL。
+HOST_PATTERN_TOOL_NAMES = frozenset({FETCH_TOOL_NAME})
+
 
 def _matched_pattern(rule: dict[str, str], root: str | None) -> str | None:
     """规则 pattern → 框架的 ``rule_content``。
 
     文件工具的 pattern 是相对项目根的 glob；框架的 ``match_rule`` 拿的是工具输入（可能是绝对
     路径），因此相对 pattern 先锚到根再匹配。绝对 pattern、空 pattern 与执行类工具（Bash）原样保留。
+
+    ``fetch`` 的输入是完整 URL，而 pattern 是 host，因此这一侧先归一成 host
+    （:func:`web.url_host`——与工具侧的输入归一化是**同一份实现**）。取不出 host 的 pattern
+    原样保留：框架那边不会匹配任何输入，比「退化成该工具的全部调用」安全。
     """
     pattern = rule["pattern"]
     if not pattern:
         return None
+    if rule["tool_name"] in HOST_PATTERN_TOOL_NAMES:
+        return url_host(pattern) or pattern
     if root and rule["tool_name"] in PATH_TOOL_NAMES and not os.path.isabs(pattern):
         return os.path.join(root, pattern)
     return pattern
