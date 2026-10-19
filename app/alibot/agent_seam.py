@@ -728,11 +728,16 @@ class AgentScopeAgentSeam:
         4. **权限档闸门**（§三）：``read-only`` 只挂 ``web_search``；``ask-writes`` / ``trusted-writes``
            才挂 ``fetch``，而 ``fetch`` 的逐次 ASK 由权限引擎（``FetchTool`` 继承的 ASK）给出。
 
+        挂上之后还有一层**容器出网策略**（#187 / §五）：Docker 后端下按 ``docker_egress`` 与
+        ``fetch`` 的 allow host 白名单构造 ``EgressPolicy`` 交给两个工具；开关关闭时工具**一个
+        请求都不发**，返回说明容器网络策略的可读错误。
+
         能力闸门（``supports_tool_calling``）**不在**这里：它由 :func:`_round_toolkit` 统一守，于是
         “provider 不能携带工具”与文件工具/沉默工具是同一个落点。
         """
         from .web import (
             FETCH_ACCESS_LEVEL,
+            EgressPolicy,
             ProviderResolutionError,
             fetch_tool,
             resolve_search_provider,
@@ -753,11 +758,21 @@ class AgentScopeAgentSeam:
         if provider not in settings.get("consented_providers", ()):
             _log.debug("web tools skipped: no ('web', %s) consent row", provider)
             return []
-        tools = [search_tool(provider=provider, environ=self._environ)]
+        # 容器出网策略（#187 / ADR-0026 §五）：**只有 Docker 后端**才有这一层。两个工具跑在宿主
+        # 进程里，容器真的无网挡不住它们，因此「默认无网」必须在这里变成可读拒绝 + 零请求；
+        # 本地后端传 ``None``，工具行为与 #186 逐字相同（票面：不改本地后端行为）。
+        egress = None
+        if str(settings.get("backend") or "local") == "docker":
+            egress = EgressPolicy(
+                enabled=bool(settings.get("docker_egress")),
+                allowed_hosts=frozenset(str(host) for host in settings.get("egress_hosts") or ()),
+                locale=self._locale(),
+            )
+        tools = [search_tool(provider=provider, environ=self._environ, egress=egress)]
         # 未知取值（写路径的 CHECK 拦住了）退化成「只挂只读的搜索」：fail-safe 的方向是多装只读工具，
         # 而不是把需要逐次审批的 fetch 多装上去。
         if access == FETCH_ACCESS_LEVEL and settings.get("mode") != "read-only":
-            tools.append(fetch_tool())
+            tools.append(fetch_tool(egress=egress))
         return tools
 
     # ─── 模型构造 ─────────────────────────────────────────────────────────

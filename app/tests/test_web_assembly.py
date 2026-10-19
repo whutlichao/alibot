@@ -501,3 +501,81 @@ def test_a_provider_that_cannot_carry_tools_gets_no_web_tool(library: Any) -> No
     assert outcome.status == "replied", outcome.reason
     assert model.tool_names, "模型没被调用：这条判据无从取证"
     assert not ({"web_search", "fetch"} & model.tool_names[0])
+
+
+# ─── 6. 容器出网策略（#187 / ADR-0026 §五） ────────────────────────────────
+# ``backend='docker'`` + ``docker_egress`` 由库读路径带进装配层；这一层没有容器参与（两个工具跑在
+# 宿主进程里），因此「默认无网」的可读错误与零请求在这里取证，容器侧的 NetworkMode 由
+# ``test_docker_network_policy.py`` 取证（本机无 daemon）。
+def _configure_container_egress(database: Any, channel: dict[str, Any], *, egress: bool) -> None:
+    with sqlite3.connect(database.path) as connection:
+        connection.execute(
+            "UPDATE channel SET docker_egress = ?, workspace_backend = 'docker' WHERE id = ?",
+            (1 if egress else 0, channel["id"]),
+        )
+        connection.commit()
+
+
+def test_docker_container_egress_off_mounts_the_tools_but_sends_zero_requests(
+    library: Any, no_outbound_requests: _RecordingTransport
+) -> None:
+    """默认无网：工具照旧挂（``web_access`` 已开），但每次调用是被拒绝的**可读错误**。"""
+    database, agent, channel = library
+    _configure(database, channel, web_access="search+fetch", mode="ask-writes", consent=["brave"])
+    _configure_container_egress(database, channel, egress=False)
+    # 空 pattern 的 allow = 「这个工具的调用都放行」：权限层不会 ASK，于是这个用例证明的只有
+    # 出网策略这一层（不会混淆成「等审批」）。
+    database.create_permission_rule(
+        scope_kind="channel", scope_id=channel["id"], tool_name="fetch", pattern="", behavior="allow"
+    )
+    seam = _ModelSubstitutingSeam(
+        _ScriptedModel([_fetch_call(), _text_reply()]),
+        timeout_seconds=10.0,
+        permission_of=database.permission_settings_for_target,
+        web_of=database.web_settings_for_target,
+    )
+
+    outcome = _run_round(seam, database, agent, channel)
+
+    assert outcome.status == "replied", outcome.reason
+    assert no_outbound_requests.requests == [], "容器未允许出网时一个请求都不该发"
+    assert database.list_approval_requests(channel["id"]) == []
+
+
+def test_docker_egress_on_allows_only_the_hosts_in_the_fetch_allow_rules(
+    library: Any, no_outbound_requests: _RecordingTransport
+) -> None:
+    """显式允许：白名单（``fetch`` 的 allow 规则 host）内成功，白名单外仍是零请求。"""
+    database, agent, channel = library
+    _configure(database, channel, web_access="search+fetch", mode="ask-writes", consent=["brave"])
+    _configure_container_egress(database, channel, egress=True)
+    database.create_permission_rule(
+        scope_kind="channel", scope_id=channel["id"], tool_name="fetch", pattern="", behavior="allow"
+    )
+    database.create_permission_rule(
+        scope_kind="channel",
+        scope_id=channel["id"],
+        tool_name="fetch",
+        pattern="api.example.com",
+        behavior="allow",
+    )
+
+    allowed = _ModelSubstitutingSeam(
+        _ScriptedModel([_fetch_call(FETCH_URL), _text_reply()]),
+        timeout_seconds=10.0,
+        permission_of=database.permission_settings_for_target,
+        web_of=database.web_settings_for_target,
+    )
+    outcome = _run_round(allowed, database, agent, channel)
+    assert outcome.status == "replied", outcome.reason
+    assert [request.url for request in no_outbound_requests.requests] == [FETCH_URL]
+
+    outside = _ModelSubstitutingSeam(
+        _ScriptedModel([_fetch_call("https://internal.example.net/x"), _text_reply()]),
+        timeout_seconds=10.0,
+        permission_of=database.permission_settings_for_target,
+        web_of=database.web_settings_for_target,
+    )
+    outcome = _run_round(outside, database, agent, channel)
+    assert outcome.status == "replied", outcome.reason
+    assert len(no_outbound_requests.requests) == 1, "白名单外的 host 没有发请求"

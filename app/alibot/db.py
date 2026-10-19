@@ -33,7 +33,9 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from .i18n import SOURCE_LOCALE, locale_of, render
+from .permissions import effective_rules
 from .reminder_delivery import reminder_state
+from .web import egress_hosts
 
 OWNER_ID = "owner"
 OWNER_DISPLAY_NAME = "Owner"
@@ -89,7 +91,11 @@ MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # 改表级 CHECK 只能重建表，因此 `17 → 18` 里既有 `remote_consent_scope` 的重建（旧行逐行保真），
 # 也有两列的 `ADD COLUMN`；**不为网络请求新增任何用量表 / 计数列**（预算口径不变，ADR-0026 §六）。
 # 判据同前：main 是 17、18 是满足「必须高于当前 main」的最小号。
-SCHEMA_VERSION = 18
+# 19 = **本票 #187**（Docker 后端的容器网络策略：``channel.docker_egress`` 一个频道级开关列，
+# ADR-0026 §五）。它是**纯增量**：``ADD COLUMN`` + 列级 CHECK，不回填旧数据（旧频道停在 0 =
+# 容器默认无网），因此 ``18 → 19`` 一步（`migrate._step_18_to_19`）。判据同前：main 是 18、
+# 19 是满足「必须高于当前 main」的最小号。
+SCHEMA_VERSION = 19
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -313,7 +319,13 @@ CREATE TABLE IF NOT EXISTS channel (
   -- 联网档（#184 / ADR-0026 §二）：``NULL`` = **关闭**（不装配 ``web_search`` / ``fetch``，旧行于是
   -- 逐字保持「没有联网入口」的既有行为）；两档只差 ``fetch`` 装不装，权限裁决在装配层。
   -- 它不是 ``allow_local_shell`` 的同义词：那个开关的风险面是本机任意进程，这个是数据出网。
-  web_access TEXT CHECK (web_access IN ('search', 'search+fetch'))
+  web_access TEXT CHECK (web_access IN ('search', 'search+fetch')),
+  -- 容器出网开关（#187 / ADR-0026 §五）：``0`` = 容器以 ``--network none`` 创建（默认）；
+  -- ``1`` = 容器接上 Docker 默认的网络，且联网工具只放行 ``permission_rule`` 里 ``fetch`` 的
+  -- allow 规则的 host（白名单来源见 ``web.egress_hosts``）。它是**频道级**配置，与
+  -- ``workspace_backend`` / ``web_access`` 同级但不同开关：那两个决定「挂什么工具」，
+  -- 这个决定「容器能不能出网」。
+  docker_egress INTEGER NOT NULL DEFAULT 0 CHECK (docker_egress IN (0, 1))
 );
 
 CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_insert
@@ -2580,7 +2592,8 @@ class Database:
                 return None
 
             channel = self._conn.execute(
-                "SELECT workspace_root, workspace_backend, permission_mode FROM channel WHERE id = ?",
+                "SELECT workspace_root, workspace_backend, permission_mode, docker_egress "
+                "FROM channel WHERE id = ?",
                 (channel_id,),
             ).fetchone()
             if channel is None or not str(channel["workspace_root"] or "").strip():
@@ -2616,6 +2629,8 @@ class Database:
             "docker_image": docker_image,
             # 远端镜像确认是**配置事实**：装配层只读，未确认时不拉取、不启动容器。
             "docker_image_consented": consent is not None,
+            # 容器出网开关（#187）：频道级事实，Agent 没有覆盖列（见 issue-187 验收文档）。
+            "docker_egress": bool(channel["docker_egress"]),
         }
 
     def permission_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
@@ -2668,19 +2683,28 @@ class Database:
             if channel_id is None:
                 return None
             channel = self._conn.execute(
-                "SELECT web_access, permission_mode FROM channel WHERE id = ?",
+                "SELECT web_access, permission_mode, workspace_backend, docker_egress "
+                "FROM channel WHERE id = ?",
                 (channel_id,),
             ).fetchone()
             if channel is None:
                 return None
             agent = self._conn.execute(
-                "SELECT web_access, permission_mode FROM agent_config WHERE member_id = ?",
+                "SELECT web_access, permission_mode, workspace_backend FROM agent_config WHERE member_id = ?",
                 (member_id,),
             ).fetchone()
             consented = self._conn.execute(
                 "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
                 "ORDER BY acknowledged_at, scope_id"
             ).fetchall()
+            # D3：容器出网白名单复用 ``permission_rule`` 里 ``fetch`` 的 allow 规则的 host，
+            # **不新建 host 白名单表**；合并仍走 ``permissions.effective_rules``（Agent 级覆盖频道级）。
+            allowed_hosts = egress_hosts(
+                effective_rules(
+                    self._permission_rule_rows_locked("channel", channel_id),
+                    self._permission_rule_rows_locked("agent", member_id),
+                )
+            )
         channel_web_access = channel["web_access"]
         agent_web_access = agent["web_access"] if agent is not None else None
         return {
@@ -2691,6 +2715,14 @@ class Database:
                 or "ask-writes"
             ),
             "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+            # 容器出网策略（#187）：只有 ``backend == 'docker'`` 时才进工具闸门；本地后端逐字不变。
+            "backend": str(
+                (agent["workspace_backend"] if agent is not None else None)
+                or channel["workspace_backend"]
+                or "local"
+            ),
+            "docker_egress": bool(channel["docker_egress"]),
+            "egress_hosts": allowed_hosts,
         }
 
     def _channel_id_for_target_locked(self, target_id: str) -> str | None:
@@ -3722,7 +3754,7 @@ class Database:
         with self._lock:
             row = self._conn.execute(
                 "SELECT id, mode, team_leader_member_id, workspace_root, workspace_backend, "
-                "permission_mode, web_access FROM channel WHERE id = ?",
+                "permission_mode, web_access, docker_egress FROM channel WHERE id = ?",
                 (channel_id,),
             ).fetchone()
         if row is None:
@@ -3735,6 +3767,7 @@ class Database:
             "workspace_backend": row["workspace_backend"],
             "permission_mode": row["permission_mode"],
             "web_access": row["web_access"],
+            "docker_egress": bool(row["docker_egress"]),
         }
 
     def update_channel_config(
@@ -3747,6 +3780,7 @@ class Database:
         workspace_backend: str | None = None,
         permission_mode: str | None = None,
         web_access: Any = _UNSET,
+        docker_egress: bool | None = None,
     ) -> dict[str, Any]:
         """写频道配置：**任一字段不合法整体拒绝**（校验先于写入，事务内一次 UPDATE）。
 
@@ -3825,6 +3859,9 @@ class Database:
             else:
                 resolved_root = candidate
 
+        # 容器出网开关（#187）：布尔单值，没有第三档；``None`` = 这次请求没提到它。
+        resolved_docker_egress = current["docker_egress"] if docker_egress is None else bool(docker_egress)
+
         if fields:
             raise DomainError(
                 "validation_failed",
@@ -3837,7 +3874,8 @@ class Database:
             try:
                 self._conn.execute(
                     "UPDATE channel SET mode = ?, team_leader_member_id = ?, workspace_root = ?, "
-                    "workspace_backend = ?, permission_mode = ?, web_access = ? WHERE id = ?",
+                    "workspace_backend = ?, permission_mode = ?, web_access = ?, docker_egress = ? "
+                    "WHERE id = ?",
                     (
                         resolved_mode,
                         resolved_leader,
@@ -3845,6 +3883,7 @@ class Database:
                         current["workspace_backend"] if workspace_backend is None else workspace_backend,
                         current["permission_mode"] if permission_mode is None else permission_mode,
                         resolved_web_access,
+                        1 if resolved_docker_egress else 0,
                         channel_id,
                     ),
                 )
