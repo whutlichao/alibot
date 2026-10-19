@@ -37,8 +37,10 @@ from agentscope.tool import FunctionTool, ToolChunk
 
 #: 模块对外的名字（装配层 #186 与测试只用这些；其余一律是内部实现）。
 __all__ = [
+    "FETCH_ACCESS_LEVEL",
     "FETCH_DEFAULT_MAX_BYTES",
     "FETCH_DEFAULT_MAX_CHARS",
+    "FETCH_TOOL_NAME",
     "FETCH_USER_AGENT",
     "PROVIDER_ENV_NAME",
     "SEARCH_BACKENDS",
@@ -49,6 +51,7 @@ __all__ = [
     "SEARCH_PROVIDERS",
     "WEB_ENV_ALLOWLIST",
     "WEB_TIMEOUT_SECONDS",
+    "FetchTool",
     "HttpRequest",
     "HttpResponse",
     "HttpTransport",
@@ -61,6 +64,7 @@ __all__ = [
     "fetch_tool",
     "resolve_search_provider",
     "search_tool",
+    "url_host",
     "web_env",
 ]
 
@@ -74,6 +78,13 @@ WEB_ENV_ALLOWLIST = ("ALIBOT_WEB_SEARCH_PROVIDER", "BRAVE_API_KEY", "TAVILY_API_
 
 #: 显式指明搜索 provider 的变量名（取值为 :data:`SEARCH_PROVIDERS`，其它值一律报错）。
 PROVIDER_ENV_NAME = "ALIBOT_WEB_SEARCH_PROVIDER"
+
+#: 抓取工具在工具面与 ``permission_rule`` 里的名字（权限层按这个名字做 host 归一化）。
+FETCH_TOOL_NAME = "fetch"
+
+#: ``web_access`` 里唯一会打开 ``fetch`` 的档位（ADR-0026 §二：``'search'`` / ``'search+fetch'``）。
+#: 它是**读路径**的唯一判断：写路径的白名单仍以 ``db.WEB_ACCESS_LEVELS`` 为准。
+FETCH_ACCESS_LEVEL = "search+fetch"
 
 #: 搜索默认 / 最多返回的条数（条数硬上限的一档）。
 SEARCH_DEFAULT_RESULTS = 5
@@ -279,6 +290,36 @@ def _transport_error(reason: Any, timeout_seconds: float) -> WebTransportError:
     if isinstance(reason, TimeoutError):
         return WebTransportError("timeout", f"请求超时（{timeout_seconds:.0f} 秒）")
     return WebTransportError("unreachable", f"无法连接目标地址：{reason}")
+
+
+def url_host(value: str) -> str | None:
+    """从 URL 或裸 host 里取出**归一化**的 host；取不出时返回 ``None``。
+
+    归一化 = 小写、去掉 userinfo / 端口 / 路径 / query / fragment（``urlsplit().hostname`` 已经
+    把这几项做掉）。这条归一化有两处消费点，**只有这一份实现**：
+
+    - ``permissions._matched_pattern`` 把 ``permission_rule`` 的 pattern 收成 host（规则侧）；
+    - :class:`FetchTool` 把工具输入里的 URL 收成 host（输入侧）。
+
+    #187 的容器出网白名单读同一批 ``permission_rule`` 的 pattern，必须复用本函数而不是另写一份
+    （D3：host 提取单一实现）。
+
+    刻意**不**支持通配符：``*.example.com`` 不是一个 host，归一后仍是它自己，于是既不等于任何
+    输入 host、也不会变成「匹配一切」——一个坏 pattern 应当什么都不匹配，而不是允许全部调用。
+    """
+    target = (value or "").strip()
+    if not target:
+        return None
+    # 裸 host（或无 scheme 的 ``host:port/path``）补上 ``//`` 才能让 urlsplit 走 netloc 解析。
+    if "://" not in target:
+        target = "//" + target.lstrip("/")
+    try:
+        host = urllib.parse.urlsplit(target).hostname
+    except ValueError:  # 方括号不配对之类的畸形输入：没有 host，而不是抛给一轮
+        return None
+    if not host:
+        return None
+    return host.rstrip(".") or None
 
 
 def _chunk(text: str, state: ToolResultState) -> ToolChunk:
@@ -521,7 +562,9 @@ def fetch_tool(
     def fetch(url: str) -> ToolChunk:
         """按 URL 抓取网页，把正文转成纯文本返回。
 
-        会离开本机，且只接受 http / https。正文有硬上限：超出的部分被截断，并在结果里说明。
+        警告：这会离开本机——目标地址（可能含内网地址或带 token 的 query）会被第三方看到，
+        因此每次调用都需要人类逐次审批（按 host 的权限规则可放行；read-only 档不装配本工具）。
+        只接受 http / https。正文有硬上限：超出的部分被截断，并在结果里说明。
 
         Args:
             url: 要抓取的 http / https 地址。
@@ -551,7 +594,29 @@ def fetch_tool(
     async def call_fetch(url: str) -> ToolChunk:
         return await asyncio.to_thread(fetch, url)
 
-    return FunctionTool(call_fetch, name="fetch", is_read_only=False)
+    return FetchTool(call_fetch, name=FETCH_TOOL_NAME, is_read_only=False)
+
+
+class FetchTool(FunctionTool):
+    """``fetch`` 工具：唯一的差别是**权限规则的匹配方式**。
+
+    框架的 ``ToolBase.match_rule`` 默认只认工具名级规则（``rule_content is None``），文件工具各自
+    覆盖它做 glob 匹配。``fetch`` 的输入是完整 URL，而人类配置的 pattern 是 host（ADR-0026 §三：
+    「允许抓取这个 host」），因此这里把**两侧**都收成 host 再比；规则侧的归一化在
+    ``permissions._matched_pattern``，两份都调用同一份 :func:`url_host`。
+
+    刻意**不**覆盖 ``check_permissions``：它继承 ``FunctionTool`` 的 ASK，于是
+    ``ask-writes`` / ``trusted-writes`` 都逐次审批，而 allow 规则（host 级）仍能把它放行——
+    这正是「不设 ``bypass_immune``」的落点（与 ``AskEveryTimeBash`` 刻意相反）。
+    """
+
+    async def match_rule(self, rule_content: str | None, tool_input: dict[str, Any]) -> bool:
+        """规则是否命中这次调用：空 pattern = 该工具的全部调用，否则按 host 精确比较。"""
+        if not rule_content:
+            return True
+        pattern = url_host(rule_content)
+        target = url_host(str(tool_input.get("url") or ""))
+        return pattern is not None and target is not None and pattern == target
 
 
 def _render_page(target: str, response: HttpResponse, max_bytes: int, max_chars: int) -> str:
