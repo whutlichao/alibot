@@ -113,3 +113,11 @@
 - 容器网络在「允许」档是 **Docker 默认 bridge**：容器能到的地方比白名单**宽**，白名单只在工具层
   生效。要真正按 host 收敛到容器内核层，需要在容器内跑代理或自定义网络 + iptables——票面明确
   「不做通用网络策略 DSL」，本票不做，风险在此如实记。
+- **空 pattern 的 `fetch` allow 规则不构成容器白名单**（`web.egress_hosts` 丢弃无 host 的
+  pattern）：`permission_rule` 里「空 pattern = 该工具的全部调用」这条语义**没有被改**（权限判定
+  仍按它放行），容器出网是**另一个维度**的白名单，缺 host 就没有可放行的 host。方向是**更少**
+  出网（fail-safe），不会把「人为漏配」变成「放开一切」；若以后要支持「放开全部 host」，应显式
+  加一档而不是复用空 pattern。
+- **`docker_egress` 用 `ADD COLUMN … NOT NULL DEFAULT 0`**：存量行在 `ALTER TABLE` 时就取到列默认
+  `0`（= 容器无网），本票**没有**任何 `UPDATE` 回填业务数据——「不回填」在本仓的口径是「不按今天
+  的配置倒推历史取值」，列默认值不是回填。
