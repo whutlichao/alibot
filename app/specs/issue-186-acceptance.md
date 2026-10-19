@@ -279,10 +279,11 @@ FAILED tests/test_web_assembly.py::test_the_consent_endpoint_unlocks_the_tools_f
 | node --test | `tests 191 / pass 191 / fail 0` |
 | 结论 | `门禁全绿` |
 
-> 环境噪声（如实记）：pi-lens 的 turn-end 检查一度反复报 `db.py:233` / `i18n.py:233` 的
-> `[unused-ignore]`。核查结论是**陈旧缓存伪影**：两文件 `type: ignore` 计数为 0、第 233 行是普通代码
-> （`"channel_read",` / 一条 i18n 字符串），仓库 mypy 加 `--warn-unused-ignores` 对二者均为 `Success`，
-> 且清掉 `.mypy_cache`（gitignored、可重建）后重新探针不再出现。以 `scripts/check.sh` 为准。
+> 环境噪声（如实记）：pi-lens 的 turn-end 检查一度反复报“未使用的 ignore 注释”，指向
+> `app/alibot/db.py` 与 `app/alibot/i18n.py` 第 233 行。核查结论是**陈旧缓存伪影**：两文件的 ignore
+> 注释计数为 0、第 233 行是普通代码（`"channel_read",` / 一条 i18n 字符串），仓库 mypy 打开未使用告警
+> （`--warn-unused-ignores`）对二者均为 `Success`，清掉 `.mypy_cache`（gitignored、可重建）后重新探针
+> 不再出现。以 `scripts/check.sh` 为准。
 
 **仍未解的第二条**（原 §4.3 第 2 项，不属于 D6）：`fetch` 是否应当独立于搜索 provider 做确认——
 今天「只开 fetch、没有搜索 key」会因 provider 解析失败而两个工具都不装（D4 只给了一个 provider 概念）。
