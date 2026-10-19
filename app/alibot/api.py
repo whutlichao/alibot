@@ -273,6 +273,9 @@ class AgentUpdate(BaseModel):
     permission_mode: str | None = None
     allow_local_shell: bool | None = None
     docker_image: str | None = None
+    # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：缺省 = 不提（跟随频道）。显式 ``null`` 与
+    # 该端点其余字段同一纪律——整体拒绝（回到「跟随频道」由不提交该字段表达）。
+    web_access: str | None = None
 
     @field_validator(
         "display_name",
@@ -285,6 +288,7 @@ class AgentUpdate(BaseModel):
         "permission_mode",
         "allow_local_shell",
         "docker_image",
+        "web_access",
         mode="before",
     )
     @classmethod
@@ -321,8 +325,9 @@ class ChannelConfigUpdate(BaseModel):
     """频道配置的**部分**更新（规格 §4.4 / ADR-0018 / ADR-0021）。
 
     未知键由 ``extra="forbid"`` 整体拒绝；字段缺省 = 这次请求没提到它（保持原值）。
-    ``workspace_root`` 是唯一允许显式 ``null`` 的字段（``null`` = 清空项目根，即回到「未配置」
-    的既有默认行为）；其余字段的显式 ``null`` 既不是合法取值、也不是「没提到」，整体拒绝。
+    ``workspace_root`` 与 ``web_access`` 是允许显式 ``null`` 的字段（``null`` = 清空项目根 / 关闭
+    联网，两者都是「未配置」这一合法状态，ADR-0021 §六 / ADR-0026 §二）；其余字段的显式 ``null``
+    既不是合法取值、也不是「没提到」，整体拒绝。
 
     ``team_scope`` 是只读事实（固定 ``channel+task``），不在可写字段里：提交它会被
     ``extra="forbid"`` 拒绝，而不是被静默忽略。
@@ -335,6 +340,7 @@ class ChannelConfigUpdate(BaseModel):
     workspace_root: str | None = None
     workspace_backend: str | None = None
     permission_mode: str | None = None
+    web_access: str | None = None
 
     @field_validator("mode", "team_leader_member_id", "workspace_backend", "permission_mode", mode="before")
     @classmethod
@@ -1496,7 +1502,7 @@ def create_app(
 
         可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
         ``auto_claim`` / ``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` /
-        ``docker_image``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        ``docker_image`` / ``web_access``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
         校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
@@ -1517,6 +1523,7 @@ def create_app(
             permission_mode=payload.permission_mode,
             allow_local_shell=payload.allow_local_shell,
             docker_image=payload.docker_image,
+            web_access=payload.web_access,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
