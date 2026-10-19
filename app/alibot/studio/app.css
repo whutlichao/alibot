@@ -891,21 +891,19 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .board-list .result .r-snip { display: flex; align-items: center; gap: var(--sp-3); font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: var(--lh-snug); }
 .board-list .result .card-owner { margin-left: 0; }
 
-/* 列表行不使用 `.card`（`.card` 带 3px 左状态条，而原型 `renderTaskList()` 的列表行
-   只能用行内的 `.st-dot` 陈述状态）。两处共用同一张 `--task-status-color` 表。 */
-.col, .card, .tt-status, .board-list .result { --task-status-color: var(--faint); }
-.col[data-status="todo"], .card[data-status="todo"], .tt-status[data-status="todo"], .board-list .result[data-status="todo"] { --task-status-color: var(--faint); }
-.col[data-status="in_progress"], .card[data-status="in_progress"], .tt-status[data-status="in_progress"], .board-list .result[data-status="in_progress"] { --task-status-color: var(--accent-graphic); }
-.col[data-status="in_review"], .card[data-status="in_review"], .tt-status[data-status="in_review"], .board-list .result[data-status="in_review"] { --task-status-color: var(--working); }
-.col[data-status="done"], .card[data-status="done"], .tt-status[data-status="done"], .board-list .result[data-status="done"] { --task-status-color: var(--online); }
-.col[data-status="closed"], .card[data-status="closed"], .tt-status[data-status="closed"], .board-list .result[data-status="closed"] { --task-status-color: var(--offline); }
-.col .st-dot, .card .st-dot, .board-list .result .st-dot { background: var(--task-status-color); }
-/* 卡片左侧的状态条：状态点的图形档（≥3:1），不做文字。 */
-.card { border-left: 3px solid var(--task-status-color); }
-/* 悬停时**显式保色**：`border-color` 是全四边简写，不补这一行会把左边 3px 状态条
-   一起换成 `--border-strong`——交互态丢了状态色（`DESIGN.md` §1「status made visible」
-   与 §7 的「悬停不得削弱」）。这条是本文件的承重行，不是冗余。 */
-.card:hover { border-left-color: var(--task-status-color); }
+/* 列表行不使用 `.card`：列表是通栏单行、看板是 236px 列内的方块，两套内边距与信息
+   层级不同。共用的是同一张 `--task-status-color` 表（列表行用行内 `.st-dot` 陈述状态）。 */
+.col, .tt-status, .board-list .result { --task-status-color: var(--faint); }
+.col[data-status="todo"], .tt-status[data-status="todo"], .board-list .result[data-status="todo"] { --task-status-color: var(--faint); }
+.col[data-status="in_progress"], .tt-status[data-status="in_progress"], .board-list .result[data-status="in_progress"] { --task-status-color: var(--accent-graphic); }
+.col[data-status="in_review"], .tt-status[data-status="in_review"], .board-list .result[data-status="in_review"] { --task-status-color: var(--working); }
+.col[data-status="done"], .tt-status[data-status="done"], .board-list .result[data-status="done"] { --task-status-color: var(--online); }
+.col[data-status="closed"], .tt-status[data-status="closed"], .board-list .result[data-status="closed"] { --task-status-color: var(--offline); }
+.col .st-dot, .board-list .result .st-dot { background: var(--task-status-color); }
+/* 卡片**不带**左侧状态条（设计反馈：浅纸面上那条 3px 暗边读作阴影，压住了卡片本身）。
+   状态没有被藏起来：看板卡片的归属由**所在列 + 列头 `.st-dot` 与状态名**陈述，
+   列表行仍用行内 `.st-dot`。所以 `.card` 只保留四边等宽的 `--border`，
+   `--task-status-color` 表也不再作用于它（卡内没有状态点，无需该变量）。 */
 .card-unread { margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--unread); color: var(--on-accent); font-family: var(--mono); font-size: var(--fs-mono-xs); font-weight: var(--fw-black); text-align: center; }
 
 /* ─── dock 形态 B：任务线程（`.tt-*`，原型 726-790 行）──────────────────── */
