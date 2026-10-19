@@ -896,7 +896,6 @@ class AgentScopeAgentSeam:
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
         # 它是一个进程内的事实列表，只在 ``_round`` 的 loop 里被工具线程追加，不落库。
         silence_declarations: list[None] = []
-        member_id = str(agent["id"])
         member_names = {member_internal_name(member_id): member_id}
         reply_members: dict[str, str] = {}
 
