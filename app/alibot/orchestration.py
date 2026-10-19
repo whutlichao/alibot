@@ -454,11 +454,12 @@ class WakeOrchestrator:
         message = self._db.get_message(target_id, from_seq)
         if message["kind"] != "system":
             return 0
-        if self._team_config(target_id, target) is not None:
+        team = self._team_config(target_id, target)
+        if team is not None:
             return self._notify_team_task_assignee(
                 target_id,
                 from_seq,
-                self._team_config(target_id, target) or {},
+                team,
                 agent_jump=agent_jump,
                 actor_member_id=actor_member_id,
             )

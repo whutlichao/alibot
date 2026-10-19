@@ -49,20 +49,24 @@ FAILED ...::test_an_agent_authored_message_still_leaves_the_round_to_self_judgem
 9 failed in 0.52s
 ```
 
-**After**（实现后）：
+**After**（最终 head）：
 
 ```text
 $ cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
-9 passed in 0.46s
+10 passed in 0.52s                     # 第 10 条是 review 收口后补的在飞轮次边界用例
+
+$ git show origin/main:app/alibot/orchestration.py > app/alibot/orchestration.py  # 只回退实现、保留新用例
+$ cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
+10 failed in 3.47s                     # 10 条用例全部因本票要改的事实而红
 
 $ scripts/check.sh
-943 passed, 10 skipped in 501.32s (0:08:21)
+944 passed, 10 skipped in 536.15s (0:08:56)
 All checks passed!                    # ruff check
-235 files already formatted           # ruff format --check
+237 files already formatted           # ruff format --check
 Success: no issues found in 101 source files   # mypy（仓库根）
 0 errors, 0 warnings, 0 informations   # pyright
 ℹ tests 191 / pass 191 / fail 0        # node --test（Studio DOM，glob）
-门禁全绿                               # real 8m23.920s
+门禁全绿                               # real 550.69s，退出码 0
 ```
 
 判据 → 落点 → 命令 → 读数的完整表在 `app/specs/issue-189-acceptance.md`（含既有用例逐条更新说明，

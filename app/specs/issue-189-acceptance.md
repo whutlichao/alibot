@@ -62,8 +62,8 @@ human-message`。它同时回答「是否必答」（`.mandatory`）与「可读
 | team channel | `test_a_team_channel_human_message_is_a_mandatory_leader_round_with_human_wording` | 队长 `mandatory_reply is True`；成员 `calls_for(member) == []` |
 | task target | `test_an_owner_message_in_a_task_thread_makes_the_assignee_mandatory` | 改派轮 `False`（既有纪律），随后的人类消息轮 `True` |
 
-**命令**：`cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py -q`
-**读数**：`9 passed in 0.46s`
+**命令**：`cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py`
+**读数**：`10 passed in 0.52s`（最终 head；实现时这一轮是 9 条，第 10 条是 review 收口后补的边界用例，见 §5.1）
 
 ---
 
@@ -143,11 +143,27 @@ assert [False, False] == [True, False]        # 乙的人类消息轮当时不�
 AssertionError: 甲 也应必答
 ```
 
+**第 10 条用例（review 收口后补，不在上面那份 9 条的读数里）**：
+`test_a_human_message_merged_into_an_in_flight_round_does_not_retroactively_force_it` 是双轴 review 收口
+（`3ecaa22`）时补的**边界用例**——它锁的是 §10 登记的「同一 target 的在飞轮次不被后到的人类消息改判」，
+不是本票要实现的新行为，所以实现前的第一份红里没有它。它在**最终 head** 上同样是红的（把
+`app/alibot/orchestration.py` 回退到 `main`、只保留新用例）：
+
+```sh
+# 最终 head 上的红读数（第 10 条与上面 9 条同批）：
+git show origin/main:app/alibot/orchestration.py > app/alibot/orchestration.py
+cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
+# 10 failed in 3.47s        （协调者在自己的基线复现为 10 failed in 3.76s，条数与用例身份一致）
+```
+
+> 命令里**不要**再补 `-q`：`app/pyproject.toml` 的 `addopts` 已经是 `-q`，再补一次会变成 `-qq`，
+> pytest 连结尾的结果行一起吞掉（只剩 `FAILED` 明细，看不到 `N failed in ...s`）。
+
 ### 5.2 绿（实现后）
 
 ```sh
 cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
-# 9 passed in 0.46s
+# 最终 head（10 条用例，含 review 收口后补的第 10 条）：10 passed in 0.52s
 ```
 
 ### 5.3 既有用例按新纪律更新（逐条列出改了哪些断言与原因）
@@ -193,13 +209,16 @@ cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
 
 | 步骤 | 读数 |
 | --- | --- |
-| pytest（全量） | `944 passed, 10 skipped in 574.43s (0:09:34)` |
+| pytest（全量） | `944 passed, 10 skipped in 536.15s (0:08:56)` |
 | ruff check | `All checks passed!` |
-| ruff format --check | `235 files already formatted` |
+| ruff format --check | `237 files already formatted` |
 | mypy（仓库根） | `Success: no issues found in 101 source files` |
 | pyright | `0 errors, 0 warnings, 0 informations` |
 | node --test（Studio DOM，glob） | `tests 191 / pass 191 / fail 0` |
-| 总耗时 | `real 9m49.716s`（最终一轮：含 review 收口后的全量复跑） |
+| 总耗时 | `real 550.69s`（退出码 0） |
+
+**本行是本轮（补做 G-impl 三项必修之后）的最终读数**：`_notify_task_assignee` 恢复单次读取、ADR-0025 事实
+修正日期改回 `2026-10-19` 之后的全量复跑；行为零变化（读数与上一轮同为 `944 passed, 10 skipped`）。
 
 ---
 
@@ -222,7 +241,7 @@ pi-lens 在本轮反复报 4 条 blocking（`L233 / L1992 / L2027 / L2042`，`un
 | 这些文件里 `type: ignore` 的数量 | 均为 **0** |
 | `grep -c 'type: ignore' app/alibot/agent_seam.py` | `1`（只是文档串里提到这个词；**代码中 0 处**） |
 | 仓库配置 pyright（`node ~/.pi-lens/tools/node_modules/pyright/index.js app/alibot app/tests`） | `0 errors, 0 warnings, 0 informations` |
-| `ruff check app` / `ruff format --check app` | `All checks passed!` / `235 files already formatted` |
+| `ruff check app` / `ruff format --check app` | `All checks passed!` / `237 files already formatted`（本轮复跑读数） |
 | `lens_diagnostics(source=lsp, mode=full, scope=paths)` 扫四个改动文件 | 仅 15 条**既存** ast-grep 风格提示（`...` 协议体、`int()` 解析），无任何 `type: ignore` 条目 |
 | 工具自身汇总 | `18 files diagnosed this session / 8 blocking`，其中多条标注 `line past EOF` 与 `stale — re-run to confirm`；`current turn delta: no issues` |
 
