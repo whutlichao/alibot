@@ -839,6 +839,18 @@ class WakeOrchestrator:
             else:
                 task_context = self._task_action_context(target_id)
                 team_context = self._team_round_context(target_id, agent)
+                # 确定信号的可读文案按**信号来源**选（#179 / ADR-0025 §六）：认领轮与「team 队长被
+                # 任务变化唤醒」是两条**同级但不同源**的确定信号，纪律都是 `mandatory_reply`；
+                # team 频道不发生认领，把两者混用就会写下一条不存在的事实。
+                # 判据不读 `reason`（重复唤醒会被合并，原因见 docstring），也不新增第六种纪律——
+                # 这里只用「本轮是不是队长轮」这个既有的结构事实（`team_context`）挑文案。
+                leader_task_change = team_context is not None and mandatory_reply
+                if leader_task_change:
+                    silent_key, ignored_key = "reason.team_change_silent", "reason.team_change_ignored"
+                    no_body_key, round_key = "reason.team_change_no_body", "reason.team_change_round"
+                else:
+                    silent_key, ignored_key = "reason.claim_silent", "reason.claim_ignored"
+                    no_body_key, round_key = "reason.claim_no_body", "reason.claim_round"
 
                 # Plan 只在**任务 / team 轮次**自动可用（规格 §3.5）：频道与 DM 的自主轮次
                 # 既不装载也不回写。会话本身不写消息、不扣预算；事件仍走 #141 的公共发布入口。
@@ -882,9 +894,10 @@ class WakeOrchestrator:
                     if team_run_id is not None:
                         with suppress(Exception):
                             self._db.finish_team_run(team_run_id, team_status)
-                # rubric：**确定信号**有两条（被个人提及 / 被认领唤醒），两条**同级**、**同一套判据、同一处落点**。
-                # 认领那一侧用 ``mandatory_reply`` 判定（不读 reason：重复唤醒会被合并，原因见 run_round
-                # docstring）；提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把「它坏了」当成「它不想说」）。
+                # rubric：**确定信号**有三条（被个人提及 / 被认领唤醒 / team 队长被任务变化唤醒），
+                # 三条**同级**、**同一套判据、同一处落点**。后两条用 ``mandatory_reply`` 判定（不读 reason：
+                # 重复唤醒会被合并，原因见 run_round docstring），区别只在**可读文案**（`leader_task_change`）；
+                # 提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把「它坏了」当成「它不想说」）。
                 definite_signal = mentioned or mandatory_reply
                 # ``silent``（#58）与 ``ignored`` 在确定信号下**同级**处理：两者都是「它决定不说话」，
                 # 而不是「没被问」。CONTEXT.md 的**回应判断**词条明写这条纪律不因状态来源而放宽。
@@ -892,7 +905,7 @@ class WakeOrchestrator:
                     # 诊断文案按**哪个**确定信号 + **哪种**沉默选：认领轮不能写成「被个人提及」，
                     # 声明沉默也不能写成「自判忽略」（那是一个不存在的事实）。
                     if mandatory_reply:
-                        key = "reason.claim_silent" if outcome.status == "silent" else "reason.claim_ignored"
+                        key = silent_key if outcome.status == "silent" else ignored_key
                     elif outcome.status == "silent":
                         key = "reason.mention_silent"
                     else:
@@ -909,7 +922,7 @@ class WakeOrchestrator:
                     and not outcome.messages
                     and outcome.task_action is None
                 ):
-                    key = "reason.claim_no_body" if mandatory_reply else "reason.mention_no_body"
+                    key = no_body_key if mandatory_reply else "reason.mention_no_body"
                     outcome = RoundOutcome(
                         status="failed",
                         reason=render(key, self._locale()),
@@ -919,7 +932,7 @@ class WakeOrchestrator:
                     # 它只是诊断——纪律已由上面的布尔落定。
                     outcome = RoundOutcome(
                         status=outcome.status,
-                        reason=render("reason.claim_round", self._locale(), reason=outcome.reason),
+                        reason=render(round_key, self._locale(), reason=outcome.reason),
                         messages=outcome.messages,
                         started_at=outcome.started_at,
                         finished_at=outcome.finished_at,

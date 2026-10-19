@@ -1673,17 +1673,24 @@ def _system_prompt(
             if leader
             else "仅当前受派者可使用 transfer_task 工具转派给另一位 Agent。"
         )
-        options_label = (
-            "可用 TeamAssign 分派的成员："
-            if leader
-            else "可转派 Agent（工具参数 recipient_number 对应序号）："
-        )
-        parts.append(
+        # 队长**不是受派者**时：`transfer_task` 不在它手上，而 `TeamAssign` 的可选成员由**该工具自身的描述**
+        # 列出（`team.py` 从本轮成员快照生成）。这里**不再列一份**：`transfer_options_for()` 的来源是
+        # `Database.agent_members()`（**全工作区**），把它标成「可 TeamAssign 分派的成员」会把频道外的
+        # Agent 写成可分派对象——那是与事实不符的口径（#179 follow-up / ADR-0025 §四）。
+        # 任务动作的公共约束**只写一处**：两种身份（队长不受派 / 其它）只差末尾那段成员引导，
+        # 否则以后改动作约束还得同步两个分支（review Standards 轴的 Duplicated Code）。
+        action_rules = (
             "当前在任务线程中。需要改状态时使用 set_task_status 工具，不要只在正文中声称已改；"
             f"{transfer_sentence}每轮最多提交一个动作，"
-            f"动作最终是否成功以系统记录为准。{options_label}\n"
-            f"{option_names if option_names else '暂无其他 Agent'}"
+            "动作最终是否成功以系统记录为准。"
         )
+        if leader and task_context.assignee_member_id != str(agent.get("id") or ""):
+            parts.append(f"{action_rules}需要成员动手时用 TeamAssign，可选成员见该工具的描述。")
+        else:
+            parts.append(
+                f"{action_rules}可转派 Agent（工具参数 recipient_number 对应序号）：\n"
+                f"{option_names if option_names else '暂无其他 Agent'}"
+            )
     return "\n\n".join(parts)
 
 

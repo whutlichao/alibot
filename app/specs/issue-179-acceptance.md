@@ -197,6 +197,79 @@ tests/test_team_task_threads.py:207: AssertionError
 
 | 项 | 状态 |
 | --- | --- |
-| 队长轮次的 `round_outcome.reason` 仍复用 `mandatory_reply` 的可读后缀，因此会写出「本轮由**认领**唤醒（…）」——team 频道不发生认领，这是**措辞缺口** | **未修**：修它要新增 i18n 词条（`app/alibot/i18n.py`，zh + en 两份），超出本票 Target 文件清单；已用 `orchestration ask` 上报待裁定（消息 `msg_4efbb5b3ce1a` 两次等待均未获回复），未擅自扩 scope。ADR-0025 §6 登记了这条代价 |
-| pi-lens 自带 mypy（2.4.0）报若干 `[unused-ignore]` | **不是本票引入**：`git diff c606b4a..HEAD` 新增 `type: ignore` 数为 **0**；在 `git archive HEAD`（即 `main`）的纯净副本上同一把 mypy 给出**完全相同**的 11 条（含本票从未触碰的 `app/alibot/workspace.py:227`、`app/tests/test_plan.py:246`）；删掉其中一条会让**仓库门禁 mypy** 报真错（`arg-type`）。根源：pi-lens 的 mypy 工具 `resolvedCwd` 是 `<worktree>/app`，而 `docs/agents/implementation.md` 要求 mypy **从仓库根跑**（`mypy.ini` 在根、含 `warn_unused_ignores = True`）。以 `scripts/check.sh` 为准：`Success: no issues found in 92 source files` |
-| pi-lens 报的「测试分层」类若干条（`scripted.py` 导入 `_system_prompt`、`test_team_task_threads` 导入 `tests.test_team_budget` 的私有助手、用例读 `leader_model.seen[...]`） | **不是本票引入 / 是仓库既有体例**：前两条在基线 `c606b4a` 里逐字存在（`scripted.py:17,216`、`test_team_task_threads.py:39`）；读 `.seen[...]` 与 `test_team_budget.py:267` 的既有取证同源，而 `docs/agents/implementation.md` 明确「票面要求核实某项能力时…才允许在既有用例族里加进程内 stub，并在验收文档里写明理由」——本票要求的正是 prompt 注入（没有 HTTP 观测面），理由见 §4。机械守卫 `test_test_layering_guard.py` 只禁 **从 `alibot.*` 导入 `_` 开头的名字**（`tests.*` 不在判据内），且它在门禁里是绿的 |
+| 队长轮次的 `round_outcome.reason` 曾写出「本轮由**认领**唤醒（…）」——team 频道不发生认领 | **已修**（用户 2026-10-19 裁定 A，允许本票纳入 `app/alibot/i18n.py`）：新增 `reason.team_change_round` / `_ignored` / `_silent` / `_no_body` 四条（zh + en），`run_round` 按「本轮是不是队长轮」选文案；认领轮仍用 `reason.claim_*`（autonomous 读数逐字不变）。落点与读数见 §10.1 |
+| pi-lens 自带 mypy（2.4.0）报若干 `[unused-ignore]`，**同时**报这些行里的 `arg-type` 错误 | **不是本票引入，且该诊断自相矛盾**：同一批行既被说「`type: ignore` 多余」、又被说「这里有个被它抑制的 `arg-type`」——只可能来自两套不一致的环境。根因：pi-lens 的 mypy 解释器**没装 `agentscope`**（`~/.pi-lens/pip-tools/bin/python -c "import agentscope"` → `ModuleNotFoundError`，于是类型全变 `Any` ⇒ ignore 显得多余），而 `resolvedCwd` 又是 `<worktree>/app`（`docs/agents/implementation.md` 要求 mypy **从仓库根跑**）。仓库门禁跑在 `.venv`（agentscope 2.0.10）：`Success: no issues found in 92 source files`；删掉其中一条 ignore 会让仓库门禁**真红**（实测 `arg-type`）。`git diff c606b4a..HEAD` 新增 `type: ignore` 数为 **0**，且基线 `main` 上就是同样的 11 条。以 `scripts/check.sh` 为准 |
+| pi-lens 报的「测试分层」类若干条（`scripted.py` 导入 `_system_prompt`、`test_team_task_threads` 导入 `tests.test_team_budget` 的私有助手、用例读 `leader_model.seen[...]`、以及「用例用替身而不是真 pipeline」） | **不是本票引入 / 是仓库既有体例**：前两条在基线 `c606b4a` 里逐字存在（`scripted.py:17,216`、`test_team_task_threads.py:39`）；读 `.seen[...]` 与 `test_team_budget.py:267` 的既有取证同源，而 `docs/agents/implementation.md` 明确「票面要求核实某项能力时…才允许在既有用例族里加进程内 stub，并在验收文档里写明理由」——本票要求的正是 prompt 注入（没有 HTTP 观测面），理由见 §4。机械守卫 `test_test_layering_guard.py` 只禁 **从 `alibot.*` 导入 `_` 开头的名字**（`tests.*` 不在判据内），且它在门禁里是绿的 |
+
+## 10. Follow-up（#179 追加项 ①②，coordinator 复核后确认）
+
+### 10.1 ① 队长轮次的 reason 文案：不再写「认领」
+
+**判据**：队长被任务变化唤醒的轮次里，`round_outcome.reason` **不含**「认领」、含「任务变化」；认领轮
+（autonomous）的文案**逐字不变**；新词条同时存在于两份词表（`test_backend_copy` 的键集/参数守卫与
+`i18n_ui.test.cjs` 绿）。
+
+**落点**：
+
+- `app/alibot/i18n.py`：zh / en **各 4 条**——`reason.team_change_round` / `_ignored` / `_silent` / `_no_body`
+  （参数与认领那套一一对应，`{reason}` 出现在 round/ignored/silent 三条里）。
+- `app/alibot/orchestration.py::run_round`：在确定信号收口前算一个**结构事实** `leader_task_change =
+  team_context is not None and mandatory_reply`，据此选文案键（`reason.team_change_*` 或既有的
+  `reason.claim_*`）。判据**不读 `reason` 文本**，纪律标记仍是同一个 `mandatory_reply`——没有新增第六种纪律语义。
+- `docs/adr/0025-*.md` §六：把原来登记为「措辞缺口（未修）」的那条改成「已解决 + 落点」。
+
+| 命令 | 读数 |
+| --- | --- |
+| `pytest tests/test_team_task_threads.py -k "silent_leader or ignored_leader"` | `2 passed`；两条都断言 `"任务变化" in reason` 且 `"认领" not in reason` |
+| `pytest tests/test_auto_claim.py` | 认领轮文案断言（`本轮由认领唤醒，你必须回应。` / `reason.claim_round` 后缀）仍绿 |
+| `pytest tests/test_backend_copy.py` | 两份词表同键集、同参数、各自取本地化取值，绿 |
+| `node --test app/tests/i18n_ui.test.cjs` | `pass 53 / fail 0` |
+
+**红 → 绿**（改实现前，两条新断言直接指出现状）：
+
+```text
+>       assert "任务变化" in outcomes[0]["reason"]
+E       AssertionError: assert '任务变化' in '认领唤醒是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：…）；本轮由**认领**唤醒（…）'
+3 failed, 13 deselected
+```
+
+改后：`3 passed, 13 deselected`。
+
+### 10.2 ② 队长 prompt 的成员清单口径：不把「全工作区」当成 `TeamAssign` 可选项
+
+**判据**：频道外存在另一个 Agent 时，队长（**不是**受派者）的 prompt 里不得把它列为可分派对象；
+`TeamAssign` 指引仍在。
+
+**落点**（选 a，理由见 ADR-0025 §四）：`app/alibot/agent_seam.py::_system_prompt` 的 `task_context` 段——
+队长**不是受派者**时不再输出 `可转派 Agent（…）` 那份名单（它的来源 `transfer_options_for()` 是
+`Database.agent_members()`，**全工作区**），改为「需要成员动手时用 TeamAssign，可选成员见该工具的描述」；
+`TeamAssign` 的可选成员正本只有一个——`team.py` 从本轮 `TeamRoundContext.members`（该频道可用成员）生成的
+工具描述。队长**就是受派者**时保留原来那份 `transfer_task` 名单（那份的来源与工具授权一致）。
+
+| 命令 | 读数 |
+| --- | --- |
+| `pytest tests/test_team_task_threads.py -k does_not_list_workspace_agents` | `1 passed`：`频道外成员` 不在 prompt、`可转派 Agent` 不在 prompt、`TeamAssign` 在 prompt |
+| `pytest tests/test_team_task_threads.py -k team_assign_in_a_task_thread` | 真实适配器用例仍绿（队长 prompt 仍含队长身份 / `TeamAssign` / `transfer_task` 事实句） |
+
+**红 → 绿**（改实现前）：
+
+```text
+>       assert outsider["display_name"] not in prompt, "频道外的 Agent 不是 TeamAssign 的可选项"
+E       AssertionError: 频道外的 Agent 不是 TeamAssign 的可选项
+E       assert '频道外成员' not in '…\n1. 频道成员\n2. 频道外成员'
+```
+
+### 10.3 本轮增量的双轴 review 与处置
+
+固定点 `147e5b0`（上一轮 head），两个子代理并行只读审查 `147e5b0...HEAD`（单提交）。
+
+| 轴 | finding | 处置 |
+| --- | --- | --- |
+| Standards | 无硬违规；一处判断项：`agent_seam.py` 的两个分支重复了任务动作的公共提示（Duplicated Code，改动作约束要同步两处） | **已改**：抽出公共前缀 `action_rules`，两个分支只差末尾那段成员 / 转派引导；非队长输出逐字不变（`test_auto_claim.py` 的频道轮次断言仍绿） |
+| Spec | P2：`reason.team_change_no_body` 那条分支没有独立覆盖（只有 `silent` 与 `ignored` 两条） | **已补**：`test_a_body_less_leader_reply_on_a_task_change_round_uses_the_task_change_wording`（`EMPTY_REPLY` ⇒ `failed` 且 reason 含「任务变化」「没有产出可落库的正文」、不含「认领」） |
+| Spec | P3：`CONTEXT.md` 的改动不在本次 follow-up 的 Target 清单里 | **保留并说明**：改的是上一轮票面 D 项就要求同步的**同一个词条**（**回应判断**），本轮只把新增的文案口径补进那一段（不新增词条、不动其它段落）；不同步会让领域语言正本与 `reason.*` 的取值分叉（review-rules 第 6 条） |
+
+**本轮 follow-up 的全量门禁读数**（`bash scripts/check.sh`，退出码 **0**）：`857 passed, 10 skipped in 358.73s`
+（本机 OrbStack 守护进程收尾时已停，8 条 docker 用例 skip；`ruff check` `All checks passed!`、
+`ruff format --check` `218 files already formatted`、`mypy` `Success: no issues found in 92 source files`、
+`pyright` `0 errors, 0 warnings, 0 informations`、`node --test` `180 pass`、末行 `门禁全绿`）。

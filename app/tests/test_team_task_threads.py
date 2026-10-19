@@ -37,7 +37,7 @@ from tests.conftest import (
     create_channel,
     drain,
 )
-from tests.scripted import ACTION_ONLY, SILENT
+from tests.scripted import ACTION_ONLY, EMPTY_REPLY, IGNORE, SILENT
 from tests.test_team_budget import _BudgetSeam, _ScriptedModel, _text, _tool_calls
 
 
@@ -288,6 +288,75 @@ def test_a_silent_leader_on_a_task_change_round_is_recorded_as_failed(
     assert outcomes[0]["member_id"] == leader["id"]
     # 沉默在确定信号下的收口不是「它不想说」：诊断不能把它写成认领（team 频道不认领）。
     assert "沉默" in outcomes[0]["reason"]
+    # 新词条（ADR-0025 §六）：写「任务变化」，不得写「认领」——后者是一件在 team 频道没发生过的事。
+    assert "任务变化" in outcomes[0]["reason"]
+    assert "认领" not in outcomes[0]["reason"]
+
+
+def test_an_ignored_leader_on_a_reassignment_round_uses_the_task_change_wording(
+    client: TestClient, harness: dict
+) -> None:
+    """改派轮也是「队长被任务变化唤醒」：自判忽略按 `failed` 收口，且文案不牵连认领。"""
+    leader = create_agent(client, name="队长").json()["agent"]
+    member = create_agent(client, name="成员").json()["agent"]
+    channel = _make_team(client, leader["id"], member["id"])
+    task = _create_task(client, channel["id"], title="改派沉默")
+    drain(harness)  # 建任务那一轮（#179 A）正常回应
+
+    harness["seam"].behaviors[leader["id"]] = IGNORE
+    assert (
+        client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": member["id"]}).status_code == 200
+    )
+    drain(harness)
+
+    outcome = _db(client).list_round_outcomes(task["target_id"])[-1]
+    assert outcome["status"] == "failed"
+    assert "任务变化" in outcome["reason"]
+    assert "认领" not in outcome["reason"]
+
+
+def test_a_body_less_leader_reply_on_a_task_change_round_uses_the_task_change_wording(
+    client: TestClient, harness: dict
+) -> None:
+    """`replied` 但无正文、无任务动作 ⇒ `failed`，且用 `reason.team_change_no_body` 而不是认领那一条。"""
+    leader = create_agent(client, name="队长").json()["agent"]
+    member = create_agent(client, name="成员").json()["agent"]
+    channel = _make_team(client, leader["id"], member["id"])
+    harness["seam"].behaviors[leader["id"]] = EMPTY_REPLY
+
+    task = _create_task(client, channel["id"], title="队长空回")
+    drain(harness)
+
+    outcomes = _db(client).list_round_outcomes(task["target_id"])
+    assert [outcome["status"] for outcome in outcomes] == ["failed"]
+    reason = outcomes[0]["reason"]
+    assert "任务变化" in reason
+    assert "没有产出可落库的正文" in reason, "落的是 reason.team_change_no_body"
+    assert "认领" not in reason
+
+
+def test_the_team_leader_prompt_does_not_list_workspace_agents_as_team_assign_options(
+    client: TestClient, harness: dict
+) -> None:
+    """队长不是受派者时，prompt 不能把**全工作区**的 Agent 列成「可 TeamAssign 分派的成员」。
+
+    `TeamAssign` 的可选成员由该工具自身的描述给出（本轮成员快照），而任务上下文里的
+    `transfer_options_for()` 来源是 `Database.agent_members()`（全工作区）——两者不是同一份名单，
+    在 prompt 里再列一份就会把频道外的 Agent 写成可分派对象（ADR-0025 §四）。
+    """
+    leader = create_agent(client, name="队长").json()["agent"]
+    member = create_agent(client, name="频道成员").json()["agent"]
+    outsider = create_agent(client, name="频道外成员").json()["agent"]
+    channel = _make_team(client, leader["id"], member["id"])
+
+    task = _create_task(client, channel["id"], title="成员清单口径")
+    drain(harness)
+
+    assert _task(client, task["id"])["assignee_member_id"] is None, "队长这一轮不是受派者"
+    prompt = harness["seam"].calls_for(leader["id"])[0]["prompt"]
+    assert outsider["display_name"] not in prompt, "频道外的 Agent 不是 TeamAssign 的可选项"
+    assert "可转派 Agent" not in prompt, "队长不是受派者时没有 transfer_task 的可选项清单"
+    assert "TeamAssign" in prompt, "分派指引仍在（可选成员见工具描述）"
 
 
 # ─── 五态：owner HTTP + 队长轮次结构化工具 ──────────────────────────────
