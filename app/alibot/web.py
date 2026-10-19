@@ -295,8 +295,8 @@ def _transport_error(reason: Any, timeout_seconds: float) -> WebTransportError:
 def url_host(value: str) -> str | None:
     """从 URL 或裸 host 里取出**归一化**的 host；取不出时返回 ``None``。
 
-    归一化 = 小写、去掉 userinfo / 端口 / 路径 / query / fragment（``urlsplit().hostname`` 本身
-    就做这三件事）。这条归一化有两处消费点，**只有这一份实现**：
+    归一化 = 小写、去掉 userinfo / 端口 / 路径 / query / fragment（``urlsplit().hostname`` 已经
+    把这几项做掉）。这条归一化有两处消费点，**只有这一份实现**：
 
     - ``permissions._matched_pattern`` 把 ``permission_rule`` 的 pattern 收成 host（规则侧）；
     - :class:`FetchTool` 把工具输入里的 URL 收成 host（输入侧）。
@@ -304,8 +304,8 @@ def url_host(value: str) -> str | None:
     #187 的容器出网白名单读同一批 ``permission_rule`` 的 pattern，必须复用本函数而不是另写一份
     （D3：host 提取单一实现）。
 
-    刻意**不**支持通配符：``*.example.com`` 不是一个 host，归一出 ``None`` 之外的字符串时也不会
-    匹配任何输入——「一个坏 pattern 变成匹配一切」比「它什么都不匹配」危险得多。
+    刻意**不**支持通配符：``*.example.com`` 不是一个 host，归一后仍是它自己，于是既不等于任何
+    输入 host、也不会变成「匹配一切」——一个坏 pattern 应当什么都不匹配，而不是允许全部调用。
     """
     target = (value or "").strip()
     if not target:
