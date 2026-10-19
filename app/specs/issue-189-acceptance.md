@@ -193,13 +193,13 @@ cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
 
 | 步骤 | 读数 |
 | --- | --- |
-| pytest（全量） | `943 passed, 10 skipped in 501.32s (0:08:21)` |
+| pytest（全量） | `944 passed, 10 skipped in 574.43s (0:09:34)` |
 | ruff check | `All checks passed!` |
 | ruff format --check | `235 files already formatted` |
 | mypy（仓库根） | `Success: no issues found in 101 source files` |
 | pyright | `0 errors, 0 warnings, 0 informations` |
 | node --test（Studio DOM，glob） | `tests 191 / pass 191 / fail 0` |
-| 总耗时 | `real 8m23.920s`（首轮含 format 修正前）；修 format 后 `scripts/check.sh --fast` 全绿 |
+| 总耗时 | `real 9m49.716s`（最终一轮：含 review 收口后的全量复跑） |
 
 ---
 
@@ -231,3 +231,44 @@ pi-lens 在本轮反复报 4 条 blocking（`L233 / L1992 / L2027 / L2042`，`un
 只声明返回 `ToolChunk`）。本票把这三处收口成一个 `_value_returning_tool()`（形参 `Callable[..., Any]`、
 返回处局部注解 `ToolBase`），于是既不需要 `# type: ignore`，也不需要 `cast`——`ruff` / `mypy`
 (`warn_unused_ignores`, `warn_redundant_casts` 均开) / `pyright` 三种检查器同时干净。
+
+---
+
+## 10. 已知边界：同 target 的「在飞轮次」合并不改判（Spec 轴 review P1）
+
+**纪律只在投递时定下**。若某成员此刻**正在跑一轮**（由 Agent 消息触发、非必答），owner 的人类消息在这之后
+到达，按既有的 Q4=A 合并语义（同 target 重复唤醒**不排队、不重放**，收口时合成一条 `merged`），那条人类消息
+**不会**把已经在跑的那一轮改判成必答。可观察后果（用例已锁定）：
+
+| 观察点 | 读数 |
+| --- | --- |
+| 在飞那一轮的 `signal` / `mandatory_reply` | `NONE` / `False`（投递时的值） |
+| 那一轮的 `round_outcome.status` | 不是 `failed`，reason 不含「确定信号」 |
+| 人类消息是否丢失 | **不丢**：`merged` 记录存在，且它仍在本轮消费游标之后，下一次唤醒会一并读到（下一轮的 `bodies` 里可见） |
+
+**用例**：`app/tests/test_mandatory_reply.py::test_a_human_message_merged_into_an_in_flight_round_does_not_retroactively_force_it`
+（构造用既有的 `DELAY` 闸门 + 两次 `drain`，不猜时序）。
+
+**为什么本票不改它**：这条暴露面与**认领轮**完全相同（ADR-0016 五 的合并语义、Q4=A 的裁定）；要让合并继承纪律，
+必须改「一轮 ↔ 一条记录」的收口路径（在飞轮次的文案键在轮次开始时就已算好）。那属于合并语义的重新裁决，
+不在本票授权范围，因此按 `docs/agents/review-rules.md` 第 5 条（失效方向可放松的判据要写明）登记为**已知边界**，
+并留一条用例防止它变成"以为是继承"的误读。
+
+---
+
+## 11. 双轴 code-review 的结论与处置
+
+**Standards 轴**（结论 BLOCK，仅因一处误编辑）：P1 = `notify` 的 docstring 被我的一次编辑包成了丢弃表达式
+（`( """…""" "" )`）。已修（恢复成正常 docstring，行为不变）。P2 四条：
+① `CONTEXT.md` 错字 `tteam` → 已修；② `_DIRECT_MESSAGE_RUBRIC` 抄了 `_CHANNEL_RUBRIC` 的尾段 → 抽成
+`_SILENCE_RUBRIC_TAIL` 共用（频道提示词**逐字不变**）；③ 两处 8 个位置参数的 `submit(self.run_round, …)` →
+收成唯一落点 `_dispatch(...)`（标志位改关键字传参，本票落地时真的漏传过一处）；④ `i18n.py` 里仍写「布尔
+`mandatory_reply`」的旧注释 → 改成 `ReplySignal`。
+**判断下来不改的两条**：`signal` + `direct_message` 收成 `RoundContext`（它们是两个独立轴：为什么必答 / 会话形状；
+且 seam 的签名本来就是扁平关键字 API）；同一枚举在提示词拼装、文案前缀、合并优先级三处被回答（已把后两者
+收进枚举自身：`copy_prefix` 属性 + 声明顺序即优先级，只剩提示词那一处级联）。
+
+**Spec 轴**（结论 OK with notes）：P1 = §10 的在飞合并边界（已登记 + 用例）；P2 = `_value_returning_tool`
+（收紧三处 `# type: ignore`）票面未要求、验收文档 §9 与本票实现无关 → **保留**并在本文件 §9 说明理由：
+它就在本票 Target 文件内、行为零变化，且是本机三种检查器（ruff / mypy 开 `warn_unused_ignores` /
+pyright）口径一致的前提；§9 是本票的**环境取证**，留着避免下一个人重复追同一轮伪影。

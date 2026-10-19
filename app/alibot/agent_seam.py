@@ -82,22 +82,31 @@ class ReplySignal(StrEnum):
         """这一轮是否必须回应（确定信号）。"""
         return self is not ReplySignal.NONE
 
+    @property
+    def copy_prefix(self) -> str | None:
+        """该来源那组可读文案的前缀：``reason.<prefix>_silent | _ignored | _no_body | _round``。
+
+        ``NONE`` 与 ``MENTION`` 没有自己那组：没有确定信号时用「被个人提及」那一对；被点名时沿用 #57 以来
+        既有的一句（不另加后缀）。元数据只挂在这里一处——加新一类信号时不用再去另一个模块改映射表。
+        """
+        return _COPY_PREFIX.get(self)
+
     def merged_with(self, other: ReplySignal) -> ReplySignal:
-        """同一成员被重复唤醒时的合并：任一方强制 ⇒ 强制，来源按**固定优先级**取。
+        """同一成员被重复唤醒时的合并：任一方强制 ⇒ 强制，来源取**声明顺序**较后的那个。
 
         纪律的推理与既有那几条「取或」合并相同（合并**不削弱**判据）。来源也必须是确定的：
-        否则同一对唤醒换个到达顺序就会写出两种诊断。
+        否则同一对唤醒换个到达顺序就会写出两种诊断。优先级就是枚举的声明顺序
+        （``NONE < MENTION < CLAIM < TEAM_TASK_CHANGE < HUMAN_MESSAGE``），因此不需要第二张表。
         """
-        return other if _REPLY_SIGNAL_RANK[other] > _REPLY_SIGNAL_RANK[self] else self
+        order = list(ReplySignal)
+        return other if order.index(other) > order.index(self) else self
 
 
-# 合并时取哪个来源的优先级。人类消息最高（最直接的对话），其次任务变化、认领，最后是被点名。
-_REPLY_SIGNAL_RANK: dict[ReplySignal, int] = {
-    ReplySignal.NONE: 0,
-    ReplySignal.MENTION: 1,
-    ReplySignal.CLAIM: 2,
-    ReplySignal.TEAM_TASK_CHANGE: 3,
-    ReplySignal.HUMAN_MESSAGE: 4,
+# 确定信号 → 那组文案的前缀。人类消息最高（最直接的对话），也是声明顺序的末位。
+_COPY_PREFIX: dict[ReplySignal, str] = {
+    ReplySignal.CLAIM: "claim",
+    ReplySignal.TEAM_TASK_CHANGE: "team_change",
+    ReplySignal.HUMAN_MESSAGE: "human_message",
 }
 
 
@@ -1742,26 +1751,28 @@ async def _aclose_model_client(model: Any) -> None:
         return
 
 
-# #57 / D5 的定稿 rubric（channel 轮）：**沉默 = 这一轮不产出正文**。这段文本**逐字不变**——
-# `test_the_silence_rubric_*` 以它为判据，而它刻意恰好是**一段**（只写一半，模型就没有依据判断
-# 这一轮该不该说话）。人类消息的必答句（#189）因此是**另起一段**，不并进这里。
-_CHANNEL_RUBRIC = (
-    "回应纪律：被个人提及（@你的名字）时必须回应，而且正文要有实质内容；"
-    "话题明确与你无关、或你没有被点名时，正常的做法是保持沉默——"
+# #57 / D5 那条 rubric 的**尾段**：沉默是什么，以及它的反面（括注 / 旁白 / 说明 / 道歉都仍是正文）。
+# 频道与私聊共用它——「沉默的含义」不因会话形状而变，变的只是「什么时候允许沉默」。
+_SILENCE_RUBRIC_TAIL = (
     "沉默指的是这一轮不产出正文，什么都不写，也不用括注、旁白、说明或道歉去交代"
     "「本轮消息与我无关」：那仍然是一条正文，属于说了等于没说；"
     "其余情况有话要说就直接写成正文，不要把要说的话整体包在括注里。"
 )
 
+# #57 / D5 的定稿 rubric（channel 轮）：**沉默 = 这一轮不产出正文**。这段文本**逐字不变**——
+# `test_the_silence_rubric_*` 以它为判据，而它刻意恰好是**一段**（只写一半，模型就没有依据判断
+# 这一轮该不该说话）。人类消息的必答句（#189）因此是**另起一段**，不并进这里。
+_CHANNEL_RUBRIC = (
+    "回应纪律：被个人提及（@你的名字）时必须回应，而且正文要有实质内容；"
+    "话题明确与你无关、或你没有被点名时，正常的做法是保持沉默——" + _SILENCE_RUBRIC_TAIL
+)
+
 # 私聊的 rubric（#189）：一对一没有「频道里没点我」这回事，因此不再给「未被点名可以沉默」的边界——
-# 把它搬进私聊就是给模型一个合法的沉默出口（issue #189 的机制定位）。沉默的**反面**照旧逐个点名，
-# 那是 #57 的实质（沉默不能用一条旁白冒充）。
+# 把它搬进私聊就是给模型一个合法的沉默出口（issue #189 的机制定位）。尾段与频道共用（见上）。
 _DIRECT_MESSAGE_RUBRIC = (
     "你是这个私聊里唯一的 Agent，正在和人类一对一对话：这里没有其他协作者，"
     "收到的每一句都来自人类本人。回应纪律：人类对你说话时必须回应，而且正文要有实质内容；"
-    "沉默指的是这一轮不产出正文，什么都不写，也不用括注、旁白、说明或道歉去交代"
-    "「本轮消息与我无关」：那仍然是一条正文，属于说了等于没说；"
-    "其余情况有话要说就直接写成正文，不要把要说的话整体包在括注里。"
+    + _SILENCE_RUBRIC_TAIL
 )
 
 

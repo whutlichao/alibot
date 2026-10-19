@@ -146,10 +146,10 @@ CATALOGS: dict[str, dict[str, str]] = {
             "认领唤醒是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
         ),
         # 认领轮的可读后缀（ADR-0016 五）：照 `reason.pierced_suffix` 的先例追加进 reason 文本。
-        # `reason` 只承担可读诊断，**不**承担纪律判据（那是进程内布尔 `mandatory_reply` 的事）。
+        # `reason` 只承担可读诊断，**不**承担纪律判据（那是进程内枚举 `ReplySignal` 的事）。
         "reason.claim_round": "{reason}；本轮由**认领**唤醒（编排把这张任务交给你，你必须回应）",
         # 队长的「任务变化」唤醒（#179 / ADR-0025 §六）：建任务 / 改派 / 转派把 team 队长叫醒的那一轮。
-        # 它与认领轮**同级**（都是确定信号、同一个 `mandatory_reply`），但与认领**不同源**——
+        # 它与认领轮**同级**（都是确定信号、同一个 `ReplySignal` 判据），但与认领**不同源**——
         # team 频道不发生认领，复用 `reason.claim_*` 会写下一条不存在的事实。因此四条词条与认领那套并列，
         # 用词是「任务变化」而不是「认领」。
         "reason.team_change_ignored": (
@@ -541,7 +541,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         # A team leader's **task change** wake (#179 / ADR-0025 §六): creation / reassignment /
         # transfer called the leader. Same rank as a claim wake (both are definite signals carried by
-        # `mandatory_reply`) but a **different source**: team channels never claim, so reusing the
+        # `ReplySignal`) but a **different source**: team channels never claim, so reusing the
         # `reason.claim_*` wording would state a fact that never happened.
         "reason.team_change_ignored": (
             "A team-leader task-change wake is a definite signal and must be answered; this round "

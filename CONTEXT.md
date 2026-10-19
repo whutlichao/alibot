@@ -138,7 +138,7 @@ Agent 转派），那一轮 `mandatory_reply=True`。它与前两类同级、同
 「人类直接对你说话」——因此可读文案是 `reason.human_message_*`（「人类消息是确定信号，必须回应」），
 **不得**复用「任务变化」「认领」或「被个人提及」：那三种都会写下一条没发生过的事实。四个面都适用：
 DM（owner 的每条消息 → 唯一 Agent 必答）、autonomous 频道（owner 的每条消息 → 该 target 的每个 Agent 成员必答）、
-tteam 频道的 channel target（owner 的每条消息 → 队长必答）、task target（owner 在任务线程发言 → 受派者必答，
+team 频道的 channel target（owner 的每条消息 → 队长必答）、task target（owner 在任务线程发言 → 受派者必答，
 team 任务线程按既有裁决走队长）。**它不改唤醒面、不扣跳、不改未读口径、不改消息 kind，也不改非人类作者
 （Agent / system）的纪律**：Agent 作者的消息仍按相关性自判，team 里队长自己的回复仍零唤醒。DM 的 system
 prompt 因而不再说「多成员频道」与「未被点名时可以沉默」，而是**一对一**口径 + 一句显式必答句；

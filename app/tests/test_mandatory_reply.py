@@ -29,8 +29,9 @@ from tests.conftest import (
     messages,
     outcomes,
     send,
+    send_agent_message,
 )
-from tests.scripted import EMPTY_REPLY, IGNORE, REPLY, SILENT
+from tests.scripted import DELAY, EMPTY_REPLY, IGNORE, REPLY, SILENT
 
 
 def _db(client: TestClient) -> Any:
@@ -259,3 +260,66 @@ def test_an_agent_authored_message_still_leaves_the_round_to_self_judgement(
     )
     assert "确定信号" not in records[1]["reason"]
     assert [message["kind"] for message in messages(client, channel["id"])].count("agent") == 1
+
+
+# ─── 已知边界：同 target 的「在飞轮次」合并不改判 ────────────────────────
+def test_a_human_message_merged_into_an_in_flight_round_does_not_retroactively_force_it(
+    client: TestClient, harness: dict
+) -> None:
+    """**已知边界**（本票不改合并语义）：纪律只在**投递时**定下。
+
+    某成员此刻正在跑一轮（由 Agent 消息触发 ⇒ 非必答），owner 的人类消息在这之后到达——按既有的
+    Q4=A 合并语义（同 target 重复唤醒不排队、不重放，收口时合成一条 `merged`），那条人类消息**不会**
+    把已经在跑的那一轮改判成必答。可观察后果：
+
+    - 在飞那一轮的记录仍是 `ignored`（非必答），reason 不含「确定信号」；
+    - 人类消息**没被吞掉**：它仍在消费游标之后，下一次唤醒会把它一并读到（下一轮的 `bodies` 里能看到）。
+
+    这条暴露面与认领轮相同（ADR-0016 五 的合并语义、Q4=A），验收文档 §10 有登记；本用例锁定现状，
+    防止「以为合并会继承纪律」的误读。
+    """
+    import threading
+    import time
+
+    quiet = create_agent(client, name="乙").json()["agent"]
+    speaker = create_agent(client, name="甲").json()["agent"]
+    harness["seam"].behaviors = {quiet["id"]: DELAY}
+    channel = create_channel(client, member_ids=[quiet["id"], speaker["id"]]).json()["channel"]
+
+    # 第一轮：Agent 作者的消息（非必答），停在闸门上 ⇒ 该成员持续 in-flight。
+    harness["seam"].block()
+    send_agent_message(client, channel["id"], speaker["id"], "甲：先说一句")
+    runner = threading.Thread(target=harness["scheduler"].drain)
+    runner.start()
+    try:
+        for _ in range(200):
+            if harness["seam"].calls_for(quiet["id"]):
+                break
+            time.sleep(0.01)
+        assert harness["seam"].calls_for(quiet["id"]), "第一轮没有进入 in-flight"
+
+        # owner 的人类消息在 in-flight 窗口里到达 ⇒ 被合并进那一轮（不重放、不排队）。
+        assert send(client, channel["id"], "人类：这件也看下").status_code == 201
+        harness["scheduler"].drain(limit=1)  # 这一轮直接命中 in-flight ⇒ 合成 merged、不进适配层
+    finally:
+        harness["seam"].release()
+        runner.join(timeout=10)
+    assert not runner.is_alive()
+
+    # 在飞那一轮拿到的是**投递时**的纪律（非必答）：替身的记录与轮次结果都这么说。
+    assert harness["seam"].calls_for(quiet["id"])[0]["mandatory_reply"] is False
+    records = outcomes(client, channel["id"])
+    first_round = next(
+        record for record in records if record["member_id"] == quiet["id"] and record["status"] != "merged"
+    )
+    assert first_round["status"] != "failed", "非必答轮不该被纪律改判"
+    assert "确定信号" not in first_round["reason"]
+    assert any(record["status"] == "merged" for record in records), (
+        "人类消息被合并进在飞轮次 ⇒ 留一条 merged 记录"
+    )
+
+    # 没被吞掉：下一次唤醒会把它一并读到。
+    send_agent_message(client, channel["id"], speaker["id"], "甲：再说一句")
+    drain(harness)
+    bodies = harness["seam"].calls_for(quiet["id"])[-1]["bodies"]
+    assert "人类：这件也看下" in bodies, "被合并的人类消息仍在游标之后，不会丢"
