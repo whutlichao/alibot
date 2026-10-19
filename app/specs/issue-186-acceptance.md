@@ -161,7 +161,24 @@ $ git diff e8ec2cc -- app/alibot | grep -nE "SCHEMA_VERSION|target_budget|--netw
 
 ## 3. 门禁读数（全量 `scripts/check.sh`）
 
-待填（收尾跑一次后补）。
+```sh
+unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1
+scripts/check.sh
+```
+
+| 步骤 | 读数 |
+| --- | --- |
+| pytest（全量，从 `app/`） | `912 passed, 10 skipped in 375.58s` |
+| ruff check | `All checks passed!` |
+| ruff format **--check**（只检查，**不跑 `ruff format`**） | `230 files already formatted` |
+| mypy（仓库根） | `Success: no issues found in 97 source files` |
+| pyright | `0 errors, 0 warnings, 0 informations` |
+| node --test（Studio DOM 用例族 glob） | `tests 191 / pass 191 / fail 0` |
+| 结论 | `门禁全绿` |
+
+> 本次全量门禁由**协调者**在本票最后一次提交（`80c6274`）之后、于 `issue-186-impl` 工作区执行：
+> implementer 在跑同一条命令时撞上 30 分钟硬超时被中止，代码与验收文档均已提交、工作区干净，
+> 因此读数与 commit 一一对应。
 
 ---
 
@@ -206,6 +223,11 @@ $ git diff e8ec2cc -- app/alibot | grep -nE "SCHEMA_VERSION|target_budget|--netw
    由代码审查与 `test_team_mode.py` 的既有工具集读数覆盖，没有「成员自己开、队长没开」的用例。
 
 ### 4.3 待协调者决策
+
+> 协调者已收到这两条（orchestration ask），截至合并时**未回**。按「不越出票面授权范围」的默认，
+> 本票**不加**新端点：缺口如实记在此处、`#186` 的 issue 评论与集成 PR 的 Merge Danger 里。
+> 若裁定改为「本票补最小 consent 端点」，落点是：`db.record_remote_consent_scope` 的 allowlist
+> 加 `web` + 一个形状照 `POST /api/docker-images/consent` 的幂等端点 + 1 条 HTTP 用例。
 
 1. **web 数据面确认的人类面入口**（谁来写 `remote_consent_scope('web', provider)`：
    `record_remote_consent_scope` 扩 allowlist + 新端点，还是并入 #187 的 Docker 出网确认流程）。
