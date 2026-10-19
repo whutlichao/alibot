@@ -4929,11 +4929,14 @@ function renderChannelModePill() {
   const badge = channel ? channelModeBadge(state.channelConfigs[channel.id]) : null;
   pill.hidden = !badge;
   pill.textContent = badge ? badge.text : '';
-  if (badge) {
-    // 无障碍：说明它是「协作模式」及当前值（`title` 与 `aria-label` 同一句）。
-    pill.setAttribute('title', badge.label);
-    pill.setAttribute('aria-label', badge.label);
-  }
+  // 无障碍：说明它是「协作模式」及当前值（`title` 与 `aria-label` 同一句）。
+  // 隐藏态写**空串**而不是摘除属性：空串在真实 DOM 里就是「没有这个名字 / 没有提示」
+  // （`aria-label=""` 在 accname 里落到下一层，`title=""` 不弹提示），而这里只用到
+  // `setAttribute` 一种写法——`removeAttribute` 是可选方法，DOM 替身未必实现，缺位时
+  // 抛出的异常会被 `loadWorkspace()` 的 catch 当成「后端不可达」，进而排上下一次重连定时器
+  // （现象是 `node --test` 的用例全绿但子进程永不退出）。
+  pill.setAttribute('title', badge ? badge.label : '');
+  pill.setAttribute('aria-label', badge ? badge.label : '');
 }
 
 /** pill 的**读数入口**：把当前频道要的两份读数（配置 + 队长所在的成员表）读到，再铺 pill。

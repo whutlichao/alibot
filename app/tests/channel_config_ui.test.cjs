@@ -918,16 +918,27 @@ test("pill 的落点：在 #chanTitle 之后、.chan-tools 之前，且不在 .c
   assert.match(css, /\.chan-mode-pill \{[^}]*border-radius: var\(--r-pill\)/, "pill 有自己的 pill 样式");
 });
 
-test("私信下 pill 隐藏：私信没有频道 mode", async () => {
+test("私信下 pill 隐藏：私信没有频道 mode，也不带上一频道的文本与标签", async () => {
   const harness = createHarness({ fetch: channelFetch({ mode: "team", team_leader_member_id: "m_1" }) });
+  const pill = harness.elementFor("#chanModePill");
+
+  // 先在频道里把它铺出来（这样后面的「不残留」才不是空断言）
+  harness.loadChannel();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+  assert.equal(pill.textContent, "队长制 · Ada");
+  assert.ok(pill.getAttribute("aria-label"));
 
   harness.loadDm();
   await harness.api.loadActiveChannelMode();
   await settle();
 
-  const pill = harness.elementFor("#chanModePill");
   assert.equal(pill.hidden, true, "私信下不显示协作模式");
   assert.equal(pill.textContent, "", "隐藏时不残留上一个频道的文本");
+  // 隐藏件不能带着上一频道的可读标签：这里只断言「读不到名字」，不钉死是「摘掉属性」
+  // 还是「写成空串」（两种表达在真实 DOM 里都是没有名字）。
+  assert.ok(!pill.getAttribute("title"), "隐藏时不携带上一频道的 title");
+  assert.ok(!pill.getAttribute("aria-label"), "隐藏时不携带上一频道的 aria-label");
 });
 
 test("频道配置读不到：pill 隐藏，不伪造 team / autonomous 结论", async () => {
