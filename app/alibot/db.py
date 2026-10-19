@@ -2651,6 +2651,48 @@ class Database:
             "agent_rules": agent_rules,
         }
 
+    def web_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """联网工具（#186）的装配读路径：``web_access``、权限档与已确认的 web provider。
+
+        与 :meth:`permission_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
+        返回 ``None``。
+
+        ``web_access`` 是一个**独立**配置位（ADR-0026 §二：与 workspace 同级但不是同一个开关），
+        因此这条读路径**不经过** :meth:`workspace_settings_for_target`——频道没配项目根时它也生效。
+        ``consented_providers`` 是 ``remote_consent_scope('web', provider)`` 里已确认的那些行；
+        provider 本身由装配层从**进程环境**解析（D4：不加 schema 列、也不给模型一个 provider 参数）。
+        本方法只读配置：不落消息、不唤醒，也不改动库。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                return None
+            channel = self._conn.execute(
+                "SELECT web_access, permission_mode FROM channel WHERE id = ?",
+                (channel_id,),
+            ).fetchone()
+            if channel is None:
+                return None
+            agent = self._conn.execute(
+                "SELECT web_access, permission_mode FROM agent_config WHERE member_id = ?",
+                (member_id,),
+            ).fetchone()
+            consented = self._conn.execute(
+                "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
+                "ORDER BY acknowledged_at, scope_id"
+            ).fetchall()
+        channel_web_access = channel["web_access"]
+        agent_web_access = agent["web_access"] if agent is not None else None
+        return {
+            "web_access": agent_web_access or channel_web_access,
+            "mode": str(
+                (agent["permission_mode"] if agent is not None else None)
+                or channel["permission_mode"]
+                or "ask-writes"
+            ),
+            "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+        }
+
     def _channel_id_for_target_locked(self, target_id: str) -> str | None:
         """target → 频道 id（channel 型同值；task 型经 ``task.channel_id``；DM 无频道）。"""
         target = self._conn.execute("SELECT kind FROM target WHERE id = ?", (target_id,)).fetchone()

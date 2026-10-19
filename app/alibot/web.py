@@ -37,6 +37,7 @@ from agentscope.tool import FunctionTool, ToolChunk
 
 #: 模块对外的名字（装配层 #186 与测试只用这些；其余一律是内部实现）。
 __all__ = [
+    "FETCH_ACCESS_LEVEL",
     "FETCH_DEFAULT_MAX_BYTES",
     "FETCH_DEFAULT_MAX_CHARS",
     "FETCH_TOOL_NAME",
@@ -80,6 +81,10 @@ PROVIDER_ENV_NAME = "ALIBOT_WEB_SEARCH_PROVIDER"
 
 #: 抓取工具在工具面与 ``permission_rule`` 里的名字（权限层按这个名字做 host 归一化）。
 FETCH_TOOL_NAME = "fetch"
+
+#: ``web_access`` 里唯一会打开 ``fetch`` 的档位（ADR-0026 §二：``'search'`` / ``'search+fetch'``）。
+#: 它是**读路径**的唯一判断：写路径的白名单仍以 ``db.WEB_ACCESS_LEVELS`` 为准。
+FETCH_ACCESS_LEVEL = "search+fetch"
 
 #: 搜索默认 / 最多返回的条数（条数硬上限的一档）。
 SEARCH_DEFAULT_RESULTS = 5

@@ -563,6 +563,7 @@ class AgentScopeAgentSeam:
         permission_of: Callable[[str, str], Any] | None = None,
         mcp_of: Callable[[str, str], Any] | None = None,
         skills_of: Callable[[str, str], Any] | None = None,
+        web_of: Callable[[str, str], Any] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
         usage_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -587,6 +588,10 @@ class AgentScopeAgentSeam:
         # 字节在频道项目根的 ``.alibot/skills/`` 下，装配层再核一次 hash。不注入时这一轮不挂
         # Skill——未配置技能的工作区行为逐字不变。
         self._skills_of = skills_of
+        # 联网配置读路径（#186）：生产是 ``Database.web_settings_for_target``（``web_access`` /
+        # 权限档 / 已确认的 web provider）。**不挂在 workspace 上面**——``web_access`` 是独立配
+        # 置位，频道没配项目根时它也生效（ADR-0026 §二）。不注入时这一轮不挂联网工具。
+        self._web_of = web_of
         # 审批代理（#149）：不注入时遇到 ASK 只能收口为失败（单 Agent 没有人类确认通道）。
         self._approvals = approvals
         # 团队运行的关联 id（#149 的审批记录列）；#142 装配点可注入，未注入时为空。
@@ -697,6 +702,63 @@ class AgentScopeAgentSeam:
         if raw is None:
             return None
         return raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
+
+    def _web_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
+        """联网工具的配置读数（#186）；没有装配钩子 / 读不出来时返回 ``None``。"""
+        if self._web_of is None:
+            return None
+        try:
+            raw = self._web_of(target_id, member_id)
+        except Exception:  # 配置读不出来等价于没开联网工具；不拖垮一轮
+            _log.debug("web settings lookup failed", exc_info=True)
+            return None
+        return dict(raw) if raw is not None else None
+
+    def _web_tools(self, target_id: str, member_id: str) -> list[Any]:
+        """这一轮要挂的联网工具（ADR-0026 §二 / §三 / §四）。
+
+        四条闸门，按顺序判；任何一条不过都返回**空列表**（不装配），且不抛异常——配置问题不该变成
+        一轮的失败：
+
+        1. **配置闸门**（§二）：``web_access`` 为 ``NULL`` ⇒ 不挂。未配置时这一轮与 #186 之前逐字相同。
+        2. **provider 解析**（D4）：只从**进程环境**解析搜索 provider；解析不出来（没有 key / 两把都在 /
+           取值不认识）⇒ 不挂，原因进 debug 日志。模型拿不到 provider 参数——它是配置事实。
+        3. **数据面确认闸门**（§四）：缺 ``remote_consent_scope('web', provider)`` 行 ⇒ 两个工具都不挂，
+           于是**一个请求都不会发出**。确认单位是 provider，host 级粒度交给 ``permission_rule``。
+        4. **权限档闸门**（§三）：``read-only`` 只挂 ``web_search``；``ask-writes`` / ``trusted-writes``
+           才挂 ``fetch``，而 ``fetch`` 的逐次 ASK 由权限引擎（``FetchTool`` 继承的 ASK）给出。
+
+        能力闸门（``supports_tool_calling``）**不在**这里：它由 :func:`_round_toolkit` 统一守，于是
+        “provider 不能携带工具”与文件工具/沉默工具是同一个落点。
+        """
+        from .web import (
+            FETCH_ACCESS_LEVEL,
+            ProviderResolutionError,
+            fetch_tool,
+            resolve_search_provider,
+            search_tool,
+        )
+
+        settings = self._web_settings(target_id, member_id)
+        if settings is None:
+            return []
+        access = str(settings.get("web_access") or "")
+        if not access:
+            return []
+        try:
+            provider = resolve_search_provider(self._environ)
+        except ProviderResolutionError as error:
+            _log.debug("web tools skipped: %s", error.reason)
+            return []
+        if provider not in settings.get("consented_providers", ()):
+            _log.debug("web tools skipped: no ('web', %s) consent row", provider)
+            return []
+        tools = [search_tool(provider=provider, environ=self._environ)]
+        # 未知取值（写路径的 CHECK 拦住了）退化成「只挂只读的搜索」：fail-safe 的方向是多装只读工具，
+        # 而不是把需要逐次审批的 fetch 多装上去。
+        if access == FETCH_ACCESS_LEVEL and settings.get("mode") != "read-only":
+            tools.append(fetch_tool())
+        return tools
 
     # ─── 模型构造 ─────────────────────────────────────────────────────────
     def _build_model(self, provider: str, model_name: str, *, stream: bool = False) -> Any:
@@ -816,19 +878,24 @@ class AgentScopeAgentSeam:
 
         provider = provider_of(str(agent.get("model_id") or ""))
         model_name = model_name_of(str(agent.get("model_id") or ""))
+        # 归属（ADR-0020 三）：D10 派生名 → member id 只用于 ``ReplyStartEvent.name``；
+        # 其余事件按 ``reply_id`` 查。表跨整轮存活（事件消费在同一个 loop 内）。
+        member_id = str(agent["id"])
+        # 联网工具只在这一轮解析**一次**：``_system_prompt`` 要不要自陈它们的风险，与工具集里
+        # 真的有没有它们，必须是同一个事实。
+        web_tools = self._web_tools(target_id, member_id)
         system_prompt = _system_prompt(
             agent,
             mentioned=mentioned,
             task_context=task_context,
             mandatory_reply=mandatory_reply,
             structured_silence=supports_tool_calling(provider),
+            with_web=bool(web_tools) and supports_tool_calling(provider),
         )
         task_actions: list[AgentTaskAction] = []
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
         # 它是一个进程内的事实列表，只在 ``_round`` 的 loop 里被工具线程追加，不落库。
         silence_declarations: list[None] = []
-        # 归属（ADR-0020 三）：D10 派生名 → member id 只用于 ``ReplyStartEvent.name``；
-        # 其余事件按 ``reply_id`` 查。表跨整轮存活（事件消费在同一个 loop 内）。
         member_id = str(agent["id"])
         member_names = {member_internal_name(member_id): member_id}
         reply_members: dict[str, str] = {}
@@ -918,6 +985,7 @@ class AgentScopeAgentSeam:
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                     workspace_tools=workspace_tools or None,
+                    web_tools=web_tools,
                     skills=self._skills_for(target_id, member_id, settings),
                     with_plan=plan is not None,
                 )
@@ -1225,6 +1293,7 @@ class AgentScopeAgentSeam:
                 return instance
 
             try:
+                leader_web_tools = self._web_tools(target_id, member_id)
                 leader_toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
@@ -1232,6 +1301,7 @@ class AgentScopeAgentSeam:
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
                     workspace_tools=await _workspace_tools_for(member_id),
+                    web_tools=leader_web_tools,
                     skills=await _skills_for_member(member_id),
                     with_plan=plan is not None,
                 )
@@ -1246,12 +1316,14 @@ class AgentScopeAgentSeam:
                     member_id_value = str(member["id"])
                     workspace_tools = await _workspace_tools_for(member_id_value)
                     member_skills = await _skills_for_member(member_id_value)
+                    # 联网配置按**该成员自己**的 member id 读（Agent 级覆盖），不拿队长的。
+                    member_web_tools = self._web_tools(target_id, member_id_value)
                     member_agents.append(
                         (
                             member,
                             _build_agent(
                                 member,
-                                _team_member_prompt(member),
+                                _team_member_prompt(member, with_web=bool(member_web_tools)),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
                                 # 配置了项目根时挂受限文件工具；Plan 轮次则始终有自己的四工具。
                                 toolkit=(
@@ -1262,10 +1334,14 @@ class AgentScopeAgentSeam:
                                         task_actions=[],
                                         silence_declarations=[],
                                         workspace_tools=workspace_tools,
+                                        web_tools=member_web_tools,
                                         skills=member_skills,
                                         with_plan=plan is not None,
                                     )
-                                    if workspace_tools or member_skills or plan is not None
+                                    if workspace_tools
+                                    or member_skills
+                                    or member_web_tools
+                                    or plan is not None
                                     else None
                                 ),
                             ),
@@ -1509,7 +1585,20 @@ class AgentScopeAgentSeam:
         )
 
 
-def _team_member_prompt(member: Mapping[str, Any]) -> str:
+def _web_prompt_note() -> str:
+    """联网工具的边界句（#186 / ADR-0026 §一）：只在真正挂了联网工具时进 system prompt。
+
+    与 ``AskEveryTimeBash`` 在工具 description 里自陈风险是同一做法：模型要能从提示里知道这两个工具
+    的数据面差别（``web_search`` 只送查询词，``fetch`` 把 URL 送出本机）。
+    """
+    return (
+        "你本轮配有联网工具：web_search 只送出查询词与条数；fetch 会把目标 URL 送出本机，"
+        "可能把内网地址或带凭据的地址暴露给第三方，因此每次调用都要人类逐次审批"
+        "（按 host 的权限规则可放行）。不要用它们访问本机或内网地址。"
+    )
+
+
+def _team_member_prompt(member: Mapping[str, Any], *, with_web: bool = False) -> str:
     """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。"""
     parts: list[str] = []
     base = str(member.get("system_prompt") or "").strip()
@@ -1522,6 +1611,8 @@ def _team_member_prompt(member: Mapping[str, Any]) -> str:
         "你是 team 模式频道里的成员。队长会把一项具体任务分派给你；你看不到频道上下文，"
         "任务描述就是全部输入。请直接完成并在正文里给出结果。"
     )
+    if with_web:
+        parts.append(_web_prompt_note())
     return "\n\n".join(parts)
 
 
@@ -1583,6 +1674,7 @@ def _system_prompt(
     mandatory_reply: bool = False,
     structured_silence: bool = False,
     leader: bool = False,
+    with_web: bool = False,
 ) -> str:
     """把成员配置里的系统提示 + 本轮的回应 rubric + 任务上下文合成一次调用的 system prompt。
 
@@ -1605,6 +1697,10 @@ def _system_prompt(
     ``structured_silence``（#58）只**补一句**：这一轮模型手上有 ``declare_silence`` 这个工具时，
     沉默要用它声明，而不是靠「什么都不写」让后端去猜。它不改 #57 的措辞，也不改变纪律——声明之后
     仍然由后端按同一套 rubric 收口（被点名时声明沉默照样按 failed 处理）。
+
+    ``with_web``（#186）只在**这一轮真的挂了联网工具**时为真，补一段边界句（:func:`_web_prompt_note`）；
+    它与 ``structured_silence`` 同一形状：提示里提到某个工具，工具就真的在手上。默认 False，因此未
+    配置 ``web_access`` 的频道与 #186 之前逐字相同。
     """
     base = str(agent.get("system_prompt") or "").strip()
     role = str(agent.get("role") or "").strip()
@@ -1636,6 +1732,8 @@ def _system_prompt(
             parts.append("本轮由 team 任务变化唤醒，你必须回应。")
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
+    if with_web:
+        parts.append(_web_prompt_note())
     if structured_silence:
         # 结构化通道的**说明书**（#58）：只解释这个出口怎么用，不重述纪律（上面那段是唯一的 rubric）。
         # 措辞刻意不复述「被点名 / 话题无关」这两条边界：它们已经在上面的 rubric 里，写第二遍会让
@@ -1716,10 +1814,11 @@ def _round_toolkit(
     task_actions: list[AgentTaskAction],
     silence_declarations: list[None],
     workspace_tools: list[Any] | None = None,
+    web_tools: list[Any] | None = None,
     skills: list[Any] | None = None,
     with_plan: bool = False,
 ) -> Any:
-    """装配这一轮的工具集：workspace 文件工具 + 任务动作（仅任务线程）+ 沉默声明（provider 能携带工具时）。
+    """装配这一轮的工具集：workspace 文件工具 + 联网工具 + 任务动作（仅任务线程）+ 沉默声明。
 
     **能力闸门在这里**：``supports_tool_calling(provider)`` 为假时**不挂**沉默工具，于是请求里没有
     ``tools``、模型无法声明沉默，这一轮只能靠正文收口成既有的 ``replied`` / ``ignored`` / ``failed``。
@@ -1727,6 +1826,11 @@ def _round_toolkit(
 
     workspace 工具（#148）不受这个闸门影响：它们是**有 workspace 配置**时的能力，不是 message 通道；
     工具 schema 走的是同一条 provider 工具通道——provider 不能携带工具时，文件工具也送不出去。
+
+    ``web_tools``（#186）与沉默工具同属**能力**：票面要求「provider 不能携带工具时，联网工具与文件
+    工具一样送不出去」，因此它也守 ``supports_tool_calling`` 闸门。哪两个工具在清单里（配置档 /
+    权限档 / 数据面确认三条闸门）由装配层的 :meth:`AgentScopeAgentSeam._web_tools` 决定，与这里的
+    能力闸门正交。
 
     Skill（#152）与 workspace 工具同属「本轮能力」：AgentScope 的 ``Toolkit`` 把技能的说明注入
     系统提示并提供一个内置查看器；只有技能、没有工具时仍然要建 toolkit。
@@ -1739,6 +1843,8 @@ def _round_toolkit(
     tools: list[Any] = []
     if workspace_tools:
         tools.extend(workspace_tools)
+    if web_tools and supports_tool_calling(provider):
+        tools.extend(web_tools)
     if task_context is not None:
         tools.extend(_task_action_tools(task_context, actor_id, task_actions))
     if with_plan:
