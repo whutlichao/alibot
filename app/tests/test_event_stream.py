@@ -1,5 +1,7 @@
 """事件流与断线补拉：四类事件、按 seq 追加、重连带 last_seq 补拉不重复不错序。
 
+**#189**：人类消息必答，因此「``ignored`` 让状态点回到空闲」这条读数由 Agent 作者的消息触发。
+
 只经事件流（``GET /api/channels/{id}/events``）与 HTTP 面取证。事件流的补拉由后端读库完成，
 因此「重连补齐」可以用「带上 last_seq 建一条新连接」这条可观通路稳定验证，不需要真的断网。
 
@@ -44,6 +46,7 @@ from tests.conftest import (
     live_backend,
     outcomes,
     send,
+    send_agent_message,
     sse_frames,
 )
 from tests.scripted import DELAY, FAIL, IGNORE, ManualScheduler, ScriptedAgentSeam
@@ -315,13 +318,24 @@ def test_status_event_reports_offline_for_a_disabled_agent(live: dict) -> None:
 
 
 def test_ignored_round_returns_to_online(live: dict) -> None:
-    """ignored 不是失败：状态点回到空闲（四态只表达后端事实）。"""
+    """ignored 不是失败：状态点回到空闲（四态只表达后端事实）。
+
+    触发者是一个 Agent（#189）：人类消息一律必答，因此「自判忽略」这一轮只能是非必答轮。
+    """
     http = live["http"]
     agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+    speaker = http.post("/api/agents", json=dict(AGENT_PAYLOAD, name="发言者")).json()["agent"]
     live["seam"].behaviors[agent["id"]] = IGNORE
-    channel = _channel_with(http, agent["id"])
+    channel = http.post(
+        "/api/channels",
+        json={
+            "name": "协作频道",
+            "description": "",
+            "member_ids": [agent["id"], speaker["id"]],
+        },
+    ).json()["channel"]
 
-    http.post(f"/api/channels/{channel['id']}/messages", json={"body": "无关消息"})
+    send_agent_message(live["app"], channel["id"], speaker["id"], "无关消息")
     live["scheduler"].drain()
 
     events = sse_frames(http, channel["id"], after_seq=0)

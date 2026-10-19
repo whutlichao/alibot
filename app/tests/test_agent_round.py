@@ -10,6 +10,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+# #189：人类消息一律必答，因此本文件里「可沉默的一轮」改由 Agent 作者的消息触发
+# （`send_agent_message`）。唤醒面、穿透、预算、未读口径一律未变。
 from tests.conftest import (
     agents,
     channel_with_agent,
@@ -18,6 +20,7 @@ from tests.conftest import (
     messages,
     outcomes,
     send,
+    send_agent_message,
 )
 from tests.scripted import DELAY, FAIL, IGNORE, REPLY
 
@@ -162,19 +165,25 @@ def test_mention_is_a_certain_signal_so_ignoring_it_is_failed(client: TestClient
 
 
 def test_clearly_irrelevant_message_is_ignored_not_failed(client: TestClient, harness: dict) -> None:
-    """明确无关 → ignored：正常协议选择，不是失败，也不产生伪造的确认。"""
-    agent = create_agent(client, name="小明").json()["agent"]
-    harness["seam"].behaviors[agent["id"]] = IGNORE
-    channel = channel_with_agent(client, agent["id"])
+    """明确无关 → ignored：正常协议选择，不是失败，也不产生伪造的确认。
 
-    send(client, channel["id"], "只是和别人聊两句，没有点名")
+    #189 起**人类消息一律必答**，因此「可以忽略的一轮」只能在**非人类作者**的唤醒上出现：
+    这里由另一个 Agent 的回复（Agent 消息）唤醒，那一轮没有确定信号，自判忽略仍是 `ignored`。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
+    harness["seam"].behaviors[agent["id"]] = IGNORE
+    channel = create_channel(client, member_ids=[agent["id"], speaker["id"]]).json()["channel"]
+
+    send_agent_message(client, channel["id"], speaker["id"], "只是和别人聊两句，没有点名")
     harness["scheduler"].drain()
 
     record = outcomes(client, channel["id"])[0]
     assert record["status"] == "ignored"
+    assert record["member_id"] == agent["id"], "作者不被唤醒：这一轮只属于被唤醒的那一位"
     assert record["reason"]
-    assert messages(client, channel["id"]) and len(messages(client, channel["id"])) == 1
-    # ignored 不是失败：状态点回到空闲（未点名的无关消息允许沉默）。
+    assert [message["kind"] for message in messages(client, channel["id"])] == ["agent"]
+    # ignored 不是失败：状态点回到空闲（非人类作者的消息允许自判沉默）。
     assert client.get(f"/api/agents/{agent['id']}/status").json()["status"] == "online"
 
 
@@ -317,14 +326,19 @@ def test_failed_round_does_not_advance_the_cursor_so_the_next_wake_rereads(
 
 
 def test_ignored_round_advances_the_cursor_so_it_is_not_reread(client: TestClient, harness: dict) -> None:
-    """ignored 是正常协议选择：它推进游标，同一批消息不会被反复送进适配层。"""
-    agent = create_agent(client, name="小明").json()["agent"]
-    harness["seam"].behaviors[agent["id"]] = IGNORE
-    channel = channel_with_agent(client, agent["id"])
+    """ignored 是正常协议选择：它推进游标，同一批消息不会被反复送进适配层。
 
-    send(client, channel["id"], "第一条无关")
+    触发用**Agent 作者**的消息（#189 起人类消息必答，不再是「可以忽略」的样本），断言不变：
+    每一轮只看到新到的那一条。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
+    harness["seam"].behaviors[agent["id"]] = IGNORE
+    channel = create_channel(client, member_ids=[agent["id"], speaker["id"]]).json()["channel"]
+
+    send_agent_message(client, channel["id"], speaker["id"], "第一条无关")
     harness["scheduler"].drain()
-    send(client, channel["id"], "第二条无关")
+    send_agent_message(client, channel["id"], speaker["id"], "第二条无关")
     harness["scheduler"].drain()
 
     calls = harness["seam"].calls_for(agent["id"])

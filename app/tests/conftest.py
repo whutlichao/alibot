@@ -330,6 +330,34 @@ def channel_with_agent(
     return create_channel(client, name=name, description=description, member_ids=[agent_id]).json()["channel"]
 
 
+def _state(subject: Any) -> Any:
+    """取应用状态：``TestClient`` 与真实 HTTP 夹具里的 ``app`` 两种传入方式都支持。"""
+    return (getattr(subject, "app", None) or subject).state
+
+
+def send_agent_message(
+    subject: Any,
+    target_id: str,
+    author_member_id: str,
+    body: str = "接着说一句",
+) -> dict:
+    """落一条 **Agent 作者**的消息并触发既有唤醒，返回该消息。
+
+    为什么测试需要它（#189）：人类消息自本票起一律是**确定信号**（必答），而「可以合法沉默的一轮」
+    现在只能在**非人类作者**的唤醒上取证。Agent 消息在产品面上只有「真实回复」这一条产生路径，
+    要让它在某个具体时刻出现、且不引入额外往返，就用既有的 ``app.state.db`` /
+    ``app.state.orchestrator`` 接缝（与 ``test_team_mode.py`` / ``test_search.py`` 同源）。
+    **不为测试新增端点，也不新开第二套替身。**
+
+    这一条消息是一次 agent→agent 跳（会消耗 1 次回应预算），因此它仍然走既有的 ``notify``：预算、
+    唤醒面、穿透三条规则的行为与真实回复一致。
+    """
+    state = _state(subject)
+    message = state.db.append_message(target_id, body, author_member_id=author_member_id, kind="agent")
+    state.orchestrator.notify(target_id, message["seq"])
+    return message
+
+
 def sse_events(client: TestClient, channel_id: str, after_seq: int = 0) -> list[dict]:
     """把事件流的响应读成事件列表（流会在测试结束时被关闭）。
 

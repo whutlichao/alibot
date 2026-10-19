@@ -177,10 +177,15 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - **唤醒面** = 该频道的全部 agent 成员（**排除作者自己**）+ **穿透**（被个人提及但**未加入**该
   频道的 Agent）。穿透不豁免预算。这是 **`autonomous`** 频道的口径；`team` 频道（以及它的 task
   target）**只唤醒队长**，见下节。
-- **回应判断**：被个人提及是确定信号 → **必须回应**（自判忽略按 `failed` 处理，不静默）；
+- **回应判断**：**确定信号有四类**——被个人提及、被**认领**唤醒、team 队长被**任务变化**唤醒、
+  **人类消息**（`message.kind == "human"`，DM / autonomous 频道 / team 队长 / task 受派者四个面同口径，#189）
+  → **必须回应**（自判忽略按 `failed` 处理，不静默）；
   明确无关 → `ignored`（正常协议选择，不是失败）。**声明沉默**（`silent`）在确定信号下同样收口成
   `failed`——`silent` 本身不是失败，只是「它决定不说话」在必须回应的场合不算回应（与 `ignored`
-  同款，见 `orchestration.py` 的 `definite_signal` 分支）。
+  同款，见 `orchestration.py` 的 `definite_signal` 分支）。四类**同级不同源**：可读文案与提示词按来源选
+  （`reason.claim_*` / `reason.team_change_*` / `reason.human_message_*` / 提及那一对），混用就会写下一条
+  没发生过的事实。人类消息这一类**不改唤醒面、不扣跳、不改未读口径、不改消息 kind**，也不改非人类作者
+  （Agent / system）的纪律。
 - **每轮落一条 `round_outcome`**：`replied` / `ignored` / `failed` / `merged` / `budget-exhausted` /
   `silent`（`silent` = 模型经**结构化通道**声明本轮沉默，与 `ignored` 不同、也不是失败），
   带可读 reason、起止时间、是否消耗预算、是否被合并。
@@ -247,7 +252,9 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
   「回复但无正文且无任务动作」都收口成 `failed`，而**动作-only**（只调一次 `set_task_status` 而不说话）**算回应**。
   **只圈认领轮**：owner 手动改派维持既有纪律（任务本体照旧给到它，但不强制发言）。
   **team 频道例外（ADR-0025）**：**建任务 / owner 改派 / Agent 转派唤醒队长**的那一轮也是确定信号
-  （`mandatory_reply=True`），因此队长不能靠沉默把任务搁置；autonomous 频道的改派纪律不变。
+  （等价于认领轮的必答），因此队长不能靠沉默把任务搁置；autonomous 频道的改派纪律不变。
+  **人类消息（#189）**：owner 在 DM / 频道 / 任务线程的每一条发言都是确定信号，被唤醒的 Agent 必答；
+  它在 team 频道里同样走「人类消息」口径（`reason.human_message_*`），**不**复用任务变化那套文案。
 - **认领不是一次跳**：它唤醒认领者，但 `target_budget.used` **不 +1**（跳的载体必须是一条 Agent 消息）。
 - **首次认领是任务 target 的一次开世代动作**：`target_budget.epoch_seq` = 那条 `system` 记录的
   `seq`，`used` 按当世代生效的上界重置为满额——这是 q4 的人定裁定（ADR-0010 三）。

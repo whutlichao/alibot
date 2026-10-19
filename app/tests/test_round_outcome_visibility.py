@@ -1,5 +1,8 @@
 """轮次失败在消息流里可见（实施票 #8）的 HTTP / SSE 面契约。
 
+**#189**：摘要行的混合场景（同一 ``base_seq`` 下 ``ignored`` + ``failed``）现在由 **Agent 作者**的消息触发——
+人类消息那一轮都是必答，自判忽略会被改判成 ``failed``。
+
 修复本身在前端（`studio/app.js` / `studio/app.css`：把已经算好、已经落库、已经推流的那份事实
 呈现出来）。因此这里断言的不是前端 DOM，而是**前端据以呈现的那份事实**在两条可观察通道上
 （只读端点与事件流）都已经成立：
@@ -33,6 +36,7 @@ from tests.conftest import (
     messages,
     outcomes,
     send,
+    send_agent_message,
 )
 from tests.scripted import FAIL, IGNORE, REPLY
 
@@ -219,16 +223,22 @@ def _mixed_channel(client: TestClient, harness: dict, ignore: int = 2, fail: int
 
     这是 #18 摘要行的核心场景：同一条消息（同一 `base_seq`）下**既有**该收进折叠摘要行的
     非 `failed` 结果、**也有**必须直接展开的 `failed` 结果。
+
+    触发者是另一个 Agent（#189）：人类消息一律必答，自判忽略会被改判成 `failed`，于是
+    「同一条消息下的混合结论」只在**非必答轮**上成立——这正好也是摘要行真正要处理的场景。
     """
     agents_ = [create_agent(client, name=f"成员{index}").json()["agent"] for index in range(ignore + fail)]
+    speaker = create_agent(client, name="发言者").json()["agent"]
     ignore_ids = {agent["id"] for agent in agents_[:ignore]}
     harness["seam"].behaviors = {
         agent["id"]: (IGNORE if agent["id"] in ignore_ids else FAIL) for agent in agents_
     }
-    channel = create_channel(client, name="混合结论", member_ids=[agent["id"] for agent in agents_]).json()[
-        "channel"
-    ]
-    send(client, channel["id"], "大家看一下")
+    channel = create_channel(
+        client,
+        name="混合结论",
+        member_ids=[agent["id"] for agent in agents_] + [speaker["id"]],
+    ).json()["channel"]
+    send_agent_message(client, channel["id"], speaker["id"], "大家看一下")
     harness["scheduler"].drain()
     return channel
 
@@ -253,12 +263,16 @@ def test_non_failed_outcomes_of_one_message_are_grouped_under_its_base_seq(
 
 
 def test_ignored_is_not_recorded_or_reported_as_failure(client: TestClient, harness: dict) -> None:
-    """`ignored` 不是失败：记录里是 `ignored`、状态点仍空闲（摘要行不得用失败措辞的依据）。"""
-    agent = create_agent(client, name="沉默者").json()["agent"]
-    harness["seam"].behaviors[agent["id"]] = IGNORE
-    channel = channel_with_agent(client, agent["id"])
+    """`ignored` 不是失败：记录里是 `ignored`、状态点仍空闲（摘要行不得用失败措辞的依据）。
 
-    send(client, channel["id"], "没有点名谁")
+    触发者是一个 Agent（#189）：人类消息必答，所以「可以忽略」的那一轮只在非必答轮上存在。
+    """
+    agent = create_agent(client, name="沉默者").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
+    harness["seam"].behaviors[agent["id"]] = IGNORE
+    channel = create_channel(client, member_ids=[agent["id"], speaker["id"]]).json()["channel"]
+
+    send_agent_message(client, channel["id"], speaker["id"], "没有点名谁")
     harness["scheduler"].drain()
 
     record = outcomes(client, channel["id"])[0]

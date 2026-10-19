@@ -1,5 +1,8 @@
 """多 Agent 同频道接力：唤醒面、穿透与预算上界、并发合并、失败隔离、可追溯与恢复。
 
+**#189**：人类消息必答，所以「可以忽略的一轮」由 Agent 作者的消息触发（``send_agent_message``）；
+唤醒面、穿透、预算与合并判据一条未改。
+
 只经 HTTP 面与事件流取证（沿用 #② 的**唯一高层接缝**与脚本化替身，不另开第二套接缝）。
 每一轮由测试自己用 ``harness["scheduler"].drain()`` 决定何时跑完，因此「一轮 in-flight」
 与「被合并」这类窗口可以稳定观察，不需要 sleep。
@@ -26,6 +29,7 @@ from tests.conftest import (
     messages,
     outcomes,
     send,
+    send_agent_message,
 )
 from tests.scripted import DELAY, FAIL, IGNORE, REPLY
 
@@ -58,7 +62,9 @@ def test_plain_message_wakes_every_channel_agent_member_and_excludes_the_author(
         first["id"],
         second["id"],
     }
-    assert all(record["status"] == "ignored" for record in outcomes(client, channel["id"]))
+    # #189：人类消息是**确定信号**，于是「自判无关」不再是合法形态——它按 failed 收口。
+    # 本用例守的是**唤醒面**（谁被叫醒、作者被排除），不是结论类型。
+    assert all(record["status"] == "failed" for record in outcomes(client, channel["id"]))
 
 
 def test_agent_author_is_excluded_from_the_wake_set_not_only_humans(
@@ -213,16 +219,25 @@ def test_piercing_is_suppressed_once_the_budget_is_exhausted(client: TestClient,
 def test_ignored_and_failed_are_distinguishable_in_the_same_channel(
     client: TestClient, harness: dict
 ) -> None:
-    """「它不想说」与「它坏了」是两个事实：同频道内 ignored 与 failed 并存且可区分。"""
+    """「它不想说」与「它坏了」是两个事实：同频道内 ignored 与 failed 并存且可区分。
+
+    触发者是一个 Agent（#189）：人类消息必答，因此「它不想说」只能在非必答轮上出现；
+    "它坏了"不受影响。
+    """
     quiet = create_agent(client, name="沉默者").json()["agent"]
     broken = create_agent(client, name="故障者").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
     harness["seam"].behaviors = {quiet["id"]: IGNORE, broken["id"]: FAIL}
     channel = client.post(
         "/api/channels",
-        json={"name": "两种事实", "description": "", "member_ids": [quiet["id"], broken["id"]]},
+        json={
+            "name": "两种事实",
+            "description": "",
+            "member_ids": [quiet["id"], broken["id"], speaker["id"]],
+        },
     ).json()["channel"]
 
-    send(client, channel["id"], "大家看一下（没有点名）")
+    send_agent_message(client, channel["id"], speaker["id"], "大家看一下（没有点名）")
     drain(harness)
 
     by_member = {record["member_id"]: record for record in outcomes(client, channel["id"])}
@@ -235,15 +250,16 @@ def test_ignored_and_failed_are_distinguishable_in_the_same_channel(
 
 
 def test_ignore_leaves_no_fake_acknowledgement(client: TestClient, harness: dict) -> None:
-    """忽略只意味着「没有新消息」：不产生伪造的确认消息。"""
+    """忽略只意味着「没有新消息」：不产生伪造的确认消息（触发者是非人类作者，#189）。"""
     agent = create_agent(client, name="沉默者").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
     harness["seam"].behaviors[agent["id"]] = IGNORE
-    channel = channel_with_agent(client, agent["id"])
+    channel = create_channel(client, member_ids=[agent["id"], speaker["id"]]).json()["channel"]
 
-    send(client, channel["id"], "无关的一句")
+    send_agent_message(client, channel["id"], speaker["id"], "无关的一句")
     drain(harness)
 
-    assert [message["kind"] for message in messages(client, channel["id"])] == ["human"]
+    assert [message["kind"] for message in messages(client, channel["id"])] == ["agent"]
 
 
 # ─── 有界响应策略 B：硬上界 ≤ 3 ───────────────────────────────────────────

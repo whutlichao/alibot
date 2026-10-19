@@ -164,6 +164,19 @@ CATALOGS: dict[str, dict[str, str]] = {
         "reason.team_change_round": (
             "{reason}；本轮由**任务变化**唤醒（team 队长被建任务 / 改派 / 转派叫醒，你必须回应）"
         ),
+        # 人类消息唤醒（#189）：第四类确定信号。它与上面三套**并列**、**同级**，但来源是「人类直接
+        # 对你说话」——因此既不能复用「任务变化」（那是建任务/改派才成立的事实），也不能复用
+        # 「认领」或「被个人提及」。DM / autonomous channel / team 频道 / task 线程四个面共用这组词条。
+        "reason.human_message_ignored": (
+            "人类消息是确定信号，必须回应；本轮自判忽略，按失败处理（原因为：{reason}）"
+        ),
+        "reason.human_message_no_body": (
+            "人类消息是确定信号，必须回应；本轮没有产出可落库的正文、也没有提交任务动作，按失败处理"
+        ),
+        "reason.human_message_silent": (
+            "人类消息是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
+        ),
+        "reason.human_message_round": ("{reason}；本轮由**人类消息**唤醒（人类直接对你说话，你必须回应）"),
         "reason.pierced_suffix": (
             "{reason}；本轮是被点名的**穿透**唤醒（它原本不在该频道），回复时顺带加入，"
             "system 事件消息 seq={seq}"
@@ -545,6 +558,26 @@ CATALOGS: dict[str, dict[str, str]] = {
         "reason.team_change_round": (
             "{reason}; this round was woken by a **task change** (a team leader was called by task "
             "creation / reassignment / transfer, you must reply)"
+        ),
+        # A **human message** wake (#189): the fourth definite signal. Sibling of the three sets above
+        # (same rank) but a **different source** — a human is talking to you directly. Reusing the
+        # task-change / claim / mention wording would state a fact that never happened. All four faces
+        # (DM / autonomous channel / team channel / task thread) share these entries.
+        "reason.human_message_ignored": (
+            "A human message is a definite signal and must be answered; this round chose to ignore it, "
+            "so it counts as a failure (original reason: {reason})"
+        ),
+        "reason.human_message_no_body": (
+            "A human message is a definite signal and must be answered; this round produced no "
+            "storable body and submitted no task action, so it counts as a failure"
+        ),
+        "reason.human_message_silent": (
+            "A human message is a definite signal and must be answered; this round declared silence, "
+            "so it counts as a failure (original reason: {reason})"
+        ),
+        "reason.human_message_round": (
+            "{reason}; this round was woken by a **human message** (a human spoke to you directly, "
+            "you must reply)"
         ),
         "reason.pierced_suffix": (
             "{reason}; this round was a mention-driven pierce wake (the member was not in this "
