@@ -68,21 +68,25 @@
   - 末行：`门禁全绿`
 - 开发循环：`scripts/check.sh --fast tests/test_docker_network_policy.py tests/test_docker_egress_schema.py tests/test_web_assembly.py tests/test_web_access_schema.py` 全绿。
 
-## 红证据（先红后绿）
+## 红证据（红→绿）
 
-两条判据先写成失败用例，再补实现（垂直切片，顺序即提交顺序的一部分）：
+本票的红证据用**变异**方式逐条取证（临时把实现改坏/回退，跑同一批用例看它们转红，然后还原；
+`git status --porcelain` 在每组取证后为空）：
 
-1. **容器默认无网**：`test_container_config_defaults_to_no_network_and_keeps_the_bind_mount` 与
-   `test_the_creation_path_passes_the_network_mode_to_the_container` 在覆写之前失败于
-   `KeyError/无 NetworkMode`（`docker_container_config` 不存在 → collection error 即红）；
-   实现后绿。
-2. **开关关闭 ⇒ 零请求**：`test_egress_off_blocks_search_with_zero_requests` 在 `EgressPolicy`
-   闸门之前会真的发出请求（`transport.requests` 长度 1）→ 红；加闸门后
-   `transport.requests == []` 且结果文本含「容器网络策略」→ 绿。
-3. **白名单外拒绝**：`test_egress_on_still_refuses_hosts_outside_the_whitelist` 在实现前同样
-   会发请求（红），实现后零请求且原因里同时给出被拒 host 与当前白名单（绿）。
-4. **schema 19**：`test_migration_from_18_adds_the_column_without_backfilling` 在 `SCHEMA_VERSION`
-   还是 18 时红（迁移报告里没有 `18 → 19`）；bump + 迁移步骤 + 留档后绿。
+1. **容器默认无网**：把 `docker_container_config()` 里的
+   `host_config = {"NetworkMode": network_mode}` 改成 `{}` ⇒
+   `test_container_config_defaults_to_no_network_and_keeps_the_bind_mount` 红于 `KeyError: 'NetworkMode'`，
+   `test_the_creation_path_passes_the_network_mode_to_the_container` 同样红。还原后两条绿。
+2. **开关关闭 ⇒ 零请求**：把 `web.py` 的两处 `if egress is not None and not egress.enabled:`
+   短路成 `if False and …` ⇒ `test_egress_off_blocks_search_with_zero_requests`、
+   `test_egress_off_blocks_fetch_with_zero_requests` 红（工具真的把请求发了出去，`transport.requests`
+   不再为空 / 结果文本里没有「容器网络策略」）。还原后两条绿。
+3. **schema 19**：把 `db.SCHEMA_VERSION` 回退成 `18` ⇒
+   `test_migration_from_18_adds_the_column_without_backfilling` 红于 `assert (18, 19) in []`
+   （迁移报告里没有这一步）。还原后绿。
+4. **白名单外拒绝**：把 `if host is None or host not in egress.allowed_hosts:` 收缩成
+   `if host is None:` ⇒ `test_egress_on_still_refuses_hosts_outside_the_whitelist` 红（结果从
+   「可读拒绝」变成 `success`，请求真的发了出去）。还原后绿。
 
 ## 未实跑项与替代证据（本机无 Docker daemon）
 
