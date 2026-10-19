@@ -41,20 +41,30 @@
 `app/alibot/web.py`：
 
 ```python
-SearchProvider: TypeAlias = Literal["brave", "tavily"]      # provider 枚举
+SearchProvider: TypeAlias = Literal["brave", "tavily"]  # provider 枚举
 SEARCH_PROVIDERS: tuple[SearchProvider, ...] = ("brave", "tavily")
 
 SEARCH_BACKENDS = {
-    "brave":  SearchBackend(host="api.search.brave.com",
-                            endpoint="https://api.search.brave.com/res/v1/web/search",
-                            env_name="BRAVE_API_KEY",  method="GET",
-                            auth_header="X-Subscription-Token", auth_prefix="",
-                            results_path=("web", "results"), snippet_key="description"),
-    "tavily": SearchBackend(host="api.tavily.com",
-                            endpoint="https://api.tavily.com/search",
-                            env_name="TAVILY_API_KEY", method="POST",
-                            auth_header="Authorization", auth_prefix="Bearer ",
-                            results_path=("results",), snippet_key="content"),
+    "brave": SearchBackend(
+        host="api.search.brave.com",
+        endpoint="https://api.search.brave.com/res/v1/web/search",
+        env_name="BRAVE_API_KEY",
+        method="GET",
+        auth_header="X-Subscription-Token",
+        auth_prefix="",
+        results_path=("web", "results"),
+        snippet_key="description",
+    ),
+    "tavily": SearchBackend(
+        host="api.tavily.com",
+        endpoint="https://api.tavily.com/search",
+        env_name="TAVILY_API_KEY",
+        method="POST",
+        auth_header="Authorization",
+        auth_prefix="Bearer ",
+        results_path=("results",),
+        snippet_key="content",
+    ),
 }
 ```
 
