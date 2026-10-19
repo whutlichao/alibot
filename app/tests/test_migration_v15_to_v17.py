@@ -16,6 +16,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+from alibot.db import SCHEMA_VERSION
+
 from tests.test_schema_migration import (
     LEDGER_FILE_NAME,
     _backup_dirs,
@@ -106,7 +108,7 @@ def test_v15_dry_run_keeps_the_library_byte_identical_and_reports_both_steps(tmp
 
 
 def test_v15_to_v17_sets_old_row_defaults_copies_consent_and_the_backup_restores(tmp_path: Path) -> None:
-    """真迁移：版本 17、旧行默认值、旧确认行复制、新表可查、备份可恢复到原 v15 业务面。"""
+    """真迁移：推进到本代码版本、旧行默认值、旧确认行复制、新表可查、备份可恢复到原 v15 业务面。"""
     data_dir = tmp_path / "data"
     db_path = _build_library(data_dir, 15)
     _seed_v15_extra_rows(db_path)
@@ -115,8 +117,9 @@ def test_v15_to_v17_sets_old_row_defaults_copies_consent_and_the_backup_restores
     completed = _run(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
-    assert _version(db_path) == "17"
-    assert "schema_version = 17" in completed.stdout
+    # 终点从 ``SCHEMA_VERSION`` 派生（ADR-0015 §三）：下一次合法 bump 不该让这条演练假红。
+    assert _version(db_path) == str(SCHEMA_VERSION)
+    assert f"schema_version = {SCHEMA_VERSION}" in completed.stdout
 
     conn = _connect(db_path)
     try:
@@ -155,7 +158,7 @@ def test_v15_to_v17_sets_old_row_defaults_copies_consent_and_the_backup_restores
     assert _sha256(backup_db) == digest_before, "备份就是迁移前的整份库"
 
     ledger = json.loads((data_dir / LEDGER_FILE_NAME).read_text(encoding="utf-8").splitlines()[0])
-    assert (ledger["from"], ledger["to"], ledger["result"]) == (15, 17, "success")
+    assert (ledger["from"], ledger["to"], ledger["result"]) == (15, SCHEMA_VERSION, "success")
     assert ledger["backup_path"] == str(backups[0])
 
     restored_dir = tmp_path / "restored"

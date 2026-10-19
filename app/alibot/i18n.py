@@ -79,6 +79,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.agent_update_invalid": "Agent 配置校验未通过，未改动任何字段",
         "error.field.agent_workspace_backend_invalid": "工作区后端只能是这些之一：{values}",
         "error.field.agent_permission_mode_invalid": "权限档只能是这些之一：{values}",
+        "error.field.agent_web_access_invalid": "联网档只能是这些之一：{values}",
         "error.field.agent_docker_image_too_long": "Docker 镜像引用过长（上限 {limit} 字符）",
         "error.model_id_empty": "模型标识不能为空",
         "error.model_id_provider_prefix": "模型标识需要提供商前缀：{model_id}（应为 provider:model，例如 dashscope:qwen-max）",
@@ -322,6 +323,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.channel_leader_unavailable": "队长必须是该频道里未删除的 Agent：{member_id}",
         "error.field.channel_workspace_backend_invalid": "工作区后端只能是这些之一：{values}",
         "error.field.channel_permission_mode_invalid": "权限档只能是这些之一：{values}",
+        "error.field.channel_web_access_invalid": "联网档只能是这些之一：{values}",
         "error.field.channel_workspace_root_not_absolute": "项目根必须是绝对路径：{path}",
         "error.team_run_status_invalid": "team 运行状态非法",
         "error.team_run_not_found": "team 运行不存在：{team_run_id}",
@@ -424,6 +426,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.agent_update_invalid": ("Agent configuration validation failed; no field was changed"),
         "error.field.agent_workspace_backend_invalid": ("The workspace backend must be one of: {values}"),
         "error.field.agent_permission_mode_invalid": ("The permission mode must be one of: {values}"),
+        "error.field.agent_web_access_invalid": ("Web access must be one of: {values}"),
         "error.field.agent_docker_image_too_long": (
             "The Docker image reference is too long (limit {limit} characters)"
         ),
@@ -729,6 +732,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "error.field.channel_workspace_backend_invalid": ("The workspace backend must be one of: {values}"),
         "error.field.channel_permission_mode_invalid": ("The permission mode must be one of: {values}"),
+        "error.field.channel_web_access_invalid": ("Web access must be one of: {values}"),
         "error.field.channel_workspace_root_not_absolute": (
             "The project root must be an absolute path: {path}"
         ),

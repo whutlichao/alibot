@@ -255,6 +255,7 @@ class WorkspaceService:
             "workspace_root",
             "workspace_backend",
             "permission_mode",
+            "web_access",
         }
         unknown = set(changes) - allowed
         if unknown:
@@ -293,6 +294,8 @@ class WorkspaceService:
             "workspace_root": config["workspace_root"],
             "workspace_backend": config["workspace_backend"],
             "permission_mode": config["permission_mode"],
+            # 联网档（#184 / ADR-0026 §二）：``None`` = 关闭。频道给默认值、Agent 可覆盖。
+            "web_access": config["web_access"],
         }
 
     # ─── 任务看板与任务线程 ───────────────────────────────────────────────
@@ -631,6 +634,7 @@ class WorkspaceService:
         permission_mode: str | None = None,
         allow_local_shell: bool | None = None,
         docker_image: str | None = None,
+        web_access: str | None = None,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -672,6 +676,7 @@ class WorkspaceService:
             permission_mode=permission_mode,
             allow_local_shell=allow_local_shell,
             docker_image=docker_image,
+            web_access=web_access,
         )
         if any(
             value is not None
