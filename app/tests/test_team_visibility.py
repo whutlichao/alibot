@@ -33,6 +33,7 @@ from tests.conftest import (
     ManualScheduler,
     create_agent,
     create_channel,
+    drain,
     live_backend,
     messages,
     send,
@@ -459,7 +460,12 @@ def test_team_task_does_not_pierce(harness: dict) -> None:
     seam = harness["seam"]
     seam.replies[leader["id"]] = LEADER_RESULT
     seam.replies[outsider["id"]] = "不应该出现的答复"
-    scheduler = harness["scheduler"]
+    # 先把**建任务唤醒队长**那一轮跑掉（#179 A）：否则下面那条人类消息的轮次永远排不到，
+    # 这条用例就会因为「外来消息根本没跑」而假绿。
+    drain(harness)
+    before = [
+        message["body"] for message in client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
+    ]
 
     assert (
         client.post(
@@ -468,8 +474,14 @@ def test_team_task_does_not_pierce(harness: dict) -> None:
         ).status_code
         == 201
     )
-    scheduler.drain(limit=1)
+    drain(harness)
 
-    assert seam.calls_for(outsider["id"]) == []
+    assert seam.calls_for(outsider["id"]) == [], "task target 在 team 模式下不穿透"
     task_messages = client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
-    assert [message["body"] for message in task_messages if message["kind"] == "agent"] == [LEADER_RESULT]
+    assert [message["body"] for message in task_messages if message["kind"] == "agent"] == [
+        LEADER_RESULT,
+        LEADER_RESULT,
+    ]
+    # 线程里只多了人类那条与外援**没有被送到**的事实：没有新的穿透 system 记录、没有外援的消息。
+    assert [message["body"] for message in task_messages[: len(before)]] == before
+    assert not any(message["body"] == seam.replies[outsider["id"]] for message in task_messages)

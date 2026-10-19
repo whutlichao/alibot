@@ -300,15 +300,20 @@ class WorkspaceService:
         return self._db.list_tasks(channel_id=channel_id, member_id=self._member_id)
 
     def create_task(self, channel_id: str, title: str) -> dict[str, Any]:
-        """新建任务；随后由**编排**裁决认领（`CONTEXT.md` **认领** / ADR-0010）。
+        """新建任务；随后由**编排**裁决这一张新任务该唤醒谁（`CONTEXT.md` **唤醒** / ADR-0025）。
 
-        认领不是 HTTP 面的一个动作，也不扩大**成员面适配接缝**的输出形状（仍是「零或多条待落库回复
-        + 一个轮次结果」）：裁定与落库都在后端，模型不经手。没人认领（开关关着 / 没有可用 Agent /
-        这张任务已被认领过）时读回的 `task` 与不认领逐字相同。
+        唤醒裁决不是 HTTP 面的一个动作，也不扩大**成员面适配接缝**的输出形状（仍是「零或多条待落库回复
+        + 一个轮次结果」）：裁定与落库都在后端，模型不经手。两条分支：
+
+        - **team 频道**：只向队长投递一轮必答，仍不认领、不改任务行、不唤醒成员、不扣跳（#179 A）；
+          队长不可用 ⇒ 零唤醒 + 一条 ``invalid-leader``。
+        - **autonomous / DM**：逐字维持既有认领规则（ADR-0010 / ADR-0016）。
+
+        没人认领（开关关着 / 没有可用 Agent / 这张任务已被认领过）时读回的 `task` 与不认领逐字相同。
         """
         task = self._db.create_task(channel_id=channel_id, title=title)
         if self._orchestrator is not None:
-            self._orchestrator.claim_new_task(task["id"], channel_id)
+            self._orchestrator.notify_task_created(task["id"], channel_id)
             task = self._db.get_task(task["id"])
         return {"task": task, "target": self._db.get_target(task["target_id"])}
 
