@@ -4931,10 +4931,9 @@ function renderChannelModePill() {
   pill.textContent = badge ? badge.text : '';
   // 无障碍：说明它是「协作模式」及当前值（`title` 与 `aria-label` 同一句）。
   // 隐藏态写**空串**而不是摘除属性：空串在真实 DOM 里就是「没有这个名字 / 没有提示」
-  // （`aria-label=""` 在 accname 里落到下一层，`title=""` 不弹提示），而这里只用到
-  // `setAttribute` 一种写法——`removeAttribute` 是可选方法，DOM 替身未必实现，缺位时
-  // 抛出的异常会被 `loadWorkspace()` 的 catch 当成「后端不可达」，进而排上下一次重连定时器
-  // （现象是 `node --test` 的用例全绿但子进程永不退出）。
+  // （`aria-label=""` 落在 accname 的下一层，`title=""` 不弹提示），而且这条渲染路径只依赖
+  // `setAttribute` 一种写法——`removeAttribute` 是可选方法，缺位时抛出的异常会被
+  // `loadWorkspace()` 的 catch 当成「后端不可达」，进而排上下一次重连定时器。
   pill.setAttribute('title', badge ? badge.label : '');
   pill.setAttribute('aria-label', badge ? badge.label : '');
 }

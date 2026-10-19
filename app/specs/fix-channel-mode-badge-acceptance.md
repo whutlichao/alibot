@@ -227,10 +227,14 @@ Success: no issues found in 92 source files
 ## 4. 真实浏览器证据（ego-browser 0.6.0.12 / 真实 Chromium + 真实 uvicorn）
 
 **第 2 次 attempt 全部重拍**：`app.js` 字节已变（隐藏态的写法从「摘属性」改成「写空串」，见 §11），
-旧截图与新字节不对应，因此 9 张图**全部重新生成**（`ls -la` 显示 09:00–09:01，旧的 07:31–07:32 全部被覆盖，
-目录里没有留下与新字节不符的过期图）。装置换成新的隔离组合：数据目录 `/tmp/alibot-cmb-data`（干净）、
-端口 8823（`lsof -nP -iTCP:8823` 采集前为空；第 1 次 attempt 遗留在 8811 的临时服务已停掉，
-避免读到旧数据目录）。
+旧截图与新字节不对应，因此证据图**全部重新生成**（最终 13 张，`ls -la` 显示 09:09–09:10；第 1 次 attempt 的
+07:31–07:32 旧图全部被覆盖，目录里没有留下与新字节不符的过期图）。装置换成新的隔离组合：
+数据目录 `/tmp/alibot-cmb-data`（干净）、端口 8823（`lsof -nP -iTCP:8823` 采集前为空；第 1 次 attempt 遗留在
+8811 的临时服务已停掉，避免读到旧数据目录）。
+
+> 重拍顺序：`round-01`→`round-05` 采图，`round-07` 把种子状态（team + 队长 Ada）与 1440×900 视口复原。
+> 第 6 轮脚本因上一轮保存后弹窗仍开着、`#btnChannelSettings` 被遮罩挡住而失败——这本身也说明「保存后不关窗」是
+> 既有行为；`round-07` 改成「弹窗开着就地改回 team」后跑通，不影响任何证据读数。
 
 **装置**（独立数据目录 + 空闲端口 8823，**未碰**用户正在跑的实例与默认数据目录）：
 
@@ -253,7 +257,7 @@ PATCH /api/channels/ch_463b634720a5/config → mode=team, team_leader_member_id=
 POST /api/dms      ×1      → 与 Ada 的私信 dm_c10ac7b9b17f
 ```
 
-**逐项读数**（逐字抄自 ego-browser 四轮脚本的输出；脚本在 `/tmp/cmb-evidence-2/round-0{1..4}.mjs`）：
+**逐项读数**（逐字抄自 ego-browser 各轮脚本的输出；脚本在 `/tmp/cmb-evidence-2/round-0{1..5,7}.mjs`）：
 
 | 验收项 | 浏览器读数 | 截图 |
 | --- | --- | --- |
@@ -264,7 +268,8 @@ POST /api/dms      ×1      → 与 Ada 的私信 dm_c10ac7b9b17f
 | 三档视口 1440×900 | 见上两行（`pillVisible: true`、`pillLeft 394 > titleRight 382`、`pillDisplay: flex`） | `team-channel-1440.png`、`channel-header-autonomous-1440.png` |
 | 三档视口 1024×768 | `TEAM-1024 {"text":"队长制 · Ada","pillVisible":true,"pillWidth":86}` / `VIEWPORT-1024 {"text":"自主","pillVisible":true,"pillRight":437,"toolsRight":1004}` | `team-channel-1024.png`、`channel-header-autonomous-1024.png` |
 | 三档视口 430×900（≤900 移动壳） | `TEAM-430 {"text":"队长制 · Ada","pillVisible":true,"pillRight":223,"viewport":430,"mobileTopbarTitle":"#设计系统重构","mobileTopbarHasPill":false}` / `VIEWPORT-430 {"text":"自主","pillVisible":true,"pillRight":179,"viewport":430,"mobileTopbarVisible":true,"mobileTopbarTitle":"#设计系统重构","mobileTopbarHasPill":false}` | `team-channel-430.png`、`channel-header-autonomous-430.png` |
-| 设置面改回 team（收尾复原） | `RESTORED-TEAM {"text":"队长制 · Ada","ariaLabel":"协作模式：队长制 · Ada","overlayStillOpen":true}` | — |
+| 设置面改回 team（收尾复原） | `RESTORED-TEAM {"text":"队长制 · Ada","ariaLabel":"协作模式：队长制 · Ada","overlayStillOpen":true}`（`round-04`）/ `RESTORED {"text":"队长制 · Ada","ariaLabel":"协作模式：队长制 · Ada"}`（`round-07` 收尾） | — |
+| 证据覆盖面（本轮补拍，回应 review P2「只有一档视口覆盖私信 / 保存」） | `DM-1024 {"text":"","hidden":true,"titleAttr":"","ariaLabel":"","pillVisible":false,"chanTitle":"@Ada"}` / `DM-430 {"text":"","hidden":true,"pillVisible":false,"chanTitle":"@Ada","mobileTopbarTitle":"@Ada"}` / `SAVE-1024 {"text":"自主","ariaLabel":"协作模式：自主","noReloadMark":"kept","navigationEntries":1,"overlayStillOpen":true}` / `SAVE-430 {"text":"自主","hidden":false,"overlayStillOpen":true,"mobileTopbarTitle":"#设计系统重构"}` | `dm-hidden-1024.png`、`dm-hidden-430.png`、`settings-saved-autonomous-1024.png`、`settings-saved-autonomous-430.png` |
 
 **「不刷新页面」的自证**：保存前在页面里打窗口标记 `window.__cmbNoReloadMark = "kept"`，保存后读回仍是
 `kept`，且 `performance.getEntriesByType("navigation").length === 1`（整页导航只有最初那一次）——pill 的文本
@@ -282,14 +287,15 @@ POST /api/dms      ×1      → 与 Ada 的私信 dm_c10ac7b9b17f
 ```sh
 $ for f in app.js index.html app.css i18n.js; do \
     echo "$f served=$(curl -s http://127.0.0.1:8823/studio/$f | md5 -q) worktree=$(md5 -q app/alibot/studio/$f)"; done
-app.js served=794a39c407eb56f820a48315ff8a7c6f worktree=794a39c407eb56f820a48315ff8a7c6f MATCH
+app.js served=b40e1c2634688eba726a33ff5ec515cd worktree=b40e1c2634688eba726a33ff5ec515cd MATCH
 index.html served=c77485a6e3903092ab7cf449e8c9cc2d worktree=c77485a6e3903092ab7cf449e8c9cc2d MATCH
 app.css served=d76c41c8fbb4fb6d079cad9c6c94af65 worktree=d76c41c8fbb4fb6d079cad9c6c94af65 MATCH
 i18n.js served=91e7a29f9df705a114cfce4521d32953 worktree=91e7a29f9df705a114cfce4521d32953 MATCH
 ```
 
-（`app.js` 的 `794a39c4…` 是本轮修好之后的字节；第 1 次 attempt 的 `e854f3e7…` 已作废。浏览器侧另有旁证：
-`TEAM-1440` 的 `appJsSrc` 是 `http://127.0.0.1:8823/studio/app.js`，资源读数 `356562/356262` 字节。）
+（`app.js` 的 `b40e1c26…` 是**最终字节**（含 review 后收紧的那段注释）对应的读数；第 1 次 attempt 的
+`e854f3e7…`、返修中间态的 `794a39c4…` 都已作废，13 张图全部在最终字节上重拍。浏览器侧另有旁证：
+`TEAM-1440` 的 `appJsSrc` 是 `http://127.0.0.1:8823/studio/app.js`，资源读数 `356473/356173` 字节。）
 
 **live 数据目录纪律**：只用了 `/tmp/alibot-cmb-data` 与 8823 端口（干净目录、空闲端口），
 用户的默认数据目录与常驻实例全程未被触碰；证据采集结束后服务已停止。
@@ -299,7 +305,7 @@ i18n.js served=91e7a29f9df705a114cfce4521d32953 worktree=91e7a29f9df705a114cfce4
 ```sh
 $ git diff --numstat c606b4a -- app/alibot/studio app/tests     # 含第 2 次 attempt 的返修
 9       0       app/alibot/studio/app.css
-124     10      app/alibot/studio/app.js
+123     10      app/alibot/studio/app.js
 4       0       app/alibot/studio/i18n.js
 7       0       app/alibot/studio/index.html
 213     2       app/tests/channel_config_ui.test.cjs
@@ -315,20 +321,61 @@ $ git diff --name-only c606b4a | grep -c '\.py$'
 
 ## 6. 双轴 code-review
 
-方法：按 `/Users/apple/.pi/agent/skills/code-review/SKILL.md`，固定点 = `c606b4a`，被审 revision 是最初的
-代码提交；**Standards** 与 **Spec** 两轴各起一个只读子代理并行审 `git diff c606b4a...HEAD`，结论分开写。
-标准来源按 `docs/agents/review-rules.md`（`CONTEXT.md` 的 `## Language`、`docs/adr/**`、`app/README.md`、
-`AGENTS.md`、`docs/agents/**`）+ 该 skill 自带的坏味道基线。
+方法：按 `/Users/apple/.pi/agent/skills/code-review/SKILL.md`，固定点 = `c606b4a`，被审 revision = `c606b4a...HEAD`
+（含功能提交 `8ac6093` 与返修提交 `f27237a`）。**Standards** 与 **Spec** 两轴各起一个只读子代理并行审同一 diff，
+两轴结论分开记录、互不抵消；标准来源按 `docs/agents/review-rules.md`（`CONTEXT.md` 的 `## Language`、`docs/adr/**`、
+`app/README.md`、`AGENTS.md`、`docs/agents/**`）+ 该 skill 自带的坏味道基线。
 
-<!-- REVIEW-FINDINGS -->
+### 6.1 Standards 轴
 
----
+**结论：无硬性文档违规 → 可合并（附评审意见）。** 子代理逐条认可：pill 落点在 `.chan-title` 之外、CSS 只按名消费
+既有 token、两条同键词条两侧齐备、`cacheChannelConfig()` 把三处缓存写入收成一个入口（顺手消掉了重复形状）、
+用例断言落在 `getAttribute` 的可观察结果上。对这次返修的两个点名判断：
+
+- 「隐藏态写空串 vs `removeAttribute`」**可接受**，不是硬违规——仓库文档只规定「沿用既有 vm + DOM 替身、不新开接缝」，
+  没规定属性写法；并指出真正的瑕疵是**注释的形**：六行注释把 DOM 替身缺口与 `node --test` 挂死写进生产渲染注释。
+- 「删掉本票用例里的 `FakeNode.removeAttribute`」**一致**：`app.js` 全文已无 `removeAttribute` 调用，
+  `rail_identity.test.cjs` 的替身保有它且未被本票触碰。
+
+其余 P2（judgement call）与处理：
+
+| # | finding | 处理 |
+| --- | --- | --- |
+| S1 | **注释把测试事实写进生产注释**（Feature/形 问题） | **已修**：注释收紧为三行生产理由（空串语义 + 为什么不用可选方法），替身缺口与挂起现象留在本文 §11 |
+| S2 | `channelModeLeaderName()` 读 `state.activeChannelId`（possible Feature Envy） | **不改**：唯一调用方是 `channelModeBadge(state.channelConfigs[channel.id])`，而 `channel` 恒为 `activeChannel()`，两者同源；加 `channelId` 形参会把内部一致性变成调用方责任，属接口扩大。记入 §9 遗留 |
+| S3 | `channelModeBadge` 与 DOM 里的 `pill` 命名不一 | **不改**：功能提交的命名已被 coordinator 认可，改名只增加 diff 噪声，收益不抵 |
+| S4 | `mode` 字面量在三处判（Repeated Switches） | **不改**：三处语境不同（读配置视图 / 铺 pill / 任务线程），抽成一张表反而变成新的「第四份词表」 |
+| S5 | `title` 与 `aria-label` 同值两处重复 | **不改**：两处各 2 行，抽一个只有两处调用的一行包装属 Middle Man |
+| S6 | pill 的两个读取点（`loadWorkspace` / `selectTarget`）未被用例直接驱动 | **承认并记录**：本轮不加用例（`selectTarget` 未在测试导出表里，加导出=新开 seam，票面 Constraint 禁止）；真实载入路径由浏览器证据覆盖（§4 `TEAM-1440` 走真实工作台载入），记入 §9 遗留 |
+| S7 | `typeof loadActiveChannelMode === 'function'` 条件导出像 Speculative Generality | **保留**：它存在的目的就是让**同一份用例**能在改前 revision（`/tmp/cmb-red`）上跑出红证据（§2.1）；删掉会让红证据不可复跑 |
+
+### 6.2 Spec 轴
+
+**结论：一条 BLOCK（P1×2）→ 两条均已处理，复审口径下可合并。**
+
+| # | finding | 处理 |
+| --- | --- | --- |
+| P1-a | 交付面第 5 条要求的 `-pr-body.md` 缺失、§7 只剩占位 | **已修**：`app/specs/fix-channel-mode-badge-pr-body.md`（Summary / Evidence / Merge Danger）已落盘，PR [#180](https://github.com/whutlichao/alibot/pull/180) 用 `--body-file` 创建；PR 号回填本文 §7 |
+| P1-b | §11.2 把 i18n 挂起的入口写成「启动时 `loadWorkspace()`」，与源码不符（该文件 harness 把启动三行换成了导出块） | **已修**：核实后改正——入口是该文件「附件：发送时把草稿标识随消息带上」用例走 `deliver()`，`deliver()` 发完消息 `await loadWorkspace({silent:true, keepActive:true})` 才进到渲染路径；§11.2 补了带 `at async deliver` 的探针栈与「用例仍 pass、进程却挂住」的解释。机制结论（catch → `scheduleReconnect()` → 定时器永不收敛）不变 |
+| P2 | 私信隐藏与「保存后立即变自主」只有 1440 一档视口 | **已修**：补 `dm-hidden-1024.png`、`dm-hidden-430.png`、`settings-saved-autonomous-1024.png`、`settings-saved-autonomous-430.png`，共 13 张（§4） |
+
+两轴最差项：Standards = S1（P2，已修）；Spec = P1-a / P1-b（均已修）。
 
 ## 7. PR
 
-<!-- PR-SECTION -->
+- **PR**：[#180 — fix(studio): channel mode badge — hidden state without removeAttribute](https://github.com/whutlichao/alibot/pull/180)
+- **base / head**：`main` ← `channel-mode-badge`
+- **正文（`--body-file`）**：`app/specs/fix-channel-mode-badge-pr-body.md`（模板照 `/Users/apple/.pi/agent/skills/pr/SKILL.md`：
+  Summary / Evidence / Merge Danger）
+- **不开 GitHub issue**：沿用仓库 `fix-*` 先例（`fix-dock-fallback-no-channel-*` / `fix-sse-target-fail-fast-*`），
+  正文不带 issue 关联。
 
----
+```sh
+$ gh pr create --base main --head channel-mode-badge \
+    --title "fix(studio): channel mode badge — hidden state without removeAttribute" \
+    --body-file app/specs/fix-channel-mode-badge-pr-body.md
+https://github.com/whutlichao/alibot/pull/180
+```
 
 ## 8. 决策账（Q → 谁答 → 答案 → 依据）
 
@@ -361,7 +408,14 @@ $ git diff --name-only c606b4a | grep -c '\.py$'
    方法，5 个既有用例文件的 DOM 替身没有它，用它就把替身缺口变成了渲染期异常。
 4. **`≤900px` 抽屉态**：pill 在频道头（`.chan-head`）里，430×900 截图证明它仍可见且不被标题挤掉；
    但移动顶栏那一行按票面要求**不**带 pill，两条信息面因此不同（顶栏只有 `#名`）。
-5. **未跑全量 pytest / 迁移链**：票面明确排除（diff 里没有一个 `.py`），理由见 §0 末段。
+5. **review 留下的两条接口级遗留**（§6.1 S2 / S6，本轮按票面 Constraint 不动）：
+   ①`channelModeLeaderName()` 读的是 `state.activeChannelId` 的成员表，而不是形参里的频道——当前唯一调用方
+   `channelModeBadge(state.channelConfigs[channel.id])` 的 `channel` 恒为 `activeChannel()`，两者同源，所以是
+   一致的；将来若有「给非当前频道的配置做预览」的需求，要加 `channelId` 形参，否则会取错成员表。
+   ②pill 的两个读取点（`loadWorkspace()` / `selectTarget()`）没有被 DOM 用例直接驱动（用例走的是
+   `loadActiveChannelMode()` 这个读数入口，`selectTarget` 也不在测试导出表里）。真实载入路径由浏览器证据覆盖
+   （§4 `TEAM-1440` 是真实工作台载入后的读数），但「删掉 `selectTarget()` 里那行 `await` 仍全绿」这个缺口还在。
+6. **未跑全量 pytest / 迁移链**：票面明确排除（diff 里没有一个 `.py`），理由见 §0 末段。
 
 ---
 
@@ -394,7 +448,7 @@ scripts/check.sh --fast                                                        #
 rm -rf /tmp/alibot-cmb-data && mkdir -p /tmp/alibot-cmb-data
 PYTHONPATH=<worktree>/app .venv/bin/python -m alibot --port 8823 --data-dir /tmp/alibot-cmb-data
 <worktree>/.venv/bin/python /tmp/cmb-evidence/seed-8823.py
-ego-browser nodejs < /tmp/cmb-evidence-2/round-01.mjs   # 以及 round-02 / 03 / 04
+ego-browser nodejs < /tmp/cmb-evidence-2/round-01.mjs   # 以及 round-02 / 03 / 04 / 05 / 07
 for f in app.js index.html app.css i18n.js; do
   echo "$f served=$(curl -s http://127.0.0.1:8823/studio/$f | md5 -q) worktree=$(md5 -q app/alibot/studio/$f)"
 done
@@ -449,23 +503,37 @@ done
    之间出现缺口——而缺口落在**渲染路径**上，每个用例只要载入工作台 / 切 target 就会踩到。
    第 1 次 attempt 只给自己改的 `channel_config_ui.test.cjs` 补了这个方法，等于把缺口留在另外 5 份替身上。
 2. **挂起层**：这个 `TypeError` 不是被测试框架抓到的，而是被 `loadWorkspace()` 的 `try/catch` 当成
-   「后端不可达」吞掉了，随后 `scheduleReconnect()` 排上 250ms 起的重连定时器。定时器每次重试又抛同一条，
+   「后端不可达」吞掉了，随后 `scheduleReconnect()` 排上 1.5s 的重连定时器。定时器每次重试又抛同一条，
    于是**定时器永远在**：`node --test` 的子进程不退出 ⇒ 父进程等不到子进程结束 ⇒ 全量 glob 永不返回。
-   这就是 `i18n_ui.test.cjs`「53 条全部打印通过、进程却挂住」的原因；根因不在该文件自身
-   （该文件的 `fetch` 替身让启动时的 `loadWorkspace()` 成功走到 `loadActiveChannelMode()`），
+   这就是 `i18n_ui.test.cjs`「53 条全部打印通过、进程却挂住」的原因；根因不在该文件自身（该文件的 harness
+   把启动三行 `applyStaticI18n(document); bindEvents(); loadWorkspace();` 换成了导出块，**启动时不读工作台**），
    所以**没有**改它。
+
+**`i18n_ui.test.cjs` 走进渲染路径的入口**（review 追问后补取的栈，见下一段探针）：该文件里「附件：发送时把草稿
+标识随消息带上」这条用例走 `deliver()`，而 `deliver()` 发完消息后会 `await loadWorkspace({ silent: true,
+keepActive: true })` 重读工作台——这正是 `loadWorkspace()` 里那行 `await loadActiveChannelMode()` 被执行的时机。
+异常在 `loadWorkspace()` 的 catch 里被吞掉，所以**该用例照旧 pass**，但 catch 里排上的重连定时器留在了事件循环里。
 
 挂起的直接证据（在隔离副本 `/tmp/cmb-red2-probe` 里对 `loadWorkspace()` 的 catch 与 `scheduleReconnect()`
 各加一行 `console.error` 探针，只改副本、不改工作区）：
 
 ```text
-$ node --test --test-timeout=20000 app/tests/i18n_ui.test.cjs   # 8s 后 kill
+$ node --test --test-timeout=20000 app/tests/i18n_ui.test.cjs   # 7–8s 后 kill（进程不会自己退出）
 [probe] loadWorkspace caught: pill.removeAttribute is not a function
+ TypeError: pill.removeAttribute is not a function
+    at renderChannelModePill (app/alibot/studio/app.js:4939:10)
+    at loadActiveChannelMode (app/alibot/studio/app.js:4951:5)
+    at loadWorkspace (app/alibot/studio/app.js:1084:11)
+    at async deliver (app/alibot/studio/app.js:3371:5)          ← 入口：deliver() 发完消息重读工作台
 [probe] scheduleReconnect armed
+✔ 附件：发送时把草稿标识随消息带上，然后从 composer 里收走 (7.487417ms)   ← 用例仍然 pass
+…
 [probe] loadWorkspace caught: Cannot read properties of undefined (reading 'join')
 [probe] scheduleReconnect armed
-…（8 秒内重连又排了 6 轮）
+…（8 秒内重连又排了 6 轮，定时器永远在，进程不退出）
 ```
+
+修好之后再跑同一个文件：`node --test app/tests/i18n_ui.test.cjs` → `53 pass / 0 fail`，5s 退出（§3）。
 
 **修法**：把隐藏态的表达从「摘属性」换成「写空串」，只依赖 `setAttribute` 这一种所有替身都实现的方法：
 
