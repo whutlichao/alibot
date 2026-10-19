@@ -1313,6 +1313,7 @@ class AgentScopeAgentSeam:
                 member_agents: list[tuple[dict[str, Any], Any]] = []
                 for member in team.members:
                     member_id_value = str(member["id"])
+                    member_provider = provider_of(str(member.get("model_id") or ""))
                     workspace_tools = await _workspace_tools_for(member_id_value)
                     member_skills = await _skills_for_member(member_id_value)
                     # 联网配置按**该成员自己**的 member id 读（Agent 级覆盖），不拿队长的。
@@ -1322,12 +1323,17 @@ class AgentScopeAgentSeam:
                             member,
                             _build_agent(
                                 member,
-                                _team_member_prompt(member, with_web=bool(member_web_tools)),
+                                # 提示里提到联网工具就当且仅当它们真的在手上（能力闸门在同一处判）。
+                                _team_member_prompt(
+                                    member,
+                                    with_web=bool(member_web_tools)
+                                    and supports_tool_calling(member_provider),
+                                ),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
                                 # 配置了项目根时挂受限文件工具；Plan 轮次则始终有自己的四工具。
                                 toolkit=(
                                     _round_toolkit(
-                                        provider_of(str(member.get("model_id") or "")),
+                                        member_provider,
                                         task_context=None,
                                         actor_id=member_id_value,
                                         task_actions=[],
