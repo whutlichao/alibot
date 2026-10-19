@@ -567,7 +567,7 @@ $ node --test --test-timeout=20000 app/tests/i18n_ui.test.cjs   # 7–8s 后 kil
 | 全量 glob（240s 上限） | **tests 188 / pass 188 / fail 0**，`duration_ms 6071.59`，7s 结束 |
 | `scripts/check.sh --fast`（600s 上限） | exit 0，**门禁全绿**，13s |
 | 基线 `c606b4a` 干净归档（自测） | **180 / 180 pass**，3.8s；`180 + 8`（本票新增 8 条 pill 用例）= `188`，数目自洽 |
-| 浏览器证据 | 9 张图按新字节全部重拍（§4），`app.js` 服务端 md5 = 工作区 md5 = `794a39c4…` |
+| 浏览器证据 | 13 张图按**最终字节**全部重拍（§4），`app.js` 服务端 md5 = 工作区 md5 = `b40e1c26…` |
 
 ### 11.4 这次踩到的门禁纪律（留给下一位）
 
