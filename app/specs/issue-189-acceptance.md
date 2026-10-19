@@ -209,7 +209,10 @@ cd app && ../.venv/bin/python -m pytest tests/test_mandatory_reply.py
 成员 kind 其实是 **`owner`**。判据改成票面原句的**消息 kind**（`message.kind == "human"`）后转绿。这条差异
 留在代码注释里，避免下一次再从作者身份去推「这是不是人类说的」。
 
-## 9. pi-lens 伪影核查（与本票代码无关，留档避免下一个人重新追一遍）
+## 9. 工具伪影核查（**不是判据读数**；与本票代码无关，留档避免下一个人重新追一遍）
+
+> 本节只记录**检查器取证**，与 §1–§7 的门禁判据读数**分开看**：判据读数是 `scripts/check.sh` 与三个检查器
+> 的彩色读数（§7），本节是 pi-lens 会话缓存产生的伪影事实。协调者已确认：这 4 条不作为缺陷、按仓库门禁口径推进。
 
 pi-lens 在本轮反复报 4 条 blocking（`L233 / L1992 / L2027 / L2042`，`unused-ignore`），逐条核查如下：
 
@@ -223,9 +226,11 @@ pi-lens 在本轮反复报 4 条 blocking（`L233 / L1992 / L2027 / L2042`，`un
 | `lens_diagnostics(source=lsp, mode=full, scope=paths)` 扫四个改动文件 | 仅 15 条**既存** ast-grep 风格提示（`...` 协议体、`int()` 解析），无任何 `type: ignore` 条目 |
 | 工具自身汇总 | `18 files diagnosed this session / 8 blocking`，其中多条标注 `line past EOF` 与 `stale — re-run to confirm`；`current turn delta: no issues` |
 
-**结论**：`L1992/2027/2042` 大于被点名文件的长度（不可能存在），且同一组行号被同时贴到多个长度不同的文件上；
-这是 pi-lens 会话缓存把**同一份**陈旧诊断复制到本轮各文件的产物，不是仓库门禁判据（`docs/agents/review-rules.md`：
-工具已强制的不重复报，跑不过就是红——而门禁是绿的）。
+**结论**：`L1992/2027/2042` 大于被点名文件的长度（不可能存在），且**同一组行号**被同时贴到多个长度不同的
+文件上；它还会"跟着最后一次写入漂移"——最后落到 `app/alibot/orchestration.py:233`，而该行内容是 `signal,`
+（该文件 `type: ignore` 计数 0、`ruff` 干净、`pyright` 0 errors、清空 `.mypy_cache` 重建后 `mypy` 仍
+`Success: no issues found in 101 source files`）。这是 pi-lens 会话缓存把**同一份**陈旧诊断复制到本轮各文件的
+产物，不是仓库门禁判据（`docs/agents/review-rules.md`：工具已强制的不重复报，跑不过就是红——而门禁是绿的）。
 
 **真实来源已顺手消除**：`agent_seam.py` 原有三处 `# type: ignore[arg-type]`（`FunctionTool` 的 bundled typing
 只声明返回 `ToolChunk`）。本票把这三处收口成一个 `_value_returning_tool()`（形参 `Callable[..., Any]`、
