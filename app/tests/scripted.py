@@ -8,6 +8,10 @@
 
 ``ManualScheduler`` 让测试自己决定「什么时候跑完一轮」，于是「一轮 in-flight」这个窗口可以稳定
 观察（不需要 sleep、也不需要重试）。
+
+``calls_for(member_id)`` 记下每轮**输入侧的事实**——包括 ``signal``（本轮纪律来源）与
+``direct_message``（是否私聊）。它们与 ``mandatory_reply`` 同源：后者就是 ``signal.mandatory``
+的派生读数（#189），不另存一份布尔。
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from typing import Any
 from alibot.agent_seam import (
     AgentEventRecord,
     AgentTaskAction,
+    ReplySignal,
     RoundMessage,
     RoundOutcome,
     TaskActionContext,
@@ -124,7 +129,8 @@ class ScriptedAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
     ) -> RoundOutcome:
         """兼容壳：``run_round_stream(..., emit=None)``（ADR-0020 二）。"""
         return self.run_round_stream(
@@ -133,7 +139,8 @@ class ScriptedAgentSeam:
             mentioned=mentioned,
             target_id=target_id,
             task_context=task_context,
-            mandatory_reply=mandatory_reply,
+            signal=signal,
+            direct_message=direct_message,
             emit=None,
         )
 
@@ -145,7 +152,8 @@ class ScriptedAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
         team: Any = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
         plan: Any = None,
@@ -165,7 +173,8 @@ class ScriptedAgentSeam:
             mentioned=mentioned,
             target_id=target_id,
             task_context=task_context,
-            mandatory_reply=mandatory_reply,
+            signal=signal,
+            direct_message=direct_message,
             team=team,
             plan=plan,
         )
@@ -205,7 +214,8 @@ class ScriptedAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
         team: Any = None,
         plan: Any = None,
     ) -> RoundOutcome:
@@ -215,11 +225,13 @@ class ScriptedAgentSeam:
         # 这样断言落在具体片段上时，测的就是**真的会被送进模型的那段文本**。
         # 替身只跑**队长**那一侧（成员由真适配器里的 TeamPipeline 运行），因此 `team` 非空
         # 就是队长轮次：同一个 `_system_prompt` 按这个标记合成，不另抄一份文案（#179 C）。
+        # ``direct_message`` 同样原样传下去（#189）：私聊的 prompt 是一对一口径，这里不能代它猜。
         prompt = _system_prompt(
             agent,
             mentioned=mentioned,
             task_context=task_context,
-            mandatory_reply=mandatory_reply,
+            signal=signal,
+            direct_message=direct_message,
             structured_silence=supports_tool_calling(provider_of(str(agent.get("model_id") or ""))),
             leader=team is not None,
         )
@@ -230,7 +242,11 @@ class ScriptedAgentSeam:
                     "target_id": target_id,
                     "mentioned": mentioned,
                     "task_context": task_context,
-                    "mandatory_reply": mandatory_reply,
+                    # `mandatory_reply` 保留为**派生读数**（既有用例按它断言「必答 / 非必答」），
+                    # 来源单一：它就是 `signal.mandatory`，不用第二份布尔。
+                    "mandatory_reply": signal.mandatory,
+                    "signal": signal,
+                    "direct_message": direct_message,
                     "team": team,
                     "plan": plan,
                     "prompt": prompt,

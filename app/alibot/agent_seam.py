@@ -24,6 +24,7 @@ import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .i18n import SOURCE_LOCALE, Locale, render
@@ -54,6 +55,59 @@ SEAM_STATUSES = ("replied", "ignored", "failed", "silent")
 # 干脆明写忽略 ``tool_choice.mode``）。普通工具调用只要求「把 schema 送过去」，跨 provider 的形状
 # 最一致，且**不做任何正文解析**——声明与正文是两条互不推演的通道。
 SILENCE_TOOL_NAME = "declare_silence"
+
+
+class ReplySignal(StrEnum):
+    """本轮的**回应纪律来源**：一个信号回答两件事——是否必答、可读文案该按哪个来源说。
+
+    ``NONE`` 表示没有确定信号：模型按 #57 的 rubric 自判（可以合法沉默）。其余四种都是**确定信号**，
+    都必须回应，但**来源不同**，因此提示词与轮次结果的可读文案不能互相挪用——把人类消息写成
+    「任务变化」「认领」或「被个人提及」，都是在写一条没发生过的事实（#189）。
+
+    为什么是枚举，而不是从 ``reason`` 文本反推：同一 Agent 的重复唤醒会被合并、跨 target 的
+    deferred 轮次会继承参数，合并后的 ``reason`` 取决于先到者（ADR-0016 五）。纪律与来源必须是
+    **进程内**的显式标记。
+    """
+
+    NONE = "none"
+    MENTION = "mention"
+    CLAIM = "claim"
+    TEAM_TASK_CHANGE = "team-task-change"
+    # 人类直接对话（#189）。它**不改**唤醒面、不扣跳、不改未读口径与消息 kind——只把这一轮从
+    # 「自判」升成「必答」。
+    HUMAN_MESSAGE = "human-message"
+
+    @property
+    def mandatory(self) -> bool:
+        """这一轮是否必须回应（确定信号）。"""
+        return self is not ReplySignal.NONE
+
+    @property
+    def copy_prefix(self) -> str | None:
+        """该来源那组可读文案的前缀：``reason.<prefix>_silent | _ignored | _no_body | _round``。
+
+        ``NONE`` 与 ``MENTION`` 没有自己那组：没有确定信号时用「被个人提及」那一对；被点名时沿用 #57 以来
+        既有的一句（不另加后缀）。元数据只挂在这里一处——加新一类信号时不用再去另一个模块改映射表。
+        """
+        return _COPY_PREFIX.get(self)
+
+    def merged_with(self, other: ReplySignal) -> ReplySignal:
+        """同一成员被重复唤醒时的合并：任一方强制 ⇒ 强制，来源取**声明顺序**较后的那个。
+
+        纪律的推理与既有那几条「取或」合并相同（合并**不削弱**判据）。来源也必须是确定的：
+        否则同一对唤醒换个到达顺序就会写出两种诊断。优先级就是枚举的声明顺序
+        （``NONE < MENTION < CLAIM < TEAM_TASK_CHANGE < HUMAN_MESSAGE``），因此不需要第二张表。
+        """
+        order = list(ReplySignal)
+        return other if order.index(other) > order.index(self) else self
+
+
+# 确定信号 → 那组文案的前缀。人类消息最高（最直接的对话），也是声明顺序的末位。
+_COPY_PREFIX: dict[ReplySignal, str] = {
+    ReplySignal.CLAIM: "claim",
+    ReplySignal.TEAM_TASK_CHANGE: "team_change",
+    ReplySignal.HUMAN_MESSAGE: "human_message",
+}
 
 
 # provider → 该 provider 需要的凭证环境变量名（可能有多个候选，任一存在即视为有凭证）。
@@ -474,7 +528,8 @@ class AgentSeam(Protocol):
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
     ) -> RoundOutcome:
         """跑一轮，返回结论。
 
@@ -485,9 +540,11 @@ class AgentSeam(Protocol):
             mentioned: 这批新消息里是否个人提及了该成员（rubric：被点名必须回应）。
             target_id: 频道 id 或任务 id——这一轮的 target（事件随之带出去）。
             task_context: 仅任务线程提供的内部动作上下文；频道与 DM 不开放任务工具。
-            mandatory_reply: 本轮的**回应纪律标记**（不落库）：为真时本轮必须回应，
-                由编排在投递时算好（认领唤醒）。它**不用** ``reason`` 推导——重复唤醒会被合并，
-                而合并后的 ``reason`` 取决于先到者。
+            signal: 本轮的**回应纪律来源**（不落库，:class:`ReplySignal`）：非 ``NONE`` 时本轮
+                必须回应，且可读文案按这个来源选。它由编排在投递时算好，**不用** ``reason`` 推导——
+                重复唤醒会被合并，而合并后的 ``reason`` 取决于先到者。
+            direct_message: 这一轮发生在**私聊**（#189）：system prompt 用一对一口径，
+                不再给「未被点名可以沉默」的频道边界。
         """
         ...
 
@@ -499,7 +556,8 @@ class AgentSeam(Protocol):
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
         team: TeamRoundContext | None = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
         plan: PlanSession | None = None,
@@ -842,7 +900,8 @@ class AgentScopeAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
     ) -> RoundOutcome:
         """兼容壳：``run_round_stream(..., emit=None)``（ADR-0020 二）。"""
         return self.run_round_stream(
@@ -851,7 +910,8 @@ class AgentScopeAgentSeam:
             mentioned=mentioned,
             target_id=target_id,
             task_context=task_context,
-            mandatory_reply=mandatory_reply,
+            signal=signal,
+            direct_message=direct_message,
             emit=None,
         )
 
@@ -863,7 +923,8 @@ class AgentScopeAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
         team: TeamRoundContext | None = None,
         emit: Callable[[AgentEventRecord], None] | None = None,
         plan: PlanSession | None = None,
@@ -884,7 +945,8 @@ class AgentScopeAgentSeam:
                 mentioned=mentioned,
                 target_id=target_id,
                 task_context=task_context,
-                mandatory_reply=mandatory_reply,
+                signal=signal,
+                direct_message=direct_message,
                 team=team,
                 emit=emit,
                 plan=plan,
@@ -903,7 +965,8 @@ class AgentScopeAgentSeam:
             agent,
             mentioned=mentioned,
             task_context=task_context,
-            mandatory_reply=mandatory_reply,
+            signal=signal,
+            direct_message=direct_message,
             structured_silence=supports_tool_calling(provider),
             with_web=bool(web_tools) and supports_tool_calling(provider),
         )
@@ -1166,7 +1229,8 @@ class AgentScopeAgentSeam:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None,
-        mandatory_reply: bool,
+        signal: ReplySignal,
+        direct_message: bool,
         team: TeamRoundContext,
         emit: Callable[[AgentEventRecord], None] | None,
         plan: PlanSession | None = None,
@@ -1189,7 +1253,8 @@ class AgentScopeAgentSeam:
             agent,
             mentioned=mentioned,
             task_context=task_context,
-            mandatory_reply=mandatory_reply,
+            signal=signal,
+            direct_message=direct_message,
             structured_silence=supports_tool_calling(provider),
             leader=True,
         )
@@ -1686,12 +1751,38 @@ async def _aclose_model_client(model: Any) -> None:
         return
 
 
+# #57 / D5 那条 rubric 的**尾段**：沉默是什么，以及它的反面（括注 / 旁白 / 说明 / 道歉都仍是正文）。
+# 频道与私聊共用它——「沉默的含义」不因会话形状而变，变的只是「什么时候允许沉默」。
+_SILENCE_RUBRIC_TAIL = (
+    "沉默指的是这一轮不产出正文，什么都不写，也不用括注、旁白、说明或道歉去交代"
+    "「本轮消息与我无关」：那仍然是一条正文，属于说了等于没说；"
+    "其余情况有话要说就直接写成正文，不要把要说的话整体包在括注里。"
+)
+
+# #57 / D5 的定稿 rubric（channel 轮）：**沉默 = 这一轮不产出正文**。这段文本**逐字不变**——
+# `test_the_silence_rubric_*` 以它为判据，而它刻意恰好是**一段**（只写一半，模型就没有依据判断
+# 这一轮该不该说话）。人类消息的必答句（#189）因此是**另起一段**，不并进这里。
+_CHANNEL_RUBRIC = (
+    "回应纪律：被个人提及（@你的名字）时必须回应，而且正文要有实质内容；"
+    "话题明确与你无关、或你没有被点名时，正常的做法是保持沉默——" + _SILENCE_RUBRIC_TAIL
+)
+
+# 私聊的 rubric（#189）：一对一没有「频道里没点我」这回事，因此不再给「未被点名可以沉默」的边界——
+# 把它搬进私聊就是给模型一个合法的沉默出口（issue #189 的机制定位）。尾段与频道共用（见上）。
+_DIRECT_MESSAGE_RUBRIC = (
+    "你是这个私聊里唯一的 Agent，正在和人类一对一对话：这里没有其他协作者，"
+    "收到的每一句都来自人类本人。回应纪律：人类对你说话时必须回应，而且正文要有实质内容；"
+    + _SILENCE_RUBRIC_TAIL
+)
+
+
 def _system_prompt(
     agent: dict[str, Any],
     *,
     mentioned: bool,
     task_context: TaskActionContext | None = None,
-    mandatory_reply: bool = False,
+    signal: ReplySignal = ReplySignal.NONE,
+    direct_message: bool = False,
     structured_silence: bool = False,
     leader: bool = False,
     with_web: bool = False,
@@ -1700,19 +1791,23 @@ def _system_prompt(
 
     ``leader`` 是**队长轮次**的标记（#179 C / ADR-0025 §四）：它只换**身份句**、另加一段
     ``TeamAssign`` 指引，并在必答时用队长口径的「必须回应」句。它不是一种新的回应纪律：
-    ``mandatory_reply`` 仍是唯一的纪律标记，只是队长的措辞不能写成「认领」——team 频道不认领。
-    ``leader=False``（autonomous 轮次与 team 成员轮次）的产出**逐字不变**。
+    ``signal`` 仍是唯一的纪律标记，只是队长的措辞不能写成「认领」——team 频道不认领。
 
-    ``mandatory_reply`` 是**认领轮**的纪律标记（ADR-0016 五）：它由编排在投递时算好，**不由**
-    ``reason`` 或 ``mentioned`` 推导——同一 Agent 的重复唤醒会被合并，而合并后的 ``reason``
-    取决于先到者，纪律不该随它漂。
+    ``signal`` 是**纪律来源**的显式枚举（ADR-0016 五 / #189）：是否必答、以及该用哪个来源的措辞，
+    都由它回答。它由编排在投递时算好，**不由** ``reason`` 或 ``mentioned`` 推导——同一 Agent 的重复
+    唤醒会被合并，而合并后的 ``reason`` 取决于先到者，纪律不该随它漂。四种确定信号（被个人提及 /
+    认领 / team 队长被任务变化唤醒 / **人类消息**）**同级不同源**：可读文案不能互相挪用。
+
+    ``direct_message``（#189）标记这一轮发生在**私聊**：私聊的 system prompt 不再自称「多成员频道」、
+    不再给「没有被点名时可以沉默」的边界（那是频道的事实，不是私聊的事实）。
 
     回应 rubric 的措辞是 #57 / D5 的定稿：**沉默 = 这一轮不产出正文**。旧措辞把它写成「只回一个
     空字符串之外的简短说明不算回应」——主句要求沉默、括注却示范「回一句说明」，模型于是把
     「（本轮消息与我无关，无需回应）」当成一次合规的沉默说了出来，而那仍是一条真实正文。
     因此这里不再用「回什么」描述沉默，并把它的反面（括注 / 旁白 / 说明 / 道歉）逐个点名。
     边界必须留在同一段里：被点名必须回应，未被点名且话题无关才轮到沉默——只写一半，模型就没有
-    依据判断这一轮该不该说话。
+    依据判断这一轮该不该说话。频道口径是 :data:`_CHANNEL_RUBRIC`（逐字不变），私聊口径是
+    :data:`_DIRECT_MESSAGE_RUBRIC`。
 
     ``structured_silence``（#58）只**补一句**：这一轮模型手上有 ``declare_silence`` 这个工具时，
     沉默要用它声明，而不是靠「什么都不写」让后端去猜。它不改 #57 的措辞，也不改变纪律——声明之后
@@ -1729,27 +1824,28 @@ def _system_prompt(
         parts.append(base)
     if role:
         parts.append(f"你的角色：{role}")
-    parts.append(
-        (
+    if leader:
+        parts.append(
             "你是这个 team 频道的队长，不是成员：队长负责拆解任务、把具体工作分派给成员，"
-            "再汇总他们的结论给出最终回复。"
-            if leader
-            else "你在一个多成员频道里协作者的身份是「成员」，不是人类。"
+            "再汇总他们的结论给出最终回复。" + _CHANNEL_RUBRIC
         )
-        + "回应纪律：被个人提及（@你的名字）时必须回应，而且正文要有实质内容；"
-        "话题明确与你无关、或你没有被点名时，正常的做法是保持沉默——"
-        "沉默指的是这一轮不产出正文，什么都不写，也不用括注、旁白、说明或道歉去交代"
-        "「本轮消息与我无关」：那仍然是一条正文，属于说了等于没说；"
-        "其余情况有话要说就直接写成正文，不要把要说的话整体包在括注里。"
-    )
+    elif direct_message:
+        parts.append(_DIRECT_MESSAGE_RUBRIC)
+    else:
+        parts.append("你在一个多成员频道里协作者的身份是「成员」，不是人类。" + _CHANNEL_RUBRIC)
     if leader:
         parts.append(
             "你是这个 team 频道的队长，负责拆解与分派。需要成员动手时使用 TeamAssign 工具"
             "（成员 + 任务描述）：成员在**同一轮**里运行，结果作为工具结果回到你这里，"
             "不需要、也不能指望他们另开一轮。成员看不到频道上下文，所以任务描述要写全。"
         )
-        if mandatory_reply:
-            parts.append("本轮由 team 任务变化唤醒，你必须回应。")
+    if signal is ReplySignal.TEAM_TASK_CHANGE:
+        # 建任务 / 改派 / 转派叫醒队长的那一轮（#179 B / ADR-0025 §四）。
+        parts.append("本轮由 team 任务变化唤醒，你必须回应。")
+    if signal is ReplySignal.HUMAN_MESSAGE:
+        # 人类直接对话（#189）：四个面同一句。来源写成「人类消息」——它不是任务变化、不是认领，
+        # 也不依赖「被点名」才成立，写成那三种就是一条不存在的事实。
+        parts.append("本轮由人类消息唤醒：人类直接对你说话，这是确定信号，你必须回应。")
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
     if with_web:
@@ -1775,8 +1871,8 @@ def _system_prompt(
         if task_context.assignee_member_id == str(agent.get("id") or ""):
             context_lines.append("你是这张任务的受派者。")
         parts.append("\n".join(context_lines))
-        if mandatory_reply and not leader:
-            # 认领轮另有显式声明（S5）：纪律不靠模型猜 rubric。队长轮的对应句在身份段里（措辞不同）。
+        if signal is ReplySignal.CLAIM and not leader:
+            # 认领轮另有显式声明（S5）：纪律不靠模型猜 rubric。队长轮的对应句在上面的信号段里（措辞不同）。
             parts.append("本轮由认领唤醒，你必须回应。")
         transfer_options = task_context.transfer_options_for(str(agent.get("id") or ""))
         option_names = "\n".join(
@@ -1880,6 +1976,21 @@ def _round_toolkit(
     return Toolkit(tools=tools, skills_or_loaders=skills or [])
 
 
+def _value_returning_tool(func: Callable[..., Any], permission: Any, *, is_read_only: bool = False) -> Any:
+    """把一个**返回普通值**的工具函数包成可进 ``Toolkit`` 的 ``ToolBase``。
+
+    AgentScope 2.0.10 **运行期**接受返回普通值（``str``）的工具；它 bundled 的 typing 仍只声明
+    ``ToolChunk`` / ``Awaitable[ToolChunk]``。差距收口在**这一处**：形参写成 ``Callable[..., Any]``
+    （``Any`` 返回类型对 ``ToolChunk`` 双向兼容），于是既不需要 ``# type: ignore``（它在只看得到
+    ``Any`` 的检查器环境里会是「unused ignore」），也不需要 ``cast``（那会是「redundant cast」）。
+    行为零变化：这里只多了一个局部变量注解。
+    """
+    from agentscope.tool import FunctionTool, ToolBase
+
+    tool: ToolBase = FunctionTool(func, permission=permission, is_read_only=is_read_only)
+    return tool
+
+
 def _silence_tools(declarations: list[None]) -> list[Any]:
     """「声明沉默」这个结构化通道：**只记录意图**、不写任何东西（写入仍由编排决定）。
 
@@ -1888,7 +1999,7 @@ def _silence_tools(declarations: list[None]) -> list[Any]:
     正式的出口」——它自愿调用，我们据此落 ``silent``；不调用就完全退回既有判据。
     """
     from agentscope.permission import PermissionBehavior, PermissionDecision
-    from agentscope.tool import FunctionTool, ToolBase
+    from agentscope.tool import ToolBase
 
     declaration_lock = threading.Lock()
 
@@ -1902,10 +2013,8 @@ def _silence_tools(declarations: list[None]) -> list[Any]:
         behavior=PermissionBehavior.ALLOW,
         message="沉默声明只记录为本轮的结构化结果，不改写任何消息或任务。",
     )
-    # AgentScope 2.0.10 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
-    tools: list[ToolBase] = [
-        FunctionTool(declare_silence, permission=permission, is_read_only=True)  # type: ignore[arg-type]
-    ]
+    # 工具函数的 bundled typing 与运行期不一致：收口在 `_value_returning_tool` 一处。
+    tools: list[ToolBase] = [_value_returning_tool(declare_silence, permission, is_read_only=True)]
     return tools
 
 
@@ -1914,7 +2023,7 @@ def _task_action_tools(
 ) -> list[Any]:
     """仅在任务轮次提供两种类型化动作工具；工具只收集意图，写入仍由编排器授权。"""
     from agentscope.permission import PermissionBehavior, PermissionDecision
-    from agentscope.tool import FunctionTool, ToolBase
+    from agentscope.tool import ToolBase
 
     action_lock = threading.Lock()
 
@@ -1938,8 +2047,8 @@ def _task_action_tools(
         behavior=PermissionBehavior.ALLOW,
         message="任务动作只记录为本轮结构化结果，执行前仍会经过服务端授权校验。",
     )
-    # AgentScope 2.0.10 支持 FunctionTool 返回普通值；其 bundled typing 仍只写 ToolChunk。
-    tools: list[ToolBase] = [FunctionTool(set_task_status, permission=permission)]  # type: ignore[arg-type]
+    # 工具函数的 bundled typing 与运行期不一致：收口在 `_value_returning_tool` 一处。
+    tools: list[ToolBase] = [_value_returning_tool(set_task_status, permission)]
     if actor_id == context.assignee_member_id:
         transfer_options = context.transfer_options_for(actor_id)
 
@@ -1954,7 +2063,7 @@ def _task_action_tools(
             recipient = transfer_options[recipient_number - 1]
             return record(TransferTaskAction(context.task_id, recipient.member_id))
 
-        tools.append(FunctionTool(transfer_task, permission=permission))  # type: ignore[arg-type]
+        tools.append(_value_returning_tool(transfer_task, permission))
     return tools
 
 

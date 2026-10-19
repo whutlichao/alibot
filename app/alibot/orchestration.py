@@ -44,6 +44,7 @@ from typing import Any, Protocol
 from .agent_seam import (
     AgentSeam,
     CredentialUnavailable,
+    ReplySignal,
     RoundOutcome,
     SetTaskStatusAction,
     TaskActionContext,
@@ -147,9 +148,10 @@ class _DeferredWake:
     reason: str
     consumed_budget: bool
     pierced: bool
-    # 本轮的回应纪律标记（不落库）。跨 target 的 deferred 轮次必须**继承**它，合并时**取或**：
-    # 任一方强制 ⇒ 合并后强制（同一 Agent 的重复唤醒会被合并，判据不能随谁先到而漂）。
-    mandatory_reply: bool = False
+    # 本轮的回应纪律来源（不落库）。跳 target 的 deferred 轮次必须**继承**它，合并时**取或**：
+    # 任一方强制 ⇒ 合并后强制（同一 Agent 的重复唤醒会被合并，判据不能随谁先到而漂）；
+    # 两方都强制时来源按 `ReplySignal.merged_with` 的固定优先级取，诊断也不随到达顺序变。
+    signal: ReplySignal = ReplySignal.NONE
 
 
 @dataclass
@@ -203,7 +205,37 @@ class WakeOrchestrator:
         """
         return locale_of(self._db)
 
+    def _dispatch(
+        self,
+        member: dict[str, Any],
+        target_id: str,
+        from_seq: int,
+        reason: str,
+        *,
+        consumed_budget: bool,
+        pierced: bool,
+        signal: ReplySignal,
+    ) -> None:
+        """投递一轮的**唯一落点**（六个唤醒入口共用）。
+
+        这些参数原先在每处 `submit(self.run_round, ...)` 里各写一遍位置参数——#189 落地时就真的漏传过
+        一处必答标记（队长轮仍拿到旧的布尔，纪律静默失效）。收成一处之后，「多一个纪律维度」只需要在
+        这里改一次；标志位一律关键字传参，位置错位不再可能。
+        """
+        self._scheduler.submit(
+            self.run_round,
+            member,
+            target_id,
+            from_seq,
+            reason,
+            consumed_budget,
+            pierced,
+            signal,
+        )
+
     # ─── 唤醒面 ───────────────────────────────────────────────────────────
+    # 纪律（`signal`）在这里定下、随轮次一路带下去；**已启动**的那一轮不会因后到的人类消息改判
+    # （同 target 的重复唤醒按 Q4=A 合并，见 run_round 与验收文档 §10）。
     def notify(self, target_id: str, from_seq: int, reason: str = WAKE_REASON_CHANNEL_MESSAGE) -> int:
         """消息落库之后计算唤醒集合并投递轮次。返回**投递的成员数**。
 
@@ -215,6 +247,12 @@ class WakeOrchestrator:
         4. DM 中 Agent 作者的消息不再唤醒任何人；其它 target 上 Agent 作者且目标非空 ⇒
            这是**一次 agent→agent 跳**：先看预算。预算耗尽则一个都不投递，
            为每个被压制的成员记一条 ``budget-exhausted``；否则先扣 1 次预算再投递。
+
+        本轮投给每个成员的**纪律来源**由消息 kind 定（#189）：``message.kind == "human"`` ⇒
+        ``HUMAN_MESSAGE``（DM / autonomous channel / task target 四个面同一口径），被点名时升为
+        ``MENTION``；Agent 作者的消息 ⇒ ``NONE``（仍自判，纪律不变）。
+        判据读**消息 kind** 而不是作者成员 kind：owner 的成员 kind 是 ``owner``（不是 ``human``），
+        按作者 kind 判会把人类发言误认成非人类。它不改唤醒面、不扣跳、不改未读口径。
 
         这次跳只让 ``target_budget.used`` +1（跳数的单一正本）；下面传给每个成员的
         ``jump_delivered`` 是**行级**标记，投递 N 个成员就有 N 条为真的轮次结果行。
@@ -253,19 +291,23 @@ class WakeOrchestrator:
             return 0
 
         mentions = set(mentioned_member_ids(message["mention_snapshot"]))
+        # 人类作者的每一句话都是**确定信号**（#189）：DM / autonomous channel / task 同一个口径。
+        # 读的是**消息 kind**（owner 的成员 kind 是 `owner`，不是 `human`）。
+        base_signal = ReplySignal.HUMAN_MESSAGE if message["kind"] == "human" else ReplySignal.NONE
         for wake_target in targets:
             member = wake_target.member
-            # `mention` 可以覆盖 `claim`（两者同级、都是**确定信号**），覆盖**不削弱**判据：
-            # 「必须回应」由下面那个布尔承载，不读 reason（ADR-0016 五）。谁先到都不改变纪律。
+            # `mention` 可以覆盖 `claim` / `human-message`（它们同级、都是**确定信号**），
+            # 覆盖**不削弱**判据：「必须回应」由枚举承载，不读 reason（ADR-0016 五）。
+            member_signal = ReplySignal.MENTION if member["id"] in mentions else base_signal
             member_reason = WAKE_REASON_MENTION if member["id"] in mentions else reason
-            self._scheduler.submit(
-                self.run_round,
+            self._dispatch(
                 member,
                 target_id,
                 from_seq,
                 member_reason,
-                jump_delivered,
-                wake_target.pierced,
+                consumed_budget=jump_delivered,
+                pierced=wake_target.pierced,
+                signal=member_signal,
             )
         return len(targets)
 
@@ -276,12 +318,14 @@ class WakeOrchestrator:
         member_id: str,
         *,
         reason: str = WAKE_REASON_CHANNEL_MESSAGE,
+        signal: ReplySignal = ReplySignal.NONE,
         actor_member_id: str | None = None,
     ) -> int:
         """只有显式指派命令可唤醒新指派 Agent；任务 system 消息本身仍不触发通用唤醒。
 
         ``reason`` 缺省是普通消息唤醒——owner 手动改派走这个缺省值，因此那一轮维持既有纪律；
-        **认领**由编排传入 ``WAKE_REASON_CLAIM``，它算出的 ``mandatory_reply`` 才是 True。
+        **认领**由编排传入 ``signal=ReplySignal.CLAIM``（与 ``reason`` 分开：reason 只是 typing /
+        诊断的标识，纪律与文案来源由 signal 回答）。
 
         ``actor_member_id`` 是改派的发起者（owner 或 Agent）。team 模式只唤醒队长，并且
         **actor 就是队长时零唤醒**（D23=B）；system 记录的作者恒为 owner，因此不能从消息反推。
@@ -292,6 +336,7 @@ class WakeOrchestrator:
             member_id,
             agent_jump=False,
             reason=reason,
+            signal=signal,
             actor_member_id=actor_member_id,
         )
 
@@ -300,7 +345,7 @@ class WakeOrchestrator:
 
         两条分支合在一个入口上，是因为扳机只有这一个（``WorkspaceService.create_task``）：
 
-        - **team 频道**：只向该频道队长投递**一轮**且 ``mandatory_reply=True``（#179 A）。仍**不认领**、
+        - **team 频道**：只向该频道队长投递**一轮**且是确定信号（``TEAM_TASK_CHANGE``，#179 A）。仍**不认领**、
           不改任务行、不唤醒成员、不扣跳（人类动作不是 agent→agent 跳）；轮次里队长能看到
           「任务已创建：<标题>」——``from_seq`` 取那条 ``system`` 消息的 ``seq``（ADR-0025 §二）。
           队长不可用（D18）⇒ 零唤醒 + 一条 ``invalid-leader``。
@@ -362,6 +407,7 @@ class WakeOrchestrator:
             int(messages[0]["seq"]),
             str(claimant["id"]),
             reason=WAKE_REASON_CLAIM,
+            signal=ReplySignal.CLAIM,
         )
         return 1
 
@@ -393,12 +439,14 @@ class WakeOrchestrator:
         *,
         agent_jump: bool,
         reason: str = WAKE_REASON_CHANNEL_MESSAGE,
+        signal: ReplySignal = ReplySignal.NONE,
         actor_member_id: str | None = None,
     ) -> int:
         """验证任务指派事件、按动作预算裁决后唤醒新受派 Agent。
 
-        ``reason`` 与由此算出的 ``mandatory_reply`` **只认领轮为真**（ADR-0016 五的适用范围）：
-        owner 手动改派走同一条路径、reason 仍是普通消息唤醒，于是那一轮维持既有纪律（不强制发言）。
+        ``signal`` **只认领轮为真**（``CLAIM``，ADR-0016 五的适用范围）：owner 手动改派走同一条
+        路径、signal 仍是 ``NONE``，于是那一轮维持既有纪律（不强制发言）。纪律与文案来源全由这个
+        进程内枚举回答，**不**读 ``reason`` 文本。
         """
         target = self._db.get_target(target_id)
         if target["kind"] != "task":
@@ -423,15 +471,14 @@ class WakeOrchestrator:
             return 0
         if agent_jump and not self._spend_jump(target_id, from_seq, [assignee]):
             return 0
-        self._scheduler.submit(
-            self.run_round,
+        self._dispatch(
             assignee,
             target_id,
             from_seq,
             reason,
-            agent_jump,
-            False,
-            reason == WAKE_REASON_CLAIM,
+            consumed_budget=agent_jump,
+            pierced=False,
+            signal=signal,
         )
         return 1
 
@@ -553,17 +600,21 @@ class WakeOrchestrator:
             target_id, from_seq, [target.member for target in targets]
         ):
             return 0
+        # 队长的纪律来源与其它面同一套判据（#189）：人类消息 ⇒ 必答；Agent 消息（非队长自己的）
+        # 唤醒队长的那一轮维持既有纪律（不强制发言）。读消息 kind，不读作者成员 kind。
+        base_signal = ReplySignal.HUMAN_MESSAGE if message["kind"] == "human" else ReplySignal.NONE
         for wake_target in targets:
             member = wake_target.member
+            member_signal = ReplySignal.MENTION if member["id"] in mentions else base_signal
             member_reason = WAKE_REASON_MENTION if member["id"] in mentions else reason
-            self._scheduler.submit(
-                self.run_round,
+            self._dispatch(
                 member,
                 target_id,
                 from_seq,
                 member_reason,
-                jump_delivered,
-                wake_target.pierced,
+                consumed_budget=jump_delivered,
+                pierced=wake_target.pierced,
+                signal=member_signal,
             )
         return len(targets)
 
@@ -588,15 +639,16 @@ class WakeOrchestrator:
             self._record_invalid_leader(team, from_seq)
             return 0
         leader = self._db.get_agent(str(team["team_leader_member_id"]))
-        self._scheduler.submit(
-            self.run_round,
+        self._dispatch(
             leader,
             target_id,
             from_seq,
             WAKE_REASON_CHANNEL_MESSAGE,
-            False,
-            False,
-            True,
+            consumed_budget=False,
+            pierced=False,
+            # 建任务 / 改派 / 转派都是「任务变化」（#179 B）：不是人类消息（那是一条真的人类发言），
+            # 也不是认领（team 频道不认领）。
+            signal=ReplySignal.TEAM_TASK_CHANGE,
         )
         return 1
 
@@ -622,7 +674,7 @@ class WakeOrchestrator:
     ) -> int:
         """team 任务线程的改派/转派：唤醒**队长**，不唤醒新受派者（ADR-0005 收窄）。
 
-        这一轮是**确定信号**（`mandatory_reply=True`，#179 B / ADR-0025 §三）：队长可以合法沉默的
+        这一轮是**确定信号**（`ReplySignal.TEAM_TASK_CHANGE`，#179 B / ADR-0025 §三）：队长可以合法沉默的
         旧口径就是用户看到的「指派后只有一条消息就停住」。`actor` 是队长时仍零唤醒（不自我唤醒）。
         """
         status = self.leader_status(team)
@@ -635,15 +687,14 @@ class WakeOrchestrator:
         leader = self._db.get_agent(leader_id)
         if agent_jump and not self._spend_jump(target_id, from_seq, [leader]):
             return 0
-        self._scheduler.submit(
-            self.run_round,
+        self._dispatch(
             leader,
             target_id,
             from_seq,
             WAKE_REASON_CHANNEL_MESSAGE,
-            agent_jump,
-            False,
-            True,
+            consumed_budget=agent_jump,
+            pierced=False,
+            signal=ReplySignal.TEAM_TASK_CHANGE,
         )
         return 1
 
@@ -761,7 +812,7 @@ class WakeOrchestrator:
         reason: str,
         consumed_budget: bool = False,
         pierced: bool = False,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
     ) -> dict[str, Any] | None:
         """跑一轮。返回落下的轮次结果；瞬态轮次（无新消息、只被合并）返回 None。
 
@@ -770,7 +821,7 @@ class WakeOrchestrator:
         跳数只 +1。跳数的唯一正本是 ``target_budget.used``。
 
         ``reason`` 只承担**可读诊断 + 正在回复指示**，**不**承担纪律判据：那是
-        ``mandatory_reply``（进程内、不落库）的事。原因：同一 Agent 同 target 的重复唤醒不排队、
+        ``signal``（进程内枚举、不落库）的事。原因：同一 Agent 同 target 的重复唤醒不排队、
         只合成一条 merged，而跨 target 的 deferred 轮次会继承参数——若判据读 reason，一条同时到达的
         普通消息就可能让「必答」静默失效，取决于谁先到（ADR-0016 五）。
         """
@@ -793,14 +844,15 @@ class WakeOrchestrator:
                             reason=reason,
                             consumed_budget=consumed_budget,
                             pierced=pierced,
-                            mandatory_reply=mandatory_reply,
+                            signal=signal,
                         )
                     else:
                         deferred.from_seq = max(deferred.from_seq, int(from_seq))
                         deferred.consumed_budget = deferred.consumed_budget or consumed_budget
                         deferred.pierced = deferred.pierced or pierced
-                        # 任一方强制 ⇒ 合并后强制（与 consumed_budget / pierced 同款合并）。
-                        deferred.mandatory_reply = deferred.mandatory_reply or mandatory_reply
+                        # 合并**不削弱**纪律：任一方强制 ⇒ 合并后强制（与 consumed_budget / pierced
+                        # 同款合并）；两方都强制时来源按固定优先级取，诊断不随到达顺序变。
+                        deferred.signal = deferred.signal.merged_with(signal)
                         if reason == WAKE_REASON_MENTION:
                             deferred.reason = reason
                 return None
@@ -839,18 +891,18 @@ class WakeOrchestrator:
             else:
                 task_context = self._task_action_context(target_id)
                 team_context = self._team_round_context(target_id, agent)
-                # 确定信号的可读文案按**信号来源**选（#179 / ADR-0025 §六）：认领轮与「team 队长被
-                # 任务变化唤醒」是两条**同级但不同源**的确定信号，纪律都是 `mandatory_reply`；
-                # team 频道不发生认领，把两者混用就会写下一条不存在的事实。
-                # 判据不读 `reason`（重复唤醒会被合并，原因见 docstring），也不新增第六种纪律——
-                # 这里只用「本轮是不是队长轮」这个既有的结构事实（`team_context`）挑文案。
-                leader_task_change = team_context is not None and mandatory_reply
-                if leader_task_change:
-                    silent_key, ignored_key = "reason.team_change_silent", "reason.team_change_ignored"
-                    no_body_key, round_key = "reason.team_change_no_body", "reason.team_change_round"
+                # 确定信号的可读文案按**信号来源**选（#179 / #189 / ADR-0016 五 / ADR-0025 §六）：四种
+                # 确定信号同级不同源，把人类消息写成「任务变化」「认领」或「被个人提及」都是在写一条
+                # 没发生过的事实。来源是进程内枚举 `signal`，**不**读 `reason`、也不从「本轮是不是队长」
+                # 反推（那个反推在 #189 之前可以，但它对人声与任务变化一视同仁，正是本票要拆掉的）。
+                copy_prefix = signal.copy_prefix
+                if copy_prefix is None:
+                    silent_key, ignored_key = "reason.mention_silent", "reason.mention_ignored"
+                    no_body_key = "reason.mention_no_body"
                 else:
-                    silent_key, ignored_key = "reason.claim_silent", "reason.claim_ignored"
-                    no_body_key, round_key = "reason.claim_no_body", "reason.claim_round"
+                    silent_key = f"reason.{copy_prefix}_silent"
+                    ignored_key = f"reason.{copy_prefix}_ignored"
+                    no_body_key = f"reason.{copy_prefix}_no_body"
 
                 # Plan 只在**任务 / team 轮次**自动可用（规格 §3.5）：频道与 DM 的自主轮次
                 # 既不装载也不回写。会话本身不写消息、不扣预算；事件仍走 #141 的公共发布入口。
@@ -885,7 +937,8 @@ class WakeOrchestrator:
                         mentioned=mentioned,
                         target_id=target_id,
                         task_context=task_context,
-                        mandatory_reply=mandatory_reply,
+                        signal=signal,
+                        direct_message=self._db.get_target(target_id)["kind"] == "dm",
                         team=team_context,
                         plan=plan_session,
                     )
@@ -894,17 +947,18 @@ class WakeOrchestrator:
                     if team_run_id is not None:
                         with suppress(Exception):
                             self._db.finish_team_run(team_run_id, team_status)
-                # rubric：**确定信号**有三条（被个人提及 / 被认领唤醒 / team 队长被任务变化唤醒），
-                # 三条**同级**、**同一套判据、同一处落点**。后两条用 ``mandatory_reply`` 判定（不读 reason：
-                # 重复唤醒会被合并，原因见 run_round docstring），区别只在**可读文案**（`leader_task_change`）；
-                # 提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把「它坏了」当成「它不想说」）。
-                definite_signal = mentioned or mandatory_reply
+                # rubric：**确定信号有四条**（被个人提及 / 被认领唤醒 / team 队长被任务变化唤醒 /
+                # 被人类消息唤醒），四条**同级**、**同一套判据、同一处落点**。后三条用 ``signal.mandatory``
+                # 判定（不读 reason：重复唤醒会被合并，原因见 run_round docstring），区别只在**可读文案**
+                # （`ReplySignal.copy_prefix`）；提及那一侧仍用 ``mentioned``。自判忽略在不静默（不能把
+                # 「它坏了」当成「它不想说」）。
+                definite_signal = mentioned or signal.mandatory
                 # ``silent``（#58）与 ``ignored`` 在确定信号下**同级**处理：两者都是「它决定不说话」，
                 # 而不是「没被问」。CONTEXT.md 的**回应判断**词条明写这条纪律不因状态来源而放宽。
                 if definite_signal and outcome.status in ("ignored", "silent"):
                     # 诊断文案按**哪个**确定信号 + **哪种**沉默选：认领轮不能写成「被个人提及」，
                     # 声明沉默也不能写成「自判忽略」（那是一个不存在的事实）。
-                    if mandatory_reply:
+                    if signal.mandatory:
                         key = silent_key if outcome.status == "silent" else ignored_key
                     elif outcome.status == "silent":
                         key = "reason.mention_silent"
@@ -922,14 +976,16 @@ class WakeOrchestrator:
                     and not outcome.messages
                     and outcome.task_action is None
                 ):
-                    key = no_body_key if mandatory_reply else "reason.mention_no_body"
+                    key = no_body_key if signal.mandatory else "reason.mention_no_body"
                     outcome = RoundOutcome(
                         status="failed",
                         reason=render(key, self._locale()),
                     )
-                if mandatory_reply:
+                if copy_prefix is not None:
                     # 可读后缀（ADR-0016 五）：照 ``reason.pierced_suffix`` 的既有先例追加进 reason 文本。
-                    # 它只是诊断——纪律已由上面的布尔落定。
+                    # 它只是诊断——纪律已由上面的枚举落定。被点名（``MENTION``）走既有口径：它本来就
+                    # 有自己的一句「本轮有人点名了你」，不另加后缀（#57 以来的行为逐字不变）。
+                    round_key = f"reason.{copy_prefix}_round"
                     outcome = RoundOutcome(
                         status=outcome.status,
                         reason=render(round_key, self._locale(), reason=outcome.reason),
@@ -1024,17 +1080,16 @@ class WakeOrchestrator:
                 turn = self._in_flight.pop(member_id, None)
                 deferred_rounds = list(turn.deferred_rounds.values()) if turn is not None else []
             for deferred in deferred_rounds:
-                self._scheduler.submit(
-                    self.run_round,
+                self._dispatch(
                     deferred.agent,
                     deferred.target_id,
                     deferred.from_seq,
                     deferred.reason,
-                    deferred.consumed_budget,
-                    deferred.pierced,
-                    # 必答标记必须沿 deferred 一起传下去，否则「跨 target 被挡在后面」的认领轮会以
-                    # mandatory_reply=False 重跑——纪律静默失效，reason 后缀也丢（ADR-0016 五）。
-                    deferred.mandatory_reply,
+                    consumed_budget=deferred.consumed_budget,
+                    pierced=deferred.pierced,
+                    # 纪律与来源必须沿 deferred 一起传下去，否则「跨 target 被挡在后面」的必答轮会以
+                    # signal=NONE 重跑——纪律静默失效，reason 后缀也丢（ADR-0016 五）。
+                    signal=deferred.signal,
                 )
             # 收口后的状态点必须在**清掉 in-flight 之后**发：否则最后一帧会停在 working，
             # 前端的状态点就会永久显示「正在回复」。这是后端事实，不是前端补偿。
@@ -1167,7 +1222,8 @@ class WakeOrchestrator:
         mentioned: bool,
         target_id: str,
         task_context: TaskActionContext | None = None,
-        mandatory_reply: bool = False,
+        signal: ReplySignal = ReplySignal.NONE,
+        direct_message: bool = False,
         team: TeamRoundContext | None = None,
         plan: PlanSession | None = None,
     ) -> RoundOutcome:
@@ -1197,7 +1253,8 @@ class WakeOrchestrator:
                 mentioned=mentioned,
                 target_id=target_id,
                 task_context=task_context,
-                mandatory_reply=mandatory_reply,
+                signal=signal,
+                direct_message=direct_message,
                 team=team,
                 emit=emit,
                 plan=plan,

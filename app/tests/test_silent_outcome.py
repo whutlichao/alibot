@@ -1,5 +1,8 @@
 """#58 结构化沉默信号 ``silent``：seam 契约、落库与库级 CHECK。
 
+**#189**：人类消息一律是确定信号（必答），因此 ``ignored`` / ``silent`` 这两种「决定不说话」的结论只在
+**非必答轮**上取证（``tests.conftest.send_agent_message`` 造一条 Agent 作者的消息）。
+
 判据来源：spec #35 的 D0-b / D0-d / D3（落点-b）与 ADR-0008。
 
 接缝沿用既有那两套（票面硬要求：**不新开 seam**）：
@@ -27,9 +30,11 @@ from fastapi.testclient import TestClient
 from tests.conftest import (
     channel_with_agent,
     create_agent,
+    create_channel,
     messages,
     outcomes,
     send,
+    send_agent_message,
 )
 from tests.scripted import FAIL, IGNORE, REPLY, SILENT
 
@@ -63,12 +68,13 @@ def test_each_round_still_carries_at_most_one_storable_message() -> None:
 
 # ─── 2. 四种结论经既有脚本化替身落库 ─────────────────────────────────────
 @pytest.mark.parametrize(
-    ("behavior", "expected_status", "reply_messages"),
+    ("behavior", "expected_status", "reply_messages", "trigger_kind"),
     [
-        (REPLY, "replied", 1),
-        (IGNORE, "ignored", 0),
-        (FAIL, "failed", 0),
-        (SILENT, "silent", 0),
+        (REPLY, "replied", 1, "human"),
+        (FAIL, "failed", 0, "human"),
+        # #189：人类消息是**确定信号**，因此「可以合法沉默」的两种结论只能由非人类作者触发。
+        (IGNORE, "ignored", 0, "agent"),
+        (SILENT, "silent", 0, "agent"),
     ],
 )
 def test_each_round_outcome_kind_is_persisted_with_its_message_count(
@@ -77,20 +83,30 @@ def test_each_round_outcome_kind_is_persisted_with_its_message_count(
     behavior: str,
     expected_status: str,
     reply_messages: int,
+    trigger_kind: str,
 ) -> None:
-    """四种结论各落一条 ``round_outcome``：``silent`` **零条**待落库回复消息，``ignored`` 语义不变。"""
-    agent = create_agent(client, name="小明").json()["agent"]
-    harness["seam"].behaviors[agent["id"]] = behavior
-    channel = channel_with_agent(client, agent["id"])
+    """四种结论各落一条 ``round_outcome``：``silent`` **零条**待落库回复消息，``ignored`` 语义不变。
 
-    # 不点名（不是确定信号）：这一轮允许自判忽略 / 声明沉默，不该被纪律改判成 failed。
-    send(client, channel["id"], "随便聊两句，今天天气不错")
+    触发者按 ``trigger_kind`` 选（#189）：人类消息一律必答，所以 ``ignored`` / ``silent`` 这两种
+    「决定不说话」的结论只在**非必答轮**上仍然成立，用例因此用一条 Agent 消息唤醒它。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
+    harness["seam"].behaviors[agent["id"]] = behavior
+    # 发言者不自判回应：它的轮次不属于本用例的观察对象（否则会多出一条它自己的记录与消息）。
+    harness["seam"].behaviors[speaker["id"]] = IGNORE
+    channel = create_channel(client, member_ids=[agent["id"], speaker["id"]]).json()["channel"]
+
+    if trigger_kind == "human":
+        send(client, channel["id"], "随便聊两句，今天天气不错")
+    else:
+        send_agent_message(client, channel["id"], speaker["id"], "随便聊两句，今天天气不错")
     harness["scheduler"].drain()
 
     listed = messages(client, channel["id"])
-    assert [message["kind"] for message in listed] == ["human"] + ["agent"] * reply_messages
+    assert [message["kind"] for message in listed] == [trigger_kind] + ["agent"] * reply_messages
 
-    records = outcomes(client, channel["id"])
+    records = [record for record in outcomes(client, channel["id"]) if record["member_id"] == agent["id"]]
     assert [record["status"] for record in records] == [expected_status]
     record = records[0]
     assert record["member_id"] == agent["id"]
@@ -109,16 +125,21 @@ def test_each_round_outcome_kind_is_persisted_with_its_message_count(
 def test_silent_and_ignored_are_two_distinguishable_rows_in_one_round(
     client: TestClient, harness: dict
 ) -> None:
-    """同一条消息下两种「没说话」各自可查：``silent`` 有显式声明，``ignored`` 是既有的自判忽略。"""
+    """同一条消息下两种「没说话」各自可查：``silent`` 有显式声明，``ignored`` 是既有的自判忽略。
+
+    #189：这条消息由另一个 Agent 发出（非必答轮）——人类消息下的这两种结论已一律按 ``failed``
+    收口，那条新纪律由 ``test_mandatory_reply.py`` 守。
+    """
     silent_agent = create_agent(client, name="沉默者").json()["agent"]
     ignored_agent = create_agent(client, name="忽略者").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
     harness["seam"].behaviors[silent_agent["id"]] = SILENT
     harness["seam"].behaviors[ignored_agent["id"]] = IGNORE
-    channel = channel_with_agent(client, silent_agent["id"])
-    joined = client.post(f"/api/channels/{channel['id']}/members", json={"member_id": ignored_agent["id"]})
-    assert joined.status_code in (200, 201), joined.text
+    channel = create_channel(
+        client, member_ids=[silent_agent["id"], ignored_agent["id"], speaker["id"]]
+    ).json()["channel"]
 
-    send(client, channel["id"], "两句闲话")
+    send_agent_message(client, channel["id"], speaker["id"], "两句闲话")
     harness["scheduler"].drain()
 
     by_member = {record["member_id"]: record for record in outcomes(client, channel["id"])}
@@ -153,9 +174,11 @@ def test_the_database_check_accepts_silent_and_refuses_an_unknown_word(
     assert "silent" in ROUND_STATUSES
 
     agent = create_agent(client, name="小明").json()["agent"]
+    speaker = create_agent(client, name="发言者").json()["agent"]
     harness["seam"].behaviors[agent["id"]] = SILENT
-    channel = channel_with_agent(client, agent["id"])
-    send(client, channel["id"], "随便聊两句")
+    channel = create_channel(client, member_ids=[agent["id"], speaker["id"]]).json()["channel"]
+    # 非必答轮（#189）：人类消息必答，因此「声明沉默」只能在不带确定信号的轮次上取证。
+    send_agent_message(client, channel["id"], speaker["id"], "随便聊两句")
     harness["scheduler"].drain()
     silent_row = outcomes(client, channel["id"])[0]
     assert silent_row["status"] == "silent"

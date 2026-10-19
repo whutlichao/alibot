@@ -1,5 +1,7 @@
 """Agent 主动认领的 HTTP 黑盒契约（实施票 #65 / ADR-0010）。
 
+**#189**：频道里的人类消息是确定信号（必答），但那与「有没有任务上下文」互不推出——两条断言各管各的。
+
 四条承诺各有一组读数（票面「可观察验收判据」）：
 
 1. **开关开启且 Agent 可用**：频道内新建任务后被认领——指派者与状态可读、认领者进入该任务的
@@ -665,7 +667,8 @@ def test_channel_and_dm_rounds_carry_no_task_context(client: TestClient, harness
 
     call = harness["seam"].calls_for(agent["id"])[-1]
     assert call["task_context"] is None
-    assert call["mandatory_reply"] is False
+    # #189：频道里的人类消息是确定信号（必答），但这与任务上下文无关——两件事互不推出。
+    assert call["mandatory_reply"] is True
     for fragment in ("任务上下文：", "你是这张任务的受派者。", "本轮由认领唤醒，你必须回应。"):
         assert fragment not in call["prompt"], f"频道轮次不该出现：{fragment}"
 

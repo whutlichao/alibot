@@ -24,7 +24,11 @@ from tests.conftest import build_app, live_backend
 
 
 class ParkingSeam:
-    """固定形状的成员面：登记一条审批，等决策，再收口。"""
+    """固定形状的成员面：登记一条审批，等决策，再收口。
+
+    签名跟随 ``AgentSeam`` 契约（``signal`` / ``direct_message`` / ``team`` / ``plan``）：本文件只关心审批链路，
+    不关心回应纪律，但假 seam 不能落后于真实契约（#189）。
+    """
 
     def __init__(self, broker: Any) -> None:
         self.broker = broker
@@ -41,7 +45,8 @@ class ParkingSeam:
         mentioned: bool,
         target_id: str,
         task_context: Any = None,
-        mandatory_reply: bool = False,
+        signal: Any = None,
+        direct_message: bool = False,
         team: Any = None,
         emit: Any = None,
         plan: Any = None,

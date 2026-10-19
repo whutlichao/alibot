@@ -79,6 +79,12 @@ ADR-0016 §五 的适用范围写的是「只圈认领唤醒」，确定信号�
 判据仍是那一个**显式布尔**（`mandatory_reply`，进程内、不落库），不读 `reason`：重复唤醒合并、跨 target
 deferred 继承参数时，「谁先到」不能决定纪律（ADR-0016 §五 的推理逐字有效）。因此在确定信号下：
 
+> **事实修正（#189，2026-10-19）**：上表「只有两类」与「增补第三类」是本文成文时的基线。此后确定信号
+> 又增补了**第四类：人类消息**（`message.kind == human`，DM / autonomous 频道 / team 队长 / task 受派者
+> 同口径，可读文案走 `reason.human_message_*`）。纪律载体从单一布尔收敛为进程内枚举 `ReplySignal`
+> （四个来源 + `none`），判据与文案都不读 `reason`。决策内容（本文 §三 的推理与三条收口规则）不变，
+> 四类确定信号的完整口径见 `CONTEXT.md` 的**回应判断**词条。
+
 - 队长自判忽略（`ignored`）或结构化声明沉默（`silent`）⇒ 收口成 `failed`；
 - 回复但没有可落库正文、也没有提交任务动作 ⇒ `failed`；
 - **只提交一个动作**（`TeamAssign` 走 pipeline、或 `set_task_status`）**算回应**——`TeamAssign` 的那一轮
