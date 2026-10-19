@@ -242,6 +242,8 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - **认领轮必须回应**：判据与「被 @ 点名」**同级**（都是**确定信号**）——`ignored`、`silent` 与
   「回复但无正文且无任务动作」都收口成 `failed`，而**动作-only**（只调一次 `set_task_status` 而不说话）**算回应**。
   **只圈认领轮**：owner 手动改派维持既有纪律（任务本体照旧给到它，但不强制发言）。
+  **team 频道例外（ADR-0025）**：**建任务 / owner 改派 / Agent 转派唤醒队长**的那一轮也是确定信号
+  （`mandatory_reply=True`），因此队长不能靠沉默把任务搁置；autonomous 频道的改派纪律不变。
 - **认领不是一次跳**：它唤醒认领者，但 `target_budget.used` **不 +1**（跳的载体必须是一条 Agent 消息）。
 - **首次认领是任务 target 的一次开世代动作**：`target_budget.epoch_seq` = 那条 `system` 记录的
   `seq`，`used` 按当世代生效的上界重置为满额——这是 q4 的人定裁定（ADR-0010 三）。

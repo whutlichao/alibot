@@ -295,6 +295,26 @@ class WakeOrchestrator:
             actor_member_id=actor_member_id,
         )
 
+    def notify_task_created(self, task_id: str, channel_id: str) -> int:
+        """新建任务后的唤醒裁决（ADR-0025）；返回到**投递的轮次数**（0 / 1）。
+
+        两条分支合在一个入口上，是因为扳机只有这一个（``WorkspaceService.create_task``）：
+
+        - **team 频道**：只向该频道队长投递**一轮**且 ``mandatory_reply=True``（#179 A）。仍**不认领**、
+          不改任务行、不唤醒成员、不扣跳（人类动作不是 agent→agent 跳）；轮次里队长能看到
+          「任务已创建：<标题>」——``from_seq`` 取那条 ``system`` 消息的 ``seq``（ADR-0025 §二）。
+          队长不可用（D18）⇒ 零唤醒 + 一条 ``invalid-leader``。
+        - **其它频道（autonomous / DM）**：逐字转调既有的 :meth:`claim_new_task`。不把认领逻辑复制成两份，
+          也不让 ``claim_new_task`` 的名字承担「唤醒但不认领」这个新语义。
+        """
+        task = self._db.get_task(task_id)
+        target_id = str(task["target_id"])
+        # task target 没有自己的 mode 列：经 `task.channel_id -> channel.mode` 解析（ADR-0022 §一）。
+        team = self._team_config(target_id)
+        if team is None:
+            return self.claim_new_task(task_id, channel_id)
+        return self._notify_team_task_created(task_id, team)
+
     def claim_new_task(self, task_id: str, channel_id: str) -> int:
         """新建任务后由**编排**裁决认领（`CONTEXT.md` **认领** / ADR-0010）；返回是否认领（0 / 1）。
 
@@ -306,11 +326,15 @@ class WakeOrchestrator:
         「**每张任务至多一次**」由 ``Database.claim_task`` 的 ``claimed_at`` 标记构造性保证；这里只做
         「这次要不要动它」的早退，真正的把关在库层（并发下同一个任务不可能被开两次世代）。
         认领唤醒认领者走既有的 ``notify_task_assignment``：与 owner 指派同一条路径，**不消耗跳数**。
+
+        建任务那个扳机**不是**直接调这里：它调 :meth:`notify_task_created`，由后者把 team 频道分走。
         """
         task = self._db.get_task(task_id)
         if task["assignee_member_id"] is not None or task["claimed_at"] is not None:
             return 0
         # team 模式下认领不再是一条唤醒路径（D16 / D23=B）：创建立即停在 todo，不替任何人接手。
+        # 建任务的 team 分支已由 `notify_task_created` 分走；这里的早退仍然必要——
+        # `claim_new_task` 是公开入口，别的调用方（含测试）不该在 team 频道里认领。
         if self._db.get_channel_config(channel_id)["mode"] == "team":
             return 0
         claimant = next(
@@ -543,6 +567,50 @@ class WakeOrchestrator:
             )
         return len(targets)
 
+    def _notify_team_task_created(self, task_id: str, team: dict[str, Any]) -> int:
+        """team 频道建任务：向队长投递**一轮**必答，仍不认领（#179 A / ADR-0025 §二）。
+
+        `system` 事件消息本身不是对话回合（`notify` 在它上面早退），所以这一轮不经 `notify`，
+        而是在这里显式投递。投递的三个不变项：
+
+        - **不认领**：`task.status/assignee_member_id/claimed_at/updated_at` 都不动，任务停在 `todo`；
+        - **不唤醒成员**、**不穿透**：只有队长一轮；
+        - **不扣跳**：人类建任务是人的动作，不是 agent→agent 跳（ADR-0005）；`target_budget.used` 不动。
+
+        `from_seq` 取建任务那条 `system` 消息的 `seq`：它是这一轮的 `base_seq`，也是队长
+        在轮次里看到「任务已创建：<标题>」的那条待读消息的序号（还没被任何游标消费过）。
+        """
+        target_id = str(team["target_id"])
+        from_seq = self._task_created_seq(task_id)
+        status = self.leader_status(team)
+        if not status.ok:
+            # 与「人类消息 → 队长不可用」同口径（D18）：零唤醒 + 一条 invalid-leader。
+            self._record_invalid_leader(team, from_seq)
+            return 0
+        leader = self._db.get_agent(str(team["team_leader_member_id"]))
+        self._scheduler.submit(
+            self.run_round,
+            leader,
+            target_id,
+            from_seq,
+            WAKE_REASON_CHANNEL_MESSAGE,
+            False,
+            False,
+            True,
+        )
+        return 1
+
+    def _task_created_seq(self, task_id: str) -> int:
+        """建任务那条 `system` 消息的 seq（ADR-0016 四的同一条记录：「任务已创建：<title>」）。
+
+        读法按**任务线程的消息流**取第一条 `system`——不硬编码 1，也不另建一张映射表：
+        `Database.create_task` 在同一事务里逐字落下它，流是它唯一的正本。
+        """
+        for message in self._db.list_task_messages(task_id):
+            if message["kind"] == "system":
+                return int(message["seq"])
+        return 0  # pragma: no cover - create_task 必然落一条 system；0 = 「从头读」，不编造事实
+
     def _notify_team_task_assignee(
         self,
         target_id: str,
@@ -552,7 +620,11 @@ class WakeOrchestrator:
         agent_jump: bool,
         actor_member_id: str | None,
     ) -> int:
-        """team 任务线程的改派/转派：唤醒**队长**，不唤醒新受派者（ADR-0005 收窄）。"""
+        """team 任务线程的改派/转派：唤醒**队长**，不唤醒新受派者（ADR-0005 收窄）。
+
+        这一轮是**确定信号**（`mandatory_reply=True`，#179 B / ADR-0025 §三）：队长可以合法沉默的
+        旧口径就是用户看到的「指派后只有一条消息就停住」。`actor` 是队长时仍零唤醒（不自我唤醒）。
+        """
         status = self.leader_status(team)
         if not status.ok:
             self._record_invalid_leader(team, from_seq)
@@ -571,6 +643,7 @@ class WakeOrchestrator:
             WAKE_REASON_CHANNEL_MESSAGE,
             agent_jump,
             False,
+            True,
         )
         return 1
 

@@ -1109,6 +1109,7 @@ class AgentScopeAgentSeam:
             task_context=task_context,
             mandatory_reply=mandatory_reply,
             structured_silence=supports_tool_calling(provider),
+            leader=True,
         )
         task_actions: list[AgentTaskAction] = []
         silence_declarations: list[None] = []
@@ -1581,8 +1582,14 @@ def _system_prompt(
     task_context: TaskActionContext | None = None,
     mandatory_reply: bool = False,
     structured_silence: bool = False,
+    leader: bool = False,
 ) -> str:
     """把成员配置里的系统提示 + 本轮的回应 rubric + 任务上下文合成一次调用的 system prompt。
+
+    ``leader`` 是**队长轮次**的标记（#179 C / ADR-0025 §四）：它只换**身份句**、另加一段
+    ``TeamAssign`` 指引，并在必答时用队长口径的「必须回应」句。它不是一种新的回应纪律：
+    ``mandatory_reply`` 仍是唯一的纪律标记，只是队长的措辞不能写成「认领」——team 频道不认领。
+    ``leader=False``（autonomous 轮次与 team 成员轮次）的产出**逐字不变**。
 
     ``mandatory_reply`` 是**认领轮**的纪律标记（ADR-0016 五）：它由编排在投递时算好，**不由**
     ``reason`` 或 ``mentioned`` 推导——同一 Agent 的重复唤醒会被合并，而合并后的 ``reason``
@@ -1607,13 +1614,26 @@ def _system_prompt(
     if role:
         parts.append(f"你的角色：{role}")
     parts.append(
-        "你在一个多成员频道里协作者的身份是「成员」，不是人类。"
-        "回应纪律：被个人提及（@你的名字）时必须回应，而且正文要有实质内容；"
+        (
+            "你是这个 team 频道的队长，不是成员：队长负责拆解任务、把具体工作分派给成员，"
+            "再汇总他们的结论给出最终回复。"
+            if leader
+            else "你在一个多成员频道里协作者的身份是「成员」，不是人类。"
+        )
+        + "回应纪律：被个人提及（@你的名字）时必须回应，而且正文要有实质内容；"
         "话题明确与你无关、或你没有被点名时，正常的做法是保持沉默——"
         "沉默指的是这一轮不产出正文，什么都不写，也不用括注、旁白、说明或道歉去交代"
         "「本轮消息与我无关」：那仍然是一条正文，属于说了等于没说；"
         "其余情况有话要说就直接写成正文，不要把要说的话整体包在括注里。"
     )
+    if leader:
+        parts.append(
+            "你是这个 team 频道的队长，负责拆解与分派。需要成员动手时使用 TeamAssign 工具"
+            "（成员 + 任务描述）：成员在**同一轮**里运行，结果作为工具结果回到你这里，"
+            "不需要、也不能指望他们另开一轮。成员看不到频道上下文，所以任务描述要写全。"
+        )
+        if mandatory_reply:
+            parts.append("本轮由 team 任务变化唤醒，你必须回应。")
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
     if structured_silence:
@@ -1637,17 +1657,31 @@ def _system_prompt(
         if task_context.assignee_member_id == str(agent.get("id") or ""):
             context_lines.append("你是这张任务的受派者。")
         parts.append("\n".join(context_lines))
-        if mandatory_reply:
-            # 认领轮另有显式声明（S5）：纪律不靠模型猜 rubric。
+        if mandatory_reply and not leader:
+            # 认领轮另有显式声明（S5）：纪律不靠模型猜 rubric。队长轮的对应句在身份段里（措辞不同）。
             parts.append("本轮由认领唤醒，你必须回应。")
         transfer_options = task_context.transfer_options_for(str(agent.get("id") or ""))
         option_names = "\n".join(
             f"{index}. {option.display_name}" for index, option in enumerate(transfer_options, start=1)
         )
+        # 转派句按本轮身份选：`transfer_task` 仍只属**受派者**（ADR-0022 §三）。措辞要同时盖住两种事实：
+        # 队长**就是**受派者时工具真的在它手上（`_task_action_tools` 只在 `actor == assignee` 时挂它），
+        # 队长不是受派者时没有这个工具——所以不能用一句无条件的「队长不能改指派人」。
+        transfer_sentence = (
+            "transfer_task 只属于这张任务的受派者：你只有在就是受派者时才能用它改指派人；"
+            "不是受派者时需要成员动手请用 TeamAssign。"
+            if leader
+            else "仅当前受派者可使用 transfer_task 工具转派给另一位 Agent。"
+        )
+        options_label = (
+            "可用 TeamAssign 分派的成员："
+            if leader
+            else "可转派 Agent（工具参数 recipient_number 对应序号）："
+        )
         parts.append(
             "当前在任务线程中。需要改状态时使用 set_task_status 工具，不要只在正文中声称已改；"
-            "仅当前受派者可使用 transfer_task 工具转派给另一位 Agent。每轮最多提交一个动作，"
-            "动作最终是否成功以系统记录为准。可转派 Agent（工具参数 recipient_number 对应序号）：\n"
+            f"{transfer_sentence}每轮最多提交一个动作，"
+            f"动作最终是否成功以系统记录为准。{options_label}\n"
             f"{option_names if option_names else '暂无其他 Agent'}"
         )
     return "\n\n".join(parts)

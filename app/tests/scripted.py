@@ -213,12 +213,15 @@ class ScriptedAgentSeam:
         # 接缝的**输入侧**全记下来：prompt 注入（S5）没有 HTTP 可观测面，因此按仓库既有做法
         # 用脚本化替身取证。``prompt`` 复用真适配器的同一个合成函数（不手抄一份文案），
         # 这样断言落在具体片段上时，测的就是**真的会被送进模型的那段文本**。
+        # 替身只跑**队长**那一侧（成员由真适配器里的 TeamPipeline 运行），因此 `team` 非空
+        # 就是队长轮次：同一个 `_system_prompt` 按这个标记合成，不另抄一份文案（#179 C）。
         prompt = _system_prompt(
             agent,
             mentioned=mentioned,
             task_context=task_context,
             mandatory_reply=mandatory_reply,
             structured_silence=supports_tool_calling(provider_of(str(agent.get("model_id") or ""))),
+            leader=team is not None,
         )
         with self._lock:
             self.calls.append(

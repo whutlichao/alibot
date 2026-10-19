@@ -260,7 +260,12 @@ def test_team_task_human_message_wakes_only_the_leader_and_does_not_pierce(
     task = created.json()["task"]
     assert task["status"] == "todo"
     assert task["claimed_at"] is None
-    assert harness["scheduler"].pending_count() == 0
+    # 建任务只唤醒队长一轮（#179 A），没有成员轮次、也没有认领。
+    assert harness["scheduler"].pending_count() == 1
+    drain(harness)
+    assert len(harness["seam"].calls_for(leader["id"])) == 1
+    assert harness["seam"].calls_for(member["id"]) == []
+    assert _db(client).get_task(task["id"])["claimed_at"] is None
 
     response = client.post(
         f"/api/tasks/{task['id']}/messages",
@@ -277,11 +282,12 @@ def test_team_task_human_message_wakes_only_the_leader_and_does_not_pierce(
     assert leader_call["team"] is not None
 
     task_outcomes = _db(client).list_round_outcomes(task["target_id"])
-    assert [row["member_id"] for row in task_outcomes] == [leader["id"]]
+    assert [row["member_id"] for row in task_outcomes] == [leader["id"], leader["id"]]
     assert [row["member_id"] for row in outcomes(client, channel["id"])] == []
 
     thread = client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
-    assert [row["author"]["id"] for row in thread if row["kind"] == "agent"] == [leader["id"]]
+    # 线程里的 agent 正文只有队长自己的两条（建任务那一轮 + 人类消息那一轮）；成员与外援都不落消息。
+    assert [row["author"]["id"] for row in thread if row["kind"] == "agent"] == [leader["id"]] * 2
 
 
 def test_team_task_agent_message_from_a_member_wakes_the_leader(client: TestClient, harness: dict) -> None:
@@ -290,6 +296,7 @@ def test_team_task_agent_message_from_a_member_wakes_the_leader(client: TestClie
     channel = _make_team(client, leader["id"], member["id"])
     task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "进展"}).json()["task"]
     target_id = task["target_id"]
+    drain(harness)  # 建任务唤醒队长那一轮（#179 A）
 
     message = _db(client).append_message(
         target_id=target_id,
@@ -300,7 +307,8 @@ def test_team_task_agent_message_from_a_member_wakes_the_leader(client: TestClie
     )
     assert _orchestrator(client).notify(target_id, message["seq"]) == 1
     drain(harness)
-    assert len(harness["seam"].calls_for(leader["id"])) == 1
+    # 队长共两轮：建任务那一轮（#179 A）+ 成员消息这一轮。
+    assert len(harness["seam"].calls_for(leader["id"])) == 2
     assert harness["seam"].calls_for(member["id"]) == []
 
 
@@ -308,6 +316,7 @@ def test_leader_agent_message_in_a_task_thread_wakes_nobody(client: TestClient, 
     leader = create_agent(client, name="队长").json()["agent"]
     channel = _make_team(client, leader["id"])
     task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "收口"}).json()["task"]
+    drain(harness)  # 建任务唤醒队长那一轮（#179 A）
 
     message = _db(client).append_message(
         target_id=task["target_id"],
@@ -325,6 +334,7 @@ def test_owner_reassignment_wakes_the_leader_not_the_new_assignee(client: TestCl
     member = create_agent(client, name="成员").json()["agent"]
     channel = _make_team(client, leader["id"], member["id"])
     task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "改派"}).json()["task"]
+    drain(harness)  # 建任务唤醒队长那一轮（#179 A）
 
     response = client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": member["id"]})
     assert response.status_code == 200
@@ -332,7 +342,7 @@ def test_owner_reassignment_wakes_the_leader_not_the_new_assignee(client: TestCl
     drain(harness)
 
     assert client.get(f"/api/tasks/{task['id']}").json()["task"]["assignee_member_id"] == member["id"]
-    assert len(harness["seam"].calls_for(leader["id"])) == 1
+    assert len(harness["seam"].calls_for(leader["id"])) == 2
     assert harness["seam"].calls_for(member["id"]) == []
 
 
@@ -342,6 +352,7 @@ def test_agent_transfer_to_another_member_wakes_the_leader(client: TestClient, h
     target = create_agent(client, name="新受派者").json()["agent"]
     channel = _make_team(client, leader["id"], source["id"], target["id"])
     task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "转派"}).json()["task"]
+    drain(harness)  # 建任务唤醒队长那一轮（#179 A）
 
     # owner 先把任务指派给 source（唤醒队长），再模拟 source 的一次 Agent 转派。
     assert (
@@ -363,7 +374,7 @@ def test_agent_transfer_to_another_member_wakes_the_leader(client: TestClient, h
     )
     drain(harness)
 
-    assert len(harness["seam"].calls_for(leader["id"])) == 2
+    assert len(harness["seam"].calls_for(leader["id"])) == 3  # 建任务 + owner 改派 + Agent 转派
     assert harness["seam"].calls_for(target["id"]) == []
 
 
@@ -399,9 +410,13 @@ def test_claiming_a_task_never_happens_in_a_team_channel(client: TestClient, har
 
     assert task["claimed_at"] is None
     assert task["status"] == "todo"
-    assert harness["scheduler"].pending_count() == 0
+    # 待跑的是**队长**那一轮（建任务唤醒），不是候选成员的认领轮。
+    assert harness["scheduler"].pending_count() == 1
+    drain(harness)
+    assert len(harness["seam"].calls_for(leader["id"])) == 1
     assert _orchestrator(client).claim_new_task(task["id"], channel["id"]) == 0
     assert client.get(f"/api/tasks/{task['id']}").json()["task"]["claimed_at"] is None
+    assert harness["seam"].calls_for(member["id"]) == []
 
 
 # ─── autonomous / DM 不变 ────────────────────────────────────────────────

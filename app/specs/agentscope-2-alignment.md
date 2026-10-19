@@ -36,7 +36,7 @@
 | **D13** | **Plan 的落点。** 新增运行期 `plan_run` / `plan_task` 表（按 `member + target + run`），与既有「任务」五态**严格分离**；只在**运行面板 / SSE** 展示，**不进看板、未读、搜索**。必须补清理/保留策略与迁移。 | Plan 是成员的**工作清单**，不是用户的任务对象；它**不新增 target**（只挂在既有 target 上），不计未读、不唤醒、不耗预算。保留策略见 §3.5。 |
 | **D14** | **Workspace / 权限配置粒度。** **频道**配置项目根；**每个 Agent** 可配 `local` / `docker` 后端与权限模式。 | 频道根是共享项目边界；Agent 级后端/权限是隔离与信任的粒度。频道默认值可被 Agent 覆盖，但 Agent 不能越出频道根（local）或容器挂载（docker）。 |
 | **D15** | **本地 shell 边界。** 本地模式默认**只开文件工具**并强制根目录限定；**Bash 默认仅在 Docker 后端开放**。本地 Bash 必须**显式开启**、**逐次审批**并**明确告知无沙箱**。 | “本地 Bash = 主机进程”这条事实不能被文案掩盖；默认关闭是安全边界，不是能力缺失。显式开启的用户接受无沙箱风险。 |
-| **D16** | **team 模式下 `auto_claim`。** 关闭该频道**全部成员**的 `auto_claim`；任务只能由 **owner 指派**或**队长经 `TeamAssign` 分派**。 | `auto_claim` 是配置，不在 team 模式下被读取；不删除既有列、不改 autonomous 行为。队长分派仍走 `TeamAssign` 预算，不产生“认领”。 |
+| **D16** | **team 模式下 `auto_claim`。** 关闭该频道**全部成员**的 `auto_claim`；任务只能由 **owner 指派**或**队长经 `TeamAssign` 分派**。 | `auto_claim` 是配置，不在 team 模式下被读取；不删除既有列、不改 autonomous 行为。队长分派仍走 `TeamAssign` 预算，不产生“认领”。**#179 补充（ADR-0025）**：建任务仍**不认领**，但向队长投递一轮必答——“不认领”与“零唤醒”是两件事。 |
 | **D17** | **穿透的可见性。** 穿透是 **pipeline 外的一次性直答**：其回复照常落为**频道消息**；**D2 只约束 pipeline 成员输出**。 | 穿透回复会占用一条频道消息与未读（既有语义），但不进入 team pipeline、不产生 `team_assignment`、不再唤醒任何人。 |
 
 ### 1.2 第二轮 ask 追加裁定（D18–D23，已由用户裁定）
@@ -50,7 +50,7 @@
 | **D20** | **Plan / SOP 启动面。** Plan 在每个**任务/team 轮次**自动可用并持久化；SOP 只能由 **owner 显式启动**（或队长在 `TeamAssign` 中建议、由 owner 确认），Agent **不能自行创建并运行 SOP**。 | Plan 是轮次内建能力；SOP 是 owner 的运行编排，不是模型的自由动作。 |
 | **D21** | **MCP / Skill 来源。** 本轮只支持**本机目录 / 上传 zip / 本机 stdio 与 HTTP MCP**，不做远程市场或自动下载。 | 不引入第三方内容市场、远程注册表、自动更新；远端 MCP 只按用户显式配置的连接串访问，并单独做数据面告知。 |
 | **D22** | **权限档位。** 对外只暴露 `read-only` / `ask-writes`（默认）/ `trusted-writes`（工作目录内自动写）；框架的 `DEFAULT`/`EXPLORE` 映射到前两档，**不暴露 `BYPASS`**；`DONT_ASK` 不暴露。 | 没有“完全跳过安全审批”的 UI 档位；`trusted-writes` 仍只限工作目录内，越界写仍要审批。 |
-| **D23** | **team 模式作用范围（Q11 = B）。** team 模式覆盖该频道的 **channel 型 target 与全部 task target**；**任务线程也只唤醒队长**。既有任务五态保留（owner 与成员的结构化工具维护；队长可分派），但**认领与受派者唤醒在 team 模式任务线程中不再是唤醒路径**；`auto_claim` 已按 D16 全关；`TeamAssign` 在任务线程可用并记入运行期分派。 | 非队长的任务受派者不会被任务消息唤醒；任务线程的协调权集中到队长，`in_review → done` 仍保留“受派者不能批准自己、owner 恒可”，队长为受派者时只能由 owner 批准。任务五态本身、`task` 行、看板、任务线程消息流与任务 target 预算都保留。 |
+| **D23** | **team 模式作用范围（Q11 = B）。** team 模式覆盖该频道的 **channel 型 target 与全部 task target**；**任务线程也只唤醒队长**。既有任务五态保留（owner 与成员的结构化工具维护；队长可分派），但**认领与受派者唤醒在 team 模式任务线程中不再是唤醒路径**；`auto_claim` 已按 D16 全关；`TeamAssign` 在任务线程可用并记入运行期分派。 | 非队长的任务受派者不会被任务消息唤醒；任务线程的协调权集中到队长，`in_review → done` 仍保留“受派者不能批准自己、owner 恒可”，队长为受派者时只能由 owner 批准。任务五态本身、`task` 行、看板、任务线程消息流与任务 target 预算都保留。**#179 补充（ADR-0025）**：任务线程的唤醒点补上**建任务**（投递队长一轮必答，仍不认领）；owner 改派 / Agent 转派的那一轮也改为**必答**（确定信号）。 |
 
 ## 2. 现状与 gap
 
@@ -186,6 +186,11 @@ class AgentSeam(Protocol):
       → 解析 team 配置：channel target 自身；task target 经 task.channel_id 查所属频道
       → 唤醒集合 = {队长}（若队长可用；task target 不做穿透）
       → 队长不可用 ⇒ 零投递，记录可读原因（D18）
+建任务（owner POST /api/channels/{id}/tasks）
+  → notify_task_created(task_id, channel_id)        ← #179 A / ADR-0025
+      ├─ 非 team 频道：转调既有的 claim_new_task（认领逻辑只有一份）
+      └─ team 频道：向队长投递一轮（from_seq = 建任务那条 system 的 seq，mandatory_reply=True）
+            仍不认领 / 不改任务行 / 不唤醒成员 / 不扣跳；队长不可用 ⇒ invalid-leader
   → 队长轮次：run_round_stream
       → 按当前频道成员重建 BudgetedTeamPipeline（D11）
       → 队长可调用 TeamAssign
@@ -198,9 +203,10 @@ class AgentSeam(Protocol):
 
 任务 target 的额外规则：
 
-- **创建**：owner 在 team 频道创建任务后**不认领**（D16 / Q11=B）；任务停在 `todo`，不唤醒任何人。
-- **owner 改派**：`update_task_assignee` 仍写任务行、追加 `system` 记录（ADR-0005）；`notify_task_assignment` 在 team 模式唤醒**队长**，不唤醒新受派者。若新受派者就是队长，等价于唤醒队长。
-- **Agent 转派**：`notify_task_reassignment` 在 team 模式唤醒**队长**；若 actor 就是队长，则不自我唤醒（`system` 记录仍落库）。
+- **创建**：owner 在 team 频道创建任务后**不认领**（D16 / Q11=B）；任务停在 `todo`。但**向队长投递一轮**且
+  `mandatory_reply=True`（#179 A / ADR-0025）：不唤醒成员、不穿透、不扣跳、不写 `team_assignment`。
+- **owner 改派**：`update_task_assignee` 仍写任务行、追加 `system` 记录（ADR-0005）；`notify_task_assignment` 在 team 模式唤醒**队长**，不唤醒新受派者，且那一轮 `mandatory_reply=True`（#179 B）。若新受派者就是队长，等价于唤醒队长。
+- **Agent 转派**：`notify_task_reassignment` 在 team 模式唤醒**队长**且 `mandatory_reply=True`；若 actor 就是队长，则不自我唤醒（`system` 记录仍落库）。
 - **认领**：`claim_new_task()` 在 team 频道直接返回 0；`claim_task` 不成为唤醒路径；`claimed_at` 保持既有列与 autonomous 语义。
 - **任务五态**：仍由 `update_task_status` / `update_task_assignee` / `claim_task`（autonomous）维护；team 任务线程中只有队长会跑任务轮次，因此只有队长能通过成员面结构化工具提交 `SetTaskStatusAction` / `TransferTaskAction`，owner 仍可经 HTTP 维护。`in_review → done` 保留“受派者不能批准自己、owner 恒可”：队长不是受派者时可由队长批准；队长是受派者时只能由 owner 批准。
 - **穿透**：task target 在 team 模式下**不做穿透**——只唤醒队长；@ 未加入成员不会得到一次性送达。channel target 仍按 D17 穿透。
@@ -216,8 +222,9 @@ class AgentSeam(Protocol):
 | task | team | human | 只唤醒队长；不穿透 |
 | task | team | agent（队长） | **零唤醒** |
 | task | team | agent（非队长） | 只唤醒队长（若队长不是作者） |
-| task | team | owner 改派 / Agent 转派 | 只唤醒队长；不唤醒新受派者；actor 是队长时零唤醒 |
-| task | team | 创建 / 认领 | 零唤醒；创建后不认领 |
+| task | team | owner 改派 / Agent 转派 | 只唤醒队长且**必答**（`mandatory_reply=True`，ADR-0025）；不唤醒新受派者；actor 是队长时零唤醒 |
+| task | team | 创建 | **只唤醒队长一轮且必答**（#179 A / ADR-0025）；不认领、不改任务行、不扣跳、不写 `team_assignment` |
+| task | team | 认领 | 零唤醒；`claim_new_task()` 在 team 频道直接返回 0（不变） |
 | task | team | system（其它） | 零唤醒 |
 | channel / task | autonomous | 任意 | 既有 `notify` 不变 |
 | dm | autonomous | 任意 | 既有 `notify` 不变 |
@@ -864,11 +871,12 @@ graph TD
 | D13 Plan 落点 | ADR-0023 | `plan_run` / `plan_task`；`GET /api/targets/{id}/plan` | README 数据模型 + 端点；CONTEXT **Plan** |
 | D14 频道根 + Agent 后端/权限 | ADR-0021 | `channel.workspace_*` / `agent_config.workspace_*` | CONTEXT **工作区项目根** / **工作区后端** |
 | D15 本地 shell 边界 | ADR-0021 | `agent_config.allow_local_shell`；`workspace.WorkspaceRootGuard` | README「Workspace」；CONTEXT **工作区后端** |
-| D16 team 下 auto_claim | ADR-0022 | `orchestration.claim_new_task` 的 team 早退 | README「team 模式」；CONTEXT **认领** |
+| D16 team 下 auto_claim | ADR-0022；#179 补 ADR-0025 | `orchestration.claim_new_task` 的 team 早退；建任务仍不认领（改走 `notify_task_created`） | README「team 模式」；CONTEXT **认领** / **唤醒** |
 | D17 穿透可见性 | ADR-0018 | `_notify_team` 的穿透候选（channel only） | README「穿透」；CONTEXT **穿透** |
 | D18 队长不可用 | ADR-0018 | `leader_status`；`team_run.status='invalid-leader'` | README「team 模式」；CONTEXT **队长** |
 | D19 HITL 持久性 | ADR-0021 §四 | `approval_request`；`DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600` | README「Workspace / 权限 / 审批」；CONTEXT **审批** |
 | D20 Plan / SOP 启动面 | ADR-0023 | Plan 工具自动装配；`POST /api/sops/{id}/runs`（owner） | CONTEXT **Plan** / **SOP** |
 | D21 MCP / Skill 来源 | ADR-0021 §三 | `mcp_server` / `skill`；`env_names` | README「Workspace」；CONTEXT **MCP 声明** / **Skill** |
 | D22 权限档位 | ADR-0021 §四 | `permissions.PERMISSION_MODES` / `map_permission_mode` | README「Workspace」；CONTEXT **权限档** / **权限规则** |
-| D23 team 作用范围（B） | ADR-0022 | `_team_config`（task → channel.mode）；`_notify_team` 的 task 分支 | README「team 模式」；CONTEXT **任务线程** / **唤醒** |
+| D23 team 作用范围（B） | ADR-0022；#179 补 ADR-0025 | `_team_config`（task → channel.mode）；`_notify_team` 的 task 分支；`notify_task_created` / `_notify_team_task_created` | README「team 模式」；CONTEXT **任务线程** / **唤醒** / **回应判断** |
+| #179 建任务唤醒队长 + 队长身份 prompt | **ADR-0025** | `notify_task_created`；`_notify_team_task_created`；`_notify_team_task_assignee` 的 `mandatory_reply`；`_system_prompt(..., leader=True)` | CONTEXT **唤醒** / **回应判断** / **队长** / **TeamAssign / 分派**；`app/specs/issue-179-acceptance.md` |
