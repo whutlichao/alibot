@@ -189,7 +189,9 @@ def _configure(
         connection.commit()
 
 
-def _seam(database: Any, *, broker: ApprovalBroker | None = None, environ: dict[str, str] | None = None) -> Any:
+def _seam(
+    database: Any, *, broker: ApprovalBroker | None = None, environ: dict[str, str] | None = None
+) -> Any:
     return AgentScopeAgentSeam(
         timeout_seconds=10.0,
         environ=environ,
