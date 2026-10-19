@@ -14,7 +14,9 @@
  * 5. 非法路径 / 非法档位 / team 无合法队长时显示后端可读原因，界面不改口；
  * 6. 任务视图读取所属频道配置并显示「任务线程只唤醒队长」；
  * 7. 私信没有这条面（入口隐藏）；
- * 8. 新增词条在两份词条表里都取到值。
+ * 8. 新增词条在两份词条表里都取到值；
+ * 9. 频道头的**协作模式 pill**：不必打开弹窗就看出「自主」/「队长制 · 队长名」，
+ *    私信下隐藏，读不到配置时隐藏，保存后按响应立刻更新，切频道按新频道读数重铺。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -336,7 +338,12 @@ function createHarness(options) {
         + " openChannelConfigModal, closeChannelConfigModal, loadChannelConfig,"
         + " renderChannelConfigModal, selectChannelConfigMode, selectChannelConfigBackend,"
         + " selectChannelConfigPermission, submitChannelConfig, loadTaskChannelConfig,"
-        + " renderTaskThread, openTask, applySettings, t };\n",
+        + " renderTaskThread, openTask, applySettings, t };\n"
+        // pill 的读数入口是本票新增的：基线副本（改前的 app.js）里没有它。用 `typeof` 判存
+        // （未声明的标识符在 `typeof` 下不抛错），于是同一份用例能在改前 / 改后两个 revision 上跑，
+        // 改前那些用例会以「没有这个入口」红。
+        + "if (typeof loadActiveChannelMode === 'function')"
+        + " globalThis.__channelConfigTest.loadActiveChannelMode = loadActiveChannelMode;\n",
     ),
     context,
     { filename: appPath },
@@ -820,10 +827,214 @@ test("新增词条在 zh-CN / en 两份词条表里都取到值", () => {
     "channelConfig.save",
     "channelConfig.saved",
     "channelConfig.saveFailed",
+    "channelConfig.modeBadge.title",
+    "channelConfig.modeBadge.teamWithLeader",
     "task.teamNotice",
   ];
   for (const key of keys) {
     assert.ok(harness.catalogs["zh-CN"][key], "zh-CN 缺词条：" + key);
     assert.ok(harness.catalogs.en[key], "en 缺词条：" + key);
   }
+});
+
+/* ─── 7. 频道头的协作模式 pill（不打开弹窗就看出自主 / 队长制） ──────────
+   判据全部落在**外部可观察行为**上：pill 的可见文本 / `hidden` / 可读的 `title` 与 `aria-label`，
+   以及它在 `index.html` 里的落点（`#chanTitle` 之后、`.chan-tools` 之前，且不在 `.chan-title` 里）。
+   不读实现里的任何内部布尔。 */
+
+/** 连等几轮宏任务：pill 的读数要经过「读配置 → 读成员 → 重绘」两跳异步。 */
+async function settle() {
+  for (let round = 0; round < 6; round += 1) await flush();
+}
+
+/** 一个频道配置 + 成员表都读得到的 `fetch` 替身（`ch_1`；口径与后端一致）。 */
+function channelFetch(overrides, members, patches) {
+  return (url, request) => {
+    const method = request.method || "GET";
+    if (url === "/api/channels/ch_1/config" && method === "GET") {
+      return { ok: true, status: 200, json: async () => configPayload(overrides) };
+    }
+    if (url === "/api/channels/ch_1/config" && method === "PATCH") {
+      if (patches) return patches(request);
+      return { ok: true, status: 200, json: async () => configPayload(overrides) };
+    }
+    if (url === "/api/channels/ch_1/members") {
+      return { ok: true, status: 200, json: async () => members || membersPayload() };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+}
+
+test("team 频道：pill 显示「队长制 · 队长名」；配置还没读回时先隐藏，不伪造结论", async () => {
+  const harness = createHarness({
+    fetch: channelFetch({ mode: "team", team_leader_member_id: "m_1", leader_available: true }),
+  });
+  const pill = harness.elementFor("#chanModePill");
+
+  harness.loadChannel();
+  assert.equal(pill.hidden, true, "配置还没读回时 pill 隐藏（不伪造 team / autonomous 结论）");
+
+  await harness.api.loadActiveChannelMode();
+  await settle();
+  assert.equal(pill.hidden, false, "读回 team 配置后 pill 出现");
+  assert.equal(pill.textContent, "队长制 · Ada", "文本 = 模式名 + 队长显示名，中间是「·」");
+  assert.match(pill.getAttribute("title"), /协作模式/, "title 说明它是协作模式");
+  assert.match(pill.getAttribute("title"), /队长制 · Ada/, "title 带当前值");
+  assert.equal(pill.getAttribute("aria-label"), pill.getAttribute("title"), "aria-label 与 title 同义");
+});
+
+test("autonomous 频道：pill 显示「自主」", async () => {
+  const harness = createHarness({ fetch: channelFetch({ mode: "autonomous" }) });
+
+  harness.loadChannel();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+
+  const pill = harness.elementFor("#chanModePill");
+  assert.equal(pill.hidden, false);
+  assert.equal(pill.textContent, "自主");
+  assert.match(pill.getAttribute("aria-label"), /自主/);
+});
+
+test("pill 的落点：在 #chanTitle 之后、.chan-tools 之前，且不在 .chan-title 里（那里带 ellipsis）", () => {
+  const html = fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8");
+  const pill = html.indexOf('id="chanModePill"');
+  assert.ok(pill > 0, "index.html 里应当有这颗 pill");
+  assert.ok(html.indexOf('id="chanTitle"') < pill, "pill 在 #chanTitle 之后");
+  assert.ok(pill < html.indexOf('class="chan-tools"'), "pill 在 .chan-tools 之前");
+
+  // 「不在 .chan-title 里」：标题的 `<h1 class="chan-title">` 在 pill 之前开、在 pill 之前闭。
+  const titleOpen = html.lastIndexOf('<h1 class="chan-title"', pill);
+  const titleClose = html.lastIndexOf("</h1>", pill);
+  assert.ok(titleOpen >= 0 && titleClose > titleOpen && titleClose < pill, "pill 不在 .chan-title 里");
+
+  // 标题那条 ellipsis 语义一个字不改（pill 若挪进去就会被截断）。
+  const css = fs.readFileSync(path.join(STUDIO_DIR, "app.css"), "utf8");
+  assert.match(
+    css,
+    /\.chan-title span \{[^}]*overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/,
+    ".chan-title span 的 ellipsis 语义保持原样",
+  );
+  assert.match(css, /\.chan-mode-pill \{[^}]*border-radius: var\(--r-pill\)/, "pill 有自己的 pill 样式");
+});
+
+test("私信下 pill 隐藏：私信没有频道 mode，也不带上一频道的文本与标签", async () => {
+  const harness = createHarness({ fetch: channelFetch({ mode: "team", team_leader_member_id: "m_1" }) });
+  const pill = harness.elementFor("#chanModePill");
+
+  // 先在频道里把它铺出来（这样后面的「不残留」才不是空断言）
+  harness.loadChannel();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+  assert.equal(pill.textContent, "队长制 · Ada");
+  assert.ok(pill.getAttribute("aria-label"));
+
+  harness.loadDm();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+
+  assert.equal(pill.hidden, true, "私信下不显示协作模式");
+  assert.equal(pill.textContent, "", "隐藏时不残留上一个频道的文本");
+  // 隐藏件不能带着上一频道的可读标签：这里只断言「读不到名字」，不钉死是「摘掉属性」
+  // 还是「写成空串」（两种表达在真实 DOM 里都是没有名字）。
+  assert.ok(!pill.getAttribute("title"), "隐藏时不携带上一频道的 title");
+  assert.ok(!pill.getAttribute("aria-label"), "隐藏时不携带上一频道的 aria-label");
+});
+
+test("频道配置读不到：pill 隐藏，不伪造 team / autonomous 结论", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/channels/ch_1/config") {
+        return { ok: false, status: 500, json: async () => ({ error: "后端读取失败" }) };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+
+  harness.loadChannel();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+
+  const pill = harness.elementFor("#chanModePill");
+  assert.equal(pill.hidden, true, "读不到配置就不下结论，pill 保持隐藏");
+  assert.equal(pill.textContent, "");
+});
+
+test("队长成员读不到：pill 只显示「队长制」，不加占位名", async () => {
+  const harness = createHarness({
+    fetch: channelFetch({ mode: "team", team_leader_member_id: "m_9", leader_available: true }),
+  });
+
+  harness.loadChannel();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+
+  const pill = harness.elementFor("#chanModePill");
+  assert.equal(pill.hidden, false);
+  assert.equal(pill.textContent, "队长制", "成员表里没有这位队长时只显示模式名");
+});
+
+test("在设置面把 team 改回 autonomous 并保存：pill 立刻变「自主」（不刷新页面）", async () => {
+  let patched = false;
+  const harness = createHarness({
+    fetch: channelFetch({ mode: "team", team_leader_member_id: "m_1", leader_available: true }, null, () => {
+      patched = true;
+      return { ok: true, status: 200, json: async () => configPayload({ mode: "autonomous" }) };
+    }),
+  });
+  harness.loadChannel();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+
+  const pill = harness.elementFor("#chanModePill");
+  assert.equal(pill.textContent, "队长制 · Ada");
+
+  await harness.open();
+  await harness.click(harness.modeCard("autonomous"));
+  await harness.click(harness.saveButton());
+  await settle();
+
+  assert.equal(patched, true, "保存确实提交了 PATCH");
+  assert.equal(pill.textContent, "自主", "pill 按响应里的新配置更新，不需要刷新页面");
+  assert.match(pill.getAttribute("aria-label"), /自主/);
+});
+
+test("切频道：pill 按新频道的读数重铺，不残留上一个频道的模式", async () => {
+  const harness = createHarness({
+    fetch: (url, request) => {
+      const method = request.method || "GET";
+      if (url === "/api/channels/ch_1/config" && method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            configPayload({ mode: "team", team_leader_member_id: "m_1", leader_available: true }),
+        };
+      }
+      if (url === "/api/channels/ch_2/config" && method === "GET") {
+        return { ok: true, status: 200, json: async () => configPayload({ channel_id: "ch_2" }) };
+      }
+      if (url === "/api/channels/ch_1/members" || url === "/api/channels/ch_2/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+
+  harness.loadChannel("ch_1", "设计系统重构");
+  await harness.api.loadActiveChannelMode();
+  await settle();
+  const pill = harness.elementFor("#chanModePill");
+  assert.equal(pill.textContent, "队长制 · Ada");
+
+  harness.api.state.channels = [channel("ch_1", "设计系统重构"), channel("ch_2", "另一个频道")];
+  harness.api.state.activeChannelId = "ch_2";
+  harness.api.renderHeader();
+  await harness.api.loadActiveChannelMode();
+  await settle();
+
+  assert.equal(pill.textContent, "自主", "切到 autonomous 频道后 pill 跟着新频道走");
 });
