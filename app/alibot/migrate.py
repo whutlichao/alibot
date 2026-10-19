@@ -780,6 +780,63 @@ def _step_16_to_17(conn: sqlite3.Connection) -> int:
     return max(conn.execute(COPY_REMOTE_CONSENT_SCOPE_SQL).rowcount, 0)
 
 
+# ``17 → 18`` 的两列（ADR-0026 §二）：频道级 = 默认档（``NULL`` = 关闭），Agent 级 = 覆盖
+# （``NULL`` = 跟随频道）。``web_access`` 不是新表：它与 ``workspace_backend`` 同级，是**单值配置**。
+WEB_ACCESS_TABLES: tuple[str, ...] = ("channel", "agent_config")
+
+
+def _step_17_to_18(conn: sqlite3.Connection) -> int:
+    """Agent 联网的库形态（#184 / ADR-0026 §二 / §四）：`web` 档 + 两个 ``web_access`` 列。
+
+    本步只做两件 DDL 级的事，**不动任何既有行的取值**（返回 0 行改动）：
+
+    - 给 ``channel`` 与 ``agent_config`` 补 ``web_access``（连列级 ``CHECK`` 一起，与 ``9 → 10`` /
+      ``16 → 17`` 同一手法）；
+    - **重建** ``remote_consent_scope``：它的取值白名单是**表级** ``CHECK``，而 SQLite 没有
+      ``ALTER TABLE … ADD CONSTRAINT``，所以把 ``web`` 纳入白名单只能走 :func:`_rebuild_table`
+      （建新表 / 逐列复制 / ``DROP`` 原名表 / 改名回来）。
+
+    **不变填也不丢数据**（ADR-0015 的只前进纪律）：旧频道的 ``web_access`` 停在 ``NULL``（= 关闭，
+    与升级前「没有联网工具」逐字等价）；旧 Agent 的也停在 ``NULL``（= 跟随频道）；
+    ``remote_consent_scope`` 的既有行由 :func:`_rebuild_table` 逐列原样复制。这里不造第二个
+    ``web`` 确认行、也不按今天的配置倒推历史。
+
+    **重复执行是空操作**：表级 DDL 里已经点名 ``web`` 就跳过重建（与 ``14 → 15`` 同一条幂等纪律，
+    防止手工重放把同一张表反复重建）。
+    """
+    _create_missing_tables(conn, ("remote_consent_scope",))
+    for table in WEB_ACCESS_TABLES:
+        _add_missing_columns(conn, table)
+    stored = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'remote_consent_scope'"
+    ).fetchone()
+    if stored is not None and "'web'" in _normalize_sql(_without_comments(str(stored[0]))):
+        return 0
+    _rebuild_table(conn, "remote_consent_scope")
+    return 0
+
+
+# ``18 → 19`` 的一列（#187 / ADR-0026 §五）：频道级「容器是否可出网」开关。它不是新表，也不是
+# 白名单——白名单复用 ``permission_rule`` 里 ``fetch`` 的 allow 规则的 host（D3）。
+DOCKER_EGRESS_TABLES: tuple[str, ...] = ("channel",)
+
+
+def _step_18_to_19(conn: sqlite3.Connection) -> int:
+    """Docker 后端容器网络策略的库形态（#187 / ADR-0026 §五）：``channel.docker_egress``。
+
+    只加一列（连列级 ``CHECK`` 一起，与 ``16 → 17`` / ``17 → 18`` 同一手法），**不动任何既有行的
+    取值**（返回 0 行改动）：旧频道的 ``docker_egress`` 停在 0，读路径把它解释成「容器默认无网」。
+    这**不是回填**，而是本版比上一版更严的默认值——ADR-0026 §五 的裁定就是「容器默认无网」，
+    升级不应把旧频道静默留在有网状态。
+
+    **重复执行是空操作**：:func:`_add_missing_columns` 只补缺的列。
+    """
+    _create_missing_tables(conn, DOCKER_EGRESS_TABLES)
+    for table in DOCKER_EGRESS_TABLES:
+        _add_missing_columns(conn, table)
+    return 0
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -841,6 +898,18 @@ STEPS: tuple[MigrationStep, ...] = (
         17,
         "agentscope-2 workspace/permission/mcp/skill expand",
         _step_16_to_17,
+    ),
+    MigrationStep(
+        17,
+        18,
+        "agent web access config (remote_consent_scope 的 web 档 + 两个 web_access 列)",
+        _step_17_to_18,
+    ),
+    MigrationStep(
+        18,
+        19,
+        "docker container egress policy (channel.docker_egress)",
+        _step_18_to_19,
     ),
 )
 

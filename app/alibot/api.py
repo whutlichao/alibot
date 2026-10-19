@@ -41,6 +41,7 @@
 - ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
 - ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
 - ``POST /api/docker-images/consent``          远端 Docker 镜像的数据面确认（幂等；未确认不拉取）
+- ``POST /api/web-providers/{provider}/consent`` 联网 provider 的数据面确认（幂等；未确认不装配联网工具）
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
@@ -273,6 +274,9 @@ class AgentUpdate(BaseModel):
     permission_mode: str | None = None
     allow_local_shell: bool | None = None
     docker_image: str | None = None
+    # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：缺省 = 不提（跟随频道）。显式 ``null`` 与
+    # 该端点其余字段同一纪律——整体拒绝（回到「跟随频道」由不提交该字段表达）。
+    web_access: str | None = None
 
     @field_validator(
         "display_name",
@@ -285,6 +289,7 @@ class AgentUpdate(BaseModel):
         "permission_mode",
         "allow_local_shell",
         "docker_image",
+        "web_access",
         mode="before",
     )
     @classmethod
@@ -321,8 +326,9 @@ class ChannelConfigUpdate(BaseModel):
     """频道配置的**部分**更新（规格 §4.4 / ADR-0018 / ADR-0021）。
 
     未知键由 ``extra="forbid"`` 整体拒绝；字段缺省 = 这次请求没提到它（保持原值）。
-    ``workspace_root`` 是唯一允许显式 ``null`` 的字段（``null`` = 清空项目根，即回到「未配置」
-    的既有默认行为）；其余字段的显式 ``null`` 既不是合法取值、也不是「没提到」，整体拒绝。
+    ``workspace_root`` 与 ``web_access`` 是允许显式 ``null`` 的字段（``null`` = 清空项目根 / 关闭
+    联网，两者都是「未配置」这一合法状态，ADR-0021 §六 / ADR-0026 §二）；其余字段的显式 ``null``
+    既不是合法取值、也不是「没提到」，整体拒绝。
 
     ``team_scope`` 是只读事实（固定 ``channel+task``），不在可写字段里：提交它会被
     ``extra="forbid"`` 拒绝，而不是被静默忽略。
@@ -335,8 +341,17 @@ class ChannelConfigUpdate(BaseModel):
     workspace_root: str | None = None
     workspace_backend: str | None = None
     permission_mode: str | None = None
+    web_access: str | None = None
+    docker_egress: bool | None = None
 
-    @field_validator("mode", "team_leader_member_id", "workspace_backend", "permission_mode", mode="before")
+    @field_validator(
+        "mode",
+        "team_leader_member_id",
+        "workspace_backend",
+        "permission_mode",
+        "docker_egress",
+        mode="before",
+    )
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
         if value is None:
@@ -658,6 +673,9 @@ def create_app(
             mcp_of=database.mcp_servers_for_target,
             # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
             skills_of=database.skills_for_target,
+            # 联网配置（#186 / ADR-0026 §二）：``web_access`` 未配置时不挂任何联网工具。这条读路径
+            # **不经过** workspace——两个配置位同级但不同开关（频道没配项目根时联网仍可生效）。
+            web_of=database.web_settings_for_target,
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
@@ -1185,6 +1203,18 @@ def create_app(
         clear_docker_failure()
         return {"consent": consent}
 
+    @app.post("/api/web-providers/{provider}/consent")
+    def consent_web_provider(provider: str) -> dict[str, Any]:
+        """联网 provider 的数据面确认（#186 / D6；幂等；重复确认不覆盖首次时间）。
+
+        这条确认是 ``remote_consent_scope('web', provider)`` 的人类面**唯一**写路径，也是 ADR-0026 §四
+        那条闸门的可开启点：未确认时装配层**不挂** ``web_search`` / ``fetch``、且不发起任何请求；
+        确认之后，下一轮按 ``web_access`` 与权限档装配。``provider`` 只接受工具面自己的枚举
+        （``brave`` / ``tavily``），其它取值整条 400、不写入任何行——与 ``POST /api/docker-images/consent``
+        同形，不扩出 provider 配置或凭据管理面。确认只存时间，不存凭证与连接参数。
+        """
+        return {"consent": service.confirm_web_provider(provider)}
+
     @app.get("/api/search")
     def search(
         q: Annotated[str, Query(min_length=1, max_length=MAX_MESSAGE_BODY_LENGTH)],
@@ -1496,7 +1526,7 @@ def create_app(
 
         可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
         ``auto_claim`` / ``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` /
-        ``docker_image``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        ``docker_image`` / ``web_access``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
         校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
@@ -1517,6 +1547,7 @@ def create_app(
             permission_mode=payload.permission_mode,
             allow_local_shell=payload.allow_local_shell,
             docker_image=payload.docker_image,
+            web_access=payload.web_access,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 

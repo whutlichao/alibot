@@ -39,6 +39,7 @@ from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
 from .team import TEAM_SCOPE
+from .web import SEARCH_PROVIDERS
 from .workspace import clear_docker_failure
 
 if TYPE_CHECKING:
@@ -255,6 +256,8 @@ class WorkspaceService:
             "workspace_root",
             "workspace_backend",
             "permission_mode",
+            "web_access",
+            "docker_egress",
         }
         unknown = set(changes) - allowed
         if unknown:
@@ -293,6 +296,10 @@ class WorkspaceService:
             "workspace_root": config["workspace_root"],
             "workspace_backend": config["workspace_backend"],
             "permission_mode": config["permission_mode"],
+            # 联网档（#184 / ADR-0026 §二）：``None`` = 关闭。频道给默认值、Agent 可覆盖。
+            "web_access": config["web_access"],
+            # 容器出网开关（#187 / ADR-0026 §五）：``false``（缺省）= 容器无网。
+            "docker_egress": config["docker_egress"],
         }
 
     # ─── 任务看板与任务线程 ───────────────────────────────────────────────
@@ -631,6 +638,7 @@ class WorkspaceService:
         permission_mode: str | None = None,
         allow_local_shell: bool | None = None,
         docker_image: str | None = None,
+        web_access: str | None = None,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -672,6 +680,7 @@ class WorkspaceService:
             permission_mode=permission_mode,
             allow_local_shell=allow_local_shell,
             docker_image=docker_image,
+            web_access=web_access,
         )
         if any(
             value is not None
@@ -768,7 +777,29 @@ class WorkspaceService:
             "end_to_end_encrypted": False,
             "loopback_only": True,
             "statement": render("remote.statement", locale, faces=join_list(faces, locale)),
+            # 联网 provider 的确认行（#186 / D6）：与上面那条模型告知同源，只读、只存「何时确认过」。
+            # 它是「未确认 ⇒ 联网工具不装配」这条闸门的可读出处，也是人类面确认端点写入后能读回的证据。
+            "web_consents": self._db.list_remote_consent_scopes("web"),
         }
+
+    def confirm_web_provider(self, provider: str) -> dict[str, Any]:
+        """确认一个联网 provider 的数据面告知（#186 / D6）：``remote_consent_scope('web', provider)``。
+
+        这是 ADR-0026 §四 那条「未确认时不装配、且绝不发起任何调用」的人类面**唯一写路径**。
+        幂等（重复确认不覆盖首次时间）；只存时间，不存凭证与连接参数——凭据仍只从进程环境读（D2/D4）。
+        ``provider`` 只接受工具面自己的枚举（``brave`` / ``tavily``），不接受任意字符串。
+        """
+        locale = self._locale()
+        clean = (provider or "").strip()
+        if clean not in SEARCH_PROVIDERS:
+            raise DomainError(
+                "validation_failed",
+                render("error.web_provider_invalid", locale, values=", ".join(SEARCH_PROVIDERS)),
+                fields={
+                    "provider": render("error.field_choices", locale, values=", ".join(SEARCH_PROVIDERS))
+                },
+            )
+        return self._db.record_remote_consent_scope("web", clean)
 
     def acknowledge_remote_flow(self, provider: str) -> dict[str, Any]:
         """确认一次数据面告知。幂等；不记录也不接收任何凭证。"""
