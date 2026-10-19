@@ -267,7 +267,22 @@ FAILED tests/test_web_assembly.py::test_the_consent_endpoint_unlocks_the_tools_f
 3 passed in 1.09s
 ```
 
-**门禁**：`scripts/check.sh` 全量读数见 PR #188 的 Evidence 段（本次补做的提交之后重跑）。
+**门禁**（补做提交 `fc15dc7` 之后重跑 `scripts/check.sh` 全量）：
+
+| 步骤 | 读数 |
+| --- | --- |
+| pytest（全量，从 `app/`） | `934 passed, 10 skipped in 625.64s` |
+| ruff check | `All checks passed!` |
+| ruff format **--check** | `234 files already formatted` |
+| mypy（仓库根） | `Success: no issues found in 100 source files` |
+| pyright | `0 errors, 0 warnings, 0 informations` |
+| node --test | `tests 191 / pass 191 / fail 0` |
+| 结论 | `门禁全绿` |
+
+> 环境噪声（如实记）：pi-lens 的 turn-end 检查一度反复报 `db.py:233` / `i18n.py:233` 的
+> `[unused-ignore]`。核查结论是**陈旧缓存伪影**：两文件 `type: ignore` 计数为 0、第 233 行是普通代码
+> （`"channel_read",` / 一条 i18n 字符串），仓库 mypy 加 `--warn-unused-ignores` 对二者均为 `Success`，
+> 且清掉 `.mypy_cache`（gitignored、可重建）后重新探针不再出现。以 `scripts/check.sh` 为准。
 
 **仍未解的第二条**（原 §4.3 第 2 项，不属于 D6）：`fetch` 是否应当独立于搜索 provider 做确认——
 今天「只开 fetch、没有搜索 key」会因 provider 解析失败而两个工具都不装（D4 只给了一个 provider 概念）。
