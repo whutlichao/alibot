@@ -256,6 +256,7 @@ class WorkspaceService:
             "workspace_backend",
             "permission_mode",
             "web_access",
+            "docker_egress",
         }
         unknown = set(changes) - allowed
         if unknown:
@@ -296,6 +297,8 @@ class WorkspaceService:
             "permission_mode": config["permission_mode"],
             # 联网档（#184 / ADR-0026 §二）：``None`` = 关闭。频道给默认值、Agent 可覆盖。
             "web_access": config["web_access"],
+            # 容器出网开关（#187 / ADR-0026 §五）：``false``（缺省）= 容器无网。
+            "docker_egress": config["docker_egress"],
         }
 
     # ─── 任务看板与任务线程 ───────────────────────────────────────────────

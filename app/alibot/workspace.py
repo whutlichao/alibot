@@ -100,6 +100,10 @@ class WorkspaceSettings:
     ``root`` 是**频道**的项目边界；后端 / 权限档 / 本地 shell 开关是 Agent 级覆盖（缺省跟随
     频道）。``docker_image_consented`` 是 DB 读路径按 ``remote_consent_scope('docker', image)``
     算出的**配置事实**：本模块只消费它，不在装配时写库。
+
+    ``docker_egress`` 是**频道级**的容器出网开关（#187 / ADR-0026 §五）：``False``（缺省）⇒
+    容器以 ``--network none`` 创建。它只管**容器接不接网络**；按 host 的白名单在工具层
+    （``web.EgressPolicy``），因为两个联网工具跑在宿主进程里，容器无网挡不住它们。
     """
 
     root: str
@@ -108,6 +112,7 @@ class WorkspaceSettings:
     allow_local_shell: bool = False
     docker_image: str | None = None
     docker_image_consented: bool = False
+    docker_egress: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> WorkspaceSettings:
@@ -119,6 +124,7 @@ class WorkspaceSettings:
             allow_local_shell=bool(raw.get("allow_local_shell") or False),
             docker_image=(str(raw["docker_image"]) if raw.get("docker_image") else None),
             docker_image_consented=bool(raw.get("docker_image_consented") or False),
+            docker_egress=bool(raw.get("docker_egress") or False),
         )
 
     @property
@@ -302,7 +308,39 @@ class ProjectLocalWorkspace(_AlibotLayoutMixin, LocalWorkspace):
 
 
 class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
-    """Docker 后端：``/workspace`` 挂到频道根，框架状态同样收进 ``.alibot``。"""
+    """Docker 后端：``/workspace`` 挂到频道根，框架状态同样收进 ``.alibot``。
+
+    多出来的一件事是**容器网络策略**（#187 / ADR-0026 §五）：``docker_egress`` 由
+    :func:`assemble_docker_workspace` 在 ``initialize()`` 之前赋值，缺省 ``False`` = 容器无网。
+    """
+
+    #: 频道级的容器出网开关；缺省 ``False``，于是「忘记赋值」也不会放开出网。
+    docker_egress: bool = False
+
+    async def _create_and_start_container(self) -> None:
+        """覆写上游创建路径，把 ``HostConfig.NetworkMode`` 写进容器配置（#187）。
+
+        为什么必须动这个**私有**方法：AgentScope 2.0.10 的 ``_create_and_start_container`` 自己
+        组装 ``config`` / ``HostConfig``（只写 ``Binds``），``create_or_replace(config=…)`` 也不
+        接收网络参数——上游没有网络钩子，也没有第二处可注入的接缝。本仓因此把那份 config 的
+        **构造**收进纯函数 :func:`docker_container_config`，这里只保留上游那三步
+        （``create_or_replace`` → ``start`` → 建 backend）。升级 agentscope 时重跑
+        ``test_docker_network_policy.py``（不起 daemon 的配置断言）与
+        ``test_docker_workspace.py``（有 daemon 的端到端断言）。
+        """
+        config = docker_container_config(
+            image_tag=self._image_tag,
+            workspace_id=self.workspace_id,
+            env=self.env,
+            host_workdir=self.host_workdir,
+            network_mode=docker_network_mode(self.docker_egress),
+        )
+        self._container = await self._client.containers.create_or_replace(
+            name=f"as_ws_{self.workspace_id}",
+            config=config,
+        )
+        await self._container.start()
+        self._backend = DockerBackend(self._container, DOCKER_WORKDIR)
 
 
 def _guarded_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
@@ -396,6 +434,51 @@ async def assemble_local_workspace(
 
 
 # ─── Docker 后端（#150） ────────────────────────────────────────────────────
+
+
+#: 出网开关打开时容器接的网络：Docker 的 ``HostConfig.NetworkMode`` 只有「网络名 / none」两态，
+#: 没有「按 host 过滤」这一档。host 级白名单因此由**工具层**执行（``web.EgressPolicy``），
+#: NetworkMode 只负责「容器到底接不接网络」这半件事（ADR-0026 §五：不做通用网络策略 DSL）。
+DOCKER_EGRESS_NETWORK = "bridge"
+
+
+def docker_network_mode(docker_egress: bool) -> str:
+    """频道出网开关 → 容器网络模式：关（缺省）= ``none``，开 = :data:`DOCKER_EGRESS_NETWORK`。"""
+    return DOCKER_EGRESS_NETWORK if docker_egress else "none"
+
+
+def docker_container_config(
+    *,
+    image_tag: str | None,
+    workspace_id: str,
+    env: Mapping[str, str] | None,
+    host_workdir: str | None,
+    network_mode: str,
+) -> dict[str, Any]:
+    """容器配置 dict（含 ``HostConfig``）：上游 2.0.10 的构造 + 网络策略。
+
+    逐字对齐 ``DockerWorkspace._create_and_start_container`` 的 config（镜像 / ``sleep infinity`` /
+    working dir / label / env / bind mount），唯一多出来的是 ``HostConfig["NetworkMode"]``——
+    上游**没有任何**网络参数位（``create_or_replace(config=…)`` 也不接收）。抽成纯函数是为了让
+    「网络模式与 bind mount 都写进了容器配置」这条判据**不需要 daemon** 就能断言。
+    """
+    config: dict[str, Any] = {
+        "Image": image_tag,
+        "Cmd": ["sleep", "infinity"],
+        "WorkingDir": DOCKER_WORKDIR,
+        "Labels": {
+            "agentscope.workspace": "true",
+            "agentscope.workspace.id": workspace_id,
+        },
+    }
+    if env:
+        config["Env"] = [f"{name}={value}" for name, value in env.items()]
+
+    host_config: dict[str, Any] = {"NetworkMode": network_mode}
+    if host_workdir is not None:
+        host_config["Binds"] = [f"{os.path.abspath(host_workdir)}:{DOCKER_WORKDIR}:rw"]
+    config["HostConfig"] = host_config
+    return config
 
 
 def docker_workspace_id(member_id: str, session_id: str) -> str:
@@ -517,6 +600,7 @@ class _DockerEntry:
     last_used: float
     active: int = 0
     image: str | None = None
+    egress: bool = False
 
 
 _pool: dict[tuple[str, str], _DockerEntry] = {}
@@ -699,9 +783,11 @@ async def assemble_docker_workspace(
     image = settings.docker_image
     with _pool_lock:
         pooled = _pool.get(key)
-    if pooled is not None and pooled.image != settings.docker_image:
-        # 配置写路径改了镜像：池里的容器是旧镜像，不能复用（否则「改了配置却没生效」）。
-        # 删掉旧容器后按新配置重建；镜像本身不随容器删除。
+    if pooled is not None and (
+        pooled.image != settings.docker_image or pooled.egress != settings.docker_egress
+    ):
+        # 配置写路径改了镜像 / 出网开关：池里的容器按旧配置建的，不能复用（否则「改了配置却没
+        # 生效」）。删掉旧容器后按新配置重建；镜像本身不随容器删除。
         with _pool_lock:
             if _pool.get(key) is pooled:
                 _pool.pop(key, None)
@@ -752,6 +838,8 @@ async def assemble_docker_workspace(
         options["base_image"] = image
 
     workspace = ProjectDockerWorkspace(**options)
+    # 出网开关必须在 initialize() 之前赋值：容器就是在那一步创建的（#187）。
+    workspace.docker_egress = settings.docker_egress
     try:
         await asyncio.wait_for(workspace.initialize(), timeout=timeout)
     except Exception as error:
@@ -775,6 +863,7 @@ async def assemble_docker_workspace(
         last_used=time.monotonic(),
         active=1,
         image=image,
+        egress=settings.docker_egress,
     )
     with _pool_lock:
         _pool[key] = entry

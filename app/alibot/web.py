@@ -27,13 +27,15 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Literal, Protocol, TypeAlias
 
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import FunctionTool, ToolChunk
+
+from .i18n import SOURCE_LOCALE, Locale, render
 
 #: 模块对外的名字（装配层 #186 与测试只用这些；其余一律是内部实现）。
 __all__ = [
@@ -51,6 +53,7 @@ __all__ = [
     "SEARCH_PROVIDERS",
     "WEB_ENV_ALLOWLIST",
     "WEB_TIMEOUT_SECONDS",
+    "EgressPolicy",
     "FetchTool",
     "HttpRequest",
     "HttpResponse",
@@ -61,6 +64,7 @@ __all__ = [
     "SearchProvider",
     "UrlopenTransport",
     "WebTransportError",
+    "egress_hosts",
     "fetch_tool",
     "resolve_search_provider",
     "search_tool",
@@ -322,6 +326,46 @@ def url_host(value: str) -> str | None:
     return host.rstrip(".") or None
 
 
+@dataclass(frozen=True)
+class EgressPolicy:
+    """容器出网策略（#187 / ADR-0026 §五）：默认无网，显式允许时只放行白名单 host。
+
+    ``backend == 'docker'`` 时由装配层构造；本地后端传 ``None``（行为逐字不变）。
+    ``allowed_hosts`` 的来源是 ``permission_rule`` 里 ``fetch`` 的 allow 规则的 host（D3，
+    ``Database.web_settings_for_target`` 用 :func:`egress_hosts` 算出来）。
+
+    为什么闸门在**工具层**而不只靠容器：两个工具在**宿主机进程内**执行（``urllib``），
+    容器真的无网并不会让它们失败；反过来，容器无网也不能替工具做「白名单外拒绝」这种按 host
+    的判定（Docker 的 ``NetworkMode`` 只有 none / 网络名两态）。因此两侧各说各的一半：容器按
+    开关接不接网络，工具按同一个开关 + 白名单决定发不发请求。
+    """
+
+    enabled: bool
+    allowed_hosts: frozenset[str] = frozenset()
+    locale: Locale = SOURCE_LOCALE
+
+
+def egress_hosts(rules: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
+    """把 ``permission_rule`` 行收成容器出网的 host 白名单（D3）。
+
+    只认 ``tool_name == 'fetch'`` 且 ``behavior == 'allow'`` 的规则：``allow`` 是唯一表示
+    「这个 host 已被人显式放行」的行为；``ask`` / ``deny`` 都不构成白名单。pattern 收成 host
+    走 :func:`url_host`（与权限层、工具输入侧**同一份实现**），取不出的 pattern 丢弃——
+    「坏 pattern 什么都不匹配」与 ``match_rule`` 同一方向。空 pattern（= 该工具的全部调用）
+    不产生 host，因此它不会变成「允许一切」。
+    """
+    hosts: list[str] = []
+    for rule in rules:
+        if str(rule.get("tool_name") or "") != FETCH_TOOL_NAME:
+            continue
+        if str(rule.get("behavior") or "") != "allow":
+            continue
+        host = url_host(str(rule.get("pattern") or ""))
+        if host is not None and host not in hosts:
+            hosts.append(host)
+    return tuple(hosts)
+
+
 def _chunk(text: str, state: ToolResultState) -> ToolChunk:
     return ToolChunk(content=[TextBlock(text=text)], state=state, is_last=True)
 
@@ -336,6 +380,7 @@ def search_tool(
     transport: HttpTransport | None = None,
     environ: Mapping[str, str] | None = None,
     timeout_seconds: float = WEB_TIMEOUT_SECONDS,
+    egress: EgressPolicy | None = None,
 ) -> Any:
     """构造 ``web_search`` 工具：只读（ADR-0026 §三），只送查询词与条数。
 
@@ -363,6 +408,8 @@ def search_tool(
             query: 检索词。
             count: 期望结果条数，默认 5，最多 10。
         """
+        if egress is not None and not egress.enabled:
+            return _error(render("workspace.docker-egress-disabled", egress.locale, tool="web_search"))
         if backend is None:
             reason = resolution_error or "没有配置搜索 provider"
             return _error(f"web_search 未启用：{reason}（本次没有发起任何请求）。")
@@ -551,11 +598,16 @@ def fetch_tool(
     timeout_seconds: float = WEB_TIMEOUT_SECONDS,
     max_bytes: int = FETCH_DEFAULT_MAX_BYTES,
     max_chars: int = FETCH_DEFAULT_MAX_CHARS,
+    egress: EgressPolicy | None = None,
 ) -> Any:
     """构造 ``fetch`` 工具：**不是**只读（ADR-0026 §三：抓取按执行处理，逐次审批）。
 
     ``max_bytes`` / ``max_chars`` 是本票的硬上限（读多少字节、转成纯文本后保留多少字符）；
     ``timeout_seconds`` 是显式默认值，装配层（#186）可按需覆盖。
+
+    ``egress`` 是 #187 的容器出网策略（``backend == 'docker'`` 时由装配层注入）：开关关闭或
+    host 不在白名单时**先拒绝、零请求**，返回说明容器网络策略的可读错误，而不是等一次超时。
+    本地后端不注入（``None``），工具行为与 #186 逐字相同。
     """
     http: HttpTransport = transport if transport is not None else UrlopenTransport()
 
@@ -569,10 +621,24 @@ def fetch_tool(
         Args:
             url: 要抓取的 http / https 地址。
         """
+        if egress is not None and not egress.enabled:
+            return _error(render("workspace.docker-egress-disabled", egress.locale, tool=FETCH_TOOL_NAME))
         target = url.strip()
         parsed = urllib.parse.urlsplit(target)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             return _error(f"fetch 未执行：只支持 http / https 地址（收到 {target!r}）。")
+        if egress is not None:
+            host = url_host(target)
+            if host is None or host not in egress.allowed_hosts:
+                return _error(
+                    render(
+                        "workspace.docker-egress-host",
+                        egress.locale,
+                        tool=FETCH_TOOL_NAME,
+                        host=host or target,
+                        hosts="、".join(sorted(egress.allowed_hosts)) or "-",
+                    )
+                )
         request = HttpRequest(
             method="GET",
             url=target,

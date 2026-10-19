@@ -207,6 +207,16 @@ CATALOGS: dict[str, dict[str, str]] = {
         "workspace.docker-image-failed": "Docker 镜像拉取/构建失败：{image}：{error}",
         "workspace.docker-mount": "Docker 工作区挂载失败（{type}）：{error}",
         "workspace.docker-failed": "Docker 工作区启动失败（{type}）：{error}",
+        # #187 / ADR-0026 §五：容器默认无网。这两条是**工具结果**里的可读原因（不是超时），
+        # 与上面那一族同住一处，于是「为什么没有出网」只有一份说法、两种语言。
+        "workspace.docker-egress-disabled": (
+            "本频道的容器网络策略未允许出网：{tool} 没有发起任何请求"
+            "（在频道配置里允许容器出网后，只有白名单 host 会放行）"
+        ),
+        "workspace.docker-egress-host": (
+            "容器的出网白名单没有 {host}：{tool} 没有发起任何请求"
+            "（白名单来自 fetch 的 allow 规则，当前为 {hosts}）"
+        ),
         # ─── 权限规则 / 审批（#149） ──────────────────────────────────────
         "error.permission_rule_scope_invalid": "权限规则作用域只能是 channel 或 agent",
         "error.permission_rule_tool_empty": "权限规则的 tool_name 不能为空",
@@ -595,6 +605,15 @@ CATALOGS: dict[str, dict[str, str]] = {
         "workspace.docker-image-failed": "Docker image pull/build failed: {image}: {error}",
         "workspace.docker-mount": "Docker workspace mount failed ({type}): {error}",
         "workspace.docker-failed": "Docker workspace startup failed ({type}): {error}",
+        "workspace.docker-egress-disabled": (
+            "This channel's container network policy does not allow egress: "
+            "{tool} sent no request at all (allow container egress in the channel "
+            "configuration to permit the whitelisted hosts only)"
+        ),
+        "workspace.docker-egress-host": (
+            "The container egress whitelist does not include {host}: {tool} sent no "
+            "request at all (the whitelist comes from fetch allow rules and is now {hosts})"
+        ),
         # ─── Permission rules / approvals (#149) ─────────────────────────
         "error.permission_rule_scope_invalid": "A permission rule scope must be channel or agent",
         "error.permission_rule_tool_empty": "A permission rule tool_name cannot be empty",

@@ -341,8 +341,16 @@ class ChannelConfigUpdate(BaseModel):
     workspace_backend: str | None = None
     permission_mode: str | None = None
     web_access: str | None = None
+    docker_egress: bool | None = None
 
-    @field_validator("mode", "team_leader_member_id", "workspace_backend", "permission_mode", mode="before")
+    @field_validator(
+        "mode",
+        "team_leader_member_id",
+        "workspace_backend",
+        "permission_mode",
+        "docker_egress",
+        mode="before",
+    )
     @classmethod
     def _reject_explicit_null(cls, value: Any) -> Any:
         if value is None:

@@ -816,6 +816,27 @@ def _step_17_to_18(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ``18 → 19`` 的一列（#187 / ADR-0026 §五）：频道级「容器是否可出网」开关。它不是新表，也不是
+# 白名单——白名单复用 ``permission_rule`` 里 ``fetch`` 的 allow 规则的 host（D3）。
+DOCKER_EGRESS_TABLES: tuple[str, ...] = ("channel",)
+
+
+def _step_18_to_19(conn: sqlite3.Connection) -> int:
+    """Docker 后端容器网络策略的库形态（#187 / ADR-0026 §五）：``channel.docker_egress``。
+
+    只加一列（连列级 ``CHECK`` 一起，与 ``16 → 17`` / ``17 → 18`` 同一手法），**不动任何既有行的
+    取值**（返回 0 行改动）：旧频道的 ``docker_egress`` 停在 0，读路径把它解释成「容器默认无网」。
+    这**不是回填**，而是本版比上一版更严的默认值——ADR-0026 §五 的裁定就是「容器默认无网」，
+    升级不应把旧频道静默留在有网状态。
+
+    **重复执行是空操作**：:func:`_add_missing_columns` 只补缺的列。
+    """
+    _create_missing_tables(conn, DOCKER_EGRESS_TABLES)
+    for table in DOCKER_EGRESS_TABLES:
+        _add_missing_columns(conn, table)
+    return 0
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -883,6 +904,12 @@ STEPS: tuple[MigrationStep, ...] = (
         18,
         "agent web access config (remote_consent_scope 的 web 档 + 两个 web_access 列)",
         _step_17_to_18,
+    ),
+    MigrationStep(
+        18,
+        19,
+        "docker container egress policy (channel.docker_egress)",
+        _step_18_to_19,
     ),
 )
 
