@@ -869,6 +869,36 @@ def run_shape_step(conn: sqlite3.Connection, source_version: int) -> StepReport 
     )
 
 
+# ``19 → 20`` 的语义变更（#195 / ADR-0027）：``agent_config.auto_claim`` 缺省 0 → 1。
+# 这不是纯增量：新插入的默认值变了，存量行也要按新语义一次性回填，因此本步同时做「重建 + 回填」。
+AUTO_CLAIM_TABLES: tuple[str, ...] = ("agent_config",)
+
+# 存量行的一次性回填：只改 ``auto_claim`` 这一列（``WHERE auto_claim = 0`` 让重放是空操作）。
+BACKFILL_AUTO_CLAIM_SQL = "UPDATE agent_config SET auto_claim = 1 WHERE auto_claim = 0"
+
+
+def _step_19_to_20(conn: sqlite3.Connection) -> int:
+    """自动认领默认开启（#195 / ADR-0027）：重建 ``agent_config`` + 存量行一次性回填。
+
+    两件事，顺序固定：
+
+    1. **重建** ``agent_config``（:func:`_rebuild_table`）：按**当前 ``SCHEMA``** 的 DDL 落表，
+       于是升级库此后不写这一列的直接插入也拿到默认 1。重建逐列复制既有行，列集与数据不变；
+    2. **回填**：``UPDATE … SET auto_claim = 1 WHERE auto_claim = 0``。只改这一列，不动
+       ``updated_at``（这是语义迁移，不是一次配置写入），也不碰其它列。
+
+    返回值是**实际由 0 变 1 的行数**（``UPDATE`` 的 ``rowcount``）：重放同一库时第二次是 0 行。
+    这**不是**「把开关打开」的常规写路径——那仍然只有 ``PATCH /api/agents/{id}``；本步是一次显式的
+    一次性升级回填（ADR-0027 的代价：升级会覆盖此前显式关闭的存量行）。
+
+    索引 / 触发器随 ``DROP TABLE`` 一起消失，由执行器在本步之后施的
+    :func:`_align_to_current_schema` 按当前 ``SCHEMA`` 补回来。
+    """
+    _create_missing_tables(conn, AUTO_CLAIM_TABLES)
+    _rebuild_table(conn, "agent_config")
+    return max(conn.execute(BACKFILL_AUTO_CLAIM_SQL).rowcount, 0)
+
+
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(3, 4, "channel 型作用域数据搬迁（影子行 / 成员 / 已读 / 预算）", _step_3_to_4),
     MigrationStep(4, 5, "任务表与任务线程（task + message.task_ref + 触发器）", _step_4_to_5),
@@ -910,6 +940,12 @@ STEPS: tuple[MigrationStep, ...] = (
         19,
         "docker container egress policy (channel.docker_egress)",
         _step_18_to_19,
+    ),
+    MigrationStep(
+        19,
+        20,
+        "auto claim defaults on (agent_config rebuild + one-time backfill)",
+        _step_19_to_20,
     ),
 )
 

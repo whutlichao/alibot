@@ -77,25 +77,25 @@ def channel_with_agent_and_auto_claim(client: TestClient) -> tuple[dict, dict]:
 # ─── 1. 开关与读回 ───────────────────────────────────────────────────────────
 
 
-def test_auto_claim_defaults_off_and_round_trips_through_the_patch_endpoint(
+def test_auto_claim_defaults_on_and_round_trips_through_the_patch_endpoint(
     client: TestClient,
 ) -> None:
-    """开关缺省**关闭**（认领是显式选择），并经 ④ 的同一条写路径读写。"""
+    """开关缺省**开启**（#195 / ADR-0027），并经 ④ 的同一条写路径可关闭 / 再打开。"""
     agent = create_agent(client).json()["agent"]
-    assert agent["auto_claim"] is False
+    assert agent["auto_claim"] is True
 
     listed = client.get("/api/agents").json()["agents"]
-    assert next(item for item in listed if item["id"] == agent["id"])["auto_claim"] is False
+    assert next(item for item in listed if item["id"] == agent["id"])["auto_claim"] is True
 
-    opened = client.patch(f"/api/agents/{agent['id']}", json={"auto_claim": True}).json()["agent"]
-    assert opened["auto_claim"] is True
-    assert client.get(f"/api/agents/{agent['id']}").json()["agent"]["auto_claim"] is True
-    # 只写这一个字段：其余配置逐字不变。
-    assert opened["display_name"] == agent["display_name"]
-    assert opened["enabled"] is True
-
-    assert set_auto_claim(client, agent["id"], False)["auto_claim"] is False
+    closed = client.patch(f"/api/agents/{agent['id']}", json={"auto_claim": False}).json()["agent"]
+    assert closed["auto_claim"] is False
     assert client.get(f"/api/agents/{agent['id']}").json()["agent"]["auto_claim"] is False
+    # 只写这一个字段：其余配置逐字不变。
+    assert closed["display_name"] == agent["display_name"]
+    assert closed["enabled"] is True
+
+    assert set_auto_claim(client, agent["id"], True)["auto_claim"] is True
+    assert client.get(f"/api/agents/{agent['id']}").json()["agent"]["auto_claim"] is True
 
 
 def test_auto_claim_rejects_an_explicit_null_without_writing(client: TestClient, harness: dict) -> None:
@@ -107,7 +107,7 @@ def test_auto_claim_rejects_an_explicit_null_without_writing(client: TestClient,
     rejected = client.patch(f"/api/agents/{agent['id']}", json={"auto_claim": None})
     assert rejected.status_code == 400
     assert rejected.json()["error"]["code"] == "validation_failed"
-    assert client.get(f"/api/agents/{agent['id']}").json()["agent"]["auto_claim"] is False
+    assert client.get(f"/api/agents/{agent['id']}").json()["agent"]["auto_claim"] is True
 
     # 配置变更（含被拒的那次）不是发言：无人被唤醒，频道消息仍逐字相同。
     assert client.get(f"/api/channels/{channel['id']}/messages").json()["messages"] == before_messages
@@ -189,9 +189,10 @@ def test_claim_writes_the_record_in_the_current_locale(client: TestClient, harne
 
 
 def test_new_task_stays_unclaimed_when_the_switch_is_off(client: TestClient, harness: dict) -> None:
-    """对照读数：开关关着（缺省）时，任务保持**未认领**，且没有任何唤醒被投递。"""
+    """对照读数：开关**被显式关闭**时，任务保持**未认领**，且没有任何唤醒被投递。"""
     agent = create_agent(client).json()["agent"]
     channel = create_channel(client, name="协作频道", member_ids=[agent["id"]]).json()["channel"]
+    set_auto_claim(client, agent["id"], False)
 
     task = new_task(client, channel["id"])
 
@@ -209,6 +210,33 @@ def test_new_task_stays_unclaimed_when_the_switch_is_off(client: TestClient, har
         "used": 0,
         "remaining": 3,
     }
+
+
+def test_new_task_in_a_team_channel_stays_unclaimed_even_with_the_switch_on(
+    client: TestClient, harness: dict
+) -> None:
+    """合取判据（#195 / ADR-0027）：team 模式早退优先——成员 ``auto_claim = 1`` 也不认领。"""
+    leader = create_agent(client, name="队长").json()["agent"]
+    member = create_agent(client, name="成员").json()["agent"]
+    set_auto_claim(client, member["id"], True)
+    channel = create_channel(client, name="团队频道", member_ids=[leader["id"], member["id"]]).json()[
+        "channel"
+    ]
+    configured = client.patch(
+        f"/api/channels/{channel['id']}/config",
+        json={"mode": "team", "team_leader_member_id": leader["id"]},
+    )
+    assert configured.status_code == 200, configured.text
+
+    task = new_task(client, channel["id"])
+
+    assert task["assignee_member_id"] is None
+    assert task["claimed_at"] is None
+    assert task["status"] == "todo"
+    # 只唤醒队长（建任务唤醒），候选成员零唤醒；公开入口直接调用也不认领。
+    assert harness["scheduler"].pending_count() == 1
+    assert _orchestrator(client).claim_new_task(task["id"], channel["id"]) == 0
+    assert harness["seam"].calls_for(member["id"]) == []
 
 
 def test_new_task_stays_unclaimed_when_the_claimant_is_unavailable(client: TestClient, harness: dict) -> None:
@@ -411,6 +439,7 @@ def test_the_claim_marker_survives_a_backend_restart(launched: dict) -> None:
 def test_the_auto_claim_switch_changes_nothing_until_the_next_task(client: TestClient, harness: dict) -> None:
     """开关是**配置类取值**：写它不落消息、不唤醒、不消耗预算，且不回填已有的任务。"""
     agent = create_agent(client).json()["agent"]
+    set_auto_claim(client, agent["id"], False)
     channel = create_channel(client, name="协作频道", member_ids=[agent["id"]]).json()["channel"]
     existing = new_task(client, channel["id"], title="先有的任务")
 
@@ -744,6 +773,7 @@ def test_path_one_switch_off_leaves_no_trace_and_no_wake(client: TestClient, har
     """[S10/D7 第 1 格] 开关关闭：任务留 `todo`、线程仅 `created`、`epoch_seq=0`、无唤醒、无轮次结果。"""
     agent = create_agent(client).json()["agent"]
     channel = create_channel(client, name="协作频道", member_ids=[agent["id"]]).json()["channel"]
+    set_auto_claim(client, agent["id"], False)
 
     task = new_task(client, channel["id"], title="开关关着")
 

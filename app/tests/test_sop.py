@@ -192,6 +192,10 @@ def _run(client: TestClient, run_id: str) -> dict[str, Any]:
 def _two_agents(client: TestClient) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     executor = create_agent(client, name="执行者").json()["agent"]
     verifier = create_agent(client, name="校验者").json()["agent"]
+    # SOP 用例要观察「任务行不被 SOP 触碰」：默认开启的自动认领会在建任务时先推进状态，
+    # 因此这里显式关闭两名成员的开关（认领不是本文件的被测量）。
+    for agent in (executor, verifier):
+        assert client.patch(f"/api/agents/{agent['id']}", json={"auto_claim": False}).status_code == 200
     channel = create_channel(client, member_ids=[executor["id"], verifier["id"]]).json()["channel"]
     return executor, verifier, channel
 
