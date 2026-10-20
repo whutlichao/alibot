@@ -25,6 +25,19 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import channel_with_agent, create_agent, create_channel, messages
 
+
+def _set_auto_claim(client: TestClient, member_id: str, value: bool) -> None:
+    """显式落定某 Agent 的认领开关。
+
+    本文件的判据是「**指针消息本身**不唤醒任何人」，与认领是两件事。``auto_claim`` 自 #195 起
+    **缺省开启**，于是「建任务」这个动作本身就会经既有认领路径投递一轮唤醒（ADR-0010 / ADR-0016），
+    在 ``pending_count`` 上叠加一个与指针消息无关的读数。这里把该变量**显式置 0**，让断言只量
+    "指针消息是否额外唤醒"——隔离后的对照读数与 #198 成文时（旧默认 0）完全一致。
+    """
+    response = client.patch(f"/api/agents/{member_id}", json={"auto_claim": value})
+    assert response.status_code == 200, response.text
+
+
 OWNER_ID = "owner"
 
 
@@ -72,6 +85,7 @@ def test_creating_a_task_appends_exactly_one_channel_pointer_message(client: Tes
 def test_channel_pointer_does_not_wake_anyone_or_count_as_unread(client: TestClient, harness: dict) -> None:
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
+    _set_auto_claim(client, agent["id"], False)
 
     task = _create_task(client, channel["id"], "检查未读边界").json()["task"]
 

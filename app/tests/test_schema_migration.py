@@ -45,6 +45,8 @@ LEDGER_FILE_NAME = "schema-migrations.jsonl"
 
 # 历史各版新增、但 SQLite 无法用 ``CREATE`` 表达的列（用带约束的 ``ADD COLUMN`` 补）。
 # 取值口径按规格 D6：``theme`` 缺省 ``'system'``、``auto_claim`` 缺省 ``0``、``claimed_at`` 空。
+# ``auto_claim`` 的 0 是**历史形态**（v12 引入时的默认值）；v21 的默认 flip 由 ``20 → 21`` 迁移
+# 重建表时落成 1，搭 v12…v20 形态的库仍然必须按当时的 DDL 补这一列。
 _COLUMN_DDL: dict[str, str] = {
     "dm_peer_member_id": 'ALTER TABLE "target" ADD COLUMN dm_peer_member_id TEXT REFERENCES member(id)',
     "task_ref": 'ALTER TABLE "message" ADD COLUMN task_ref TEXT',
@@ -406,13 +408,73 @@ def test_theme_and_auto_claim_checks_are_present_after_migration(tmp_path: Path)
             )
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE workspace_settings SET theme = 'neon' WHERE id = 1")
-        # 存量 agent 行的 auto_claim 取 DDL 默认值 0（关闭），且列级 CHECK 在库级生效。
+        # 迁移后直接从 DDL 默认值取 auto_claim = 1（#195 / ADR-0029 的默认 flip），
+        # 且列级 CHECK 在库级生效。
         conn.execute("INSERT INTO agent_config(member_id, created_at, updated_at) VALUES ('mem_x', 'x', 'x')")
         assert (
-            conn.execute("SELECT auto_claim FROM agent_config WHERE member_id = 'mem_x'").fetchone()[0] == 0
+            conn.execute("SELECT auto_claim FROM agent_config WHERE member_id = 'mem_x'").fetchone()[0] == 1
         )
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE agent_config SET auto_claim = 7 WHERE member_id = 'mem_x'")
+    finally:
+        conn.close()
+
+
+def test_v19_upgrade_flips_the_default_and_backfills_existing_auto_claim_rows(tmp_path: Path) -> None:
+    """``20 → 21``（#195 / ADR-0029）：存量 0 → 1、行与其它列不变、新插入拿到默认 1。
+
+    读数取自 CLI 报告与库内实际行：报告里该步「改动 N 行」必须等于库内由 0 变 1 的行数。
+    """
+    data_dir = tmp_path / "data"
+    db_path = _build_library(data_dir, 19)
+    columns = (
+        "member_id, role, model_id, system_prompt, enabled, auto_claim, workspace_backend, "
+        "permission_mode, allow_local_shell, docker_image, created_at, updated_at"
+    )
+    conn = _connect(db_path)
+    try:
+        _new_member(conn, "mem_y", "agent", "小红")
+        conn.execute(
+            "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, auto_claim, "
+            "created_at, updated_at) VALUES "
+            "('mem_x', '前端', 'ollama:qwen2.5', '提示', 1, 0, "
+            "'2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, auto_claim, "
+            "created_at, updated_at) VALUES "
+            "('mem_y', '研究', 'ollama:qwen2.5', '另一条提示', 1, 1, "
+            "'2026-10-03T00:00:00Z', '2026-10-04T00:00:00Z')"
+        )
+        before = [
+            tuple(row) for row in conn.execute(f"SELECT {columns} FROM agent_config ORDER BY member_id")
+        ]
+        count_before = conn.execute("SELECT COUNT(*) FROM agent_config").fetchone()[0]
+    finally:
+        conn.close()
+    assert [row[5] for row in before] == [0, 1]
+
+    completed = _run(*_migrate_argv(data_dir))
+
+    assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
+    reported = re.search(r"^ {2}20 → 21 {2}.*?改动 (\d+) 行", completed.stdout, re.MULTILINE)
+    assert reported is not None, completed.stdout
+    assert int(reported.group(1)) == 1, "报告里的改动行数必须等于库里实际由 0 变 1 的行数"
+
+    conn = _connect(db_path)
+    try:
+        after = [tuple(row) for row in conn.execute(f"SELECT {columns} FROM agent_config ORDER BY member_id")]
+        assert conn.execute("SELECT COUNT(*) FROM agent_config").fetchone()[0] == count_before
+        assert [row[5] for row in after] == [1, 1]
+        assert [row[:5] + row[6:] for row in after] == [row[:5] + row[6:] for row in before], (
+            "除 auto_claim 外的列必须逐行不变（含 updated_at）"
+        )
+        # 升级库的直接插入也拿到新默认值（重建后的 DDL 默认 1）。
+        _new_member(conn, "mem_z", "agent", "新成员")
+        conn.execute("INSERT INTO agent_config(member_id, created_at, updated_at) VALUES ('mem_z', 'x', 'x')")
+        assert (
+            conn.execute("SELECT auto_claim FROM agent_config WHERE member_id = 'mem_z'").fetchone()[0] == 1
+        )
     finally:
         conn.close()
 

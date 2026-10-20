@@ -91,10 +91,10 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-### Schema 版本与迁移（15 → 20）
+### Schema 版本与迁移（15 → 21）
 
-本代码的 `SCHEMA_VERSION = 20`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
-推进到 20，由**五个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+本代码的 `SCHEMA_VERSION = 21`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
+推进到 21，由**六个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -103,15 +103,19 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `17 → 18` | `agent web access config` | `channel.web_access` / `agent_config.web_access`（`NULL` / `'search'` / `'search+fetch'`）；`remote_consent_scope.scope_kind` 的 `CHECK` 纳入 `web`（表级 `CHECK` 只能**重建表**，重建后既有行逐行保真） |
 | `18 → 19` | `docker container egress switch` | `channel.docker_egress`（`0` = 容器 `--network none`，缺省；`1` = 容器接 Docker 默认网络，且联网工具只放行 `permission_rule` 里 `fetch` 的 `allow` 规则的 host） |
 | `19 → 20` | `channel task pointer message` | `message.task_pointer`（可空，`REFERENCES task(id)`）+ 部分唯一索引 `idx_message_task_pointer`（一张任务至多一条）+ `message_task_pointer_is_scoped` 触发器（必须是 channel 型 target 的 system 消息，且任务属于该频道）。**不回填**旧任务 |
+| `20 → 21` | `auto claim defaults on` | `agent_config.auto_claim` 的 DDL 默认 `0 → 1`；按当前 `SCHEMA` **重建** `agent_config`（升级库的新插入也拿到 1），并把存量 `auto_claim = 0` 一次性回填为 `1`（只改这一列、不动 `updated_at`；报告真实改动行数，重放是空操作） |
 
-- **只加不删、不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——`mode='autonomous'`、
-  `team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
+- **只加不删；除 `20 → 21` 的显式回填外，不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——
+  `mode='autonomous'`、`team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
   `permission_mode='ask-writes'`；`agent_config` 的四个新列是 `NULL` / `NULL` / `0` / `NULL`；
   `17 → 18` 的两列 `web_access` 也一律停在 `NULL`（= 关闭 / 跟随频道，见下面的**联网档**）；
-  `18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）。
+  `18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）；
+  `19 → 20` 的 `message.task_pointer` 停在 `NULL`（= 不是指针消息）。
+  `20 → 21` 是一次**显式的语义变更**：它把存量 `auto_claim = 0` 一次性置 1（ADR-0029），
+  因此升级会覆盖此前显式关闭的存量行；它**不回溯任务**，频道里既有的未认领任务保持原状。
 - **迁移是显式动作**：`python -m alibot --migrate --data-dir <数据目录>`；`--dry-run` 在数据目录内的临时
   副本上预演完整链，**原库 sha256 前后一致**，不建备份、不写台账、不留副本。迁移前自动把整个数据目录
-  复制成同级 `<数据目录>-backup-15-to-19-<UTC 时间戳>`；**备份失败就不迁移**。
+  复制成同级 `<数据目录>-backup-15-to-21-<UTC 时间戳>`；**备份失败就不迁移**。
 - **单向、无降级代码**：回滚 = 恢复迁移前的那份**整目录备份**（`cp -a` / 反向复制），再用旧版本代码打开。
   旧代码**不能**打开新版本库（版本闸门），所以「把 `SCHEMA_VERSION` 改回去」不是回滚。
 - **失败即回滚**：步骤链在单事务内跑；任一步失败 ⇒ `ROLLBACK`、库仍停在源版本且未被改动、备份仍在、
@@ -123,7 +127,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
-| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省关闭）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置）, **联网档**（`web_access`，可空 = 跟随频道） | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021 |
+| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省开启，仅在自主频道生效）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置）, **联网档**（`web_access`，可空 = 跟随频道） | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021 |
 | `target` | id, kind(`channel`/`dm`/`task`), dm_peer_member_id, created_at | 一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果都挂 `target_id`。channel 型是**影子行**（id 与 `channel.id` 同值、只承载 `kind`） |
 | `target_member` | target_id, member_id | **成员关系**的正本（三种 kind 共用一张表）：唤醒面与未读口径的共同来源；频道成员就是它在 channel 型上的读法 |
 | `target_read` | member_id, target_id, last_read_seq | 已读位置（未读的正本）。owner 的行是未读徽标基准，agent 的行是它自己的消费游标 |
@@ -146,7 +150,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `attachment` | id, 原文件名, 大小, MIME, **相对路径**, 创建时间, **可空的 message_id** | 附件的元数据；**字节在数据目录**、不进 SQLite。`message_id` 为空 = 未发送的草稿（读取面不暴露）。绑定一次即不可变，**没有**删除路径 |
 | `round_outcome` | member_id, target_id, base_seq, status, reason, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `target_budget.used` |
 
-- **表清单与 `SCHEMA_VERSION = 20` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
+- **表清单与 `SCHEMA_VERSION = 21` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
   新增列/表的默认值必须与读路径解释一致——改一处就要同时改这张表。
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /
@@ -233,12 +237,18 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
   收口时合并**恰好一条** `merged` 记录，`base_seq` 取窗口内**最大 seq**。被合并的消息仍在消费
   游标之后，下一次**新的**唤醒会被一并读到（不重放 ≠ 永久吞掉）。
 
-### Agent 主动认领（`auto_claim`，ADR-0010 / ADR-0016）
+### Agent 主动认领（`auto_claim`，ADR-0010 / ADR-0016 / ADR-0029）
 
 频道内**新建任务之后**，由**编排**裁决认领——不让模型自己改数据库：候选 = 该频道里**可用**
 （模型配置、启用态、凭证、远端告知）且 `auto_claim` 开启的 Agent 成员，按创建顺序取**第一个**。
-一次只认领一个，不抢、不重复指派；开关缺省**关闭**，写它只有 `PATCH /api/agents/{id}` 这一个入口。
+一次只认领一个，不抢、不重复指派；开关**缺省开启**（#195 / ADR-0029），生效条件是合取：
+`channel.mode = autonomous` **且** `agent.auto_claim = 1` **且** Agent 可用。写它只有
+`PATCH /api/agents/{id}` 这一个入口，可逐 Agent 关闭。
 
+- **存量回填（#195 / ADR-0029）**：升级走 `20 → 21`，按当前 `SCHEMA` 重建 `agent_config` 并把存量
+  `auto_claim = 0` 的行一次性置 1（只改这一列、不动 `updated_at`，返回真实改动行数）。它**不回溯任务**：
+  频道里既有的 `todo` / 未认领任务保持原状，本变更只影响升级之后新建的任务。代价是升级会覆盖此前
+  显式关闭的存量行（库内无法区分「显式关闭」与「从未配置」），升级后仍可逐 Agent 关闭。
 - **认领是一次开工动作，一个事务里落五项效应**（ADR-0016 二）：落**两条**可读的 `system` 记录、认领者
   进入该任务的 **target 成员**、任务状态推进到 `in_progress`、**唤醒认领者**（与 owner 指派同一条既有
   唤醒路径）。任一步失败则**全部零改动**。
@@ -264,8 +274,9 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
   `claimed_at IS NULL`（且尚未指派）时成立；因此即便任务之后被取消指派，也不会触发第二次世代推进与
   预算重置。**这条是 ADR-0002 三跳上界仍然可执行的前提**——没有它，Agent 就能靠「认领 → 用满 →
   再认领」把「一次人类发言能引发多少 Agent 往返」这道闸门拆掉。
-- **`SCHEMA_VERSION` 不 bump、无迁移步骤**：本能力零 DDL（新增的是词条与一个进程内参数），而
-  ADR-0015 的链只覆盖 **schema 形态变更**，因此「链连续性」这条纪律不适用于它（ADR-0016 六）。
+- **`SCHEMA_VERSION` 的历史**：认领能力最初（ADR-0016）零 DDL；`auto_claim` 列由 #65 引入（v12），
+  默认值 flip 由 #195 / ADR-0029 引入（`20 → 21`，含存量回填）。此后任何形态变更仍按 ADR-0015 随票
+  携带 `from → to` 步骤，链连续性由守卫测试把守。
 - **已知代价**：认领会重置一次该任务的预算。触发者是人（人创建了任务），推进世代的动作却由编排
   执行；风险由「每张任务至多一次」封住（见上）。认领现在另多了「推状态 + 强制必答」两条效应，
   比 ADR-0010 当时描述的重；守这条边界的只有 `claimed_at` 那一把锁。
@@ -312,8 +323,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 - **成员产出可见性（D2）**：成员输出只走 **SSE `agent_event`** 与 **`team_assignment`** 运行记录；
   **只有队长的最终回复**落为频道消息（恰好一条）。成员过程**不占**频道消息、未读、搜索。
 - **认领与受派者唤醒在 team 下停用（D16 / D23）**：team 频道里新建任务**停在 `todo`、
-  `claimed_at IS NULL`、零认领轮次**——即便候选人的 `auto_claim=true`。`auto_claim` 是**读路径规则**
-  （编排不读它），列与 autonomous 行为都不变。非队长的任务受派者**不会**被任务消息或改派唤醒。
+  `claimed_at IS NULL`、零认领轮次**——即便候选人的 `auto_claim=true`：认领裁决在读到 `auto_claim`
+  之前就按 `mode = team` 早退，列与 autonomous 行为都不变。非队长的任务受派者**不会**被任务消息或
+  改派唤醒。
 - **`TeamAssign` 计 1 跳（D3 / ADR-0019）**：队长每分派一次，推进**该 target** 的
   `target_budget.used`（task target 用任务自己的预算，**不动频道预算**）；检查与扣减在同一事务/
   `BEGIN IMMEDIATE` 里完成。预算耗尽时**不运行该成员**，给队长一个错误 `ToolResult`，分派记为
@@ -453,7 +465,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
 | `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
-| `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；开关缺省关闭） |
+| `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；`auto_claim` 缺省开启，见 ADR-0029） |
 | `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim`、Agent 级 workspace 四项与 `web_access`、`stats`） |
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
@@ -521,7 +533,8 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   `system_prompt` / `enabled` / `auto_claim` / `workspace_backend` / `permission_mode` /
   `allow_local_shell` / `docker_image`，**任一字段不合法则整体不写**（不得部分写入）；`model_id`
   沿用与创建同一套校验与**远端数据流告知**语义。「自动认领任务」开关就在这个既有编辑面里
-  （不另造第二个编辑面），写它只影响**之后新建**的任务。
+  （不另造第二个编辑面），**缺省开启**（#195 / ADR-0029）、只在自主频道生效，写它只影响
+  **之后新建**的任务；升级时的存量回填见上文「存量回填」。
 - **配置变更不是发言**：不落消息、不唤醒、不消耗预算、不开世代（ADR-0011 与 ADR-0007 的边界：
   人类面可写配置类取值）。`auto_claim` 同此——它是编排在**新建任务之后**读的配置，不是动作。
 - **「暂停」= 写 `enabled = 0`**，复用既有可用性判定：状态点为**未启用**、`enabled_reason` 可读；

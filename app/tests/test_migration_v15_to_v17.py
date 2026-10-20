@@ -135,7 +135,9 @@ def test_v15_to_v17_sets_old_row_defaults_copies_consent_and_the_backup_restores
             "FROM agent_config WHERE member_id = 'mem_x'"
         ).fetchone()
         assert agent is not None
-        assert tuple(agent) == ("planner", 0, None, None, 0, None)
+        assert tuple(agent) == ("planner", 1, None, None, 0, None), (
+            "存量 auto_claim = 0 由 20 → 21 一次性回填为 1（#195 / ADR-0029）"
+        )
 
         consent = conn.execute(
             "SELECT scope_kind, scope_id, acknowledged_at FROM remote_consent_scope"

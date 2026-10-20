@@ -172,6 +172,8 @@ def test_an_owner_message_in_a_task_thread_makes_the_assignee_mandatory(
 ) -> None:
     """任务线程里 owner 发言 ⇒ 受派者必答（人类直接对话不是「频道里没点我」）。"""
     agent = create_agent(client, name="受派者").json()["agent"]
+    # 本用例只关心 owner 手动改派那一轮；关掉自动认领，避免建任务时的认领轮抢先跑掉。
+    assert client.patch(f"/api/agents/{agent['id']}", json={"auto_claim": False}).status_code == 200
     harness["seam"].replies[agent["id"]] = "已经在做"
     channel = create_channel(client, member_ids=[agent["id"]]).json()["channel"]
     task = _create_task(client, channel["id"], title="任务线程必答")
