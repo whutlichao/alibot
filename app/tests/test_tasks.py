@@ -21,7 +21,7 @@ def _db(client: TestClient) -> Any:
     return cast(Any, client.app).state.db
 
 
-def test_creating_a_task_creates_its_own_thread_without_a_channel_message(client: TestClient) -> None:
+def test_creating_a_task_creates_its_own_thread_and_a_channel_pointer(client: TestClient) -> None:
     channel = create_channel(client, name="产品迭代").json()["channel"]
 
     created = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "整理验收清单"})
@@ -34,7 +34,8 @@ def test_creating_a_task_creates_its_own_thread_without_a_channel_message(client
     assert created.json()["target"]["id"] == task["target_id"]
     assert created.json()["target"]["kind"] == "task"
     assert client.get("/api/tasks").json()["tasks"] == [task]
-    assert messages(client, channel["id"]) == []
+    # 频道流里有一条**指针消息**（#198）：它指向这张任务，但不是任务线程那条记录。
+    assert [message["task_pointer"] for message in messages(client, channel["id"])] == [task["id"]]
 
     # 任务本体（标题）随第一条 `system` 记录进消息流（S4）：人读线程能读懂，Agent 读消息也能读懂。
     thread = client.get(f"/api/tasks/{task['id']}/messages").json()
@@ -201,7 +202,8 @@ def test_task_reference_is_renderable_in_its_own_target_and_rejected_across_targ
     assert same_target.json()["message"]["target_id"] == task["target_id"]
     assert cross_target.status_code == 400
     assert cross_target.json()["error"]["code"] == "validation_failed"
-    assert messages(client, channel["id"]) == []
+    # 跨 target 引用被拒：频道里只剩建任务那条指针消息，它的 `task_ref` 是 null。
+    assert [message["task_ref"] for message in messages(client, channel["id"])] == [None]
     assert [
         message["task_ref"] for message in client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
     ] == [
