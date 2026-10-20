@@ -24,8 +24,8 @@
 读数：
 
 ```text
-$ cd app && ../.venv/bin/python -m pytest tests/test_migration_chain_guard.py
-24 passed in 22.77s          # 与 test_task_channel_pointer.py 同批跑；链守卫含 v3..v20 全部源版本
+$ cd app && ../.venv/bin/python -m pytest tests/test_migration_chain_guard.py tests/test_task_channel_pointer.py
+24 passed in 22.77s          # 链守卫覆盖 v3..v20 每个源版本；指针行为用例同批
 ```
 
 迁移实现上的一处必要修正：`_create_missing_indexes` 现在会**跳过「索引引用的列还没到」的对象**。
@@ -142,7 +142,26 @@ $ scripts/check.sh
 
 ## 8. 双轴 code-review
 
-（结论与处理待填）
+两轴分别由独立 reviewer 子代理跑在 `main...HEAD` 上（fix 之前的提交 `31773e3`），结论与处理：
+
+### Standards 轴
+
+| 结论 | findings | 处理 |
+| --- | --- | --- |
+| 未发现合并阻断缺陷；问题集中在证据缺口与词条/重复形状的判断项 | ① §7/§8 仍是「待填」占位；② CONTEXT 系统事件消息把「任务创建」与「频道入口」写成两条却又说同一动作；③ 「指针消息」词条同时登记消息与两个字段，称谓有二义；④ 新增的 seq 分配 + INSERT 是第三处同类形状；⑤ `_indexed_columns` 的文档串与实现不符（表达式里的名字会被当列名） | ①② **已修**（填读数；② 的来源表去重）；③ **部分修**：词条名沿用票面规定的「指针消息」，正文首句明确「不加限定时指频道里那条 system 记录」，并保留两个字段的分述；④ **已修**：`_append_target_message_locked` 新增可选 `task_pointer`，指针插入改为调用它（`_append_task_pointer_locked` 留作具名的意图落点/注入点）；⑤ **已修**：按顶层逗号逐项只取首个标识符，含 `(` 的表达式项跳过 |
+
+### Spec 轴
+
+| 结论 | findings | 处理 |
+| --- | --- | --- |
+| schema 对象集、触发器语义、同事务指针与回滚、读面（`task_pointer` / `message_count`）、频道 SSE 与返回 `message`、不调频道 notify、Studio chip / i18n / `absorbMessage`、ADR-0028、README 表、迁移留档均与票面一致 | ① §7 缺全量门禁读数；② §8 缺 review 记录（且当时 PR 未开）；③ `CONTEXT.md` 的「数据迁移」段仍写「本轮（15 → 19）是四个步骤」 | ①② **已修**（本文件两节）；③ **已修**：改为「15 → 20 / 五个严格 +1」，补 `19→20` 频道任务指针消息 |
+
+### 修复后复跑
+
+- `cd app && ../.venv/bin/python -m pytest tests/test_task_channel_pointer.py tests/test_migration_chain_guard.py` → 24 passed
+- 全量 `scripts/check.sh` 读数见 §7。
+- 既有用例的两处旧期望按新契约更新（不是重新钉住实现细节）：`test_tasks.py` 的「建任务后频道为空」改为断言
+  指针消息；`test_backend_copy.py` 的同一旧断言改为断言指针消息的正文仍按源语言渲染。
 
 ## 9. Merge Danger
 

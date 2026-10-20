@@ -2209,25 +2209,15 @@ class Database:
         正文与任务线程首条记录**逐字一致**（同一个 ``system.task.created`` 词条、同一个标题），
         作者仍是 owner：系统事件消息的既有口径不改。``task_pointer`` 是它与任务之间唯一的连接，
         ``task_ref`` 保持 ``NULL``——两条引用字段的语义不混用。
+
+        写形状复用 :meth:`_append_target_message_locked`；这个方法保留为**具名的一步**：它是
+        「建任务 = 频道入口」这条意图的落点，也是原子性用例的注入点。
         """
-        row = self._conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM message WHERE target_id = ?",
-            (channel_id,),
-        ).fetchone()
-        seq = int(row["next_seq"])
-        message_id = new_id("msg")
-        self._conn.execute(
-            "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
-            "mention_snapshot, task_pointer) VALUES (?, ?, ?, ?, 'system', ?, ?, '[]', ?)",
-            (
-                message_id,
-                channel_id,
-                seq,
-                OWNER_ID,
-                self._render_copy("system.task.created", title=title),
-                now,
-                task_id,
-            ),
+        self._append_target_message_locked(
+            channel_id,
+            self._render_copy("system.task.created", title=title),
+            now,
+            task_pointer=task_id,
         )
 
     def task_pointer_message(self, task_id: str) -> dict[str, Any] | None:
@@ -2304,11 +2294,14 @@ class Database:
         task = self.get_task(task_id)  # task 面只认任务，不把任意 target 当成任务线程
         return self.list_messages(task["target_id"], after_seq=after_seq)
 
-    def _append_target_message_locked(self, target_id: str, body: str, now: str) -> int:
+    def _append_target_message_locked(
+        self, target_id: str, body: str, now: str, *, task_pointer: str | None = None
+    ) -> int:
         """在**已开着的事务内**分配 target 内单调 seq，并落一条 ``system`` 消息（作者恒为 owner）。
 
-        任务面的四处状态推进与提醒的到点投递共用这一条写形状：它不 ``begin`` / ``commit``
-        （调用方持有事务边界），因此「落消息 + 同一个事务里的其它写」在构造上原子。
+        任务面的四处状态推进、提醒的到点投递与建任务的频道指针共用这一条写形状：它不 ``begin`` /
+        ``commit``（调用方持有事务边界），因此「落消息 + 同一个事务里的其它写」在构造上原子。
+        ``task_pointer`` 只有建任务的频道入口会传（#198 / ADR-0028），其余调用点保持 ``NULL``。
         """
         row = self._conn.execute(
             "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM message WHERE target_id = ?", (target_id,)
@@ -2316,8 +2309,8 @@ class Database:
         seq = int(row["next_seq"])
         self._conn.execute(
             "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
-            "mention_snapshot) VALUES (?, ?, ?, ?, 'system', ?, ?, '[]')",
-            (new_id("msg"), target_id, seq, OWNER_ID, body, now),
+            "mention_snapshot, task_pointer) VALUES (?, ?, ?, ?, 'system', ?, ?, '[]', ?)",
+            (new_id("msg"), target_id, seq, OWNER_ID, body, now, task_pointer),
         )
         return seq
 

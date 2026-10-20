@@ -398,4 +398,6 @@ def test_fresh_workspace_falls_back_to_the_source_language(client: TestClient) -
     task_id = create_task(client, channel, "空工作台的任务")
 
     assert task_bodies(client, task_id)[0] == i18n.render("system.task.created", ZH, title="空工作台的任务")
-    assert messages(client, channel) == []
+    channel_messages = messages(client, channel)
+    assert [message["task_pointer"] for message in channel_messages] == [task_id]
+    assert channel_messages[0]["body"] == i18n.render("system.task.created", ZH, title="空工作台的任务")

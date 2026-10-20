@@ -69,9 +69,7 @@ def test_creating_a_task_appends_exactly_one_channel_pointer_message(client: Tes
     assert client.get(f"/api/tasks/{task['id']}").json()["task"]["message_count"] == 2
 
 
-def test_channel_pointer_does_not_wake_anyone_or_count_as_unread(
-    client: TestClient, harness: dict
-) -> None:
+def test_channel_pointer_does_not_wake_anyone_or_count_as_unread(client: TestClient, harness: dict) -> None:
     agent = create_agent(client, name="小明").json()["agent"]
     channel = channel_with_agent(client, agent["id"])
 
@@ -90,18 +88,14 @@ def test_channel_pointer_does_not_wake_anyone_or_count_as_unread(
 
 def test_channel_event_stream_carries_the_pointer_message(live: dict) -> None:
     http = live["http"]
-    channel = http.post(
-        "/api/channels", json={"name": "事件流", "description": ""}
-    ).json()["channel"]
+    channel = http.post("/api/channels", json={"name": "事件流", "description": ""}).json()["channel"]
 
     events: list[dict] = []
     stop = threading.Event()
     connected = threading.Event()
 
     def reader() -> None:
-        with http.stream(
-            "GET", f"/api/channels/{channel['id']}/events", params={"after_seq": 0}
-        ) as response:
+        with http.stream("GET", f"/api/channels/{channel['id']}/events", params={"after_seq": 0}) as response:
             for line in response.iter_lines():
                 connected.set()
                 if stop.is_set():
@@ -116,15 +110,11 @@ def test_channel_event_stream_carries_the_pointer_message(live: dict) -> None:
         # 先确认订阅已建立（事件流发过第一帧，至少是一条 keep-alive 注释），再触发写路径：
         # 否则「帧没来」可能只是订阅迟到，而不是发布缺失。
         assert connected.wait(timeout=8.0), "频道事件流没有建立订阅"
-        created = http.post(
-            f"/api/channels/{channel['id']}/tasks", json={"title": "推送入口"}
-        ).json()
+        created = http.post(f"/api/channels/{channel['id']}/tasks", json={"title": "推送入口"}).json()
         task_id = created["task"]["id"]
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline:
-            if any(
-                event.get("message", {}).get("task_pointer") == task_id for event in events
-            ):
+            if any(event.get("message", {}).get("task_pointer") == task_id for event in events):
                 break
             time.sleep(0.01)
         delivered = [

@@ -387,15 +387,22 @@ def _object_table(sql: str) -> str | None:
 
 
 def _indexed_columns(sql: str) -> frozenset[str]:
-    """索引 DDL 里 ``ON <table>(<列…>)`` 列出的列名（表达式 / 排序方向不参与判定）。"""
+    """索引 DDL 里 ``ON <table>(<列…>)`` 列出的列名。
+
+    只取每一项的**首个标识符**；含 ``(`` 的项是表达式（例如 ``casefold(body)``），不对它做
+    「列是否存在」的判定——表达式内部的名字会被误当成列名。没有任何可判定的列时返回空集，
+    调用方的子集判断因此放行（创建失败仍会被下面翻成可读的拒绝）。
+    """
     match = re.search(r"\bON\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)", sql, re.IGNORECASE)
     if match is None:
         return frozenset()
-    return frozenset(
-        token
-        for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", match.group(1))
-        if token.upper() not in {"ASC", "DESC"}
-    )
+    columns: set[str] = set()
+    for term in _split_top_level(match.group(1)):
+        entry = term.strip()
+        if not entry or "(" in entry:
+            continue
+        columns.add(entry.split()[0].strip('"'))
+    return frozenset(columns)
 
 
 def _create_missing_tables(conn: sqlite3.Connection, names: tuple[str, ...]) -> None:
