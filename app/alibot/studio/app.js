@@ -4365,7 +4365,9 @@ function renderDock() {
   nodes.push(joinedSection);
 
   // ── 未加入：本工作区的 Agent，点「加入」进入该频道 ────────────────────
-  const outsideSection = el('section', 'dock-group');
+  // 它是**候选池**而不是名单：整段是 `--panel` 井、标题在井内、行是平铺行（见 app.css）。
+  // 已加入的卡片仍是透明底 + 描边——默认态不该比候选池更响。
+  const outsideSection = el('section', 'dock-group is-pool');
   outsideSection.dataset.odId = 'dock-not-joined';
   outsideSection.appendChild(
     el('div', 'dock-group-label', t('dock.notJoined', { count: groups.outsiders.length })),
@@ -4397,12 +4399,20 @@ function renderDock() {
   replaceChildren(container, nodes);
 }
 
-/** 一张成员卡片。``canJoin`` 为真时附上「加入」控件（与既有 `.btn-sm` 同一语汇，不新造色位）。 */
+/** 成员面板的一行。`canJoin` 为真 = **候选行**（候选池里还没加入本频道的 Agent），此时
+    附上「加入」控件，且只留**选人需要的事实**：名字 / 角色 / 状态点 /（若有）不可用原因。
+
+    `model_id` 与状态**文案**只在已加入的卡片上出现：它们是成员在这个频道里的运行时读数，
+    对「要不要把它加进来」不提供判据；状态点仍带四态 `title` / `aria-label`，信息不丢。
+    行骨架两段共用，因此两段的差异只来自区块化与密度，而不是换了一种行。
+
+    控件语汇沿用 `.btn-sm`，不新造色位——`.btn` 的底是 `--surface`，在 `--panel` 井里
+    天然是该行最亮的东西，「加入」因此不需要 `btn-primary` 才是强调元素。 */
 function memberCard(member, agentsById, canJoin) {
   const agent = agentsById.get(member.id) || {};
-  const card = el('div', 'dock-member' + (canJoin ? ' is-outside' : ''));
+  const card = el('div', 'dock-member' + (canJoin ? ' is-candidate' : ''));
   card.dataset.member = member.id;
-  card.setAttribute('data-od-id', (canJoin ? 'dock-outside-' : 'dock-member-') + member.id);
+  card.setAttribute('data-od-id', (canJoin ? 'dock-candidate-' : 'dock-member-') + member.id);
   const head = el('div', 'dock-member-head');
   head.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
   // 名字本身是**打开 Agent 详情**的控件：卡片里已经有「加入」按钮（未加入那一段），
@@ -4416,12 +4426,14 @@ function memberCard(member, agentsById, canJoin) {
   if (agent.role) head.appendChild(el('span', 'msg-tag', agent.role));
   head.appendChild(presenceNode(statusOf(agent)));
   card.appendChild(head);
-  const meta = el('div', 'dock-member-meta mono', agent.model_id || t('dock.noModel'));
-  card.appendChild(meta);
-  const status = statusOf(agent);
-  const line = el('div', 'dock-member-status', statusLabel(status));
-  line.dataset.status = status;
-  card.appendChild(line);
+  if (!canJoin) {
+    const meta = el('div', 'dock-member-meta mono', agent.model_id || t('dock.noModel'));
+    card.appendChild(meta);
+    const status = statusOf(agent);
+    const line = el('div', 'dock-member-status', statusLabel(status));
+    line.dataset.status = status;
+    card.appendChild(line);
+  }
   if (agent.enabled_reason) {
     const reason = el('div', 'dock-member-reason', agent.enabled_reason);
     reason.dataset.odId = 'agent-reason-' + member.id;
@@ -7205,6 +7217,7 @@ async function joinChannelMember(memberId) {
   if (!channel || joining.has(memberId)) return;
   joining.add(memberId);
   renderDock();
+  let joined = false;
   try {
     const payload = await api(channelPath(channel.id, '/members'), {
       method: 'POST',
@@ -7220,12 +7233,31 @@ async function joinChannelMember(memberId) {
         : t('toast.alreadyMember', { name, channel: channel.name }),
     );
     updateMentionPicker();
+    joined = true;
   } catch (err) {
     toast(t('toast.joinFailed', { reason: err.message }), 'err');
   } finally {
     joining.delete(memberId);
     renderDock();
+    // 落点：卡片已经从候选井挪到「已加入」段，但 380px 列里那一段常常在视口外——
+    // 只看到一行消失 + toast，人会不知道它去了哪。把落点滚进视野，并把焦点交给新卡片的
+    // 名字控件（刚被点的「加入」按钮在重渲染里已经不存在，焦点本来会落回 body）。
+    if (joined) revealJoinedMember(memberId);
   }
+}
+
+/** 把「加入」的落点（已加入段里那张卡）滚进视野并接住焦点。
+
+    焦点落在**名字**上而不是整张卡：名字是那里唯一可聚焦的控件（打开详情），
+    于是键盘用户在按过「加入」之后可以直接继续按 Enter 看详情，而不是从文档开头 Tab 回来。 */
+function revealJoinedMember(memberId) {
+  const card = $('#dockMembers') && $('#dockMembers').querySelector(
+    '[data-od-id="dock-member-' + memberId + '"]',
+  );
+  if (!card) return;
+  card.scrollIntoView({ block: 'nearest' });
+  const name = card.querySelector('.dock-member-name');
+  if (name) name.focus({ preventScroll: true });
 }
 
 function syncMentionHint() {
