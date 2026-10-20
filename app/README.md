@@ -126,7 +126,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `target` | id, kind(`channel`/`dm`/`task`), dm_peer_member_id, created_at | 一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果都挂 `target_id`。channel 型是**影子行**（id 与 `channel.id` 同值、只承载 `kind`） |
 | `target_member` | target_id, member_id | **成员关系**的正本（三种 kind 共用一张表）：唤醒面与未读口径的共同来源；频道成员就是它在 channel 型上的读法 |
 | `target_read` | member_id, target_id, last_read_seq | 已读位置（未读的正本）。owner 的行是未读徽标基准，agent 的行是它自己的消费游标 |
-| `task` | id, target_id, channel_id, 标题, 状态, **`assignee_member_id`**(可空), **`claimed_at`** | 任务当前态在行上；`assignee_member_id` = 受派者；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点） |
+| `task` | id, target_id, channel_id, 标题, 状态, **`assignee_member_id`**(可空), **`claimed_at`** | 任务当前态在行上；`assignee_member_id` = 受派者；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点）。读路径载荷另派发 **`allowed_transitions`**（当前态的合法迁移目标，顺序固定五态、终态 `[]`；由迁移表派生，呈现面只读它，#191） |
 | `permission_rule` | id, scope_kind(`channel`/`agent`), scope_id, tool_name, pattern, behavior(`allow`/`deny`/`ask`), created_at | 权限规则是**配置**：三档行为，不暴露 BYPASS / DONT_ASK（ADR-0021 §四） |
 | `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四） |
 | `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明；`env_names` 只存变量**名**，值只从进程环境读（ADR-0021 §三） |
