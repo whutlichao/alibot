@@ -80,7 +80,7 @@ def channel_with_agent_and_auto_claim(client: TestClient) -> tuple[dict, dict]:
 def test_auto_claim_defaults_on_and_round_trips_through_the_patch_endpoint(
     client: TestClient,
 ) -> None:
-    """开关缺省**开启**（#195 / ADR-0027），并经 ④ 的同一条写路径可关闭 / 再打开。"""
+    """开关缺省**开启**（#195 / ADR-0029），并经 ④ 的同一条写路径可关闭 / 再打开。"""
     agent = create_agent(client).json()["agent"]
     assert agent["auto_claim"] is True
 
@@ -215,7 +215,7 @@ def test_new_task_stays_unclaimed_when_the_switch_is_off(client: TestClient, har
 def test_new_task_in_a_team_channel_stays_unclaimed_even_with_the_switch_on(
     client: TestClient, harness: dict
 ) -> None:
-    """合取判据（#195 / ADR-0027）：team 模式早退优先——成员 ``auto_claim = 1`` 也不认领。"""
+    """合取判据（#195 / ADR-0029）：team 模式早退优先——成员 ``auto_claim = 1`` 也不认领。"""
     leader = create_agent(client, name="队长").json()["agent"]
     member = create_agent(client, name="成员").json()["agent"]
     set_auto_claim(client, member["id"], True)

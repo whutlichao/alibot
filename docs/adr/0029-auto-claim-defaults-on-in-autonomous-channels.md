@@ -14,9 +14,12 @@ team 模式的拓扑见 ADR-0018 / ADR-0022 / ADR-0025，均不变。
   ——刚建好的 Agent——上不成立。
 - **Decision**：`agent_config.auto_claim` 的 DDL 默认值改为 `1`；认领仍要求
   `channel.mode = autonomous` **且** `availability.ok` **且** `auto_claim = 1` 三者合取；升级时把
-  存量 `auto_claim = 0` 的行一次性置 1（`19 → 20`，重建表 + 回填，返回真实改动行数）。
-- **Consequences**：升级会覆盖此前显式关闭的存量行（见「代价」）；`SCHEMA_VERSION` 19 → 20，迁移
+  存量 `auto_claim = 0` 的行一次性置 1（`20 → 21`，重建表 + 回填，返回真实改动行数）。
+- **Consequences**：升级会覆盖此前显式关闭的存量行（见「代价」）；`SCHEMA_VERSION` 20 → 21，迁移
   只前进；team 频道的行为逐字不变；Studio 控件与文案不变，仍可逐 Agent 关闭。
+
+  **事实修正（合并时）**：本 ADR 成文时预留的是 19 → 20，但 #198（频道指针消息，ADR-0028）在合并
+  时已先落地 20。按 ADR-0015 §三「必须高于当前 main」的判据，本步顺延为 **20 → 21**；决策内容不变。
 
 ## 一、默认开启
 
@@ -42,7 +45,7 @@ DM 恒为 autonomous，因此 DM 里的行为与既有读路径一致；team 的
 
 ## 三、存量行一次性回填与迁移
 
-`19 → 20` 在同一个 `MigrationStep` 里做两件事：
+`20 → 21` 在同一个 `MigrationStep` 里做两件事：
 
 1. 按当前 `SCHEMA` **重建** `agent_config`（既有 `_rebuild_table`）：升级库此后不写该列的直接插入
    也拿到默认 1；

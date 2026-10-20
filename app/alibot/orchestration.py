@@ -43,6 +43,7 @@ from typing import Any, Protocol
 
 from .agent_seam import (
     AgentSeam,
+    ContinueTaskAction,
     CredentialUnavailable,
     ReplySignal,
     RoundOutcome,
@@ -55,7 +56,7 @@ from .agent_seam import (
     provider_of,
     read_api_key,
 )
-from .db import Database, DomainError, utc_now
+from .db import OWNER_ID, TASK_WORK_ROUNDS_PER_EPOCH, Database, DomainError, utc_now
 from .events import EventBus, agent_event
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
@@ -76,6 +77,9 @@ WAKE_REASON_CHANNEL_MESSAGE = "channel-message"
 # 它与 ``mention`` 同级（都是**确定信号**），因此 `notify` 里 ``mention`` 可以覆盖它——
 # 覆盖**不削弱**判据：两者都要求必须回应（见 `CONTEXT.md` **回应判断**）。
 WAKE_REASON_CLAIM = "claim"
+# 自动续跑那条投递的 reason（ADR-0027）：与认领同一形状——**不落库**，只进进程内轮次参数与
+# typing 事件；「本轮由自动续跑唤醒」以 ``reason.continue_round`` 后缀追加进 reason 文本。
+WAKE_REASON_CONTINUE = "continue"
 # team 成员没有自己的唤醒轮次：它由队长的 TeamAssign 分派运行。typing 的 reason 只是可读标识
 # （规格 §4.5），不与预算/唤醒判定耦合。
 TYPING_REASON_TEAM_ASSIGNMENT = "team-assignment"
@@ -152,6 +156,8 @@ class _DeferredWake:
     # 任一方强制 ⇒ 合并后强制（同一 Agent 的重复唤醒会被合并，判据不能随谁先到而漂）；
     # 两方都强制时来源按 `ReplySignal.merged_with` 的固定优先级取，诊断也不随到达顺序变。
     signal: ReplySignal = ReplySignal.NONE
+    # 本轮是否把**整个 target 历史**作为输入（自动续跑轮，ADR-0027）；合并时同样取或。
+    history: bool = False
 
 
 @dataclass
@@ -215,12 +221,16 @@ class WakeOrchestrator:
         consumed_budget: bool,
         pierced: bool,
         signal: ReplySignal,
+        history: bool = False,
     ) -> None:
-        """投递一轮的**唯一落点**（六个唤醒入口共用）。
+        """投递一轮的**唯一落点**（七个唤醒入口共用）。
 
         这些参数原先在每处 `submit(self.run_round, ...)` 里各写一遍位置参数——#189 落地时就真的漏传过
         一处必答标记（队长轮仍拿到旧的布尔，纪律静默失效）。收成一处之后，「多一个纪律维度」只需要在
         这里改一次；标志位一律关键字传参，位置错位不再可能。
+
+        ``history`` 只被自动续跑轮置真（ADR-0027）：把整个 target 历史交给模型，它才接得上自己上一轮
+        的产出。其它入口逐字保持既有口径（只喂新消息）。
         """
         self._scheduler.submit(
             self.run_round,
@@ -231,6 +241,7 @@ class WakeOrchestrator:
             consumed_budget,
             pierced,
             signal,
+            history,
         )
 
     # ─── 唤醒面 ───────────────────────────────────────────────────────────
@@ -813,6 +824,7 @@ class WakeOrchestrator:
         consumed_budget: bool = False,
         pierced: bool = False,
         signal: ReplySignal = ReplySignal.NONE,
+        history: bool = False,
     ) -> dict[str, Any] | None:
         """跑一轮。返回落下的轮次结果；瞬态轮次（无新消息、只被合并）返回 None。
 
@@ -853,6 +865,7 @@ class WakeOrchestrator:
                         # 合并**不削弱**纪律：任一方强制 ⇒ 合并后强制（与 consumed_budget / pierced
                         # 同款合并）；两方都强制时来源按固定优先级取，诊断不随到达顺序变。
                         deferred.signal = deferred.signal.merged_with(signal)
+                        deferred.history = deferred.history or history
                         if reason == WAKE_REASON_MENTION:
                             deferred.reason = reason
                 return None
@@ -860,20 +873,30 @@ class WakeOrchestrator:
 
         started_at = utc_now()
         base_seq = from_seq
+        continuation_requested = False
         try:
             cursor = self._db.agent_cursor(target_id, member_id)
-            pending = [
-                message
-                for message in self._db.list_messages(target_id, after_seq=cursor)
-                if message["author"]["id"] != member_id
-            ]
-            if not pending:
+            fresh = self._db.list_messages(target_id, after_seq=cursor)
+            if not fresh:
                 # 瞬态轮次（无新消息）：按规格不落盘。
                 return None
+            # 自动续跑轮（ADR-0027）把**整个 target 历史**交给模型：续跑的意义就是接上自己上一轮的
+            # 产出，只喂一条「继续」记录会让它从零重做。其它轮次逐字保持既有口径（只喂新消息、
+            # 且不含自己的消息）。
+            pending = (
+                self._db.list_messages(target_id)
+                if history
+                else [message for message in fresh if message["author"]["id"] != member_id]
+            )
+            if not pending:
+                return None
 
+            # mentions 只看**本轮新消息里别人说的话**（ADR-0027）：历史里旧的点名不该把续跑轮改判成
+            # 「被个人提及」；自己消息里的自我提及同样不构成本轮的点名（与普通轮次的既有口径一致）。
+            mentioned_messages = [message for message in fresh if message["author"]["id"] != member_id]
             mentions = {
                 mention
-                for message in pending
+                for message in mentioned_messages
                 for mention in mentioned_member_ids(message["mention_snapshot"])
             }
             mentioned = member_id in mentions
@@ -1027,9 +1050,17 @@ class WakeOrchestrator:
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
 
             if outcome.status == "replied" and outcome.task_action is not None:
-                rejection = self._apply_task_action(agent, target_id, outcome.task_action)
-                if rejection:
-                    outcome.reason = "；".join(part for part in (outcome.reason, rejection) if part)
+                if isinstance(outcome.task_action, ContinueTaskAction):
+                    # 自动续跑是**请求**而不是库写入（ADR-0027）：先校验它属于这张任务、属于受派者，
+                    # 真正的投递在收口后做（同一成员 in-flight 时投递会被当成重复唤醒合并掉）。
+                    rejection = self._validate_continue_request(agent, target_id, outcome.task_action)
+                    continuation_requested = rejection is None
+                    if rejection:
+                        outcome.reason = "；".join(part for part in (outcome.reason, rejection) if part)
+                else:
+                    rejection = self._apply_task_action(agent, target_id, outcome.task_action)
+                    if rejection:
+                        outcome.reason = "；".join(part for part in (outcome.reason, rejection) if part)
 
             self._record_merged(target_id, member_id, merged_bases, started_at)
             record = self._db.append_round_outcome(
@@ -1090,7 +1121,14 @@ class WakeOrchestrator:
                     # 纪律与来源必须沿 deferred 一起传下去，否则「跨 target 被挡在后面」的必答轮会以
                     # signal=NONE 重跑——纪律静默失效，reason 后缀也丢（ADR-0016 五）。
                     signal=deferred.signal,
+                    history=deferred.history,
                 )
+            # 自动续跑必须在 in-flight **清掉之后**投递（ADR-0027）：同成员同 target 的新一轮若在收口前
+            # 投递，会被当成重复唤醒合并进本轮，续跑当场消失。轮次结论已经落库，这里再失败也不能
+            # 打穿工作线程（与 try 块里「任何异常都不逃逸」同一条纪律）。
+            if continuation_requested:
+                with suppress(Exception):
+                    self._dispatch_continuation(agent, target_id)
             # 收口后的状态点必须在**清掉 in-flight 之后**发：否则最后一帧会停在 working，
             # 前端的状态点就会永久显示「正在回复」。这是后端事实，不是前端补偿。
             self._emit_status(target_id, member_id, base_seq)
@@ -1123,6 +1161,105 @@ class WakeOrchestrator:
         except DomainError as error:
             return render("error.task_action_rejected", self._locale(), message=error.message)
         return None
+
+    # ─── 自动续跑（ADR-0027） ─────────────────────────────────────────────
+    def _validate_continue_request(
+        self, agent: dict[str, Any], target_id: str, action: ContinueTaskAction
+    ) -> str | None:
+        """校验「申请续跑」属于这张任务、且是本轮 Agent 的受派者身份；返回拒绝文案或 ``None``。
+
+        动作本身不改库，所以这里只做「这是不是一个真实、且由受派者发出的请求」这一层；投递条件
+        （任务仍在进行中、世代的轮数上限）由 :meth:`_dispatch_continuation` 在收口时再裁决。
+        """
+        locale = self._locale()
+        try:
+            task = self._db.get_task(action.task_id)
+        except DomainError as error:
+            return render("error.task_action_rejected", locale, message=error.message)
+        if str(task["target_id"]) != target_id:
+            return render(
+                "error.task_action_rejected",
+                locale,
+                message=render("error.task_action_wrong_target", locale),
+            )
+        if str(task.get("assignee_member_id") or "") != str(agent["id"]):
+            return render(
+                "error.task_action_rejected",
+                locale,
+                message=render("error.continue_not_assignee", locale),
+            )
+        return None
+
+    def _dispatch_continuation(self, agent: dict[str, Any], target_id: str) -> int:
+        """受派者申请自动续跑：落一条 ``system`` 记录，再把同一个人叫醒一轮；返回是否投递（0 / 1）。
+
+        三件**必须**在这里一起成立的边界：
+
+        - **只在进行中的任务上续跑**：任务已经离开 ``in_progress``（完成 / 待审 / 关闭）或换了受派者，
+          这次申请就过期了——静默不投递，不写记录。
+        - **不消耗跳数**：续跑不是 agent→agent 跳（跳的载体是 Agent 消息，它唤醒的是**别人**）；
+          ``target_budget.used`` 一字不动。
+        - **每世代有界**：轮数从 ``round_outcome`` 读（持久、跨重启一致），到达
+          ``TASK_WORK_ROUNDS_PER_EPOCH`` 后不再投递，改落一条可读的「已暂停」记录——不停在
+          一个没人解释的静默里。
+
+        唤醒的载体仍必须是一条消息（ADR-0017 的构造性前提）：先落 ``system.task.continue``，
+        再以它的 ``seq`` 投递；续跑轮把整个任务线程作为输入（``history=True``），模型才接得上自己
+        上一轮的产出。
+        """
+        task = self._db.task_for_target(target_id)
+        if task is None:
+            return 0
+        if str(task["status"]) != "in_progress":
+            return 0
+        if str(task.get("assignee_member_id") or "") != str(agent["id"]):
+            return 0
+        if self._team_config(target_id) is not None:
+            return 0
+        if not self.availability(agent).ok:
+            return 0
+        locale = self._locale()
+        if self._rounds_since_epoch(target_id, str(agent["id"])) >= TASK_WORK_ROUNDS_PER_EPOCH:
+            message = self._db.append_message(
+                target_id=target_id,
+                body=render("system.task.continue_paused", locale, rounds=TASK_WORK_ROUNDS_PER_EPOCH),
+                author_member_id=OWNER_ID,
+                kind="system",
+                mention_snapshot=[],
+            )
+            self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
+            return 0
+        message = self._db.append_message(
+            target_id=target_id,
+            body=render("system.task.continue", locale),
+            author_member_id=OWNER_ID,
+            kind="system",
+            mention_snapshot=[],
+        )
+        self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
+        self._dispatch(
+            agent,
+            target_id,
+            int(message["seq"]),
+            WAKE_REASON_CONTINUE,
+            consumed_budget=False,
+            pierced=False,
+            signal=ReplySignal.CONTINUE,
+            history=True,
+        )
+        return 1
+
+    def _rounds_since_epoch(self, target_id: str, member_id: str) -> int:
+        """该成员在**当前人类世代**里已经跑完的轮数（``merged`` 行不算一轮）。
+
+        上限的计数读 ``round_outcome``（运行事实的正本）：它跨重启一致、不依赖 locale，也不新增 DDL。
+        世代的起算点是 ``target_budget.epoch_seq``——与本文件里跳数的世代语义同一个键。
+        """
+        epoch = int(self._db.budget_state(target_id)["epoch_seq"])
+        outcomes = self._db.list_round_outcomes(target_id, after_seq=epoch)
+        return sum(
+            1 for outcome in outcomes if str(outcome["member_id"]) == member_id and not outcome["merged"]
+        )
 
     def _is_team_leader(self, target_id: str, member_id: str) -> bool:
         """该成员是否是此 target 所属 team 的队长。
@@ -1184,6 +1321,8 @@ class WakeOrchestrator:
             agent_members=agents,
             title=str(task["title"]),
             status=str(task["status"]),
+            # team 任务线程只唤醒队长（ADR-0022）：续跑会绕开那条裁决，因此那边不提供这个动作。
+            allow_continue=self._team_config(target_id) is None,
         )
 
     def _team_round_context(self, target_id: str, agent: dict[str, Any]) -> TeamRoundContext | None:

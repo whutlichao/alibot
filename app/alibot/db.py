@@ -95,11 +95,15 @@ MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # ADR-0026 §五）。它是**纯增量**：``ADD COLUMN`` + 列级 CHECK，不回填旧数据（旧频道停在 0 =
 # 容器默认无网），因此 ``18 → 19`` 一步（`migrate._step_18_to_19`）。判据同前：main 是 18、
 # 19 是满足「必须高于当前 main」的最小号。
-# 20 = **本票 #195**（自动认领默认开启 + 仅在自主频道生效，ADR-0027）。它 flip
-# `agent_config.auto_claim` 的 DDL 默认值 0 → 1，并在 ``19 → 20`` 里按当前 ``SCHEMA`` 重建该表、
-# 把存量 ``auto_claim = 0`` 的行一次性回填为 1（返回真实改动行数）。判据同前：main 是 19、
-# 20 是满足「必须高于当前 main」的最小号。
-SCHEMA_VERSION = 20
+# 20 = **票 #198**（建任务在所属频道落一条可进入任务线程的指针消息：``message.task_pointer``
+# 可空列 + 部分唯一索引 + BEFORE INSERT 触发器，ADR-0028）。它是**纯增量**：``ADD COLUMN`` +
+# 索引 + 触发器，**不回填旧数据**（旧任务没有频道消息，读路径如实返回 null），因此 ``19 → 20``
+# 一步（`migrate._step_19_to_20`）。判据同前：main 是 19、20 是满足「必须高于当前 main」的最小号。
+# 21 = **本票 #195**（自动认领默认开启 + 仅在自主频道生效，ADR-0029）。它 flip
+# `agent_config.auto_claim` 的 DDL 默认值 0 → 1，并在 ``20 → 21`` 里按当前 ``SCHEMA`` 重建该表、
+# 把存量 ``auto_claim = 0`` 的行一次性回填为 1（返回真实改动行数）。判据同前：合并时的 main 已是 20
+# （#198 的频道指针消息），21 是满足「必须高于当前 main」的最小号——本票原先预留的 20 已被 #198 占用。
+SCHEMA_VERSION = 21
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -213,6 +217,14 @@ ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted", 
 # 内置默认值仍是 3（ADR-0002 保留原文：耗尽仍零投递、默认值仍是它）。频道可以把它**上调/下调**到
 # 固定档位之一（#31 §2 人定，落库于 ``channel_budget_limit``），未配置的频道回落到这里。
 BUDGET_LIMIT = 3
+
+# 自动续跑（ADR-0027）：**一次人类世代内**，受派者在一张任务上最多跑几轮（含第一轮 / 认领轮）。
+# 它和 `BUDGET_LIMIT` 是两个计数器：跳数只数 agent→agent 的投递，续跑轮不是跳（它不唤醒其他
+# Agent），因此不能共用 `target_budget.used`。3 轮续跑 = 认领轮之后最多再干 3 轮。
+TASK_CONTINUE_ROUNDS = 3
+# 上限落在「轮数」上：第一轮（认领 / 指派唤醒）+ 最多 `TASK_CONTINUE_ROUNDS` 轮续跑。
+# 计数读 `round_outcome`（持久、跨重启一致），不新增 DDL。
+TASK_WORK_ROUNDS_PER_EPOCH = 1 + TASK_CONTINUE_ROUNDS
 
 # 频道可选的**固定档位**（#31 §2 人定）：不支持任意整数、0 或 1。非法值必须明确拒绝、不部分写入
 # （写路径见 :meth:`Database.set_channel_budget_limit`）。
@@ -426,9 +438,33 @@ CREATE TABLE IF NOT EXISTS message (
   created_at       TEXT NOT NULL,
   mention_snapshot TEXT NOT NULL DEFAULT '[]',
   task_ref         TEXT,
+  -- 频道指针消息（#198 / ADR-0028）：**只由后端在建任务时写入**。它不是一个**放宽的** ``task_ref``
+  -- ——``task_ref`` 仍要求与消息同 target（任务线程内引用），这一列反过来承载「频道 system 消息 →
+  -- 本频道下的任务」这条跨 target 指向。``NULL`` 是常态，旧数据因此不需要回填。
+  task_pointer     TEXT REFERENCES task(id),
   FOREIGN KEY (target_id, task_ref) REFERENCES task(target_id, id),
   UNIQUE (target_id, seq)
 );
+
+-- 一张任务至多一条频道指针消息：``task_pointer`` 非空时唯一。部分索引（``WHERE`` 子句）让
+-- 「绝大多数消息的这一列是 NULL」不进入唯一性判定。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_task_pointer
+  ON message(task_pointer) WHERE task_pointer IS NOT NULL;
+
+-- 指针消息的作用域不变量（#198 / ADR-0028）：``task_pointer`` 非空 ⇒ **system** + **channel 型
+-- target** + **该任务属于这个频道**。它挡的是「把 task_ref 的跨 target 引用偷偷挪到新列」——
+-- 客户端没有写这一列的路径（``MessageCreate`` 不收它），触发器是库层面最后一道。
+CREATE TRIGGER IF NOT EXISTS message_task_pointer_is_scoped
+BEFORE INSERT ON message
+WHEN NEW.task_pointer IS NOT NULL
+  AND (
+    NEW.kind IS NOT 'system'
+    OR (SELECT kind FROM target WHERE id = NEW.target_id) IS NOT 'channel'
+    OR (SELECT channel_id FROM task WHERE id = NEW.task_pointer) IS NOT NEW.target_id
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'task pointer must be a channel system message for this channel task');
+END;
 
 -- 附件（ADR-0014）：**元数据落库、字节落数据目录**。
 -- ``relative_path`` 是相对**数据目录**的路径（不是绝对路径），于是整个数据目录可整体搬迁；
@@ -611,7 +647,7 @@ CREATE TABLE IF NOT EXISTS sop_run (
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
 -- role 是 Agent 的配置数据（用户输入原样落库），不是代码常量、也不折进系统提示。
 -- ``auto_claim``（#65 / ADR-0010）是「频道内新建任务后，编排要不要替它接手这张任务」的配置开关。
--- 从 #195 / ADR-0027 起**缺省开启**：新建 Agent 不写这一列就拿到默认 1；它只在**自主频道**
+-- 从 #195 / ADR-0029 起**缺省开启**：新建 Agent 不写这一列就拿到默认 1；它只在**自主频道**
 -- （``channel.mode = autonomous``）里生效，team 频道的认领裁决在读路径上直接早退。写入路径只有
 -- ``PATCH /api/agents/{id}``（可逐 Agent 关闭）。
 CREATE TABLE IF NOT EXISTS agent_config (
@@ -2163,17 +2199,57 @@ class Database:
                         now,
                     ),
                 )
+                # 频道流里的可进入任务线程的入口（#198 / ADR-0028）：与任务行、任务线程首条记录
+                # **同一个事务**。任一插入失败都整体回滚，于是不存在「任务在、频道指针不在」的
+                # 半成品——这正是「建任务 = 一处动作」在库层面的构造性保证。
+                self._append_task_pointer_locked(task_id, channel_id, clean_title, now)
                 self._commit()
             except Exception:
                 self._rollback()
                 raise
         return self.get_task(task_id)
 
+    def _append_task_pointer_locked(self, task_id: str, channel_id: str, title: str, now: str) -> None:
+        """在**已开着的事务内**向频道 target 落一条 ``system`` 指针消息（#198 / ADR-0028）。
+
+        正文与任务线程首条记录**逐字一致**（同一个 ``system.task.created`` 词条、同一个标题），
+        作者仍是 owner：系统事件消息的既有口径不改。``task_pointer`` 是它与任务之间唯一的连接，
+        ``task_ref`` 保持 ``NULL``——两条引用字段的语义不混用。
+
+        写形状复用 :meth:`_append_target_message_locked`；这个方法保留为**具名的一步**：它是
+        「建任务 = 频道入口」这条意图的落点，也是原子性用例的注入点。
+        """
+        self._append_target_message_locked(
+            channel_id,
+            self._render_copy("system.task.created", title=title),
+            now,
+            task_pointer=task_id,
+        )
+
+    def task_pointer_message(self, task_id: str) -> dict[str, Any] | None:
+        """该任务的**频道指针消息**（#198 / ADR-0028）；没有时返回 ``None``。
+
+        「没有」是合法读数：本版之前的任务不补历史（只前进、不回填），因此读路径必须能用
+        ``None`` 如实表达它，而不是伪造一条。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT m.*, a.kind AS author_kind, a.display_name AS author_name,
+                       a.avatar_slot AS author_avatar_slot
+                  FROM message m JOIN member a ON a.id = m.author_member_id
+                 WHERE m.task_pointer = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        return None if row is None else self._message_payload(row)
+
     def get_task(self, task_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT t.*, c.name AS channel_name FROM task t "
-                "JOIN channel c ON c.id = t.channel_id WHERE t.id = ?",
+                "SELECT t.*, c.name AS channel_name, "
+                "(SELECT COUNT(*) FROM message m WHERE m.target_id = t.target_id) AS message_count "
+                "FROM task t JOIN channel c ON c.id = t.channel_id WHERE t.id = ?",
                 (task_id,),
             ).fetchone()
         if row is None:
@@ -2189,6 +2265,9 @@ class Database:
             "claimed_at": row["claimed_at"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            # 任务线程的消息总条数（#198）：频道 chip 的「进入任务线程 · N 条」读它。
+            # 含 system / human / agent 三类，**不是**未读数（未读另有 ``unread_count``）。
+            "message_count": int(row["message_count"]),
         }
         # 合法迁移集合随载荷出行（#191）：从同一张表派生，前端只读它、不持正本。
         task["allowed_transitions"] = allowed_task_transitions(task["status"])
@@ -2221,11 +2300,14 @@ class Database:
         task = self.get_task(task_id)  # task 面只认任务，不把任意 target 当成任务线程
         return self.list_messages(task["target_id"], after_seq=after_seq)
 
-    def _append_target_message_locked(self, target_id: str, body: str, now: str) -> int:
+    def _append_target_message_locked(
+        self, target_id: str, body: str, now: str, *, task_pointer: str | None = None
+    ) -> int:
         """在**已开着的事务内**分配 target 内单调 seq，并落一条 ``system`` 消息（作者恒为 owner）。
 
-        任务面的四处状态推进与提醒的到点投递共用这一条写形状：它不 ``begin`` / ``commit``
-        （调用方持有事务边界），因此「落消息 + 同一个事务里的其它写」在构造上原子。
+        任务面的四处状态推进、提醒的到点投递与建任务的频道指针共用这一条写形状：它不 ``begin`` /
+        ``commit``（调用方持有事务边界），因此「落消息 + 同一个事务里的其它写」在构造上原子。
+        ``task_pointer`` 只有建任务的频道入口会传（#198 / ADR-0028），其余调用点保持 ``NULL``。
         """
         row = self._conn.execute(
             "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM message WHERE target_id = ?", (target_id,)
@@ -2233,8 +2315,8 @@ class Database:
         seq = int(row["next_seq"])
         self._conn.execute(
             "INSERT INTO message(id, target_id, seq, author_member_id, kind, body, created_at, "
-            "mention_snapshot) VALUES (?, ?, ?, ?, 'system', ?, ?, '[]')",
-            (new_id("msg"), target_id, seq, OWNER_ID, body, now),
+            "mention_snapshot, task_pointer) VALUES (?, ?, ?, ?, 'system', ?, ?, '[]', ?)",
+            (new_id("msg"), target_id, seq, OWNER_ID, body, now, task_pointer),
         )
         return seq
 
@@ -4920,6 +5002,7 @@ class Database:
             "created_at": row["created_at"],
             "mention_snapshot": mentions,
             "task_ref": row["task_ref"],
+            "task_pointer": row["task_pointer"],
             "attachments": list(attachments),
             "author": {
                 "id": row["author_member_id"],

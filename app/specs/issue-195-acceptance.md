@@ -11,10 +11,10 @@
 
 | 判据 | 落点 |
 | --- | --- |
-| `agent_config.auto_claim` 的 DDL 默认 0 → 1 | `app/alibot/db.py` 的 `SCHEMA`（`DEFAULT 1`）与 `SCHEMA_VERSION = 20` |
+| `agent_config.auto_claim` 的 DDL 默认 0 → 1 | `app/alibot/db.py` 的 `SCHEMA`（`DEFAULT 1`）与 `SCHEMA_VERSION = 21` |
 | 创建 Agent 继续吃列默认值 | `Database.create_agent` 的 `INSERT INTO agent_config(...)` 仍不写 `auto_claim` |
-| `19 → 20` 一步：重建表 + 存量回填 + 真实行数 | `app/alibot/migrate.py` 的 `_step_19_to_20` 与 `STEPS` 登记 |
-| 迁移留档 | `app/tests/_migration_history.py` 的 `SOURCE_COMMITS[20]` / `OBJECTS['agent_config_v20']` / `VERSION_OBJECTS[20]` |
+| `20 → 21` 一步：重建表 + 存量回填 + 真实行数 | `app/alibot/migrate.py` 的 `_step_20_to_21` 与 `STEPS` 登记 |
+| 迁移留档 | `app/tests/_migration_history.py` 的 `SOURCE_COMMITS[21]` / `OBJECTS['agent_config_v21']` / `VERSION_OBJECTS[21]` |
 | 默认值断言与 PATCH 往返 | `app/tests/test_auto_claim.py::test_auto_claim_defaults_on_and_round_trips_through_the_patch_endpoint` |
 | v19 迁移实测（回填 / 默认 / 行与列不变） | `app/tests/test_schema_migration.py::test_v19_upgrade_flips_the_default_and_backfills_existing_auto_claim_rows` |
 | 空白表迁移后的默认值 | `app/tests/test_schema_migration.py::test_theme_and_auto_claim_checks_are_present_after_migration` |
@@ -65,7 +65,7 @@ $ PYTHONPATH=$PWD/app .venv/bin/python -m alibot --migrate --data-dir /tmp/alibo
 本次备份：/tmp/alibot-195-migrate/copy-backup-19-to-20-20261020T132814Z
 
 实际执行的步骤（每步改动的数据行数）：
-  19 → 20  auto claim defaults on (agent_config rebuild + one-time backfill)  改动 1 行
+  20 → 21  auto claim defaults on (agent_config rebuild + one-time backfill)  改动 1 行
 
 迁移完成：schema_version = 20；本次共改动 1 行。
 EXIT=0
@@ -182,8 +182,8 @@ Standards 轴另有一条「verified clean」结论，未产生 finding：`_step
 
 | 票面条目 | 结论 | 依据 |
 | --- | --- | --- |
-| 默认值 flip：DDL `0 → 1`、`SCHEMA_VERSION 19 → 20`、创建路径继续吃列默认 | 已实现 | `app/alibot/db.py` 的 `SCHEMA` 与 `SCHEMA_VERSION`；`Database.create_agent` 的 INSERT 仍不写 `auto_claim`；`AgentCreate` 没有该字段（无第二套缺省） |
-| `19 → 20` 同一 `MigrationStep`：重建 `agent_config` + 存量 `auto_claim = 0` 一次性置 1、只改该列、返回真实行数、幂等 | 已实现 | `migrate._step_19_to_20` + `STEPS`；报告 1 行 = 库内实际 0→1 行；`updated_at` 与其它列逐行不变；重放空操作 |
+| 默认值 flip：DDL `0 → 1`、`SCHEMA_VERSION 20 → 21`、创建路径继续吃列默认 | 已实现 | `app/alibot/db.py` 的 `SCHEMA` 与 `SCHEMA_VERSION`；`Database.create_agent` 的 INSERT 仍不写 `auto_claim`；`AgentCreate` 没有该字段（无第二套缺省） |
+| `20 → 21` 同一 `MigrationStep`：重建 `agent_config` + 存量 `auto_claim = 0` 一次性置 1、只改该列、返回真实行数、幂等 | 已实现 | `migrate._step_20_to_21` + `STEPS`；报告 1 行 = 库内实际 0→1 行；`updated_at` 与其它列逐行不变；重放空操作 |
 | 裁决不动；补测试锁「team + `auto_claim = 1` 不认领」 | 已实现 | `orchestration.py` 无 diff；`test_auto_claim.py::test_new_task_in_a_team_channel_stays_unclaimed_even_with_the_switch_on` |
 | 不回溯任务 | 已实现 | 迁移只触碰 `agent_config`；无任何 `task` 语句；既有未认领任务不变 |
 | ADR（默认开启 + 自主频道 + 一次性回填、三个被否方案、代价）+ CONTEXT/README 同步 | 已实现 | `docs/adr/0027-*.md`；CONTEXT **认领**词条；README 的 schema 章节 / `agent_config` 行 / 认领小节 / 端点说明；无残留「缺省关闭」 |

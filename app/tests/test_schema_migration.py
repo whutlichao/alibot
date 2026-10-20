@@ -45,8 +45,8 @@ LEDGER_FILE_NAME = "schema-migrations.jsonl"
 
 # 历史各版新增、但 SQLite 无法用 ``CREATE`` 表达的列（用带约束的 ``ADD COLUMN`` 补）。
 # 取值口径按规格 D6：``theme`` 缺省 ``'system'``、``auto_claim`` 缺省 ``0``、``claimed_at`` 空。
-# ``auto_claim`` 的 0 是**历史形态**（v12 引入时的默认值）；v20 的默认 flip 由 ``19 → 20`` 迁移
-# 重建表时落成 1，搭 v12…v19 形态的库仍然必须按当时的 DDL 补这一列。
+# ``auto_claim`` 的 0 是**历史形态**（v12 引入时的默认值）；v21 的默认 flip 由 ``20 → 21`` 迁移
+# 重建表时落成 1，搭 v12…v20 形态的库仍然必须按当时的 DDL 补这一列。
 _COLUMN_DDL: dict[str, str] = {
     "dm_peer_member_id": 'ALTER TABLE "target" ADD COLUMN dm_peer_member_id TEXT REFERENCES member(id)',
     "task_ref": 'ALTER TABLE "message" ADD COLUMN task_ref TEXT',
@@ -408,7 +408,7 @@ def test_theme_and_auto_claim_checks_are_present_after_migration(tmp_path: Path)
             )
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("UPDATE workspace_settings SET theme = 'neon' WHERE id = 1")
-        # 迁移后直接从 DDL 默认值取 auto_claim = 1（#195 / ADR-0027 的默认 flip），
+        # 迁移后直接从 DDL 默认值取 auto_claim = 1（#195 / ADR-0029 的默认 flip），
         # 且列级 CHECK 在库级生效。
         conn.execute("INSERT INTO agent_config(member_id, created_at, updated_at) VALUES ('mem_x', 'x', 'x')")
         assert (
@@ -421,7 +421,7 @@ def test_theme_and_auto_claim_checks_are_present_after_migration(tmp_path: Path)
 
 
 def test_v19_upgrade_flips_the_default_and_backfills_existing_auto_claim_rows(tmp_path: Path) -> None:
-    """``19 → 20``（#195 / ADR-0027）：存量 0 → 1、行与其它列不变、新插入拿到默认 1。
+    """``20 → 21``（#195 / ADR-0029）：存量 0 → 1、行与其它列不变、新插入拿到默认 1。
 
     读数取自 CLI 报告与库内实际行：报告里该步「改动 N 行」必须等于库内由 0 变 1 的行数。
     """
@@ -457,7 +457,7 @@ def test_v19_upgrade_flips_the_default_and_backfills_existing_auto_claim_rows(tm
     completed = _run(*_migrate_argv(data_dir))
 
     assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
-    reported = re.search(r"^ {2}19 → 20 {2}.*?改动 (\d+) 行", completed.stdout, re.MULTILINE)
+    reported = re.search(r"^ {2}20 → 21 {2}.*?改动 (\d+) 行", completed.stdout, re.MULTILINE)
     assert reported is not None, completed.stdout
     assert int(reported.group(1)) == 1, "报告里的改动行数必须等于库里实际由 0 变 1 的行数"
 

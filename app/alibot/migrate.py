@@ -386,6 +386,25 @@ def _object_table(sql: str) -> str | None:
     return None if match is None else match.group(1)
 
 
+def _indexed_columns(sql: str) -> frozenset[str]:
+    """索引 DDL 里 ``ON <table>(<列…>)`` 列出的列名。
+
+    只取每一项的**首个标识符**；含 ``(`` 的项是表达式（例如 ``casefold(body)``），不对它做
+    「列是否存在」的判定——表达式内部的名字会被误当成列名。没有任何可判定的列时返回空集，
+    调用方的子集判断因此放行（创建失败仍会被下面翻成可读的拒绝）。
+    """
+    match = re.search(r"\bON\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)", sql, re.IGNORECASE)
+    if match is None:
+        return frozenset()
+    columns: set[str] = set()
+    for term in _split_top_level(match.group(1)):
+        entry = term.strip()
+        if not entry or "(" in entry:
+            continue
+        columns.add(entry.split()[0].strip('"'))
+    return frozenset(columns)
+
+
 def _create_missing_tables(conn: sqlite3.Connection, names: tuple[str, ...]) -> None:
     """按**当前 SCHEMA** 的 DDL 建出缺失的表（``IF NOT EXISTS``，幂等、只增不减）。"""
     existing = _table_names(conn)
@@ -468,6 +487,13 @@ def _create_missing_indexes(conn: sqlite3.Connection) -> None:
         table = _object_table(CURRENT_SCHEMA_SHAPE.index_sql[name])
         if table is not None and table not in tables:
             continue  # 基表还没建出来：交给同一次对齐里更早的建表步骤
+        if table is not None and not _indexed_columns(CURRENT_SCHEMA_SHAPE.index_sql[name]) <= _column_names(
+            conn, table
+        ):
+            # 索引引用的列还没到（例如从 v5 起步时 ``message.task_pointer`` 尚未补上）：同样交给
+            # 「补列 → 建索引」这条更大的对齐。它不是静默放过唯一性收紧——执行器每步之后都会再跑
+            # 一次对齐，那时列已在，索引照常建出；列补不上时下面依然会把冲突翻成可读的拒绝。
+            continue
         try:
             conn.execute(CURRENT_SCHEMA_SHAPE.index_sql[name])
         except sqlite3.IntegrityError as exc:
@@ -837,6 +863,28 @@ def _step_18_to_19(conn: sqlite3.Connection) -> int:
     return 0
 
 
+def _step_19_to_20(conn: sqlite3.Connection) -> int:
+    """频道指针消息的库形态（#198 / ADR-0028）：``message.task_pointer`` + 部分唯一索引 + 触发器。
+
+    三件都是**纯增量**，不动任何既有行（返回 0 行改动）：
+
+    - 可空列 ``task_pointer``（带 ``REFERENCES task(id)``）：``NULL`` = 不是频道指针消息；
+    - 部分唯一索引 ``idx_message_task_pointer``：一张任务至多一条指针消息；
+    - ``BEFORE INSERT`` 触发器 ``message_task_pointer_is_scoped``：非空指针必须是「channel 型
+      target 里的 system 消息，且指向该频道下的任务」。
+
+    **不回填旧数据**（ADR-0015 的只前进纪律）：升级前的任务没有频道消息，读路径如实返回
+    ``None``；本步不替历史任务造一条。
+
+    **重复执行是空操作**：``_add_missing_columns`` / ``_create_missing_indexes`` 都只补缺；
+    触发器由 ``_replace_changed_triggers`` 按文本比对。
+    """
+    _add_missing_columns(conn, "message")
+    _create_missing_indexes(conn)
+    _replace_changed_triggers(conn)
+    return 0
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -869,16 +917,18 @@ def run_shape_step(conn: sqlite3.Connection, source_version: int) -> StepReport 
     )
 
 
-# ``19 → 20`` 的语义变更（#195 / ADR-0027）：``agent_config.auto_claim`` 缺省 0 → 1。
+# ``20 → 21`` 的语义变更（#195 / ADR-0029）：``agent_config.auto_claim`` 缺省 0 → 1。
 # 这不是纯增量：新插入的默认值变了，存量行也要按新语义一次性回填，因此本步同时做「重建 + 回填」。
+# 号段说明：本票原先预留 20，但 #198（频道指针消息）在合并时已先落地 20，按 ADR-0015
+# 「必须高于当前 main」的判据，本步顺延为 ``20 → 21``。
 AUTO_CLAIM_TABLES: tuple[str, ...] = ("agent_config",)
 
 # 存量行的一次性回填：只改 ``auto_claim`` 这一列（``WHERE auto_claim = 0`` 让重放是空操作）。
 BACKFILL_AUTO_CLAIM_SQL = "UPDATE agent_config SET auto_claim = 1 WHERE auto_claim = 0"
 
 
-def _step_19_to_20(conn: sqlite3.Connection) -> int:
-    """自动认领默认开启（#195 / ADR-0027）：重建 ``agent_config`` + 存量行一次性回填。
+def _step_20_to_21(conn: sqlite3.Connection) -> int:
+    """自动认领默认开启（#195 / ADR-0029）：重建 ``agent_config`` + 存量行一次性回填。
 
     两件事，顺序固定：
 
@@ -889,7 +939,7 @@ def _step_19_to_20(conn: sqlite3.Connection) -> int:
 
     返回值是**实际由 0 变 1 的行数**（``UPDATE`` 的 ``rowcount``）：重放同一库时第二次是 0 行。
     这**不是**「把开关打开」的常规写路径——那仍然只有 ``PATCH /api/agents/{id}``；本步是一次显式的
-    一次性升级回填（ADR-0027 的代价：升级会覆盖此前显式关闭的存量行）。
+    一次性升级回填（ADR-0029 的代价：升级会覆盖此前显式关闭的存量行）。
 
     索引 / 触发器随 ``DROP TABLE`` 一起消失，由执行器在本步之后施的
     :func:`_align_to_current_schema` 按当前 ``SCHEMA`` 补回来。
@@ -944,8 +994,14 @@ STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(
         19,
         20,
-        "auto claim defaults on (agent_config rebuild + one-time backfill)",
+        "channel task pointer message (message.task_pointer + unique index + scope trigger)",
         _step_19_to_20,
+    ),
+    MigrationStep(
+        20,
+        21,
+        "auto claim defaults on (agent_config rebuild + one-time backfill)",
+        _step_20_to_21,
     ),
 )
 
