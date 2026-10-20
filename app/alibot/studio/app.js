@@ -3454,6 +3454,21 @@ async function submitTask() {
   try {
     const payload = await api(channelPath(channelId, '/tasks'), { method: 'POST', body: { title } });
     closeTaskModal();
+    // 建任务在频道流里留下一条 system 指针消息（#198）：把它当作一条到达的消息吸收，
+    // 于是「消息 N」页签计数立刻 +1，人不用等下一次整页刷新。其它频道只对齐频道列表读数。
+    // 任务先补进快照：chip 的条数读 `taskById(...).message_count`，快照没到就只能显示 0。
+    if (payload.message) {
+      const index = state.tasks.findIndex((task) => task.id === payload.task.id);
+      if (index >= 0) state.tasks[index] = payload.task;
+      else state.tasks.push(payload.task);
+      absorbMessage(channelId, payload.message);
+      if (state.activeChannelId === channelId) {
+        renderMessages();
+        scrollToBottom();
+      } else {
+        await refreshChannelList();
+      }
+    }
     if (forTaskFromComposer) {
       forTaskFromComposer = false;
       resetComposerInput(); // D6：正文已变成任务标题，成功后不再留在输入框里。
@@ -7122,14 +7137,27 @@ function messageNode(message) {
 }
 
 function appendTaskRefChip(body, message) {
-  if (!message.task_ref) return;
-  const referencedTask = taskById(message.task_ref);
-  const title = referencedTask ? referencedTask.title : message.task_ref;
-  const chip = el('button', 'task-ref-chip', t('msg.taskRef', { title }));
-  chip.type = 'button';
-  chip.dataset.openTask = message.task_ref;
-  chip.setAttribute('aria-label', t('msg.taskRefAria', { title }));
-  body.appendChild(chip);
+  if (message.task_ref) {
+    const referencedTask = taskById(message.task_ref);
+    const title = referencedTask ? referencedTask.title : message.task_ref;
+    const chip = el('button', 'task-ref-chip', t('msg.taskRef', { title }));
+    chip.type = 'button';
+    chip.dataset.openTask = message.task_ref;
+    chip.setAttribute('aria-label', t('msg.taskRefAria', { title }));
+    body.appendChild(chip);
+  }
+  // 频道指针消息（#198）：`task_pointer` 是**频道 system 消息 → 本频道任务**这条跨 target 指向，
+  // 与同 target 的 `task_ref` 是两列、两条语义（见 `CONTEXT.md` **指针消息**）。计数来自任务载荷的
+  // `message_count`（任务不在快照里时如实显示 0，而不是编一个数）。
+  if (!message.task_pointer) return;
+  const pointedTask = taskById(message.task_pointer);
+  const pointedTitle = pointedTask ? pointedTask.title : message.task_pointer;
+  const count = pointedTask ? Number(pointedTask.message_count) || 0 : 0;
+  const entry = el('button', 'task-ref-chip', t('msg.taskThreadEntry', { count }));
+  entry.type = 'button';
+  entry.dataset.openTask = message.task_pointer;
+  entry.setAttribute('aria-label', t('msg.taskThreadEntryAria', { title: pointedTitle, count }));
+  body.appendChild(entry);
 }
 
 function dayLabel(iso) {

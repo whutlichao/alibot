@@ -343,6 +343,8 @@ const I18N_CATALOGS = {
     'msg.discard': '移除',
     'msg.taskRef': '任务 · {title}',
     'msg.taskRefAria': '打开任务 {title}',
+    'msg.taskThreadEntry': '进入任务线程 · {count} 条',
+    'msg.taskThreadEntryAria': '打开任务 {title} 的任务线程，共 {count} 条消息',
     'msg.attachmentAria': '{name}（{size}），下载',
     'attach.fallbackName': '附件',
 
@@ -1095,6 +1097,8 @@ const I18N_CATALOGS = {
     'msg.discard': 'Remove',
     'msg.taskRef': 'Task · {title}',
     'msg.taskRefAria': 'Open task {title}',
+    'msg.taskThreadEntry': 'Enter task thread · {count} messages',
+    'msg.taskThreadEntryAria': 'Open the task thread for {title} — {count} messages',
     'msg.attachmentAria': '{name} ({size}) — download',
     'attach.fallbackName': 'Attachment',
 

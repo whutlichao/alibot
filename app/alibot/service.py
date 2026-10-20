@@ -326,10 +326,20 @@ class WorkspaceService:
         没人认领（开关关着 / 没有可用 Agent / 这张任务已被认领过）时读回的 `task` 与不认领逐字相同。
         """
         task = self._db.create_task(channel_id=channel_id, title=title)
+        # 频道流里的入口（#198 / ADR-0028）：指针消息与任务行同事务落库，这里把它作为**频道 target**
+        # 的既有 ``message`` 事件推给订阅者。系统事件不唤醒、不计未读，因此这里**不**对频道调
+        # ``orchestrator.notify``——唤醒裁决仍只有下面那一次。
+        pointer = self._db.task_pointer_message(task["id"])
+        if pointer is not None and self._events is not None:
+            self._events.publish(channel_id, {"type": "message", "seq": pointer["seq"], "message": pointer})
         if self._orchestrator is not None:
             self._orchestrator.notify_task_created(task["id"], channel_id)
             task = self._db.get_task(task["id"])
-        return {"task": task, "target": self._db.get_target(task["target_id"])}
+        return {
+            "task": task,
+            "target": self._db.get_target(task["target_id"]),
+            "message": pointer,
+        }
 
     def task(self, task_id: str) -> dict[str, Any]:
         task = self._db.get_task(task_id, self._member_id)

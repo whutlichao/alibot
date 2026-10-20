@@ -1,7 +1,7 @@
-FF.............FF.FF.F..F.FFFFFF                                         [100%]
+FF.............FF.FF.F..F.FFFFFFF                                        [100%]
 ==================================== ERRORS ====================================
 ___________________ ERROR collecting tests/test_web_tools.py ___________________
-ImportError while importing test module '/private/tmp/alibot-baseline-199/app/tests/test_web_tools.py'.
+ImportError while importing test module '/private/tmp/alibot-main-199/app/tests/test_web_tools.py'.
 Hint: make sure your test modules/packages have valid Python names.
 Traceback:
 /Users/apple/.local/share/uv/python/cpython-3.11.13-macos-aarch64-none/lib/python3.11/importlib/__init__.py:126: in import_module
@@ -9,12 +9,12 @@ Traceback:
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 tests/test_web_tools.py:26: in <module>
     from alibot.web import (
-E   ImportError: cannot import name 'FALLBACK_PROVIDER' from 'alibot.web' (/private/tmp/alibot-baseline-199/app/alibot/web.py)
+E   ImportError: cannot import name 'FALLBACK_PROVIDER' from 'alibot.web' (/private/tmp/alibot-main-199/app/alibot/web.py)
 =================================== FAILURES ===================================
 ____________ test_an_unset_web_access_mounts_web_search_by_default _____________
 
-library = (<alibot.db.Database object at 0x10ac37b90>, {'id': 'mem_536970618661', 'kind': 'agent', 'display_name': '联网成员', 'avat...: 0, ...}, {'id': 'ch_fa628196a1d5', 'name': '联网频道', 'description': '', 'created_at': '2026-10-20T14:43:14.090Z', ...})
-stub_provider = 'http://127.0.0.1:57982/v1'
+library = (<alibot.db.Database object at 0x10d3d3990>, {'id': 'mem_b6dc7f35276e', 'kind': 'agent', 'display_name': '联网成员', 'avat...: 0, ...}, {'id': 'ch_b77277163946', 'name': '联网频道', 'description': '', 'created_at': '2026-10-20T15:48:12.066Z', ...})
+stub_provider = 'http://127.0.0.1:54189/v1'
 
     def test_an_unset_web_access_mounts_web_search_by_default(library: Any, stub_provider: str) -> None:
         """``web_access=NULL`` = 未配置，读路径回退到默认档 ``search``；免凭据回退不需要确认行。"""
@@ -44,8 +44,8 @@ E        +  where {'declare_silence'} = _tool_names()
 tests/test_web_assembly.py:248: AssertionError
 _____ test_explicit_off_mounts_no_web_tool_even_with_a_consented_provider ______
 
-library = (<alibot.db.Database object at 0x10ac35650>, {'id': 'mem_80ec567e963e', 'kind': 'agent', 'display_name': '联网成员', 'avat...: 0, ...}, {'id': 'ch_f3a9f1ec9864', 'name': '联网频道', 'description': '', 'created_at': '2026-10-20T14:43:14.690Z', ...})
-stub_provider = 'http://127.0.0.1:57984/v1'
+library = (<alibot.db.Database object at 0x10d3d3790>, {'id': 'mem_107431f711ba', 'kind': 'agent', 'display_name': '联网成员', 'avat...: 0, ...}, {'id': 'ch_7a36809dd2b4', 'name': '联网频道', 'description': '', 'created_at': '2026-10-20T15:48:12.684Z', ...})
+stub_provider = 'http://127.0.0.1:54191/v1'
 
     def test_explicit_off_mounts_no_web_tool_even_with_a_consented_provider(
         library: Any, stub_provider: str
@@ -57,8 +57,8 @@ stub_provider = 'http://127.0.0.1:57984/v1'
 tests/test_web_assembly.py:257: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-database = <alibot.db.Database object at 0x10ac35650>
-channel = {'id': 'ch_f3a9f1ec9864', 'name': '联网频道', 'description': '', 'created_at': '2026-10-20T14:43:14.690Z', ...}
+database = <alibot.db.Database object at 0x10d3d3790>
+channel = {'id': 'ch_7a36809dd2b4', 'name': '联网频道', 'description': '', 'created_at': '2026-10-20T15:48:12.684Z', ...}
 web_access = 'off', mode = 'ask-writes', consent = ['brave'], consent_rows = ()
 agent_id = None, agent_web_access = None
 
@@ -84,7 +84,7 @@ E           sqlite3.IntegrityError: CHECK constraint failed: web_access IN ('sea
 tests/test_web_assembly.py:176: IntegrityError
 ___ test_channel_and_agent_web_access_take_only_the_three_documented_levels ____
 
-tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2217/test_channel_and_agent_web_acc0')
+tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2240/test_channel_and_agent_web_acc0')
 
     def test_channel_and_agent_web_access_take_only_the_three_documented_levels(tmp_path: Path) -> None:
         """两个 `web_access` 列的白名单：`NULL` / `off` / `search` / `search+fetch` 可写，其余被 CHECK 拒。"""
@@ -97,14 +97,14 @@ tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/p
 E               sqlite3.IntegrityError: CHECK constraint failed: web_access IN ('search', 'search+fetch')
 
 tests/test_web_access_schema.py:118: IntegrityError
-_ test_a_v19_library_reaches_the_current_version_in_one_step_and_keeps_every_row _
+_ test_a_v20_library_reaches_the_current_version_in_one_step_and_keeps_every_row _
 
-tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2217/test_a_v19_library_reaches_the0')
+tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2240/test_a_v20_library_reaches_the0')
 
-    def test_a_v19_library_reaches_the_current_version_in_one_step_and_keeps_every_row(
+    def test_a_v20_library_reaches_the_current_version_in_one_step_and_keeps_every_row(
         tmp_path: Path,
     ) -> None:
-        """v19 库被接受：报告里有 19 → 20、终点等于本代码版本；重建后的表保真、两列全为 NULL。"""
+        """v20 库被接受：报告里有 20 → 21、终点等于本代码版本；重建后的表保真、两列全为 NULL。"""
         data_dir = tmp_path / "data"
         db_path = _build_library(data_dir, SOURCE_VERSION)
         _seed_legacy_rows(db_path)
@@ -114,17 +114,17 @@ tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/p
         assert completed.returncode == MIGRATION_SUCCEEDED, completed.stderr
         steps = [(int(frm), int(to)) for frm, to in STEP_LINE_RE.findall(completed.stdout)]
 >       assert (SOURCE_VERSION, SOURCE_VERSION + 1) in steps, completed.stdout
-E       AssertionError: 迁移：/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2217/test_a_v19_library_reaches_the0/data/alibot.db 已是本代码的 schema 形态（版本 19），无事可做；不建备份。
+E       AssertionError: 迁移：/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2240/test_a_v20_library_reaches_the0/data/alibot.db 已是本代码的 schema 形态（版本 20），无事可做；不建备份。
 E         
-E       assert (19, 20) in []
+E       assert (20, 21) in []
 
 tests/test_web_access_schema.py:185: AssertionError
-____ test_the_v20_archive_encodes_the_three_levels_and_the_credential_table ____
+____ test_the_v21_archive_encodes_the_three_levels_and_the_credential_table ____
 
-tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2217/test_the_v20_archive_encodes_t0')
+tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2240/test_the_v21_archive_encodes_t0')
 
-    def test_the_v20_archive_encodes_the_three_levels_and_the_credential_table(tmp_path: Path) -> None:
-        """留档自身可复核：用 v20 留档搭出来的库就表现本版的库级行为（抄漏一处就红）。"""
+    def test_the_v21_archive_encodes_the_three_levels_and_the_credential_table(tmp_path: Path) -> None:
+        """留档自身可复核：用 v21 留档搭出来的库就表现本版的库级行为（抄漏一处就红）。"""
         conn = _connect(_build_library(tmp_path / "archive", SCHEMA_VERSION))
         try:
             conn.execute(
@@ -140,7 +140,7 @@ E               sqlite3.IntegrityError: CHECK constraint failed: web_access IN (
 tests/test_web_access_schema.py:243: IntegrityError
 ____ test_the_credential_table_accepts_only_known_providers_and_one_default ____
 
-tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2217/test_the_credential_table_acce0')
+tmp_path = PosixPath('/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2240/test_the_credential_table_acce0')
 
     def test_the_credential_table_accepts_only_known_providers_and_one_default(tmp_path: Path) -> None:
         """`web_provider_credential` 的三条库级事实：五家白名单、key 非空、至多一行默认。"""
@@ -157,7 +157,7 @@ E           sqlite3.OperationalError: no such table: web_provider_credential
 tests/test_web_access_schema.py:261: OperationalError
 ____ test_channel_web_access_round_trips_the_three_levels_and_can_be_unset _____
 
-client = <starlette.testclient.TestClient object at 0x10b9c3650>
+client = <starlette.testclient.TestClient object at 0x10de93510>
 
     def test_channel_web_access_round_trips_the_three_levels_and_can_be_unset(
         client: TestClient,
@@ -175,7 +175,7 @@ E            +  where 400 = <Response [400 Bad Request]>.status_code
 tests/test_web_access_config.py:62: AssertionError
 ______________ test_agent_web_access_round_trips_the_three_levels ______________
 
-client = <starlette.testclient.TestClient object at 0x10bc9b3d0>
+client = <starlette.testclient.TestClient object at 0x10e173410>
 
     def test_agent_web_access_round_trips_the_three_levels(client: TestClient) -> None:
         agent = create_agent(client).json()["agent"]
@@ -190,7 +190,7 @@ E            +  where 400 = <Response [400 Bad Request]>.status_code
 tests/test_web_access_config.py:105: AssertionError
 ______ test_saving_a_key_returns_only_the_mask_and_writes_the_consent_row ______
 
-client = <starlette.testclient.TestClient object at 0x10beb70d0>
+client = <starlette.testclient.TestClient object at 0x10e37e410>
 
     def test_saving_a_key_returns_only_the_mask_and_writes_the_consent_row(client: TestClient) -> None:
         """PUT → 只回掩码；GET 同样只回掩码；同一动作写入 ``('web', provider)`` 确认行。"""
@@ -206,7 +206,7 @@ E        +  where 404 = <Response [404 Not Found]>.status_code
 tests/test_web_providers.py:56: AssertionError
 _____ test_the_default_provider_can_be_switched_without_reentering_the_key _____
 
-client = <starlette.testclient.TestClient object at 0x10bfccbd0>
+client = <starlette.testclient.TestClient object at 0x10e48fb50>
 
     def test_the_default_provider_can_be_switched_without_reentering_the_key(client: TestClient) -> None:
         """「设为默认」是一次不带 key 的 PUT：切换唯一默认，原 key 与确认行都不受影响。"""
@@ -220,12 +220,12 @@ client = <starlette.testclient.TestClient object at 0x10bfccbd0>
 E           AssertionError: assert 404 == 200
 E            +  where 404 = <Response [404 Not Found]>.status_code
 E            +    where <Response [404 Not Found]> = put('/api/web-providers/brave/credential', json={'api_key': 'brave-secret-1234'})
-E            +      where put = <starlette.testclient.TestClient object at 0x10bfccbd0>.put
+E            +      where put = <starlette.testclient.TestClient object at 0x10e48fb50>.put
 
 tests/test_web_providers.py:75: AssertionError
 __ test_delete_clears_the_key_and_the_default_flag_but_keeps_the_consent_row ___
 
-client = <starlette.testclient.TestClient object at 0x10c0dab50>
+client = <starlette.testclient.TestClient object at 0x10e5a2290>
 
     def test_delete_clears_the_key_and_the_default_flag_but_keeps_the_consent_row(
         client: TestClient,
@@ -242,7 +242,7 @@ E        +  where 404 = <Response [404 Not Found]>.status_code
 tests/test_web_providers.py:102: AssertionError
 _________ test_an_unknown_provider_is_rejected_without_a_partial_write _________
 
-client = <starlette.testclient.TestClient object at 0x10c1ec7d0>
+client = <starlette.testclient.TestClient object at 0x10e6a7f90>
 
     def test_an_unknown_provider_is_rejected_without_a_partial_write(client: TestClient) -> None:
         """词表外的 provider 整条 400，且库里不留下任何凭据或确认行。"""
@@ -253,7 +253,7 @@ E       KeyError: 'providers'
 tests/test_web_providers.py:114: KeyError
 __________ test_an_empty_or_oversized_key_is_rejected_without_writing __________
 
-client = <starlette.testclient.TestClient object at 0x10c2f1d50>
+client = <starlette.testclient.TestClient object at 0x10e7c5610>
 
     def test_an_empty_or_oversized_key_is_rejected_without_writing(client: TestClient) -> None:
         """PUT 校验取值非空、长度有上限；两种失败都不写凭据、也不写确认行。"""
@@ -267,7 +267,7 @@ E            +  where 404 = <Response [404 Not Found]>.status_code
 tests/test_web_providers.py:132: AssertionError
 _______________ test_all_five_credentialed_providers_are_listed ________________
 
-client = <starlette.testclient.TestClient object at 0x10baa7ad0>
+client = <starlette.testclient.TestClient object at 0x10e8cf210>
 
     def test_all_five_credentialed_providers_are_listed(client: TestClient) -> None:
         """列表固定出现五家（未配置也出现），当前 provider 在没有任何凭据时是免凭据回退。"""
@@ -284,15 +284,31 @@ client = <starlette.testclient.TestClient object at 0x10baa7ad0>
 E       KeyError: 'providers'
 
 tests/test_web_providers.py:144: KeyError
+___________ test_an_empty_key_is_rejected_even_after_a_key_was_saved ___________
+
+client = <starlette.testclient.TestClient object at 0x10e988790>
+
+    def test_an_empty_key_is_rejected_even_after_a_key_was_saved(client: TestClient) -> None:
+        """显式空串永远是校验失败，不能因为「已有行」就变成一次静默的 200 no-op。"""
+        client.put("/api/web-providers/brave/credential", json={"api_key": SECRET})
+    
+        rejected = client.put("/api/web-providers/brave/credential", json={"api_key": ""})
+    
+>       assert rejected.status_code == 400, rejected.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 400
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/test_web_providers.py:161: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_web_assembly.py::test_an_unset_web_access_mounts_web_search_by_default - AssertionError: assert 'web_search' in {'declare_silence'}
  +  where {'declare_silence'} = _tool_names()
 FAILED tests/test_web_assembly.py::test_explicit_off_mounts_no_web_tool_even_with_a_consented_provider - sqlite3.IntegrityError: CHECK constraint failed: web_access IN ('search', 'search+fetch')
 FAILED tests/test_web_access_schema.py::test_channel_and_agent_web_access_take_only_the_three_documented_levels - sqlite3.IntegrityError: CHECK constraint failed: web_access IN ('search', 'search+fetch')
-FAILED tests/test_web_access_schema.py::test_a_v19_library_reaches_the_current_version_in_one_step_and_keeps_every_row - AssertionError: 迁移：/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2217/test_a_v19_library_reaches_the0/data/alibot.db 已是本代码的 schema 形态（版本 19），无事可做；不建备份。
+FAILED tests/test_web_access_schema.py::test_a_v20_library_reaches_the_current_version_in_one_step_and_keeps_every_row - AssertionError: 迁移：/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-2240/test_a_v20_library_reaches_the0/data/alibot.db 已是本代码的 schema 形态（版本 20），无事可做；不建备份。
   
-assert (19, 20) in []
-FAILED tests/test_web_access_schema.py::test_the_v20_archive_encodes_the_three_levels_and_the_credential_table - sqlite3.IntegrityError: CHECK constraint failed: web_access IN ('search', 'search+fetch')
+assert (20, 21) in []
+FAILED tests/test_web_access_schema.py::test_the_v21_archive_encodes_the_three_levels_and_the_credential_table - sqlite3.IntegrityError: CHECK constraint failed: web_access IN ('search', 'search+fetch')
 FAILED tests/test_web_access_schema.py::test_the_credential_table_accepts_only_known_providers_and_one_default - sqlite3.OperationalError: no such table: web_provider_credential
 FAILED tests/test_web_access_config.py::test_channel_web_access_round_trips_the_three_levels_and_can_be_unset - AssertionError: {"error":{"code":"validation_failed","message":"频道配置校验未通过，未改动任何字段","fields":{"web_access":"联网档只能是这些之一：search, search+fetch"}}}
 assert 400 == 200
@@ -306,7 +322,7 @@ assert 404 == 200
 FAILED tests/test_web_providers.py::test_the_default_provider_can_be_switched_without_reentering_the_key - AssertionError: assert 404 == 200
  +  where 404 = <Response [404 Not Found]>.status_code
  +    where <Response [404 Not Found]> = put('/api/web-providers/brave/credential', json={'api_key': 'brave-secret-1234'})
- +      where put = <starlette.testclient.TestClient object at 0x10bfccbd0>.put
+ +      where put = <starlette.testclient.TestClient object at 0x10e48fb50>.put
 FAILED tests/test_web_providers.py::test_delete_clears_the_key_and_the_default_flag_but_keeps_the_consent_row - AssertionError: {"detail":"Not Found"}
 assert 404 == 200
  +  where 404 = <Response [404 Not Found]>.status_code
@@ -315,5 +331,8 @@ FAILED tests/test_web_providers.py::test_an_empty_or_oversized_key_is_rejected_w
 assert 404 == 400
  +  where 404 = <Response [404 Not Found]>.status_code
 FAILED tests/test_web_providers.py::test_all_five_credentialed_providers_are_listed - KeyError: 'providers'
+FAILED tests/test_web_providers.py::test_an_empty_key_is_rejected_even_after_a_key_was_saved - AssertionError: {"detail":"Not Found"}
+assert 404 == 400
+ +  where 404 = <Response [404 Not Found]>.status_code
 ERROR tests/test_web_tools.py
-14 failed, 18 passed, 1 error in 8.77s
+15 failed, 18 passed, 1 error in 9.96s

@@ -386,6 +386,25 @@ def _object_table(sql: str) -> str | None:
     return None if match is None else match.group(1)
 
 
+def _indexed_columns(sql: str) -> frozenset[str]:
+    """索引 DDL 里 ``ON <table>(<列…>)`` 列出的列名。
+
+    只取每一项的**首个标识符**；含 ``(`` 的项是表达式（例如 ``casefold(body)``），不对它做
+    「列是否存在」的判定——表达式内部的名字会被误当成列名。没有任何可判定的列时返回空集，
+    调用方的子集判断因此放行（创建失败仍会被下面翻成可读的拒绝）。
+    """
+    match = re.search(r"\bON\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)", sql, re.IGNORECASE)
+    if match is None:
+        return frozenset()
+    columns: set[str] = set()
+    for term in _split_top_level(match.group(1)):
+        entry = term.strip()
+        if not entry or "(" in entry:
+            continue
+        columns.add(entry.split()[0].strip('"'))
+    return frozenset(columns)
+
+
 def _create_missing_tables(conn: sqlite3.Connection, names: tuple[str, ...]) -> None:
     """按**当前 SCHEMA** 的 DDL 建出缺失的表（``IF NOT EXISTS``，幂等、只增不减）。"""
     existing = _table_names(conn)
@@ -472,6 +491,13 @@ def _create_missing_indexes(conn: sqlite3.Connection) -> None:
         table = _object_table(CURRENT_SCHEMA_SHAPE.index_sql[name])
         if table is not None and table not in tables:
             continue  # 基表还没建出来：交给同一次对齐里更早的建表步骤
+        if table is not None and not _indexed_columns(CURRENT_SCHEMA_SHAPE.index_sql[name]) <= _column_names(
+            conn, table
+        ):
+            # 索引引用的列还没到（例如从 v5 起步时 ``message.task_pointer`` 尚未补上）：同样交给
+            # 「补列 → 建索引」这条更大的对齐。它不是静默放过唯一性收紧——执行器每步之后都会再跑
+            # 一次对齐，那时列已在，索引照常建出；列补不上时下面依然会把冲突翻成可读的拒绝。
+            continue
         try:
             conn.execute(CURRENT_SCHEMA_SHAPE.index_sql[name])
         except sqlite3.IntegrityError as exc:
@@ -841,12 +867,34 @@ def _step_18_to_19(conn: sqlite3.Connection) -> int:
     return 0
 
 
-# ``19 → 20``（#199）：联网档纳入 ``off`` 需要重建两张表的列级 CHECK；凭据表是纯增量。
+def _step_19_to_20(conn: sqlite3.Connection) -> int:
+    """频道指针消息的库形态（#198 / ADR-0028）：``message.task_pointer`` + 部分唯一索引 + 触发器。
+
+    三件都是**纯增量**，不动任何既有行（返回 0 行改动）：
+
+    - 可空列 ``task_pointer``（带 ``REFERENCES task(id)``）：``NULL`` = 不是频道指针消息；
+    - 部分唯一索引 ``idx_message_task_pointer``：一张任务至多一条指针消息；
+    - ``BEFORE INSERT`` 触发器 ``message_task_pointer_is_scoped``：非空指针必须是「channel 型
+      target 里的 system 消息，且指向该频道下的任务」。
+
+    **不回填旧数据**（ADR-0015 的只前进纪律）：升级前的任务没有频道消息，读路径如实返回
+    ``None``；本步不替历史任务造一条。
+
+    **重复执行是空操作**：``_add_missing_columns`` / ``_create_missing_indexes`` 都只补缺；
+    触发器由 ``_replace_changed_triggers`` 按文本比对。
+    """
+    _add_missing_columns(conn, "message")
+    _create_missing_indexes(conn)
+    _replace_changed_triggers(conn)
+    return 0
+
+
+# ``20 → 21``（#199）：联网档纳入 ``off`` 需要重建两张表的列级 CHECK；凭据表是纯增量。
 WEB_ACCESS_REBUILD_TABLES: tuple[str, ...] = ("channel", "agent_config")
 WEB_CREDENTIAL_TABLES: tuple[str, ...] = ("web_provider_credential",)
 
 
-def _step_19_to_20(conn: sqlite3.Connection) -> int:
+def _step_20_to_21(conn: sqlite3.Connection) -> int:
     """多 provider 搜索 + 凭据入库 + 联网档显式 ``off``（#199）。
 
     两件 DDL 级的事，**不动任何既有行的取值**（返回 0 行改动）：
@@ -949,8 +997,14 @@ STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(
         19,
         20,
-        "web provider credentials + explicit off level (web_provider_credential, web_access CHECK)",
+        "channel task pointer message (message.task_pointer + unique index + scope trigger)",
         _step_19_to_20,
+    ),
+    MigrationStep(
+        20,
+        21,
+        "web provider credentials + explicit off level (web_provider_credential, web_access CHECK)",
+        _step_20_to_21,
     ),
 )
 

@@ -91,10 +91,10 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-### Schema 版本与迁移（15 → 20）
+### Schema 版本与迁移（15 → 21）
 
-本代码的 `SCHEMA_VERSION = 20`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
-推进到 20，由**五个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+本代码的 `SCHEMA_VERSION = 21`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
+推进到 20，由**六个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -102,7 +102,8 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `16 → 17` | `agentscope-2 workspace/permission/mcp/skill expand` | `channel.workspace_root` / `workspace_backend` / `permission_mode`；`agent_config.workspace_backend` / `permission_mode` / `allow_local_shell` / `docker_image`；`permission_rule` / `approval_request` / `mcp_server` / `skill` / `remote_consent_scope`；旧 `remote_consent` 行复制成 `('model', provider, acknowledged_at)` |
 | `17 → 18` | `agent web access config` | `channel.web_access` / `agent_config.web_access`（`NULL` / `'search'` / `'search+fetch'`）；`remote_consent_scope.scope_kind` 的 `CHECK` 纳入 `web`（表级 `CHECK` 只能**重建表**，重建后既有行逐行保真） |
 | `18 → 19` | `docker container egress switch` | `channel.docker_egress`（`0` = 容器 `--network none`，缺省；`1` = 容器接 Docker 默认网络，且联网工具只放行 `permission_rule` 里 `fetch` 的 `allow` 规则的 host） |
-| `19 → 20` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
+| `19 → 20` | `channel task pointer message` | `message.task_pointer`（可空，`REFERENCES task(id)`）+ 部分唯一索引 `idx_message_task_pointer`（一张任务至多一条）+ `message_task_pointer_is_scoped` 触发器（必须是 channel 型 target 的 system 消息，且任务属于该频道）。**不回填**旧任务 |
+| `20 → 21` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
 
 - **只加不删、不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——`mode='autonomous'`、
   `team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
@@ -111,7 +112,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
   见下面的**联网档**）；`18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）。
 - **迁移是显式动作**：`python -m alibot --migrate --data-dir <数据目录>`；`--dry-run` 在数据目录内的临时
   副本上预演完整链，**原库 sha256 前后一致**，不建备份、不写台账、不留副本。迁移前自动把整个数据目录
-  复制成同级 `<数据目录>-backup-15-to-20-<UTC 时间戳>`；**备份失败就不迁移**。
+  复制成同级 `<数据目录>-backup-15-to-21-<UTC 时间戳>`；**备份失败就不迁移**。
 - **单向、无降级代码**：回滚 = 恢复迁移前的那份**整目录备份**（`cp -a` / 反向复制），再用旧版本代码打开。
   旧代码**不能**打开新版本库（版本闸门），所以「把 `SCHEMA_VERSION` 改回去」不是回滚。
 - **失败即回滚**：步骤链在单事务内跑；任一步失败 ⇒ `ROLLBACK`、库仍停在源版本且未被改动、备份仍在、
@@ -143,11 +144,11 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `target_budget` | target_id, epoch_seq, used, applied_limit | **回应预算的用量正本**（每 target 一行）：`epoch_seq` = 人类世代，`used` = 该世代已投递的跳数，`applied_limit` = 该世代生效上界的快照（`NULL` = 内置默认 3） |
 | `channel_budget_limit` | channel_id, budget_limit(`3`/`5`/`10`), updated_at | 回应预算上界的**配置**落点；**没有行 = 回落到内置默认值**。保存只影响**下一个人类世代**，不回溯改写当前世代 |
 | `team_run` / `team_assignment` | run: id, target_id, leader_member_id, base_seq, status(`running`/`completed`/`failed`/`interrupted`/`invalid-leader`), started_at, finished_at；assignment: team_run_id, target_id, task_id(可空), leader/member_id, tool_call_id, prompt, state(`started`/`succeeded`/`failed`/`interrupted`/`budget-exhausted`), jump_consumed, reply_excerpt, error | **team 模式的运行记录**（ADR-0018/0019/0022）：`target_id` 可以是 channel 型或该频道下的 task 型；task target 上 `task_id` 非空。它们**不是消息**：不占未读、不进搜索、不写频道消息；`jump_consumed` 只记「这次分派扣了一次跳」 |
-| `message` | id, target_id, seq, author_member_id, kind, 正文, **提及快照**, task_ref(可空) | **append-only**，`UNIQUE(target_id, seq)` |
+| `message` | id, target_id, seq, author_member_id, kind, 正文, **提及快照**, task_ref(可空), **task_pointer**(可空) | **append-only**，`UNIQUE(target_id, seq)`。`task_ref` = 同 target 的任务引用（任务线程内）；`task_pointer` = **频道 system 消息 → 本频道任务**的指针（只由后端在建任务时写入；部分唯一索引 + `BEFORE INSERT` 作用域触发器，ADR-0028） |
 | `attachment` | id, 原文件名, 大小, MIME, **相对路径**, 创建时间, **可空的 message_id** | 附件的元数据；**字节在数据目录**、不进 SQLite。`message_id` 为空 = 未发送的草稿（读取面不暴露）。绑定一次即不可变，**没有**删除路径 |
 | `round_outcome` | member_id, target_id, base_seq, status, reason, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `target_budget.used` |
 
-- **表清单与 `SCHEMA_VERSION = 20` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
+- **表清单与 `SCHEMA_VERSION = 21` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
   新增列/表的默认值必须与读路径解释一致——改一处就要同时改这张表。
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /

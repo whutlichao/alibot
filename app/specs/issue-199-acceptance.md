@@ -11,7 +11,7 @@
 | A3 解析四条路径 | `describe_search_provider()` | 四条路径各一条用例（环境显式 / DB 默认 / 固定顺序 / 免凭据回退） |
 | A4 结果映射与上限 | `_search_hits` / `_exa_text_hits` / `_render_hits` | 截断、空结果、429、JSON-RPC error / `isError` 用例 |
 | A5 `fetch` 闸门不变 | `fetch_tool` 未改动 | 既有 `test_web_tools.py` fetch 用例全绿 |
-| B1 schema 20 + 凭据表 | `db.py` SCHEMA / `migrate._step_19_to_20` | `tests/test_web_access_schema.py`、`tests/test_schema_migration.py` |
+| B1 schema 21 + 凭据表 | `db.py` SCHEMA / `migrate._step_20_to_21` | `tests/test_web_access_schema.py`、`tests/test_schema_migration.py` |
 | B2 掩码回读 | `db.web_provider_credential_views()` / `web.mask_credential()` | `tests/test_web_providers.py` 断言响应里找不到完整 key |
 | B3 凭据 API | `api.py` 四条端点 + `service.py` | `tests/test_web_providers.py`（PUT/GET/DELETE、默认切换、400 不部分写入） |
 | B4 `exa-mcp` 免确认 | `agent_seam._web_tools` | `test_an_unset_web_access_mounts_web_search_by_default` |
@@ -24,18 +24,18 @@
 
 ## 2. 红 → 绿（同一命令）
 
-基线：`git worktree add /tmp/alibot-baseline-199 HEAD`（HEAD = `a58f020`），只复制本票改动后的测试文件，
+基线：`git worktree add /tmp/alibot-main-199 origin/main`（= `3d1e424`），只复制本票改动后的测试文件，
 不复制实现。
 
 ```sh
 # 红：旧代码
-cd /tmp/alibot-baseline-199/app
+cd /tmp/alibot-main-199/app
 ../.venv/bin/python -m pytest -o addopts="" \
   tests/test_web_tools.py tests/test_web_assembly.py tests/test_web_access_schema.py \
   tests/test_web_access_config.py tests/test_web_providers.py \
   --continue-on-collection-errors -q
-# 14 failed, 18 passed, 1 error（`test_web_tools.py` 导入 `FALLBACK_PROVIDER` 失败；
-#   `off` 被 CHECK 拒、迁移没有 19→20、凭据端点 404、默认档未挂工具）
+# 15 failed, 18 passed, 1 error（`test_web_tools.py` 导入 `FALLBACK_PROVIDER` 失败；
+#   `off` 被 CHECK 拒、迁移没有 20→21、凭据端点 404、默认档未挂工具）
 node --test app/tests/channel_config_ui.test.cjs
 # 21 tests, 16 pass, 5 fail（联网区块不存在）
 ```
@@ -135,10 +135,10 @@ web_settings: {'web_access': None, 'credentials': {}, 'default_provider': None}
 
 ```text
 迁移：/tmp/alibot-199-ui/alibot.db
-源版本：19 → 目标版本：20
-本次备份：/tmp/alibot-199-ui-backup-19-to-20-20261020T144602Z
-  19 → 20  web provider credentials + explicit off level ... 改动 0 行
-迁移完成：schema_version = 20；本次共改动 0 行。
+源版本：20 → 目标版本：21
+本次备份：/tmp/alibot-199-ui-backup-19-to-20-20261020T144602Z（该次为合并 main 前的旧读数；合并后同一迁移在 v20 源库上以 20 → 21 执行）
+  20 → 21  web provider credentials + explicit off level ... 改动 0 行
+迁移完成：schema_version = 21；本次共改动 0 行。
 ```
 
 ## 5. UI 实证（ego-browser，隔离数据目录 `/tmp/alibot-199-ui`）
@@ -163,18 +163,18 @@ scripts/check.sh
 
 ```text
 == pytest（全量）
-975 passed, 10 skipped in 570.61s (0:09:30)
+984 passed, 10 skipped in 577.52s (0:09:37)
 == ruff check
 All checks passed!
 == ruff format --check（只检查；不要跑 ruff format，它会整文件重排）
-246 files already formatted
+249 files already formatted
 == mypy（仓库根）
-Success: no issues found in 103 source files
+Success: no issues found in 104 source files
 == pyright
 0 errors, 0 warnings, 0 informations
 == node --test（Studio DOM 用例族：glob，新增文件自动纳入）
-ℹ tests 205
-ℹ pass 205
+ℹ tests 208
+ℹ pass 208
 ℹ fail 0
 门禁全绿
 ```
