@@ -11,8 +11,8 @@
  * 4. 运行时页签**只**呈现真字段（温度 / 内存 / 延迟 / token / 上下文一律不出现）；
  * 5. 「暂停」发出的请求体与结果状态点（`enabled: false` → 未启用 + 可读原因 + 按钮变「恢复」）；
  * 6. 「编辑配置」提交全部可写字段并读回（左栏名字跟着后端事实走）；
- * 6b. 联网档（#202）：三档选中态读 `agent.web_access`、未选择 = 不提交该字段（跟随频道）、
- *     保存的 `web_access` 在运行时页签读回；
+ * 6b. 联网档（#202 / 2026-10-21 修订）：四档选中态读 `agent.web_access`（`null` = 「跟随频道」，
+ *     选中它提交 `web_access: null` = 清除覆盖），保存的档位在运行时页签读回；
  * 7. 新增文案在两份词条里都取到值；
  * 8. 关闭详情的**落点**：有任务线程 / 有频道才退回对应形态，否则收起 dock（不残留成员面板）。
  */
@@ -256,10 +256,10 @@ function createHarness(options) {
         node.appendChild(card);
       });
     }
-    // 「联网」三档（#202）：静态 HTML 里的三张 `.radio-card`；未选中（`web_access=null`）
-    // 就是「跟随频道」，因此替身不预置选中态。
+    // 「联网」四档（#202 / 2026-10-21 修订）：静态 HTML 里的四张 `.radio-card`；
+    // 第一张 `follow` = 「跟随频道（默认）」，它代表 `web_access=null`（没有 Agent 级覆盖）。
     if (selector === "#agentEditWebAccess") {
-      ["off", "search", "search+fetch"].forEach((value) => {
+      ["follow", "off", "search", "search+fetch"].forEach((value) => {
         const card = new FakeNode("button");
         card.dataset.webAccess = value;
         node.appendChild(card);
@@ -583,9 +583,9 @@ test("运行时页签只呈现 agent_config 里的真字段，不出现原型的
   // 「自动认领任务」也是 `agent_config` 里真实存在的一列（#65），因此与其余字段同一条口径：
   // 它**读**的是后端读数本身，不是界面上的一个布尔。
   assert.equal(values[6], catalogText(harness, "zh-CN", "agentDetail.autoClaimOff"));
-  // 联网档与其它 `agent_config` 字段同一条口径：值缺失（`null` = 跟随频道）显示空字段文案，
-  // 不在运行时页签里替人推断一个「生效档」。
-  assert.equal(values[7], catalogText(harness, "zh-CN", "agentDetail.emptyField"));
+  // 联网档（#202 / 2026-10-21 修订）：`null` = 没有 Agent 级覆盖 = 「跟随频道」，这是一个读数
+  // （有词条），不是空字段；运行时页签仍不替人推断私聊里实际生效的档。
+  assert.equal(values[7], catalogText(harness, "zh-CN", "agentDetail.webAccessFollow"));
   // 系统提示是配置数据的**原文**（不是被改写的一句话）。
   assert.equal(byDataset(harness.runtime, "odId", "agent-detail-prompt").textContent, "你只回答一句话。");
 
@@ -690,6 +690,9 @@ test("「编辑配置」预填当前配置，保存提交全部可写字段并�
     system_prompt: "你只回答一句话。",
     enabled: true,
     auto_claim: false,
+    // 联网档是四档之一且**总是**提交：这个 Agent 没有覆盖，提交的是显式 null（= 跟随频道），
+    // 而不是省略字段（省略只表示「保持原值」，没有清空语义）。
+    web_access: null,
   });
   assert.equal(harness.editOverlay.hidden, true, "保存成功要关掉弹窗");
   assert.equal(harness.memberList.textContent.includes("小明明"), true, "左栏名字跟着后端读数走");
@@ -751,12 +754,13 @@ test("「自动认领任务」开关在既有详情面里可见、可写、读�
   assert.equal(byDataset(harness.elementFor("#agentEditAutoClaim"), "autoClaim", "on").classList.contains("is-on"), true);
 });
 
-/* ─── 6b. 联网档：Agent 级入口（#202）───────────────────────────────────────
-   「私聊从哪打开」的答案就是这个入口：三档读 `agent.web_access`、随
-   `PATCH /api/agents/{id}` 的 `web_access` 一起提交。未选择 = 跟随频道（**不提交该字段**），
-   私聊里按默认档 `search`；频道设置里的联网区块行为不变（它有自己的用例）。 */
+/* ─── 6b. 联网档：Agent 级入口（#202 / 2026-10-21 修订）─────────────────────
+   「私聊从哪打开」的答案就是这个入口：四档读 `agent.web_access`、随
+   `PATCH /api/agents/{id}` 的 `web_access` 一起提交。「跟随频道（默认）」= 没有 Agent 级覆盖，
+   选中它提交**显式 null**（清除覆盖，可逆），私聊里按默认档 `search`；频道设置里的联网区块
+   行为不变（它有自己的用例）。 */
 
-test("联网档三档：未配置时没有选中档，保存不提交该字段（= 跟随频道）", async () => {
+test("联网档四档：未配置时选中「跟随频道」，保存提交 web_access: null", async () => {
   const harness = createHarness();
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
@@ -767,12 +771,18 @@ test("联网档三档：未配置时没有选中档，保存不提交该字段�
   await flush();
 
   const group = harness.elementFor("#agentEditWebAccess");
+  const follow = byDataset(group, "webAccess", "follow");
   const cards = ["off", "search", "search+fetch"].map((value) => byDataset(group, "webAccess", value));
-  assert.ok(cards.every(Boolean), "编辑面要有 off / search / search+fetch 三档");
+  assert.ok(follow && cards.every(Boolean), "编辑面要有 follow / off / search / search+fetch 四档");
+  assert.equal(
+    follow.classList.contains("is-on"),
+    true,
+    "`agent.web_access=null` = 没有覆盖：选中的是「跟随频道」",
+  );
   assert.equal(
     cards.some((card) => card.classList.contains("is-on")),
     false,
-    "`agent.web_access=null` = 未配置：三档都不选中",
+    "三个具体档位都不选中",
   );
 
   await harness.elementFor("#agentEditSubmit").dispatchEvent({ type: "click" });
@@ -780,8 +790,63 @@ test("联网档三档：未配置时没有选中档，保存不提交该字段�
 
   const patch = harness.patches();
   assert.equal(patch.length, 1);
-  assert.equal("web_access" in patch[0].body, false, "未选择不提交该字段，保持「跟随频道」");
+  assert.equal(
+    "web_access" in patch[0].body && patch[0].body.web_access,
+    null,
+    "选「跟随频道」提交显式 null（= 清除覆盖），不是省略字段",
+  );
 });
+
+test("联网档：从具体档位切回「跟随频道」提交 null，读回时选中跟随频道", async () => {
+  const configured = agentDetail({ web_access: "off" });
+  const saved = agentDetail({ web_access: null });
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const harness = createHarness({
+    fetch: async (url, init) => {
+      if (String(url) === "/api/agents/mem-1" && (init.method || "GET") === "PATCH") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ agent: saved, agents: [saved], members: [owner, saved] }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ agent: configured }) };
+    },
+  });
+  harness.load([configured]);
+  await harness.clickRow("mem-1");
+  await harness.overview.dispatchEvent({
+    type: "click",
+    target: harness.overview.querySelector("[data-agent-edit]"),
+  });
+  await flush();
+
+  const group = harness.elementFor("#agentEditWebAccess");
+  const follow = byDataset(group, "webAccess", "follow");
+  const off = byDataset(group, "webAccess", "off");
+  assert.equal(off.classList.contains("is-on"), true, "预填读的是后端读数 `web_access='off'`");
+  assert.equal(follow.classList.contains("is-on"), false);
+
+  // 点「跟随频道」：四档互斥，卡片自己带状态。
+  await group.dispatchEvent({ type: "click", target: follow });
+  assert.equal(follow.classList.contains("is-on"), true);
+  assert.equal(off.classList.contains("is-on"), false);
+
+  await harness.elementFor("#agentEditSubmit").dispatchEvent({ type: "click" });
+  await flush();
+
+  const patch = harness.patches();
+  assert.equal(patch.length, 1);
+  assert.equal(patch[0].body.web_access, null, "切回跟随频道 = 提交 null（真的清掉覆盖）");
+
+  // 读回一致：运行时页签显示「跟随频道」，不是空字段文案。
+  await harness.elementFor("#adTabRuntime").dispatchEvent({ type: "click" });
+  assert.equal(
+    kvValues(harness.runtime)[7],
+    catalogText(harness, "zh-CN", "agentDetail.webAccessFollow"),
+  );
+});
+
 
 test("联网档：选中态读 agent.web_access，点档后随 PATCH 提交并在运行时页签读回", async () => {
   const configured = agentDetail({ web_access: "off" });
@@ -933,6 +998,8 @@ test("本票新增的文案在两份词条里都取到值", () => {
     "agent.autoClaimOffHint",
     "agent.autoClaimNote",
     "agent.webAccessLabel",
+    "agent.webAccessFollow",
+    "agent.webAccessFollowHint",
     "agent.webAccessOff",
     "agent.webAccessOffHint",
     "agent.webAccessSearch",
@@ -941,6 +1008,7 @@ test("本票新增的文案在两份词条里都取到值", () => {
     "agent.webAccessSearchFetchHint",
     "agent.webAccessNote",
     "agentDetail.kvWebAccess",
+    "agentDetail.webAccessFollow",
     "agentDetail.webAccessOff",
     "agentDetail.webAccessSearch",
     "agentDetail.webAccessSearchFetch",

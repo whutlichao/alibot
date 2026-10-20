@@ -744,3 +744,42 @@ def test_patching_the_agent_web_access_off_stops_web_search_in_a_dm(library: Any
 
     assert outcome.status == "replied", outcome.reason
     assert "web_search" not in _tool_names()
+
+
+def test_patching_the_agent_web_access_null_brings_web_search_back_in_a_dm(
+    library: Any, stub_provider: str
+) -> None:
+    """端到端的另一半（2026-10-21 人定）：显式 ``null`` 清除覆盖，DM 挂回 ``web_search``。
+
+    三跳对齐同一条事实：HTTP 写路径 → ``agent_config.web_access IS NULL`` → 读路径默认档 →
+    装配层的工具清单。只交其它字段时**不**清覆盖（上一条与读路径用例各钉一半）。
+    """
+    database, agent, _channel = library
+    dm, _created = database.create_dm(agent["id"])
+    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+        patched = client.patch(f"/api/agents/{agent['id']}", json={"web_access": "off"})
+        assert patched.status_code == 200, patched.text
+
+    _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+    assert "web_search" not in _tool_names(), "显式 off 先关掉它"
+
+    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+        cleared = client.patch(f"/api/agents/{agent['id']}", json={"web_access": None})
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["agent"]["web_access"] is None
+
+    with sqlite3.connect(database.path) as connection:
+        row = connection.execute(
+            "SELECT web_access FROM agent_config WHERE member_id = ?", (agent["id"],)
+        ).fetchone()
+    assert row is not None and row[0] is None, "清除覆盖写库为 NULL"
+
+    _StubProviderHandler.request_bodies.clear()
+    outcome = _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+
+    assert outcome.status == "replied", outcome.reason
+    assert "web_search" in _tool_names(), "回到默认档 search"
+    assert "fetch" not in _tool_names(), "DM 仍不装配 fetch"
+    settings = database.web_settings_for_target(dm["id"], agent["id"])
+    assert settings is not None
+    assert settings["web_access"] == "search"

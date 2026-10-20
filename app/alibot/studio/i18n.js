@@ -409,16 +409,19 @@ const I18N_CATALOGS = {
     'agent.autoClaimOffHint': '新建任务保持未认领',
     'agent.autoClaimNote':
       '开启后：频道内新建的任务由编排交给它（一次只认领一个）；认领会写一条可读的系统记录、唤醒它，并为该任务重置一次回应预算——每张任务至多一次。',
-    // 「联网档」的 Agent 级入口（#202）：未选择 = 跟随频道；私聊里没有频道，按默认档「只搜索」。
-    // 三档与频道设置里的那三档同名同义；`fetch` 只在频道 / 任务线程装配（私聊没有审批面）。
+    // 「联网档」的 Agent 级入口（#202）：默认档「跟随频道（默认）」= 不写 Agent 级覆盖，选中它
+    // 提交显式 null（清除覆盖）；私聊里没有频道，按默认档「只搜索」。其余三档与频道设置里的
+    // 那三档同名同义；`fetch` 只在频道 / 任务线程装配（私聊没有审批面）。
     'agent.webAccessLabel': '联网',
+    'agent.webAccessFollow': '跟随频道（默认）',
+    'agent.webAccessFollowHint': '清除 Agent 级覆盖；私聊按默认档',
     'agent.webAccessOff': '关闭',
     'agent.webAccessOffHint': '不挂任何联网工具',
     'agent.webAccessSearch': '只搜索',
     'agent.webAccessSearchHint': '挂 web_search；查询词会离开本机',
     'agent.webAccessSearchFetch': '搜索+抓取',
     'agent.webAccessSearchFetchHint': '额外挂 fetch；每次抓取都要审批',
-    'agent.webAccessNote': '未选择 = 跟随频道；私聊里按默认档「只搜索」，且私聊不装配 fetch。',
+    'agent.webAccessNote': '跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。',
 
     /* ─── Agent 详情（dock 第三形态）：概览 + 运行时两个页签（日志页签不做，D24） ──
        概览的每个数字都由**后端既有事实**推导（`stats`：`round_outcome` 聚合 + 任务行），
@@ -469,9 +472,10 @@ const I18N_CATALOGS = {
     'agentDetail.kvAutoClaim': '自动认领任务',
     'agentDetail.autoClaimOn': '已开启',
     'agentDetail.autoClaimOff': '已关闭',
-    // 联网档（#202）：与其它 `agent_config` 字段同一口径——读数缺失（`null` = 跟随频道）
-    // 显示空字段文案，不在运行时页签里替人推断生效档。
+    // 联网档（#202 / 2026-10-21 修订）：读数缺失（`null`）= 没有 Agent 级覆盖 = 跟随频道，
+    // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在运行时页签里替人推断私聊的生效档。
     'agentDetail.kvWebAccess': '联网档',
+    'agentDetail.webAccessFollow': '跟随频道',
     'agentDetail.webAccessOff': '已关闭',
     'agentDetail.webAccessSearch': '只搜索',
     'agentDetail.webAccessSearchFetch': '搜索+抓取',
@@ -1190,6 +1194,8 @@ const I18N_CATALOGS = {
     // share names and meaning with the channel settings; `fetch` mounts only in channels / task
     // threads (a DM has no approval surface).
     'agent.webAccessLabel': 'Web access',
+    'agent.webAccessFollow': 'Follow channel (default)',
+    'agent.webAccessFollowHint': 'Clear the agent-level override; DMs use the default level',
     'agent.webAccessOff': 'Off',
     'agent.webAccessOffHint': 'Mount no web tool',
     'agent.webAccessSearch': 'Search only',
@@ -1197,7 +1203,7 @@ const I18N_CATALOGS = {
     'agent.webAccessSearchFetch': 'Search + fetch',
     'agent.webAccessSearchFetchHint': 'Also mount fetch; every fetch asks first',
     'agent.webAccessNote':
-      'No selection = follow the channel; a direct message uses the default "search only" level and never mounts fetch.',
+      'Follow channel = no agent-level override (submit null); a direct message uses the default "search only" level and never mounts fetch.',
 
     /* ─── Agent detail (dock form C): overview + runtime tabs (no log tab, D24) ──
        Every number on the overview is derived from **backend facts** (`stats`: aggregates over
@@ -1251,9 +1257,11 @@ const I18N_CATALOGS = {
     'agentDetail.kvAutoClaim': 'Auto-claim tasks',
     'agentDetail.autoClaimOn': 'On',
     'agentDetail.autoClaimOff': 'Off',
-    // Web access (#202): same rule as every other `agent_config` field — a missing value
-    // (`null` = follow the channel) shows the empty-field copy instead of a derived level.
+    // Web access (#202 / 2026-10-21 revision): a missing value (`null`) means there is no
+    // agent-level override, i.e. "follow channel" — a reading, not an empty field; an override
+    // shows its level. The runtime tab never derives the level that is live in a DM.
     'agentDetail.kvWebAccess': 'Web access',
+    'agentDetail.webAccessFollow': 'Follow channel',
     'agentDetail.webAccessOff': 'Off',
     'agentDetail.webAccessSearch': 'Search only',
     'agentDetail.webAccessSearchFetch': 'Search + fetch',

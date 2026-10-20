@@ -81,6 +81,7 @@ from starlette.types import Scope
 from .agent_seam import AgentScopeAgentSeam
 from .approval import APPROVAL_STATES, DEFAULT_APPROVAL_TIMEOUT_SECONDS, ApprovalBroker
 from .db import (
+    _UNSET,
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
     MAX_DOCKER_IMAGE_LENGTH,
@@ -258,6 +259,11 @@ class AgentUpdate(BaseModel):
     **显式 ``null`` 不是「没提到」**：它既不是字段取值也不是合法取值，因此同样整体拒绝，
     而不是被静默当成一次成功的空更新（与 `SettingsUpdate` 同一条纪律）。
 
+    ``web_access`` 是**唯一的例外**（2026-10-21 人定，ADR-0026 §十五）：显式 ``null`` =
+    **清除 Agent 级覆盖、回到跟随频道**（写库 ``NULL``），与频道配置端点同名字段同一口径；
+    「保持原值」由缺省该字段表达。区分发生在端点里（``model_fields_set``），其它字段的显式
+    ``null`` 仍整体 400。
+
     ``auto_claim``（#65 / ADR-0010）是「自动认领任务」开关，与 ``enabled`` 一样是**布尔配置**：
     ``true`` 打开、``false`` 关闭，缺省 = 这次不提它。
     """
@@ -276,8 +282,8 @@ class AgentUpdate(BaseModel):
     permission_mode: str | None = None
     allow_local_shell: bool | None = None
     docker_image: str | None = None
-    # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：缺省 = 不提（跟随频道）。显式 ``null`` 与
-    # 该端点其余字段同一纪律——整体拒绝（回到「跟随频道」由不提交该字段表达）。
+    # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二、§十五）：缺省 = 不提（保持原值）；显式 ``null``
+    # = 清除覆盖（写库 ``NULL`` = 跟随频道）。它因此**不**在下面的「显式 null 一律拒绝」名单里。
     web_access: str | None = None
 
     @field_validator(
@@ -291,7 +297,6 @@ class AgentUpdate(BaseModel):
         "permission_mode",
         "allow_local_shell",
         "docker_image",
-        "web_access",
         mode="before",
     )
     @classmethod
@@ -1576,10 +1581,17 @@ def create_app(
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
 
+        ``web_access`` 是**三态**（ADR-0026 §十五）：缺省 = 保持原值、具体档位 = 写这一档、显式
+        ``null`` = 清除覆盖（回到跟随频道，写库 ``NULL``）。区分读的是 ``model_fields_set``——
+        「字段缺省」与「显式 null」在 pydantic 模型上都表现为 ``None``，只有前者不在这个集合里。
+
         配置变更**不落消息、不唤醒、不消耗预算、不开世代**——它不是一次「发言」。响应形状与
         ``POST /api/agents`` 同形（``agent`` + ``agents`` + ``members``），前端一次调用就能刷新
         详情、左栏与成员面板。
         """
+        # 只有**出现在请求体里**的 web_access 才是「这次要写它」：显式 null 因此能落到库层的三态
+        # 入参上，而缺省该字段仍走 ``_UNSET``（保持原值）。
+        web_access = payload.web_access if "web_access" in payload.model_fields_set else _UNSET
         agent = service.update_agent(
             member_id,
             display_name=payload.display_name,
@@ -1592,7 +1604,7 @@ def create_app(
             permission_mode=payload.permission_mode,
             allow_local_shell=payload.allow_local_shell,
             docker_image=payload.docker_image,
-            web_access=payload.web_access,
+            web_access=web_access,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 

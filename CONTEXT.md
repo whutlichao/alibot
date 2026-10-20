@@ -269,9 +269,12 @@ _Avoid_: 隐私协议（它是运行时的一次确认，不是一份文档）�
 `'search'`）、`'off'` = **显式关闭**（不装配任何联网工具）、`'search'` = 只有 `web_search`、
 `'search+fetch'` = 再加 `fetch`。它与 `allow_local_shell` 是**两个**开关：后者的风险面是本机任意进程，
 前者是数据出网；它也不等于「容器能出网」（那是下面那条）。默认开启搜索（2026-10-20 人定，ADR-0026
-修订节），关闭必须显式写 `'off'`。**私聊（DM）没有频道**：DM 的联网档回退到 Agent 级配置 +
-默认档（`agent_config.web_access`，未配置 = `'search'`），且 `mode` 固定 `read-only`——DM 只挂
-`web_search`，`fetch` 永不装配（2026-10-21 人定，#202；ADR-0026 §十四）。
+修订节），关闭必须显式写 `'off'`。Agent 级覆盖（`agent_config.web_access`）的 `NULL` = **跟随频道**；
+`PATCH /api/agents/{id}` 的**显式 `null` = 清除覆盖、回到跟随频道**（与频道侧同一口径，2026-10-21
+人定，ADR-0026 §十五；同一条 PATCH 的其它字段显式 `null` 仍整体 400）。**私聊（DM）没有频道**：
+DM 的联网档回退到 Agent 级配置 + 默认档（`agent_config.web_access`，未配置 = `'search'`），且
+`mode` 固定 `read-only`——DM 只挂 `web_search`，`fetch` 永不装配（2026-10-21 人定，#202；
+ADR-0026 §十四）。Studio 的 Agent 编辑弹窗因此是四档：**跟随频道（默认）** + 上面三档。
 _Avoid_: 联网开关（会被读成「一个总闸」，而它只管工具面）；隐私设置（它是能力开关，不是数据面告知）
 
 **联网 provider 凭据 (Web Provider Credential)**:

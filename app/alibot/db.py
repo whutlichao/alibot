@@ -189,7 +189,8 @@ SOP_RETENTION_DAYS = 90
 # 其余四态描述「成员这一条分派」的结果；跳一旦扣减就不退款，失败/中断也保留 ``jump_consumed=1``。
 TEAM_ASSIGNMENT_STATES = ("started", "succeeded", "failed", "interrupted", "budget-exhausted")
 
-# 「这次请求没提到这个字段」与「显式清空」是两件事；只有 ``workspace_root`` 允许后者。
+# 「这次请求没提到这个字段」与「显式清空」是两件事；``workspace_root`` 与两处 ``web_access``
+# （channel / agent_config）允许后者（ADR-0021 §六 / ADR-0026 §二、§十五）。
 _UNSET = object()
 
 # 计入工作台快照 ``unread_total`` 的 kind（规格 §2 / 决策 G5）：channel 型 + dm 型之和。
@@ -1594,9 +1595,13 @@ class Database:
         permission_mode: str | None = None,
         allow_local_shell: bool | None = None,
         docker_image: str | None = None,
-        web_access: str | None = None,
+        web_access: Any = _UNSET,
     ) -> dict[str, Any]:
         """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
+
+        ``web_access`` 是**例外**：它是允许显式清空的字段，用 ``_UNSET`` 区分「没提到」与
+        「显式 ``null`` = 清除 Agent 级覆盖、回到跟随频道」（2026-10-21 人定，ADR-0026 §十五；
+        与 ``update_channel_config`` 的同名字段同一口径）。
 
         校验先于写入：**任一字段不合法则整体不改**（与 ``create_agent`` /
         ``update_workspace_settings`` 同一偏序——没有「一半新一半旧」的中间态）。``model_id`` 的
@@ -1614,10 +1619,18 @@ class Database:
             docker_image=docker_image,
             message_key="error.agent_update_invalid",
         )
-        # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：白名单与频道同一条；``None`` = 这次没提到
-        # （跟随频道由**不提交该字段**表达，PATCH 的显式 ``null`` 在请求体层就被拒）。
-        clean_web_access = None if web_access is None else str(web_access).strip()
-        if clean_web_access is not None and clean_web_access not in WEB_ACCESS_LEVELS:
+        # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：白名单与频道同一条。三态入参：
+        # ``_UNSET`` = 这次没提到（保持原值）、``None`` = 显式清空（写库 ``NULL`` = 跟随频道）、
+        # 字符串 = 写这一档。``NULL`` 与「没提到」在 SQL 里由两个参数分开表达（见下方 UPDATE）。
+        if web_access is _UNSET or web_access is None:
+            clean_web_access: Any = web_access
+        else:
+            clean_web_access = str(web_access).strip()
+        if (
+            clean_web_access is not _UNSET
+            and clean_web_access is not None
+            and clean_web_access not in WEB_ACCESS_LEVELS
+        ):
             raise DomainError(
                 "validation_failed",
                 self._render_copy("error.agent_update_invalid"),
@@ -1683,8 +1696,10 @@ class Database:
                     # 空串是**显式清空**（回到内置镜像）；「没提到」保持原值。COALESCE 无法区分
                     # 这两种输入，因此这里用两个参数：第一个是「这次提到了吗」。
                     "docker_image = CASE WHEN ? THEN ? ELSE docker_image END, "
-                    # 联网档的覆盖：与上面的部分更新同一条 COALESCE 语义（``NULL`` 入参 = 没提到）。
-                    "web_access = COALESCE(?, web_access), "
+                    # 联网档的覆盖：**三态**，COALESCE 表达不了，因此与 ``docker_image`` 同一条
+                    # 「这次提到了吗」写法。第一个参数是「提到了」、第二个是「写成什么」——
+                    # 显式 ``None`` 因此能落成 ``NULL``（回到跟随频道），而没提到保持原值。
+                    "web_access = CASE WHEN ? THEN ? ELSE web_access END, "
                     "updated_at = ? WHERE member_id = ?",
                     (
                         clean["role"],
@@ -1697,7 +1712,8 @@ class Database:
                         None if allow_local_shell is None else int(bool(allow_local_shell)),
                         docker_image is not None,
                         clean_image,
-                        clean_web_access,
+                        clean_web_access is not _UNSET,
+                        None if clean_web_access is _UNSET else clean_web_access,
                         utc_now(),
                         member_id,
                     ),

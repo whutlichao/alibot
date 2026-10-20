@@ -382,13 +382,14 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   安装只接受**本机目录或上传 zip**（校验 `SKILL.md` front matter、路径与 hash），**不做远程市场/下载**。
   Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级；删除只删配置与工作区副本，
   不删用户源目录。
-- **联网档（#184 / #199 / #202 / ADR-0026 §二修订 / §十四）**：`channel.web_access` 是频道默认值、
+- **联网档（#184 / #199 / #202 / ADR-0026 §二修订 / §十四 / §十五）**：`channel.web_access` 是频道默认值、
   `agent_config.web_access` 是 Agent 级覆盖（`NULL` = 跟随频道），取值 `NULL` / `'off'` / `'search'` /
   `'search+fetch'`。读路径三态合并 `agent_config.web_access or channel.web_access or 'search'`：
   **未配置默认开启搜索**，只有 `'off'` 才不挂任何联网工具。**私聊（DM）没有频道**：DM 的读路径
   回退到 Agent 级配置 + 默认档（`agent_config.web_access or 'search'`），`mode` 固定 `read-only`、
   `backend=local` / `docker_egress=False` / `egress_hosts=[]`，因此 DM 只挂 `web_search`、`fetch`
-  永不装配；人类面入口是 Agent 编辑弹窗的「联网」三档（未选择 = 跟随频道）。它**不是**
+  永不装配；人类面入口是 Agent 编辑弹窗的「联网」四档（**跟随频道（默认）** + 三档；选中跟随频道
+  提交显式 `null` = 清除 Agent 级覆盖，读回 `null` 也选中它）。它**不是**
   `allow_local_shell` 的同义词——那个的风险面是本机任意进程，这个是数据出网。工具面是
   `app/alibot/web.py` 的 `web_search`（只读，只送查询词）与 `fetch`（非只读，逐次审批，
   `permission_rule` 的 `pattern` 是 **host**）：`read-only`
@@ -485,7 +486,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
 | `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；`auto_claim` 缺省开启，见 ADR-0029） |
 | `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim`、Agent 级 workspace 四项与 `web_access`、`stats`） |
-| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）。响应同形 `agent` + `agents` + `members` |
+| `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）；`web_access: null` 是**清除 Agent 级覆盖**（回到跟随频道，写库 `NULL`；缺省该字段 = 保持原值，其它字段的显式 `null` 仍 400）。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
@@ -553,7 +554,8 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   带回落库值，`null` 表示「跟随频道默认」。
 - **写路径唯一**：`PATCH /api/agents/{id}` 可写 `display_name` / `role` / `model_id` /
   `system_prompt` / `enabled` / `auto_claim` / `workspace_backend` / `permission_mode` /
-  `allow_local_shell` / `docker_image`，**任一字段不合法则整体不写**（不得部分写入）；`model_id`
+  `allow_local_shell` / `docker_image` / `web_access`，**任一字段不合法则整体不写**（不得部分写入）；
+  `model_id`
   沿用与创建同一套校验与**远端数据流告知**语义。「自动认领任务」开关就在这个既有编辑面里
   （不另造第二个编辑面），**缺省开启**（#195 / ADR-0029）、只在自主频道生效，写它只影响
   **之后新建**的任务；升级时的存量回填见上文「存量回填」。
