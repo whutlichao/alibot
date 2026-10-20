@@ -4,7 +4,7 @@ from itertools import pairwise
 from typing import Any, cast
 
 from alibot.agent_seam import SetTaskStatusAction, TransferTaskAction
-from alibot.db import BUDGET_LIMIT
+from alibot.db import BUDGET_LIMIT, TASK_STATUS_TRANSITIONS, TASK_STATUSES
 from fastapi.testclient import TestClient
 
 from tests.conftest import create_agent, create_channel, drain, messages
@@ -88,6 +88,97 @@ def test_task_statuses_follow_the_five_state_machine_and_closed_is_terminal(clie
     assert rejected.json()["error"]["code"] == "validation_failed"
     assert "closed" in rejected.json()["error"]["message"]
     assert client.get(f"/api/tasks/{task['id']}").json()["task"]["status"] == "closed"
+
+
+def _expected_allowed(status: str) -> list[str]:
+    """``allowed_transitions`` 的期望值：拿迁移表的**集合**按 ``TASK_STATUSES`` 排序。
+
+    这里**不钉**五态灯格的任何字面量，也刻意不复用生产代码那个「按状态表过滤」的表达式：
+    从集合 + 状态顺序独立派生，于是实现若漏一格或多一格都会被这条断言抓到。
+    """
+    return sorted(TASK_STATUS_TRANSITIONS[status], key=TASK_STATUSES.index)
+
+
+def _path_from_todo(status: str) -> list[str]:
+    """沿迁移表从 ``todo`` 走到 ``status`` 的最短路径（写路径只接受表内的边）。"""
+    if status == "todo":
+        return []
+    queue: list[list[str]] = [["todo"]]
+    seen = {"todo"}
+    while queue:
+        path = queue.pop(0)
+        for target in _expected_allowed(path[-1]):
+            if target == status:
+                return [*path[1:], target]
+            if target in seen:
+                continue
+            seen.add(target)
+            queue.append([*path, target])
+    raise AssertionError(f"迁移表里从 todo 走不到 {status}")
+
+
+def _task_in_status(client: TestClient, channel_id: str, status: str) -> dict[str, Any]:
+    """建一张任务并只用写路径把它推到 ``status``（不直接改库，走的是同一条入口）。"""
+    created = client.post(f"/api/channels/{channel_id}/tasks", json={"title": f"载荷契约 {status}"})
+    task = created.json()["task"]
+    for step in _path_from_todo(status):
+        moved = client.patch(f"/api/tasks/{task['id']}/status", json={"status": step})
+        assert moved.status_code == 200, moved.json()
+        task = moved.json()["task"]
+    assert task["status"] == status
+    return task
+
+
+def test_task_payload_carries_allowed_transitions_on_every_read_path(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+
+    for status in TASK_STATUSES:
+        task = _task_in_status(client, channel["id"], status)
+        expected = _expected_allowed(status)
+        assert task["allowed_transitions"] == expected
+
+        # 读路径一：全量看板；读路径二：单条任务。
+        board = client.get("/api/tasks").json()["tasks"]
+        assert [item["allowed_transitions"] for item in board if item["id"] == task["id"]] == [expected]
+        single = client.get(f"/api/tasks/{task['id']}").json()["task"]
+        assert single["allowed_transitions"] == expected
+        # 频道筛选是同一读路径的另一条入口（`?channel_id=`），不能有两套形状。
+        filtered = client.get("/api/tasks", params={"channel_id": channel["id"]}).json()["tasks"]
+        assert [item["allowed_transitions"] for item in filtered if item["id"] == task["id"]] == [expected]
+
+        # 另外两个 PATCH 的 `task` 也带这个字段（改名 / 改派都不改状态集合）。
+        retitled = client.patch(f"/api/tasks/{task['id']}/title", json={"title": f"改名 {status}"})
+        assert retitled.status_code == 200
+        assert retitled.json()["task"]["allowed_transitions"] == expected
+        unassigned = client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": None})
+        assert unassigned.status_code == 200
+        assert unassigned.json()["task"]["allowed_transitions"] == expected
+
+
+def test_allowed_transitions_are_exactly_what_the_write_path_accepts(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+
+    for status in TASK_STATUSES:
+        allowed = _expected_allowed(status)
+        for target in TASK_STATUSES:
+            if target == status:
+                continue
+            task = _task_in_status(client, channel["id"], status)
+            status_path = f"/api/tasks/{task['id']}/status"
+
+            response = client.patch(status_path, json={"status": target})
+
+            if target in allowed:
+                assert response.status_code == 200, (status, target, response.json())
+                assert response.json()["task"]["status"] == target
+                assert response.json()["task"]["allowed_transitions"] == _expected_allowed(target)
+            else:
+                assert response.status_code == 400, (status, target, response.json())
+                assert response.json()["error"]["code"] == "validation_failed"
+                # 被拒绝的写不改变后端事实：报表里仍是原状态与原集合。
+                unchanged = client.get(f"/api/tasks/{task['id']}").json()["task"]
+                assert unchanged["status"] == status
+                assert unchanged["allowed_transitions"] == allowed
 
 
 def test_task_reference_is_renderable_in_its_own_target_and_rejected_across_targets(

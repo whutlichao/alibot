@@ -184,6 +184,16 @@ TASK_STATUS_TRANSITIONS = {
     "closed": set(),
 }
 
+
+def allowed_task_transitions(status: str) -> list[str]:
+    """某个状态的全部合法迁移目标（#191）。
+
+    顺序固定为 ``TASK_STATUSES`` 的顺序，终态是空数组——这是任务载荷
+    ``allowed_transitions`` 的**唯一派生点**，因此呈现面不必（也不许）自带一份迁移表副本。
+    """
+    return [target for target in TASK_STATUSES if target in TASK_STATUS_TRANSITIONS.get(status, set())]
+
+
 # 认领在同一个事务里把任务推进到的状态（ADR-0016 二：认领是**开工动作**）。
 # 它是**表里的一个格子**而不是任意取值：``claim_task`` 用
 # ``CLAIM_START_STATUS in TASK_STATUS_TRANSITIONS['todo']`` 做合法性判定，因此收紧迁移表时
@@ -2174,6 +2184,8 @@ class Database:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+        # 合法迁移集合随载荷出行（#191）：从同一张表派生，前端只读它、不持正本。
+        task["allowed_transitions"] = allowed_task_transitions(task["status"])
         task["unread_count"] = self.unread_count(task["target_id"], member_id)
         return task
 
