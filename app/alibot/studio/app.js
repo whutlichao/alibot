@@ -205,6 +205,7 @@ const state = {
       workspaceRoot: '',
       backend: 'local',
       permission: 'ask-writes',
+      webAccess: 'search',
     },
   },
   // 任务视图要读所属频道的同一份配置（#154 / 规格 §4.6）：按 channel id 缓存
@@ -214,6 +215,9 @@ const state = {
   // `mcp` / `skills` 是 `GET /api/mcp-servers` / `GET /api/skills` 的镜像；`mcpDraft` 是
   // **还没提交**的表单状态。清单里只有 `env_names`（变量名）——值从来不进这条通道。
   resources: emptyResourcesView(),
+  // 联网 provider 的掩码读数（#199）：`GET /api/web-providers` 的镜像。`draftKeys` 只放**还没
+  // 提交**的输入值（password 框），绝不回填已保存的 key；`errors` 按 provider 记写失败原因。
+  webProviders: emptyWebProvidersView(),
   // 运行面板（#155 / 规格 §4.6）：dock 的**第四形态**，频道与任务线程都能打开。
   // 它是**独立面**——成员过程、分派、Plan、SOP 只在这里呈现，不进消息流 / 未读 / 搜索。
   // `runs` / `plan` / `sops` 是三个只读快照（`GET /team-runs` / `GET /plan` /
@@ -5181,6 +5185,8 @@ function renderBudgetModal() {
 const CHANNEL_MODES = ['autonomous', 'team'];
 const WORKSPACE_BACKENDS = ['local', 'docker'];
 const PERMISSION_MODES = ['read-only', 'ask-writes', 'trusted-writes'];
+// 联网档（三态）：`off` 是显式关闭，`search` 是默认档；后端仍有库级 CHECK，前端只挡词表外的值。
+const WEB_ACCESS_LEVELS = ['off', 'search', 'search+fetch'];
 
 /** 弹窗的空镜像（打开 / 关闭都用它，于是「缓存了过期配置」这个中间态不存在）。 */
 function emptyChannelConfigView() {
@@ -5197,6 +5203,7 @@ function emptyChannelConfigView() {
       workspaceRoot: '',
       backend: 'local',
       permission: 'ask-writes',
+      webAccess: 'search',
     },
   };
 }
@@ -5209,6 +5216,8 @@ function channelConfigDraftFrom(config) {
     workspaceRoot: config.workspace_root || '',
     backend: config.workspace_backend,
     permission: config.permission_mode,
+    // `null` = 未配置；读路径回退默认档，界面因此按 `search` 选中（保存后成为显式值）。
+    webAccess: WEB_ACCESS_LEVELS.includes(config.web_access) ? config.web_access : 'search',
   };
 }
 
@@ -5317,11 +5326,16 @@ async function openChannelConfigModal() {
   // 资源三段（#156）与频道配置同时读：三段各有自己的错误行，一段读不到不牵连其它段。
   state.resources = emptyResourcesView();
   state.resources.channelId = channel.id;
+  state.webProviders = emptyWebProvidersView();
   $('#channelConfigOverlay').hidden = false;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
   renderChannelConfigModal();
-  await Promise.all([loadChannelConfig(channel.id), loadChannelResources(channel.id)]);
+  await Promise.all([
+    loadChannelConfig(channel.id),
+    loadChannelResources(channel.id),
+    loadWebProviders(),
+  ]);
 }
 
 /** 读一次该频道的配置 + 成员表（队长候选）。读回后按**同一个频道**重铺。 */
@@ -5397,6 +5411,240 @@ function selectChannelConfigPermission(permission) {
   if (!PERMISSION_MODES.includes(permission) || !state.channelConfig.channelId) return;
   state.channelConfig.draft.permission = permission;
   renderChannelConfigModal();
+}
+
+function selectChannelConfigWebAccess(level) {
+  if (!WEB_ACCESS_LEVELS.includes(level) || !state.channelConfig.channelId) return;
+  state.channelConfig.draft.webAccess = level;
+  renderChannelConfigModal();
+}
+
+/** provider 的显示名（字面键；动态取值不拼词条键，词条守卫才能看见全部键）。 */
+function webProviderLabel(provider) {
+  if (provider === 'brave') return t('webProviders.provider.brave');
+  if (provider === 'tavily') return t('webProviders.provider.tavily');
+  if (provider === 'perplexity') return t('webProviders.provider.perplexity');
+  if (provider === 'jina') return t('webProviders.provider.jina');
+  if (provider === 'exa') return t('webProviders.provider.exa');
+  return t('webProviders.provider.fallback');
+}
+
+function webProviderSourceLabel(source) {
+  if (source === 'env') return t('webProviders.source.env');
+  if (source === 'ui') return t('webProviders.source.ui');
+  if (source === 'invalid') return t('webProviders.source.invalid');
+  return t('webProviders.source.fallback');
+}
+
+/** 联网 provider 的空镜像（打开 / 关闭弹窗都用它；不含任何已保存的 key）。 */
+function emptyWebProvidersView() {
+  return {
+    loading: false,
+    error: '',
+    providers: [],
+    active: null,
+    draftKeys: {},
+    errors: {},
+  };
+}
+
+/** 读五家的掩码状态与当前生效 provider；失败只落在联网这一段自己的错误行。 */
+async function loadWebProviders() {
+  const view = state.webProviders;
+  const channelId = state.channelConfig.channelId;
+  view.loading = true;
+  view.error = '';
+  if (channelId) renderChannelConfigModal();
+  try {
+    const payload = await api('/api/web-providers');
+    if (state.channelConfig.channelId !== channelId) return;
+    view.providers = payload.providers || [];
+    view.active = payload.active || null;
+  } catch (err) {
+    if (state.channelConfig.channelId !== channelId) return;
+    view.error = t('webProviders.loadFailed', { reason: err.message });
+  }
+  if (state.channelConfig.channelId !== channelId) return;
+  view.loading = false;
+  renderChannelConfigModal();
+}
+
+function webProviderStatusText(item) {
+  if (item.masked) return t('webProviders.configuredWithMask', { masked: item.masked });
+  if (item.env_configured) return t('webProviders.configuredFromEnv');
+  return t('webProviders.notConfigured');
+}
+
+/** 保存一家 provider 的 key：请求里只出现刚输入的明文，响应只回掩码。 */
+async function saveWebProviderKey(provider) {
+  const view = state.webProviders;
+  const key = String(view.draftKeys[provider] || '').trim();
+  if (!key) {
+    view.errors[provider] = t('webProviders.keyRequired');
+    renderChannelConfigModal();
+    return;
+  }
+  view.errors[provider] = '';
+  try {
+    await api('/api/web-providers/' + encodeURIComponent(provider) + '/credential', {
+      method: 'PUT',
+      body: { api_key: key },
+    });
+    delete view.draftKeys[provider];
+    await loadWebProviders();
+    toast(t('webProviders.saved', { provider: webProviderLabel(provider) }));
+  } catch (err) {
+    view.errors[provider] = t('webProviders.saveFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+/** 切换默认 provider：不带 key，只改默认标记。 */
+async function setDefaultWebProvider(provider) {
+  const view = state.webProviders;
+  view.errors[provider] = '';
+  try {
+    await api('/api/web-providers/' + encodeURIComponent(provider) + '/credential', {
+      method: 'PUT',
+      body: { is_default: true },
+    });
+    await loadWebProviders();
+    toast(t('webProviders.defaultSet', { provider: webProviderLabel(provider) }));
+  } catch (err) {
+    view.errors[provider] = t('webProviders.defaultFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+/** 清除一家 provider 的凭据（连同默认标记）；确认行保留。 */
+async function clearWebProvider(provider) {
+  const view = state.webProviders;
+  view.errors[provider] = '';
+  try {
+    await api('/api/web-providers/' + encodeURIComponent(provider) + '/credential', {
+      method: 'DELETE',
+    });
+    delete view.draftKeys[provider];
+    await loadWebProviders();
+    toast(t('webProviders.cleared', { provider: webProviderLabel(provider) }));
+  } catch (err) {
+    view.errors[provider] = t('webProviders.clearFailed', { reason: err.message });
+    renderChannelConfigModal();
+  }
+}
+
+/** 一家 provider 的一行：掩码状态 + password 输入 + 保存 / 默认 / 清除。 */
+function webProviderRow(item) {
+  const view = state.webProviders;
+  const row = el('div', 'web-provider-row');
+  row.setAttribute('data-od-id', 'web-provider-' + item.provider);
+  const head = el('div', 'web-provider-head');
+  head.appendChild(el('b', null, webProviderLabel(item.provider)));
+  const status = el(
+    'span',
+    'resource-meta' + (item.configured ? '' : ' is-faint'),
+    webProviderStatusText(item),
+  );
+  status.setAttribute('data-od-id', 'web-provider-status-' + item.provider);
+  head.appendChild(status);
+  if (item.is_default) {
+    const badge = el('span', 'web-provider-badge', t('webProviders.defaultBadge'));
+    badge.setAttribute('data-od-id', 'web-provider-default-' + item.provider);
+    head.appendChild(badge);
+  }
+  row.appendChild(head);
+
+  const controls = el('div', 'resource-form-row');
+  const field = el('div', 'field');
+  const label = el('label', null, t('webProviders.keyLabel', { provider: webProviderLabel(item.provider) }));
+  label.setAttribute('for', 'web-provider-key-' + item.provider);
+  field.appendChild(label);
+  const input = el('input', 'input');
+  input.type = 'password';
+  input.autocomplete = 'new-password';
+  input.id = 'web-provider-key-' + item.provider;
+  input.dataset.webKey = item.provider;
+  input.setAttribute('data-od-id', 'web-provider-key-' + item.provider);
+  input.placeholder = item.masked || t('webProviders.keyPlaceholder');
+  input.value = view.draftKeys[item.provider] || '';
+  field.appendChild(input);
+  controls.appendChild(field);
+
+  const actions = el('div', 'agent-actions');
+  const save = el('button', 'btn btn-primary', t('webProviders.save'));
+  save.type = 'button';
+  save.dataset.webSave = item.provider;
+  save.setAttribute('data-od-id', 'web-provider-save-' + item.provider);
+  save.disabled = !state.online;
+  actions.appendChild(save);
+
+  const makeDefault = el('button', 'btn', t('webProviders.makeDefault'));
+  makeDefault.type = 'button';
+  makeDefault.dataset.webDefault = item.provider;
+  makeDefault.setAttribute('data-od-id', 'web-provider-make-default-' + item.provider);
+  makeDefault.disabled = !state.online || !item.configured || item.is_default;
+  actions.appendChild(makeDefault);
+
+  const clear = el('button', 'btn', t('webProviders.clear'));
+  clear.type = 'button';
+  clear.dataset.webClear = item.provider;
+  clear.setAttribute('data-od-id', 'web-provider-clear-' + item.provider);
+  clear.disabled = !state.online || !item.configured;
+  actions.appendChild(clear);
+  controls.appendChild(actions);
+  row.appendChild(controls);
+
+  row.appendChild(el('div', 'resource-meta is-faint', t('webProviders.dataNotice')));
+  if (view.errors[item.provider]) {
+    row.appendChild(resourceErrorNode(view.errors[item.provider], 'web-provider-error-' + item.provider));
+  }
+  return row;
+}
+
+/** 联网区块：档位三选 + 当前 provider / 来源 + 五家的凭据行。 */
+function webAccessSection(view) {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('channelConfig.sectionWeb', 'channel-config-section-web'));
+  section.appendChild(
+    channelConfigRadioRow(
+      WEB_ACCESS_LEVELS,
+      view.draft.webAccess,
+      'configWebAccess',
+      'channelConfig.webAccess.',
+      'channelConfig.webAccess.',
+    ),
+  );
+  section.appendChild(channelConfigHint('channelConfig.webAccessHint', 'channel-config-web-access-hint'));
+
+  const providers = state.webProviders;
+  if (providers.error) {
+    section.appendChild(resourceErrorNode(providers.error, 'channel-config-web-providers-error'));
+    return section;
+  }
+  if (providers.active) {
+    const provider = providers.active.provider
+      ? webProviderLabel(providers.active.provider)
+      : t('webProviders.none');
+    const line = kvRow(
+      t('webProviders.active'),
+      t('webProviders.activeValue', {
+        provider,
+        source: webProviderSourceLabel(providers.active.source),
+      }),
+      'channel-config-web-active',
+    );
+    section.appendChild(line);
+    if (providers.active.reason) {
+      const reason = el('div', 'dock-member-reason', providers.active.reason);
+      reason.setAttribute('data-od-id', 'channel-config-web-active-reason');
+      section.appendChild(reason);
+    }
+  }
+  const list = el('div', 'web-provider-list');
+  list.setAttribute('data-od-id', 'channel-config-web-providers');
+  (providers.providers || []).forEach((item) => list.appendChild(webProviderRow(item)));
+  section.appendChild(list);
+  return section;
 }
 
 /** 一行说明（`.field .hint` 那一档的排版，不新造样式）。 */
@@ -5585,6 +5833,9 @@ function renderChannelConfigModal() {
     ),
   );
   nodes.push(permission);
+
+  // ⑦ 联网（#199）：档位三选 + provider 状态与凭据。凭据行只出现掩码 / 未配置。
+  nodes.push(webAccessSection(view));
 
   // ⑦ 保存。失败原因写在弹窗自带的 `#channelConfigFormError` 里（重铺不会清掉它）。
   const actions = el('div', 'agent-actions');
@@ -6388,6 +6639,7 @@ async function submitChannelConfig() {
     workspace_root: root || null,
     workspace_backend: view.draft.backend,
     permission_mode: view.draft.permission,
+    web_access: view.draft.webAccess,
   };
   if (view.draft.leader) body.team_leader_member_id = view.draft.leader;
   try {
@@ -7901,6 +8153,26 @@ function bindEvents() {
       selectChannelConfigPermission(permission.dataset.configPermission);
       return;
     }
+    const webAccess = event.target.closest('[data-config-web-access]');
+    if (webAccess) {
+      selectChannelConfigWebAccess(webAccess.dataset.configWebAccess);
+      return;
+    }
+    const webSave = event.target.closest('[data-web-save]');
+    if (webSave) {
+      saveWebProviderKey(webSave.dataset.webSave);
+      return;
+    }
+    const webDefault = event.target.closest('[data-web-default]');
+    if (webDefault) {
+      setDefaultWebProvider(webDefault.dataset.webDefault);
+      return;
+    }
+    const webClear = event.target.closest('[data-web-clear]');
+    if (webClear) {
+      clearWebProvider(webClear.dataset.webClear);
+      return;
+    }
     if (event.target.closest('[data-config-save]')) {
       submitChannelConfig();
       return;
@@ -7972,6 +8244,11 @@ function bindEvents() {
     const root = event.target.closest('[data-config-workspace-root]');
     if (root) {
       state.channelConfig.draft.workspaceRoot = root.value;
+      return;
+    }
+    const key = event.target.closest('[data-web-key]');
+    if (key) {
+      state.webProviders.draftKeys[key.dataset.webKey] = key.value;
       return;
     }
     const field = event.target.closest('[data-mcp-field]');

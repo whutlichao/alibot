@@ -254,19 +254,30 @@ _Avoid_: 内网 / 外网（那是网络位置，不是调用者类别）；私�
 `remote_consent`（兼容面：新读路径读 `remote_consent_scope` 的 `('model', provider)` 行，迁移把旧行复制过去），未确认时该 Agent 的
 状态点是**未启用**，被点名时轮次 reason 可读，且**绝不发起任何远端调用**。本仓不做应用层端到端加密，
 产品文案不声称 E2EE。
-**本轮扩展（ADR-0021 §三 / ADR-0026 §四）**：同一张 `remote_consent_scope` 还记**远端 MCP**（`('mcp', …)`）、
+**本轮扩展（ADR-0021 §三 / ADR-0026 §四修订）**：同一张 `remote_consent_scope` 还记**远端 MCP**（`('mcp', …)`）、
 **Docker registry/镜像**（`('docker', …)`）与**联网 provider**（`('web', provider)`）的一次性确认；四类都只存
-「何时确认过」，不存凭证与连接参数。`web` 档的人类面写路径是 `POST /api/web-providers/{provider}/consent`
-（只接受 `brave` / `tavily`，幂等）：未确认时装配层不挂联网工具且零请求，确认后下一轮按配置装配；已确认的
-provider 由 `GET /api/remote-data-flow` 的 `web_consents` 读回（D6，见 `app/specs/issue-186-acceptance.md` §4.3）。
-_Avoid_: 隐私协议（它是运行时的一次确认，不是一份文档）；密钥录入（库里没有密钥字段，凭证只从进程环境变量读）
+「何时确认过」，不存连接参数。`web` 档的人类面写路径是 `POST /api/web-providers/{provider}/consent`
+与 `PUT /api/web-providers/{provider}/credential`（保存 key 同时写确认行）；只接受五家带凭据 provider，
+幂等。未确认时装配层不挂这家 provider 的工具且零请求；免凭据的 `exa-mcp` 不需要确认行。已确认的 provider
+由 `GET /api/remote-data-flow` 的 `web_consents` 读回。凭据本体的落点是 `web_provider_credential`：
+`api_key` 明文入库（部署层保证库文件 `0600`），HTTP / 日志 / 事件只回掩码。
+_Avoid_: 隐私协议（它是运行时的一次确认，不是一份文档）；密钥录入（见「联网 provider 凭据」：保存的是**凭据**，读回只有掩码）
 
 **联网档 (Web Access)**:
-频道级的联网能力配置（`channel.web_access`，Agent 可覆盖）：`NULL` = **关闭**（不装配任何联网工具）、
-`'search'` = 只有 `web_search`、`'search+fetch'` = 再加 `fetch`。它与 `allow_local_shell` 是**两个**开关：
-后者的风险面是本机任意进程，前者是数据出网；它也不等于「容器能出网」（那是下面那条）。默认关闭，
-与 ADR-0021 §二的「默认没有」同一口径。
+频道级的联网能力配置（`channel.web_access`，Agent 可覆盖）：`NULL` = **未配置**（读路径回退默认档
+`'search'`）、`'off'` = **显式关闭**（不装配任何联网工具）、`'search'` = 只有 `web_search`、
+`'search+fetch'` = 再加 `fetch`。它与 `allow_local_shell` 是**两个**开关：后者的风险面是本机任意进程，
+前者是数据出网；它也不等于「容器能出网」（那是下面那条）。默认开启搜索（2026-10-20 人定，ADR-0026
+修订节），关闭必须显式写 `'off'`。
 _Avoid_: 联网开关（会被读成「一个总闸」，而它只管工具面）；隐私设置（它是能力开关，不是数据面告知）
+
+**联网 provider 凭据 (Web Provider Credential)**:
+五家带凭据 provider（`brave` / `tavily` / `perplexity` / `jina` / `exa`）各一把 key，存
+`web_provider_credential`（`provider` 主键、`api_key` 明文、`is_default`、时间戳；至多一行默认）。
+解析顺序唯一：进程环境 `ALIBOT_WEB_SEARCH_PROVIDER` → 凭据表默认项 → 已配置项的固定顺序 → 免凭据回退
+`exa-mcp`。凭据优先级是**库内值优先、环境变量兜底**；任何人类面读数只回掩码（如 `sk-…abcd`），完整 key
+绝不进 HTTP 响应、日志或事件载荷。
+_Avoid_: 密钥库（它只存联网搜索凭据，不是通用 secret store）；环境变量列表（那不是正本，只是兜底来源）
 
 **容器出网 (Container Egress)**:
 Docker 后端下「这个频道的容器接不接网络」的频道级开关（`channel.docker_egress`，缺省 `0` = `--network none`）；
@@ -602,9 +613,9 @@ _Avoid_: 兼容性检查（会被读成尽力而为的探测）；自动升级�
 **数据迁移 (Schema Migration)**:
 把旧一代形态的库**显式**推进到本代码的 **Schema 版本**的动作：**形态步骤 + 逐版步骤链**、迁移前自动
 **备份**、单事务收口。它由用户显式执行（`--migrate`），**不是**启动流程的一步；**未来版本**的库
-（库版本高于代码版本）一律拒绝——本仓没有降级路径。**本轮（15 → 19）**是四个严格 +1 的步骤
+（库版本高于代码版本）一律拒绝——本仓没有降级路径。**本轮（15 → 20）**是五个严格 +1 的步骤
 （`15→16` team/Plan/SOP、`16→17` workspace/permission/MCP/Skill/approval、`17→18` 联网档与 `web` 确认档、
-`18→19` 容器出网开关），只加不删、旧行按默认值解释；
+`18→19` 容器出网开关、`19→20` 凭据表与联网三态），只加不删、旧行按默认值解释；
 迁移**单向**：回滚 = **恢复迁移前整目录备份**（`SCHEMA_VERSION` 改回去不算回滚，旧代码打不开新库）。
 _Avoid_: 自动升级（启动不会替你迁）；就地改造（迁移必须经步骤链与备份，不是随手改表）；把迁移读成"改 `SCHEMA_VERSION`"（号是结果，不是动作）
 

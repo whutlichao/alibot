@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,7 +40,13 @@ from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import parse_mentions
 from .team import TEAM_SCOPE
-from .web import SEARCH_PROVIDERS
+from .web import (
+    SEARCH_BACKENDS,
+    SEARCH_PROVIDERS,
+    ProviderResolutionError,
+    describe_search_provider,
+    web_env,
+)
 from .workspace import clear_docker_failure
 
 if TYPE_CHECKING:
@@ -756,6 +763,76 @@ class WorkspaceService:
         return self._db.delete_reminder(str(reminder_id).strip())
 
     # ─── 远端数据流告知 ──────────────────────────────────────────────────
+    def _web_provider_views(self) -> list[dict[str, Any]]:
+        """五家的掩码状态；``env_configured`` 只表示「进程环境里有这一家的 key」，
+        它不改变「库内是否配置」——清除 / 设为默认只对库内行生效。"""
+        env = web_env(os.environ)
+        views: list[dict[str, Any]] = []
+        for view in self._db.web_provider_credential_views():
+            backend = SEARCH_BACKENDS[view["provider"]]
+            env_configured = bool(backend.env_name and env.get(backend.env_name))
+            views.append({**view, "env_configured": env_configured})
+        return views
+
+    def _web_active(self) -> dict[str, Any]:
+        runtime = self._db.web_provider_credentials()
+        try:
+            choice = describe_search_provider(
+                os.environ,
+                credentials=runtime["credentials"],
+                default_provider=runtime["default_provider"],
+            )
+            return {"provider": choice.provider, "source": choice.source}
+        except ProviderResolutionError as error:
+            # 环境变量写错不该让一次只读请求变成 500：把「配置无效」作为读数交给界面。
+            return {"provider": "", "source": "invalid", "reason": error.reason}
+
+    def web_providers(self) -> dict[str, Any]:
+        """联网 provider 的人类面读数：五家的掩码状态 + 当前生效的 provider 与来源。
+
+        返回值**不含任何完整 key**：``providers[].masked`` 是唯一可回读的凭据形态；
+        ``env_configured`` 只说明环境变量兜底是否可用，仍然不回吐取值。
+        """
+        return {"providers": self._web_provider_views(), "active": self._web_active()}
+
+    def web_provider_credential(self, provider: str) -> dict[str, Any]:
+        """一家 provider 的掩码读数（未配置时 ``configured=False``）。"""
+        clean = (provider or "").strip()
+        for view in self._web_provider_views():
+            if view["provider"] == clean:
+                return {"credential": view}
+        raise DomainError(
+            "validation_failed",
+            render("error.web_provider_invalid", self._locale(), values=", ".join(SEARCH_PROVIDERS)),
+            fields={
+                "provider": render("error.field_choices", self._locale(), values=", ".join(SEARCH_PROVIDERS))
+            },
+        )
+
+    def save_web_provider_credential(
+        self, provider: str, api_key: str | None, is_default: bool | None
+    ) -> dict[str, Any]:
+        """保存 key（同时写数据面确认）或把已配置的一家设为默认；响应只有掩码。"""
+        clean = (provider or "").strip()
+        self._db.save_web_provider_credential(clean, api_key, is_default=is_default)
+        views = self._web_provider_views()
+        return {
+            "credential": next(view for view in views if view["provider"] == clean),
+            "providers": views,
+            "active": self._web_active(),
+        }
+
+    def delete_web_provider_credential(self, provider: str) -> dict[str, Any]:
+        """清空一家 provider 的凭据（连同默认标记）；响应只有掩码形态。"""
+        clean = (provider or "").strip()
+        self._db.delete_web_provider_credential(clean)
+        views = self._web_provider_views()
+        return {
+            "credential": next(view for view in views if view["provider"] == clean),
+            "providers": views,
+            "active": self._web_active(),
+        }
+
     def remote_data_flow(self) -> dict[str, Any]:
         """告知文案的数据面：哪些数据会离开本机、发给谁、以及已经确认过哪些提供商。"""
         locale = self._locale()
@@ -785,9 +862,11 @@ class WorkspaceService:
     def confirm_web_provider(self, provider: str) -> dict[str, Any]:
         """确认一个联网 provider 的数据面告知（#186 / D6）：``remote_consent_scope('web', provider)``。
 
-        这是 ADR-0026 §四 那条「未确认时不装配、且绝不发起任何调用」的人类面**唯一写路径**。
-        幂等（重复确认不覆盖首次时间）；只存时间，不存凭证与连接参数——凭据仍只从进程环境读（D2/D4）。
-        ``provider`` 只接受工具面自己的枚举（``brave`` / ``tavily``），不接受任意字符串。
+        这是 ADR-0026 §四 那条「未确认时不装配、且绝不发起任何调用」的人类面**唯一**写路径。
+        幂等（重复确认不覆盖首次时间）；只存时间，不存凭证与连接参数——凭据落在
+        ``web_provider_credential``（明文、掩码回读），保存 key 的动作也会写这张确认表。
+        ``provider`` 只接受工具面自己的枚举（五家带凭据 provider），不接受任意字符串；免凭据的
+        ``exa-mcp`` 不需要确认行。
         """
         locale = self._locale()
         clean = (provider or "").strip()

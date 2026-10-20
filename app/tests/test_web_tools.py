@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from agentscope.message import ToolResultState
 from alibot.web import (
+    FALLBACK_PROVIDER,
     SEARCH_MAX_RESULTS,
     SEARCH_MAX_SNIPPET_CHARS,
     WEB_TIMEOUT_SECONDS,
@@ -32,7 +33,9 @@ from alibot.web import (
     ProviderResolutionError,
     UrlopenTransport,
     WebTransportError,
+    describe_search_provider,
     fetch_tool,
+    mask_credential,
     resolve_search_provider,
     search_tool,
     web_env,
@@ -159,15 +162,237 @@ def test_web_search_uses_the_tavily_host_and_key_when_configured() -> None:
     assert "搜索 API 的接入说明" in text
 
 
+def test_web_search_uses_the_perplexity_search_shape() -> None:
+    """Perplexity：POST 到 ``/search``，JSON 体，Bearer 凭据；结果映射 ``results[].snippet``。"""
+    stub = StubTransport(
+        _json_response(
+            {"results": [{"title": "P 文档", "url": "https://docs.perplexity.ai/", "snippet": "检索 API"}]}
+        )
+    )
+    tool = search_tool(provider="perplexity", transport=stub, environ={"PERPLEXITY_API_KEY": "pplx-secret"})
+
+    chunk = _run(_chunk(tool, query="AgentScope", count=4))
+
+    request = stub.requests[0]
+    assert request.method == "POST"
+    assert urlsplit(request.url).netloc == "api.perplexity.ai"
+    assert urlsplit(request.url).path == "/search"
+    assert request.headers["Authorization"] == "Bearer pplx-secret"
+    assert request.body is not None
+    assert json.loads(request.body.decode("utf-8")) == {"query": "AgentScope", "max_results": 4}
+    assert chunk.state == ToolResultState.SUCCESS
+    assert "P 文档" in _text(chunk) and "检索 API" in _text(chunk)
+
+
+def test_web_search_uses_the_jina_search_shape() -> None:
+    """Jina：GET 到 ``s.jina.ai``，查询词在 ``q``，Bearer 凭据；结果映射 ``data[].description``。"""
+    stub = StubTransport(
+        _json_response({"data": [{"title": "J 文档", "url": "https://jina.ai/", "description": "阅读器"}]})
+    )
+    tool = search_tool(provider="jina", transport=stub, environ={"JINA_API_KEY": "jina-secret"})
+
+    chunk = _run(_chunk(tool, query="AgentScope", count=2))
+
+    request = stub.requests[0]
+    assert request.method == "GET"
+    parsed = urlsplit(request.url)
+    assert parsed.netloc == "s.jina.ai"
+    assert parse_qs(parsed.query) == {"q": ["AgentScope"]}, "Jina 只收查询词"
+    assert request.headers["Authorization"] == "Bearer jina-secret"
+    assert chunk.state == ToolResultState.SUCCESS
+    assert "J 文档" in _text(chunk) and "阅读器" in _text(chunk)
+
+
+def test_web_search_uses_the_exa_rest_shape_when_a_key_exists() -> None:
+    """Exa（有 key）：POST 到 ``api.exa.ai/search``，``x-api-key``，body 用 ``numResults``。"""
+    stub = StubTransport(
+        _json_response({"results": [{"title": "Exa 文档", "url": "https://exa.ai/", "text": "语义检索"}]})
+    )
+    tool = search_tool(provider="exa", transport=stub, environ={"EXA_API_KEY": "exa-secret"})
+
+    chunk = _run(_chunk(tool, query="AgentScope", count=2))
+
+    request = stub.requests[0]
+    assert request.method == "POST"
+    assert urlsplit(request.url).netloc == "api.exa.ai"
+    assert request.headers["x-api-key"] == "exa-secret"
+    assert request.body is not None
+    assert json.loads(request.body.decode("utf-8")) == {"query": "AgentScope", "numResults": 2}
+    assert chunk.state == ToolResultState.SUCCESS
+    assert "Exa 文档" in _text(chunk) and "语义检索" in _text(chunk)
+
+
+EXA_TEXT = (
+    "Title: AgentScope 文档\n"
+    "URL: https://doc.agentscope.io/\n"
+    "Published: 2026-01-01\n"
+    "Highlights:\n"
+    "框架 2.0.10 的文档站\n"
+    "---\n"
+    "Title: AgentScope 仓库\n"
+    "URL: https://github.com/agentscope/agentscope\n"
+    "Text:\n"
+    "多智能体框架的源码与示例\n"
+    "Title: 第三条结果\n"
+    "URL: https://example.org/third\n"
+    "Highlights:\n"
+    "这条不该出现在 count=2 的响应里\n"
+)
+
+
+def _exa_sse(text: str) -> HttpResponse:
+    """Exa MCP 的典型回包：SSE，一行一个 ``data:``，正文在 ``result.content[0].text``。"""
+    message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"content": [{"type": "text", "text": text}]},
+    }
+    body = f"event: message\ndata: {json.dumps(message, ensure_ascii=False)}\n\n"
+    return HttpResponse(status=200, body=body.encode("utf-8"))
+
+
+def test_exa_mcp_posts_a_jsonrpc_tools_call_without_any_credential() -> None:
+    """免凭据回退：只发查询词与条数；没有凭据头，URL 是 Exa MCP 的零配置端点。"""
+    stub = StubTransport(_exa_sse(EXA_TEXT))
+    tool = search_tool(provider=FALLBACK_PROVIDER, transport=stub, environ={})
+
+    chunk = _run(_chunk(tool, query="AgentScope", count=2))
+
+    assert len(stub.requests) == 1
+    request = stub.requests[0]
+    assert request.method == "POST"
+    assert request.url == "https://mcp.exa.ai/mcp?tools=web_search_exa"
+    assert dict(request.headers) == {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "alibot-web-tools/0.1",
+    }, "免凭据 provider 不带任何凭据头"
+    assert request.body is not None
+    assert json.loads(request.body.decode("utf-8")) == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "web_search_exa",
+            "arguments": {"query": "AgentScope", "numResults": 2},
+        },
+    }
+    assert request.timeout_seconds == WEB_TIMEOUT_SECONDS
+
+    assert chunk.state == ToolResultState.SUCCESS
+    text = _text(chunk)
+    assert "AgentScope 文档" in text
+    assert "https://doc.agentscope.io/" in text
+    assert "框架 2.0.10 的文档站" in text, "Highlights 是摘要的来源"
+    assert "AgentScope 仓库" in text
+    assert "多智能体框架的源码与示例" in text, "没有 Highlights 时退回 Text:"
+    assert "第三条结果" not in text, "条数按请求值截断"
+
+
+def test_exa_mcp_parses_a_bare_json_body_and_reports_errors_readably() -> None:
+    """裸 JSON 同样可读；JSON-RPC error / ``result.isError`` / 空结果都收口成可读结果。"""
+    message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"content": [{"type": "text", "text": EXA_TEXT}]},
+    }
+    stub = StubTransport(_json_response(message))
+    chunk = _run(_chunk(search_tool(provider=FALLBACK_PROVIDER, transport=stub, environ={}), query="x"))
+    assert chunk.state == ToolResultState.SUCCESS
+    assert "AgentScope 文档" in _text(chunk)
+
+    empty = StubTransport(_exa_sse(""))
+    empty_chunk = _run(
+        _chunk(search_tool(provider=FALLBACK_PROVIDER, transport=empty, environ={}), query="没有结果")
+    )
+    assert empty_chunk.state == ToolResultState.SUCCESS
+    assert "没有找到结果" in _text(empty_chunk)
+
+    jsonrpc_error = _json_response(
+        {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "上游炸了"}}
+    )
+    error_chunk = _run(
+        _chunk(
+            search_tool(provider=FALLBACK_PROVIDER, transport=StubTransport(jsonrpc_error), environ={}),
+            query="x",
+        )
+    )
+    assert error_chunk.state == ToolResultState.ERROR
+    assert "上游炸了" in _text(error_chunk)
+
+    tool_error = _json_response(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"isError": True, "content": [{"type": "text", "text": "query is required"}]},
+        }
+    )
+    tool_error_chunk = _run(
+        _chunk(
+            search_tool(provider=FALLBACK_PROVIDER, transport=StubTransport(tool_error), environ={}),
+            query="x",
+        )
+    )
+    assert tool_error_chunk.state == ToolResultState.ERROR
+    assert "query is required" in _text(tool_error_chunk)
+
+
+def test_a_429_is_a_readable_result_and_no_retry_happens() -> None:
+    """429 与其它非 200 一样：写明 provider 与状态码，一个请求只发一次。"""
+    stub = StubTransport(HttpResponse(status=429, body=b"slow down"))
+    tool = search_tool(provider="brave", transport=stub, environ={"BRAVE_API_KEY": "k"})
+
+    chunk = _run(_chunk(tool, query="AgentScope"))
+
+    assert chunk.state == ToolResultState.ERROR
+    text = _text(chunk)
+    assert "429" in text and "api.search.brave.com" in text
+    assert len(stub.requests) == 1, "不重试"
+
+
+def test_the_database_credential_wins_over_the_environment() -> None:
+    """凭据来源优先级：库内值优先，环境变量只是兜底；响应头只出现库内那份。"""
+    stub = StubTransport(_json_response(BRAVE_PAYLOAD))
+    tool = search_tool(
+        provider="brave",
+        transport=stub,
+        environ={"BRAVE_API_KEY": "env-secret"},
+        credentials={"brave": "db-secret"},
+    )
+
+    _run(_chunk(tool, query="AgentScope"))
+
+    assert stub.requests[0].headers["X-Subscription-Token"] == "db-secret"
+
+
+def test_mask_credential_never_reveals_the_full_value() -> None:
+    """掩码是唯一的可回读形态：首三 + 尾四；短值（含 8 位）只回省略号。"""
+    assert mask_credential("sk-1234567890abcd") == "sk-…abcd"
+    assert mask_credential("sk-123456") == "…"
+    assert mask_credential("abcdefgh") == "…"
+    assert mask_credential("sk-1234567") == "…"
+    assert mask_credential("sk-12345678") == "sk-…5678"
+    assert "1234567890" not in mask_credential("sk-1234567890abcd")
+
+
 def test_web_env_only_reads_the_whitelisted_names() -> None:
     """凭据只从**名字白名单**里读：其它环境变量一个都不进来（形状同 ``docker_env``）。"""
     environ = {
         "BRAVE_API_KEY": "brave-secret",
         "TAVILY_API_KEY": "tavily-secret",
+        "PERPLEXITY_API_KEY": "pplx-secret",
+        "JINA_API_KEY": "jina-secret",
+        "EXA_API_KEY": "exa-secret",
         "PATH": "/usr/bin:/bin",
         "OPENAI_API_KEY": "openai-secret",
     }
-    assert web_env(environ) == {"BRAVE_API_KEY": "brave-secret", "TAVILY_API_KEY": "tavily-secret"}
+    assert web_env(environ) == {
+        "BRAVE_API_KEY": "brave-secret",
+        "TAVILY_API_KEY": "tavily-secret",
+        "PERPLEXITY_API_KEY": "pplx-secret",
+        "JINA_API_KEY": "jina-secret",
+        "EXA_API_KEY": "exa-secret",
+    }
 
 
 def test_web_env_skips_empty_values() -> None:
@@ -189,39 +414,68 @@ def test_web_search_reports_a_missing_key_without_sending_anything() -> None:
     assert stub.requests == []
 
 
-def test_the_provider_env_var_wins_over_the_keys() -> None:
-    """D4：``ALIBOT_WEB_SEARCH_PROVIDER`` 先读；两把 key 都在时它决定用哪一家。"""
-    both = {"ALIBOT_WEB_SEARCH_PROVIDER": "brave", "BRAVE_API_KEY": "b", "TAVILY_API_KEY": "t"}
-    assert resolve_search_provider(both) == "brave"
+def test_the_explicit_env_var_wins_over_the_database_default() -> None:
+    """① 进程环境显式指定优先于凭据表的默认项；来源标记为 ``env``。"""
+    choice = describe_search_provider(
+        {"ALIBOT_WEB_SEARCH_PROVIDER": "brave", "BRAVE_API_KEY": "b"},
+        credentials={"tavily": "t"},
+        default_provider="tavily",
+    )
+    assert (choice.provider, choice.source) == ("brave", "env")
 
-    switched = {"ALIBOT_WEB_SEARCH_PROVIDER": "tavily", "BRAVE_API_KEY": "b", "TAVILY_API_KEY": "t"}
-    assert resolve_search_provider(switched) == "tavily"
+    switched = describe_search_provider(
+        {"ALIBOT_WEB_SEARCH_PROVIDER": "tavily", "BRAVE_API_KEY": "b"},
+        credentials={"brave": "b", "tavily": "t"},
+        default_provider="brave",
+    )
+    assert (switched.provider, switched.source) == ("tavily", "env")
 
 
-def test_the_provider_is_inferred_from_the_only_configured_key() -> None:
-    """D4：没有显式变量时按「唯一存在的那把 key」推断（一把 key 就够用，不用额外配置）。"""
-    assert resolve_search_provider({"BRAVE_API_KEY": "b"}) == "brave"
-    assert resolve_search_provider({"TAVILY_API_KEY": "t"}) == "tavily"
+def test_the_database_default_wins_over_the_fixed_order() -> None:
+    """② 凭据表里 ``is_default`` 的 provider 优先于固定顺序；来源标记为 ``ui``。"""
+    choice = describe_search_provider(
+        {},
+        credentials={"brave": "b", "jina": "j"},
+        default_provider="jina",
+    )
+    assert (choice.provider, choice.source) == ("jina", "ui")
+    assert (
+        resolve_search_provider({}, credentials={"brave": "b", "jina": "j"}, default_provider="jina")
+        == "jina"
+    )
 
 
-def test_two_keys_without_an_explicit_provider_are_a_readable_error() -> None:
-    """D4：两把 key 都在却不说是哪一家 ⇒ 报可读错误（不猜），一个请求都不发。"""
-    both = {"BRAVE_API_KEY": "brave-secret", "TAVILY_API_KEY": "tavily-secret"}
-    with pytest.raises(ProviderResolutionError):
-        resolve_search_provider(both)
+def test_configured_providers_follow_the_fixed_order() -> None:
+    """③ 没有默认项时按 brave → tavily → perplexity → jina → exa 的固定顺序（不再报「两把都在」）。"""
+    both_env = {"BRAVE_API_KEY": "b", "TAVILY_API_KEY": "t"}
+    assert resolve_search_provider(both_env) == "brave"
+    assert describe_search_provider(both_env).source == "env"
 
-    stub = StubTransport()
-    tool = search_tool(transport=stub, environ=both)
+    choice = describe_search_provider({}, credentials={"tavily": "t", "brave": "b"})
+    assert (choice.provider, choice.source) == ("brave", "ui")
+
+    # 只配了后面的某一家时选它（顺序是「已配置集合」的顺序，不是「前面没配就报错」）。
+    assert resolve_search_provider({}, credentials={"exa": "e", "jina": "j"}) == "jina"
+
+
+def test_without_any_credential_the_fallback_is_the_keyless_exa_mcp() -> None:
+    """④ 都没有 ⇒ 免凭据回退；工具照常发一次请求、不带任何凭据头。"""
+    choice = describe_search_provider({})
+    assert (choice.provider, choice.source) == (FALLBACK_PROVIDER, "fallback")
+
+    stub = StubTransport(_exa_sse(EXA_TEXT))
+    tool = search_tool(transport=stub, environ={})
+
     chunk = _run(_chunk(tool, query="AgentScope"))
-    assert chunk.state == ToolResultState.ERROR
-    text = _text(chunk)
-    assert "BRAVE_API_KEY" in text and "TAVILY_API_KEY" in text
-    assert "brave-secret" not in text and "tavily-secret" not in text, "错误文案不能回吐凭据取值"
-    assert stub.requests == []
+
+    assert chunk.state == ToolResultState.SUCCESS
+    assert len(stub.requests) == 1
+    assert stub.requests[0].url.startswith("https://mcp.exa.ai/mcp")
+    assert "AgentScope 文档" in _text(chunk)
 
 
 def test_an_unknown_provider_value_is_not_silently_ignored() -> None:
-    """D4：取值只接受 brave / tavily，其它值报可读错误，**不静默回落**。"""
+    """显式变量只接受全部已知取值，其它值报可读错误，**不静默回落**。"""
     with pytest.raises(ProviderResolutionError):
         resolve_search_provider({"ALIBOT_WEB_SEARCH_PROVIDER": "duckduckgo", "BRAVE_API_KEY": "b"})
 
@@ -233,16 +487,25 @@ def test_an_unknown_provider_value_is_not_silently_ignored() -> None:
     assert stub.requests == []
 
 
-def test_without_any_key_the_error_names_the_variables_to_set() -> None:
-    """D4：什么都没配 ⇒ 可读错误说出要配哪一把 key，且不抛未捕获异常。"""
+def test_explicit_exa_without_a_key_uses_the_keyless_mcp_path() -> None:
+    """显式点名 ``exa`` 但没有任何 key ⇒ 走免凭据的 exa-mcp（有 key 才走 REST）。"""
+    choice = describe_search_provider({"ALIBOT_WEB_SEARCH_PROVIDER": "exa"})
+    assert (choice.provider, choice.source) == (FALLBACK_PROVIDER, "fallback")
+
+    with_key = describe_search_provider({"ALIBOT_WEB_SEARCH_PROVIDER": "exa", "EXA_API_KEY": "exa-secret"})
+    assert (with_key.provider, with_key.source) == ("exa", "env")
+
+
+def test_an_explicit_credentialed_provider_without_a_key_reports_it_readably() -> None:
+    """显式指定带凭据 provider 却缺 key ⇒ 可读错误（只提 provider 与变量名），零请求。"""
     stub = StubTransport()
-    tool = search_tool(transport=stub, environ={})
+    tool = search_tool(transport=stub, environ={"ALIBOT_WEB_SEARCH_PROVIDER": "brave"})
 
     chunk = _run(_chunk(tool, query="AgentScope"))
 
     assert chunk.state == ToolResultState.ERROR
     text = _text(chunk)
-    assert "BRAVE_API_KEY" in text and "TAVILY_API_KEY" in text
+    assert "brave" in text and "BRAVE_API_KEY" in text and "未配置凭据" in text
     assert stub.requests == []
 
 

@@ -5,13 +5,14 @@
 它们的权限差别（ADR-0026 §一），因此 ``web_search`` 是只读工具、``fetch`` 不是。
 本模块只做**工具本体**：不读 ``web_access``、不判权限档、不做装配（那是 #186）。
 
-三条边界落在代码里：
+四条边界落在代码里：
 
-- **凭据只从进程环境读**（:data:`WEB_ENV_ALLOWLIST`，形状同 ``workspace.docker_env``）：库内没有
-  密钥字段，白名单之外的环境变量一个都不进来，错误文案只提**变量名**、绝不回吐取值。
-- **provider 只从进程环境解析**（D4 / ADR-0026 §二）：显式变量优先，否则按唯一存在的那把 key
-  推断；两把都在、取值不认识、一把都没有都**报可读错误而不是静默回落**。模型拿不到 provider
-  参数——那是一个配置事实，不是一次工具调用的选择。
+- **凭据有两个来源，库内优先**（#199 / ADR-0026 §四修订）：``web_provider_credential`` 存明文 key，
+  进程环境（:data:`WEB_ENV_ALLOWLIST`）只是兜底；白名单之外的环境变量一个都不进来，错误文案只提
+  **provider 与变量名**、绝不回吐取值。人类面读数一律走 ``mask_credential``。
+- **provider 由唯一顺序解析**（:func:`describe_search_provider`）：显式环境变量优先，其次凭据表
+  默认项，再按已配置项的固定顺序，最后是免凭据的 ``exa-mcp``。模型拿不到 provider 参数——那是一个
+  配置事实，不是一次工具调用的选择。
 - **不做通用 HTTP 客户端**（ADR-0026 §七）：工具入参只有 ``query`` / ``count`` 与 ``url``，没有
   「任意方法 / 任意头」的入口；:class:`HttpRequest` 是模块内部的传输形状，不是工具面。
 - **结果形状是 ``ToolChunk`` 文本块**，且有硬上限（条数 / 字节 / 字符）：超限**截断并说明**，
@@ -39,6 +40,8 @@ from .i18n import SOURCE_LOCALE, Locale, render
 
 #: 模块对外的名字（装配层 #186 与测试只用这些；其余一律是内部实现）。
 __all__ = [
+    "ANY_SEARCH_PROVIDERS",
+    "FALLBACK_PROVIDER",
     "FETCH_ACCESS_LEVEL",
     "FETCH_DEFAULT_MAX_BYTES",
     "FETCH_DEFAULT_MAX_CHARS",
@@ -58,14 +61,17 @@ __all__ = [
     "HttpRequest",
     "HttpResponse",
     "HttpTransport",
+    "ProviderChoice",
     "ProviderResolutionError",
     "SearchBackend",
     "SearchHit",
     "SearchProvider",
     "UrlopenTransport",
     "WebTransportError",
+    "describe_search_provider",
     "egress_hosts",
     "fetch_tool",
+    "mask_credential",
     "resolve_search_provider",
     "search_tool",
     "url_host",
@@ -75,12 +81,22 @@ __all__ = [
 #: 出网请求的默认超时（秒）。显式取值而不是靠 ``urllib`` 的无限等待；构造工具时可覆盖。
 WEB_TIMEOUT_SECONDS = 15.0
 
-#: 允许被读取的环境变量清单（ADR-0026 §四：库里不存密钥，值只从**进程环境**读）。
-#: 它是「哪些变量允许读」的白名单，不是「把这些值透传给子进程」的清单——形状同
-#: ``workspace.DOCKER_ENV_ALLOWLIST``。
-WEB_ENV_ALLOWLIST = ("ALIBOT_WEB_SEARCH_PROVIDER", "BRAVE_API_KEY", "TAVILY_API_KEY")
+#: 联网工具的 UA：本仓没有浏览器，声明自己是脚本比冒充浏览器更诚实。
+#: Exa 的公开 MCP 端点会拒绝 Python-urllib 的默认 UA（403），因此搜索请求也带上它。
+WEB_USER_AGENT = "alibot-web-tools/0.1"
 
-#: 显式指明搜索 provider 的变量名（取值为 :data:`SEARCH_PROVIDERS`，其它值一律报错）。
+#: 允许被读取的环境变量清单。它是「哪些变量允许读」的白名单，不是「把这些值透传给子进程」
+#: 的清单——形状同 ``workspace.DOCKER_ENV_ALLOWLIST``。库内凭据优先，环境变量只是兜底来源。
+WEB_ENV_ALLOWLIST = (
+    "ALIBOT_WEB_SEARCH_PROVIDER",
+    "BRAVE_API_KEY",
+    "TAVILY_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "JINA_API_KEY",
+    "EXA_API_KEY",
+)
+
+#: 显式指明搜索 provider 的变量名（取值为 :data:`ANY_SEARCH_PROVIDERS`，其它值一律报错）。
 PROVIDER_ENV_NAME = "ALIBOT_WEB_SEARCH_PROVIDER"
 
 #: 抓取工具在工具面与 ``permission_rule`` 里的名字（权限层按这个名字做 host 归一化）。
@@ -104,11 +120,28 @@ SEARCH_MAX_BYTES = 512_000
 FETCH_DEFAULT_MAX_BYTES = 1_000_000
 FETCH_DEFAULT_MAX_CHARS = 8_000
 
-#: 搜索提供方（ADR-0026 §四：确认与凭据的单位是 provider）。两家都实现，由它选择客户端。
-SearchProvider: TypeAlias = Literal["brave", "tavily"]
+#: 带凭据的搜索提供方（ADR-0026 §四：确认与凭据的单位是 provider）。它们各自读一把 key；
+#: 凭据可以存在库里（界面配置）或进程环境里（兜底）。
+SearchProvider: TypeAlias = Literal["brave", "tavily", "perplexity", "jina", "exa"]
 
-#: 允许的 provider 取值：只有这两家（不静默回落，也不给模型自己选的入口）。
-SEARCH_PROVIDERS: tuple[SearchProvider, ...] = ("brave", "tavily")
+#: 免凭据回退的 provider：Exa 的公开 MCP 端点，零配置、不需要确认行。
+FallbackProvider: TypeAlias = Literal["exa-mcp"]
+
+#: 显式变量 / 解析结果可能出现的全部取值（五家带凭据 + 一家免凭据回退）。
+AnySearchProvider: TypeAlias = Literal["brave", "tavily", "perplexity", "jina", "exa", "exa-mcp"]
+
+#: 允许的带凭据 provider：固定顺序同时是「没有显式默认时」的解析顺序。
+SEARCH_PROVIDERS: tuple[SearchProvider, ...] = ("brave", "tavily", "perplexity", "jina", "exa")
+
+#: 免凭据回退（没有可用凭据时的确定结果，不是「静默猜一家」）。
+FALLBACK_PROVIDER: FallbackProvider = "exa-mcp"
+
+#: 全部取值（显式变量的白名单）。
+ANY_SEARCH_PROVIDERS: tuple[AnySearchProvider, ...] = (*SEARCH_PROVIDERS, FALLBACK_PROVIDER)
+
+#: 凭据掩码的可见前缀 / 尾字符数：HTTP 响应、日志与事件载荷只出现 ``sk-…abcd`` 这一形态。
+CREDENTIAL_MASK_PREFIX = 3
+CREDENTIAL_MASK_TAIL = 4
 
 
 class ProviderResolutionError(Exception):
@@ -120,45 +153,108 @@ class ProviderResolutionError(Exception):
 
 
 @dataclass(frozen=True)
-class SearchBackend:
-    """一个搜索提供方的接入点：凭据从哪个变量读、请求长什么样、结果怎么映射。
+class ProviderChoice:
+    """一次解析的完整读数：用哪一家，以及这个结论来自哪一层配置。"""
 
-    两家 API 的差别全部落在这里，于是「选 provider」是一张表而不是两段分支代码：
-    Brave 把查询词放 query（``GET``）、凭据放 ``X-Subscription-Token``、结果在
-    ``web.results[].description``；Tavily 把查询词放 JSON 体（``POST``）、凭据放
-    ``Authorization: Bearer``、结果在 ``results[].content``。
+    provider: AnySearchProvider
+    source: Literal["env", "ui", "fallback"]
+
+
+@dataclass(frozen=True)
+class SearchBackend:
+    """一个搜索提供方的接入点：凭据从哪读、请求长什么样、结果怎么映射。
+
+    各家的差别全部落在这张表里，于是「选 provider」是一张表而不是几段分支代码：
+
+    - Brave：``GET``，查询词放 query（``q`` / ``count``），凭据放 ``X-Subscription-Token``；
+    - Tavily：``POST``，JSON 体（``query`` / ``max_results``），``Authorization: Bearer``；
+    - Perplexity：``POST``，JSON 体（``query`` / ``max_results``），``Authorization: Bearer``；
+    - Jina：``GET``，查询词放 query（``q``），``Authorization: Bearer``；
+    - Exa：``POST``，JSON 体（``query`` / ``numResults``），``x-api-key``；
+    - ``exa-mcp``：免凭据的 JSON-RPC（回包可能是 SSE），没有凭据头、没有结果路径。
     """
 
     host: str
     endpoint: str
-    env_name: str
     method: str
     auth_header: str
     auth_prefix: str
     results_path: tuple[str, ...]
-    snippet_key: str
+    snippet_keys: tuple[str, ...]
+    env_name: str | None = None
+    query_name: str = "query"
+    count_name: str | None = "max_results"
+    protocol: Literal["json", "exa-mcp"] = "json"
+    keyless: bool = False
 
 
-SEARCH_BACKENDS: dict[SearchProvider, SearchBackend] = {
+SEARCH_BACKENDS: dict[AnySearchProvider, SearchBackend] = {
     "brave": SearchBackend(
         host="api.search.brave.com",
         endpoint="https://api.search.brave.com/res/v1/web/search",
-        env_name="BRAVE_API_KEY",
         method="GET",
         auth_header="X-Subscription-Token",
         auth_prefix="",
         results_path=("web", "results"),
-        snippet_key="description",
+        snippet_keys=("description",),
+        env_name="BRAVE_API_KEY",
+        query_name="q",
+        count_name="count",
     ),
     "tavily": SearchBackend(
         host="api.tavily.com",
         endpoint="https://api.tavily.com/search",
-        env_name="TAVILY_API_KEY",
         method="POST",
         auth_header="Authorization",
         auth_prefix="Bearer ",
         results_path=("results",),
-        snippet_key="content",
+        snippet_keys=("content",),
+        env_name="TAVILY_API_KEY",
+    ),
+    "perplexity": SearchBackend(
+        host="api.perplexity.ai",
+        endpoint="https://api.perplexity.ai/search",
+        method="POST",
+        auth_header="Authorization",
+        auth_prefix="Bearer ",
+        results_path=("results",),
+        snippet_keys=("snippet", "content"),
+        env_name="PERPLEXITY_API_KEY",
+    ),
+    "jina": SearchBackend(
+        host="s.jina.ai",
+        endpoint="https://s.jina.ai/",
+        method="GET",
+        auth_header="Authorization",
+        auth_prefix="Bearer ",
+        results_path=("data",),
+        snippet_keys=("description", "content"),
+        env_name="JINA_API_KEY",
+        query_name="q",
+        count_name=None,
+    ),
+    "exa": SearchBackend(
+        host="api.exa.ai",
+        endpoint="https://api.exa.ai/search",
+        method="POST",
+        auth_header="x-api-key",
+        auth_prefix="",
+        results_path=("results",),
+        snippet_keys=("text", "summary"),
+        env_name="EXA_API_KEY",
+        query_name="query",
+        count_name="numResults",
+    ),
+    "exa-mcp": SearchBackend(
+        host="mcp.exa.ai",
+        endpoint="https://mcp.exa.ai/mcp?tools=web_search_exa",
+        method="POST",
+        auth_header="",
+        auth_prefix="",
+        results_path=(),
+        snippet_keys=(),
+        protocol="exa-mcp",
+        keyless=True,
     ),
 }
 
@@ -178,42 +274,78 @@ def web_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     return {name: source[name] for name in WEB_ENV_ALLOWLIST if source.get(name)}
 
 
-def resolve_search_provider(environ: Mapping[str, str] | None = None) -> SearchProvider:
-    """按 **D4** 只读**进程环境**确定搜索 provider，失败抛 :class:`ProviderResolutionError`。
+def mask_credential(value: str) -> str:
+    """凭据的**唯一**可回读形态：``sk-…abcd``；太短的值只回 ``…``。
 
-    三类判据，一处落点（不读库、不加 schema 列、也不给模型一个 provider 参数）：
+    掩码要留下可见前缀与尾字符时，值必须至少比「前缀 + 尾字符」多一位——否则前缀与尾字符
+    会拼出完整取值。任何 HTTP 响应、日志与事件载荷都只许出现这个函数的返回值。
+    """
+    text = value or ""
+    # 至少藏住 4 个字符，避免「前缀 + 尾字符」拼出完整短 key。
+    if len(text) < CREDENTIAL_MASK_PREFIX + CREDENTIAL_MASK_TAIL + 4:
+        return "…"
+    return f"{text[:CREDENTIAL_MASK_PREFIX]}…{text[-CREDENTIAL_MASK_TAIL:]}"
 
-    1. ``ALIBOT_WEB_SEARCH_PROVIDER`` 有值 ⇒ 只接受 ``brave`` / ``tavily``，其它取值**报错**
-       （不静默回落到「看起来能跑」的那一家）；
-    2. 没设 ⇒ 按**唯一存在的那把 key** 推断（只有 ``BRAVE_API_KEY`` ⇒ brave，只有
-       ``TAVILY_API_KEY`` ⇒ tavily）；
-    3. 两把 key 都在却没说是哪一家 ⇒ 报错要求显式指定；一把都没有 ⇒ 报错说明要配哪一把。
+
+def describe_search_provider(
+    environ: Mapping[str, str] | None = None,
+    *,
+    credentials: Mapping[str, str] | None = None,
+    default_provider: str | None = None,
+) -> ProviderChoice:
+    """按**唯一**的解析顺序确定 provider，并说明结论来自哪一层配置。
+
+    1. 进程环境 ``ALIBOT_WEB_SEARCH_PROVIDER`` 显式指定（取值非法仍报错）；
+    2. 凭据表里 ``is_default = 1`` 的 provider（``default_provider``）；
+    3. 已配置 provider 的固定顺序 ``brave → tavily → perplexity → jina → exa``
+       （「已配置」= 库里有 key，或该 provider 的环境变量有值）；
+    4. 都没有 ⇒ 免凭据的 :data:`FALLBACK_PROVIDER`（``exa-mcp``）。
+
+    ``source`` 是给人类面显示「当前 provider 与来源」的事实：``env`` / ``ui`` / ``fallback``。
+    模型拿不到 provider 参数——它是配置事实，不是一次工具调用的选择。
     """
     env = web_env(environ)
+    keys = credentials or {}
     explicit = (env.get(PROVIDER_ENV_NAME) or "").strip()
     if explicit:
-        for provider in SEARCH_PROVIDERS:
+        for provider in ANY_SEARCH_PROVIDERS:
             if explicit == provider:
-                return provider
-        allowed = " / ".join(SEARCH_PROVIDERS)
+                # ``exa`` 有两条接入路径：有 key 走 REST，没有 key 走 MCP。显式点名 exa 却没有
+                # 任何来源的 key 时，落到免凭据的 exa-mcp，而不是报「未配置凭据」。
+                if provider == "exa" and not (keys.get("exa") or env.get("EXA_API_KEY")):
+                    return ProviderChoice(provider=FALLBACK_PROVIDER, source="fallback")
+                return ProviderChoice(provider=provider, source="env")
+        allowed = " / ".join(ANY_SEARCH_PROVIDERS)
         raise ProviderResolutionError(
             f"{PROVIDER_ENV_NAME} 只接受 {allowed}（收到 {explicit!r}），不静默回落到其它提供方"
         )
 
     configured: list[SearchProvider] = [
-        provider for provider in SEARCH_PROVIDERS if env.get(SEARCH_BACKENDS[provider].env_name)
+        provider
+        for provider in SEARCH_PROVIDERS
+        if keys.get(provider) or env.get(SEARCH_BACKENDS[provider].env_name or "")
     ]
-    if len(configured) == 1:
-        return configured[0]
-    if len(configured) > 1:
-        names = "、".join(SEARCH_BACKENDS[name].env_name for name in configured)
-        raise ProviderResolutionError(
-            f"两把搜索凭据都在（{names}），需要用 {PROVIDER_ENV_NAME} 显式指明用哪一家"
-        )
-    key_names = "、".join(backend.env_name for backend in SEARCH_BACKENDS.values())
-    raise ProviderResolutionError(
-        f"没有可用的搜索凭据：设置 {key_names} 之一（或用 {PROVIDER_ENV_NAME} 显式指明提供方）"
-    )
+    default = (default_provider or "").strip()
+    for provider in configured:
+        if provider == default:
+            return ProviderChoice(provider=provider, source="ui")
+    if configured:
+        provider = configured[0]
+        source: Literal["env", "ui"] = "ui" if keys.get(provider) else "env"
+        return ProviderChoice(provider=provider, source=source)
+    return ProviderChoice(provider=FALLBACK_PROVIDER, source="fallback")
+
+
+def resolve_search_provider(
+    environ: Mapping[str, str] | None = None,
+    *,
+    credentials: Mapping[str, str] | None = None,
+    default_provider: str | None = None,
+) -> AnySearchProvider:
+    """解析结果的**唯一**取值入口（判据见 :func:`describe_search_provider`）。"""
+    return describe_search_provider(
+        environ, credentials=credentials, default_provider=default_provider
+    ).provider
 
 
 @dataclass(frozen=True)
@@ -376,28 +508,37 @@ def _error(text: str) -> ToolChunk:
 
 def search_tool(
     *,
-    provider: SearchProvider | None = None,
+    provider: AnySearchProvider | None = None,
     transport: HttpTransport | None = None,
     environ: Mapping[str, str] | None = None,
+    credentials: Mapping[str, str] | None = None,
+    default_provider: str | None = None,
     timeout_seconds: float = WEB_TIMEOUT_SECONDS,
     egress: EgressPolicy | None = None,
 ) -> Any:
     """构造 ``web_search`` 工具：只读（ADR-0026 §三），只送查询词与条数。
 
     ``provider`` 由装配层（#186）按 :func:`resolve_search_provider` 解析后传入；传 ``None``
-    时本工具自己按同一规则解析——**确定性不会从两条路走岔**。provider 定不下来或环境里缺该
-    provider 的 key 时，**一个请求都不发**，返回可读的错误结果：配置问题不该变成一轮的未捕获异常。
+    时本工具自己按同一规则解析——**确定性不会从两条路走岔**。凭据优先取库内值
+    （``credentials``），再回退到该 provider 的环境变量。显式指定的 provider 缺凭据时，
+    **一个请求都不发**，返回可读的错误结果：配置问题不该变成一轮的未捕获异常。
     """
     http: HttpTransport = transport if transport is not None else UrlopenTransport()
     resolution_error = ""
     resolved = provider
     if resolved is None:
         try:
-            resolved = resolve_search_provider(environ)
+            resolved = resolve_search_provider(
+                environ, credentials=credentials, default_provider=default_provider
+            )
         except ProviderResolutionError as error:
             resolution_error = error.reason
     backend = SEARCH_BACKENDS[resolved] if resolved is not None else None
-    key = "" if backend is None else web_env(environ).get(backend.env_name, "")
+    stored = (credentials or {}).get(resolved) if resolved is not None else None
+    env_key = ""
+    if backend is not None and backend.env_name:
+        env_key = web_env(environ).get(backend.env_name, "")
+    key = "" if backend is None else (stored or env_key)
 
     def web_search(query: str, count: int = SEARCH_DEFAULT_RESULTS) -> ToolChunk:
         """在公网检索，返回若干条结果的标题、URL 与摘要。
@@ -413,8 +554,11 @@ def search_tool(
         if backend is None:
             reason = resolution_error or "没有配置搜索 provider"
             return _error(f"web_search 未启用：{reason}（本次没有发起任何请求）。")
-        if not key:
-            return _error(f"web_search 未启用：环境变量 {backend.env_name} 未设置，本次没有发起任何请求。")
+        if not backend.keyless and not key:
+            return _error(
+                f"web_search 未启用：provider {resolved} 未配置凭据"
+                f"（环境变量 {backend.env_name} 或界面配置），本次没有发起任何请求。"
+            )
         sent = max(1, min(count, SEARCH_MAX_RESULTS))
         note = "" if sent == count else f"（请求 {count} 条，按上限 {SEARCH_MAX_RESULTS} 条送出）"
         request = _search_request(backend, key, query, sent, timeout_seconds)
@@ -423,13 +567,18 @@ def search_tool(
         except WebTransportError as error:
             return _error(f"web_search 失败：{error.detail}")
         if response.status != 200:
-            return _error(f"web_search 失败：HTTP {response.status}（{backend.host}）")
+            return _error(f"web_search 失败：{backend.host} 返回 HTTP {response.status}")
+        if backend.protocol == "exa-mcp":
+            hits, reason = _exa_mcp_hits(response.body)
+            if reason:
+                return _error(f"web_search 失败：{backend.host} {reason}")
+            return _chunk(_render_hits(query, hits[:sent], note), ToolResultState.SUCCESS)
         try:
             payload = json.loads(response.body.decode("utf-8", errors="replace"))
         except ValueError:
             return _error(f"web_search 失败：{backend.host} 返回的内容不是 JSON")
         hits = _search_hits(backend, payload)
-        return _chunk(_render_hits(query, hits, note), ToolResultState.SUCCESS)
+        return _chunk(_render_hits(query, hits[:sent], note), ToolResultState.SUCCESS)
 
     async def call_web_search(query: str, count: int = SEARCH_DEFAULT_RESULTS) -> ToolChunk:
         return await asyncio.to_thread(web_search, query, count)
@@ -445,17 +594,47 @@ def _search_request(
     timeout_seconds: float,
 ) -> HttpRequest:
     """按 provider 的形状组装请求：查询词与条数是**唯一**送出去的业务内容。"""
-    headers = {"Accept": "application/json", backend.auth_header: backend.auth_prefix + key}
+    headers: dict[str, str] = {"User-Agent": WEB_USER_AGENT}
+    if backend.auth_header:
+        headers["Accept"] = "application/json"
+        headers[backend.auth_header] = backend.auth_prefix + key
+    if backend.protocol == "exa-mcp":
+        headers["Accept"] = "application/json, text/event-stream"
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "web_search_exa",
+                    "arguments": {"query": query, "numResults": count},
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return HttpRequest(
+            method="POST",
+            url=backend.endpoint,
+            headers=headers,
+            body=body,
+            timeout_seconds=timeout_seconds,
+        )
     if backend.method == "GET":
-        url = backend.endpoint + "?" + urllib.parse.urlencode({"q": query, "count": count})
+        params = {backend.query_name: query}
+        if backend.count_name:
+            params[backend.count_name] = str(count)
+        url = backend.endpoint + "?" + urllib.parse.urlencode(params)
         return HttpRequest(method="GET", url=url, headers=headers, timeout_seconds=timeout_seconds)
     headers["Content-Type"] = "application/json"
-    body = json.dumps({"query": query, "max_results": count}, ensure_ascii=False).encode("utf-8")
+    body_fields: dict[str, Any] = {backend.query_name: query}
+    if backend.count_name:
+        body_fields[backend.count_name] = count
     return HttpRequest(
         method="POST",
         url=backend.endpoint,
         headers=headers,
-        body=body,
+        body=json.dumps(body_fields, ensure_ascii=False).encode("utf-8"),
         timeout_seconds=timeout_seconds,
     )
 
@@ -473,8 +652,128 @@ def _search_hits(backend: SearchBackend, payload: Any) -> list[SearchHit]:
         url = str(item.get("url") or "").strip()
         if not title or not url:
             continue
-        snippet = str(item.get(backend.snippet_key) or "").strip()
+        snippet = ""
+        for key in backend.snippet_keys:
+            snippet = str(item.get(key) or "").strip()
+            if snippet:
+                break
         hits.append(SearchHit(title=title, url=url, snippet=snippet))
+    return hits
+
+
+def _jsonrpc_messages(body: bytes) -> list[Any]:
+    """从 SSE（逐行 ``data:``）或裸 JSON 回包里取出全部消息对象。"""
+    text = body.decode("utf-8", errors="replace")
+    messages: list[Any] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("data:"):
+            continue
+        data = stripped[len("data:") :].strip()
+        if not data:
+            continue
+        try:
+            messages.append(json.loads(data))
+        except ValueError:
+            continue
+    if messages:
+        return messages
+    try:
+        return [json.loads(text)]
+    except ValueError:
+        return []
+
+
+def _exa_mcp_text(body: bytes) -> tuple[str, str]:
+    """取 JSON-RPC 的可读文本：``(正文, 错误原因)``；两者至多一个非空。"""
+    messages = _jsonrpc_messages(body)
+    if not messages:
+        return "", "返回的内容不是 JSON / SSE"
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        error = message.get("error")
+        if isinstance(error, dict):
+            return "", str(error.get("message") or "JSON-RPC 调用失败")
+        result = message.get("result")
+        if not isinstance(result, dict):
+            continue
+        content = result.get("content")
+        texts = (
+            [
+                str(block.get("text") or "").strip()
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            if isinstance(content, list)
+            else []
+        )
+        text = next((item for item in texts if item), "")
+        if result.get("isError"):
+            return "", text or "工具返回了错误"
+        return text, ""
+    return "", "回包里没有 JSON-RPC 结果"
+
+
+def _exa_mcp_hits(body: bytes) -> tuple[list[SearchHit], str]:
+    """把 Exa MCP 的文本结果映射成 :class:`SearchHit`：``(结果, 错误原因)``。"""
+    text, error = _exa_mcp_text(body)
+    if error:
+        return [], error
+    hits = _exa_text_hits(text)
+    return hits, ""
+
+
+def _exa_text_hits(text: str) -> list[SearchHit]:
+    """解析 Exa MCP 的文本块：``Title:`` / ``URL:`` / ``Highlights:``（或 ``Text:``）。
+
+    也接受 JSON 数组（部分部署直接回结构化的 ``title`` / ``url`` / ``text``）。
+    """
+    stripped = text.strip()
+    if stripped.startswith(("[", "{")):
+        try:
+            payload = json.loads(stripped)
+        except ValueError:
+            payload = None
+        if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
+            return _search_hits(SEARCH_BACKENDS["exa"], {"results": payload})
+    hits: list[SearchHit] = []
+    current: dict[str, Any] | None = None
+    snippet_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current, snippet_lines
+        if current and current.get("title") and current.get("url"):
+            hits.append(
+                SearchHit(
+                    title=str(current["title"]),
+                    url=str(current["url"]),
+                    snippet=" ".join(snippet_lines).strip(),
+                )
+            )
+        current = None
+        snippet_lines = []
+
+    for line in stripped.splitlines():
+        if line.startswith("Title: "):
+            flush()
+            current = {"title": line[len("Title: ") :].strip()}
+            continue
+        if current is None:
+            continue
+        if line.startswith("URL: "):
+            current["url"] = line[len("URL: ") :].strip()
+        elif line.startswith(("Published: ", "Author: ")):
+            continue
+        elif line.startswith(("Highlights:", "Text:")):
+            rest = line.split(":", 1)[1].strip()
+            if rest:
+                snippet_lines.append(rest)
+        elif line.strip() == "---":
+            continue
+        else:
+            snippet_lines.append(line.strip())
+    flush()
     return hits
 
 
@@ -499,7 +798,7 @@ def _clip(text: str, limit: int, reason: str) -> str:
 
 
 #: 抓取时带上的 UA：本仓没有浏览器，声明自己是脚本比冒充浏览器更诚实。
-FETCH_USER_AGENT = "alibot-web-tools/0.1"
+FETCH_USER_AGENT = WEB_USER_AGENT
 
 
 class _HtmlText(HTMLParser):

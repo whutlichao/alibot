@@ -601,12 +601,13 @@ test("保存提交的是全部配置字段，保存后按响应里的新配置�
   const patches = harness.patches();
   assert.equal(patches.length, 1, "一次保存只发一个 PATCH");
   assert.equal(patches[0].url, "/api/channels/ch_1/config");
-  assert.deepEqual(patches[0].body, {
+  assert.deepEqual(harness.patches()[0].body, {
     mode: "team",
     team_leader_member_id: "m_2",
     workspace_root: "/work/demo",
     workspace_backend: "docker",
     permission_mode: "trusted-writes",
+    web_access: "search",
   });
   assert.ok(saved, "PATCH 真的发出去了");
   assert.equal(pressed(harness.modeCard("team")), "true", "读回后 team 仍是选中档");
@@ -1037,4 +1038,190 @@ test("切频道：pill 按新频道的读数重铺，不残留上一个频道的
   await settle();
 
   assert.equal(pill.textContent, "自主", "切到 autonomous 频道后 pill 跟着新频道走");
+});
+
+/* ─── 10. 联网区块（#199）：档位 / provider 来源 / 凭据掩码 / 保存 / 默认 / 清除 ── */
+
+function providerItem(provider, overrides) {
+  return Object.assign(
+    { provider, configured: false, masked: "", is_default: false, updated_at: "" },
+    overrides || {},
+  );
+}
+
+function webProvidersPayload(providers, active) {
+  return { providers, active: active || { provider: "exa-mcp", source: "fallback" } };
+}
+
+function webHarnessFetch(handlers) {
+  return (url, request) => {
+    const method = request.method || "GET";
+    if (handlers[url + " " + method]) return handlers[url + " " + method](request);
+    if (url === "/api/channels/ch_1/config" && method === "GET") {
+      return { ok: true, status: 200, json: async () => configPayload() };
+    }
+    if (url === "/api/channels/ch_1/members") {
+      return { ok: true, status: 200, json: async () => membersPayload() };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+}
+
+test("联网区块：默认档是 search，当前 provider / 来源与五家掩码状态都可读", async () => {
+  const harness = createHarness({
+    fetch: webHarnessFetch({
+      "/api/web-providers GET": () => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          webProvidersPayload(
+            [
+              providerItem("brave", { configured: true, masked: "sk-…abcd", is_default: true }),
+              providerItem("tavily"),
+              providerItem("perplexity"),
+              providerItem("jina", { env_configured: true }),
+              providerItem("exa"),
+            ],
+            { provider: "brave", source: "ui" },
+          ),
+      }),
+    }),
+  });
+  harness.loadChannel();
+
+  await harness.open();
+
+  assert.equal(
+    byDataset(harness.body, "configWebAccess", "search").getAttribute("aria-pressed"),
+    "true",
+    "未配置时界面按默认档 search 选中",
+  );
+  assert.equal(byDataset(harness.body, "configWebAccess", "off").getAttribute("aria-pressed"), "false");
+  assert.match(textOf(harness.body, "channel-config-web-active"), /Brave/);
+  assert.match(textOf(harness.body, "channel-config-web-active"), /界面配置/);
+  assert.equal(textOf(harness.body, "web-provider-status-brave"), "已配置 · sk-…abcd");
+  assert.equal(textOf(harness.body, "web-provider-status-tavily"), "未配置");
+  assert.equal(textOf(harness.body, "web-provider-status-jina"), "由环境变量提供");
+  assert.equal(textOf(harness.body, "web-provider-default-brave"), "默认");
+  const key = byDataset(harness.body, "webKey", "brave");
+  assert.equal(key.type, "password", "key 输入框必须是 password");
+});
+
+test("联网区块：切到 off 后保存，PATCH 体里带 web_access=off", async () => {
+  const harness = createHarness({
+    fetch: webHarnessFetch({
+      "/api/web-providers GET": () => ({
+        ok: true,
+        status: 200,
+        json: async () => webProvidersPayload([providerItem("brave")]),
+      }),
+      "/api/channels/ch_1/config PATCH": () => ({
+        ok: true,
+        status: 200,
+        json: async () => configPayload({ web_access: "off" }),
+      }),
+    }),
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.click(byDataset(harness.body, "configWebAccess", "off"));
+  await harness.click(harness.saveButton());
+
+  const patch = harness.patches()[0];
+  assert.equal(patch.body.web_access, "off");
+});
+
+test("联网区块：保存一个 key 后只显示掩码，输入框清空且响应里没有完整 key", async () => {
+  let saved = providerItem("brave");
+  const responses = [];
+  const harness = createHarness({
+    fetch: (url, request) => {
+      const method = request.method || "GET";
+      if (url === "/api/web-providers" && method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => webProvidersPayload([saved]),
+        };
+      }
+      if (url === "/api/web-providers/brave/credential" && method === "PUT") {
+        saved = providerItem("brave", { configured: true, masked: "sk-…abcd" });
+        const payload = { credential: saved, providers: [saved] };
+        responses.push(JSON.stringify(payload));
+        return { ok: true, status: 200, json: async () => payload };
+      }
+      if (url === "/api/channels/ch_1/config" && method === "GET") {
+        return { ok: true, status: 200, json: async () => configPayload() };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.input(byDataset(harness.body, "webKey", "brave"), "sk-1234abcd");
+  await harness.click(byDataset(harness.body, "webSave", "brave"));
+
+  const put = harness.calls.find((call) => call.method === "PUT");
+  assert.deepEqual(put.body, { api_key: "sk-1234abcd" });
+  assert.equal(textOf(harness.body, "web-provider-status-brave"), "已配置 · sk-…abcd");
+  assert.equal(byDataset(harness.body, "webKey", "brave").value, "", "保存后输入框不残留明文");
+  assert.ok(
+    responses.every((text) => !text.includes("sk-1234abcd")),
+    "响应里绝不出现完整 key",
+  );
+});
+
+test("联网区块：切换默认 provider 与清除凭据", async () => {
+  let providers = [
+    providerItem("brave", { configured: true, masked: "bra…1234", is_default: true }),
+    providerItem("tavily", { configured: true, masked: "tav…5678" }),
+  ];
+  const active = () => ({ provider: "brave", source: "ui" });
+  const harness = createHarness({
+    fetch: (url, request) => {
+      const method = request.method || "GET";
+      if (url === "/api/web-providers" && method === "GET") {
+        return { ok: true, status: 200, json: async () => webProvidersPayload(providers, active()) };
+      }
+      if (url === "/api/web-providers/tavily/credential" && method === "PUT") {
+        providers = providers.map((item) =>
+          Object.assign({}, item, { is_default: item.provider === "tavily" }),
+        );
+        return { ok: true, status: 200, json: async () => webProvidersPayload(providers, active()) };
+      }
+      if (url === "/api/web-providers/tavily/credential" && method === "DELETE") {
+        providers = providers.map((item) =>
+          item.provider === "tavily" ? providerItem("tavily") : item,
+        );
+        return { ok: true, status: 200, json: async () => webProvidersPayload(providers, active()) };
+      }
+      if (url === "/api/channels/ch_1/config" && method === "GET") {
+        return { ok: true, status: 200, json: async () => configPayload() };
+      }
+      if (url === "/api/channels/ch_1/members") {
+        return { ok: true, status: 200, json: async () => membersPayload() };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.open();
+
+  await harness.click(byDataset(harness.body, "webDefault", "tavily"));
+
+  const put = harness.calls.find((call) => call.method === "PUT");
+  assert.deepEqual(put.body, { is_default: true }, "切换默认不带 key");
+  assert.equal(textOf(harness.body, "web-provider-default-tavily"), "默认");
+  assert.equal(byOdId(harness.body, "web-provider-default-brave"), null);
+
+  await harness.click(byDataset(harness.body, "webClear", "tavily"));
+
+  const deleted = harness.calls.find((call) => call.method === "DELETE");
+  assert.equal(deleted.url, "/api/web-providers/tavily/credential");
+  assert.equal(textOf(harness.body, "web-provider-status-tavily"), "未配置");
 });

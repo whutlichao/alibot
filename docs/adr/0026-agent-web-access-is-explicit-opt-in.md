@@ -109,3 +109,44 @@ Docker 网络策略、`app/specs/issue-<n>-acceptance.md` 的判据与读数。
 
 第六节（预算口径）是**从既有 ADR 推导的结论**，不是本轮 4 个选项之一。若认为网络调用应当独立计数，
 本条需先行修改，再进入实施。
+
+## 修订（2026-10-20，#199）
+
+本节记录三项**人定**，并显式推翻本文早先的对应条目。冲突处一律以本节为准；§一、§三、§五、§六、
+§七不变（两个工具的权限差异、`fetch` 逐次审批、容器出网白名单、预算口径与「不做什么」仍逐字有效）。
+
+### 十、联网档默认 `search`（推翻 §二「默认不装配」）
+
+- `channel.web_access` / `agent_config.web_access` 的 `NULL` 不再是「关闭」：读路径按
+  `agent_config.web_access or channel.web_access or 'search'` 合并，**未配置 = 默认 `'search'`**。
+- `'off'` 成为显式关闭位（schema 20 把两表列级 CHECK 扩为三态）。只有 `'off'` 会移除全部联网工具；
+  `fetch` 仍只由 `'search+fetch'` + 非 `read-only` 权限档打开，闸门逐字不变。
+- 迁移**不回填**：既有行的 `NULL` 原样保留，由读路径解释；`off` 不会被升级过程写进任何旧频道。
+
+### 十一、五家带凭据 provider + 免凭据 Exa MCP（扩展 §四的「provider」）
+
+- 带凭据 provider：`brave` / `tavily` / `perplexity` / `jina` / `exa`（Exa 有 key 走 REST，无 key 走 MCP）。
+- 免凭据回退：`exa-mcp`（Exa 公开 MCP 端点，JSON-RPC + SSE），**不需要** `remote_consent_scope('web', …)`
+  行；带凭据 provider 仍必须有确认行才装配。
+- 解析顺序唯一且确定：进程环境 `ALIBOT_WEB_SEARCH_PROVIDER` → 凭据表 `is_default = 1` → 凭据表 / 环境
+  变量里已配置 provider 的固定顺序 `brave → tavily → perplexity → jina → exa` → `exa-mcp`。非法显式取值
+  仍报错，不静默回落。
+- 免密钥方案只选 Exa MCP：DuckDuckGo / Startpage 的免密钥抓取在本机与 CI 网络下返回挑战页或结果不在
+  HTML 里（2026-10-20 实测），因此**不实现**这类抓取，也不新增浏览器内核或代理。
+
+### 十二、凭据明文入库、掩码回读（推翻 §四「凭据只从进程环境读、库里没有密钥字段」）
+
+- 新表 `web_provider_credential(provider, api_key, is_default, created_at, updated_at)`：`api_key` **明文**
+  存储；`is_default = 1` 至多一行（部分唯一索引）。
+- **部署层必须**把库文件权限设为 `0600`（`app/README.md` 已写明）；本仓不做应用层加密，也不声称 E2EE。
+- 任何 HTTP 响应、日志、事件载荷只出现掩码（`sk-…abcd`）；工具错误只提 provider 名与「未配置凭据」，
+  **绝不回吐取值**。保存 key 的动作同时写 `record_remote_consent_scope('web', provider)`（幂等、只存时间）。
+- 环境变量（`BRAVE_API_KEY` 等五家）仍是**该 provider 的凭据来源之一**，优先级低于库内值；显式
+  `ALIBOT_WEB_SEARCH_PROVIDER` 仍是最高优先级的配置事实。
+
+### 十三、验收与代价
+
+- 人类面新增 `GET /api/web-providers`、`GET / PUT / DELETE /api/web-providers/{provider}/credential`，
+  并在频道设置「联网」区块暴露档位、provider 状态、key 保存 / 清除 / 设为默认。
+- 这是一道**单向门**：schema 20 迁移 + 密钥存储 + 默认值语义变更。回滚只能恢复迁移前的整目录备份并用
+  旧版代码打开；旧代码不能打开新库。

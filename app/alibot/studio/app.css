@@ -1155,3 +1155,19 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .resource-form-row .agent-actions { flex: 0 0 auto; }
 .resource-form-row .agent-actions .btn { flex: 0 0 auto; }
 .resource-empty { padding: var(--sp-3) 0; font-size: var(--fs-sm); color: var(--faint); }
+
+/* ─── 联网 provider 凭据（#199）：一行 = 名称 + 掩码状态 + password 输入 + 动作组 ───
+   行形态沿用资源管理那一族（列表 + hairline）；焦点环来自全局 `:focus-visible`，
+   这里不另造焦点样式，也不加新色位。 */
+.web-provider-list { margin-top: var(--sp-3); }
+.web-provider-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.web-provider-row:last-child { border-bottom: 0; }
+.web-provider-head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3); }
+.web-provider-badge {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-semi);
+  color: var(--accent-graphic);
+  background: var(--accent-soft);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+}

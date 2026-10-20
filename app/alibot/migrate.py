@@ -414,6 +414,10 @@ def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
 
     ``PRAGMA defer_foreign_keys = ON`` 让 ``DROP TABLE`` 的隐式删除不立刻校验外键——新表随后被
     改名为正式名、行与原表一致，因此 ``COMMIT`` 时的检查仍然成立。
+
+    迁移连接在 ``BEGIN`` 之前显式关掉 ``foreign_keys``（见 :func:`migrate_data_dir` / :func:`dry_run_chain`）：
+    重建**被引用的父表**（例如 ``channel``）会先隐式删除父行，即使延迟到 ``COMMIT`` 仍会报
+    ``FOREIGN KEY constraint failed``。链末的 ``PRAGMA foreign_key_check`` 负责证明数据仍然完整。
     """
     conn.execute("PRAGMA defer_foreign_keys = ON")
     temporary = f"{REBUILD_TABLE_PREFIX}{table}"
@@ -837,6 +841,37 @@ def _step_18_to_19(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ``19 → 20``（#199）：联网档纳入 ``off`` 需要重建两张表的列级 CHECK；凭据表是纯增量。
+WEB_ACCESS_REBUILD_TABLES: tuple[str, ...] = ("channel", "agent_config")
+WEB_CREDENTIAL_TABLES: tuple[str, ...] = ("web_provider_credential",)
+
+
+def _step_19_to_20(conn: sqlite3.Connection) -> int:
+    """多 provider 搜索 + 凭据入库 + 联网档显式 ``off``（#199）。
+
+    两件 DDL 级的事，**不动任何既有行的取值**（返回 0 行改动）：
+
+    - 建 ``web_provider_credential``（含「至多一个默认」的部分唯一索引）；
+    - 重建 ``channel`` 与 ``agent_config``：它们的 ``web_access`` 列级 CHECK 要纳入 ``off``，
+      而 SQLite 没有 ``ALTER TABLE … ADD CONSTRAINT``，只能走 :func:`_rebuild_table`
+      （建新表 / 逐列复制 / ``DROP`` 原名表 / 改名回来）。既有行逐字保留：``NULL`` 仍是
+      「未配置」（读路径回退到默认档 ``search``），不是回填。
+
+    **重复执行是空操作**：表级 DDL 里已经点名 ``'off'`` 就跳过重建（与 ``17 → 18`` 同一条幂等纪律）。
+    """
+    _create_missing_tables(conn, WEB_CREDENTIAL_TABLES)
+    for table in WEB_ACCESS_REBUILD_TABLES:
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        if stored is None:
+            continue
+        if "'off'" in _normalize_sql(_without_comments(str(stored[0]))):
+            continue
+        _rebuild_table(conn, table)
+    return 0
+
+
 # ─── 链前形态步骤（#92） ─────────────────────────────────────────────────────
 # 形态步骤的标签：在报告里与逐版步骤并列，但 ``from`` / ``to`` 都是源版本（它**不推进版本号**）。
 SHAPE_STEP_LABEL = "形态步骤（channel 型作用域数据补齐：影子行 / 成员 / 已读 / 预算）"
@@ -910,6 +945,12 @@ STEPS: tuple[MigrationStep, ...] = (
         19,
         "docker container egress policy (channel.docker_egress)",
         _step_18_to_19,
+    ),
+    MigrationStep(
+        19,
+        20,
+        "web provider credentials + explicit off level (web_provider_credential, web_access CHECK)",
+        _step_19_to_20,
     ),
 )
 
@@ -995,6 +1036,12 @@ def run_chain(conn: sqlite3.Connection, from_version: int, to_version: int = SCH
                 changed_rows=changed,
             )
         )
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        table, rowid, parent = (str(violations[0][0]), str(violations[0][1]), str(violations[0][2]))
+        raise StepError(
+            f"迁移后外键校验失败：表 {table} 的 rowid={rowid} 指向不存在的 {parent}；本次迁移已拒绝继续"
+        )
     return ChainResult(from_version=from_version, to_version=to_version, steps=tuple(reports))
 
 
@@ -1060,6 +1107,9 @@ def migrate_data_dir(data_dir: Path | str, from_version: int) -> MigrationReport
     conn = connect(db_path)
     try:
         try:
+            # 重建被引用的父表时，删除父行的延迟违例在 COMMIT 仍会失败；迁移连接因此关闭外键执行，
+            # 由链末的 ``PRAGMA foreign_key_check`` 证明数据完整（schema 里的 FK 定义不变）。
+            conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute("BEGIN IMMEDIATE")
             chain = run_chain(conn, from_version)
             conn.execute(STAMP_SCHEMA_VERSION_SQL, (str(SCHEMA_VERSION),))
@@ -1322,6 +1372,7 @@ def dry_run_chain(copy_dir: Path | str, from_version: int) -> ChainResult:
     try:
         try:
             conn = connect(Path(copy_dir) / DATABASE_FILE_NAME)
+            conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute("BEGIN IMMEDIATE")
             try:
                 return run_chain(conn, from_version)

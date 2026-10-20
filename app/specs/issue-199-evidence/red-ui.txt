@@ -1,0 +1,93 @@
+✔ 频道头入口打开设置面：mode / team_scope / 队长 / 项目根 / 后端 / 权限档都是后端读数 (13.0565ms)
+✔ 私信没有频道设置面：入口隐藏 (3.277708ms)
+✔ team 模式下显示成员 auto_claim 已停用与任务线程只唤醒队长；切回 autonomous 后消失 (4.881125ms)
+✖ 保存提交的是全部配置字段，保存后按响应里的新配置重铺 (8.102833ms)
+✔ 清空项目根提交 null（未配置项目根是一个合法状态） (4.739708ms)
+✔ 非法路径被后端整体拒绝时显示可读原因，界面不改口 (4.026791ms)
+✔ team 没有合法队长时整体拒绝，并显示后端原因 (5.344166ms)
+✔ 任务视图读取所属频道配置并显示「任务线程只唤醒队长」 (4.055083ms)
+✔ 新增词条在 zh-CN / en 两份词条表里都取到值 (2.330875ms)
+✔ team 频道：pill 显示「队长制 · 队长名」；配置还没读回时先隐藏，不伪造结论 (2.971209ms)
+✔ autonomous 频道：pill 显示「自主」 (4.218375ms)
+✔ pill 的落点：在 #chanTitle 之后、.chan-tools 之前，且不在 .chan-title 里（那里带 ellipsis） (1.633167ms)
+✔ 私信下 pill 隐藏：私信没有频道 mode，也不带上一频道的文本与标签 (4.680958ms)
+✔ 频道配置读不到：pill 隐藏，不伪造 team / autonomous 结论 (2.799ms)
+✔ 队长成员读不到：pill 只显示「队长制」，不加占位名 (3.037375ms)
+✔ 在设置面把 team 改回 autonomous 并保存：pill 立刻变「自主」（不刷新页面） (4.446583ms)
+✔ 切频道：pill 按新频道的读数重铺，不残留上一个频道的模式 (4.263667ms)
+✖ 联网区块：默认档是 search，当前 provider / 来源与五家掩码状态都可读 (3.475334ms)
+✖ 联网区块：切到 off 后保存，PATCH 体里带 web_access=off (4.164084ms)
+✖ 联网区块：保存一个 key 后只显示掩码，输入框清空且响应里没有完整 key (7.398333ms)
+✖ 联网区块：切换默认 provider 与清除凭据 (3.489417ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 16
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 159.457042
+
+✖ failing tests:
+
+test at app/tests/channel_config_ui.test.cjs:561:1
+✖ 保存提交的是全部配置字段，保存后按响应里的新配置重铺 (8.102833ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      mode: 'team',
+      permission_mode: 'trusted-writes',
+      team_leader_member_id: 'm_2',
+  -   web_access: 'search',
+      workspace_backend: 'docker',
+      workspace_root: '/work/demo'
+    }
+  
+      at TestContext.<anonymous> (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:604:10)
+      at runNextTicks (node:internal/process/task_queues:64:5)
+      at process.processImmediate (node:internal/timers:472:9)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { mode: 'team', workspace_root: '/work/demo', workspace_backend: 'docker', permission_mode: 'trusted-writes', team_leader_member_id: 'm_2' },
+    expected: { mode: 'team', team_leader_member_id: 'm_2', workspace_root: '/work/demo', workspace_backend: 'docker', permission_mode: 'trusted-writes', web_access: 'search' },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at app/tests/channel_config_ui.test.cjs:1070:1
+✖ 联网区块：默认档是 search，当前 provider / 来源与五家掩码状态都可读 (3.475334ms)
+  TypeError: Cannot read properties of null (reading 'getAttribute')
+      at TestContext.<anonymous> (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:1095:57)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7)
+
+test at app/tests/channel_config_ui.test.cjs:1109:1
+✖ 联网区块：切到 off 后保存，PATCH 体里带 web_access=off (4.164084ms)
+  TypeError: Cannot read properties of null (reading 'closest')
+      at FakeNode.<anonymous> (/private/tmp/alibot-baseline-199/app/alibot/studio/app.js:7889:31)
+      at FakeNode.dispatchEvent (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:118:54)
+      at Object.click (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:396:26)
+      at TestContext.<anonymous> (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:1127:17)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7)
+
+test at app/tests/channel_config_ui.test.cjs:1134:1
+✖ 联网区块：保存一个 key 后只显示掩码，输入框清空且响应里没有完整 key (7.398333ms)
+  TypeError: Cannot set properties of null (setting 'value')
+      at Object.input (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:405:18)
+      at TestContext.<anonymous> (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:1165:17)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7)
+
+test at app/tests/channel_config_ui.test.cjs:1178:1
+✖ 联网区块：切换默认 provider 与清除凭据 (3.489417ms)
+  TypeError: Cannot read properties of null (reading 'closest')
+      at FakeNode.<anonymous> (/private/tmp/alibot-baseline-199/app/alibot/studio/app.js:7889:31)
+      at FakeNode.dispatchEvent (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:118:54)
+      at Object.click (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:396:26)
+      at TestContext.<anonymous> (/private/tmp/alibot-baseline-199/app/tests/channel_config_ui.test.cjs:1214:17)
+      at async Test.run (node:internal/test_runner/test:1113:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7)

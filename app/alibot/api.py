@@ -41,7 +41,9 @@
 - ``GET/POST/PATCH/DELETE /api/mcp-servers``   MCP 声明的读写（只存 env 变量名；配置动作）
 - ``POST /api/mcp-servers/{id}/consent``       远端 MCP 的数据面确认（幂等；未确认不连接）
 - ``POST /api/docker-images/consent``          远端 Docker 镜像的数据面确认（幂等；未确认不拉取）
-- ``POST /api/web-providers/{provider}/consent`` 联网 provider 的数据面确认（幂等；未确认不装配联网工具）
+- ``POST /api/web-providers/{provider}/consent`` 联网 provider 的数据面确认（幂等；未确认不装配带凭据工具）
+- ``GET  /api/web-providers``                 五家 provider 的掩码状态 + 当前生效 provider 与来源
+- ``GET/PUT/DELETE /api/web-providers/{provider}/credential`` 掩码读写：保存 key / 设为默认 / 清空
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
@@ -314,6 +316,20 @@ class DockerConsent(BaseModel):
     image: str = ""
 
 
+class WebProviderCredentialUpdate(BaseModel):
+    """联网 provider 凭据的写请求。
+
+    ``api_key`` 缺省 = 「这次不换 key，只切默认」；显式传值时时必须是非空字符串（空串会被
+    ``PUT`` 的写路径整体拒绝）。``is_default`` 缺省 = 不改默认标记——换 key 不会悄悄改变
+    「先用哪一家」。响应永远只有掩码。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str | None = None
+    is_default: bool | None = None
+
+
 class ChannelMemberAdd(BaseModel):
     """把一个 Agent 成员加入频道（人类面动作）。"""
 
@@ -326,9 +342,9 @@ class ChannelConfigUpdate(BaseModel):
     """频道配置的**部分**更新（规格 §4.4 / ADR-0018 / ADR-0021）。
 
     未知键由 ``extra="forbid"`` 整体拒绝；字段缺省 = 这次请求没提到它（保持原值）。
-    ``workspace_root`` 与 ``web_access`` 是允许显式 ``null`` 的字段（``null`` = 清空项目根 / 关闭
-    联网，两者都是「未配置」这一合法状态，ADR-0021 §六 / ADR-0026 §二）；其余字段的显式 ``null``
-    既不是合法取值、也不是「没提到」，整体拒绝。
+    ``workspace_root`` 与 ``web_access`` 是允许显式 ``null`` 的字段（``null`` = 清空项目根 / 回到
+    「未配置」——联网读路径随后回退默认档 ``search``；显式关闭要写 ``"off"``，ADR-0021 §六 /
+    ADR-0026 §二修订）；其余字段的显式 ``null`` 既不是合法取值、也不是「没提到」，整体拒绝。
 
     ``team_scope`` 是只读事实（固定 ``channel+task``），不在可写字段里：提交它会被
     ``extra="forbid"`` 拒绝，而不是被静默忽略。
@@ -1207,13 +1223,42 @@ def create_app(
     def consent_web_provider(provider: str) -> dict[str, Any]:
         """联网 provider 的数据面确认（#186 / D6；幂等；重复确认不覆盖首次时间）。
 
-        这条确认是 ``remote_consent_scope('web', provider)`` 的人类面**唯一**写路径，也是 ADR-0026 §四
-        那条闸门的可开启点：未确认时装配层**不挂** ``web_search`` / ``fetch``、且不发起任何请求；
-        确认之后，下一轮按 ``web_access`` 与权限档装配。``provider`` 只接受工具面自己的枚举
-        （``brave`` / ``tavily``），其它取值整条 400、不写入任何行——与 ``POST /api/docker-images/consent``
-        同形，不扩出 provider 配置或凭据管理面。确认只存时间，不存凭证与连接参数。
+        这条确认是 ``remote_consent_scope('web', provider)`` 的人类面写路径之一（另一条是保存
+        凭据的 ``PUT``）；也是 ADR-0026 §四那条闸门的可开启点：未确认时装配层**不挂**带凭据
+        provider 的 ``web_search`` / ``fetch``、且不发起任何请求；确认之后，下一轮按 ``web_access``
+        与权限档装配。``provider`` 只接受工具面
+        自己的枚举（五家带凭据 provider），其它取值整条 400、不写入任何行——与
+        ``POST /api/docker-images/consent`` 同形。确认只存时间，不存凭证与连接参数。
+        免凭据的 ``exa-mcp`` 不需要确认行，因此它不在这个枚举里。
         """
         return {"consent": service.confirm_web_provider(provider)}
+
+    @app.get("/api/web-providers")
+    def list_web_providers() -> dict[str, Any]:
+        """五家带凭据 provider 的掩码状态 + 当前生效的 provider 与来源。
+
+        载荷只含 ``configured`` / ``masked`` / ``is_default`` / ``updated_at``；完整 key 从不出现。
+        """
+        return service.web_providers()
+
+    @app.get("/api/web-providers/{provider}/credential")
+    def get_web_provider_credential(provider: str) -> dict[str, Any]:
+        """一家 provider 的掩码凭据读数（未配置时 ``configured=false``）。"""
+        return service.web_provider_credential(provider)
+
+    @app.put("/api/web-providers/{provider}/credential")
+    def put_web_provider_credential(provider: str, payload: WebProviderCredentialUpdate) -> dict[str, Any]:
+        """保存 / 换 key、或把已配置的一家设为默认。
+
+        保存 key 的动作同时写 ``remote_consent_scope('web', provider)``：界面上的「保存」就是
+        「查询词会发送给该服务」的确认动作。响应只回掩码。
+        """
+        return service.save_web_provider_credential(provider, payload.api_key, payload.is_default)
+
+    @app.delete("/api/web-providers/{provider}/credential")
+    def delete_web_provider_credential(provider: str) -> dict[str, Any]:
+        """清空一家 provider 的凭据（连同默认标记）；确认行保留，删除不撤销历史告知。"""
+        return service.delete_web_provider_credential(provider)
 
     @app.get("/api/search")
     def search(
