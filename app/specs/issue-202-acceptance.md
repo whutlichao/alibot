@@ -237,12 +237,10 @@ Success: no issues found in 104 source files
 
 ## 6. 提交 / 推送 / PR
 
-- commit：（见 §6.1）
-- PR 号 / body 路径：（见 §6.1）
-
-### 6.1 落库
-
-（在推送与开 PR 后回填）
+- commits：`6928394`（实现）→ `ce5a523`（review 处置）→ `f6e21e2`（门禁读数与 PR 正文）
+- 分支：`issue-202-impl`（`git push -u origin issue-202-impl`）
+- **PR #203**：https://github.com/whutlichao/alibot/pull/203
+- PR body 路径：`app/specs/issue-202-pr-body.md`（`gh pr create --body-file` 用同一份，正文含 `Closes #202`）
 
 ---
 
