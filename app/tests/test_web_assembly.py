@@ -726,3 +726,21 @@ def test_a_dm_stays_read_only_even_when_the_agent_level_says_search_plus_fetch(
     settings = database.web_settings_for_target(dm["id"], agent["id"])
     assert settings is not None
     assert settings["mode"] == "read-only"
+
+
+def test_patching_the_agent_web_access_off_stops_web_search_in_a_dm(library: Any, stub_provider: str) -> None:
+    """端到端的一半：`PATCH /api/agents/{id}` 写进去的档位真的改变 DM 的装配结果。"""
+    database, agent, _channel = library
+    dm, _created = database.create_dm(agent["id"])
+    _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+    assert "web_search" in _tool_names(), "未配置时 DM 默认挂 web_search"
+
+    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+        patched = client.patch(f"/api/agents/{agent['id']}", json={"web_access": "off"})
+        assert patched.status_code == 200, patched.text
+
+    _StubProviderHandler.request_bodies.clear()
+    outcome = _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+
+    assert outcome.status == "replied", outcome.reason
+    assert "web_search" not in _tool_names()

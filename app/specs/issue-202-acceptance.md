@@ -93,13 +93,14 @@ cd app && /Users/apple/orca/alibot/.venv/bin/python -m pytest tests/test_web_ass
 
 | 状态 | 读数 |
 | --- | --- |
-| 红（基线副本） | `2 failed, 1 passed, 14 deselected in 1.74s` |
-| 绿（本 worktree） | `3 passed, 14 deselected in 1.70s` |
+| 红（基线副本） | `3 failed, 1 passed, 14 deselected in 2.24s` |
+| 绿（本 worktree） | `4 passed, 14 deselected in 2.37s` |
 
-红的两条：`test_a_dm_mounts_web_search_by_default_and_needs_no_consent_row`（`'web_search' not in
-{'declare_silence'}`）与 `test_a_dm_stays_read_only_even_when_the_agent_level_says_search_plus_fetch`
-（`fetch` 之前全部模型都收不到联网工具）。`off` 那一条在基线上本来就绿（没有工具可挂），它是
-回归护栏而不是红证据。
+红的三条：`test_a_dm_mounts_web_search_by_default_and_needs_no_consent_row`（`'web_search' not in
+{'declare_silence'}`）、`test_a_dm_stays_read_only_even_when_the_agent_level_says_search_plus_fetch`
+（`fetch` 之前全部模型都收不到联网工具）与 `test_patching_the_agent_web_access_off_stops_web_search_in_a_dm`
+（DM 读路径返回 `None`，`PATCH` 写进去什么都不改变）。`off` 那一条在基线上本来就绿（没有工具可
+挂），它是回归护栏而不是红证据。
 
 ### 2.2 读路径：同一条命令，先红后绿
 
@@ -109,12 +110,14 @@ cd app && /Users/apple/orca/alibot/.venv/bin/python -m pytest tests/test_web_acc
 
 | 状态 | 读数 |
 | --- | --- |
-| 红（基线副本） | `2 failed, 8 passed in 0.56s` |
-| 绿（本 worktree） | `10 passed in 0.47s` |
+| 红（基线副本） | `4 failed, 8 passed in 0.71s` |
+| 绿（本 worktree） | `12 passed in 0.56s` |
 
-红的两条：`test_a_dm_reads_the_default_search_level_from_agent_config_only`（`settings is None`）与
-`test_a_dm_normalizes_an_explicit_off_to_none`（`settings is None`）。未知 target 与 channel / task
-两条在基线上就是绿的——它们的作用是钉住「逐字不变」，不是红证据。
+红的四条：`test_a_dm_reads_the_default_search_level_from_agent_config_only`（`settings is None`）、
+`test_a_dm_normalizes_an_explicit_off_to_none`（`settings is None`）、
+`test_a_dm_reads_the_same_credential_and_consent_sources_as_a_channel`（`settings is None`）、
+`test_omitting_web_access_keeps_the_previous_explicit_value`（`settings is None`）。未知 target 与
+channel / task 两条在基线上就是绿的——它们的作用是钉住「逐字不变」，不是红证据。
 
 ### 2.3 Studio DOM：同一条命令，先红后绿
 
@@ -124,11 +127,12 @@ node --test app/tests/agent_detail_ui.test.cjs
 
 | 状态 | 读数 |
 | --- | --- |
-| 红（基线副本） | `tests 21 / pass 17 / fail 4` |
+| 红（基线副本） | `tests 21 / pass 18 / fail 3` |
 | 绿（本 worktree） | `tests 21 / pass 21 / fail 0` |
 
-红的四条：运行时页签的行集合（缺 `agentDetail.kvWebAccess`）、两条新用例（三档不存在 / 无选中）、
-词条键缺失（`agent.webAccessLabel` 等）。
+红的三条：运行时页签的行集合（缺 `agentDetail.kvWebAccess`）、「选中态 + PATCH 提交」用例
+（三档不存在）、词条键缺失（`agent.webAccessLabel` 等）。「未配置时没有选中档、保存不提交该字段」
+在基线上也绿（旧实现同样不提交 `web_access`）——它钉住的是「未选择 = 跟随频道」这条不变量。
 
 ---
 
@@ -175,6 +179,8 @@ Success: no issues found in 104 source files
 | # | 判据（外部可观察） | 落点 | 读数 |
 | --- | --- | --- | --- |
 | D1 | DM target 默认挂 `web_search`（免凭据 `exa-mcp`，不需要确认行） | `db._dm_web_settings_locked` + 既有 `agent_seam._web_tools` | `test_web_assembly.py::test_a_dm_mounts_web_search_by_default_and_needs_no_consent_row`；`consented_providers == ()` |
+| D1 | `PATCH /api/agents/{id} {"web_access":"off"}` 后 DM 不再挂 `web_search`（HTTP 写路径 → 装配） | 同上 | `test_patching_the_agent_web_access_off_stops_web_search_in_a_dm` |
+| A1 | 凭据 / 默认 provider / 已确认 provider 与频道分支同一来源（非空读数） | `_web_shared_settings_locked` | `test_a_dm_reads_the_same_credential_and_consent_sources_as_a_channel`（`{'brave': 'sk-…'}` / `'brave'` / `('brave',)`） |
 | D1 | `agent_config.web_access='off'` 时 DM 不挂任何联网工具 | 同上（`off` → `None`） | `test_a_dm_with_agent_level_off_mounts_no_web_tool`（工具清单 `{'declare_silence'}`） |
 | D1 | `'search+fetch'` 在 DM 仍不挂 `fetch` | `mode` 固定 `read-only`（既有权限档闸门） | `test_a_dm_stays_read_only_even_when_the_agent_level_says_search_plus_fetch` |
 | D2 | DM 返回默认档 `search`；`off` 归一 `None`；未知 target `None` | `db.web_settings_for_target` | `test_web_access_config.py` 三条 DM 用例 |
@@ -189,33 +195,81 @@ Success: no issues found in 104 source files
 - DM 默认：`web_settings_for_target(dm_id, agent_id)["web_access"] == "search"`；
 - 显式 `off`：`PATCH /api/agents/{id} {"web_access": "off"}` 之后同一读数为 `None`，DM 的
   `web_search` 不再装配；
-- 回到默认档：**不提交 `web_access`**（PATCH 的部分更新语义 = 保持原值）后仍是「跟随频道」，
-  DM 读路径按默认档 `search`。Agent 端点的显式 `null` 仍按 #184 纪律整体拒绝（400）——本票
-  不改这条既有语义，见 §7 的遗留项。
+- 回到默认档：**当前不可达**。`PATCH /api/agents/{id} {"web_access": null}` 按 #184 纪律整体
+  拒绝（400）；**不提交**该字段只保持原值（`off` 仍是 `off`，不会回到默认档），这条由
+  `test_omitting_web_access_keeps_the_previous_explicit_value` 取证。票面验收 3 的第三步因此与
+  Constraints「本票只改读路径与界面」冲突，处理与待裁定项见 §7.1。
 
 ---
 
-## 5. 双轴 code-review
+## 5. 双轴 code-review（`/Users/apple/.agents/skills/code-review/SKILL.md`）
 
-（见下节，两轴并行子代理的原始结论）
+两个并行子代理，固定点 `e2ad031`，diff `git diff e2ad031...HEAD`，各自只报告、不改文件。结论分开
+记录（不做跨轴重排）：
 
----
+### Standards 轴
+
+**无硬违规**（ADR 只追加修订节、schema 未动、README / CONTEXT / 验收证据同步）。判断项：
+
+| 级别 | 发现 | 处置 |
+| --- | --- | --- |
+| P1 | `_dm_web_settings_locked` 与频道分支尾部重复（consent SELECT / 凭据读数 / `off` 归一 / 8 键形状） | **已修**：抽 `_web_shared_settings_locked()`，两条读路径共用同一来源 |
+| P1 | 三套词条（`channelConfig.webAccess.*` / `agent.webAccess*` / `agentDetail.webAccess*`）映射同一枚举；`agentWebAccessLabel` 是 if 链 | **记录（P2）**：字面键 if 链是本仓既有约定（`webProviderLabel` 注释：动态键会让词条守卫看不见）；三套分别属于频道设置 / Agent 编辑 / Agent 运行时三个命名空间，且运行时文案不同（「已关闭」vs「关闭」）。不改 |
+| P1 | 「未选择 = 跟随频道」在保存过一次后 UI 不可达（PATCH 拒绝显式 `null`） | **记录**：与验收 3 的冲突同源，见 §7.1；不在本票擅自改 API 语义 |
+| P2 | `web_settings_for_target` 先 SELECT target，解析器又查同一行 | 保持：复用**同一** target→channel 解析器，避免第二条解析旁路；主键查询可忽略 |
+| P2 | 控件助手（`renderEditTier` / `renderAgentEditWebAccess`）形状重复 | 保持：三态与布尔是两种取值；不新增样式，复用既有 `.radio-card` |
+| P2 | 编辑面标签「联网」vs 运行时「联网档」 | 保持：区块名沿用票面「联网」（与频道设置同名），运行时字段名按 CONTEXT 词条「联网档」 |
+| 记录 | 读路径用例直调公开库方法 | 该读数没有 HTTP 面；与既有 `test_docker_network_policy.py` 同体例，验收文档已写明 |
+
+### Spec 轴
+
+**无 P0**；Change A / B / C / D 逐条对得上，scope creep 无（改动全在票面 Target；schema / 迁移、
+`studio/app.css`、`alibot-design-system/**`、频道联网区块均未动）。
+
+| 级别 | 发现 | 处置 |
+| --- | --- | --- |
+| P1 | 验收 3 第三步 `{"web_access":null}` 实际 400；原文「不提交」只在原值本就是 `null` 时成立 | **已改文档口径**：§4.1 写明「回到默认档当前不可达」，并补 `off → 不提交 → 仍 off` 的读数；裁定请求见 §7.1 |
+| P2 | B1 文案「未选择 = 跟随频道」在首次保存后不可达 | 如实披露（§7.1）；是否加「清除 / 跟随频道」动作待裁定 |
+| P2 | 验收 3「PATCH off → DM 不再挂 web_search」缺端到端用例 | **已补**：`test_patching_the_agent_web_access_off_stops_web_search_in_a_dm`（HTTP 写 → DM 装配） |
+| P2 | 凭据 / 默认 provider / 已确认 provider 只有空读数 | **已补**：`test_a_dm_reads_the_same_credential_and_consent_sources_as_a_channel`（非空 `{'brave': …}` / `'brave'` / `('brave',)`） |
+| P2 | DM 提示词仍提 `fetch`（既有 `_web_prompt_note`，与频道 `search` 档同源） | 记录（§7.2）；`agent_seam.py` 不在 Target |
+| P2 | 验收 6（PR）未完成 | 本轮完成，见 §6 |
 
 ## 6. 提交 / 推送 / PR
 
-- commit：（见 `git log -1`）
-- PR 号 / body 路径：（见 Answer）
+- commit：（见 §6.1）
+- PR 号 / body 路径：（见 §6.1）
+
+### 6.1 落库
+
+（在推送与开 PR 后回填）
 
 ---
 
 ## 7. 遗留 / 已知边界（不是本票的静默缺口）
 
-1. **Agent 级「回到跟随频道」没有 HTTP 写入口**：#184 纪律下 `PATCH /api/agents/{id}` 的显式
-   `null` 整体拒绝，因此一旦把 Agent 写成某个显式档，界面上没有「清除回未配置」的按钮。本票的
-   编辑面按票面只做三档（未选择 = 不提交 = 跟随频道）；要恢复「跟随频道」需要新增写语义或第二个
-   动作，属于另一张票。
-2. **DM 的系统提示仍提到 `fetch`**：`_web_prompt_note()` 是「本轮挂了联网工具」的通用边界句，
-   与频道 `search` 档的既有行为一致；本票不改 `agent_seam.py`（不在 Target 内）。DM 的工具清单
-   里确实没有 `fetch`，闸门未被放宽。
-3. **DM 的 `docker_egress` / `egress_hosts` 读数是固定值**：DM 没有频道 workspace，也没有
-   `permission_rule` 的频道 scope；这避免了「私聊借某个频道的白名单出网」。
+### 7.1 Agent 级「回到跟随频道」没有 HTTP 写入口（待 coordinator 裁定）
+
+`PATCH /api/agents/{id}` 的显式 `null` 在请求体层整体拒绝（#184 纪律，
+`test_web_access_config.py::test_agent_web_access_rejects_null_and_unknown_levels_without_partial_write`），
+而「不提交该字段」是保持原值、不是清空。于是：
+
+- 验收 3 的第三步 `{"web_access":null}` **当前不可达**（本票未改 API 语义，遵守 Constraints「只改
+  读路径与界面」）；
+- 编辑面「未选择 = 跟随频道」只在**尚未写过**的 Agent 上可达；写过任意一档之后，界面没有「清除」
+  动作。
+
+两条可选解（都需要 coordinator / 人定，本票不擅自选）：① 放开 Agent 端点的显式 `null` = 清空
+（改 API 语义 + 既有用例）；② 保持现状，把界面文案改成「新 Agent 未选择时跟随频道」。本票**保持
+API 现状**、保留票面文案（它对「尚未写过的 Agent」为真，且 `renderAgentEditWebAccess` 不会替人
+选一个档），并在 Answer 里显式报告验收 3 的第三步未满足、等待裁定。
+
+### 7.2 DM 的系统提示仍提到 `fetch`
+
+`_web_prompt_note()` 是「本轮挂了联网工具」的通用边界句，与频道 `search` 档的既有行为一致；
+本票不改 `agent_seam.py`（不在 Target 内）。DM 的工具清单里确实没有 `fetch`，闸门未被放宽。
+
+### 7.3 DM 的 `docker_egress` / `egress_hosts` 是固定读数
+
+DM 没有频道 workspace，也没有 `permission_rule` 的频道 scope；这避免了「私聊借某个频道的白名单
+出网」。若将来 DM 需要容器出网，必须另开票设计，而不是在这里放宽。

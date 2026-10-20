@@ -239,3 +239,44 @@ def test_channel_and_task_levels_keep_their_merge_order(client: TestClient, data
             assert settings["web_access"] is None
     finally:
         database.close()
+
+
+def test_a_dm_reads_the_same_credential_and_consent_sources_as_a_channel(
+    client: TestClient, data_dir: Path
+) -> None:
+    """凭据 / 默认 provider / 已确认 provider 与频道分支同一来源（不是空读数就算数）。"""
+    agent = create_agent(client).json()["agent"]
+    dm = _dm(client, agent["id"])
+    saved = client.put(
+        "/api/web-providers/brave/credential",
+        json={"api_key": "sk-brave-202", "is_default": True},
+    )
+    assert saved.status_code == 200, saved.text
+
+    database = open_database(data_dir)
+    try:
+        settings = database.web_settings_for_target(dm["id"], agent["id"])
+    finally:
+        database.close()
+
+    assert settings is not None
+    assert settings["credentials"] == {"brave": "sk-brave-202"}
+    assert settings["default_provider"] == "brave"
+    assert settings["consented_providers"] == ("brave",), "保存 key 同时写 ('web', 'brave') 确认行"
+
+
+def test_omitting_web_access_keeps_the_previous_explicit_value(client: TestClient, data_dir: Path) -> None:
+    """部分更新语义：不提交 ≠ 清空。显式 ``off`` 不会因为一次别的编辑就回到默认档。"""
+    agent = create_agent(client).json()["agent"]
+    dm = _dm(client, agent["id"])
+    assert _patch_agent(client, agent["id"], web_access="off").status_code == 200
+    assert _patch_agent(client, agent["id"], role="后端工程师").status_code == 200
+
+    database = open_database(data_dir)
+    try:
+        settings = database.web_settings_for_target(dm["id"], agent["id"])
+    finally:
+        database.close()
+
+    assert settings is not None
+    assert settings["web_access"] is None, "仍是显式 off，不是默认档"

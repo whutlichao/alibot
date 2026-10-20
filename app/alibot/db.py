@@ -2993,11 +2993,7 @@ class Database:
                 "SELECT web_access, permission_mode, workspace_backend FROM agent_config WHERE member_id = ?",
                 (member_id,),
             ).fetchone()
-            consented = self._conn.execute(
-                "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
-                "ORDER BY acknowledged_at, scope_id"
-            ).fetchall()
-            runtime_credentials = self.web_provider_credentials()
+            web = self._web_shared_settings_locked()
             # D3：容器出网白名单复用 ``permission_rule`` 里 ``fetch`` 的 allow 规则的 host，
             # **不新建 host 白名单表**；合并仍走 ``permissions.effective_rules``（Agent 级覆盖频道级）。
             allowed_hosts = egress_hosts(
@@ -3012,8 +3008,6 @@ class Database:
         # 只有显式 ``off`` 才关闭。装配层仍用 ``if not access: return []``，因此这里把 ``off``
         # 归一成 ``None``——「关闭」与「未注入读路径」在装配层是同一个方向。
         resolved_access = agent_web_access or channel_web_access or DEFAULT_WEB_ACCESS
-        credentials = dict(runtime_credentials["credentials"])
-        default_provider = runtime_credentials["default_provider"]
         return {
             "web_access": None if resolved_access == "off" else resolved_access,
             "mode": str(
@@ -3021,10 +3015,10 @@ class Database:
                 or channel["permission_mode"]
                 or "ask-writes"
             ),
-            "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+            "consented_providers": web["consented_providers"],
             # 凭据只给装配层：HTTP 载荷一律走 ``web_provider_credential_views`` 的掩码读数。
-            "credentials": credentials,
-            "default_provider": default_provider,
+            "credentials": web["credentials"],
+            "default_provider": web["default_provider"],
             # 容器出网策略（#187）：只有 ``backend == 'docker'`` 时才进工具闸门；本地后端逐字不变。
             "backend": str(
                 (agent["workspace_backend"] if agent is not None else None)
@@ -3049,24 +3043,39 @@ class Database:
         agent = self._conn.execute(
             "SELECT web_access FROM agent_config WHERE member_id = ?", (member_id,)
         ).fetchone()
-        consented = self._conn.execute(
-            "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
-            "ORDER BY acknowledged_at, scope_id"
-        ).fetchall()
-        runtime_credentials = self.web_provider_credentials()
+        web = self._web_shared_settings_locked()
         agent_web_access = agent["web_access"] if agent is not None else None
         # 与频道分支同一归一：``NULL`` = 未配置 = 默认档 ``search``；只有显式 ``off`` 才关闭。
         resolved_access = agent_web_access or DEFAULT_WEB_ACCESS
         return {
             "web_access": None if resolved_access == "off" else resolved_access,
             "mode": "read-only",
-            "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+            "consented_providers": web["consented_providers"],
             # 凭据只给装配层：HTTP 载荷一律走 ``web_provider_credential_views`` 的掩码读数。
-            "credentials": dict(runtime_credentials["credentials"]),
-            "default_provider": runtime_credentials["default_provider"],
+            "credentials": web["credentials"],
+            "default_provider": web["default_provider"],
             "backend": "local",
             "docker_egress": False,
             "egress_hosts": [],
+        }
+
+    def _web_shared_settings_locked(self) -> dict[str, Any]:
+        """联网工具两条读路径共享的三样读数（#186 / #202）。
+
+        来源只有一处：``remote_consent_scope('web', provider)`` 的已确认行与
+        ``web_provider_credentials()`` 的明文凭据 / 默认 provider。频道 / 任务分支与 DM 分支都
+        调用它——「DM 的凭据与频道分支同一来源」因此由同一条语句保证，而不是靠两份逐字相同的
+        SQL 维持。调用方已持有 ``self._lock``。
+        """
+        consented = self._conn.execute(
+            "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
+            "ORDER BY acknowledged_at, scope_id"
+        ).fetchall()
+        runtime_credentials = self.web_provider_credentials()
+        return {
+            "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+            "credentials": dict(runtime_credentials["credentials"]),
+            "default_provider": runtime_credentials["default_provider"],
         }
 
     def _channel_id_for_target_locked(self, target_id: str) -> str | None:
