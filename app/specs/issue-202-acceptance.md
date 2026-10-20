@@ -27,9 +27,9 @@
 | --- | --- | --- |
 | 先读规格 | 逐条拆票面 Change A–D 与 Constraints，落到 Target 文件 | §1 |
 | TDD 红 | 先写 3 条 DM 装配用例 + 4 条读路径用例 + 2 条 Studio DOM 用例，在基线副本上跑 | §2（红：`2 failed` / `2 failed` / `4 failed`） |
-| 绿 | 实现后同一条命令 | §2（绿：`3 passed` / `10 passed` / `21 pass`） |
+| 绿 | 实现后同一条命令 | §2（绿：`4 passed` / `12 passed` / `21 pass`） |
 | 类型检查 / 单文件 | 每改完一处跑受影响文件；`scripts/check.sh --fast` 含 ruff / ruff format --check / mypy / pyright / Node glob | §3 |
-| 全量 | `scripts/check.sh`（全量 pytest + 其余门禁） | §3（`997 passed, 10 skipped`；`门禁全绿`） |
+| 全量 | `scripts/check.sh`（全量 pytest + 其余门禁） | §3（`1000 passed, 10 skipped`；`门禁全绿`） |
 | code-review | 两轴并行子代理（Standards + Spec），结论分开写 | §5 |
 | 提交 | 一个 commit 在分支 `issue-202-impl`，随后推送并开 PR | §6 |
 
@@ -40,12 +40,12 @@
 | 文件 | 动作 |
 | --- | --- |
 | `app/alibot/db.py` | `web_settings_for_target` 先读 `target.kind`：`dm` → 新增的 `_dm_web_settings_locked`（只读 `agent_config`，形状与频道分支一致）；channel / task 分支**一行未改**；未知 target 仍 `None` |
-| `app/alibot/db.py`（`_dm_web_settings_locked`） | `web_access = agent_config.web_access or 'search'`，`'off'` 归一 `None`；`mode='read-only'`；`backend='local'` / `docker_egress=False` / `egress_hosts=[]`；凭据 / 默认 provider / 已确认 provider 与频道分支同一来源 |
+| `app/alibot/db.py`（`_dm_web_settings_locked` / `_web_shared_settings_locked`） | `web_access = agent_config.web_access or 'search'`，`'off'` 归一 `None`；`mode='read-only'`；`backend='local'` / `docker_egress=False` / `egress_hosts=[]`；凭据 / 默认 provider / 已确认 provider 走与频道分支**同一条**语句（`_web_shared_settings_locked`） |
 | `app/alibot/studio/index.html` | Agent 编辑弹窗新增「联网」字段：`off` / `search` / `search+fetch` 三张 `.radio-card`（`#agentEditWebAccess`）+ 提示「未选择 = 跟随频道；私聊里按默认档『只搜索』，且私聊不装配 fetch」 |
 | `app/alibot/studio/app.js` | `openAgentEditModal` 读 `agent.web_access` 定选中态；`submitAgentEdit` 选了三档才提交 `web_access`（未选 = 不提交 = 跟随频道）；`agentRuntimeNodes` 补一行读数；`agentWebAccessLabel` 值缺失显示空字段文案；`bindEvents` 新增三档点击处理 |
 | `app/alibot/studio/i18n.js` | 新增中英同键词条：`agent.webAccess*`（8 条）、`agentDetail.kvWebAccess` / `webAccessOff` / `webAccessSearch` / `webAccessSearchFetch` |
-| `app/tests/test_web_assembly.py` | 新增 DM 装配用例（默认挂 `web_search`；`off` 不挂；`search+fetch` 在 DM 仍不挂 `fetch`）+ 抽出 `_keyless_environ()` |
-| `app/tests/test_web_access_config.py` | 新增 DM 读路径用例（默认 `search`；`off` 归一 `None`；未知 target `None`；channel / task 分支合并顺序与读数逐字不变） |
+| `app/tests/test_web_assembly.py` | 新增 4 条 DM 装配用例（默认挂 `web_search`；`off` 不挂；`search+fetch` 在 DM 仍不挂 `fetch`；`PATCH off` → 装配变化）+ 抽出 `_keyless_environ()` |
+| `app/tests/test_web_access_config.py` | 新增 4 条 DM 读路径用例（默认 `search`；`off` 归一 `None`；凭据 / 确认行非空读数；`off` 不被「不提交」清空）+ 未知 target / channel / task 分支逐字不变 |
 | `app/tests/agent_detail_ui.test.cjs` | 三档选中态 / 保存 payload / 运行时读数；DOM 替身补 `#agentEditWebAccess` 的三张卡片；词条键清单补新键 |
 | `CONTEXT.md` | 「联网档」词条补 DM 语义（回退 Agent 级 + 默认档；DM 不装 `fetch`；2026-10-21 人定） |
 | `app/README.md` | 「联网档」段落同步 DM 读路径与 UI 入口 |
@@ -148,13 +148,13 @@ scripts/check.sh
 
 ```text
 == pytest（全量） ==
-997 passed, 10 skipped in 513.65s (0:08:33)
+1000 passed, 10 skipped in 511.81s (0:08:31)
 
 == ruff check ==
 All checks passed!
 
 == ruff format --check（只检查；不要跑 ruff format，它会整文件重排） ==
-250 files already formatted
+251 files already formatted
 
 == mypy（仓库根） ==
 Success: no issues found in 104 source files
