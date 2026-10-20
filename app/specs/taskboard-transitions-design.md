@@ -71,6 +71,8 @@
   且**零请求**；当前列 → 无动作。
 - 指针**离开看板**（`dragleave` 且 `relatedTarget` 不在看板内）清掉落点态——否则最后一列会一直亮着。
 - `dragend` / 松手 / 任何重铺都会清掉落点态（`.drag-over` / `.invalid-over` / `.dragging`）。
+- 拖拽结束后的短窗口内，看板的点击委派**不把 click 当打开线程**（`boardDrag.suppressClickUntil`）：
+  「拖拽不触发点击」是显式事实，不依赖某个内核恰好不补发 click。
 - 离线：`dragstart` 不记录被拖任务，松手不发请求（与菜单的离线纪律一致）。
 
 ### 4.2 卡片「流转」菜单
@@ -86,7 +88,9 @@
 - `closed` 卡片没有这个按钮（无合法目标 ⇒ 不摆一个点不出东西的入口）。
 - 键盘：Tab 聚焦按钮；Enter / Space 打开并把焦点移到第一项；↑ / ↓ 循环移动；Esc 关闭并把焦点
   还回触发器；Enter / Space 激活当前项；点外部、滚看板、看板重铺都会关闭。
-- 触屏：菜单是唯一入口，热区取 `calc(var(--icon-btn) + var(--sp-1))` = 32px（token 派生，不写裸尺寸）。
+- 触屏：菜单是唯一入口。触发器热区取 `--control-h` = 32px（本票判据「≥ 32px 等效」，沿用既有控件
+  尺寸 token；它低于设计系统 `--tap-min: 44px`，与 `.group-label button` 的同一条登记）；
+  菜单项 `min-height: var(--tap-min)` = 44px——触屏真正按的是菜单项。
 - 离线（`state.online === false`）：按钮 `disabled`，打开函数直接返回。
 - 打开菜单的卡片若被重渲染（SSE / 刷新）：`renderTaskBoard()` 开头统一关闭菜单，重开时按新载荷重建。
 
@@ -94,7 +98,9 @@
 
 - PATCH 失败（`validation_failed` / 网络）：toast 带后端可读文案（`toast.statusUpdateFailed`），
   随后重读看板；线程仍开着才重铺线程——用户看到的是后端的当前态，而不是本地猜测。
-- 菜单/拖拽打开期间任务状态被他处改变：目标集合按**重渲染后**的载荷重新判定；
+- 菜单/拖拽打开期间任务状态被他处改变：目标集合按**当前载荷**（同一份 `state.tasks` 快照）判定；
+  若点击时目标已不在 `allowed_transitions` 里，**不发**那次注定失败的请求，但仍给出
+  `toast.transitionInvalid` 的可读原因（静默什么都不发生，人只会以为界面坏了）；
   迟到的请求被后端拒绝即走上面的失败路径。
 
 ## 五、数据契约
@@ -121,7 +127,7 @@
    Enter / Space 打开线程由 `#taskColumns` 的 keydown 委派补上（`app.js:8101-8107`）。
 2. 卡片菜单按钮点击 `stopPropagation`，看板点击委派先判 `[data-task-menu]`（`app.js:8092-8099`）。
 3. 菜单是共享浮层（`index.html:549`），`fixed` 定位，不靠 `.board` 的裁剪。
-4. 键盘：打开进第一项、↑/↓ 循环、Esc 还焦点、点外部 / 滚动 / 重铺时关闭（`app.js:1510-1548`）。
+4. 键盘：打开进第一项、↑/↓ 循环、Esc 还焦点、点外部 / 滚动 / 重铺时关闭（`app.js:1516-1548`）。
    菜单项集合要 `Array.from(...)`：真实 `querySelectorAll` 是 NodeList，没有 `indexOf`
    （浏览器证据里抓到过一次 TypeError，见验收文档）。
 5. 拖拽判定只读 `task.allowed_transitions`；`dragstart` 记任务 id（`dataTransfer` + 内存兜底）、
@@ -148,10 +154,10 @@
 
 | 验收判据（issue #191） | 落点 | 证据 |
 | --- | --- | --- |
-| 卡片可拖、合法列高亮、非法列红框、非法松手零请求 + toast | `app.js:1561-1617`、`app.css:902-905` | `app/tests/taskboard_transitions_ui.test.cjs`（悬停三态 / 非法松手 / 合法松手） |
+| 卡片可拖、合法列高亮、非法列红框、非法松手零请求 + toast | `app.js:1564-1637`、`app.css:902-905` | `app/tests/taskboard_transitions_ui.test.cjs`（悬停三态 / 非法松手 / 合法松手） |
 | 卡片菜单只列载荷 `allowed_transitions`，点击走一次 PATCH 并刷新 | `app.js:1401-1548` | 同上（用一份静态表里不存在的集合证明载荷驱动） |
 | `closed` 卡片无按钮、不是拖拽源、无合法落点 | `app.js:1364-1399`、`app.js:1564-1637` | 同上（终态用例） |
 | 前端不再有迁移表副本，线程 chips 与看板同源 | `app.js:111`、`app.js:1790` | `grep -n TASK_STATUS_TRANSITIONS app/alibot/studio/app.js` 无定义 |
-| 载荷字段在四条读路径与三个 PATCH 响应中都存在且顺序固定 | `db.py:188`、`db.py:2188` | `app/tests/test_tasks.py` 两条契约用例 |
+| 载荷字段在三个读入口（全量 / 频道筛选 / 单条）与三个 PATCH 响应中都存在且顺序固定 | `db.py` 的 `allowed_task_transitions()` / `get_task()` | `app/tests/test_tasks.py` 两条契约用例 |
 | `scripts/check.sh` 全绿；双轴 review 结论落验收文档 | 全仓 | `app/specs/issue-191-acceptance.md` |
 | 真浏览器：菜单可开、键盘可走、拖拽三态可观察 | Studio | `app/specs/issue-191-evidence/*.png` |

@@ -878,11 +878,13 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 /* 有流转菜单的卡片要给右上角的图标按钮让出位置（不是所有卡片都有：终态没有入口）。 */
 .card.has-menu { position: relative; }
 .card.has-menu .card-title { padding-right: 22px; }
-/* 卡片右上角的「流转」图标按钮：热区 `--icon-btn + --sp-1` = 32px（触屏下限），
+/* 卡片右上角的「流转」图标按钮：热区取 `--control-h` = 32px（#191 交互规格的「≥ 32px 等效」，
+   沿用既有控件尺寸 token）。它**低于**设计系统 `--tap-min: 44px`——与 `.group-label button`
+   的同一条登记：这是本票判据的下限、不是新造的退化；触屏的主要入口是菜单项（44px）。
    离线时禁用（不发得出去的写就不摆按钮）。 */
 .card-menu-btn {
   position: absolute; top: 3px; right: 3px; display: inline-flex; align-items: center; justify-content: center;
-  width: calc(var(--icon-btn) + var(--sp-1)); height: calc(var(--icon-btn) + var(--sp-1));
+  width: var(--control-h); height: var(--control-h);
   border: 0; border-radius: var(--r-sm); background: transparent; color: var(--faint);
 }
 .card-menu-btn:hover { background: var(--fg-soft); color: var(--fg); }
@@ -916,7 +918,7 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 }
 .card-menu[hidden] { display: none; }
 .card-menu-item {
-  display: flex; align-items: center; min-height: var(--icon-btn); padding: 0 var(--sp-4);
+  display: flex; align-items: center; min-height: var(--tap-min); padding: 0 var(--sp-4);
   border-radius: var(--r-sm); color: var(--fg); font-size: var(--fs-sm); cursor: pointer;
   outline-offset: -2px;
 }

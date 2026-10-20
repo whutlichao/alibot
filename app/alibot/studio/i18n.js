@@ -928,7 +928,7 @@ const I18N_CATALOGS = {
     'board.openThread': 'Open thread →',
     'board.cardAria': '{title}, {status} — open the task thread',
     'board.unreadAria': '{count} unread task messages',
-    'board.cardMenuAria': 'Move “{title}”',
+    'board.cardMenuAria': 'Transition menu for “{title}”',
     'board.cardMenuLabel': 'Task transitions',
     'task.selectChannel': 'Choose a channel',
     'task.createChannelFirst': 'Create a channel first',

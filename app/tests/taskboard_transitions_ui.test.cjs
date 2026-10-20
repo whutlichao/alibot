@@ -312,10 +312,7 @@ function createHarness(options) {
   vm.runInContext(
     source.replace(
       startup,
-      "\nglobalThis.__taskboardTransitionsTest = {"
-        + " state, bindEvents, renderTaskBoard, taskCardNode, openTaskMoveMenu, closeTaskMoveMenu,"
-        + " changeTaskStatus, taskAllowedTransitions };"
-        + "\n",
+      "\nglobalThis.__taskboardTransitionsTest = { state, bindEvents, renderTaskBoard };\n",
     ),
     context,
     { filename: appPath },
@@ -366,6 +363,11 @@ function createHarness(options) {
     async click(node) {
       assert.ok(node, "要点击的控件应当存在");
       await node.dispatchEvent({ type: "click", target: node });
+      await settle();
+    },
+    /** 看板容器上的点击委派（`openTask` 的入口）：`target` 指到卡片或卡片内控件。 */
+    async tap(node) {
+      await columnsRoot.dispatchEvent({ type: "click", target: node });
       await settle();
     },
     async key(node, key) {
@@ -529,6 +531,35 @@ test("合法列松手发起一次 PATCH /api/tasks/{id}/status", async () => {
   assert.equal(patches[0].url, "/api/tasks/t_1/status");
   assert.deepEqual(patches[0].body, { status: "in_progress" });
   assert.equal(harness.calls.some((call) => call.url === "/api/tasks/t_1/status" && call.method !== "PATCH"), false);
+
+  // 内核可能在 drop 之后补一个 click：它不是「打开线程」的意思（拖拽不触发点击）。
+  const moved = harness.column("in_progress").querySelector("[data-task]");
+  await harness.tap(moved);
+  assert.equal(
+    harness.calls.some((call) => /\/api\/tasks\/[^/]+\/messages$/.test(call.url)),
+    false,
+    "拖完那一下不能把线程打开",
+  );
+});
+
+test("菜单项的目标被别处改掉后，点击它只说明事实、不发请求", async () => {
+  const harness = createHarness({
+    tasks: [taskRecord({ allowed_transitions: ["in_progress", "closed"] })],
+  });
+  await harness.click(harness.card("t_1").querySelector("[data-task-menu]"));
+  assert.equal(harness.menuItems().length, 2);
+
+  // 模拟「菜单开着的时候状态被别处改了」：载荷已变，浮层里还是旧目标。
+  harness.api.state.tasks[0].status = "done";
+  harness.api.state.tasks[0].allowed_transitions = [];
+  await harness.click(harness.menuItems()[0]);
+
+  assert.equal(harness.patches().length, 0, "目标已不合法 ⇒ 不发那次注定失败的写");
+  const zh = harness.catalogs["zh-CN"];
+  const expected = zh["toast.transitionInvalid"]
+    .replace("{from}", zh["task.status.done"])
+    .replace("{to}", zh["task.status.in_progress"]);
+  assert.equal(harness.toastText(), expected, "静默什么都不发生会让人以为界面坏了：要给可读原因");
 });
 
 /* ─── 6. 终态：没有流转按钮，也没有合法落点 ─────────────────────────────── */
@@ -586,7 +617,6 @@ test("键盘可用：打开进第一项、↓ 移动、Esc 关闭并还焦点、
   assert.equal(menu.hidden, false, "Enter 打开菜单");
   const items = harness.menuItems();
   assert.equal(items.length, 2);
-  assert.equal(harness.api.state.online, true);
   assert.equal(menuItemsFocus(harness), 0, "打开后焦点落在第一项");
 
   await harness.menuKey("ArrowDown");

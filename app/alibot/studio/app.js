@@ -1331,6 +1331,12 @@ function renderBoardToolbar() {
   replaceChildren(filters, nodes);
 }
 
+/** 「激活」键：Enter 与 Space（`Spacebar` 是旧版 Edge/IE 的写法）。
+    卡片按钮、卡片菜单触发器、菜单项三处共用一条判据，免得三份 `key !== …` 漂移。 */
+function isActivationKey(event) {
+  return event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar';
+}
+
 /** 「更多」图标（lucide `more-horizontal` 同族的三点几何）：卡片流转菜单的触发器是图标按钮，
     因此图标本身不承担文案（可访问名在 `aria-label` 上）。DOM 替身没有命名空间工厂时退化成一个
     同形的点阵字符——用例断言的是行为，不是画笔。 */
@@ -1414,7 +1420,7 @@ function taskMoveButton(task) {
     openTaskMoveMenu(task.id, button);
   });
   button.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+    if (!isActivationKey(event)) return;
     if (event.preventDefault) event.preventDefault();
     if (event.stopPropagation) event.stopPropagation();
     openTaskMoveMenu(task.id, button);
@@ -1523,7 +1529,7 @@ function onTaskMoveMenuKeydown(event) {
     focusTaskMoveItem(menu, current + (event.key === 'ArrowDown' ? 1 : -1));
     return;
   }
-  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+  if (!isActivationKey(event)) return;
   const item = current >= 0 ? items[current] : null;
   if (!item) return;
   if (event.preventDefault) event.preventDefault();
@@ -1543,8 +1549,11 @@ function onDocumentClickCloseTaskMoveMenu(event) {
 
 /* ─── 看板拖拽（#191 D3/D4）：拖拽服务指针设备，卡片菜单服务触屏与键盘，
    两者命中同一条受守卫的写路径（`PATCH /api/tasks/{id}/status`），不做第二套语义。
-   落点判定**只读**载荷 `allowed_transitions`；非法松手零请求。 */
-const boardDrag = { taskId: null };
+   落点判定**只读**载荷 `allowed_transitions`；非法松手零请求。
+
+   `suppressClickUntil`：拖拽结束后浏览器仍可能补一个 `click`（不同内核时机不同），
+   于是「拖完顺手打开了线程」。给点击委派一个短窗口，让「拖拽不触发点击」成为显式事实。 */
+const boardDrag = { taskId: null, suppressClickUntil: 0 };
 
 function boardColumnsWithState() {
   const columns = $('#taskColumns');
@@ -1569,6 +1578,7 @@ function onBoardDragStart(event) {
   if (!task || !state.online || !taskAllowedTransitions(task).length) return;
   closeTaskMoveMenu(false);
   boardDrag.taskId = task.id;
+  boardDrag.suppressClickUntil = 0;
   card.classList.add('dragging');
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
@@ -1617,6 +1627,8 @@ function onBoardDrop(event) {
   const task = taskById(taskId);
   clearBoardDropStates();
   boardDrag.taskId = null;
+  // drop 之后内核可能补一个 click：从现在起短窗口内不把点击当成「打开线程」。
+  boardDrag.suppressClickUntil = Date.now() + 250;
   if (!task || !state.online) return;
   const target = column.dataset.status;
   // 拖回原列：无动作（既不是迁移，也不该给一句「非法」的指责）。
@@ -1635,6 +1647,7 @@ function onBoardDrop(event) {
 function onBoardDragEnd() {
   clearBoardDropStates();
   boardDrag.taskId = null;
+  boardDrag.suppressClickUntil = Date.now() + 250;
 }
 
 /** 看板列（`TASK_STATUS_ORDER` 五态）：固定 `--board-col-w`(236px) → 超出时容器横向滚动。 */
@@ -3490,8 +3503,16 @@ async function saveTaskTitle() {
 async function changeTaskStatus(taskId, target) {
   const task = taskById(taskId);
   if (!task || target === task.status) return;
-  // chip / 菜单目标都是呈现，不变量在写路径：这里再拦一次非法值，省一次注定失败的请求。
-  if (!taskAllowedTransitions(task).includes(target)) return;
+  // chip / 菜单目标都是呈现，不变量在写路径。这里读的是**当前载荷**：若目标已不在
+  // `allowed_transitions` 里（菜单/拖拽打开期间状态被他处改过），不发那次注定失败的请求，
+  // 但仍把「不是合法迁移」这条事实说出来——静默什么都不发生，人只会以为界面坏了。
+  if (!taskAllowedTransitions(task).includes(target)) {
+    toast(t('toast.transitionInvalid', {
+      from: taskStatusLabel(task.status),
+      to: taskStatusLabel(target),
+    }), 'err');
+    return;
+  }
   const isOpenThread = state.activeTaskId === taskId;
   try {
     const payload = await api(taskPath(taskId, '/status'), { method: 'PATCH', body: { status: target } });
@@ -8093,6 +8114,8 @@ function bindEvents() {
   // ② 拖拽与菜单交互都不该被当成「点卡片」。
   ['#taskColumns', '#taskListWrap'].forEach((selector) => {
     $(selector).addEventListener('click', (event) => {
+      // 刚结束一次拖拽：内核补发的那个 click 不是「打开线程」的意思。
+      if (Date.now() < boardDrag.suppressClickUntil) return;
       if (event.target.closest('[data-task-menu]')) return;
       const card = event.target.closest('[data-task]');
       if (card) openTask(card.dataset.task);
@@ -8100,13 +8123,13 @@ function bindEvents() {
   });
   // 卡片是 div（不是原生 button）：Enter / Space 打开线程的键盘语义要显式补上。
   $('#taskColumns').addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+    if (!isActivationKey(event)) return;
     const card = event.target.closest('[data-task]');
     if (!card || event.target.closest('[data-task-menu]')) return;
     if (event.preventDefault) event.preventDefault();
     openTask(card.dataset.task);
   });
-  // 拖拽（#191）：四个事件都在看板容器上委派——列与卡片每次重铺都是新节点。
+  // 拖拽（#191）：五个事件都在看板容器上委派——列与卡片每次重铺都是新节点。
   const columns = $('#taskColumns');
   columns.addEventListener('dragstart', onBoardDragStart);
   columns.addEventListener('dragover', onBoardDragOver);
