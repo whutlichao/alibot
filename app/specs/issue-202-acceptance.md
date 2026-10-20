@@ -437,11 +437,11 @@ Node `210 pass / 0 fail`。第二轮新增 4 条 pytest 用例（读路径 3 条
 ## 6. 提交 / 推送 / PR
 
 - 第一轮 commits：`6928394`（实现）→ `ce5a523`（review 处置）→ `f6e21e2`（门禁读数与 PR 正文）
-- 第二轮 commits：`a3d70df`（实现：API 三态 + Studio 四档 + 用例 + 文档）→ 本轮收尾提交（验收读数 /
-  双轴处置 / PR 正文；SHA 见 PR #203 的提交列表）
+- 第二轮 commits：`a3d70df`（实现：API 三态 + Studio 四档 + 用例 + 文档）→ `66f9c34`（验收读数 /
+  双轴处置）→ `1841ef7`（PR 正文与提交清单）→ 本条时点标注的收尾提交（SHA 见 PR #203 的提交列表）
 - 分支：`issue-202-impl`（`git push -u origin issue-202-impl`；**不新开分支**）
 - **PR #203**：https://github.com/whutlichao/alibot/pull/203（**同一个 PR**，正文用
-  `gh pr edit --body-file` 更新，保留 `Closes #202`）
+  `gh pr edit --body-file` 更新，保留 `Closes #202`；已回填 head `456f589` 之前的提交与门禁读数）
 - PR body 路径：`app/specs/issue-202-pr-body.md`（与 PR 正文逐字同源）
 
 ---
