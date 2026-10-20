@@ -150,3 +150,15 @@ Docker 网络策略、`app/specs/issue-<n>-acceptance.md` 的判据与读数。
   并在频道设置「联网」区块暴露档位、provider 状态、key 保存 / 清除 / 设为默认。
 - 这是一道**单向门**：schema 20 迁移 + 密钥存储 + 默认值语义变更。回滚只能恢复迁移前的整目录备份并用
   旧版代码打开；旧代码不能打开新库。
+
+## 修订（2026-10-21，#202）
+
+### 十四、私聊（DM）的联网档回退到 Agent 级配置 + 默认档
+
+- **人定（2026-10-21）**：私聊（DM）也要能联网，但 DM 没有频道，因此**联网档回退到 Agent 级配置**：
+  读路径对 `target.kind = 'dm'` 只读 `agent_config.web_access`，未配置回退默认档 `'search'`，显式
+  `'off'` 归一成 `None`（与频道分支同一归一）。DM 没有频道级默认值可合并。
+- DM 的 `mode` 固定 `read-only`：私聊没有权限档与审批面，`fetch` 因此**永不装配**（§三的权限档闸门
+  逐字不变）。`backend = local` / `docker_egress = False` / `egress_hosts = []`——DM 没有频道 workspace。
+- 频道 / 任务分支**逐字不变**（仍是 `agent_config.web_access or channel.web_access or 'search'` 的合并
+  顺序）。人类面入口是 Agent 编辑弹窗的「联网」三档；频道设置里的联网区块行为不变。

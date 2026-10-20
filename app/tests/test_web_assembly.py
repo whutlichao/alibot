@@ -224,11 +224,12 @@ def _system_prompt(index: int = 0) -> str:
 
 
 # ─── 1. 配置闸门：NULL = 默认档 search；off = 显式关闭 ──────────────────────
-def test_an_unset_web_access_mounts_web_search_by_default(library: Any, stub_provider: str) -> None:
-    """``web_access=NULL`` = 未配置，读路径回退到默认档 ``search``；免凭据回退不需要确认行。"""
-    database, agent, channel = library
-    # 只摘掉搜索凭据；模型端点仍要读 OPENAI_API_KEY / OPENAI_BASE_URL。
-    environ = {
+def _keyless_environ() -> dict[str, str]:
+    """摘掉五家搜索凭据：provider 解析回落到免凭据 ``exa-mcp``（不需要确认行）。
+
+    模型端点仍要读 ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL``，因此只摘联网这一组。
+    """
+    return {
         name: value
         for name, value in os.environ.items()
         if name
@@ -242,7 +243,11 @@ def test_an_unset_web_access_mounts_web_search_by_default(library: Any, stub_pro
         }
     }
 
-    outcome = _run_round(_seam(database, environ=environ), database, agent, channel)
+
+def test_an_unset_web_access_mounts_web_search_by_default(library: Any, stub_provider: str) -> None:
+    """``web_access=NULL`` = 未配置，读路径回退到默认档 ``search``；免凭据回退不需要确认行。"""
+    database, agent, channel = library
+    outcome = _run_round(_seam(database, environ=_keyless_environ()), database, agent, channel)
 
     assert outcome.status == "replied", outcome.reason
     assert "web_search" in _tool_names()
@@ -647,3 +652,77 @@ def test_docker_egress_on_allows_only_the_hosts_in_the_fetch_allow_rules(
     outcome = _run_round(outside, database, agent, channel)
     assert outcome.status == "replied", outcome.reason
     assert len(no_outbound_requests.requests) == 1, "白名单外的 host 没有发请求"
+
+
+# ─── 7. DM（私聊）：Agent 级联网档 + 默认档，fetch 永不装配（#202） ──────────
+# DM 没有频道，读路径只读 ``agent_config``：未配置 = 默认档 ``search``，显式 ``off`` 关闭；
+# ``mode`` 固定 ``read-only``——DM 没有权限档与审批面，``fetch`` 那道权限闸门因此永远挡住。
+def _set_agent_web_access(database: Any, agent_id: str, value: str | None) -> None:
+    """直写 Agent 级联网档（与 ``_configure`` 同一体例：造「已落库的配置」而不是造读路径）。"""
+    with sqlite3.connect(database.path) as connection:
+        connection.execute("UPDATE agent_config SET web_access = ? WHERE member_id = ?", (value, agent_id))
+        connection.commit()
+
+
+def _run_dm_round(seam: Any, database: Any, agent: dict, dm: dict) -> Any:
+    return seam.run_round_stream(
+        database.get_agent(agent["id"]),
+        [{"seq": 1, "kind": "human", "body": "帮我查一下", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id=dm["id"],
+        direct_message=True,
+    )
+
+
+def test_a_dm_mounts_web_search_by_default_and_needs_no_consent_row(library: Any, stub_provider: str) -> None:
+    """DM 未配 Agent 级档位 ⇒ 默认档 ``search``；免凭据回退 ``exa-mcp`` 不需要确认行。"""
+    database, agent, _channel = library
+    dm, _created = database.create_dm(agent["id"])
+
+    outcome = _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+
+    assert outcome.status == "replied", outcome.reason
+    assert "web_search" in _tool_names()
+    assert "fetch" not in _tool_names(), "DM 的 mode 固定 read-only，永不装配 fetch"
+    settings = database.web_settings_for_target(dm["id"], agent["id"])
+    assert settings is not None
+    assert settings["web_access"] == "search"
+    assert settings["consented_providers"] == (), "免凭据回退不写、也不需要确认行"
+
+
+def test_a_dm_with_agent_level_off_mounts_no_web_tool(library: Any, stub_provider: str) -> None:
+    """``agent_config.web_access='off'`` 是显式关闭：DM 里一个联网工具都不挂。"""
+    database, agent, _channel = library
+    dm, _created = database.create_dm(agent["id"])
+    _set_agent_web_access(database, agent["id"], "off")
+
+    outcome = _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+
+    assert outcome.status == "replied", outcome.reason
+    assert _tool_names() == {"declare_silence"}
+    assert "fetch" not in _system_prompt()
+
+
+def test_a_dm_stays_read_only_even_when_the_agent_level_says_search_plus_fetch(
+    library: Any, stub_provider: str
+) -> None:
+    """``'search+fetch'`` 在 DM 仍只挂 ``web_search``：DM 没有权限档，mode 固定 ``read-only``。"""
+    database, agent, _channel = library
+    dm, _created = database.create_dm(agent["id"])
+    _set_agent_web_access(database, agent["id"], "search+fetch")
+    with sqlite3.connect(database.path) as connection:
+        # 就算 Agent 级权限档写成 trusted-writes，DM 也不借它开 fetch。
+        connection.execute(
+            "UPDATE agent_config SET permission_mode = 'trusted-writes' WHERE member_id = ?",
+            (agent["id"],),
+        )
+        connection.commit()
+
+    outcome = _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
+
+    assert outcome.status == "replied", outcome.reason
+    assert "web_search" in _tool_names()
+    assert "fetch" not in _tool_names(), "DM 不装配 fetch"
+    settings = database.web_settings_for_target(dm["id"], agent["id"])
+    assert settings is not None
+    assert settings["mode"] == "read-only"

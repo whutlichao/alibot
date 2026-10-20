@@ -4661,6 +4661,9 @@ function agentRuntimeNodes(agent) {
     ['agentDetail.kvAutoClaim',
       agent.auto_claim ? t('agentDetail.autoClaimOn') : t('agentDetail.autoClaimOff'),
       'agent-detail-auto-claim'],
+    // 联网档（#202）同理：这里是 `agent_config.web_access` 的**读数本身**（私聊的联网档就回退到
+    // 它 + 默认档）；`null` = 跟随频道，按其余字段的口径显示空字段文案，不在前端推断生效档。
+    ['agentDetail.kvWebAccess', agentWebAccessLabel(agent), 'agent-detail-web-access'],
   ];
   rows.forEach(([key, value, odId]) => section.appendChild(kvRow(t(key), value, odId)));
 
@@ -4677,6 +4680,15 @@ function agentConsentLabel(agent) {
   if (!agent.provider) return t('agentDetail.emptyField');
   if (!agent.is_remote) return t('agentDetail.consentNotNeeded');
   return agent.remote_consent ? t('agentDetail.consentAck') : t('agentDetail.consentPending');
+}
+
+/** 联网档的**读数本身**（#202）：`null` = 未配置 = 跟随频道，显示空字段文案；
+    前端不推断「私聊里实际生效的档」——那是读路径的事，界面只呈现配置。 */
+function agentWebAccessLabel(agent) {
+  if (agent.web_access === 'off') return t('agentDetail.webAccessOff');
+  if (agent.web_access === 'search') return t('agentDetail.webAccessSearch');
+  if (agent.web_access === 'search+fetch') return t('agentDetail.webAccessSearchFetch');
+  return t('agentDetail.emptyField');
 }
 
 /** 一个概览数字：`title` 与 `aria-label` 都写明**来源**（数字本身不带来源就是不可核对的读数）。 */
@@ -4753,6 +4765,8 @@ function openAgentEditModal(memberId) {
   renderAgentEditProviderSelect(preferred);
   renderEditTier('#agentEditEnabled', 'enabled', agent.enabled !== false);
   renderEditTier('#agentEditAutoClaim', 'autoClaim', agent.auto_claim === true);
+  // 联网档（#202）：`null` = 未配置 = 跟随频道，此时三档都不选中。
+  renderAgentEditWebAccess(agent.web_access);
   renderAgentEditNotice();
   $('#agentEditOverlay').hidden = false;
   $('#agentEditName').focus();
@@ -4800,6 +4814,34 @@ function editTierValue(selector, key) {
   return on;
 }
 
+/* 联网档（#202）：与布尔档位组同一套 `.radio-card` 控件族，但取值是三态而不是布尔。
+   **未选中**（`agent.web_access=null`）就是「跟随频道」——保存时不提交该字段，频道级配置因此
+   一个字都不会被覆盖；私聊没有频道可跟随，读路径回退默认档 `search`。 */
+function editWebAccessCards() {
+  const group = $('#agentEditWebAccess');
+  if (!group) return [];
+  return Array.prototype.slice.call(group.querySelectorAll('[data-web-access]'));
+}
+
+/** 写联网档的选中态：后端词表外的取值一律不选中（不猜一个档出来）。 */
+function renderAgentEditWebAccess(value) {
+  const selected = WEB_ACCESS_LEVELS.includes(value) ? value : null;
+  editWebAccessCards().forEach((card) => {
+    const on = card.dataset.webAccess === selected;
+    card.classList.toggle('is-on', on);
+    card.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+/** 读当前选中的联网档；三档都没选中 = `null` = 跟随频道。 */
+function agentEditWebAccessValue() {
+  const cards = editWebAccessCards();
+  for (const card of cards) {
+    if (card.classList.contains('is-on')) return card.dataset.webAccess;
+  }
+  return null;
+}
+
 function renderAgentEditNotice() {
   renderRemoteNoticeBlock(AGENT_EDIT_NOTICE_IDS, $('#agentEditProviderSelect').value);
 }
@@ -4818,6 +4860,10 @@ async function submitAgentEdit() {
     enabled: editTierValue('#agentEditEnabled', 'enabled'),
     auto_claim: editTierValue('#agentEditAutoClaim', 'autoClaim'),
   };
+  // 联网档（#202）：未选择 = 跟随频道，**不提交**该字段——PATCH 的部分更新语义会保持原值，
+  // 于是「打开编辑面顺手改别的」不会把 Agent 从跟随频道变成显式档。
+  const webAccess = agentEditWebAccessValue();
+  if (webAccess) payload.web_access = webAccess;
   const box = $('#agentEditFormError');
   const submit = $('#agentEditSubmit');
   submit.disabled = true;
@@ -8365,6 +8411,11 @@ function bindEvents() {
   $('#agentEditAutoClaim').addEventListener('click', (event) => {
     const card = event.target.closest('[data-auto-claim]');
     if (card) renderEditTier('#agentEditAutoClaim', 'autoClaim', card.dataset.autoClaim === 'on');
+  });
+  // 联网档（#202）：点哪张选哪张（三态互斥；提交仍由保存按钮表达）。
+  $('#agentEditWebAccess').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-web-access]');
+    if (card) renderAgentEditWebAccess(card.dataset.webAccess);
   });
   $('#agentEditOverlay').addEventListener('click', (event) => {
     if (event.target.id === 'agentEditOverlay') closeAgentEditModal();

@@ -2959,17 +2959,26 @@ class Database:
     def web_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
         """联网工具（#186）的装配读路径：``web_access``、权限档与已确认的 web provider。
 
-        与 :meth:`permission_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
-        返回 ``None``。
+        与 :meth:`permission_settings_for_target` 同一 target→channel 解析口径；未知 target
+        返回 ``None``。**DM 没有频道**（#202）：它只读 ``agent_config``，读数形状与频道分支一致
+        ——``web_access`` = ``agent_config.web_access or 'search'``、``mode`` 固定 ``'read-only'``
+        （没有权限档与审批面，``fetch`` 因此永不装配）、``backend='local'`` /
+        ``docker_egress=False`` / ``egress_hosts=[]``（没有频道 workspace）。
 
         ``web_access`` 是一个**独立**配置位（ADR-0026 §二：与 workspace 同级但不是同一个开关），
         因此这条读路径**不经过** :meth:`workspace_settings_for_target`——频道没配项目根时它也生效。
-        三态合并 ``agent → channel → 'search'``；``'off'`` 归一成 ``None``（装配层据此不挂工具）。
-        ``consented_providers`` 是 ``remote_consent_scope('web', provider)`` 里已确认的那些行；
-        ``credentials`` / ``default_provider`` 是凭据表的**内部**读数（明文只给工具发请求用）。
+        频道 / 任务分支是三态合并 ``agent → channel → 'search'``；``'off'`` 在两条分支里都归一成
+        ``None``（装配层据此不挂工具）。``consented_providers`` 是
+        ``remote_consent_scope('web', provider)`` 里已确认的那些行；``credentials`` /
+        ``default_provider`` 是凭据表的**内部**读数（明文只给工具发请求用）。
         本方法只读配置：不落消息、不唤醒，也不改动库。
         """
         with self._lock:
+            target = self._conn.execute("SELECT kind FROM target WHERE id = ?", (target_id,)).fetchone()
+            if target is None:
+                return None
+            if target["kind"] == "dm":
+                return self._dm_web_settings_locked(member_id)
             channel_id = self._channel_id_for_target_locked(target_id)
             if channel_id is None:
                 return None
@@ -3024,6 +3033,40 @@ class Database:
             ),
             "docker_egress": bool(channel["docker_egress"]),
             "egress_hosts": allowed_hosts,
+        }
+
+    def _dm_web_settings_locked(self, member_id: str) -> dict[str, Any]:
+        """DM 的联网档读数（#202）：只读 ``agent_config``，形状与频道分支一致。
+
+        DM 没有频道，也就没有频道级默认值：``web_access`` 只取 Agent 级配置，未配置回退默认档
+        ``'search'``、显式 ``'off'`` 归一成 ``None``（与频道分支同一归一）。DM 也没有权限档与
+        审批面，因此 ``mode`` 固定 ``'read-only'``——装配层 ``FETCH_ACCESS_LEVEL and
+        mode != "read-only"`` 的闸门据此永不装 ``fetch``。``backend='local'`` /
+        ``docker_egress=False`` / ``egress_hosts=[]`` 是「没有频道 workspace」的同形状读数。
+
+        调用方已持有 ``self._lock``（与频道分支整段读在同一把锁里）。
+        """
+        agent = self._conn.execute(
+            "SELECT web_access FROM agent_config WHERE member_id = ?", (member_id,)
+        ).fetchone()
+        consented = self._conn.execute(
+            "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
+            "ORDER BY acknowledged_at, scope_id"
+        ).fetchall()
+        runtime_credentials = self.web_provider_credentials()
+        agent_web_access = agent["web_access"] if agent is not None else None
+        # 与频道分支同一归一：``NULL`` = 未配置 = 默认档 ``search``；只有显式 ``off`` 才关闭。
+        resolved_access = agent_web_access or DEFAULT_WEB_ACCESS
+        return {
+            "web_access": None if resolved_access == "off" else resolved_access,
+            "mode": "read-only",
+            "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+            # 凭据只给装配层：HTTP 载荷一律走 ``web_provider_credential_views`` 的掩码读数。
+            "credentials": dict(runtime_credentials["credentials"]),
+            "default_provider": runtime_credentials["default_provider"],
+            "backend": "local",
+            "docker_egress": False,
+            "egress_hosts": [],
         }
 
     def _channel_id_for_target_locked(self, target_id: str) -> str | None:
