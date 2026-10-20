@@ -59,6 +59,9 @@ Closes #202
   `All checks passed`；ruff format `252 files already formatted`；mypy `no issues in 104 source files`；
   pyright `0 errors`；`node --test` `212 pass / 0 fail`（exit code `0`）。
 - 判据 → 落点 → 读数：`app/specs/issue-202-acceptance.md`。
+- 本轮 commits（同一分支、同一 PR，未新开分支 / PR）：`a3d70df`（实现：API 三态 + Studio 四档 +
+  用例 + 文档）→ `66f9c34`（验收读数与双轴处置）→ `1841ef7` / `456f589` / `f999d5f`（PR 正文、
+  提交清单、SHA 回填）；完整列表见本 PR 的 Commits。
 
 ## Merge Danger
 
