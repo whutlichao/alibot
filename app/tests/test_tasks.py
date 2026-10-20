@@ -91,12 +91,12 @@ def test_task_statuses_follow_the_five_state_machine_and_closed_is_terminal(clie
 
 
 def _expected_allowed(status: str) -> list[str]:
-    """``allowed_transitions`` 的期望值：从迁移表按 ``TASK_STATUSES`` 顺序派生。
+    """``allowed_transitions`` 的期望值：拿迁移表的**集合**按 ``TASK_STATUSES`` 排序。
 
-    这里**不钉**五态灯格的任何字面量——表换了两边一起变；断言的是「载荷与写路径同源」这条
-    事实，而不是某份副本的形状。
+    这里**不钉**五态灯格的任何字面量，也刻意不复用生产代码那个「按状态表过滤」的表达式：
+    从集合 + 状态顺序独立派生，于是实现若漏一格或多一格都会被这条断言抓到。
     """
-    return [target for target in TASK_STATUSES if target in TASK_STATUS_TRANSITIONS[status]]
+    return sorted(TASK_STATUS_TRANSITIONS[status], key=TASK_STATUSES.index)
 
 
 def _path_from_todo(status: str) -> list[str]:

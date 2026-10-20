@@ -484,6 +484,12 @@ test("拖拽悬停：合法列 `.drag-over`、非法列 `.invalid-over`、当前
   await harness.drag(current, "dragover", { dataTransfer });
   assert.equal(current.classList.contains("drag-over"), false, "拖回原列不标合法态");
   assert.equal(current.classList.contains("invalid-over"), false, "拖回原列也不标非法态（它是无动作，不是错误）");
+
+  // 指针离开看板：落点态必须跟着清掉，不能留一个没有行为支撑的高亮。
+  await harness.drag(legal, "dragover", { dataTransfer });
+  assert.equal(legal.classList.contains("drag-over"), true);
+  await harness.drag(harness.columnsRoot, "dragleave", { dataTransfer, relatedTarget: null });
+  assert.equal(legal.classList.contains("drag-over"), false, "离开看板后合法落点态清掉");
 });
 
 /* ─── 4. 非法松手：零请求 + toast 说明 ───────────────────────────────────── */
@@ -527,28 +533,27 @@ test("合法列松手发起一次 PATCH /api/tasks/{id}/status", async () => {
 
 /* ─── 6. 终态：没有流转按钮，也没有合法落点 ─────────────────────────────── */
 
-test("closed 卡片没有流转按钮，拖起后没有任何合法落点", async () => {
+test("closed 卡片没有流转按钮、不是拖拽源，也没有任何合法落点", async () => {
   const harness = createHarness({
     tasks: [taskRecord({ status: "closed", allowed_transitions: [] })],
   });
 
   const card = harness.card("t_1");
   assert.equal(card.querySelector("[data-task-menu]"), null, "终态不摆一个点不出东西的入口");
+  assert.equal(card.getAttribute("draggable"), null, "终态也不是拖拽源（没有出边就没有可拖的动作）");
 
-  const { dataTransfer } = await startDrag(harness, "t_1");
-  for (const status of ["todo", "in_progress", "in_review", "done"]) {
+  const dataTransfer = transfer();
+  await harness.drag(card, "dragstart", { dataTransfer });
+  assert.equal(card.classList.contains("dragging"), false, "拖不起来");
+  for (const status of ["todo", "in_progress", "in_review", "done", "closed"]) {
     const column = harness.column(status);
     await harness.drag(column, "dragover", { dataTransfer });
     assert.equal(column.classList.contains("drag-over"), false, `closed → ${status} 不标合法落点`);
-    assert.equal(column.classList.contains("invalid-over"), true, `closed → ${status} 只能是非法落点`);
+    assert.equal(column.classList.contains("invalid-over"), false, `closed → ${status} 也不标非法落点（没有拖拽进行中）`);
   }
-  const closedColumn = harness.column("closed");
-  await harness.drag(closedColumn, "dragover", { dataTransfer });
-  assert.equal(closedColumn.classList.contains("drag-over"), false);
-  assert.equal(closedColumn.classList.contains("invalid-over"), false, "拖回原列不标态");
 
   await harness.drag(harness.column("done"), "drop", { dataTransfer });
-  assert.equal(harness.patches().length, 0, "终态的非法落点同样零请求");
+  assert.equal(harness.patches().length, 0, "终态卡片松手同样零请求");
 });
 
 /* ─── 7. 离线：按钮禁用、菜单打不开、零请求 ─────────────────────────────── */

@@ -51,22 +51,25 @@
 - **D4 非法落点零写入。** 拖到非法列：该列显示非法态（`.invalid-over`）、松手**不发起任何请求**、
   toast 说明「不是合法迁移」；拖到当前列：无动作；拖到合法列：一次 PATCH，成功后刷新看板与
   （若打开的）任务线程。**不做乐观更新**——失败时用户看到的是后端事实。
-- **D5 终态不摆样子。** `closed` 无出边 ⇒ 卡片不渲染流转按钮；拖起后每一列都只能是非法落点；
-  线程里仍显示既有的「无可用推进」说明。
+- **D5 终态不摆样子。** `closed` 无出边 ⇒ 卡片不渲染流转按钮，也**不是拖拽源**（不挂 `draggable`：
+  没有可拖的动作就不摆一个拖不变的入口）；悬停不会出现任何合法落点；线程里仍显示既有的
+  「无可用推进」说明。
 - **D6 不动其它口径。** 唤醒 / 预算 / 未读 / 消息 kind / schema / 列表视图行内入口一律不变。
 
 ## 四、交互规格
 
 ### 4.1 拖拽（看板列之间）
 
-- 卡片根节点是 `<div class="card" role="button" tabindex="0" draggable="true">`：`<button>` 里不能再嵌
-  菜单按钮，`<div>` 作拖拽源也更稳；Enter / Space 仍打开线程（键盘语义显式补上）。
+- 卡片根节点是 `<div class="card" role="button" tabindex="0">`：`<button>` 里不能再嵌菜单按钮，
+  `<div>` 作拖拽源也更稳；`draggable="true"` 只在**有合法目标**的卡片上挂（终态没有）。
+  Enter / Space 仍打开线程（键盘语义显式补上）。
 - 拖起时卡片呈 `.dragging`（`opacity: .4`），并收起可能开着的流转菜单。
 - 悬停列三态：**合法** `.drag-over`（`--accent-graphic` 边 + `--accent-soft` 底）、
   **非法** `.invalid-over`（`--error` 边）、**当前列**不标态（拖回原列是无动作，不是错误）。
 - 合法判定**只读**该任务的 `allowed_transitions`，不读本地表、不做「同状态不迁移」之外的推断。
 - 松手：合法 → 一次 PATCH；非法 → toast（`toast.transitionInvalid`，文案含「从哪个状态到哪个状态」）
   且**零请求**；当前列 → 无动作。
+- 指针**离开看板**（`dragleave` 且 `relatedTarget` 不在看板内）清掉落点态——否则最后一列会一直亮着。
 - `dragend` / 松手 / 任何重铺都会清掉落点态（`.drag-over` / `.invalid-over` / `.dragging`）。
 - 离线：`dragstart` 不记录被拖任务，松手不发请求（与菜单的离线纪律一致）。
 
@@ -83,7 +86,7 @@
 - `closed` 卡片没有这个按钮（无合法目标 ⇒ 不摆一个点不出东西的入口）。
 - 键盘：Tab 聚焦按钮；Enter / Space 打开并把焦点移到第一项；↑ / ↓ 循环移动；Esc 关闭并把焦点
   还回触发器；Enter / Space 激活当前项；点外部、滚看板、看板重铺都会关闭。
-- 触屏：菜单是唯一入口，热区沿用既有 `--icon-btn`（30px 控件 + 卡片内边距，等效 ≥ 32px）。
+- 触屏：菜单是唯一入口，热区取 `calc(var(--icon-btn) + var(--sp-1))` = 32px（token 派生，不写裸尺寸）。
 - 离线（`state.online === false`）：按钮 `disabled`，打开函数直接返回。
 - 打开菜单的卡片若被重渲染（SSE / 刷新）：`renderTaskBoard()` 开头统一关闭菜单，重开时按新载荷重建。
 
@@ -114,16 +117,19 @@
 
 ## 六、实现约束（踩过的坑）
 
-1. 卡片根从 `<button>` 改成 `<div role="button">`；Enter / Space 打开线程由 `#taskColumns` 的
-   keydown 委派补上（`app.js:8081-8088`）。
-2. 卡片菜单按钮点击 `stopPropagation`，看板点击委派先判 `[data-task-menu]`（`app.js:8071-8080`）。
+1. 卡片根从 `<button>` 改成 `<div role="button">`（`draggable` 只在有合法目标时挂）；
+   Enter / Space 打开线程由 `#taskColumns` 的 keydown 委派补上（`app.js:8101-8107`）。
+2. 卡片菜单按钮点击 `stopPropagation`，看板点击委派先判 `[data-task-menu]`（`app.js:8092-8099`）。
 3. 菜单是共享浮层（`index.html:549`），`fixed` 定位，不靠 `.board` 的裁剪。
-4. 键盘：打开进第一项、↑/↓ 循环、Esc 还焦点、点外部 / 滚动 / 重铺时关闭（`app.js:1507-1545`）。
+4. 键盘：打开进第一项、↑/↓ 循环、Esc 还焦点、点外部 / 滚动 / 重铺时关闭（`app.js:1510-1548`）。
+   菜单项集合要 `Array.from(...)`：真实 `querySelectorAll` 是 NodeList，没有 `indexOf`
+   （浏览器证据里抓到过一次 TypeError，见验收文档）。
 5. 拖拽判定只读 `task.allowed_transitions`；`dragstart` 记任务 id（`dataTransfer` + 内存兜底）、
-   `dragover` 逐列判态、`drop` 非法 → toast 且零请求、`dragend` 清态（`app.js:1561-1617`）。
-6. `renderTaskBoard()` 开头统一关闭菜单（`app.js:1685-1688`）。
+   `dragover` 逐列判态、`dragleave` 离开看板清态、`drop` 非法 → toast 且零请求、
+   `dragend` 清态（`app.js:1564-1637`）。
+6. `renderTaskBoard()` 开头统一关闭菜单（`app.js:1705-1708`）。
 7. 样式只消费既有 token（`.col.drag-over` / `.col.invalid-over` / `.card.dragging` /
-   `.card-menu*`，`app.css:873-923`），不新造色位、不写裸色值。
+   `.card-menu*`，`app.css:873-925`），不新造色位、不写裸色值。
 8. 新词条 zh/en 同键集（`board.cardMenuAria` / `board.cardMenuLabel` / `toast.transitionInvalid`）。
 9. `allowed_transitions` 顺序固定 `TASK_STATUSES` 顺序；无出边时是 `[]`（不是 `null`）。
 10. pytest 只断言 HTTP 载荷与写路径行为（`app/tests/test_test_layering_guard.py`）：不 import
@@ -143,9 +149,9 @@
 | 验收判据（issue #191） | 落点 | 证据 |
 | --- | --- | --- |
 | 卡片可拖、合法列高亮、非法列红框、非法松手零请求 + toast | `app.js:1561-1617`、`app.css:902-905` | `app/tests/taskboard_transitions_ui.test.cjs`（悬停三态 / 非法松手 / 合法松手） |
-| 卡片菜单只列载荷 `allowed_transitions`，点击走一次 PATCH 并刷新 | `app.js:1400-1545` | 同上（用一份静态表里不存在的集合证明载荷驱动） |
-| `closed` 卡片无按钮、无合法落点 | `app.js:1363-1398`、`app.js:1575-1609` | 同上（终态用例） |
-| 前端不再有迁移表副本，线程 chips 与看板同源 | `app.js:111`、`app.js:1770` | `grep -n TASK_STATUS_TRANSITIONS app/alibot/studio/app.js` 无定义 |
+| 卡片菜单只列载荷 `allowed_transitions`，点击走一次 PATCH 并刷新 | `app.js:1401-1548` | 同上（用一份静态表里不存在的集合证明载荷驱动） |
+| `closed` 卡片无按钮、不是拖拽源、无合法落点 | `app.js:1364-1399`、`app.js:1564-1637` | 同上（终态用例） |
+| 前端不再有迁移表副本，线程 chips 与看板同源 | `app.js:111`、`app.js:1790` | `grep -n TASK_STATUS_TRANSITIONS app/alibot/studio/app.js` 无定义 |
 | 载荷字段在四条读路径与三个 PATCH 响应中都存在且顺序固定 | `db.py:188`、`db.py:2188` | `app/tests/test_tasks.py` 两条契约用例 |
 | `scripts/check.sh` 全绿；双轴 review 结论落验收文档 | 全仓 | `app/specs/issue-191-acceptance.md` |
 | 真浏览器：菜单可开、键盘可走、拖拽三态可观察 | Studio | `app/specs/issue-191-evidence/*.png` |

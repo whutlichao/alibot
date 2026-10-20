@@ -1357,15 +1357,16 @@ function moreHorizontalIcon() {
 
 /** 一张看板卡片（原型 `cardHtml()`）：标题 + mono 序号 + 频道 tag + 指派者 / 未认领。
 
-    根节点是 `<div role="button" tabindex="0" draggable="true">`（#191）：它同时承载
-    「拖拽源」与卡片内右上角的「流转」菜单按钮，而 `<button>` 里不能再嵌按钮。
+    根节点是 `<div role="button" tabindex="0">`（#191）：它同时承载「拖拽源」与卡片内右上角的
+    「流转」菜单按钮，而 `<button>` 里不能再嵌按钮。`draggable` 只在**有合法目标**时挂上——
+    终态（`closed`）没有出边，摆一个拖不动的拖拽源同样是「不实现就不摆样子」。
     Enter / Space 仍打开线程（`#taskColumns` 的 keydown 委派），点击语义不变。 */
 function taskCardNode(task) {
   const targets = taskAllowedTransitions(task);
   const card = el('div', targets.length ? 'card has-menu' : 'card');
   card.setAttribute('role', 'button');
   card.setAttribute('tabindex', '0');
-  card.setAttribute('draggable', 'true');
+  if (targets.length) card.setAttribute('draggable', 'true');
   card.dataset.task = task.id;
   card.dataset.status = task.status;
   card.setAttribute('data-od-id', 'task-card-' + task.id);
@@ -1564,7 +1565,8 @@ function onBoardDragStart(event) {
   const card = event.target && event.target.closest ? event.target.closest('[data-task]') : null;
   if (!card) return;
   const task = taskById(card.dataset.task);
-  if (!task || !state.online) return;
+  // 没有合法目标（终态）的卡片不是拖拽源：它连 `draggable` 都不挂，这里再守一次。
+  if (!task || !state.online || !taskAllowedTransitions(task).length) return;
   closeTaskMoveMenu(false);
   boardDrag.taskId = task.id;
   card.classList.add('dragging');
@@ -1581,12 +1583,28 @@ function onBoardDragOver(event) {
   if (!task) return;
   // 允许 drop：非法落点也要收到 drop，才能给「不是合法迁移」的说明（零请求）。
   if (event.preventDefault) event.preventDefault();
+  const target = column.dataset.status;
+  const sameColumn = target === task.status;
+  const legal = !sameColumn && taskAllowedTransitions(task).includes(target);
   boardColumnsWithState().forEach((other) => {
     const on = other === column;
-    other.classList.toggle('drag-over', on && column.dataset.status !== task.status
-      && taskAllowedTransitions(task).includes(column.dataset.status));
-    other.classList.toggle('invalid-over', on && column.dataset.status !== task.status
-      && !taskAllowedTransitions(task).includes(column.dataset.status));
+    other.classList.toggle('drag-over', on && legal);
+    other.classList.toggle('invalid-over', on && !sameColumn && !legal);
+  });
+}
+
+/** 指针离开看板（不是在看板内部换列）时清掉落点态：否则最后一列会一直亮着，
+    直到有人松手或拖拽结束——那是一个没有行为支撑的「落点」。 */
+function onBoardDragLeave(event) {
+  const columns = $('#taskColumns');
+  const next = event.relatedTarget;
+  if (next && columns) {
+    if (columns.contains && columns.contains(next)) return;
+    if (!columns.contains && next.closest && next.closest('#taskColumns')) return;
+  }
+  boardColumnsWithState().forEach((column) => {
+    column.classList.remove('drag-over');
+    column.classList.remove('invalid-over');
   });
 }
 
@@ -3477,7 +3495,7 @@ async function changeTaskStatus(taskId, target) {
   const isOpenThread = state.activeTaskId === taskId;
   try {
     const payload = await api(taskPath(taskId, '/status'), { method: 'PATCH', body: { status: target } });
-    if (isOpenThread || (state.activeTask && state.activeTask.id === taskId)) {
+    if (isOpenThread) {
       state.activeTask = payload.task;
       if (payload.message) absorbTaskMessage(payload.message);
     }
@@ -8092,6 +8110,7 @@ function bindEvents() {
   const columns = $('#taskColumns');
   columns.addEventListener('dragstart', onBoardDragStart);
   columns.addEventListener('dragover', onBoardDragOver);
+  columns.addEventListener('dragleave', onBoardDragLeave);
   columns.addEventListener('drop', onBoardDrop);
   columns.addEventListener('dragend', onBoardDragEnd);
   // 「流转」菜单：共享浮层自己的键盘面 + 点外部 / 滚看板时收起。
