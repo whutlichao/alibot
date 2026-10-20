@@ -91,10 +91,10 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-### Schema 版本与迁移（15 → 21）
+### Schema 版本与迁移（15 → 22）
 
-本代码的 `SCHEMA_VERSION = 21`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
-推进到 21，由**六个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+本代码的 `SCHEMA_VERSION = 22`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
+推进到 22，由**七个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -104,18 +104,20 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `18 → 19` | `docker container egress switch` | `channel.docker_egress`（`0` = 容器 `--network none`，缺省；`1` = 容器接 Docker 默认网络，且联网工具只放行 `permission_rule` 里 `fetch` 的 `allow` 规则的 host） |
 | `19 → 20` | `channel task pointer message` | `message.task_pointer`（可空，`REFERENCES task(id)`）+ 部分唯一索引 `idx_message_task_pointer`（一张任务至多一条）+ `message_task_pointer_is_scoped` 触发器（必须是 channel 型 target 的 system 消息，且任务属于该频道）。**不回填**旧任务 |
 | `20 → 21` | `auto claim defaults on` | `agent_config.auto_claim` 的 DDL 默认 `0 → 1`；按当前 `SCHEMA` **重建** `agent_config`（升级库的新插入也拿到 1），并把存量 `auto_claim = 0` 一次性回填为 `1`（只改这一列、不动 `updated_at`；报告真实改动行数，重放是空操作） |
+| `21 → 22` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
 
 - **只加不删；除 `20 → 21` 的显式回填外，不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——
   `mode='autonomous'`、`team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
   `permission_mode='ask-writes'`；`agent_config` 的四个新列是 `NULL` / `NULL` / `0` / `NULL`；
-  `17 → 18` 的两列 `web_access` 也一律停在 `NULL`（= 关闭 / 跟随频道，见下面的**联网档**）；
-  `18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）；
-  `19 → 20` 的 `message.task_pointer` 停在 `NULL`（= 不是指针消息）。
+  `17 → 18` 的两列 `web_access` 也一律停在 `NULL`（= 未配置 / 跟随频道，读路径回退默认档 `search`，
+  见下面的**联网档**）；`18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）；
+  `19 → 20` 的 `message.task_pointer` 停在 `NULL`（= 不是指针消息）；
+  `21 → 22` 的两列 `web_access` 仍停在 `NULL`（同上，读路径回退默认档 `search`）。
   `20 → 21` 是一次**显式的语义变更**：它把存量 `auto_claim = 0` 一次性置 1（ADR-0029），
   因此升级会覆盖此前显式关闭的存量行；它**不回溯任务**，频道里既有的未认领任务保持原状。
 - **迁移是显式动作**：`python -m alibot --migrate --data-dir <数据目录>`；`--dry-run` 在数据目录内的临时
   副本上预演完整链，**原库 sha256 前后一致**，不建备份、不写台账、不留副本。迁移前自动把整个数据目录
-  复制成同级 `<数据目录>-backup-15-to-21-<UTC 时间戳>`；**备份失败就不迁移**。
+  复制成同级 `<数据目录>-backup-15-to-22-<UTC 时间戳>`；**备份失败就不迁移**。
 - **单向、无降级代码**：回滚 = 恢复迁移前的那份**整目录备份**（`cp -a` / 反向复制），再用旧版本代码打开。
   旧代码**不能**打开新版本库（版本闸门），所以「把 `SCHEMA_VERSION` 改回去」不是回滚。
 - **失败即回滚**：步骤链在单事务内跑；任一步失败 ⇒ `ROLLBACK`、库仍停在源版本且未被改动、备份仍在、
@@ -137,12 +139,13 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明；`env_names` 只存变量**名**，值只从进程环境读（ADR-0021 §三） |
 | `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；字节在 `workspace_root/.alibot/skills/<scope_id>/`（Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级），只接受本机目录/上传 zip |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证**（兼容面，迁移后读路径优先读 `remote_consent_scope`） |
-| `remote_consent_scope` | scope_kind(`model`/`mcp`/`docker`/`web`), scope_id, acknowledged_at | 远端数据面的统一一次性确认；旧 `remote_consent` 行复制成 `('model', provider, …)` |
+| `remote_consent_scope` | scope_kind(`model`/`mcp`/`docker`/`web`), scope_id, acknowledged_at | 远端数据面的统一一次性确认；旧 `remote_consent` 行复制成 `('model', provider, …)`。**不存凭据** |
+| `web_provider_credential` | provider(`brave`/`tavily`/`perplexity`/`jina`/`exa`), api_key, is_default(0/1), created_at, updated_at | 联网 provider 的凭据：**一家一行**，`api_key` 明文入库（部署层保证库文件 `0600`），HTTP / 日志 / 事件只回掩码（`sk-…abcd`）；`is_default=1` 至多一行 |
 | `plan_run` / `plan_task` | run: id, target_id, member_id, base_seq, status, started_at, finished_at；task: plan_run_id, seq, subject, description, state(`pending`/`in_progress`/`completed`), owner, blocks/blocked_by(JSON), metadata(JSON) | **Plan** 是成员轮次内的工作清单（ADR-0023），**不是任务五态**：不进看板、未读、搜索、唤醒、预算，不新增 target。每个 `(target_id, member_id)` 保留最近 20 run 或 30 天，`plan_task` 随 run 级联删除；只进运行面板（`GET /api/targets/{id}/plan` + `plan_update`） |
 | `sop_definition` / `sop_run` | definition: id, name, description, steps(JSON: executor/verifier member id、subject、description、max_attempts), enabled；run: id, sop_definition_id, target_id, leader_member_id, state(`SOPRunState` JSON), phase(`pending`/`running`/`awaiting`/`completed`/`failed`), started_at, finished_at | **SOP** 是 owner 显式启动的多步运行（ADR-0023），**不是任务五态**：不改任务行、不写消息、不进看板/未读/搜索/唤醒/预算，不新增 target。运行保留最近 50 个或 90 天；完成/失败不自动删除定义。步骤事件走 `sop_event`，快照是 `GET /api/sop-runs/{id}` |
 | `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `reminder` | id, text, time(`YYYY-MM-DD HH:MM`，**一次性**), channel_id(可空 = 不归属), created_at, **`fired_at`**(可空) | **提醒**（ADR-0012 / ADR-0017）：库内对象，后端是唯一正本（不放 localStorage）。它与频道的关系是**归属**，不是 target 作用域——**不**新增 target、不计未读、不参与唤醒；增删**不落消息、不唤醒、不消耗预算**。`time` 是**一次性**到期时刻（按本机本地时间解释，**无重复字段**）；`fired_at` 非空 = 已投递（UTC），`NULL` = 还没到点 |
-| `channel` | id, 名称, 描述, **`mode`**(`autonomous`/`team`), **`team_leader_member_id`**(team 必填), **`workspace_root`**(可空 = 未配置), **workspace 后端 / 权限档默认值**, **联网档 `web_access`**（`NULL` = 关闭）, **容器出网开关 `docker_egress`**（缺省 `0` = `--network none`） | `mode` / 队长是**频道级协作拓扑**（ADR-0018）；team 覆盖该频道的 channel 型 target 与**全部 task target**。`workspace_root` 是**频道级项目边界**（ADR-0021 §一）；后端缺省 `local`、权限档缺省 `ask-writes` |
+| `channel` | id, 名称, 描述, **`mode`**(`autonomous`/`team`), **`team_leader_member_id`**(team 必填), **`workspace_root`**(可空 = 未配置), **workspace 后端 / 权限档默认值**, **联网档 `web_access`**（`NULL` = 未配置 → 默认 `search`；`off` = 显式关闭）, **容器出网开关 `docker_egress`**（缺省 `0` = `--network none`） | `mode` / 队长是**频道级协作拓扑**（ADR-0018）；team 覆盖该频道的 channel 型 target 与**全部 task target**。`workspace_root` 是**频道级项目边界**（ADR-0021 §一）；后端缺省 `local`、权限档缺省 `ask-writes` |
 | `target_budget` | target_id, epoch_seq, used, applied_limit | **回应预算的用量正本**（每 target 一行）：`epoch_seq` = 人类世代，`used` = 该世代已投递的跳数，`applied_limit` = 该世代生效上界的快照（`NULL` = 内置默认 3） |
 | `channel_budget_limit` | channel_id, budget_limit(`3`/`5`/`10`), updated_at | 回应预算上界的**配置**落点；**没有行 = 回落到内置默认值**。保存只影响**下一个人类世代**，不回溯改写当前世代 |
 | `team_run` / `team_assignment` | run: id, target_id, leader_member_id, base_seq, status(`running`/`completed`/`failed`/`interrupted`/`invalid-leader`), started_at, finished_at；assignment: team_run_id, target_id, task_id(可空), leader/member_id, tool_call_id, prompt, state(`started`/`succeeded`/`failed`/`interrupted`/`budget-exhausted`), jump_consumed, reply_excerpt, error | **team 模式的运行记录**（ADR-0018/0019/0022）：`target_id` 可以是 channel 型或该频道下的 task 型；task target 上 `task_id` 非空。它们**不是消息**：不占未读、不进搜索、不写频道消息；`jump_consumed` 只记「这次分派扣了一次跳」 |
@@ -379,22 +382,33 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   安装只接受**本机目录或上传 zip**（校验 `SKILL.md` front matter、路径与 hash），**不做远程市场/下载**。
   Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级；删除只删配置与工作区副本，
   不删用户源目录。
-- **联网档（#184 / ADR-0026 §二）**：`channel.web_access` 是频道默认值、`agent_config.web_access` 是
-  Agent 级覆盖（`NULL` = 跟随频道），取值只有 `NULL` / `'search'` / `'search+fetch'`。频道 `NULL` = **关闭**
-  （不挂任何联网工具，旧行因此逐字保持既有行为）；它**不是** `allow_local_shell` 的同义词——那个的风险面
-  是本机任意进程，这个是数据出网。工具面是 `app/alibot/web.py` 的 `web_search`（只读，只送查询词）与
-  `fetch`（非只读，逐次审批，`permission_rule` 的 `pattern` 是 **host**）：`NULL` 不装配；`read-only` 档
-  只装 `web_search`；`ask-writes` / `trusted-writes` 装 `fetch` 且每次 ASK；缺 `('web', provider)` 确认行时
-  两个工具都不装配（provider 由进程环境的 `ALIBOT_WEB_SEARCH_PROVIDER` / 单 key 推断决定）。网络请求
-  **不进** `target_budget.used`（那是回应预算，ADR-0026 §六）。
+- **联网档（#184 / #199 / ADR-0026 §二修订）**：`channel.web_access` 是频道默认值、
+  `agent_config.web_access` 是 Agent 级覆盖（`NULL` = 跟随频道），取值 `NULL` / `'off'` / `'search'` /
+  `'search+fetch'`。读路径三态合并 `agent_config.web_access or channel.web_access or 'search'`：
+  **未配置默认开启搜索**，只有 `'off'` 才不挂任何联网工具。它**不是** `allow_local_shell` 的同义词——
+  那个的风险面是本机任意进程，这个是数据出网。工具面是 `app/alibot/web.py` 的 `web_search`（只读，
+  只送查询词）与 `fetch`（非只读，逐次审批，`permission_rule` 的 `pattern` 是 **host**）：`read-only`
+  档只装 `web_search`；`ask-writes` / `trusted-writes` 装 `fetch` 且每次 ASK。网络请求 **不进**
+  `target_budget.used`（那是回应预算，ADR-0026 §六）。
+- **搜索 provider（#199）**：带凭据的五家 `brave` / `tavily` / `perplexity` / `jina` / `exa`（Exa 有 key
+  走 REST），以及免凭据回退 `exa-mcp`（Exa 公开 MCP，JSON-RPC + SSE）。解析顺序唯一：
+  `ALIBOT_WEB_SEARCH_PROVIDER` → 凭据表 `is_default=1` → 凭据表 / 环境变量里已配置的固定顺序
+  `brave → tavily → perplexity → jina → exa` → `exa-mcp`。凭据优先级：**库内值优先**，
+  `BRAVE_API_KEY` / `TAVILY_API_KEY` / `PERPLEXITY_API_KEY` / `JINA_API_KEY` / `EXA_API_KEY` 只是兜底。
+  带凭据 provider 需要 `('web', provider)` 确认行；`exa-mcp` 免确认。UI 路径：频道设置 →「联网」→
+  档位 / provider 状态 / key 输入（password、掩码回显、保存 / 清除 / 设为默认）。
 - **容器出网（#187 / ADR-0026 §五）**：Docker 后端下容器默认 `--network none`；`channel.docker_egress=1`
   才接 Docker 默认网络，且联网工具只对 `permission_rule(tool_name='fetch', behavior='allow', pattern=<host>)`
   的 host 发请求（开关关闭 ⇒ 工具返回说明容器网络策略的可读错误、零请求）。本地后端不受影响。
 - **远端数据面确认**：`remote_consent_scope(scope_kind ∈ {model, mcp, docker, web}, scope_id)` 是统一的一次性
   确认；旧 `remote_consent` 行保留为兼容面（迁移复制成 `('model', provider, …)`）。四类都**只存确认时间**。
-  `web` 档的人类面写路径是 `POST /api/web-providers/{provider}/consent`（只接受 `brave` / `tavily`，
-  幂等、只存确认时间）：未确认时装配层**不挂** `web_search` / `fetch` 且零请求，确认后下一轮按
-  `web_access` 与权限档装配。已确认的 web provider 由 `GET /api/remote-data-flow` 的 `web_consents` 读回。
+  `web` 档的人类面写路径有两条：`POST /api/web-providers/{provider}/consent`（幂等、只存时间）与
+  `PUT /api/web-providers/{provider}/credential`（保存 key 的动作**同时**写确认行）。未确认时装配层
+  **不挂**带凭据 provider 的工具且零请求；`exa-mcp` 不需要确认行。已确认的 provider 由
+  `GET /api/remote-data-flow` 的 `web_consents` 读回。
+- **凭据入库与脱敏（#199）**：`web_provider_credential.api_key` 是明文（部署层须把库文件权限设为 `0600`）；
+  任何 HTTP 响应、日志与事件载荷只出现 `mask_credential()` 的掩码形态，错误文案只提 provider 与
+  「未配置凭据」，绝不回吐取值。
 
 ## 实时呈现（SSE 与断线补拉）
 
@@ -451,7 +465,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `GET /api/channels/{id}/members` | 频道成员 |
 | `POST /api/channels/{id}/members` | 把 Agent 加入频道 `{member_id}`；幂等（`joined` 区分新增与本来就在），只接受 Agent，校验失败**整体不加入** |
 | `GET /api/channels/{id}/config` | 频道配置：`mode`（`autonomous` / `team`）、`team_scope`（固定 `channel+task`）、`team_leader_member_id`、`leader_available` / `leader_reason`、`workspace_root` / `workspace_backend` / `permission_mode` / `web_access` / `docker_egress` |
-| `PATCH /api/channels/{id}/config` | 写频道配置 `{mode?, team_leader_member_id?, workspace_root?, workspace_backend?, permission_mode?, web_access?, docker_egress?}`；任一字段不合法**整体拒绝**；`workspace_root` 与 `web_access` 的显式 `null` = 清空 / 关闭（两者都是合法状态）；team 要求队长是当前频道成员且未删除；**不**自动改 `auto_claim` |
+| `PATCH /api/channels/{id}/config` | 写频道配置 `{mode?, team_leader_member_id?, workspace_root?, workspace_backend?, permission_mode?, web_access?, docker_egress?}`；任一字段不合法**整体拒绝**；`workspace_root` 与 `web_access` 的显式 `null` = 清空项目根 / 回到未配置（联网读路径回退默认档 `search`；显式关闭写 `"off"`）；team 要求队长是当前频道成员且未删除；**不**自动改 `auto_claim` |
 | `GET /api/targets/{id}/team-runs` | team 运行记录与分派快照（`?limit=&offset=&task_id=`；`started_at` 倒序、`has_more` 供翻页）。`target_id` 可以是频道或任务线程；`task_id` 只做命中过滤 |
 | `GET /api/targets/{id}/plan` | 运行面板的 Plan 快照：按成员分组、每个 `(target_id, member_id)` 保留最近 20 run 或 30 天（`plan_task` 随 run 级联删除）。`target_id` 可以是频道或任务线程；**不是**任务看板（Plan 不进看板/未读/搜索） |
 | `GET /api/sops` / `POST /api/sops` | SOP 定义列表 / 新建（owner；`steps` 含 executor/verifier member id、description 与 `max_attempts`） |
@@ -484,7 +498,11 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `POST /api/mcp-servers/{id}/consent` | 远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认的远端声明在装配层**不连接** |
 | `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
 | `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
-| `POST /api/web-providers/{provider}/consent` | 联网 provider 的数据面确认（幂等；写 `remote_consent_scope('web', provider)`，只存确认时间）。只接受 `brave` / `tavily`；未确认时装配层**不挂** `web_search` / `fetch` 且**零请求** |
+| `POST /api/web-providers/{provider}/consent` | 联网 provider 的数据面确认（幂等；写 `remote_consent_scope('web', provider)`，只存确认时间）。接受五家带凭据 provider；未确认时装配层**不挂**该 provider 的工具且**零请求**；`exa-mcp` 免确认 |
+| `GET /api/web-providers` | 五家 provider 的掩码状态（`configured` / `masked` / `is_default` / `env_configured`）+ 当前生效 provider 与来源（`env` / `ui` / `fallback`）；**不含完整 key** |
+| `GET /api/web-providers/{provider}/credential` | 一家的掩码凭据读数（未配置时 `configured=false`） |
+| `PUT /api/web-providers/{provider}/credential` | 保存 / 换 key `{api_key, is_default?}`（非空、长度上限；保存同时写确认行），或不带 key 只切默认 `{is_default: true}`；响应只回掩码 |
+| `DELETE /api/web-providers/{provider}/credential` | 清空凭据与默认标记（确认行保留）；响应只回掩码 |
 | `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节） |
 | `POST /api/skills` | 安装：JSON 正文 `{scope_kind, scope_id, source_path, channel_id?}` 从**本机目录**；或 `Content-Type: application/zip` 的原始字节 + query `scope_kind/scope_id/channel_id/filename` 从**上传 zip**。两者都先校验 `SKILL.md` front matter、路径与内容 hash，非法输入**整体拒绝**；同名同 scope 409；不做远端市场/下载 |
 | `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |

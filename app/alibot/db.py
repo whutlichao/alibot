@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 from .i18n import SOURCE_LOCALE, locale_of, render
 from .permissions import effective_rules
 from .reminder_delivery import reminder_state
-from .web import egress_hosts
+from .web import SEARCH_PROVIDERS, egress_hosts, mask_credential
 
 OWNER_ID = "owner"
 OWNER_DISPLAY_NAME = "Owner"
@@ -99,11 +99,17 @@ MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # 可空列 + 部分唯一索引 + BEFORE INSERT 触发器，ADR-0028）。它是**纯增量**：``ADD COLUMN`` +
 # 索引 + 触发器，**不回填旧数据**（旧任务没有频道消息，读路径如实返回 null），因此 ``19 → 20``
 # 一步（`migrate._step_19_to_20`）。判据同前：main 是 19、20 是满足「必须高于当前 main」的最小号。
-# 21 = **本票 #195**（自动认领默认开启 + 仅在自主频道生效，ADR-0029）。它 flip
+# 21 = **票 #195**（自动认领默认开启 + 仅在自主频道生效，ADR-0029）。它 flip
 # `agent_config.auto_claim` 的 DDL 默认值 0 → 1，并在 ``20 → 21`` 里按当前 ``SCHEMA`` 重建该表、
 # 把存量 ``auto_claim = 0`` 的行一次性回填为 1（返回真实改动行数）。判据同前：合并时的 main 已是 20
 # （#198 的频道指针消息），21 是满足「必须高于当前 main」的最小号——本票原先预留的 20 已被 #198 占用。
-SCHEMA_VERSION = 21
+# 22 = **本票 #199**（多 provider 搜索 + 凭据入库 + 联网档默认 ``search`` / 显式 ``off``）。
+# ``web_provider_credential`` 是新表；``WEB_ACCESS_LEVELS`` 纳入 ``off`` 需要重建 ``channel`` 与
+# ``agent_config`` 两表的列级 CHECK（SQLite 改列约束只能重建），``21 → 22`` 一步
+# （`migrate._step_21_to_22`）。不回填：既有行逐字保留，读路径把 ``NULL`` 解释成默认档。
+# 号段说明：本票原先自行取的是 21，但 #195（自动认领默认开启）随 main 先落地了 21，按 ADR-0015
+# 「必须高于当前 main」的判据，本步顺延为 ``21 → 22``。
+SCHEMA_VERSION = 22
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -146,9 +152,16 @@ CHANNEL_MODES = ("autonomous", "team")
 WORKSPACE_BACKENDS = ("local", "docker")
 PERMISSION_MODES = ("read-only", "ask-writes", "trusted-writes")
 
-# 联网档（ADR-0026 §二）：两档只差 ``fetch`` 装不装，``NULL``（未配置）= 不挂任何联网工具。
+# 联网档（ADR-0026 §二，2026-10-20 修订）：三档。``NULL`` 是「未配置」——读路径把它解释成
+# 默认档 ``search``；``off`` 才是**显式关闭**。`search` 与 `search+fetch` 只差 ``fetch`` 装不装。
 # 它与 ``allow_local_shell`` 是两个开关：那个的风险面是本机任意进程，这个是数据出网。
-WEB_ACCESS_LEVELS = ("search", "search+fetch")
+WEB_ACCESS_LEVELS = ("off", "search", "search+fetch")
+
+#: 联网档的缺省值（读路径的最后一层回退）：未配置 = 默认开启搜索、但不抓取。
+DEFAULT_WEB_ACCESS = "search"
+
+#: 凭据长度的硬上限（写路径校验；超长整体拒绝，不截断保存）。
+MAX_WEB_CREDENTIAL_LENGTH = 4096
 
 #: ``remote_consent_scope`` 的 scope 档位（ADR-0021 §三 / ADR-0026 §四）。``web`` 档（#186 / D6）与另三档
 #: 同一纪律：**只存「何时确认过」**，不存凭证、不存连接参数；确认单位是 provider，host 级粒度归
@@ -347,10 +360,10 @@ CREATE TABLE IF NOT EXISTS channel (
     CHECK (workspace_backend IN ('local', 'docker')),
   permission_mode TEXT NOT NULL DEFAULT 'ask-writes'
     CHECK (permission_mode IN ('read-only', 'ask-writes', 'trusted-writes')),
-  -- 联网档（#184 / ADR-0026 §二）：``NULL`` = **关闭**（不装配 ``web_search`` / ``fetch``，旧行于是
-  -- 逐字保持「没有联网入口」的既有行为）；两档只差 ``fetch`` 装不装，权限裁决在装配层。
+  -- 联网档（#184 / ADR-0026 §二，2026-10-20 修订）：``NULL`` = 未配置（读路径回退到默认档
+  -- ``search``）；``off`` = 显式关闭；其余两档只差 ``fetch`` 装不装，权限裁决在装配层。
   -- 它不是 ``allow_local_shell`` 的同义词：那个开关的风险面是本机任意进程，这个是数据出网。
-  web_access TEXT CHECK (web_access IN ('search', 'search+fetch')),
+  web_access TEXT CHECK (web_access IN ('off', 'search', 'search+fetch')),
   -- 容器出网开关（#187 / ADR-0026 §五）：``0`` = 容器以 ``--network none`` 创建（默认）；
   -- ``1`` = 容器接上 Docker 默认的网络，且联网工具只放行 ``permission_rule`` 里 ``fetch`` 的
   -- allow 规则的 host（白名单来源见 ``web.egress_hosts``）。它是**频道级**配置，与
@@ -666,7 +679,7 @@ CREATE TABLE IF NOT EXISTS agent_config (
   docker_image        TEXT,
   -- 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：``NULL`` = 跟随频道（旧行逐字保持既有行为），
   -- 非空时覆盖频道那一档。取值与频道同一条白名单，库级 CHECK 是第二道闸。
-  web_access          TEXT CHECK (web_access IN ('search', 'search+fetch')),
+  web_access          TEXT CHECK (web_access IN ('off', 'search', 'search+fetch')),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -729,6 +742,23 @@ CREATE TABLE IF NOT EXISTS remote_consent_scope (
   acknowledged_at  TEXT NOT NULL,
   PRIMARY KEY (scope_kind, scope_id)
 );
+
+-- 联网 provider 的凭据（#199 / ADR-0026 §四修订）：**一家一行**，`provider` 是主键。
+-- ``api_key`` 明文入库（部署层保证库文件权限 0600）；任何 HTTP 响应 / 日志 / 事件载荷只回
+-- 掩码后的形态（``web.mask_credential``），绝不回吐完整取值。``is_default = 1`` 至多一行
+-- （部分唯一索引），它只决定「没有显式环境变量时先用哪一家」，不是第二份 provider 配置。
+-- ``created_at`` 是首次保存时间；``updated_at`` 在换 key / 换默认时推进。
+CREATE TABLE IF NOT EXISTS web_provider_credential (
+  provider   TEXT PRIMARY KEY
+             CHECK (provider IN ('brave', 'tavily', 'perplexity', 'jina', 'exa')),
+  api_key    TEXT NOT NULL CHECK (length(trim(api_key)) > 0),
+  is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_web_provider_credential_default
+ON web_provider_credential(is_default) WHERE is_default = 1;
 
 -- ─── 权限规则 / 审批 / MCP / Skill（#139 / 规格 §4.3 / ADR-0021 §三 / §四） ──
 -- 权限规则是**配置**（不是消息、不是任务）：``scope_kind`` + ``scope_id`` 指向频道或 Agent，
@@ -1817,6 +1847,153 @@ class Database:
             for row in rows
         ]
 
+    # ─── 联网 provider 凭据（#199；明文入库、掩码回读） ────────────────────
+    def _require_web_provider(self, provider: str) -> str:
+        """凭据写路径的 provider 白名单：非法取值整条 400，不做部分写入。"""
+        clean = (provider or "").strip()
+        if clean not in SEARCH_PROVIDERS:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.web_provider_invalid", values=", ".join(SEARCH_PROVIDERS)),
+                fields={
+                    "provider": self._render_copy("error.field_choices", values=", ".join(SEARCH_PROVIDERS))
+                },
+            )
+        return clean
+
+    def web_provider_credentials(self) -> dict[str, Any]:
+        """装配路径的**内部**读数：provider → 明文 key，以及默认 provider。
+
+        这个方法只给装配层（``agent_seam``）用：工具需要真实 key 才能发请求。人类面一律走
+        :meth:`web_provider_credential_views` / HTTP 载荷，那两条路径只回掩码。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT provider, api_key, is_default FROM web_provider_credential ORDER BY provider"
+            ).fetchall()
+        credentials = {str(row["provider"]): str(row["api_key"]) for row in rows}
+        default = next(
+            (str(row["provider"]) for row in rows if bool(row["is_default"])),
+            None,
+        )
+        return {"credentials": credentials, "default_provider": default}
+
+    def web_provider_credential_views(self) -> list[dict[str, Any]]:
+        """人类面读数：五家都出现，只有「已配置 / 掩码 / 是否默认 / 更新时间」。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT provider, api_key, is_default, updated_at FROM web_provider_credential"
+            ).fetchall()
+        saved = {str(row["provider"]): row for row in rows}
+        views: list[dict[str, Any]] = []
+        for provider in SEARCH_PROVIDERS:
+            row = saved.get(provider)
+            views.append(
+                {
+                    "provider": provider,
+                    "configured": row is not None,
+                    "masked": mask_credential(str(row["api_key"])) if row is not None else "",
+                    "is_default": bool(row["is_default"]) if row is not None else False,
+                    "updated_at": str(row["updated_at"]) if row is not None else "",
+                }
+            )
+        return views
+
+    def save_web_provider_credential(
+        self, provider: str, api_key: str | None = None, *, is_default: bool | None = None
+    ) -> dict[str, Any]:
+        """保存 / 切换默认凭据（人类面动作）：要么写入非空 key，要么只把已配置项设为默认。
+
+        保存 key 的动作**同时**写 ``remote_consent_scope('web', provider)``（数据面确认，幂等、
+        只存时间）。任一校验失败整条拒绝、不部分写入；返回的载荷只有掩码。
+        """
+        clean = (provider or "").strip()
+        if clean not in SEARCH_PROVIDERS:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.web_provider_invalid", values=", ".join(SEARCH_PROVIDERS)),
+                fields={
+                    "provider": self._render_copy("error.field_choices", values=", ".join(SEARCH_PROVIDERS))
+                },
+            )
+        key_provided = api_key is not None
+        key = (api_key or "").strip()
+        field_errors: dict[str, str] = {}
+        if key_provided and not key:
+            field_errors["api_key"] = self._render_copy("error.field.web_provider_key_empty")
+        if key and len(key) > MAX_WEB_CREDENTIAL_LENGTH:
+            field_errors["api_key"] = self._render_copy(
+                "error.field.web_provider_key_too_long", limit=MAX_WEB_CREDENTIAL_LENGTH
+            )
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT provider FROM web_provider_credential WHERE provider = ?", (clean,)
+            ).fetchone()
+        if not key_provided and existing is None:
+            field_errors["api_key"] = self._render_copy("error.field.web_provider_key_empty")
+        if field_errors:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.web_provider_credential_invalid"),
+                fields=field_errors,
+            )
+        now = utc_now()
+        with self._lock:
+            self._begin()
+            try:
+                if key:
+                    force_default = is_default is True
+                    if force_default:
+                        self._conn.execute("UPDATE web_provider_credential SET is_default = 0")
+                    self._conn.execute(
+                        "INSERT INTO web_provider_credential("
+                        "provider, api_key, is_default, created_at, updated_at"
+                        ") VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(provider) DO UPDATE SET "
+                        "api_key = excluded.api_key, "
+                        "is_default = CASE WHEN ? THEN 1 ELSE is_default END, "
+                        "updated_at = excluded.updated_at",
+                        (clean, key, 1 if force_default else 0, now, now, 1 if force_default else 0),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO remote_consent_scope(scope_kind, scope_id, acknowledged_at) "
+                        "VALUES ('web', ?, ?) ON CONFLICT(scope_kind, scope_id) DO NOTHING",
+                        (clean, now),
+                    )
+                elif is_default:
+                    self._conn.execute("UPDATE web_provider_credential SET is_default = 0")
+                    self._conn.execute(
+                        "UPDATE web_provider_credential SET is_default = 1, updated_at = ? "
+                        "WHERE provider = ?",
+                        (now, clean),
+                    )
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return next(view for view in self.web_provider_credential_views() if view["provider"] == clean)
+
+    def delete_web_provider_credential(self, provider: str) -> dict[str, Any]:
+        """清空一家 provider 的凭据（连同它的 ``is_default``）。删除不撤销确认行。"""
+        clean = (provider or "").strip()
+        if clean not in SEARCH_PROVIDERS:
+            raise DomainError(
+                "validation_failed",
+                self._render_copy("error.web_provider_invalid", values=", ".join(SEARCH_PROVIDERS)),
+                fields={
+                    "provider": self._render_copy("error.field_choices", values=", ".join(SEARCH_PROVIDERS))
+                },
+            )
+        with self._lock:
+            self._begin()
+            try:
+                self._conn.execute("DELETE FROM web_provider_credential WHERE provider = ?", (clean,))
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return next(view for view in self.web_provider_credential_views() if view["provider"] == clean)
+
     # ─── 工作区设置（配置类取值：人类面可写，用量类事实不可写） ─────────────
     def workspace_settings(self) -> dict[str, Any]:
         """当前工作区设置（**只读**）。行的缺省值在空库初始化时就已写入。
@@ -2787,8 +2964,9 @@ class Database:
 
         ``web_access`` 是一个**独立**配置位（ADR-0026 §二：与 workspace 同级但不是同一个开关），
         因此这条读路径**不经过** :meth:`workspace_settings_for_target`——频道没配项目根时它也生效。
+        三态合并 ``agent → channel → 'search'``；``'off'`` 归一成 ``None``（装配层据此不挂工具）。
         ``consented_providers`` 是 ``remote_consent_scope('web', provider)`` 里已确认的那些行；
-        provider 本身由装配层从**进程环境**解析（D4：不加 schema 列、也不给模型一个 provider 参数）。
+        ``credentials`` / ``default_provider`` 是凭据表的**内部**读数（明文只给工具发请求用）。
         本方法只读配置：不落消息、不唤醒，也不改动库。
         """
         with self._lock:
@@ -2810,6 +2988,7 @@ class Database:
                 "SELECT scope_id FROM remote_consent_scope WHERE scope_kind = 'web' "
                 "ORDER BY acknowledged_at, scope_id"
             ).fetchall()
+            runtime_credentials = self.web_provider_credentials()
             # D3：容器出网白名单复用 ``permission_rule`` 里 ``fetch`` 的 allow 规则的 host，
             # **不新建 host 白名单表**；合并仍走 ``permissions.effective_rules``（Agent 级覆盖频道级）。
             allowed_hosts = egress_hosts(
@@ -2820,14 +2999,23 @@ class Database:
             )
         channel_web_access = channel["web_access"]
         agent_web_access = agent["web_access"] if agent is not None else None
+        # 三态合并（2026-10-20）：Agent 覆盖 → 频道 → 默认档。``NULL`` = 未配置 = 默认 ``search``；
+        # 只有显式 ``off`` 才关闭。装配层仍用 ``if not access: return []``，因此这里把 ``off``
+        # 归一成 ``None``——「关闭」与「未注入读路径」在装配层是同一个方向。
+        resolved_access = agent_web_access or channel_web_access or DEFAULT_WEB_ACCESS
+        credentials = dict(runtime_credentials["credentials"])
+        default_provider = runtime_credentials["default_provider"]
         return {
-            "web_access": agent_web_access or channel_web_access,
+            "web_access": None if resolved_access == "off" else resolved_access,
             "mode": str(
                 (agent["permission_mode"] if agent is not None else None)
                 or channel["permission_mode"]
                 or "ask-writes"
             ),
             "consented_providers": tuple(str(row["scope_id"]) for row in consented),
+            # 凭据只给装配层：HTTP 载荷一律走 ``web_provider_credential_views`` 的掩码读数。
+            "credentials": credentials,
+            "default_provider": default_provider,
             # 容器出网策略（#187）：只有 ``backend == 'docker'`` 时才进工具闸门；本地后端逐字不变。
             "backend": str(
                 (agent["workspace_backend"] if agent is not None else None)
@@ -3899,7 +4087,8 @@ class Database:
 
         ``None`` 在这些参数上表示「这次请求没提到它」（与 ``update_agent`` 同一条纪律）；
         ``workspace_root`` 与 ``web_access`` 是允许显式清空的字段（``_UNSET`` 区分「没提到」与
-        「清空」）：「未配置项目根」与「联网关闭」本身就是合法状态（ADR-0021 §六 / ADR-0026 §二），
+        「清空」）：「未配置项目根」与「联网回到未配置（读路径回退默认档）」本身就是合法状态
+        （ADR-0021 §六 / ADR-0026 §二修订）；显式关闭联网要写 ``"off"``。
         不给清空路径就变成单向开关。
 
         team 的队长校验（规格 §4.4）：必须是**当前频道成员**里未删除的 Agent。库内触发器还守着

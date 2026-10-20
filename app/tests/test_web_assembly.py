@@ -223,17 +223,55 @@ def _system_prompt(index: int = 0) -> str:
     return "".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
 
 
-# ─── 1. 配置闸门：未配置 web_access ⇒ 工具集逐字不变 ─────────────────────────
-def test_without_web_access_the_tool_set_stays_unchanged(library: Any, stub_provider: str) -> None:
-    """``web_access=NULL`` 时即使**已有**确认行，工具集也与 #186 之前逐字相同。"""
+# ─── 1. 配置闸门：NULL = 默认档 search；off = 显式关闭 ──────────────────────
+def test_an_unset_web_access_mounts_web_search_by_default(library: Any, stub_provider: str) -> None:
+    """``web_access=NULL`` = 未配置，读路径回退到默认档 ``search``；免凭据回退不需要确认行。"""
     database, agent, channel = library
-    _configure(database, channel, consent=["brave"])
+    # 只摘掉搜索凭据；模型端点仍要读 OPENAI_API_KEY / OPENAI_BASE_URL。
+    environ = {
+        name: value
+        for name, value in os.environ.items()
+        if name
+        not in {
+            "ALIBOT_WEB_SEARCH_PROVIDER",
+            "BRAVE_API_KEY",
+            "TAVILY_API_KEY",
+            "PERPLEXITY_API_KEY",
+            "JINA_API_KEY",
+            "EXA_API_KEY",
+        }
+    }
+
+    outcome = _run_round(_seam(database, environ=environ), database, agent, channel)
+
+    assert outcome.status == "replied", outcome.reason
+    assert "web_search" in _tool_names()
+    assert "fetch" not in _tool_names(), "默认档只挂只读搜索"
+
+
+def test_explicit_off_mounts_no_web_tool_even_with_a_consented_provider(
+    library: Any, stub_provider: str
+) -> None:
+    """``web_access='off'`` 是显式关闭：即使有确认行与 key，也一个联网工具都不挂。"""
+    database, agent, channel = library
+    _configure(database, channel, web_access="off", consent=["brave"])
 
     outcome = _run_round(_seam(database), database, agent, channel)
 
     assert outcome.status == "replied", outcome.reason
     assert _tool_names() == {"declare_silence"}
     assert "fetch" not in _system_prompt(), "没挂联网工具时提示里不该提到它"
+
+
+def test_a_configured_but_unconsented_provider_mounts_nothing(library: Any, stub_provider: str) -> None:
+    """带凭据 provider（环境里的 brave）有 key 但缺确认行 ⇒ 不装配、零请求。"""
+    database, agent, channel = library
+    _configure(database, channel, web_access="search")
+
+    outcome = _run_round(_seam(database), database, agent, channel)
+
+    assert outcome.status == "replied", outcome.reason
+    assert "web_search" not in _tool_names()
 
 
 # ─── 2. 权限档闸门：read-only 只装 web_search ────────────────────────────────

@@ -92,6 +92,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.remote_scope_kind_invalid": "远端数据面类型只能是 model、mcp、docker 或 web",
         "error.remote_scope_id_empty": "远端数据面的标识不能为空",
         "error.web_provider_invalid": "联网 provider 只能是这些之一：{values}",
+        "error.web_provider_credential_invalid": "联网 provider 凭据校验未通过，未保存任何改动",
+        "error.field.web_provider_key_empty": "先保存这家的凭据，才能把它设为默认",
+        "error.field.web_provider_key_too_long": "凭据过长（上限 {limit} 个字符）",
         "error.task_action_wrong_target": "Agent 任务动作只能操作当前任务线程",
         "error.task_action_not_member": "只有任务成员可以更新任务状态",
         "error.continue_not_assignee": "只有这张任务的受派者可以申请自动续跑",
@@ -493,6 +496,13 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.remote_scope_kind_invalid": "A remote data-flow kind must be model, mcp, docker, or web",
         "error.remote_scope_id_empty": "A remote data-flow identifier cannot be empty",
         "error.web_provider_invalid": "A web provider must be one of: {values}",
+        "error.web_provider_credential_invalid": (
+            "Web provider credential validation failed; nothing was saved"
+        ),
+        "error.field.web_provider_key_empty": (
+            "Save a credential for this provider before making it the default"
+        ),
+        "error.field.web_provider_key_too_long": ("The credential is too long (limit: {limit} characters)"),
         "error.task_action_wrong_target": ("An Agent task action can only touch the task thread it runs in"),
         "error.task_action_not_member": "Only task members can update the task status",
         "error.continue_not_assignee": "Only the assignee of this task can request auto-continue",

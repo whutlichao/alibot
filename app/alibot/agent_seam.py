@@ -597,7 +597,8 @@ class AgentSeam(Protocol):
 def read_api_key(
     provider: str, environ: dict[str, str] | None = None, *, locale: str | None = None
 ) -> str | None:
-    """凭证窄 seam：只从**进程环境变量**读，应用库不存任何密钥。
+    """凭证窄 seam：模型凭证只从**进程环境变量**读（联网搜索凭据是独立的
+    ``web_provider_credential``，不走这里）。
 
     ``locale`` 只决定**异常消息**的语言（ADR-0009 第二层）：消息会经 ``enabled_reason`` 露给用户，
     因此调用点把当前**语言偏好**传下来；不传则用源语言。
@@ -797,11 +798,12 @@ class AgentScopeAgentSeam:
         四条闸门，按顺序判；任何一条不过都返回**空列表**（不装配），且不抛异常——配置问题不该变成
         一轮的失败：
 
-        1. **配置闸门**（§二）：``web_access`` 为 ``NULL`` ⇒ 不挂。未配置时这一轮与 #186 之前逐字相同。
-        2. **provider 解析**（D4）：只从**进程环境**解析搜索 provider；解析不出来（没有 key / 两把都在 /
-           取值不认识）⇒ 不挂，原因进 debug 日志。模型拿不到 provider 参数——它是配置事实。
-        3. **数据面确认闸门**（§四）：缺 ``remote_consent_scope('web', provider)`` 行 ⇒ 两个工具都不挂，
-           于是**一个请求都不会发出**。确认单位是 provider，host 级粒度交给 ``permission_rule``。
+        1. **配置闸门**（§二）：读路径把 ``NULL`` / ``'search'`` / ``'search+fetch'`` 合并成有效档；
+           只有 ``'off'`` 会给出空值，于是不挂任何联网工具。
+        2. **provider 解析**（修订版解析顺序）：进程环境显式值 → 凭据表默认项 → 已配置项的固定顺序 →
+           免凭据 ``exa-mcp``；取值非法 ⇒ 不挂，原因进 debug 日志。模型拿不到 provider 参数。
+        3. **数据面确认闸门**（§四）：带凭据 provider 缺 ``remote_consent_scope('web', provider)`` 行 ⇒
+           不挂；``exa-mcp`` 免确认。于是**一个请求都不会发出**。host 级粒度仍交给 ``permission_rule``。
         4. **权限档闸门**（§三）：``read-only`` 只挂 ``web_search``；``ask-writes`` / ``trusted-writes``
            才挂 ``fetch``，而 ``fetch`` 的逐次 ASK 由权限引擎（``FetchTool`` 继承的 ASK）给出。
 
@@ -813,6 +815,7 @@ class AgentScopeAgentSeam:
         “provider 不能携带工具”与文件工具/沉默工具是同一个落点。
         """
         from .web import (
+            FALLBACK_PROVIDER,
             FETCH_ACCESS_LEVEL,
             EgressPolicy,
             ProviderResolutionError,
@@ -827,12 +830,19 @@ class AgentScopeAgentSeam:
         access = str(settings.get("web_access") or "")
         if not access:
             return []
+        credentials = settings.get("credentials") or {}
         try:
-            provider = resolve_search_provider(self._environ)
+            provider = resolve_search_provider(
+                self._environ,
+                credentials=credentials,
+                default_provider=settings.get("default_provider"),
+            )
         except ProviderResolutionError as error:
             _log.debug("web tools skipped: %s", error.reason)
             return []
-        if provider not in settings.get("consented_providers", ()):
+        # 免凭据的 ``exa-mcp`` 不需要确认行：它不发送任何凭据，也不存在「把项目内容交给某个
+        # 已配置服务」的额外数据面。带凭据 provider 仍必须有 ``('web', provider)`` 确认行。
+        if provider != FALLBACK_PROVIDER and provider not in settings.get("consented_providers", ()):
             _log.debug("web tools skipped: no ('web', %s) consent row", provider)
             return []
         # 容器出网策略（#187 / ADR-0026 §五）：**只有 Docker 后端**才有这一层。两个工具跑在宿主
@@ -845,7 +855,14 @@ class AgentScopeAgentSeam:
                 allowed_hosts=frozenset(str(host) for host in settings.get("egress_hosts") or ()),
                 locale=self._locale(),
             )
-        tools = [search_tool(provider=provider, environ=self._environ, egress=egress)]
+        tools = [
+            search_tool(
+                provider=provider,
+                environ=self._environ,
+                credentials=credentials,
+                egress=egress,
+            )
+        ]
         # 未知取值（写路径的 CHECK 拦住了）退化成「只挂只读的搜索」：fail-safe 的方向是多装只读工具，
         # 而不是把需要逐次审批的 fetch 多装上去。
         if access == FETCH_ACCESS_LEVEL and settings.get("mode") != "read-only":
