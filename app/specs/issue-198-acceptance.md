@@ -135,10 +135,31 @@ GET /api/tasks/task_7c775a5571b6/messages HTTP/1.1 200 OK
 
 ```sh
 $ scripts/check.sh
-# 读数见本节末尾（全量 pytest + ruff + ruff format --check + mypy + pyright + node --test）
+== pytest（全量）                     # 全量通过（见下面的已知噪声）
+== ruff check                         All checks passed!
+== ruff format --check              243 files already formatted
+== mypy（仓库根）                     Success: no issues found
+== pyright                         0 errors
+== node --test（Studio DOM）         ℹ tests 204 / pass 204 / fail 0
+门禁全绿
 ```
 
-（读数待填）
+同一提交上再单独跑一次全量 pytest，得到 **959 passed, 10 skipped, 1 failed**；失败的是
+`tests/test_agent_round.py::test_round_outcome_distinguishes_replied_ignored_and_failed`。
+**这是基线已有的顺序敏感噪声，本票没有改唤醒 / 轮次结论路径**：该用例读到**同一成员的两条**
+轮次结果（人类消息必答轮落 `failed`，随后 Agent 回复触发的非必答轮落 `ignored`），却用
+`{member: status}` 取**最后一条**——过不过取决于两条的落账顺序。基线取证（`main` = `a58f020`，
+同一场景重复 3 次）：
+
+```text
+0 [('88a6e0','replied'), ('31c03d','failed'), ('31c03d','ignored'), ('9e1c0c','failed'), ('9e1c0c','failed')]
+1 [('619f89','replied'), ('095008','failed'), ('6561ef','failed'), ('6561ef','ignored'), ('095008','failed')]
+2 [('aaad1b','replied'), ('04acc4','failed'), ('04acc4','ignored'), ('b8ccac','failed'), ('b8ccac','failed')]
+```
+
+也就是说：**同一成员两条结果**在基线上是常态，用例的 `dict` 只保留最后一条。按「只改本票范围」
+的纪律，本票**不**修改那条既有用例；它在本票新增用例与受影响用例（§2–§5）之外，过或不过都不
+改变本票的行为判据。
 
 ## 8. 双轴 code-review
 
