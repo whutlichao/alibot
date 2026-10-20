@@ -144,7 +144,12 @@ def _scripted_rounds() -> list[_ScriptedToolModel]:
 
 
 def _prepare_claimed_task(client: TestClient, agent_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """频道 + 任务，并把任务指派给该 Agent（这样任务线程消息会唤醒它）。"""
+    """频道 + 任务，并把任务指派给该 Agent（这样任务线程消息会唤醒它）。
+
+    自动认领显式关闭：本文件的用例要观察「建任务后停在 todo、由 owner 指派」的既有形态；
+    默认开启的认领轮会先把任务推进到 ``in_progress``，与 Plan / retention 的判据无关。
+    """
+    assert client.patch(f"/api/agents/{agent_id}", json={"auto_claim": False}).status_code == 200
     channel = create_channel(client, member_ids=[agent_id]).json()["channel"]
     task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "规划验收"}).json()["task"]
     assigned = client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": agent_id})

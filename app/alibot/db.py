@@ -95,15 +95,21 @@ MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # ADR-0026 §五）。它是**纯增量**：``ADD COLUMN`` + 列级 CHECK，不回填旧数据（旧频道停在 0 =
 # 容器默认无网），因此 ``18 → 19`` 一步（`migrate._step_18_to_19`）。判据同前：main 是 18、
 # 19 是满足「必须高于当前 main」的最小号。
-# 20 = **#198**（建任务在所属频道落一条可进入任务线程的指针消息：``message.task_pointer``
+# 20 = **票 #198**（建任务在所属频道落一条可进入任务线程的指针消息：``message.task_pointer``
 # 可空列 + 部分唯一索引 + BEFORE INSERT 触发器，ADR-0028）。它是**纯增量**：``ADD COLUMN`` +
 # 索引 + 触发器，**不回填旧数据**（旧任务没有频道消息，读路径如实返回 null），因此 ``19 → 20``
 # 一步（`migrate._step_19_to_20`）。判据同前：main 是 19、20 是满足「必须高于当前 main」的最小号。
-# 21 = **本票 #199**（多 provider 搜索 + 凭据入库 + 联网档默认 ``search`` / 显式 ``off``）。
+# 21 = **票 #195**（自动认领默认开启 + 仅在自主频道生效，ADR-0029）。它 flip
+# `agent_config.auto_claim` 的 DDL 默认值 0 → 1，并在 ``20 → 21`` 里按当前 ``SCHEMA`` 重建该表、
+# 把存量 ``auto_claim = 0`` 的行一次性回填为 1（返回真实改动行数）。判据同前：合并时的 main 已是 20
+# （#198 的频道指针消息），21 是满足「必须高于当前 main」的最小号——本票原先预留的 20 已被 #198 占用。
+# 22 = **本票 #199**（多 provider 搜索 + 凭据入库 + 联网档默认 ``search`` / 显式 ``off``）。
 # ``web_provider_credential`` 是新表；``WEB_ACCESS_LEVELS`` 纳入 ``off`` 需要重建 ``channel`` 与
-# ``agent_config`` 两表的列级 CHECK（SQLite 改列约束只能重建），``20 → 21`` 一步
-# （`migrate._step_20_to_21`）。不回填：既有行逐字保留，读路径把 ``NULL`` 解释成默认档。
-SCHEMA_VERSION = 21
+# ``agent_config`` 两表的列级 CHECK（SQLite 改列约束只能重建），``21 → 22`` 一步
+# （`migrate._step_21_to_22`）。不回填：既有行逐字保留，读路径把 ``NULL`` 解释成默认档。
+# 号段说明：本票原先自行取的是 21，但 #195（自动认领默认开启）随 main 先落地了 21，按 ADR-0015
+# 「必须高于当前 main」的判据，本步顺延为 ``21 → 22``。
+SCHEMA_VERSION = 22
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -653,15 +659,17 @@ CREATE TABLE IF NOT EXISTS sop_run (
 
 -- Agent 的模型配置：模型是可配置数据而不是代码常量（spec #1 §2）。
 -- role 是 Agent 的配置数据（用户输入原样落库），不是代码常量、也不折进系统提示。
--- ``auto_claim``（#65 / ADR-0010）是「频道内新建任务后，编排要不要替它接手这张任务」的配置开关，
--- **缺省关闭**（认领是显式选择，不是默认行为）；写入路径只有 ``PATCH /api/agents/{id}``。
+-- ``auto_claim``（#65 / ADR-0010）是「频道内新建任务后，编排要不要替它接手这张任务」的配置开关。
+-- 从 #195 / ADR-0029 起**缺省开启**：新建 Agent 不写这一列就拿到默认 1；它只在**自主频道**
+-- （``channel.mode = autonomous``）里生效，team 频道的认领裁决在读路径上直接早退。写入路径只有
+-- ``PATCH /api/agents/{id}``（可逐 Agent 关闭）。
 CREATE TABLE IF NOT EXISTS agent_config (
   member_id     TEXT PRIMARY KEY REFERENCES member(id),
   role          TEXT NOT NULL DEFAULT '',
   model_id      TEXT NOT NULL DEFAULT '',
   system_prompt TEXT NOT NULL DEFAULT '',
   enabled       INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-  auto_claim    INTEGER NOT NULL DEFAULT 0 CHECK (auto_claim IN (0, 1)),
+  auto_claim    INTEGER NOT NULL DEFAULT 1 CHECK (auto_claim IN (0, 1)),
   -- workspace 配置（ADR-0021 §一 / §二 / §四）：后端与权限档是 Agent 级覆盖，``NULL`` = 跟随频道
   -- 默认（旧行于是逐字保持「未配置」的语义）；``allow_local_shell`` 缺省关闭——本地 Bash 默认不挂，
   -- 显式开启后每次调用仍走审批；``docker_image`` 缺省即 AgentScope 的内置镜像。

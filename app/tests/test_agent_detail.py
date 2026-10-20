@@ -46,7 +46,7 @@ def test_patch_writes_every_writable_field_and_reads_it_back(client: TestClient)
         model_id="ollama:qwen3",
         system_prompt="你只回答一句话。",
         enabled=False,
-        auto_claim=True,
+        auto_claim=False,
     )
 
     assert response.status_code == 200
@@ -57,12 +57,12 @@ def test_patch_writes_every_writable_field_and_reads_it_back(client: TestClient)
     assert written["model_id"] == "ollama:qwen3"
     assert written["system_prompt"] == "你只回答一句话。"
     assert written["enabled"] is False
-    assert written["auto_claim"] is True
+    assert written["auto_claim"] is False
     # 响应与后续两个读面说的是同一件事（读回一致，不是回显入参）。
     assert detail(client, agent["id"])["display_name"] == "新名字"
-    assert detail(client, agent["id"])["auto_claim"] is True
+    assert detail(client, agent["id"])["auto_claim"] is False
     assert [item["display_name"] for item in agents(client)] == ["新名字"]
-    assert [item["auto_claim"] for item in agents(client)] == [True]
+    assert [item["auto_claim"] for item in agents(client)] == [False]
     # 响应形状与 `POST /api/agents` 同形：一次调用就能刷新详情、左栏与成员面板。
     assert body["members"] and body["agents"]
 
@@ -193,7 +193,7 @@ def test_unknown_and_null_fields_are_rejected_whole(client: TestClient) -> None:
     current = detail(client, agent["id"])
     assert current["display_name"] == "原名"
     assert current["enabled"] is True
-    assert current["auto_claim"] is False
+    assert current["auto_claim"] is True
 
 
 def test_docker_image_consent_endpoint_is_idempotent_and_validates_the_image(

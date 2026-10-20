@@ -11,7 +11,7 @@
 | A3 解析四条路径 | `describe_search_provider()` | 四条路径各一条用例（环境显式 / DB 默认 / 固定顺序 / 免凭据回退） |
 | A4 结果映射与上限 | `_search_hits` / `_exa_text_hits` / `_render_hits` | 截断、空结果、429、JSON-RPC error / `isError` 用例 |
 | A5 `fetch` 闸门不变 | `fetch_tool` 未改动 | 既有 `test_web_tools.py` fetch 用例全绿 |
-| B1 schema 21 + 凭据表 | `db.py` SCHEMA / `migrate._step_20_to_21` | `tests/test_web_access_schema.py`、`tests/test_schema_migration.py` |
+| B1 schema 22 + 凭据表 | `db.py` SCHEMA / `migrate._step_21_to_22` | `tests/test_web_access_schema.py`、`tests/test_schema_migration.py` |
 | B2 掩码回读 | `db.web_provider_credential_views()` / `web.mask_credential()` | `tests/test_web_providers.py` 断言响应里找不到完整 key |
 | B3 凭据 API | `api.py` 四条端点 + `service.py` | `tests/test_web_providers.py`（PUT/GET/DELETE、默认切换、400 不部分写入） |
 | B4 `exa-mcp` 免确认 | `agent_seam._web_tools` | `test_an_unset_web_access_mounts_web_search_by_default` |
@@ -35,7 +35,7 @@ cd /tmp/alibot-main-199/app
   tests/test_web_access_config.py tests/test_web_providers.py \
   --continue-on-collection-errors -q
 # 15 failed, 18 passed, 1 error（`test_web_tools.py` 导入 `FALLBACK_PROVIDER` 失败；
-#   `off` 被 CHECK 拒、迁移没有 20→21、凭据端点 404、默认档未挂工具）
+#   `off` 被 CHECK 拒、迁移没有 21→22、凭据端点 404、默认档未挂工具）
 node --test app/tests/channel_config_ui.test.cjs
 # 21 tests, 16 pass, 5 fail（联网区块不存在）
 ```
@@ -135,10 +135,10 @@ web_settings: {'web_access': None, 'credentials': {}, 'default_provider': None}
 
 ```text
 迁移：/tmp/alibot-199-ui/alibot.db
-源版本：20 → 目标版本：21
-本次备份：/tmp/alibot-199-ui-backup-19-to-20-20261020T144602Z（该次为合并 main 前的旧读数；合并后同一迁移在 v20 源库上以 20 → 21 执行）
-  20 → 21  web provider credentials + explicit off level ... 改动 0 行
-迁移完成：schema_version = 21；本次共改动 0 行。
+源版本：21 → 目标版本：22
+本次备份：/tmp/alibot-199-ui-backup-19-to-20-20261020T144602Z（该次为合并 main 前的旧读数；合并 main 后本步顺延为 21 → 22，因为 #195 的 `20 → 21` 先落地）
+  21 → 22  web provider credentials + explicit off level ... 改动 0 行
+迁移完成：schema_version = 22；本次共改动 0 行。
 ```
 
 ## 5. UI 实证（ego-browser，隔离数据目录 `/tmp/alibot-199-ui`）

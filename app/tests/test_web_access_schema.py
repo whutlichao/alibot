@@ -1,4 +1,4 @@
-"""schema 21：`web` 确认档 + `web_access` 三态 + provider 凭据表的**库形态**（#184 / #199）。
+"""schema 22：`web` 确认档 + `web_access` 三态 + provider 凭据表的**库形态**（#184 / #199）。
 
 判据来源：ADR-0026 §二 / §四（联网是配置事实、默认关闭、确认按 provider 落
 ``remote_consent_scope``）、ADR-0015（迁移显式、只前进、链连续、不回填旧数据）。
@@ -7,13 +7,13 @@
 
 - **库级**：由**本代码**初始化出来的当前版本库（``test_schema_migration._fresh_current_library``），
   直接读它对外可见的结果——CHECK 放行 / 拒绝、列的形态；
-- **迁移**：规格 T2 的唯一接缝 ``python -m alibot --migrate --data-dir <目录>``，v20 形态库由
+- **迁移**：规格 T2 的唯一接缝 ``python -m alibot --migrate --data-dir <目录>``，v21 形态库由
   ``tests/_migration_history.py`` 的留档搭出来（与既有迁移测试同一个 builder）。
 
 断言只落在外部可观察面：写入是否被 CHECK 拒绝、迁移报告的步骤表与改动行数、迁移后从库里读回的
 取值、迁移后的列集与「本代码初始化的库」是否一致。**不**断言 ``SCHEMA`` 文本、不断言私有函数。
 
-本轮**不**为网络请求加任何用量表或计数列（D1 / ADR-0026 §六）：预算口径不变。schema 21 的增量是
+本轮**不**为网络请求加任何用量表或计数列（D1 / ADR-0026 §六）：预算口径不变。schema 22 的增量是
 「`web_access` 纳入 `off`（重建两张表）+ `web_provider_credential` 一张表」。
 """
 
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from alibot.db import SCHEMA_VERSION
 
-# v20 形态库的搭建与 CLI 调用复用既有迁移测试的文件级外部面（不 import 迁移实现内部）。
+# v21 形态库的搭建与 CLI 调用复用既有迁移测试的文件级外部面（不 import 迁移实现内部）。
 from tests.test_schema_migration import (
     _build_library,
     _connect,
@@ -41,12 +41,14 @@ MIGRATION_SUCCEEDED = 0
 # 报告里的版本步骤行（缩进两格；报告头部那行没有缩进，不会命中）。
 STEP_LINE_RE = re.compile(r"^ {2}(\d+) → (\d+) {2}", re.MULTILINE)
 
-# 本票的起点：v20 是 #198 落地后的读数，`20 → 21` 由本票引入。
-SOURCE_VERSION = 20
+# 本票的起点：v21 是 #195（auto_claim 默认 flip）落地后的读数，`21 → 22` 由本票引入。
+# 号段备注：本票原先自行取的是 21（`20 → 21`），但 #195 随 main 先落地了 21，按 ADR-0015
+# 「必须高于当前 main」的判据顺延为 `21 → 22`；本文件的断言因此跟着起点前移到 21。
+SOURCE_VERSION = 21
 
 NOW = "2026-10-19T09:00:00Z"
 
-# 升级前的存量确认行：三个已有档各一条。``20 → 21`` 只重建 ``channel`` / ``agent_config``，
+# 升级前的存量确认行：三个已有档各一条。``21 → 22`` 只重建 ``channel`` / ``agent_config``，
 # 确认行必须逐字还在（重建只改 DDL，不改任何一行）。
 CONSENT_ROWS = (
     ("model", "ollama", "2026-10-18T01:00:00Z"),
@@ -141,9 +143,9 @@ def test_channel_and_agent_web_access_take_only_the_three_documented_levels(tmp_
         conn.close()
 
 
-# ─── 验收 3：`20 → 21` 一步、既有行不变、`web_access` 全为 `NULL`（不回填） ──────
+# ─── 验收 3：`21 → 22` 一步、既有行不变、`web_access` 全为 `NULL`（不回填） ──────
 def _seed_legacy_rows(db_path: Path) -> None:
-    """在 v20 库里放三条既有确认行与一条 Agent 配置行（升级前就存在的存量面）。"""
+    """在 v21 库里放三条既有确认行与一条 Agent 配置行（升级前就存在的存量面）。"""
     conn = _connect(db_path)
     try:
         conn.execute(
@@ -160,8 +162,8 @@ def _seed_legacy_rows(db_path: Path) -> None:
         conn.close()
 
 
-def _migrated_v20_library(tmp_path: Path) -> Path:
-    """搭一个 v20 形态的库、灌入既有确认行，再用真实子进程把它推进到本代码版本。"""
+def _migrated_v21_library(tmp_path: Path) -> Path:
+    """搭一个 v21 形态的库、灌入既有确认行，再用真实子进程把它推进到本代码版本。"""
     data_dir = tmp_path / "data"
     db_path = _build_library(data_dir, SOURCE_VERSION)
     _seed_legacy_rows(db_path)
@@ -170,10 +172,10 @@ def _migrated_v20_library(tmp_path: Path) -> Path:
     return db_path
 
 
-def test_a_v20_library_reaches_the_current_version_in_one_step_and_keeps_every_row(
+def test_a_v21_library_reaches_the_current_version_in_one_step_and_keeps_every_row(
     tmp_path: Path,
 ) -> None:
-    """v20 库被接受：报告里有 20 → 21、终点等于本代码版本；重建后的表保真、两列全为 NULL。"""
+    """v21 库被接受：报告里有 21 → 22、终点等于本代码版本；重建后的表保真、两列全为 NULL。"""
     data_dir = tmp_path / "data"
     db_path = _build_library(data_dir, SOURCE_VERSION)
     _seed_legacy_rows(db_path)
@@ -184,7 +186,7 @@ def test_a_v20_library_reaches_the_current_version_in_one_step_and_keeps_every_r
     steps = [(int(frm), int(to)) for frm, to in STEP_LINE_RE.findall(completed.stdout)]
     assert (SOURCE_VERSION, SOURCE_VERSION + 1) in steps, completed.stdout
     assert steps[-1][1] == SCHEMA_VERSION, completed.stdout
-    assert SCHEMA_VERSION >= 21
+    assert SCHEMA_VERSION >= 22
 
     conn = _connect(db_path)
     try:
@@ -219,7 +221,7 @@ def test_a_v20_library_reaches_the_current_version_in_one_step_and_keeps_every_r
 
 def test_the_migrated_web_access_columns_match_a_fresh_library(tmp_path: Path) -> None:
     """两列与重建后的表在「迁移库」与「本代码初始化的库」上同形（D7 的终态判据）。"""
-    db_path = _migrated_v20_library(tmp_path)
+    db_path = _migrated_v21_library(tmp_path)
     fresh_path = _fresh_current_library(tmp_path, "fresh")
     migrated = _shape(db_path)
     fresh = _shape(fresh_path)
@@ -229,8 +231,8 @@ def test_the_migrated_web_access_columns_match_a_fresh_library(tmp_path: Path) -
     assert migrated["version"] == fresh["version"] == str(SCHEMA_VERSION)
 
 
-def test_the_v21_archive_encodes_the_three_levels_and_the_credential_table(tmp_path: Path) -> None:
-    """留档自身可复核：用 v21 留档搭出来的库就表现本版的库级行为（抄漏一处就红）。"""
+def test_the_v22_archive_encodes_the_three_levels_and_the_credential_table(tmp_path: Path) -> None:
+    """留档自身可复核：用 v22 留档搭出来的库就表现本版的库级行为（抄漏一处就红）。"""
     conn = _connect(_build_library(tmp_path / "archive", SCHEMA_VERSION))
     try:
         conn.execute(
