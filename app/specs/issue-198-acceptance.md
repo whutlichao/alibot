@@ -1,0 +1,191 @@
+# Issue #198 验收：建任务留下频道指针消息 + 线程入口 + 消息计数
+
+票面正本：GitHub [whutlichao/alibot#198](https://github.com/whutlichao/alibot/issues/198)。
+本文件按「**判据 → 落点 → 命令与真实读数**」记录可复跑的验收证据。
+
+## 0. 基线与分支
+
+- 开工时 base：`main = a58f020`（`git rev-parse main` 与 `origin/main` 同值）。
+- 工作分支：`issue-198-impl`（本 worktree）。
+- 本票**不**放宽 `task_ref`、不 backfill 历史任务、不新增前端测试框架。
+
+## 1. Schema 19 → 20（严格 +1）
+
+| 判据 | 落点 |
+| --- | --- |
+| `SCHEMA_VERSION = 20`，只前进一号 | `app/alibot/db.py` |
+| `message.task_pointer TEXT REFERENCES task(id)`（可空） | `db.SCHEMA` |
+| 部分唯一索引：`task_pointer` 非空时唯一 | `idx_message_task_pointer` |
+| `BEFORE INSERT` 触发器：非空指针必须是「channel 型 target 的 system 消息，且任务属于该频道」 | `message_task_pointer_is_scoped` |
+| 链上一步 `19 → 20`，注册进 `STEPS` | `app/alibot/migrate.py::_step_19_to_20` |
+| 历史留档（v20 对象 SQL + `VERSION_OBJECTS`） | `app/tests/_migration_history.py` |
+| 链连续、覆盖到 `SCHEMA_VERSION`、每个源版本迁到终态 | `app/tests/test_migration_chain_guard.py` / `test_schema_migration.py` |
+
+读数：
+
+```text
+$ cd app && ../.venv/bin/python -m pytest tests/test_migration_chain_guard.py tests/test_task_channel_pointer.py
+24 passed in 22.77s          # 链守卫覆盖 v3..v20 每个源版本；指针行为用例同批
+```
+
+迁移实现上的一处必要修正：`_create_missing_indexes` 现在会**跳过「索引引用的列还没到」的对象**。
+从 v5 / v8 起步时，`idx_message_task_pointer` 会在补列之前被枚举到；跳过之后，执行器每步之后的
+形态对齐（先补列、再建索引）仍会把它建出来，唯一性收紧不会被静默丢掉。
+
+## 2. 建任务：同事务落频道指针消息
+
+| 判据 | 落点 |
+| --- | --- |
+| 任务行 / 任务线程首条 system / 频道指针消息在**同一事务** | `Database.create_task` → `_append_task_pointer_locked` |
+| 正文与任务线程那条逐字一致（`system.task.created`） | 同上；两处都取 `self._render_copy("system.task.created", title=...)` |
+| author 恒为 owner；`task_pointer = task_id`；`task_ref = NULL` | 同上 |
+| 任一插入失败 ⇒ 任务行与两条消息全无 | 事务回滚；用例 `test_task_creation_rolls_back_when_the_channel_pointer_insert_fails` |
+| 客户端不能写 `task_pointer` | `MessageCreate(extra="forbid")`；用例 `test_clients_cannot_write_task_pointer` |
+
+读数：
+
+```text
+$ cd app && ../.venv/bin/python -m pytest tests/test_task_channel_pointer.py
+5 passed
+```
+
+其中 `test_creating_a_task_appends_exactly_one_channel_pointer_message` 断言：频道消息列表最后一条
+`kind == "system"`、`task_pointer == task["id"]`、`task_ref is None`、`body == "任务已创建：整理验收清单"`、
+`author.id == "owner"`；任务线程仍只有它自己那条 system。
+
+## 3. 读面
+
+| 判据 | 落点 |
+| --- | --- |
+| `_message_payload` 暴露 `task_pointer`（无值为 null） | `db._message_payload` |
+| 按任务取频道指针消息（供 SSE 发布） | `Database.task_pointer_message(task_id)`，无则 `None` |
+| 任务载荷增加 `message_count`（线程消息总条数，含 system/human/agent） | `Database.get_task` |
+| 任务线程读面逐字不变 | `list_task_messages` 未改；用例断言线程仍只有一条 system |
+
+读数：后端用例断言 `task["message_count"] == 1`，线程追加一条人类消息后变为 `2`；
+`GET /api/channels/{id}/messages` 与 `POST` 响应里的 `message` 完全一致（同一条记录）。
+
+## 4. `service.create_task`：频道 SSE + 返回 `message`
+
+| 判据 | 落点 |
+| --- | --- |
+| 向**频道 target** 发布既有 `message` 事件（`{type, seq, message}`） | `WorkspaceService.create_task` |
+| 返回载荷增加 `"message"` | 同上（无指针消息时为 `null`） |
+| **不**对频道调 `orchestrator.notify`；`notify_task_created` 逐字保留 | 同上 |
+| 频道指针 system 消息不计未读、不唤醒 | 未读 SQL 仍 `kind IN ('human','agent')`；用例断言频道/任务/工作台三处 `unread_count` 为 0、调度器无待跑轮次 |
+
+真实事件流读数（`test_channel_event_stream_carries_the_pointer_message`）：连接 `GET /api/channels/{id}/events`
+后建任务，收到 `type == "message"`、`message.task_pointer == <task id>`、`kind == "system"`，
+帧游标等于消息自己的 `seq`。
+
+## 5. Studio
+
+| 判据 | 落点 |
+| --- | --- |
+| `message.task_pointer` 渲染 `.task-ref-chip`，`data-open-task=<task id>` | `app/alibot/studio/app.js::appendTaskRefChip` |
+| 文案「进入任务线程 · {count} 条」，count = `taskById(...).message_count`（取不到为 0） | 同上 |
+| aria-label 含任务标题与条数 | 同上（`msg.taskThreadEntryAria`） |
+| 既有 `task_ref` 分支逐字保留 | 同上 |
+| `submitTask` 吸收 `payload.message`，本频道立即 `renderMessages()` + 滚到底，否则 `refreshChannelList()` | `app/alibot/studio/app.js::submitTask` |
+| 页签「消息 N」包含该条 | `renderMessages()` → `renderTabs()` 的既有计数来源 |
+| 新词条 zh / en 同键 | `app/alibot/studio/i18n.js`（`msg.taskThreadEntry` / `msg.taskThreadEntryAria`） |
+
+读数：
+
+```text
+$ node --test app/tests/task_pointer_ui.test.cjs
+✔ 频道指针消息渲染出进入任务线程的 chip，文案带任务线程消息数，点击打开线程
+✔ 建任务成功后吸收返回的 message：流里立刻出现该行，页签计数 +1
+✔ 任务不在快照里时 chip 的计数显示 0，不编造条数
+ℹ tests 3 / pass 3 / fail 0
+```
+
+## 6. 真机 UI 验证（ego-browser）
+
+隔离数据目录 + 空闲端口启动：
+
+```sh
+.venv/bin/python -m alibot --port 8763 --data-dir /tmp/alibot-198-check
+```
+
+在 Studio 中新建频道「验收频道」，用「作为任务发送」建任务「验收任务 198」。实际读数（DOM 探针）：
+
+```json
+{
+  "msgCount": "1",
+  "taskCount": "1",
+  "rows": [{ "cls": "msg sys",
+             "text": "O Owner 事件 22:33 任务已创建：验收任务 198 进入任务线程 · 1 条" }],
+  "chip": { "text": "进入任务线程 · 1 条",
+            "openTask": "task_7c775a5571b6",
+            "aria": "打开任务 验收任务 198 的任务线程，共 1 条消息" }
+}
+```
+
+点 chip 后后端请求日志（真实 HTTP）：
+
+```text
+GET /api/tasks/task_7c775a5571b6/messages HTTP/1.1 200 OK
+```
+
+刷新整页后重新读数：`msgCount = "1"`、同一行 system 与同一 chip 仍在，频道栏**没有**未读徽标。
+截图：`/tmp/alibot-198-channel-pointer.png`（频道流 + chip）、`/tmp/alibot-198-task-thread.png`（点开线程）。
+
+## 7. 全量门禁
+
+```sh
+$ scripts/check.sh
+== pytest（全量）                     # 全量通过（见下面的已知噪声）
+== ruff check                         All checks passed!
+== ruff format --check              243 files already formatted
+== mypy（仓库根）                     Success: no issues found
+== pyright                         0 errors
+== node --test（Studio DOM）         ℹ tests 204 / pass 204 / fail 0
+门禁全绿
+```
+
+同一提交上再单独跑一次全量 pytest，得到 **959 passed, 10 skipped, 1 failed**；失败的是
+`tests/test_agent_round.py::test_round_outcome_distinguishes_replied_ignored_and_failed`。
+**这是基线已有的顺序敏感噪声，本票没有改唤醒 / 轮次结论路径**：该用例读到**同一成员的两条**
+轮次结果（人类消息必答轮落 `failed`，随后 Agent 回复触发的非必答轮落 `ignored`），却用
+`{member: status}` 取**最后一条**——过不过取决于两条的落账顺序。基线取证（`main` = `a58f020`，
+同一场景重复 3 次）：
+
+```text
+0 [('88a6e0','replied'), ('31c03d','failed'), ('31c03d','ignored'), ('9e1c0c','failed'), ('9e1c0c','failed')]
+1 [('619f89','replied'), ('095008','failed'), ('6561ef','failed'), ('6561ef','ignored'), ('095008','failed')]
+2 [('aaad1b','replied'), ('04acc4','failed'), ('04acc4','ignored'), ('b8ccac','failed'), ('b8ccac','failed')]
+```
+
+也就是说：**同一成员两条结果**在基线上是常态，用例的 `dict` 只保留最后一条。按「只改本票范围」
+的纪律，本票**不**修改那条既有用例；它在本票新增用例与受影响用例（§2–§5）之外，过或不过都不
+改变本票的行为判据。
+
+## 8. 双轴 code-review
+
+两轴分别由独立 reviewer 子代理跑在 `main...HEAD` 上（fix 之前的提交 `31773e3`），结论与处理：
+
+### Standards 轴
+
+| 结论 | findings | 处理 |
+| --- | --- | --- |
+| 未发现合并阻断缺陷；问题集中在证据缺口与词条/重复形状的判断项 | ① §7/§8 仍是「待填」占位；② CONTEXT 系统事件消息把「任务创建」与「频道入口」写成两条却又说同一动作；③ 「指针消息」词条同时登记消息与两个字段，称谓有二义；④ 新增的 seq 分配 + INSERT 是第三处同类形状；⑤ `_indexed_columns` 的文档串与实现不符（表达式里的名字会被当列名） | ①② **已修**（填读数；② 的来源表去重）；③ **部分修**：词条名沿用票面规定的「指针消息」，正文首句明确「不加限定时指频道里那条 system 记录」，并保留两个字段的分述；④ **已修**：`_append_target_message_locked` 新增可选 `task_pointer`，指针插入改为调用它（`_append_task_pointer_locked` 留作具名的意图落点/注入点）；⑤ **已修**：按顶层逗号逐项只取首个标识符，含 `(` 的表达式项跳过 |
+
+### Spec 轴
+
+| 结论 | findings | 处理 |
+| --- | --- | --- |
+| schema 对象集、触发器语义、同事务指针与回滚、读面（`task_pointer` / `message_count`）、频道 SSE 与返回 `message`、不调频道 notify、Studio chip / i18n / `absorbMessage`、ADR-0028、README 表、迁移留档均与票面一致 | ① §7 缺全量门禁读数；② §8 缺 review 记录（且当时 PR 未开）；③ `CONTEXT.md` 的「数据迁移」段仍写「本轮（15 → 19）是四个步骤」 | ①② **已修**（本文件两节）；③ **已修**：改为「15 → 20 / 五个严格 +1」，补 `19→20` 频道任务指针消息 |
+
+### 修复后复跑
+
+- `cd app && ../.venv/bin/python -m pytest tests/test_task_channel_pointer.py tests/test_migration_chain_guard.py` → 24 passed
+- 全量 `scripts/check.sh` 读数见 §7。
+- 既有用例的两处旧期望按新契约更新（不是重新钉住实现细节）：`test_tasks.py` 的「建任务后频道为空」改为断言
+  指针消息；`test_backend_copy.py` 的同一旧断言改为断言指针消息的正文仍按源语言渲染。
+
+## 9. Merge Danger
+
+本票含 **schema 迁移（19 → 20，单向门）**：合并后旧代码无法读取新的库版本；升级必须显式执行
+`python -m alibot --migrate --data-dir <数据目录>`（迁移前自动整目录备份）。旧任务不生成频道指针
+消息（只前进、不回填）。
