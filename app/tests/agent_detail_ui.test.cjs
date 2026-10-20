@@ -1025,6 +1025,28 @@ test("本票新增的文案在两份词条里都取到值", () => {
   }
 });
 
+/* 正本守卫：上面那些用例用的是**替身节点**（`buildNode` 自造卡片），因此 `index.html` 少一张卡、
+   或卡片的 `data-i18n` 键写错，DOM 用例都不会红。这条直接读静态 HTML，钉住「四张卡 + 四个词条键 +
+   一条 hint」在正本里齐全——替身与正本同形这件事由它兜底。 */
+test("静态 HTML 的联网档四张卡片齐全（替身与正本同形）", () => {
+  const html = fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8");
+  const start = html.indexOf('id="agentEditWebAccess"');
+  assert.ok(start > 0, "index.html 缺少联网档卡片容器 #agentEditWebAccess");
+  const group = html.slice(start, html.indexOf("</div>", start));
+  const cards = [
+    ["follow", "agent.webAccessFollow"],
+    ["off", "agent.webAccessOff"],
+    ["search", "agent.webAccessSearch"],
+    ["search+fetch", "agent.webAccessSearchFetch"],
+  ];
+  for (const [token, key] of cards) {
+    assert.ok(group.includes(`data-web-access="${token}"`), "缺档位卡片：" + token);
+    assert.ok(group.includes(`data-i18n="${key}"`), "缺卡片词条键：" + key);
+  }
+  // hint 是卡片组的**兄弟**节点（不在这个 `.radio-row` 里），因此按整份 HTML 查。
+  assert.ok(html.includes('data-i18n="agent.webAccessNote"'), "缺区块 hint 词条键");
+});
+
 /* ─── 8. 关闭详情的落点：没有频道就收起 dock ──────────────────────────────
    行为规则（用户 2026-10-16 裁定）：关闭 Agent 详情的落点按序判——
    ① 有任务线程打开着 → 任务线程；② 否则当前有打开的频道 → 频道成员；

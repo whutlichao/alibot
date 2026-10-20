@@ -161,8 +161,8 @@ Docker 网络策略、`app/specs/issue-<n>-acceptance.md` 的判据与读数。
 - DM 的 `mode` 固定 `read-only`：私聊没有权限档与审批面，`fetch` 因此**永不装配**（§三的权限档闸门
   逐字不变）。`backend = local` / `docker_egress = False` / `egress_hosts = []`——DM 没有频道 workspace。
 - 频道 / 任务分支**逐字不变**（仍是 `agent_config.web_access or channel.web_access or 'search'` 的合并
-  顺序）。人类面入口是 Agent 编辑弹窗的「联网」档位（§十五 把入口补成四档：**跟随频道（默认）** +
-  三档）；频道设置里的联网区块行为不变。
+  顺序）。人类面入口是 Agent 编辑弹窗的「联网」三档；频道设置里的联网区块行为不变。
+  （**事实修正**：§十五 把入口补成四档——「跟随频道（默认）」+ 上面三档。）
 
 ### 十五、Agent 侧显式 `null` = 清除覆盖、回到跟随频道（推翻 #184 的「一律 400」）
 

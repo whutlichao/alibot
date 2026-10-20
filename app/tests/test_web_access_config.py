@@ -18,7 +18,6 @@ DM 的联网档读数（#202）是装配层的**内部**配置读数（`web_sett
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from alibot.db import open_database
@@ -152,7 +151,11 @@ def test_other_agent_fields_still_reject_an_explicit_null(client: TestClient) ->
 
 
 def test_agent_web_access_explicit_null_clears_the_override(client: TestClient, data_dir: Path) -> None:
-    """显式 ``null`` = 清除覆盖：写库为 ``NULL``、读回 ``null``，读路径回到默认档。"""
+    """显式 ``null`` = 清除覆盖：读回 ``null``，私聊读路径回到默认档。
+
+    断言只落在**对外载荷**与公开读路径的读数上（`app/README.md` 的测试判据：不读表结构）；
+    「库内列真的是 `NULL`」这一条读数在验收文档 §2.4 里用同一条 HTTP 写路径 + `sqlite3` 手工取证。
+    """
     agent = create_agent(client).json()["agent"]
     dm = _dm(client, agent["id"])
     assert _patch_agent(client, agent["id"], web_access="off").status_code == 200
@@ -165,11 +168,6 @@ def test_agent_web_access_explicit_null_clears_the_override(client: TestClient, 
 
     database = open_database(data_dir)
     try:
-        with sqlite3.connect(database.path) as connection:
-            row = connection.execute(
-                "SELECT web_access FROM agent_config WHERE member_id = ?", (agent["id"],)
-            ).fetchone()
-        assert row is not None and row[0] is None, "清空写的是 NULL（不是空串，也不是 'off'）"
         settings = database.web_settings_for_target(dm["id"], agent["id"])
     finally:
         database.close()

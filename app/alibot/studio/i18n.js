@@ -1189,10 +1189,11 @@ const I18N_CATALOGS = {
     'agent.autoClaimOffHint': 'New tasks stay unclaimed',
     'agent.autoClaimNote':
       'When on: the orchestrator hands new tasks in this Agent\'s channels to it (one claimant at a time); a claim writes a readable system record, wakes the Agent, and resets that task\'s response budget once — at most once per task.',
-    // Agent-level web access entry (#202): no selection = follow the channel; a direct message
-    // has no channel, so it falls back to the default "search only" level. The three levels
-    // share names and meaning with the channel settings; `fetch` mounts only in channels / task
-    // threads (a DM has no approval surface).
+    // Agent-level web access entry (#202 / 2026-10-21 revision): the default level is "follow
+    // channel" — it writes no agent-level override, and picking it submits an explicit null
+    // (clearing the override). A direct message has no channel, so it falls back to the default
+    // "search only" level. The other three levels share names and meaning with the channel
+    // settings; `fetch` mounts only in channels / task threads (a DM has no approval surface).
     'agent.webAccessLabel': 'Web access',
     'agent.webAccessFollow': 'Follow channel (default)',
     'agent.webAccessFollowHint': 'Clear the agent-level override; DMs use the default level',

@@ -4662,7 +4662,8 @@ function agentRuntimeNodes(agent) {
       agent.auto_claim ? t('agentDetail.autoClaimOn') : t('agentDetail.autoClaimOff'),
       'agent-detail-auto-claim'],
     // 联网档（#202）同理：这里是 `agent_config.web_access` 的**读数本身**（私聊的联网档就回退到
-    // 它 + 默认档）；`null` = 跟随频道，按其余字段的口径显示空字段文案，不在前端推断生效档。
+    // 它 + 默认档）；`null` = 没有 Agent 级覆盖 = 跟随频道，它有**自己的词条**（不是空字段文案），
+    // 但仍不在前端推断私聊里实际生效的档。
     ['agentDetail.kvWebAccess', agentWebAccessLabel(agent), 'agent-detail-web-access'],
   ];
   rows.forEach(([key, value, odId]) => section.appendChild(kvRow(t(key), value, odId)));
@@ -4765,7 +4766,7 @@ function openAgentEditModal(memberId) {
   renderAgentEditProviderSelect(preferred);
   renderEditTier('#agentEditEnabled', 'enabled', agent.enabled !== false);
   renderEditTier('#agentEditAutoClaim', 'autoClaim', agent.auto_claim === true);
-  // 联网档（#202）：`null` = 未配置 = 跟随频道，此时三档都不选中。
+  // 联网档（#202 / 2026-10-21 修订）：`null` = 没有 Agent 级覆盖，选中「跟随频道（默认）」卡片。
   renderAgentEditWebAccess(agent.web_access);
   renderAgentEditNotice();
   $('#agentEditOverlay').hidden = false;
@@ -4835,13 +4836,16 @@ function renderAgentEditWebAccess(value) {
   });
 }
 
-/** 读当前选中的联网档：返回 `follow` 或后端的三个档之一（控件族总有一张卡片是选中的）。 */
+/** 读当前选中的联网档，返回**提交值**：`null`（= 跟随频道 / 清除覆盖）或后端的三个档之一。
+    控件族总有一张卡片是选中的；把 `follow` 翻译成 `null` 发生在**这里**，于是提交路径不认识
+    界面 token（`submitAgentEdit` 直接把这个值写进 payload）。 */
 function agentEditWebAccessValue() {
   const cards = editWebAccessCards();
   for (const card of cards) {
-    if (card.classList.contains('is-on')) return card.dataset.webAccess;
+    if (!card.classList.contains('is-on')) continue;
+    return card.dataset.webAccess === WEB_ACCESS_FOLLOW ? null : card.dataset.webAccess;
   }
-  return WEB_ACCESS_FOLLOW;
+  return null;
 }
 
 function renderAgentEditNotice() {
@@ -4864,9 +4868,9 @@ async function submitAgentEdit() {
   };
   // 联网档（#202）：`follow` 是界面上的「跟随频道」档，提交 **`web_access: null`**——后端把它
   // 解释成「清除 Agent 级覆盖」（写库 NULL），所以从具体档位切回跟随频道真的会清掉覆盖，
-  // 而不是只改界面（ADR-0026 §十五）。
+  // 而不是只改界面（ADR-0026 §十五）。`agentEditWebAccessValue()` 已经把 `follow` 翻译成 `null`。
   const webAccess = agentEditWebAccessValue();
-  payload.web_access = WEB_ACCESS_LEVELS.includes(webAccess) ? webAccess : null;
+  payload.web_access = webAccess;
   const box = $('#agentEditFormError');
   const submit = $('#agentEditSubmit');
   submit.disabled = true;
