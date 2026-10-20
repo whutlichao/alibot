@@ -779,13 +779,34 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .dock-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-5) var(--sp-6) var(--sp-7); }
 /* 两段（已加入 / 未加入）：段标签沿用 rail 的分组语汇，段间距用既有 spacing token。 */
 .dock-group + .dock-group { margin-top: var(--sp-7); }
+/* 段标题是**标题**不是注脚：层级与 `.dock-member-name` 同一档文字（fs-sm + 半粗 + --fg）。
+   计数仍走等宽栈（`SKILL.md` §6「Counts and ids are explicit and mono」）；中文由等宽栈
+   回退到系统 CJK 字体，因此只有数字是等宽。 */
 .dock-group-label {
-  font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider);
-  text-transform: uppercase; color: var(--faint); font-weight: var(--fw-semi); margin-bottom: var(--sp-3);
+  font-family: var(--mono); font-size: var(--fs-sm); letter-spacing: normal;
+  text-transform: none; color: var(--fg); font-weight: var(--fw-semi); margin-bottom: var(--sp-3);
 }
+/* 「未加入」那一段是**候选池**，不是名单：整段垫成 `--panel` 井（与 `.stat` / `.col` 同一
+   嵌套语汇），段标题进井内。于是两段的差异来自**填充与结构**，而不是 1px 的实/虚线——
+   暗档里 `--surface` 25.5% 与 `--border` 32% 只差几个 L，线型信号在 1× 屏上不可靠。
+   井是这一段自己的容器，因此不新造色位、也不做负边距穿透 `.dock-scroll` 的内边距。 */
+.dock-group.is-pool {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: var(--sp-4) var(--sp-4) 0;
+}
+/* 井内标题退一档：它现在标的是**次级区块**，与上方名单的标题不再同级。 */
+.dock-group.is-pool .dock-group-label { color: var(--muted); }
+/* 井里的空态文案是井自己的第一行：不再叠一层滚动容器的内边距。 */
+.dock-group.is-pool .rail-empty { padding-inline: 0; padding-bottom: var(--sp-4); }
 .dock-member { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); margin-bottom: var(--sp-4); }
-/* 未加入的那一段用虚线边框：它是「还没在这个频道里」这一事实的呈现，不新造色位。 */
-.dock-member.is-outside { border-style: dashed; }
+/* 候选行是**平铺行**而不是卡片：候选池里的东西不各自成块，只留行间虚线下分隔。
+   虚线的对象也从「整张卡的边框」变成了「行与行的分界」，这才是它该承担的语义。 */
+.dock-member.is-candidate {
+  border: 0; border-radius: 0; padding: 0 0 var(--sp-4); margin-bottom: var(--sp-4);
+  border-bottom: 1px dashed var(--border);
+}
+.dock-member.is-candidate:last-child { border-bottom: 0; margin-bottom: 0; }
+.dock-member.is-candidate .dock-member-foot { margin-top: var(--sp-3); }
 .dock-member-head { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-sm); }
 .dock-member-head .presence { margin-left: auto; }
 .dock-member-meta { font-size: var(--fs-mono-xs); color: var(--faint); margin-top: var(--sp-3); }
