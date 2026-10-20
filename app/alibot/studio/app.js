@@ -102,13 +102,15 @@ function taskTransitionLabel(target) {
 }
 
 const TASK_STATUS_ORDER = ['todo', 'in_progress', 'in_review', 'done', 'closed'];
-const TASK_STATUS_TRANSITIONS = {
-  todo: ['in_progress', 'closed'],
-  in_progress: ['in_review', 'todo', 'closed'],
-  in_review: ['done', 'in_progress', 'todo'],
-  done: ['in_progress', 'closed'],
-  closed: [],
-};
+
+/** 一张任务**当前态**的全部合法迁移目标（#191 D2）。
+
+    集合的正本在后端：任务载荷的 `allowed_transitions` 由 `TASK_STATUS_TRANSITIONS` 派生。
+    前端**不持有**迁移表副本——没有字段就是空集合（一个目标都不给），而不是回退到一份本地表；
+    写路径（`PATCH /api/tasks/{id}/status`）仍是唯一权威，这里只决定「呈现什么」。 */
+function taskAllowedTransitions(task) {
+  return Array.isArray(task && task.allowed_transitions) ? task.allowed_transitions : [];
+}
 
 /** 模型提供商的界面说法（远端 / 本机是**事实**，不是档位）。 */
 function providerLabel(provider) {
@@ -1329,11 +1331,41 @@ function renderBoardToolbar() {
   replaceChildren(filters, nodes);
 }
 
+/** 「更多」图标（lucide `more-horizontal` 同族的三点几何）：卡片流转菜单的触发器是图标按钮，
+    因此图标本身不承担文案（可访问名在 `aria-label` 上）。DOM 替身没有命名空间工厂时退化成一个
+    同形的点阵字符——用例断言的是行为，不是画笔。 */
+function moreHorizontalIcon() {
+  if (typeof document.createElementNS !== 'function') return el('span', 'card-menu-glyph', '\u00b7\u00b7\u00b7');
+  const namespace = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(namespace, 'svg');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  [5, 12, 19].forEach((cx) => {
+    const dot = document.createElementNS(namespace, 'circle');
+    dot.setAttribute('cx', String(cx));
+    dot.setAttribute('cy', '12');
+    dot.setAttribute('r', '1');
+    svg.appendChild(dot);
+  });
+  return svg;
+}
+
 /** 一张看板卡片（原型 `cardHtml()`）：标题 + mono 序号 + 频道 tag + 指派者 / 未认领。
-    它是 `<button>`（可点击打开 dock 线程），**不**带 `draggable`：拖拽属 #26。 */
+
+    根节点是 `<div role="button" tabindex="0" draggable="true">`（#191）：它同时承载
+    「拖拽源」与卡片内右上角的「流转」菜单按钮，而 `<button>` 里不能再嵌按钮。
+    Enter / Space 仍打开线程（`#taskColumns` 的 keydown 委派），点击语义不变。 */
 function taskCardNode(task) {
-  const card = el('button', 'card');
-  card.type = 'button';
+  const targets = taskAllowedTransitions(task);
+  const card = el('div', targets.length ? 'card has-menu' : 'card');
+  card.setAttribute('role', 'button');
+  card.setAttribute('tabindex', '0');
+  card.setAttribute('draggable', 'true');
   card.dataset.task = task.id;
   card.dataset.status = task.status;
   card.setAttribute('data-od-id', 'task-card-' + task.id);
@@ -1356,7 +1388,235 @@ function taskCardNode(task) {
     unread.setAttribute('aria-label', t('board.unreadAria', { count: task.unread_count }));
     meta.appendChild(unread);
   }
+  // 终态（`closed`）没有出边 ⇒ 不摆一个点不出东西的入口（#191 D5）。
+  if (targets.length) card.appendChild(taskMoveButton(task));
   return card;
+}
+
+/** 卡片右上角的「流转」图标按钮：打开共享菜单（`#taskMoveMenu`）。
+
+    点击必须 `stopPropagation`：看板的点击委派会把 `[data-task]` 解释成「打开线程」，
+    而点菜单不该连带打开线程（委派处也先判 `[data-task-menu]`，两道保险）。 */
+function taskMoveButton(task) {
+  const button = el('button', 'card-menu-btn');
+  button.type = 'button';
+  button.dataset.taskMenu = task.id;
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'false');
+  button.setAttribute('aria-controls', 'taskMoveMenu');
+  button.setAttribute('aria-label', t('board.cardMenuAria', { title: task.title }));
+  // 离线纪律与线程 chips 一致：不发得出去的写，就不摆一个能按的入口。
+  button.disabled = !state.online;
+  button.appendChild(moreHorizontalIcon());
+  button.addEventListener('click', (event) => {
+    if (event.stopPropagation) event.stopPropagation();
+    openTaskMoveMenu(task.id, button);
+  });
+  button.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+    if (event.preventDefault) event.preventDefault();
+    if (event.stopPropagation) event.stopPropagation();
+    openTaskMoveMenu(task.id, button);
+  });
+  return button;
+}
+
+/* ─── 看板卡片的「流转」菜单（#191）──────────────────────────────────────
+   它是**一个共享浮层**：`position: fixed` 按触发器 rect 定位，于是不被 `.board` 的
+   `overflow: auto` 裁切。菜单项**只**来自该任务的载荷 `allowed_transitions`，顺序即载荷顺序；
+   文案复用既有动词词条 `task.transition.<target>`（与线程 chips 同一套说法）。 */
+let taskMoveMenu = { taskId: null, trigger: null };
+
+function taskMoveMenuNode() {
+  return $('#taskMoveMenu');
+}
+
+function taskMoveMenuItems(menu) {
+  // `Array.from`：`querySelectorAll` 给的是 NodeList（有 `forEach`、没有 `indexOf`），
+  // 键盘面要按索引取项、判当前焦点，必须先在**一份快照数组**上做。
+  return menu && menu.querySelectorAll ? Array.from(menu.querySelectorAll('[role="menuitem"]')) : [];
+}
+
+/** 把焦点放到第 `index` 项（负数与越界都按环绕取模：↑ 从第一项回到最后一项）。 */
+function focusTaskMoveItem(menu, index) {
+  const items = taskMoveMenuItems(menu);
+  if (!items.length) return;
+  const node = items[((index % items.length) + items.length) % items.length];
+  if (node && node.focus) node.focus();
+}
+
+function closeTaskMoveMenu(restoreFocus) {
+  const trigger = taskMoveMenu.trigger;
+  taskMoveMenu = { taskId: null, trigger: null };
+  const menu = taskMoveMenuNode();
+  if (menu) {
+    menu.hidden = true;
+    if (menu.replaceChildren) replaceChildren(menu, []);
+    if (menu.dataset) delete menu.dataset.task;
+  }
+  if (trigger) {
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && trigger.focus) trigger.focus();
+  }
+}
+
+/** 按触发器 rect 摆菜单：下方优先，空间不足翻到上方；右缘对齐触发器右缘。 */
+function positionTaskMoveMenu(menu, trigger) {
+  if (!trigger.getBoundingClientRect) return;
+  const rect = trigger.getBoundingClientRect();
+  if (!rect) return;
+  const gap = 6;
+  const viewportHeight = (window && window.innerHeight) || 0;
+  const menuHeight = menu.getBoundingClientRect ? menu.getBoundingClientRect().height : 0;
+  const flip = viewportHeight > 0 && menuHeight > 0 && rect.bottom + gap + menuHeight > viewportHeight;
+  menu.style.position = 'fixed';
+  menu.style.top = (flip ? Math.max(gap, rect.top - gap - menuHeight) : rect.bottom + gap) + 'px';
+  menu.style.right = ((window && window.innerWidth ? window.innerWidth : rect.right) - rect.right) + 'px';
+  menu.style.left = 'auto';
+}
+
+function openTaskMoveMenu(taskId, trigger) {
+  const task = taskById(taskId);
+  const targets = taskAllowedTransitions(task);
+  const menu = taskMoveMenuNode();
+  if (!task || !targets.length || !state.online || !menu) return;
+  closeTaskMoveMenu(false);
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', t('board.cardMenuLabel'));
+  replaceChildren(menu, targets.map((target) => {
+    const item = el('div', 'card-menu-item', taskTransitionLabel(target));
+    item.setAttribute('role', 'menuitem');
+    item.setAttribute('tabindex', '-1');
+    item.dataset.moveTarget = target;
+    item.addEventListener('click', (event) => {
+      if (event.stopPropagation) event.stopPropagation();
+      closeTaskMoveMenu(false);
+      changeTaskStatus(taskId, target);
+    });
+    return item;
+  }));
+  menu.dataset.task = taskId;
+  menu.hidden = false;
+  taskMoveMenu = { taskId, trigger };
+  if (trigger) trigger.setAttribute('aria-expanded', 'true');
+  positionTaskMoveMenu(menu, trigger);
+  focusTaskMoveItem(menu, 0);
+}
+
+/** 菜单的键盘面：↑/↓ 循环、Esc 关闭并还焦点、Enter / Space 激活当前项。
+    菜单项是 `<div role="menuitem">`（不是 `<button>`）：于是**只有**这一条激活路径，
+    不会出现「键盘一次、原生 click 再一次」的双写。 */
+function onTaskMoveMenuKeydown(event) {
+  const menu = taskMoveMenuNode();
+  if (!menu || menu.hidden) return;
+  const items = taskMoveMenuItems(menu);
+  const active = document.activeElement;
+  const current = items.indexOf(active);
+  if (event.key === 'Escape') {
+    if (event.preventDefault) event.preventDefault();
+    closeTaskMoveMenu(true);
+    return;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (event.preventDefault) event.preventDefault();
+    focusTaskMoveItem(menu, current + (event.key === 'ArrowDown' ? 1 : -1));
+    return;
+  }
+  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+  const item = current >= 0 ? items[current] : null;
+  if (!item) return;
+  if (event.preventDefault) event.preventDefault();
+  const target = item.dataset.moveTarget;
+  const taskId = menu.dataset.task;
+  closeTaskMoveMenu(false);
+  changeTaskStatus(taskId, target);
+}
+
+/** 点外部 / 点看板其它地方关闭：触发器与菜单自身不算「外部」。 */
+function onDocumentClickCloseTaskMoveMenu(event) {
+  if (!taskMoveMenu.taskId) return;
+  const target = event.target;
+  if (target && target.closest && (target.closest('#taskMoveMenu') || target.closest('[data-task-menu]'))) return;
+  closeTaskMoveMenu(false);
+}
+
+/* ─── 看板拖拽（#191 D3/D4）：拖拽服务指针设备，卡片菜单服务触屏与键盘，
+   两者命中同一条受守卫的写路径（`PATCH /api/tasks/{id}/status`），不做第二套语义。
+   落点判定**只读**载荷 `allowed_transitions`；非法松手零请求。 */
+const boardDrag = { taskId: null };
+
+function boardColumnsWithState() {
+  const columns = $('#taskColumns');
+  return columns && columns.querySelectorAll ? columns.querySelectorAll('.col') : [];
+}
+
+function clearBoardDropStates() {
+  boardColumnsWithState().forEach((column) => {
+    column.classList.remove('drag-over');
+    column.classList.remove('invalid-over');
+  });
+  const columns = $('#taskColumns');
+  const dragging = columns && columns.querySelectorAll ? columns.querySelectorAll('.dragging') : [];
+  dragging.forEach((card) => card.classList.remove('dragging'));
+}
+
+function onBoardDragStart(event) {
+  const card = event.target && event.target.closest ? event.target.closest('[data-task]') : null;
+  if (!card) return;
+  const task = taskById(card.dataset.task);
+  if (!task || !state.online) return;
+  closeTaskMoveMenu(false);
+  boardDrag.taskId = task.id;
+  card.classList.add('dragging');
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    if (event.dataTransfer.setData) event.dataTransfer.setData('text/plain', task.id);
+  }
+}
+
+function onBoardDragOver(event) {
+  const column = event.target && event.target.closest ? event.target.closest('.col') : null;
+  if (!column || !boardDrag.taskId) return;
+  const task = taskById(boardDrag.taskId);
+  if (!task) return;
+  // 允许 drop：非法落点也要收到 drop，才能给「不是合法迁移」的说明（零请求）。
+  if (event.preventDefault) event.preventDefault();
+  boardColumnsWithState().forEach((other) => {
+    const on = other === column;
+    other.classList.toggle('drag-over', on && column.dataset.status !== task.status
+      && taskAllowedTransitions(task).includes(column.dataset.status));
+    other.classList.toggle('invalid-over', on && column.dataset.status !== task.status
+      && !taskAllowedTransitions(task).includes(column.dataset.status));
+  });
+}
+
+function onBoardDrop(event) {
+  const column = event.target && event.target.closest ? event.target.closest('.col') : null;
+  const fromTransfer = event.dataTransfer && event.dataTransfer.getData ? event.dataTransfer.getData('text/plain') : '';
+  const taskId = boardDrag.taskId || fromTransfer || '';
+  if (!column || !taskId) return;
+  if (event.preventDefault) event.preventDefault();
+  const task = taskById(taskId);
+  clearBoardDropStates();
+  boardDrag.taskId = null;
+  if (!task || !state.online) return;
+  const target = column.dataset.status;
+  // 拖回原列：无动作（既不是迁移，也不该给一句「非法」的指责）。
+  if (!target || target === task.status) return;
+  if (!taskAllowedTransitions(task).includes(target)) {
+    // D4：非法落点**零写入**，只说明事实。
+    toast(t('toast.transitionInvalid', {
+      from: taskStatusLabel(task.status),
+      to: taskStatusLabel(target),
+    }), 'err');
+    return;
+  }
+  changeTaskStatus(task.id, target);
+}
+
+function onBoardDragEnd() {
+  clearBoardDropStates();
+  boardDrag.taskId = null;
 }
 
 /** 看板列（`TASK_STATUS_ORDER` 五态）：固定 `--board-col-w`(236px) → 超出时容器横向滚动。 */
@@ -1374,8 +1634,7 @@ function boardColumns() {
     column.appendChild(head);
     const body = el('div', 'col-body');
     if (items.length) items.forEach((task) => body.appendChild(taskCardNode(task)));
-    // 空态只陈述事实。「拖拽任务到此」是原型文案，但拖拽属 #26、现在拖不动，
-    // 写上去就是一句假话（`SKILL.md` §7 的「不实现就不摆样子」同一条纪律）。
+    // 空态只陈述事实（「这一列还没有任务」）：拖拽入口由卡片承担，落点提示不是必需文案。
     else body.appendChild(el('div', 'drop-hint', t('board.emptyColumn')));
     column.appendChild(body);
     return column;
@@ -1426,6 +1685,9 @@ function boardList() {
 }
 
 function renderTaskBoard() {
+  // 浮层指向的是**这一版**卡片的 rect 与目标集合：重铺看板前先收起菜单（#191 约束 6），
+  // 于是 SSE / 刷新造成的重渲染不会留下一个对不上任何卡片的旧菜单。
+  closeTaskMoveMenu(false);
   // 看板与页签计数读的是**同一份**全量快照：重铺看板的地方顺带把计数重算一遍，
   // 于是 `state.tasks` 的就地替换路径（`markTaskRead()` / `refreshTaskDetails()`）
   // 不必各自再记得写一次 `#taskCount`。
@@ -1506,8 +1768,8 @@ function renderTaskThread() {
     teamNotice.textContent = team ? t('task.teamNotice') : '';
   }
 
-  // ── 推进 chips：**只**出现迁移集合里的目标（`closed` 是终态 ⇒ 一个都不出）──
-  const transitions = TASK_STATUS_TRANSITIONS[task.status] || [];
+  // ── 推进 chips：**只**出现载荷 `allowed_transitions` 里的目标（`closed` 是终态 ⇒ 一个都不出）──
+  const transitions = taskAllowedTransitions(task);
   if (transitions.length) {
     replaceChildren($('#ttTransitions'), transitions.map((target) => {
       const chip = filterChip(
@@ -3202,21 +3464,30 @@ async function saveTaskTitle() {
   }
 }
 
-async function changeTaskStatus(status) {
-  const task = state.activeTask;
-  if (!task || status === task.status) return;
-  // 前端只渲染合法迁移的 chip（`closed` 是终态 ⇒ 它一个都不出），但把这条不变量
-  // 再当守卫写一遍：chip 是呈现，不变量是语义，两者不互相代替。
-  if (!(TASK_STATUS_TRANSITIONS[task.status] || []).includes(status)) return;
+/** 改状态：看板拖拽、卡片「流转」菜单、线程 chips 三条入口都走这一条函数，
+    命中同一个受守卫的 `PATCH /api/tasks/{id}/status`（#191 D3）——不另立第二套语义。
+
+    前端守卫只读载荷：`allowed_transitions` 不含目标就不发请求；但**不做乐观更新**——
+    成功后按响应与重读刷新，失败时用户看到的是后端事实（D4）。 */
+async function changeTaskStatus(taskId, target) {
+  const task = taskById(taskId);
+  if (!task || target === task.status) return;
+  // chip / 菜单目标都是呈现，不变量在写路径：这里再拦一次非法值，省一次注定失败的请求。
+  if (!taskAllowedTransitions(task).includes(target)) return;
+  const isOpenThread = state.activeTaskId === taskId;
   try {
-    const payload = await api(taskPath(task.id, '/status'), { method: 'PATCH', body: { status } });
-    state.activeTask = payload.task;
-    if (payload.message) absorbTaskMessage(payload.message);
+    const payload = await api(taskPath(taskId, '/status'), { method: 'PATCH', body: { status: target } });
+    if (isOpenThread || (state.activeTask && state.activeTask.id === taskId)) {
+      state.activeTask = payload.task;
+      if (payload.message) absorbTaskMessage(payload.message);
+    }
     await refreshTasks();
-    renderTaskThread();
+    if (state.activeTaskId === taskId) renderTaskThread();
   } catch (err) {
     toast(t('toast.statusUpdateFailed', { reason: err.message }), 'err');
-    renderTaskThread();
+    // 失败路径也回到后端事实：先重读看板，线程仍开着才重铺线程。
+    await refreshTasks();
+    if (state.activeTaskId === taskId) renderTaskThread();
   }
 }
 
@@ -7799,13 +8070,34 @@ function bindEvents() {
     state.taskFilterChannelId = channel.dataset.boardChannel;
     refreshTasks();
   });
-  // 卡片与列表行都打开同一个 dock 线程（点击是唯一入口；不实现拖拽）。
+  // 卡片与列表行都打开同一个 dock 线程。卡片（#191）根节点是 `<div role="button">`：
+  // ① 右上角的「流转」菜单按钮是卡片内控件，先于卡片判定，点它不打开线程；
+  // ② 拖拽与菜单交互都不该被当成「点卡片」。
   ['#taskColumns', '#taskListWrap'].forEach((selector) => {
     $(selector).addEventListener('click', (event) => {
+      if (event.target.closest('[data-task-menu]')) return;
       const card = event.target.closest('[data-task]');
       if (card) openTask(card.dataset.task);
     });
   });
+  // 卡片是 div（不是原生 button）：Enter / Space 打开线程的键盘语义要显式补上。
+  $('#taskColumns').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+    const card = event.target.closest('[data-task]');
+    if (!card || event.target.closest('[data-task-menu]')) return;
+    if (event.preventDefault) event.preventDefault();
+    openTask(card.dataset.task);
+  });
+  // 拖拽（#191）：四个事件都在看板容器上委派——列与卡片每次重铺都是新节点。
+  const columns = $('#taskColumns');
+  columns.addEventListener('dragstart', onBoardDragStart);
+  columns.addEventListener('dragover', onBoardDragOver);
+  columns.addEventListener('drop', onBoardDrop);
+  columns.addEventListener('dragend', onBoardDragEnd);
+  // 「流转」菜单：共享浮层自己的键盘面 + 点外部 / 滚看板时收起。
+  $('#taskMoveMenu').addEventListener('keydown', onTaskMoveMenuKeydown);
+  document.addEventListener('click', onDocumentClickCloseTaskMoveMenu);
+  $('#boardScroll').addEventListener('scroll', () => closeTaskMoveMenu(false));
 
   // 新建任务：弹窗形态（标题 + 所属频道）。
   $('#btnNewTask').addEventListener('click', () => openTaskModal());
@@ -7832,7 +8124,7 @@ function bindEvents() {
   titleInput.addEventListener('blur', () => { saveTaskTitle(); });
   $('#ttTransitions').addEventListener('click', (event) => {
     const chip = event.target.closest('[data-tt-move]');
-    if (chip) changeTaskStatus(chip.dataset.ttMove);
+    if (chip && state.activeTask) changeTaskStatus(state.activeTask.id, chip.dataset.ttMove);
   });
   $('#ttAssign').addEventListener('click', (event) => {
     const chip = event.target.closest('[data-tt-assign]');

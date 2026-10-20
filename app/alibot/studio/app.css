@@ -825,8 +825,9 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
    （`SKILL.md` §3 第 3 条：Never stretch columns to fill）。列表视图与看板是 `.seg`
    的两半，共用同一份 `GET /api/tasks`。
    任务线程：右侧 dock 的**第二种形态**（`#dockTask`），形态来自原型 726-790 行的 `.tt-*`。
-   拖拽未实现（`#26` 的剩余交付），因此不引入 `.drag-over` / `.invalid-over` / `.dragging`
-   这些没有行为支撑的状态类。
+   拖拽（#191）：卡片可拖，落点三态与设计系统原型同源——合法 `.drag-over`
+   （`--accent-graphic` 边 + `--accent-soft` 底）、非法 `.invalid-over`（`--error` 边）、
+   被拖起的卡片 `.dragging`（`opacity .4`）。判定只读任务载荷的 `allowed_transitions`。
    档位纪律（ADR-0015）：`.seg button.is-active` 的底是 `--fg`（深梅墨），所以它的墨色必须是
    `--bg`（纸族浅色，与仓内 `.toast` 同一形态）；**不能**用 `--on-accent`——它是 `var(--fg)`，
    压在 `--fg` 底上就是同色同底、字看不见。`.filter-chip.is-on` 用 `--selected-soft`
@@ -868,8 +869,24 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .col-head .col-count { margin-left: auto; font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 6px; }
 .col-body { flex: 1; padding: 2px var(--sp-4) 10px; display: flex; flex-direction: column; gap: 7px; min-height: 44px; }
 .card { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 11px; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
+/* 卡片根是 `<div role="button" draggable="true">`（#191）：拖起时整张卡片降不透明度，
+   与设计系统原型的 `.card.dragging` 同值。 */
+.card[draggable="true"] { cursor: grab; }
+.card.dragging { opacity: .4; }
 .card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card); }
 .card-title { font-size: 12.5px; font-weight: var(--fw-semi); line-height: var(--lh-snug); margin-bottom: 7px; overflow-wrap: anywhere; }
+/* 有流转菜单的卡片要给右上角的图标按钮让出位置（不是所有卡片都有：终态没有入口）。 */
+.card.has-menu { position: relative; }
+.card.has-menu .card-title { padding-right: 22px; }
+/* 卡片右上角的「流转」图标按钮：热区沿用既有 `--icon-btn`，离线时禁用（不发得出去的写就不摆按钮）。 */
+.card-menu-btn {
+  position: absolute; top: 4px; right: 4px; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--icon-btn); height: var(--icon-btn); border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--faint);
+}
+.card-menu-btn:hover { background: var(--fg-soft); color: var(--fg); }
+.card-menu-btn:disabled { cursor: not-allowed; opacity: .5; }
+.card-menu-glyph { font-size: var(--fs-sm); line-height: 1; color: inherit; }
 .card-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .card-num { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
 .card-tag { font-family: var(--mono); font-size: var(--fs-mono-micro); padding: 1px 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
@@ -878,6 +895,32 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 /* 列内空态：原型在拖拽未实现前用它做落点提示；本票不实现拖拽，因此它只陈述
    「这一列还没有任务」这一事实（不写「拖拽任务到此」——那句话目前是假的）。 */
 .drop-hint { border: 1px dashed var(--border-strong); border-radius: var(--r-md); padding: 9px; text-align: center; font-size: 11px; color: var(--faint); }
+
+/* ─── 拖拽落点三态（#191 / 设计系统原型 `screens/task-board.html` 状态 2）──────
+   合法落点：`--accent-graphic` 边 + `--accent-soft` 底；非法落点：`--error` 边。
+   两者都只换**已有** token，不新造色位、不写裸色值；当前列不标态（拖回原列是无动作）。 */
+.col.drag-over { border-color: var(--accent-graphic); background: var(--accent-soft); }
+.col.invalid-over { border-color: var(--error); }
+/* 落点态还要让列内的空态提示跟着读得出来（它原本是 faint 灰）。 */
+.col.drag-over .drop-hint { border-color: var(--accent-graphic); color: var(--fg); }
+
+/* ─── 卡片「流转」菜单（#191）────────────────────────────────────────────
+   共享浮层（`#taskMoveMenu`）：`position: fixed` 由 app.js 按触发器 rect 摆放，因此不被
+   `.board` 的 `overflow: auto` 裁切；层级沿用既有 `--z-overlay`（高于 dock、低于 toast，
+   与「菜单跟着当前页面走」的事实一致）。子项是 `role="menuitem"` 的 `<div>`，激活路径只有一条。 */
+.card-menu {
+  position: fixed; z-index: var(--z-overlay); display: flex; flex-direction: column; gap: 2px;
+  min-width: 152px; padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--shadow-card);
+}
+.card-menu[hidden] { display: none; }
+.card-menu-item {
+  display: flex; align-items: center; min-height: var(--icon-btn); padding: 0 var(--sp-4);
+  border-radius: var(--r-sm); color: var(--fg); font-size: var(--fs-sm); cursor: pointer;
+  outline-offset: -2px;
+}
+/* 键盘焦点与指针悬停同一个可见态：选中的信号走**底**（`--selected-soft`），文字仍用 `--fg`。 */
+.card-menu-item:hover, .card-menu-item:focus-visible { background: var(--selected-soft); color: var(--fg); }
 
 /* 列表视图：`.seg` 的另一半。`max-width:880px` 居中（原型 `#taskListWrap`）。 */
 .board-list { max-width: var(--stream-max); margin: 0 auto; }

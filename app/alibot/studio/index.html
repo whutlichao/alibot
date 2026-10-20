@@ -542,6 +542,12 @@
   </div>
 </div>
 
+<!-- 看板卡片的「流转」菜单（#191）：**一个共享浮层**，由 app.js 在打开时按载荷
+     `allowed_transitions` 重建子项、按触发器 rect 定位（`position: fixed`，因此不被
+     `.board` 的 `overflow: auto` 裁切）。菜单项是 `role="menuitem"`，文案复用
+     `task.transition.<target>`，与任务线程的推进 chips 同一套说法。 -->
+<div class="card-menu" id="taskMoveMenu" role="menu" hidden data-i18n-attr="aria-label:board.cardMenuLabel" aria-label="任务流转" data-od-id="task-move-menu"></div>
+
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
 <!-- ─── 新建私信 ─────────────────────────────────────────────────────── -->
