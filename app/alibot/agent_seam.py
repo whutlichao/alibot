@@ -60,9 +60,9 @@ SILENCE_TOOL_NAME = "declare_silence"
 class ReplySignal(StrEnum):
     """本轮的**回应纪律来源**：一个信号回答两件事——是否必答、可读文案该按哪个来源说。
 
-    ``NONE`` 表示没有确定信号：模型按 #57 的 rubric 自判（可以合法沉默）。其余四种都是**确定信号**，
+    ``NONE`` 表示没有确定信号：模型按 #57 的 rubric 自判（可以合法沉默）。其余五种都是**确定信号**，
     都必须回应，但**来源不同**，因此提示词与轮次结果的可读文案不能互相挪用——把人类消息写成
-    「任务变化」「认领」或「被个人提及」，都是在写一条没发生过的事实（#189）。
+    「任务变化」「认领」「自动续跑」或「被个人提及」，都是在写一条没发生过的事实（#189）。
 
     为什么是枚举，而不是从 ``reason`` 文本反推：同一 Agent 的重复唤醒会被合并、跨 target 的
     deferred 轮次会继承参数，合并后的 ``reason`` 取决于先到者（ADR-0016 五）。纪律与来源必须是
@@ -72,6 +72,10 @@ class ReplySignal(StrEnum):
     NONE = "none"
     MENTION = "mention"
     CLAIM = "claim"
+    # 自动续跑（ADR-0027）：受派者上一轮调用 `continue_task` 申请继续推进这张任务，编排落一条
+    # `system` 记录后把同一个人再叫醒一轮。它与认领同级（都是确定信号），但来源不同——把续跑轮
+    # 写成「认领」会指向一次不存在的认领。声明顺序也是合并优先级：认领高于续跑，人类消息最高。
+    CONTINUE = "continue"
     TEAM_TASK_CHANGE = "team-task-change"
     # 人类直接对话（#189）。它**不改**唤醒面、不扣跳、不改未读口径与消息 kind——只把这一轮从
     # 「自判」升成「必答」。
@@ -96,7 +100,7 @@ class ReplySignal(StrEnum):
 
         纪律的推理与既有那几条「取或」合并相同（合并**不削弱**判据）。来源也必须是确定的：
         否则同一对唤醒换个到达顺序就会写出两种诊断。优先级就是枚举的声明顺序
-        （``NONE < MENTION < CLAIM < TEAM_TASK_CHANGE < HUMAN_MESSAGE``），因此不需要第二张表。
+        （``NONE < MENTION < CLAIM < CONTINUE < TEAM_TASK_CHANGE < HUMAN_MESSAGE``），因此不需要第二张表。
         """
         order = list(ReplySignal)
         return other if order.index(other) > order.index(self) else self
@@ -105,6 +109,7 @@ class ReplySignal(StrEnum):
 # 确定信号 → 那组文案的前缀。人类消息最高（最直接的对话），也是声明顺序的末位。
 _COPY_PREFIX: dict[ReplySignal, str] = {
     ReplySignal.CLAIM: "claim",
+    ReplySignal.CONTINUE: "continue",
     ReplySignal.TEAM_TASK_CHANGE: "team_change",
     ReplySignal.HUMAN_MESSAGE: "human_message",
 }
@@ -232,7 +237,18 @@ class SetTaskStatusAction:
     status: TaskStatus
 
 
-AgentTaskAction: TypeAlias = TransferTaskAction | SetTaskStatusAction
+@dataclass(frozen=True)
+class ContinueTaskAction:
+    """Agent 在当前任务轮次中**申请自动续跑**的结构化动作（ADR-0027）。
+
+    它不改任务行：受派者用它在轮次收口时声明「这张任务还没干完，请编排再叫我一轮」。
+    「再说一次我会继续」写在正文里不是这个动作——正文里的承诺没有执行面。
+    """
+
+    task_id: str
+
+
+AgentTaskAction: TypeAlias = TransferTaskAction | SetTaskStatusAction | ContinueTaskAction
 
 
 @dataclass(frozen=True)
@@ -256,6 +272,9 @@ class TaskActionContext:
     agent_members: tuple[TaskAgentOption, ...]
     title: str = ""
     status: str = ""
+    # 自动续跑（ADR-0027）是否在这一轮可用：只在 **autonomous 任务线程**打开。team 任务线程的
+    # 唤醒面只有队长（ADR-0022），续跑会绕过那条裁决，所以那边显式关掉（工具与提示都不出现）。
+    allow_continue: bool = False
 
     def transfer_options_for(self, actor_id: str) -> tuple[TaskAgentOption, ...]:
         """模型不可见的转派目标正本，顺序由服务端固定，允许显示名重复。"""
@@ -291,7 +310,7 @@ class RoundOutcome:
         if self.status == "silent" and self.messages:
             raise ValueError("silent 轮次不得产出待落库的回复消息")
         if self.task_action is not None and not isinstance(
-            self.task_action, (TransferTaskAction, SetTaskStatusAction)
+            self.task_action, (TransferTaskAction, SetTaskStatusAction, ContinueTaskAction)
         ):
             raise ValueError("Agent 任务动作必须使用受支持的结构化类型")
 
@@ -992,7 +1011,7 @@ class AgentScopeAgentSeam:
                     UserConfirmResultEvent,
                     UserInterruptEvent,
                 )
-                from agentscope.message import Msg, ToolCallBlock, UserMsg
+                from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
                 from agentscope.state import AgentState
 
                 from .approval import ApprovalWaitTimeout
@@ -1073,8 +1092,19 @@ class AgentScopeAgentSeam:
                 instance = _agent_instance(agent_options, plan=plan, member_id=member_id)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
+                # 自动续跑轮（ADR-0027）会把**整个任务线程**交进来：自己的历史回复必须按
+                # assistant 角色回传，否则模型会把上一轮的产出读成「另一个人说的话」。
                 inputs: Any = [
-                    UserMsg(name=_author_name(item), content=_body(item)) for item in messages
+                    (
+                        Msg(
+                            name=_author_name(item),
+                            content=[TextBlock(type="text", text=_body(item))],
+                            role="assistant",
+                        )
+                        if str(item["author"]["id"]) == member_id
+                        else UserMsg(name=_author_name(item), content=_body(item))
+                    )
+                    for item in messages
                 ] or None
                 pending_reply_id: str | None = None
 
@@ -1846,6 +1876,10 @@ def _system_prompt(
         # 人类直接对话（#189）：四个面同一句。来源写成「人类消息」——它不是任务变化、不是认领，
         # 也不依赖「被点名」才成立，写成那三种就是一条不存在的事实。
         parts.append("本轮由人类消息唤醒：人类直接对你说话，这是确定信号，你必须回应。")
+    if signal is ReplySignal.CONTINUE:
+        # 自动续跑（ADR-0027）：上一轮由**受派者自己**申请，来源写成「认领」或「人类消息」都是
+        # 一条不存在的事实。
+        parts.append("本轮由自动续跑唤醒：上一轮你申请继续推进这张任务，这是确定信号，你必须回应。")
     if mentioned:
         parts.append("注意：本轮有人点名了你，因此你必须回应。")
     if with_web:
@@ -1898,6 +1932,15 @@ def _system_prompt(
             f"{transfer_sentence}每轮最多提交一个动作，"
             "动作最终是否成功以系统记录为准。"
         )
+        if task_context.allow_continue and task_context.assignee_member_id == str(agent.get("id") or ""):
+            # 自动续跑的**执行面**（ADR-0027）：正文里的「我会继续」没有执行面，工具调用才有。
+            # 完成 / 待审的出口复用既有五态，不新增状态。
+            action_rules += (
+                "任务还没干完（还有后续步骤、或你正准备说「接下来我会…」）时，**必须调用 "
+                "continue_task 工具**申请自动续跑：只在正文里承诺不会触发任何后续轮次。"
+                "任务已完成或需要人工审阅时，用 set_task_status 把状态推进到 in_review；"
+                "需要用户先确认才能继续时，不要调用 continue_task。"
+            )
         if leader and task_context.assignee_member_id != str(agent.get("id") or ""):
             parts.append(f"{action_rules}需要成员动手时用 TeamAssign，可选成员见该工具的描述。")
         else:
@@ -2021,7 +2064,7 @@ def _silence_tools(declarations: list[None]) -> list[Any]:
 def _task_action_tools(
     context: TaskActionContext, actor_id: str, actions: list[AgentTaskAction]
 ) -> list[Any]:
-    """仅在任务轮次提供两种类型化动作工具；工具只收集意图，写入仍由编排器授权。"""
+    """仅在任务轮次提供类型化动作工具；工具只收集意图，写入仍由编排器授权。"""
     from agentscope.permission import PermissionBehavior, PermissionDecision
     from agentscope.tool import ToolBase
 
@@ -2050,6 +2093,19 @@ def _task_action_tools(
     # 工具函数的 bundled typing 与运行期不一致：收口在 `_value_returning_tool` 一处。
     tools: list[ToolBase] = [_value_returning_tool(set_task_status, permission)]
     if actor_id == context.assignee_member_id:
+        if context.allow_continue:
+
+            def continue_task() -> str:
+                """申请自动续跑：本轮结束后由编排再唤醒你一轮，继续推进这张任务。
+
+                任务没干完（还有后续步骤、或你正准备说「接下来我会…」）时**必须调用它**；
+                只在正文里承诺「我会继续」不会触发任何后续轮次。任务已完成或需要人工审阅时，
+                改用 set_task_status；需要用户先确认才能继续时，不要调用它。
+                """
+                return record(ContinueTaskAction(context.task_id))
+
+            tools.append(_value_returning_tool(continue_task, permission))
+
         transfer_options = context.transfer_options_for(actor_id)
 
         def transfer_task(recipient_number: int) -> str:
