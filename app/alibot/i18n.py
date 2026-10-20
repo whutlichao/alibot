@@ -94,6 +94,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.web_provider_invalid": "联网 provider 只能是这些之一：{values}",
         "error.task_action_wrong_target": "Agent 任务动作只能操作当前任务线程",
         "error.task_action_not_member": "只有任务成员可以更新任务状态",
+        "error.continue_not_assignee": "只有这张任务的受派者可以申请自动续跑",
         "error.task_action_rejected": "Agent 任务动作被拒绝：{message}",
         # ─── 落库的系统事件消息（写入时的语言，不回填） ───────────────────
         "system.task.created": "任务已创建：{title}",
@@ -105,6 +106,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         # 认领在同一个事务里落下的**第二条**记录（ADR-0016 二）：新键，不与 `system.task.status` 共键。
         # 后者继续只表示「有人推了状态」。
         "system.task.claim_started": "认领后自动开工：状态推进至 {status}",
+        # 自动续跑（ADR-0027）：受派者用 `continue_task` 申请后，编排先落这条记录再唤醒同一人。
+        # 它与「认领后自动开工」同族，但说的是另一件事：这一次是**受派者自己**申请继续干。
+        "system.task.continue": "自动续跑：受派者申请继续推进这张任务",
+        "system.task.continue_paused": (
+            "自动续跑已暂停：本次人类世代内这张任务已跑满 {rounds} 轮；任务仍在进行中，发一条消息可继续"
+        ),
         "system.member.pierced_join": (
             "{name} 加入了频道：它被点名时并不在此频道，回复时顺带加入（成员变化只随真实回复发生）"
         ),
@@ -148,6 +155,20 @@ CATALOGS: dict[str, dict[str, str]] = {
         # 认领轮的可读后缀（ADR-0016 五）：照 `reason.pierced_suffix` 的先例追加进 reason 文本。
         # `reason` 只承担可读诊断，**不**承担纪律判据（那是进程内枚举 `ReplySignal` 的事）。
         "reason.claim_round": "{reason}；本轮由**认领**唤醒（编排把这张任务交给你，你必须回应）",
+        # 自动续跑（ADR-0027）：第五类确定信号。它与认领同级，但来源是**受派者上一轮的申请**——
+        # 复用认领那套会把这一轮写成「编排把任务交给你」，而那件事在上一轮已经发生过了。
+        "reason.continue_ignored": (
+            "自动续跑是确定信号，必须回应；本轮自判忽略，按失败处理（原因为：{reason}）"
+        ),
+        "reason.continue_no_body": (
+            "自动续跑是确定信号，但本轮没有产出可落库的正文、也没有提交任务动作，按失败处理"
+        ),
+        "reason.continue_silent": (
+            "自动续跑是确定信号，必须回应；本轮模型声明沉默，按失败处理（原因为：{reason}）"
+        ),
+        "reason.continue_round": (
+            "{reason}；本轮由**自动续跑**唤醒（你上一轮申请继续推进这张任务，你必须回应）"
+        ),
         # 队长的「任务变化」唤醒（#179 / ADR-0025 §六）：建任务 / 改派 / 转派把 team 队长叫醒的那一轮。
         # 它与认领轮**同级**（都是确定信号、同一个 `ReplySignal` 判据），但与认领**不同源**——
         # team 频道不发生认领，复用 `reason.claim_*` 会写下一条不存在的事实。因此四条词条与认领那套并列，
@@ -474,6 +495,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.web_provider_invalid": "A web provider must be one of: {values}",
         "error.task_action_wrong_target": ("An Agent task action can only touch the task thread it runs in"),
         "error.task_action_not_member": "Only task members can update the task status",
+        "error.continue_not_assignee": "Only the assignee of this task can request auto-continue",
         "error.task_action_rejected": "The Agent task action was rejected: {message}",
         # ─── 落库的系统事件消息 ──────────────────────────────────────────
         "system.task.created": "Task created: {title}",
@@ -485,6 +507,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         # The **second** record a claim writes in the same transaction (ADR-0016 二): a new key,
         # deliberately not shared with `system.task.status`, which keeps meaning "someone moved the status".
         "system.task.claim_started": "Claim started the work: status moved to {status}",
+        # Auto-continue (ADR-0027): after the assignee asks with `continue_task`, orchestration writes
+        # this record first and then wakes the same member. Same family as the claim record above, but
+        # a different fact: this time the **assignee itself** asked to keep going.
+        "system.task.continue": "Auto-continue: the assignee asked to keep working on this task",
+        "system.task.continue_paused": (
+            "Auto-continue paused: this task has used all {rounds} rounds for this human generation; "
+            "it is still in progress — send a message to continue"
+        ),
         "system.member.pierced_join": (
             "{name} joined the channel: it was mentioned while outside this channel and joined "
             "along with its reply (membership only changes alongside a real reply)"
@@ -538,6 +568,25 @@ CATALOGS: dict[str, dict[str, str]] = {
         "reason.claim_round": (
             "{reason}; this round was woken by the **claim** (orchestration handed you this task, "
             "you must reply)"
+        ),
+        # Auto-continue (ADR-0027): the fifth definite signal. Same rank as a claim wake, but the source
+        # is the **assignee's own request in the previous round** — reusing the claim wording would say
+        # orchestration handed over the task again, which already happened.
+        "reason.continue_ignored": (
+            "An auto-continue wake is a definite signal and must be answered; this round chose to "
+            "ignore it, so it counts as a failure (original reason: {reason})"
+        ),
+        "reason.continue_no_body": (
+            "An auto-continue wake is a definite signal, but this round produced no storable body and "
+            "submitted no task action, so it counts as a failure"
+        ),
+        "reason.continue_silent": (
+            "An auto-continue wake is a definite signal and must be answered; this round declared "
+            "silence, so it counts as a failure (original reason: {reason})"
+        ),
+        "reason.continue_round": (
+            "{reason}; this round was woken by **auto-continue** (you asked to keep working on this "
+            "task in the previous round, you must reply)"
         ),
         # A team leader's **task change** wake (#179 / ADR-0025 §六): creation / reassignment /
         # transfer called the leader. Same rank as a claim wake (both are definite signals carried by

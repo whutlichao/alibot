@@ -177,15 +177,16 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - **唤醒面** = 该频道的全部 agent 成员（**排除作者自己**）+ **穿透**（被个人提及但**未加入**该
   频道的 Agent）。穿透不豁免预算。这是 **`autonomous`** 频道的口径；`team` 频道（以及它的 task
   target）**只唤醒队长**，见下节。
-- **回应判断**：**确定信号有四类**——被个人提及、被**认领**唤醒、team 队长被**任务变化**唤醒、
-  **人类消息**（`message.kind == "human"`，DM / autonomous 频道 / team 队长 / task 受派者四个面同口径，#189）
+- **回应判断**：**确定信号有五类**——被个人提及、被**认领**唤醒、team 队长被**任务变化**唤醒、
+  **人类消息**（`message.kind == "human"`，DM / autonomous 频道 / team 队长 / task 受派者四个面同口径，#189）、
+  **自动续跑**（受派者用 `continue_task` 申请继续推进，ADR-0027）
   → **必须回应**（自判忽略按 `failed` 处理，不静默）；
   明确无关 → `ignored`（正常协议选择，不是失败）。**声明沉默**（`silent`）在确定信号下同样收口成
   `failed`——`silent` 本身不是失败，只是「它决定不说话」在必须回应的场合不算回应（与 `ignored`
-  同款，见 `orchestration.py` 的 `definite_signal` 分支）。四类**同级不同源**：可读文案与提示词按来源选
-  （`reason.claim_*` / `reason.team_change_*` / `reason.human_message_*` / 提及那一对），混用就会写下一条
-  没发生过的事实。人类消息这一类**不改唤醒面、不扣跳、不改未读口径、不改消息 kind**，也不改非人类作者
-  （Agent / system）的纪律。
+  同款，见 `orchestration.py` 的 `definite_signal` 分支）。五类**同级不同源**：可读文案与提示词按来源选
+  （`reason.claim_*` / `reason.continue_*` / `reason.team_change_*` / `reason.human_message_*` / 提及那一对），
+  混用就会写下一条没发生过的事实。人类消息与自动续跑这两类**不改唤醒面、不扣跳、不改未读口径、不改消息 kind**，
+  也不改非人类作者（Agent / system）的纪律。
 - **每轮落一条 `round_outcome`**：`replied` / `ignored` / `failed` / `merged` / `budget-exhausted` /
   `silent`（`silent` = 模型经**结构化通道**声明本轮沉默，与 `ignored` 不同、也不是失败），
   带可读 reason、起止时间、是否消耗预算、是否被合并。
@@ -267,6 +268,29 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - **已知代价**：认领会重置一次该任务的预算。触发者是人（人创建了任务），推进世代的动作却由编排
   执行；风险由「每张任务至多一次」封住（见上）。认领现在另多了「推状态 + 强制必答」两条效应，
   比 ADR-0010 当时描述的重；守这条边界的只有 `claimed_at` 那一把锁。
+
+### 自动续跑（ADR-0027）
+
+认领 / 指派只保证**第一轮**发生。任务需要多轮时，**受派者自己**用结构化动作 `continue_task`
+（`ContinueTaskAction`）申请：「这一轮还没干完，再叫我一轮」。它**不改任务行**，只是轮次收口时的
+一个执行请求——正文里的「我会继续」没有执行面，不算。
+
+- **投递形状**：编排先落一条 `system.task.continue`（`Auto-continue: the assignee asked to keep
+  working on this task` / `自动续跑：受派者申请继续推进这张任务`），再以它的 `seq` 唤醒**同一个人**一轮。
+  唤醒的载体仍必须是一条消息（ADR-0017）。
+- **续跑轮看整个任务线程**：`history=True` 的轮次把该 target 的全部消息交给接缝，**作者是本轮 Agent
+  的消息按 `assistant` 角色回传**（普通轮次逐字不变：只喂游标之后的新消息、且不含自己）。
+  `mentions` / `base_seq` 只看本轮新消息，历史点名的旧账不会改判本轮。
+- **是确定信号**：`ReplySignal.CONTINUE`，可读文案 `reason.continue_*`；沉默 / 自判忽略 / 无正文无动作
+  按 `failed` 收口。提示词写明「本轮由自动续跑唤醒」，不复用认领或人类消息的措辞。
+- **不是跳**：载体是 `system` 记录、被唤醒的是同一个人，`target_budget.used` 一字不动。
+- **每世代有界**：一次人类世代内受派者在这张任务上最多 `TASK_WORK_ROUNDS_PER_EPOCH` 轮
+  （首轮 + `TASK_CONTINUE_ROUNDS` = 3 轮续跑）。计数读 `round_outcome`（`base_seq >= epoch_seq`、
+  同一成员、非 `merged`），持久且跨重启一致；到上限后落一条 `system.task.continue_paused` 并停止，
+  用户再发一条消息即开新世代、额度重来。
+- **team 任务线程不提供**：`TaskActionContext.allow_continue` 在 team 下为假——工具不挂、提示词不出现
+  （只唤醒队长的裁决不因此开口子）。
+- **`SCHEMA_VERSION` 不 bump、无迁移步骤**：零 DDL（新计数器读既有 `round_outcome`），与 ADR-0016 六同一处置。
 
 ## team 模式：频道 + 任务线程的拓扑（ADR-0018 / ADR-0022）
 

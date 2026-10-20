@@ -210,6 +210,14 @@ ROUND_STATUSES = ("replied", "ignored", "failed", "merged", "budget-exhausted", 
 # 固定档位之一（#31 §2 人定，落库于 ``channel_budget_limit``），未配置的频道回落到这里。
 BUDGET_LIMIT = 3
 
+# 自动续跑（ADR-0027）：**一次人类世代内**，受派者在一张任务上最多跑几轮（含第一轮 / 认领轮）。
+# 它和 `BUDGET_LIMIT` 是两个计数器：跳数只数 agent→agent 的投递，续跑轮不是跳（它不唤醒其他
+# Agent），因此不能共用 `target_budget.used`。3 轮续跑 = 认领轮之后最多再干 3 轮。
+TASK_CONTINUE_ROUNDS = 3
+# 上限落在「轮数」上：第一轮（认领 / 指派唤醒）+ 最多 `TASK_CONTINUE_ROUNDS` 轮续跑。
+# 计数读 `round_outcome`（持久、跨重启一致），不新增 DDL。
+TASK_WORK_ROUNDS_PER_EPOCH = 1 + TASK_CONTINUE_ROUNDS
+
 # 频道可选的**固定档位**（#31 §2 人定）：不支持任意整数、0 或 1。非法值必须明确拒绝、不部分写入
 # （写路径见 :meth:`Database.set_channel_budget_limit`）。
 BUDGET_LIMIT_TIERS = (3, 5, 10)
