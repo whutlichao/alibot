@@ -4,20 +4,23 @@
  * 接缝沿用既有那一套（`vm` + `fetch` 替身 + DOM 替身；与 `narration_ui.test.cjs` /
  * `task_count_ui.test.cjs` 同款），不新开第二套前端测试框架。断言只落在用户可见面：
  *
- * 1. 频道 system 行里的 `.task-ref-chip` 文案含**任务线程消息数**（`task.message_count`），
- *    aria-label 含任务标题与条数；
+ * 1. 频道 system 行里的 `.task-ref-chip` 文案含**任务未读数**（`task.unread_count`，不是
+ *    `task.message_count`）：0 未读时不显示计数段，>0 时是「· N 条未读」；aria-label 同步；
  * 2. 点 chip 走既有 `openTask`（可观察证据：请求 `GET /api/tasks/<id>/messages`）；
  * 3. `#msgCount` 把这条 system 消息计入（0 → 1）；
  * 4. 建任务成功后吸收返回的 `message`：立即出现在流里、页签计数 +1（不需要等下一次刷新）；
- * 5. 任务不在快照里时计数如实显示 0，不编造；
- * 6. `#217`：该任务 target 有 pending 时，同一行出现与任务卡片同款的「待审批 N」角标，
+ * 5. 任务不在快照里时按未读 0 处理，不显示计数、不编造读数；
+ * 6. #223：打开线程完成已读（`openTask` → `markTaskRead`）与线程内新消息被吸收
+ *    （`absorbTaskMessage` → `markTaskRead`）之后，频道流里同一任务的 chip 立即变为未读 0，
+ *    且是**同一个节点就地改写**——不整板重铺、不丢滚动位置、不重新拉频道消息流；
+ * 7. `#217`：该任务 target 有 pending 时，同一行出现与任务卡片同款的「待审批 N」角标，
  *    文本 / aria 复用既有词条、count 严格按 target 归属；无 pending / 别的 target 的 pending
  *    都不画；live `approval_resolved` 与本地 600s 过期都会让它消失，且**不**重新拉消息；
  *    角标本身不是点击目标（可点区域仍只有既有 chip）。
  *
- * 装置分两份、各有唯一来源：前三条（#198）用文件上半部分的窄装置（只铺消息流 + 任务快照）；
+ * 装置分两份、各有唯一来源：前五条（#198 / #223）用文件上半部分的窄装置（只铺消息流 + 任务快照）；
  * #217 的判据需要**审批时钟 / 定时器 / live 帧**，这些能力已经在 `approval_dom_harness.cjs`
- * （#153 / #209 的共用装置）里，因此第 6 组用例复用那一份，不在本地再补第二套。
+ * （#153 / #209 的共用装置）里，因此第 7 组用例复用那一份，不在本地再补第二套。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -231,7 +234,8 @@ function taskRecord(overrides) {
       channel_name: "设计系统重构",
       status: "todo",
       assignee_member_id: null,
-      unread_count: 0,
+      // #223：chip 的计数读 `unread_count`；`message_count` 故意取不同值，用例据此证明读的是未读。
+      unread_count: 2,
       message_count: 3,
     },
     overrides || {},
@@ -258,6 +262,26 @@ function pointerMessage(overrides) {
   );
 }
 
+/** 一条任务线程消息（`GET /api/tasks/{id}/messages` 的项形状）。 */
+function threadMessage(overrides) {
+  return Object.assign(
+    {
+      id: "msg_thread_1",
+      target_id: "tgt_1",
+      seq: 1,
+      kind: "human",
+      body: "线程里的一条消息",
+      created_at: "2026-10-20T09:05:00Z",
+      mention_snapshot: [],
+      task_ref: null,
+      task_pointer: null,
+      attachments: [],
+      author: { id: "mem_other", kind: "member", display_name: "别的成员", avatar_slot: 1 },
+    },
+    overrides || {},
+  );
+}
+
 function jsonResponse(payload, status) {
   return { ok: (status || 200) < 400, status: status || 200, json: async () => payload };
 }
@@ -268,6 +292,7 @@ function createHarness(options) {
   const elements = new Map();
   const tasks = (config.tasks || []).map((task) => Object.assign({}, task));
   const channelMessages = (config.messages || []).map((message) => Object.assign({}, message));
+  const threadMessages = (config.threadMessages || []).map((message) => Object.assign({}, message));
 
   class FakeEventSource {
     constructor(url) {
@@ -286,6 +311,8 @@ function createHarness(options) {
         id: "t_new",
         target_id: "tgt_new",
         title: String(body.title || ""),
+        // 自己建的任务：线程里还没有别人的发言，未读为 0（system 指针与自己的消息都不计）。
+        unread_count: 0,
         message_count: 1,
       });
       const pointer = pointerMessage({
@@ -307,7 +334,22 @@ function createHarness(options) {
     if (method === "GET" && /^\/api\/tasks\/[^/]+\/messages$/.test(route)) {
       const id = decodeURIComponent(route.split("/")[3]);
       const found = tasks.find((task) => task.id === id) || taskRecord({ id });
-      return jsonResponse({ task: Object.assign({}, found), messages: [] });
+      return jsonResponse({
+        task: Object.assign({}, found),
+        messages: threadMessages.map((message) => Object.assign({}, message)),
+      });
+    }
+    // 已读端点（#223）：后端把任务载荷的未读数归零后原样返回任务。
+    if (method === "POST" && /^\/api\/tasks\/[^/]+\/read$/.test(route)) {
+      const id = decodeURIComponent(route.split("/")[3]);
+      const found = tasks.find((task) => task.id === id);
+      if (found) found.unread_count = 0;
+      return jsonResponse({ task: Object.assign({}, found || taskRecord({ id, unread_count: 0 })) });
+    }
+    if (method === "GET" && /^\/api\/tasks\/[^/]+$/.test(route)) {
+      const id = decodeURIComponent(route.split("/")[3]);
+      const found = tasks.find((task) => task.id === id) || taskRecord({ id });
+      return jsonResponse({ task: Object.assign({}, found) });
     }
     if (method === "GET" && /^\/api\/channels\/[^/]+\/members$/.test(route)) {
       return jsonResponse({ members: [OWNER] });
@@ -390,7 +432,7 @@ function createHarness(options) {
   vm.runInContext(
     source.replace(
       startup,
-      "\nglobalThis.__pointerTest = { state, bindEvents, setViewMode, renderMessages, openTask };\n",
+      "\nglobalThis.__pointerTest = { state, bindEvents, setViewMode, renderMessages, openTask, handleTaskStreamEvent };\n",
     ),
     context,
     { filename: appPath },
@@ -445,9 +487,9 @@ function createHarness(options) {
   };
 }
 
-/* ─── 1. 指针消息：chip 文案含线程条数，点它打开任务线程 ─────────────────── */
+/* ─── 1. 指针消息：chip 文案含未读数，点它打开任务线程 ─────────────────────── */
 
-test("频道指针消息渲染出进入任务线程的 chip，文案带任务线程消息数，点击打开线程", async () => {
+test("频道指针消息渲染出进入任务线程的 chip，文案带任务未读数，点击打开线程", async () => {
   const harness = createHarness({ tasks: [taskRecord()], messages: [pointerMessage()] });
   harness.show();
 
@@ -456,10 +498,13 @@ test("频道指针消息渲染出进入任务线程的 chip，文案带任务线
   assert.equal(chips.length, 1, "指针消息只有一个入口 chip（task_ref 为 null，不额外渲染）");
   const chip = chips[0];
   assert.equal(chip.tagName, "button");
-  assert.match(chip.textContent, /进入任务线程 · 3 条/, "计数来自任务载荷的 message_count");
+  assert.equal(
+    chip.textContent,
+    "进入任务线程 · 2 条未读",
+    "计数来自任务载荷的 unread_count（2），不是 message_count（3）",
+  );
   assert.equal(chip.dataset.openTask, "t_1");
-  assert.match(chip.getAttribute("aria-label"), /整理发布清单/);
-  assert.match(chip.getAttribute("aria-label"), /3 条/);
+  assert.equal(chip.getAttribute("aria-label"), "打开任务 整理发布清单 的任务线程，有 2 条未读");
 
   await harness.clickChip(chip);
 
@@ -489,13 +534,14 @@ test("建任务成功后吸收返回的 message：流里立刻出现该行，页
   assert.match(harness.messageList.textContent, /任务已创建：写发布说明/);
   const chips = harness.chips();
   assert.equal(chips.length, 1);
-  assert.match(chips[0].textContent, /进入任务线程 · 1 条/);
+  assert.equal(chips[0].textContent, "进入任务线程", "新建任务未读为 0：不显示数字与「条」");
+  assert.equal(chips[0].getAttribute("aria-label"), "打开任务 写发布说明 的任务线程");
   assert.equal(chips[0].dataset.openTask, "t_new");
 });
 
-/* ─── 3. 任务不在快照里：计数如实为 0 ───────────────────────────────────── */
+/* ─── 3. 任务不在快照里：按未读 0 处理，不编造读数 ───────────────────────── */
 
-test("任务不在快照里时 chip 的计数显示 0，不编造条数", () => {
+test("任务不在快照里时 chip 不显示计数段，也不编造条数", () => {
   const harness = createHarness({
     tasks: [],
     messages: [pointerMessage({ task_pointer: "t_missing" })],
@@ -504,7 +550,81 @@ test("任务不在快照里时 chip 的计数显示 0，不编造条数", () => 
 
   const chips = harness.chips();
   assert.equal(chips.length, 1);
-  assert.match(chips[0].textContent, /进入任务线程 · 0 条/);
+  assert.equal(chips[0].textContent, "进入任务线程");
+  assert.doesNotMatch(chips[0].textContent, /0/);
+  assert.equal(chips[0].getAttribute("aria-label"), "打开任务 t_missing 的任务线程");
+});
+
+/* ─── 3b. #223 已读后的定点刷新：不重铺、不丢滚动、不重拉频道消息流 ───────── */
+
+/** 频道消息流被整板重拉的次数（用户可观察事实：打开线程不应触发它）。 */
+function channelMessageFetches(harness) {
+  return harness.calls.filter((call) => call.url.startsWith("/api/channels/ch_1/messages")).length;
+}
+
+test("打开任务线程完成已读后，频道流里同一任务的 chip 立即变为未读 0，且不重铺消息流", async () => {
+  const harness = createHarness({
+    tasks: [taskRecord({ unread_count: 4, message_count: 9 })],
+    messages: [pointerMessage()],
+    threadMessages: [threadMessage({ seq: 1 })],
+  });
+  harness.show();
+
+  const chip = harness.chips()[0];
+  assert.equal(chip.textContent, "进入任务线程 · 4 条未读");
+  const rowBefore = byClass(harness.messageList, "msg")[0];
+  assert.ok(rowBefore, "指针消息行应当已铺好");
+  const fetchesBefore = channelMessageFetches(harness);
+  harness.messageList.scrollTop = 37;
+
+  await harness.clickChip(chip);
+
+  assert.ok(harness.findRequest("POST", "/api/tasks/t_1/read"), "打开线程后走既有已读端点");
+  const chips = harness.chips();
+  assert.equal(chips.length, 1);
+  assert.equal(chips[0], chip, "同一个 chip 节点被就地改写（不整板重铺）");
+  assert.equal(byClass(harness.messageList, "msg")[0], rowBefore, "消息行节点没有被重建");
+  assert.equal(harness.messageList.scrollTop, 37, "定点更新不改变消息流滚动位置");
+  assert.equal(chip.textContent, "进入任务线程", "已读后 chip 不再显示计数段");
+  assert.equal(chip.getAttribute("aria-label"), "打开任务 整理发布清单 的任务线程");
+  assert.equal(
+    channelMessageFetches(harness),
+    fetchesBefore,
+    "打开线程期间没有重新拉取频道消息流",
+  );
+});
+
+test("线程内新消息被吸收后，同一任务的 chip 也立即回到未读 0（不重拉频道消息流）", async () => {
+  const harness = createHarness({
+    tasks: [taskRecord({ unread_count: 1 })],
+    messages: [pointerMessage()],
+    threadMessages: [threadMessage({ seq: 1 })],
+  });
+  harness.show();
+  await harness.clickChip(harness.chips()[0]);
+
+  // 频道流先看到该任务又出现未读（模拟 12s 轮询带回了新的任务载荷），随后线程吸收一条新消息。
+  harness.api.state.tasks[0].unread_count = 1;
+  harness.api.renderMessages();
+  const chip = harness.chips()[0];
+  assert.equal(chip.textContent, "进入任务线程 · 1 条未读");
+  const fetchesBefore = channelMessageFetches(harness);
+
+  harness.api.handleTaskStreamEvent(
+    "t_1",
+    { data: JSON.stringify({ message: threadMessage({ id: "msg_thread_2", seq: 2 }) }) },
+    "message",
+  );
+  await settle();
+
+  assert.ok(harness.findRequest("POST", "/api/tasks/t_1/read"), "吸收线程消息后同样走已读端点");
+  assert.equal(harness.chips()[0], chip, "同一个 chip 节点被就地改写");
+  assert.equal(chip.textContent, "进入任务线程", "吸收并已读后 chip 回到未读 0");
+  assert.equal(
+    channelMessageFetches(harness),
+    fetchesBefore,
+    "吸收线程消息不重新拉取频道消息流",
+  );
 });
 
 /* ─── 4. #217 指针消息行上的「待审批 N」角标 ───────────────────────────────
