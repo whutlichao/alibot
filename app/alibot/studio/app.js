@@ -2264,6 +2264,9 @@ async function markTaskRead(taskId, seq) {
     if (state.activeTaskId === taskId) state.activeTask = payload.task;
     const index = state.tasks.findIndex((task) => task.id === taskId);
     if (index >= 0) state.tasks[index] = payload.task;
+    // #223：频道流里指向同一任务的 chip 跟着变成最新未读数（通常是 0）——就地写文本与 aria，
+    // 不重铺消息流（滚动位置、焦点与正在点的节点都不动），也不重新拉频道消息。
+    syncTaskPointerChips(payload.task);
     renderTaskThread();
     renderTaskBoard();
   } catch (err) {
@@ -3704,7 +3707,8 @@ async function submitTask() {
     closeTaskModal();
     // 建任务在频道流里留下一条 system 指针消息（#198）：把它当作一条到达的消息吸收，
     // 于是「消息 N」页签计数立刻 +1，人不用等下一次整页刷新。其它频道只对齐频道列表读数。
-    // 任务先补进快照：chip 的条数读 `taskById(...).message_count`，快照没到就只能显示 0。
+    // 任务先补进快照：chip 的未读数读 `taskById(...).unread_count`（#223），快照没到就按 0 处理，
+    // 不显示计数段。
     if (payload.message) {
       const index = state.tasks.findIndex((task) => task.id === payload.task.id);
       if (index >= 0) state.tasks[index] = payload.task;
@@ -7540,6 +7544,37 @@ function messageNode(message) {
   return article;
 }
 
+/** 指针 chip 的可见文案（#223）：未读为 0 时不显示数字与「条」。 */
+function taskPointerChipText(unread) {
+  return unread > 0 ? t('msg.taskThreadEntryUnread', { count: unread }) : t('msg.taskThreadEntry');
+}
+
+/** 指针 chip 的 aria 名：与可见文案同源，0 未读时不提计数（#223）。 */
+function taskPointerChipAria(title, unread) {
+  return unread > 0
+    ? t('msg.taskThreadEntryAriaUnread', { title, count: unread })
+    : t('msg.taskThreadEntryAria', { title });
+}
+
+/** 任务已读后，把频道流里指向**同一任务**的指针 chip 定点改写成最新未读数（通常是 0）。
+
+    #223：`markTaskRead()` 成功后调用。只改既有 chip 的文本与 aria——**不**重铺
+    `renderMessages()`，因此消息流的滚动位置、焦点与正在点的节点都不动，也不重新拉频道消息。
+    选择子用 `data-task-pointer`：它只挂在指针 chip 上；`task_ref` 的引用 chip 同样是
+    `.task-ref-chip` + `data-open-task`，按后者扫会误伤同 target 的引用行。 */
+function syncTaskPointerChips(task) {
+  if (!task || !task.id) return;
+  const list = $('#messageList');
+  if (!list) return;
+  const unread = Number(task.unread_count) || 0;
+  const title = task.title || task.id;
+  list.querySelectorAll('[data-task-pointer]').forEach((chip) => {
+    if (chip.dataset.taskPointer !== task.id) return;
+    chip.textContent = taskPointerChipText(unread);
+    chip.setAttribute('aria-label', taskPointerChipAria(title, unread));
+  });
+}
+
 function appendTaskRefChip(body, message) {
   if (message.task_ref) {
     const referencedTask = taskById(message.task_ref);
@@ -7552,15 +7587,18 @@ function appendTaskRefChip(body, message) {
   }
   // 频道指针消息（#198）：`task_pointer` 是**频道 system 消息 → 本频道任务**这条跨 target 指向，
   // 与同 target 的 `task_ref` 是两列、两条语义（见 `CONTEXT.md` **指针消息**）。计数来自任务载荷的
-  // `message_count`（任务不在快照里时如实显示 0，而不是编一个数）。
+  // `unread_count`（#223）——已读位置之后、作者非本人的 human / agent 消息；system 状态变更记录与
+  // 自己的发言都不计入。未读为 0 时只写「进入任务线程」，不显示计数段；任务不在快照里时按未读 0
+  // 处理（不编造读数）。`data-task-pointer` 供 `syncTaskPointerChips()` 定点刷新。
   if (!message.task_pointer) return;
   const pointedTask = taskById(message.task_pointer);
   const pointedTitle = pointedTask ? pointedTask.title : message.task_pointer;
-  const count = pointedTask ? Number(pointedTask.message_count) || 0 : 0;
-  const entry = el('button', 'task-ref-chip', t('msg.taskThreadEntry', { count }));
+  const unread = pointedTask ? Number(pointedTask.unread_count) || 0 : 0;
+  const entry = el('button', 'task-ref-chip', taskPointerChipText(unread));
   entry.type = 'button';
   entry.dataset.openTask = message.task_pointer;
-  entry.setAttribute('aria-label', t('msg.taskThreadEntryAria', { title: pointedTitle, count }));
+  entry.dataset.taskPointer = message.task_pointer;
+  entry.setAttribute('aria-label', taskPointerChipAria(pointedTitle, unread));
   body.appendChild(entry);
   // #217：该任务 target 有 pending 时，这一行显示与任务卡片**同款**的「待审批 N」角标
   // （同一个节点工厂、同一对词条、同一个 `.card-approval` 类名）。归属只按

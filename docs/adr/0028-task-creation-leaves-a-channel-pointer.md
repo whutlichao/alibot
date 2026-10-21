@@ -58,3 +58,16 @@
 `data-open-task=<task id>` 复用既有 `openTask`；N 取任务载荷的 `message_count`
 （该任务 target 的消息总条数，含 system / human / agent——**不是**未读）。建任务成功后
 `submitTask` 吸收响应里的 `message`，当前频道立即重绘并滚到底，「消息 N」页签同时 +1。
+
+## 修订（2026-10-21，#223）
+
+### 六、呈现：计数改为任务未读数
+
+- **事实修正（#223）**：§五 的呈现描述已过时。chip 的 N 不再取任务载荷的 `message_count`，改取
+  `unread_count`（`UNREAD_WHERE_SQL`：已读位置之后、`kind ∈ {human, agent}`、作者非本人），因此
+  system 状态变更记录与自己的发言都不计入。未读为 0 时 chip 只写「进入任务线程」，不显示计数段；
+  aria 同步（「打开任务 {title} 的任务线程」）。
+- 打开任务线程完成已读后（以及线程内新消息被吸收后），主区域频道流里同一任务的 chip **就地**
+  改写为未读 0——只写文本与 aria，不重铺消息流、不改变滚动位置。
+- 主决策不变：仍是一个 chip、仍复用 `data-open-task` / `openTask`、建任务成功后仍吸收响应里的
+  `message` 并重绘。`message_count` 作为 API 事实保留，只是不再被 chip 读取。
