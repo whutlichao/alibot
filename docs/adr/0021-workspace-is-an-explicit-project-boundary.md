@@ -62,6 +62,12 @@ HITL（D19 已裁定）：`RequireUserConfirmEvent` → `approval_request`（pen
 `POST /api/approvals/{reply_id}` → `ApprovalBroker` 唤醒该轮 → `UserConfirmResultEvent` 回到 Agent/TeamPipeline。
 默认等待 10 分钟；超时 `failed`；进程重启把 pending 标 `expired`，该轮 `failed`。跨重启恢复不在首版（D19）。
 
+事实修正（#215）：`reply_id` 是 AgentScope 的**回复级**标识（「当前回复的 ID」），不是一次确认的标识——
+同一条回复里第 N 个需要确认的工具调用会再发一次 `RequireUserConfirmEvent`、`reply_id` 与第一个相同。因此
+一条 `approval_request` 可以承载**多批确认**：已收口的记录收到尚未包含的调用时重开为 `pending`（合并
+`tool_calls`、清 `resolved_at`、刷新 `requested_at`、只发布新调用），既有 `decisions` 作为历史保留。
+「只接受 pending」「600 秒」「不跨重启恢复」三条语义不变。
+
 ## 五、与三条既有边界的关系
 
 | 既有边界 | 处置 |

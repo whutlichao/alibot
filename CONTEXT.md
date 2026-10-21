@@ -512,8 +512,17 @@ _Avoid_: ACL（它不表达访问控制，scope 是频道/Agent 而不是人）�
 一轮里工具需要人类确认时落一条 `approval_request`（`pending`，带工具调用与决策，**不存凭证**）：人类面经
 `POST /api/approvals/{reply_id}` 提交 `{tool_call_id, confirmed, rules?}`（只接受 `pending`、幂等、
 相反结论 409）。批准后该轮继续；**拒绝的工具结果是 `ToolResultState.DENIED`（工具未执行，本轮仍可继续）**。
-默认等待 600 秒，超时收口 `failed`；进程重启时残留 `pending` 一律标 `expired`，**不跨重启恢复**。
-_Avoid_: 授权（那是权限规则）；确认框（那是呈现）；把拒绝读成 `ERROR`（实现事实是 `DENIED`，不伪造框架不会发出的事件）
+`reply_id` 是**回复级**标识（AgentScope 的「当前回复的 ID」），**不是一次确认的标识**：同一条回复里
+第 N 个需要确认的工具调用会再发一次 `RequireUserConfirmEvent`、`reply_id` 与第一个相同。因此一条
+`approval_request` 可以**多批确认**——已收口的记录收到**尚未包含**的调用时重开为 `pending`（合并进
+`tool_calls`、清掉 `resolved_at`、把 `requested_at` 移到这一批的起点、只发布新调用），既有 `decisions`
+作为历史保留，人类只需决策新调用；重复登记同一批调用是幂等返回，不重开（`expired` 也不因迟到登记复活）。
+重开时刷新 `requested_at` 的代价是**第一批的实际等待时长不再可读**（同一行只留最近一批的起点），这是
+为了让倒计时与新一批的 600 秒同口径；收口判据仍是**全部历史决策**——第一批被拒绝时，第二批即使全部
+批准，记录也仍是 `denied`。
+默认等待 600 秒（每批重开时按现有时长重新起算），超时收口 `failed`；进程重启时残留 `pending` 一律标
+`expired`，**不跨重启恢复**。
+_Avoid_: 授权（那是权限规则）；确认框（那是呈现）；把拒绝读成 `ERROR`（实现事实是 `DENIED`，不伪造框架不会发出的事件）；把 `reply_id` 读成一次确认的 id（它是**回复**的 id，一条回复可有多批确认）
 
 **MCP 声明 (MCP Server)**:
 `mcp_server` 里的一条**配置**：transport（`stdio` / `http` / `sse`）、command / args / url、`env_names`

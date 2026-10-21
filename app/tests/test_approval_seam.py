@@ -16,7 +16,7 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -113,16 +113,24 @@ def library(tmp_path: Path) -> Any:
         database.close()
 
 
-def _run_with_decision(
+def _run_round(
     seam: AgentScopeAgentSeam,
     database: Any,
     agent: dict,
     channel: dict,
     *,
-    decision: dict[str, Any] | None,
+    on_pending: Callable[[dict[str, Any]], list[dict[str, Any]] | None],
     delay: float = 0.0,
-) -> Any:
+    timeout: float = 10.0,
+) -> tuple[Any, list[str]]:
+    """跑一轮，并按 ``on_pending`` 的指示逐批提交决策。
+
+    ``on_pending(record)`` 拿到当时那条 pending 记录，返回要提交的决策批；返回 ``None`` 表示
+    「到此为止」（例如超时用例根本不提交）。同一轮里第二次 ASK 会让同一个 ``reply_id`` 重新
+    挂起，所以调用方只能一次批一批地提交——这正是人类面在 Studio 里的操作节奏。
+    """
     result: dict[str, Any] = {}
+    decided: list[str] = []
 
     def run() -> None:
         result["outcome"] = seam.run_round(
@@ -134,23 +142,75 @@ def _run_with_decision(
 
     thread = threading.Thread(target=run)
     thread.start()
-    if decision is not None:
-        deadline = time.monotonic() + 10
-        reply_id = None
-        while time.monotonic() < deadline:
-            pending = database.list_approval_requests(channel["id"], "pending")
-            if pending:
-                reply_id = pending[0]["reply_id"]
+    broker = seam._approvals
+    assert broker is not None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pending = database.list_approval_requests(channel["id"], "pending")
+        record = pending[0] if pending else None
+        if record is None:
+            if not thread.is_alive():
                 break
             time.sleep(0.01)
-        assert reply_id is not None, "seam 没有登记待审批记录"
+            continue
+        batch = on_pending(record)
+        if batch is None:
+            break
         time.sleep(delay)
-        broker = seam._approvals
-        assert broker is not None
-        broker.submit(reply_id, [decision])
+        broker.submit(record["reply_id"], batch)
+        decided.extend(str(item["tool_call_id"]) for item in batch)
+        delay = 0.0
     thread.join(timeout=15)
     assert not thread.is_alive(), "seam 轮次没有收口"
-    return result["outcome"]
+    return result["outcome"], decided
+
+
+def _run_with_decision(
+    seam: AgentScopeAgentSeam,
+    database: Any,
+    agent: dict,
+    channel: dict,
+    *,
+    decision: dict[str, Any] | None,
+    delay: float = 0.0,
+) -> Any:
+    outcome, _decided = _run_round(
+        seam,
+        database,
+        agent,
+        channel,
+        on_pending=(lambda _record: [decision]) if decision is not None else (lambda _record: None),
+        delay=delay,
+    )
+    return outcome
+
+
+def _run_approving_every_batch(
+    seam: AgentScopeAgentSeam,
+    database: Any,
+    agent: dict,
+    channel: dict,
+    *,
+    batches: int,
+) -> tuple[Any, list[str]]:
+    """逐批批准：每批只提交库里**尚未决策**的调用，凑满 ``batches`` 批即止。"""
+    submitted: list[str] = []
+
+    def on_pending(record: dict[str, Any]) -> list[dict[str, Any]] | None:
+        if len(submitted) >= batches:
+            return None
+        known = {str(item["tool_call_id"]) for item in record["decisions"]}
+        batch = [
+            {"tool_call_id": str(call["id"]), "confirmed": True}
+            for call in record["tool_calls"]
+            if str(call["id"]) not in known
+        ]
+        if not batch:
+            return None
+        submitted.append(record["reply_id"])
+        return batch
+
+    return _run_round(seam, database, agent, channel, on_pending=on_pending)
 
 
 def _broker(database: Any, timeout: float = 5.0) -> ApprovalBroker:
@@ -191,6 +251,41 @@ def test_approval_executes_the_tool_and_completes_the_round(library: Any) -> Non
     assert record[0]["team_run_id"] is None
 
 
+def test_a_second_ask_in_the_same_reply_is_approved_like_the_first(library: Any) -> None:
+    """#215：同一个 ``reply_id`` 里的第二次 ASK 必须和第一次一样可决策，批准后本轮继续收口。
+
+    AgentScope 的 ``reply_id`` 是**一条回复**的标识（``docs/agentscope/2.0.10`` 的
+    human-in-the-loop 页）：同一轮里第二个需要确认的工具调用会再发一次
+    ``RequireUserConfirmEvent``，``reply_id`` 与第一个相同。修复前 ``register()`` 见到终态
+    直接原样返回，seam 的 ``wait()`` 拿到空批 → 整轮 failed（生产里那条
+    ``resolved without new decisions``）。
+    """
+    database, agent, channel, root = library
+    broker = _broker(database)
+    model = _ScriptedModel(
+        [
+            _tool_call("tc-one", "Write", {"file_path": "one.txt", "content": "1\n"}),
+            _tool_call("tc-two", "Write", {"file_path": "two.txt", "content": "2\n"}),
+            [ChatResponse(content=[TextBlock(text="两件都写好了。")], is_last=True)],
+        ]
+    )
+    seam = _seam(database, model, broker)
+
+    outcome, decided = _run_approving_every_batch(seam, database, agent, channel, batches=2)
+
+    assert outcome.status == "replied", outcome.reason
+    assert decided == ["tc-one", "tc-two"]
+    assert (root / "one.txt").read_text(encoding="utf-8") == "1\n"
+    assert (root / "two.txt").read_text(encoding="utf-8") == "2\n"
+    # 同一条回复只落**一行**审批记录：两次 ASK 是同一行里的两个工具调用。
+    records = database.list_approval_requests(channel["id"])
+    assert len(records) == 1
+    assert [call["id"] for call in records[0]["tool_calls"]] == ["tc-one", "tc-two"]
+    assert [item["tool_call_id"] for item in records[0]["decisions"]] == ["tc-one", "tc-two"]
+    assert records[0]["state"] == "approved"
+    assert records[0]["resolved_at"] is not None
+
+
 def test_denial_does_not_execute_the_tool_and_the_round_still_finishes(library: Any) -> None:
     database, agent, channel, root = library
     broker = _broker(database)
@@ -226,6 +321,35 @@ def test_waiting_for_approval_is_not_killed_by_the_model_timeout(library: Any) -
 
     assert outcome.status == "replied", outcome.reason
     assert (root / "notes.txt").exists()
+
+
+def test_a_terminal_record_without_new_decisions_still_fails_the_round(library: Any) -> None:
+    """终态 + 没有新决策仍然是失败出口，绝不被吞成静默成功（#215 的硬边界）。
+
+    重开只发生在「这批调用里有记录尚未包含的 id」时；记录已收口且没有可回送的决策，说明这一轮
+    的挂起没有对应的新确认，seam 只能收口 failed，而不是假装 replied。
+    """
+    database, agent, channel, root = library
+    broker = _broker(database)
+    seam = _seam(database, _write_then_reply(), broker)
+
+    def approve_out_of_band(record: dict[str, Any]) -> list[dict[str, Any]] | None:
+        # 人类在 seam 之外（另一条路径）把记录推到终态，且不经过 broker 的决策队列——
+        # wait() 因此拿到空批，正是「resolved without new decisions」的场景。
+        with sqlite3.connect(database.path) as connection:
+            connection.execute(
+                "UPDATE approval_request SET state = 'approved', resolved_at = "
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE reply_id = ?",
+                (record["reply_id"],),
+            )
+            connection.commit()
+        return None
+
+    outcome, _decided = _run_round(seam, database, agent, channel, on_pending=approve_out_of_band)
+
+    assert outcome.status == "failed"
+    assert "resolved without new decisions" in outcome.reason
+    assert not (root / "notes.txt").exists()
 
 
 def test_approval_timeout_marks_expired_and_fails_the_round(library: Any) -> None:

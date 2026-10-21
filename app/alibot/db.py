@@ -3924,9 +3924,15 @@ class Database:
         tool_calls: list[dict[str, Any]] | None = None,
         decisions: list[dict[str, Any]] | None = None,
         state: str | None = None,
-        resolved_at: str | None = None,
+        requested_at: Any = _UNSET,
+        resolved_at: Any = _UNSET,
     ) -> dict[str, Any]:
-        """更新审批记录的可变字段（工具调用合并、决策、终态与解决时间）。"""
+        """更新审批记录的可变字段（工具调用合并、决策、终态与两个时间戳）。
+
+        两个时间戳都用 ``_UNSET`` 区分「这次没提到」（保持原值）与「显式写入」——``resolved_at``
+        要能写回 ``NULL``（重开终态记录时清掉上一批的解决时间），``requested_at`` 要能被刷新到
+        这一批的起点（``#215``）；其余字段仍是 ``None`` = 不修改。
+        """
         fields: list[str] = []
         params: list[Any] = []
         if tool_calls is not None:
@@ -3940,7 +3946,10 @@ class Database:
                 raise ValueError(f"unsupported approval state: {state!r}")
             fields.append("state = ?")
             params.append(state)
-        if resolved_at is not None:
+        if requested_at is not _UNSET:
+            fields.append("requested_at = ?")
+            params.append(requested_at)
+        if resolved_at is not _UNSET:
             fields.append("resolved_at = ?")
             params.append(resolved_at)
         if not fields:

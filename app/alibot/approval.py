@@ -39,6 +39,10 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600.0
 
 APPROVAL_STATES = ("pending", "approved", "denied", "expired")
 
+#: 已收口、但可被同一个 ``reply_id`` 的**下一批**确认重开的状态（#215）。
+#: ``expired`` 不在其中：超时 / 重启是终局，迟到的登记不复活它。
+REOPENABLE_APPROVAL_STATES = ("approved", "denied")
+
 
 class ApprovalWaitTimeout(RuntimeError):
     """审批等待超时：记录已由 broker 标 ``expired``，runner 负责中断该轮。"""
@@ -102,10 +106,20 @@ class ApprovalBroker:
         tool_calls: Iterable[Mapping[str, Any]],
         team_run_id: str | None = None,
     ) -> dict[str, Any]:
-        """登记（或合并）一条待审批记录；同一个 ``reply_id`` 的新调用只追加、不重置 deadline。"""
+        """登记（或合并）一条待审批记录。
+
+        记录仍 ``pending`` 时：同一个 ``reply_id`` 的新调用只追加、不动等待窗口（首版行为）。
+        记录已收口时（``REOPENABLE_APPROVAL_STATES``）：``reply_id`` 是 AgentScope 的**回复级**
+        标识（一条回复可以有多批确认），只要这批里出现该记录尚未包含的调用，就把它重开成
+        ``pending``——合并 ``tool_calls``、清 ``resolved_at``、刷新 ``requested_at``、按现有
+        时长重开等待窗口，并只发布新调用；保留既有 ``decisions``。全是已知调用则幂等返回
+        （已收口的记录不得因重复 register 重新挂起）。
+        """
         calls = [_tool_call_payload(call) for call in tool_calls]
         with self._lock:
             record = self._db.get_approval_request(reply_id)
+            # ``None`` = 发布整条记录（既有形状）；只有「重开终态」那一次只发布这一批新调用。
+            new_calls: list[dict[str, Any]] | None = None
             if record is None:
                 self._db.create_approval_request(
                     reply_id=reply_id,
@@ -125,17 +139,44 @@ class ApprovalBroker:
                     reply_id, _Session(deadline=self._monotonic() + self.timeout_seconds)
                 )
             else:
-                # 已经 resolved / expired：保留持久事实，不重新打开。
-                return record
+                # 已收口：同一条回复里的第 N 次 ASK。``reply_id`` 标识**一条回复**，不是一次
+                # 确认，所以同一个 id 会再来一批新的工具调用。
+                fresh = _new_tool_calls(record["tool_calls"], calls)
+                if record["state"] not in REOPENABLE_APPROVAL_STATES or not fresh:
+                    # 幂等边界：重复 register 同一批调用不重开；expired 也不因迟到登记复活。
+                    return record
+                # 重开：合并新调用、回到 pending、清掉上一批的解决时间、把请求时间移到这一批的
+                # 起点（前端倒计时按 requested_at + 600s 判定）；``decisions`` 是历史事实，
+                # 原样保留——人类只需决策新调用。
+                self._db.update_approval_request(
+                    reply_id,
+                    tool_calls=_merge_tool_calls(record["tool_calls"], calls),
+                    state="pending",
+                    requested_at=utc_now(),
+                    resolved_at=None,
+                )
+                record = self._db.get_approval_request(reply_id)
+                session = self._sessions.get(reply_id)
+                if session is None:
+                    session = _Session(deadline=self._monotonic() + self.timeout_seconds)
+                    self._sessions[reply_id] = session
+                else:
+                    # 只重开等待窗口（现有时长）；已排队但尚未回送的决策不能丢。
+                    session.deadline = self._monotonic() + self.timeout_seconds
+                new_calls = fresh
 
             if record is None:
                 raise RuntimeError("approval record disappeared during register")
+            shown = cast(
+                list[Mapping[str, Any]],
+                new_calls if new_calls is not None else record["tool_calls"],
+            )
             self._events.publish(
                 record["target_id"],
                 approval_required(
                     reply_id=reply_id,
                     member_id=record["member_id"],
-                    tool_calls=record["tool_calls"],
+                    tool_calls=shown,
                 ),
             )
             return record
@@ -365,17 +406,38 @@ def _rule_payload(rule: Any) -> dict[str, str]:
     }
 
 
+def _call_key(call: Mapping[str, Any]) -> str:
+    """工具调用在一次记录里的稳定键：调用 id（缺失时退化成空串，与既有行为一致）。"""
+    return str(call.get("id") or "")
+
+
 def _merge_tool_calls(
     existing: Iterable[Mapping[str, Any]], incoming: Iterable[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {str(call.get("id") or ""): dict(call) for call in existing}
+    merged: dict[str, dict[str, Any]] = {_call_key(call): dict(call) for call in existing}
     order = list(merged)
     for call in incoming:
-        key = str(call.get("id") or "")
+        key = _call_key(call)
         if key not in merged:
             order.append(key)
         merged[key] = dict(call)
     return [merged[key] for key in order]
+
+
+def _new_tool_calls(
+    existing: Iterable[Mapping[str, Any]], incoming: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """这批调用里记录**尚未包含**的那些（按调用 id 判定，保持来件顺序）。"""
+    known = {_call_key(call) for call in existing}
+    fresh: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for call in incoming:
+        key = _call_key(call)
+        if key in known or key in seen:
+            continue
+        seen.add(key)
+        fresh.append(dict(call))
+    return fresh
 
 
 def _decision_payload(item: Mapping[str, Any]) -> dict[str, Any]:
