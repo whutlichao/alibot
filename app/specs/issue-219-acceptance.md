@@ -304,7 +304,7 @@ stub，且验收文档要写清理由。本票的理由：
 ## Answer
 
 **Status**：`implemented_pending_review`（实现 + 用例 + 红绿证据 + 双轴 review 处置 + 全量门禁全绿；
-PR 待创建，号与 body 路径在 §8 回填）
+PR [#220](https://github.com/whutlichao/alibot/pull/220) 已创建，body 路径见 §8）
 
 **判据 1（红→绿）**：红读数原文贴在 §2.2（`git stash push app/alibot/agent_seam.py`，只 stash 产品文件，
 stash 前后 `git status --porcelain` 都存档）与 §2.1（最终 9 条用例，用 `git show main:…` 换回基线原件，
@@ -328,7 +328,8 @@ pyright `0 errors, 0 warnings`、node glob `247 pass / 0 fail`。
 Spec 缺失 3 条（两份文档 + 两条判据用例）已补；`leader_context` scope creep 已删；唯一「不修」的是
 `_round_body` → `_round_message_body` 的建议（票面示例名，理由见 §5.1）。**无 P1 遗留**。
 
-**判据 6（PR）**：见 §8。
+**判据 6（PR）**：[#220](https://github.com/whutlichao/alibot/pull/220)，body
+`app/specs/issue-219-pr-body.md`（含 `Closes #219`），base `main` / head `issue-219-round-body`。
 
 **遗留**：§7 五条（历史不回溯、单段 trim 的可见微调、无增量缓存、非 text 正文形态不纳入、队长语义依赖
 AgentScope 2.0.10 的 `_final_reply_message`，升级需重核对）。
@@ -337,7 +338,9 @@ AgentScope 2.0.10 的 `_final_reply_message`，升级需重核对）。
 
 ## 8. PR
 
-- 分支：`issue-219-round-body`（base `main`）
-- 提交：`c7b146d`（实现 + 用例）、`6269a20`（review 收口）
+- 分支：`issue-219-round-body`（base `main`，已 push）
+- 提交：`c7b146d`（实现 + 用例）、`6269a20`（review 收口）、`92dbc89`（本文件与 PR body）
 - PR body 文件：`app/specs/issue-219-pr-body.md`
-- PR：见下方回填（创建后补号与本文件链接）
+- PR：[#220](https://github.com/whutlichao/alibot/pull/220)（`--body-file app/specs/issue-219-pr-body.md`，
+  base `main`、head `issue-219-round-body`，`mergeable: MERGEABLE`）；body 含 `Closes #219`
+- `gh pr checks 220`：`check` 在 CI 中（本地 `scripts/check.sh` 已全绿，§4）
