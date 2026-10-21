@@ -238,9 +238,9 @@ exit=0
 | 分支 | `issue-209-approval-badge`（从 `main` 730b9c3 切出） |
 | 实现 + 用例 | `bcf3201` feat(studio): 任务待审批角标与页签圆点（#209） |
 | review 修补 | `0a7e357` fix(studio): 待审批提示共用快照写入口并补齐可访问名（#209） |
-| 验收 / PR 文档 | 本文件与 `app/specs/issue-209-pr-body.md`（随 docs commit 入库） |
-| PR | 待创建（`gh pr create --body-file app/specs/issue-209-pr-body.md`，标题 `fix(studio): 任务线程的待审批在外不可见——卡片/列表行角标 + 任务页签圆点`，正文带 `Closes #209`） |
-| worktree | `git status --porcelain` 为空（收尾核对） |
+| 验收 / PR 文档 | `bbd1db0` docs(studio): #209 验收读数、双轴 review 处置与 PR 正文 |
+| PR | [#212](https://github.com/whutlichao/alibot/pull/212)（`--body-file app/specs/issue-209-pr-body.md`，正文含 `Closes #209`） |
+| worktree | `git status --porcelain` 为空（收尾核对；本行回填 PR 后另有 docs commit） |
 
 ---
 
