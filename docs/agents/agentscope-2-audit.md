@@ -18,9 +18,9 @@
 
 | 判定 | 行数 | 行号 |
 | --- | --- | --- |
-| 符合 | 23 | 1,3,4,7,9,10,11,12,14,15,18,19,21,22,24,26,27,29,35,36,37,40,43 |
+| 符合 | 24 | 1,3,4,7,9,10,11,12,14,15,18,19,21,22,24,26,27,29,35,36,37,40,41,43 |
 | 刻意偏离 | 14 | 2,5,13,16,20,25,28,30,31,32,34,38,39,44 |
-| 未采用 | 3 | 17,41,45 |
+| 未采用 | 2 | 17,45 |
 | 待修 | 3 | 6,8,33 |
 | 实测 | 2 | 23,42 |
 
@@ -130,7 +130,7 @@
 
 | # | 能力点 | 文档页 | 当前落点 | 判定 | 证据 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 41 | AgentState 序列化恢复 | agent/run-agent.md | 未采用；`plan.py:198` 仅重建 TaskContext | 未采用 | `grep -rn 'AgentState.model_dump' app/alibot` → 零命中 | 替代是消息重放 + `plan_task` 快照 + `SOPRunState` |
+| 41 | AgentState 序列化恢复 | agent/run-agent.md | `runtime.py`（`SessionState`） | 符合 | `grep -n 'model_dump_json' app/alibot/runtime.py` | AgentState 用 `model_dump_json` 原子写 `.alibot/sessions/<session_id>/state.json`、下一轮 `load` 恢复；单用户本机不用 RedisStorage（D3 现状 / ADR-0030） |
 | 42 | ReplyFinishedReason 判定 | agent/run-agent.md | `agent_seam.py:1675` `_outcome_from_reply` | 实测 | `python -c "from agentscope.types import ReplyFinishedReason;print([r.value for r in ReplyFinishedReason])"` → 4 值；`grep -n 'reply_error = '` → 1682 | 只把 error 收口为 failed；completed/exceed_max_iters 按正文收口，interrupted 由超时路径先转 failed |
 | 43 | 上下文压缩 / 卸载 / 环境感知 | context/compress-context.md、offload-context.md | `runtime.py`（`runtime_configs` / `SessionOffloader`）+ `agent_seam.py` 装配 | 符合 | `grep -rn 'ContextConfig\|InjectionConfig\|SessionOffloader' app/alibot` → `runtime.py`、`agent_seam.py` 均有命中 | 单 Agent 与 team 都显式传 `ContextConfig` / `InjectionConfig`，压缩内容与被截断工具结果经 `SessionOffloader` 落 `.alibot/sessions/<id>/offload/`；每轮重取时间与 target 名（D11 现状 / ADR-0030） |
 
