@@ -1092,11 +1092,10 @@ async function loadWorkspace(options) {
     await loadActiveChannelMode();
     await refreshStatuses();
     syncStreams();
-    // 审批卡的恢复与消息流同一拍：打开视图先读 pending 快照（live 帧不补发）。
-    await loadApprovalsFor(state.activeChannelId);
-    // #209：线程关着时的角标 / 圆点需要**全工作区**的 pending，不只是当前频道；
-    // 进入工作区与断线重连（`loadWorkspace` 的自动重试）都走这一处，读一次。
-    await loadPendingApprovals();
+    // 审批卡的恢复与消息流同一拍：进入工作区 / 断线重连都读一次**全工作区** pending
+    // （#209；全量读数已覆盖当前频道，不再另外按 target 读一次——live 帧不补发）。
+    // `render: true`：刚进入工作区时消息面可能刚重建，无条件铺一次。
+    await loadPendingApprovals({ render: true });
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -1387,7 +1386,19 @@ function taskCardNode(task) {
   card.dataset.task = task.id;
   card.dataset.status = task.status;
   card.setAttribute('data-od-id', 'task-card-' + task.id);
-  card.setAttribute('aria-label', t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) }));
+  // #209：卡片根是 `role="button"`，它的可访问名会**覆盖**子树；有 pending 时把条数并进
+  // 根节点的 aria 名，屏幕阅读器才读得到（角标自己的 aria 名仍保留给可定位的语义面）。
+  const approvalCount = taskPendingApprovalCount(task);
+  card.setAttribute(
+    'aria-label',
+    approvalCount
+      ? t('board.cardApprovalAria', {
+        title: task.title,
+        status: taskStatusLabel(task.status),
+        count: approvalCount,
+      })
+      : t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) }),
+  );
   card.appendChild(el('div', 'card-title', task.title));
   const meta = el('div', 'card-meta');
   meta.appendChild(el('span', 'card-num', '#' + String(task.id).slice(-6)));
@@ -1701,7 +1712,17 @@ function boardList() {
     row.type = 'button';
     row.dataset.task = task.id;
     row.setAttribute('data-od-id', 'task-row-' + task.id);
-    row.setAttribute('aria-label', t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) }));
+    const rowApprovalCount = taskPendingApprovalCount(task);
+    row.setAttribute(
+      'aria-label',
+      rowApprovalCount
+        ? t('board.cardApprovalAria', {
+          title: task.title,
+          status: taskStatusLabel(task.status),
+          count: rowApprovalCount,
+        })
+        : t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) }),
+    );
     const top = el('div', 'r-top');
     top.appendChild(el('span', 'st-dot'));
     top.appendChild(el('span', null, taskStatusLabel(task.status)));
@@ -3304,10 +3325,8 @@ function syncApprovalBadges() {
 }
 
 function hasPendingApprovals() {
-  for (const map of state.approvals.values()) {
-    for (const record of map.values()) {
-      if (approvalDisplayState(record) === 'pending') return true;
-    }
+  for (const targetId of state.approvals.keys()) {
+    if (pendingApprovalCountForTarget(targetId) > 0) return true;
   }
   return false;
 }
@@ -3336,9 +3355,13 @@ function refreshApprovalCountdowns() {
       if (remaining) remaining.textContent = approvalRemainingText(record, displayState);
     });
   });
+  // 线程关着时两张审批列表里都没有卡：本地 600s 过期只能从**派生集合**（角标/圆点）看出来，
+  // 因此除了逐卡比对，还要比对签名，让「角标到时消失」不依赖下一轮 12s 全量轮询。
+  if (!needsRender && taskApprovalSignature() !== approvalBadgeSignature) needsRender = true;
   if (needsRender) {
-    renderChannelApprovals();
-    renderTaskApprovals();
+    // 呈现态变化（pending → expired）同时是角标 / 圆点的输入：走同一个出口，
+    // 不让「卡变灰了、角标还要等下一轮 12s 轮询」留下不一致窗口。
+    renderApprovalSurfaces();
   }
 }
 
@@ -3413,71 +3436,54 @@ function absorbApprovalResolved(targetId, payload) {
   renderApprovalSurfaces();
 }
 
-/** 打开视图 / 重连后的恢复：只读 pending 快照；本次已知但快照里消失的 pending 视为已过期
-    （进程重启会把 pending 标 expired——D19）。fetch 失败不阻塞页面打开。 */
-async function loadApprovalsFor(targetId) {
-  if (!targetId) return;
-  const map = approvalMapFor(targetId);
-  const known = new Set(map.keys());
-  let payload;
-  try {
-    payload = await api('/api/approvals?target_id=' + encodeURIComponent(targetId) + '&state=pending');
-  } catch {
-    return;
-  }
-  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
-  const seen = new Set();
-  records.forEach((record) => {
-    if (!record || !record.reply_id) return;
-    const replyId = String(record.reply_id);
-    seen.add(replyId);
-    map.set(replyId, { ...record, target_id: record.target_id || targetId });
-  });
-  known.forEach((replyId) => {
-    if (seen.has(replyId)) return;
-    const record = map.get(replyId);
-    if (record && approvalDisplayState(record) === 'pending') {
-      map.set(replyId, { ...record, state: 'expired', resolved_at: new Date().toISOString() });
-    }
-  });
-  renderApprovalSurfaces();
-}
-
-/** #209：全工作区 pending 读数（不带 `target_id`）。进入工作区 / 重连后读一次，
-    页面可见且在线时由 `startApprovalRefresh()` 有界周期刷新。
-
-    - 记录按 `record.target_id` 归属到既有的 `state.approvals`；
-    - 快照里消失的 pending 沿用 `loadApprovalsFor` 的语义标 `expired`（不伪造记录）；
-    - 「已知」集合在请求发出**之前**抓取：在途期间到达的 live 帧不会被这一轮误标过期；
-    - 同一时刻最多一个在途请求；失败静默返回（角标不阻塞界面、不 toast）。 */
-async function loadPendingApprovals() {
-  if (approvalRefreshInFlight) return;
-  approvalRefreshInFlight = true;
+/** 镜像里所有仍 pending 的记录，按 target 分组（供快照对账；`onlyTargetId` 用于单 target 读数）。 */
+function pendingApprovalIndex(onlyTargetId) {
   const known = new Map();
   state.approvals.forEach((map, targetId) => {
+    if (onlyTargetId && targetId !== onlyTargetId) return;
     map.forEach((record, replyId) => {
       if (approvalDisplayState(record) !== 'pending') return;
       if (!known.has(targetId)) known.set(targetId, new Set());
       known.get(targetId).add(replyId);
     });
   });
-  let payload = null;
-  try {
-    payload = await api('/api/approvals?state=pending');
-  } catch {
-    return;
-  } finally {
-    approvalRefreshInFlight = false;
-  }
-  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+  return known;
+}
+
+/** 审批记录的呈现指纹：只覆盖会进入 DOM / 角标的字段，用来判断一次快照是否真的带来变化。 */
+function approvalRecordFingerprint(record) {
+  return JSON.stringify([
+    record && record.target_id,
+    record && record.state,
+    record && record.member_id,
+    record && record.requested_at,
+    record && record.resolved_at,
+    record && record.tool_calls,
+    record && record.decisions,
+  ]);
+}
+
+/** 把一份 pending 快照并入 `state.approvals` 的**唯一**写入口：按 `record.target_id`
+    （单 target 读数可回退到 `fallbackTargetId`）归属；`known` 里消失的 pending 标
+    `expired`（不伪造记录，与 D19 的进程重启语义一致）。两种读数（按 target / 全工作区）
+    共用这一段，避免「合并 + 消失判定」各自漂。返回快照是否真的改变了镜像——周期刷新据此
+    在「没有任何变化」时不重铺审批卡（按钮不会被无谓换掉）。 */
+function applyApprovalSnapshot(records, known, fallbackTargetId) {
+  let changed = false;
   const seen = new Map();
   records.forEach((record) => {
-    if (!record || !record.reply_id || !record.target_id) return;
-    const targetId = String(record.target_id);
+    if (!record || !record.reply_id) return;
+    const targetId = String(record.target_id || fallbackTargetId || '');
+    if (!targetId) return;
     const replyId = String(record.reply_id);
     if (!seen.has(targetId)) seen.set(targetId, new Set());
     seen.get(targetId).add(replyId);
-    approvalMapFor(targetId).set(replyId, { ...record, target_id: targetId });
+    const map = approvalMapFor(targetId);
+    const next = { ...record, target_id: targetId };
+    if (approvalRecordFingerprint(map.get(replyId)) !== approvalRecordFingerprint(next)) {
+      map.set(replyId, next);
+      changed = true;
+    }
   });
   known.forEach((replyIds, targetId) => {
     const present = seen.get(targetId) || new Set();
@@ -3487,10 +3493,54 @@ async function loadPendingApprovals() {
       const record = map.get(replyId);
       if (record && approvalDisplayState(record) === 'pending') {
         map.set(replyId, { ...record, state: 'expired', resolved_at: new Date().toISOString() });
+        changed = true;
       }
     });
   });
+  return changed;
+}
+
+/** 打开视图 / 重连后的恢复：只读 pending 快照；本次已知但快照里消失的 pending 视为已过期
+    （进程重启会把 pending 标 expired——D19）。fetch 失败不阻塞页面打开。 */
+async function loadApprovalsFor(targetId) {
+  if (!targetId) return;
+  // 「已知」在请求发出前抓取：在途期间到达的 live 帧不会被这一轮误标过期。
+  const known = pendingApprovalIndex(targetId);
+  let payload;
+  try {
+    payload = await api('/api/approvals?target_id=' + encodeURIComponent(targetId) + '&state=pending');
+  } catch {
+    return;
+  }
+  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+  applyApprovalSnapshot(records, known, targetId);
   renderApprovalSurfaces();
+}
+
+/** #209：全工作区 pending 读数（不带 `target_id`）。进入工作区 / 重连后读一次，
+    页面可见且在线时由 `startApprovalRefresh()` 有界周期刷新。
+
+    - 记录按 `record.target_id` 归属到既有的 `state.approvals`（与 `loadApprovalsFor` 同一个写入口）；
+    - 快照里消失的 pending 沿用同一语义标 `expired`（不伪造记录）；
+    - 「已知」集合在请求发出**之前**抓取：在途期间到达的 live 帧不会被这一轮误标过期；
+    - 同一时刻最多一个在途请求；失败静默返回（角标不阻塞界面、不 toast）。 */
+async function loadPendingApprovals(options) {
+  if (approvalRefreshInFlight) return;
+  approvalRefreshInFlight = true;
+  const known = pendingApprovalIndex();
+  let payload = null;
+  try {
+    payload = await api('/api/approvals?state=pending');
+  } catch {
+    return;
+  } finally {
+    approvalRefreshInFlight = false;
+  }
+  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+  const changed = applyApprovalSnapshot(records, known);
+  // 入口 / 重连那一次无条件重铺（消息面可能刚切过）；周期刷新只在快照真的变了才重铺，
+  // 否则每 12s 换掉一次审批卡按钮会把「正在点的按钮」弄丢。
+  if (changed || (options && options.render)) renderApprovalSurfaces();
 }
 
 /** 周期刷新的单例定时器：页面隐藏或离线时整轮跳过；在途闸门在 `loadPendingApprovals` 里。 */

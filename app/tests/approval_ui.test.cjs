@@ -350,7 +350,7 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__approvalTest = { state, bindEvents, render, renderApprovalSurfaces,"
-        + " loadApprovalsFor, renderTaskBoard, renderTabs,"
+        + " loadWorkspace, loadApprovalsFor, renderTaskBoard, renderTabs,"
         + " handleStreamEvent, handleTaskStreamEvent, submitApproval,"
         + " renderTaskThread, openTask, approvalDisplayState, approvalRemainingSeconds,"
         + " approvalRecordsFor, t, dateNow: () => Date.now() };\n",
@@ -778,13 +778,33 @@ test("#209 全量 pending 快照（不带 target_id）驱动任务卡片与列�
   const aria = badge.getAttribute("aria-label");
   assert.match(aria, /修一处样式/);
   assert.match(aria, /2/);
+  // 卡片根是 role=button，可访问名以它为准：条数必须并进根节点的 aria 名，否则子树被覆盖。
+  const cardLabel = odId(harness.columns, "task-card-t-1").getAttribute("aria-label");
+  assert.match(cardLabel, /修一处样式/);
+  assert.match(cardLabel, /2/);
+  assert.match(cardLabel, /待审批/);
   assert.equal(odId(harness.columns, "task-approval-badge-t-2"), null, "无 pending 的卡片不渲染角标");
+  // 反向不串台：任务 target 的待审批不得出现在频道消息流的 #approvalBoard。
+  assert.equal(cardIn(harness.board, "r-1"), null, "任务 target 不得串进频道审批板");
+
+  // 未变化的下一轮周期刷新不得重建看板 / 审批卡 DOM（否则会收起流转菜单、丢焦点、点击落空）。
+  const cardBefore = odId(harness.columns, "task-card-t-1");
+  const approvalCardBefore = cardIn(harness.board, "r-ch");
+  assert.ok(approvalCardBefore);
+  periodicTick(harness);
+  await flush();
+  await flush();
+  assert.equal(odId(harness.columns, "task-card-t-1"), cardBefore, "快照未变化时不重建看板");
+  assert.equal(cardIn(harness.board, "r-ch"), approvalCardBefore, "快照未变化时不重建审批卡");
 
   harness.api.state.taskView = "list";
   harness.api.renderTaskBoard();
   const rowBadge = odId(harness.rows, "task-approval-badge-t-1");
   assert.ok(rowBadge, "列表行应出现同一个角标");
   assert.equal(rowBadge.textContent, harness.api.t("board.approvalBadge", { count: 2 }));
+  const rowLabel = odId(harness.rows, "task-row-t-1").getAttribute("aria-label");
+  assert.match(rowLabel, /2/);
+  assert.match(rowLabel, /待审批/);
   assert.equal(odId(harness.rows, "task-approval-badge-t-2"), null);
 });
 
@@ -890,15 +910,22 @@ test("#209 越过 600s 上界后角标与圆点在下一次渲染/刷新后消�
       return json({});
     },
   });
-  harness.startTask();
+  // 线程**关着**（activeTask = null）：两张审批列表里都没有卡，600s 过期只能由派生集合驱动。
+  harness.api.state.tasks = [task()];
+  harness.api.state.boardTasks = [task()];
+  harness.api.renderTaskBoard();
   periodicTick(harness);
   await flush();
   await flush();
+  assert.equal(cardIn(harness.taskList, "r-1"), null, "线程关着时不应挂审批卡");
   assert.ok(odId(harness.columns, "task-approval-badge-t-1"));
   assert.equal(harness.taskDot.hidden, false);
 
   harness.clock.now = NOW + 600_000;
-  harness.api.renderApprovalSurfaces();
+  // 本地上界由既有 1s 倒计时探测：呈现态一变，角标/圆点在同一个出口消失，不必等下一轮 12s 轮询。
+  const countdown = harness.intervalFns.find((item) => item.ms === 1000);
+  assert.ok(countdown, "pending 存在时应注册 1s 倒计时");
+  countdown.fn();
 
   assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
   assert.equal(harness.taskDot.hidden, true);
@@ -1009,4 +1036,56 @@ test("#209 任务线程 live approval_required / approval_resolved 即时更新�
 
   assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
   assert.equal(harness.taskDot.hidden, true);
+});
+
+/* ─── 13. #209 进入工作区的真实入口 ───────────────────────────────────── */
+
+test("#209 进入工作区（loadWorkspace）时读一次全量 pending 并渲染任务角标", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/settings") {
+        return json({ settings: { locale: "zh-CN", message_density: "comfortable", theme: "system" } });
+      }
+      if (url === "/api/workspace") {
+        return json({
+          member: owner,
+          members: [owner],
+          channels: [channel()],
+          dms: [],
+          agents: [],
+          model_providers: [],
+          local_providers: [],
+          remote_consents: [],
+        });
+      }
+      if (url === "/api/tasks") return json({ tasks: [task()] });
+      if (url === "/api/reminders") return json({ reminders: [] });
+      if (url === "/api/remote-data-flow") return json({ data_faces: [] });
+      if (url === "/api/channels/ch-1/messages") return json({ channel: channel(), messages: [] });
+      if (url === "/api/channels/ch-1/round-outcomes") return json({ round_outcomes: [] });
+      if (url === "/api/channels/ch-1/members") return json({ members: [] });
+      if (url === "/api/channels/ch-1/config") return json({ config: { mode: "autonomous" } });
+      if (url === "/api/member-statuses") return json({ statuses: {} });
+      if (url === "/api/approvals?state=pending") {
+        return json({
+          approvals: [
+            approval({ reply_id: "r-boot", target_id: "tg-1" }),
+            approval({ reply_id: "r-boot-ch", target_id: "ch-1" }),
+          ],
+        });
+      }
+      return json({});
+    },
+  });
+
+  await harness.api.loadWorkspace({ silent: true });
+
+  const requests = harness.callsTo("/api/approvals");
+  assert.equal(requests.length, 1, "进入工作区只读一次全量 pending（不再按 target 另读一次）");
+  assert.equal(requests[0].url, "/api/approvals?state=pending");
+  assert.equal(requests[0].url.includes("target_id"), false);
+  assert.ok(odId(harness.columns, "task-approval-badge-t-1"), "全量读数后任务卡片应有角标");
+  // 同一份全量读数也恢复既有频道审批卡：删掉按 target 的入口不会让频道消息流回退。
+  assert.ok(cardIn(harness.board, "r-boot-ch"), "频道审批卡应由全量读数恢复");
 });

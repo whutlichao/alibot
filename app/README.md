@@ -456,6 +456,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 （ADR-0020）。否则浏览器会把 `Last-Event-ID` 推进到库里不存在的游标，重连补拉就会与消息游标混淆。
 新事件断线不补发，运行面板以 `GET /team-runs` / `GET /plan` / `GET /sop-runs/{id}` 的快照兜底；
 审批卡以 `GET /api/approvals?target_id=&state=pending` 兜底；`after_seq` 补拉仍只覆盖消息与轮次结果。
+线程关着时，Studio 另用 `GET /api/approvals?state=pending`（不带 `target_id`）读一次全工作区 pending，
+并在页面可见且在线时按 12s 有界刷新，驱动任务看板卡片 / 列表行角标与任务页签圆点（#209）；
+live `approval_*` 帧仍只补本次会话内的变化。
 
 单条连接在 `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
 `event: rotate` 帧：前端据此**区分「例行轮换」与「后端不可达」**，不会因为轮换而误报掉线，
