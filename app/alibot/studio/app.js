@@ -6833,6 +6833,10 @@ function renderMessages() {
         records
           .filter((record) => record.status === 'failed')
           .forEach((record) => nodes.push(roundOutcomeNode(record)));
+        records
+          .filter((record) => record.status === 'replied' &&
+            ['interrupted', 'exceed_max_iters'].includes(record.finished_reason))
+          .forEach((record) => nodes.push(roundOutcomeSummaryLine(record)));
       }
     }
   });

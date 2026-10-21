@@ -19,6 +19,14 @@
 - 红证据：隔离基线 `.scratch/red-t2`、`.scratch/t2-red.log`，2 failed。绿证据：`scripts/check.sh --fast tests/test_runtime_context.py tests/test_agent_seam_client_lifecycle.py tests/test_approval_seam.py tests/test_docker_workspace.py`，24 passed / 7 skipped（本机无 Docker daemon）；新增真实 Read 大结果卸载后 `test_runtime_context.py` 3 passed，随后 fast 门禁全绿 / Node 212 passed。
 - 接缝例外说明：框架配置、压缩调用、实际卸载在 ScriptedAgentSeam 下不可见，因此沿既有真实 seam + 本机脚本模型测试（与生命周期、审批测试同族），不调用内部收口函数、不联网。
 
-## T3–T5
+## T3 轮次结束原因 / schema 23
+
+- 落点：RoundOutcome、适配器收口、编排转存、数据库往返、Studio 消息流 reason 展示。`interrupted` 不产出消息，`exceed_max_iters` 可保留部分正文；status 仍使用 replied，结束原因独立存储。
+- Schema 23 一次声明完整终态：round_outcome.finished_reason 可空，旧行保持 NULL；四个 runtime 配置列随同迁移，为 T5 的读写面预备。历史 DDL 留档与 22→23 MigrationStep 连续。
+- 红证据：`.scratch/red-t3`、`.scratch/t3-red.log`（3 failed）、`.scratch/t3-ui-red.log`（新文案两例失败）。
+- 绿证据：运行迁移与链守卫时 64 passed，仅新增用例使用库文件路径代替数据目录一处失败；修正后 `scripts/check.sh --fast tests/test_runtime_finished.py` 为 3 passed、mypy/pyright/ruff 全绿、Node 214 passed。全量门禁在 T5 收尾重跑。
+- 备注：会话恢复时宿主误将原 Dispatch 标为 failed。coordinator 已明确指示不再修汇报通道、继续实现，review 基线固定为 3863e39，最终报告另写 `/tmp/alibot-agent-runtime/T5-report.md`。
+
+## T4–T5
 
 实施中；最终补完整门禁与双轴 review。

@@ -1005,6 +1005,7 @@ class WakeOrchestrator:
                 elif (
                     definite_signal
                     and outcome.status == "replied"
+                    and outcome.finished_reason == "completed"
                     and not outcome.messages
                     and outcome.task_action is None
                 ):
@@ -1026,6 +1027,7 @@ class WakeOrchestrator:
                         finished_at=outcome.finished_at,
                         consumed_budget=outcome.consumed_budget,
                         task_action=outcome.task_action,
+                        finished_reason=outcome.finished_reason,
                     )
 
             finished_at = utc_now()
@@ -1049,6 +1051,7 @@ class WakeOrchestrator:
                             seq=committed.system_seq,
                         ),
                         task_action=outcome.task_action,
+                        finished_reason=outcome.finished_reason,
                     )
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
             elif outcome.status in ("ignored", "silent") or (
@@ -1083,6 +1086,7 @@ class WakeOrchestrator:
                 consumed_budget=consumed_budget,
                 merged=False,
                 reply_seq=reply_seq,
+                finished_reason=outcome.finished_reason,
             )
             self._publish_outcome(target_id, base_seq, record)
             self._events.publish(

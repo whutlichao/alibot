@@ -297,8 +297,13 @@ class RoundOutcome:
     finished_at: str | None = None
     consumed_budget: bool = False
     task_action: AgentTaskAction | None = None
+    finished_reason: str | None = None
 
     def __post_init__(self) -> None:
+        if self.finished_reason is None:
+            self.finished_reason = "error" if self.status == "failed" else "completed"
+        if self.finished_reason not in ("completed", "interrupted", "exceed_max_iters", "error"):
+            raise ValueError(f"轮次结束原因非法：{self.finished_reason}")
         if self.status not in SEAM_STATUSES:
             raise ValueError(f"轮次结果状态非法：{self.status}")
         # 「一轮 ↔ 至多一条可落库消息」是契约（spec #1 §5）；越界直接在这里失败，
@@ -1724,6 +1729,23 @@ class AgentScopeAgentSeam:
             return RoundOutcome(
                 status="failed",
                 reason=render("seam.reply_error", self._locale(), error=reply_error),
+            )
+
+        finished_reason = str(getattr(reply, "finished_reason", None) or "completed")
+        if finished_reason == "interrupted":
+            return RoundOutcome(
+                status="replied",
+                reason=render("seam.interrupted", self._locale()),
+                finished_reason=finished_reason,
+            )
+        if finished_reason == "exceed_max_iters":
+            text = _msg_text(reply)
+            return RoundOutcome(
+                status="replied",
+                reason=render("seam.exceed_max_iters", self._locale()),
+                messages=[RoundMessage(body=text)] if text.strip() else [],
+                task_action=task_actions[0] if task_actions else None,
+                finished_reason=finished_reason,
             )
 
         task_action = task_actions[0] if task_actions else None

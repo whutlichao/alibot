@@ -109,7 +109,8 @@ MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # （`migrate._step_21_to_22`）。不回填：既有行逐字保留，读路径把 ``NULL`` 解释成默认档。
 # 号段说明：本票原先自行取的是 21，但 #195（自动认领默认开启）随 main 先落地了 21，按 ADR-0015
 # 「必须高于当前 main」的判据，本步顺延为 ``21 → 22``。
-SCHEMA_VERSION = 22
+# 23 = Agent 运行时：可空的轮次结束原因，以及上下文窗口、压缩阈值、迭代上限、长期记忆配置。
+SCHEMA_VERSION = 23
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -681,6 +682,10 @@ CREATE TABLE IF NOT EXISTS agent_config (
   -- 联网档的 Agent 级覆盖（#184 / ADR-0026 §二）：``NULL`` = 跟随频道（旧行逐字保持既有行为），
   -- 非空时覆盖频道那一档。取值与频道同一条白名单，库级 CHECK 是第二道闸。
   web_access          TEXT CHECK (web_access IN ('off', 'search', 'search+fetch')),
+  context_window_messages INTEGER DEFAULT 40 CHECK (context_window_messages > 0),
+  context_trigger_ratio REAL DEFAULT 0.7 CHECK (context_trigger_ratio > 0 AND context_trigger_ratio <= 0.9),
+  react_max_iters INTEGER DEFAULT 30 CHECK (react_max_iters > 0),
+  memory_mode TEXT DEFAULT 'off' CHECK (memory_mode IN ('off', 'agentic')),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -836,6 +841,7 @@ CREATE TABLE IF NOT EXISTS round_outcome (
   status          TEXT NOT NULL CHECK (status IN
                     ('replied', 'ignored', 'failed', 'merged', 'budget-exhausted', 'silent')),
   reason          TEXT NOT NULL DEFAULT '',
+  finished_reason TEXT,
   started_at      TEXT NOT NULL,
   finished_at     TEXT NOT NULL,
   consumed_budget INTEGER NOT NULL DEFAULT 0 CHECK (consumed_budget IN (0, 1)),
@@ -2260,6 +2266,7 @@ class Database:
         consumed_budget: bool = False,
         merged: bool = False,
         reply_seq: int | None = None,
+        finished_reason: str | None = None,
     ) -> dict[str, Any]:
         """落一条轮次结果。
 
@@ -2280,7 +2287,8 @@ class Database:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO round_outcome(id, member_id, target_id, base_seq, status, reason, started_at, "
-                "finished_at, consumed_budget, merged, reply_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "finished_at, consumed_budget, merged, reply_seq, finished_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     outcome_id,
                     member_id,
@@ -2293,6 +2301,7 @@ class Database:
                     1 if consumed_budget else 0,
                     1 if merged else 0,
                     reply_seq,
+                    finished_reason,
                 ),
             )
         return {
@@ -2307,6 +2316,7 @@ class Database:
             "consumed_budget": bool(consumed_budget),
             "merged": bool(merged),
             "reply_seq": reply_seq,
+            "finished_reason": finished_reason,
         }
 
     def list_round_outcomes(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
@@ -2330,6 +2340,7 @@ class Database:
                 "consumed_budget": bool(row["consumed_budget"]),
                 "merged": bool(row["merged"]),
                 "reply_seq": row["reply_seq"],
+                "finished_reason": row["finished_reason"],
             }
             for row in rows
         ]
