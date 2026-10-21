@@ -72,7 +72,8 @@ class FakeNode {
   }
 
   appendChild(child) {
-    this._textContent = "";
+    // 与真实 DOM 一致：appendChild 不清掉此前的 `textContent`（`textContent = x`
+    // 在真实 DOM 里只是先放了一个文本节点）。
     child.parentNode = this;
     this.children.push(child);
     return child;
@@ -421,17 +422,32 @@ test("任务线程消费新事件：按 target 归属，消息仍按 seq 去重"
 });
 
 
-test('当前 reply_id 的停止按钮发中断请求，成功与中断事件都清掉指示', async () => {
-  const { api, document, requests } = createHarness();
-  const start = liveEvent('agent_event', 'ch-1', {
-    event_type: 'REPLY_START', member_id: 'mem-1', reply_id: 'reply-stop', payload: {},
+function typingButtons(line) {
+  return line.children.filter((node) => node.tagName === 'button');
+}
+
+function addSecondMember(api) {
+  api.state.members.push({ id: 'mem-2', kind: 'agent', display_name: '第二位', avatar_slot: 2 });
+  api.state.agents.push({ id: 'mem-2', display_name: '第二位', enabled: true, status: 'online' });
+}
+
+function replyStart(memberId, replyId) {
+  return liveEvent('agent_event', 'ch-1', {
+    event_type: 'REPLY_START', member_id: memberId, reply_id: replyId, payload: {},
   });
+}
+
+test('当前 reply_id 的停止按钮可见文案带成员名，aria-label 说明停的是谁的本轮', async () => {
+  const { api, document, requests } = createHarness();
+  const start = replyStart('mem-1', 'reply-stop');
   api.handleStreamEvent('ch-1', frame(start), 'agent_event');
   const line = document.querySelector('#typingLine');
   assert.equal(line.hidden, false);
-  const button = line.children.find((node) => node.tagName === 'button');
+  assert.match(line.textContent, /小明 正在回复…/);
+  const button = typingButtons(line)[0];
   assert.ok(button);
-  assert.match(button.textContent, /停止本轮/);
+  assert.equal(button.textContent, '停止 小明');
+  assert.equal(button.getAttribute('aria-label'), '停止 小明 的本轮');
   await button.dispatchEvent({ type: 'click', target: button });
   assert.ok(requests.some((request) => request.url === '/api/targets/ch-1/rounds/reply-stop/interrupt' && request.options.method === 'POST'));
   assert.equal(line.hidden, true);
@@ -443,19 +459,102 @@ test('当前 reply_id 的停止按钮发中断请求，成功与中断事件都�
   assert.equal(api.lastSeqOf('ch-1'), 0);
 });
 
+test('两个成员同时回复时 typing 行列出两个名字，停止按钮各自带名字且只中断自己', async () => {
+  const { api, document, requests } = createHarness();
+  addSecondMember(api);
+  for (const [memberId, replyId] of [['mem-1', 'r1'], ['mem-2', 'r2']]) {
+    api.handleStreamEvent('ch-1', frame(replyStart(memberId, replyId)), 'agent_event');
+  }
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+
+  let buttons = typingButtons(line);
+  assert.deepEqual(buttons.map((button) => button.dataset.replyId), ['r1', 'r2']);
+  assert.deepEqual(
+    buttons.map((button) => button.textContent),
+    ['停止 小明', '停止 第二位'],
+    '两个停止按钮的可见文案必须各自带成员名，不能一模一样',
+  );
+  assert.deepEqual(
+    buttons.map((button) => button.getAttribute('aria-label')),
+    ['停止 小明 的本轮', '停止 第二位 的本轮'],
+  );
+  assert.match(line.textContent, /小明、第二位 正在回复…/, 'typing 行必须同时列出正在回复的两位成员');
+
+  await buttons[0].dispatchEvent({ type: 'click', target: buttons[0] });
+  assert.ok(requests.some((request) => request.url === '/api/targets/ch-1/rounds/r1/interrupt' && request.options.method === 'POST'));
+  assert.ok(!requests.some((request) => request.url.includes('/rounds/r2/interrupt')), '点击一个按钮不得中断另一位成员的轮次');
+
+  buttons = typingButtons(line);
+  assert.deepEqual(buttons.map((button) => button.dataset.replyId), ['r2'], '被中断的按钮移除后，另一位的按钮仍在');
+  assert.equal(line.textContent, '第二位 正在回复…停止 第二位', 'typing 行的名字必须收敛到仍在回复的人');
+});
+
+test('任务线程的 typing 行与频道共用同一份渲染：两个名字、两个带名按钮', () => {
+  const { api, document } = createHarness();
+  addSecondMember(api);
+  api.state.activeTaskId = 'task-1';
+  api.state.activeTask = { id: 'task-1', target_id: 'tgt-task-1' };
+  for (const [memberId, replyId] of [['mem-1', 'r1'], ['mem-2', 'r2']]) {
+    api.handleStreamEvent('tgt-task-1', frame(liveEvent('agent_event', 'tgt-task-1', {
+      event_type: 'REPLY_START', member_id: memberId, reply_id: replyId, payload: {},
+    })), 'agent_event');
+  }
+  const line = document.querySelector('#taskTypingLine');
+  assert.equal(line.hidden, false);
+  assert.equal(line.textContent, '小明、第二位 正在回复…停止 小明停止 第二位');
+  assert.deepEqual(typingButtons(line).map((button) => button.dataset.replyId), ['r1', 'r2']);
+});
+
+test('一个成员 REPLY_END 后 typing 行与停止按钮同步收敛到剩下的人', () => {
+  const { api, document } = createHarness();
+  addSecondMember(api);
+  for (const [memberId, replyId] of [['mem-1', 'r1'], ['mem-2', 'r2']]) {
+    api.handleStreamEvent('ch-1', frame(replyStart(memberId, replyId)), 'agent_event');
+  }
+  api.handleStreamEvent('ch-1', frame(liveEvent('agent_event', 'ch-1', {
+    event_type: 'REPLY_END', member_id: 'mem-1', reply_id: 'r1', payload: {},
+  })), 'agent_event');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  assert.equal(line.textContent, '第二位 正在回复…停止 第二位');
+  assert.deepEqual(typingButtons(line).map((button) => button.dataset.replyId), ['r2']);
+});
+
+test('同一成员有多条在飞轮次：名字只显示一次，停止按钮仍按轮次各一个', async () => {
+  const { api, document } = createHarness();
+  for (const replyId of ['r1', 'r2']) {
+    api.handleStreamEvent('ch-1', frame(replyStart('mem-1', replyId)), 'agent_event');
+  }
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.textContent, '小明 正在回复…停止 小明停止 小明');
+  assert.deepEqual(typingButtons(line).map((button) => button.dataset.replyId), ['r1', 'r2']);
+  await typingButtons(line)[0].dispatchEvent({ type: 'click', target: typingButtons(line)[0] });
+  assert.deepEqual(typingButtons(line).map((button) => button.dataset.replyId), ['r2']);
+  assert.equal(line.textContent, '小明 正在回复…停止 小明');
+});
+
+test('REPLY_START 尚未到达时，typing 事件仍按那一个成员显示且没有停止按钮', () => {
+  const { api, document } = createHarness();
+  api.handleStreamEvent('ch-1', frame({ type: 'typing', member_id: 'mem-1', active: true }), 'typing');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  assert.equal(line.textContent, '小明 正在回复…');
+  assert.equal(typingButtons(line).length, 0);
+});
 
 test('中断一轮只移除它的停止按钮，同 target 的其他成员继续显示', () => {
   const { api, document } = createHarness();
-  api.state.agents.push({ id: 'mem-2', display_name: '第二位', enabled: true });
+  addSecondMember(api);
   for (const [member_id, reply_id] of [['mem-1', 'r1'], ['mem-2', 'r2']]) {
-    api.handleStreamEvent('ch-1', frame(liveEvent('agent_event', 'ch-1', {
-      event_type: 'REPLY_START', member_id, reply_id, payload: {},
-    })), 'agent_event');
+    api.handleStreamEvent('ch-1', frame(replyStart(member_id, reply_id)), 'agent_event');
   }
+  const line = document.querySelector('#typingLine');
+  assert.match(line.textContent, /小明、第二位 正在回复…/);
   api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1', { reply_ids: ['r1'] })), 'round.interrupted');
   api.handleStreamEvent('ch-1', frame({ type: 'typing', member_id: 'mem-1', active: false }), 'typing');
-  const line = document.querySelector('#typingLine');
   assert.equal(line.hidden, false);
+  assert.equal(line.textContent, '第二位 正在回复…停止 第二位');
   assert.ok(line.children.some((node) => node.dataset.replyId === 'r2'));
   assert.ok(!line.children.some((node) => node.dataset.replyId === 'r1'));
 });
@@ -494,6 +593,7 @@ test('重连快照恢复当前轮的停止按钮，空快照清掉旧指示', as
   assert.equal(line.hidden, false);
   const button = line.querySelector('button');
   assert.ok(button);
+  assert.equal(button.textContent, '停止 小明');
   await button.dispatchEvent({ type: 'click', target: button });
   assert.ok(requests.some((request) => request.url.includes('/reply-reconnected/interrupt')));
   api.handleStreamEvent('ch-1', frame(liveEvent('round.active', 'ch-1', {
