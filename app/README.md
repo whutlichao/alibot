@@ -602,7 +602,8 @@ live `approval_*` 帧仍只补本次会话内的变化。
 （配置里已有 `addopts = "-q"`，补了会变 `-qq`，结果行会被吞掉）；**不要跑 `ruff format`**，只跑
 `--check`。Studio 的 DOM 用例族由 `node --test app/tests/*.test.cjs` **按 glob** 跑（新增文件自动
 纳入；每个文件覆盖什么写在各自的文件头注释里）。CI（`.github/workflows/check.yml`）跑的是同一个
-`scripts/check.sh`。
+`scripts/check.sh`。**本地全量只跑一次**：开发循环用 `--fast` 或指定用例；代码定稿时跑一次全量
+并留存读数，PR 的 CI 再跑同一脚本复核；代码未再变化的 docs-only commit 不重跑本地全量。
 
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
 已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、

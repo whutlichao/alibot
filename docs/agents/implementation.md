@@ -13,6 +13,9 @@ scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（
 ```
 
 - CI（`.github/workflows/check.yml`）跑的就是同一个脚本：本地与 CI 不维护第二份命令清单。
+- **本地全量只跑一次**：开发循环用 `--fast` / 指定文件；代码定稿时跑一次 `scripts/check.sh`
+  并留存读数，PR 的 CI 再跑同一脚本复核。代码未再变化的 docs-only commit 不重跑本地全量；
+  同一份代码不在本机重复跑全量。
 - **Node 用例族一律走 glob**（`app/tests/*.test.cjs`）：新增一个 DOM 用例文件不需要改任何清单。
   曾经把 5 个文件名抄进票面门禁，同一轮新增的 3 套前端用例就不在门禁里了。
 - **不要在命令行再补 `-q`**：`app/pyproject.toml` 已有 `addopts = "-q"`，再补一次变成 `-qq`，
