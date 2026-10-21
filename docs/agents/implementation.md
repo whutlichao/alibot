@@ -10,7 +10,12 @@
 scripts/check.sh            # 全量：pytest + ruff check + ruff format --check + mypy + pyright + node --test（glob）
 scripts/check.sh --fast     # 开发循环：除全量 pytest 外的一切（秒级）
 scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（路径**相对 app/**）
+scripts/check.sh --studio   # Studio 窄档：--fast + 审批 HTTP 契约 + 前端静态守卫（不跑全量 pytest）
 ```
+
+- **Studio 窄档只用于「diff 只落在 `app/alibot/studio/**` 与 `app/tests/*.test.cjs`」的票**：
+  它仍跑 ruff / mypy / pyright / node glob，外加审批 HTTP 契约与三条前端静态守卫；CI 依旧跑全量。
+  动到 `.py` / schema / 构建配置时用全量，不用窄档。
 
 - CI（`.github/workflows/check.yml`）跑的就是同一个脚本：本地与 CI 不维护第二份命令清单。
 - **本地全量只跑一次**：开发循环用 `--fast` / 指定文件；代码定稿时跑一次 `scripts/check.sh`
@@ -25,6 +30,19 @@ scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（
 - **不要跑 `ruff format`**：它会整文件重排，把一次小改动变成不可 review 的大 diff。
   只跑 `ruff format --check`（脚本已含）。
 
+## 红证据（隔离基线）
+
+修复类 / 新行为票要先在**隔离的基线副本**上留下失败读数，再去实现。手工复制容易漏文件，也容易
+把工作区改动混进基线；用脚本：
+
+```sh
+scripts/red-evidence.sh <base-rev> app/tests/approval_badge_ui.test.cjs
+```
+
+它用 `git archive` 把 `<base-rev>` 的 `app/alibot/studio` 与 `app/tests` 导出到临时目录，再覆盖
+工作区里指定的测试文件，最后跑 `node --test`。脚本会打印证据目录与基线文件的 md5 对照；基线
+目录**不自动删除**，便于把读数贴进验收文档。
+
 ## AgentScope 的版本与守卫
 
 - 判据正本是 `docs/agents/agentscope-2.md`（红线在 §1）；机械守卫是
@@ -36,12 +54,21 @@ scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（
 
 ## 环境
 
-- 虚拟环境在**仓库根** `.venv/`；新 worktree 用符号链接接上：`ln -s ../alibot/.venv .venv`。
+- 虚拟环境在**仓库根** `.venv/`；新 worktree 用与层级无关的符号链接接上（Orca 的 worktree 不在
+  仓库同级，`../alibot/.venv` 会指错）：
+
+  ```sh
+  ln -s "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.venv" .venv
+  ```
+
+  `scripts/check.sh` 遇到「`.venv` 存在但 `bin/python` 不可执行」会直接报错，不再静默回退到
+  `python3`（缺依赖的假红比一条明确的链接错误更难查）。
 - pytest 从 `app/` 跑（`testpaths = ["tests"]`）；**mypy 从仓库根跑**——`mypy.ini` 的
   `files = app/alibot, app/tests` 按 cwd 解析，在 `app/` 下跑会报
   `Duplicate module named "__main__"`（假象，不是回归）。
 - `GIT_CONFIG_COUNT` 设了却没有对应 key 时，**所有** git/gh 命令报
-  `error: missing config key GIT_CONFIG_KEY_0`。`scripts/check.sh` 已 `unset`；手工命令前也先
+  `error: missing config key GIT_CONFIG_KEY_0`。这是 Orca Terminal Host 注入的残缺变量；
+  `scripts/check.sh` 检测到会提示并 `unset`，手工命令前也先
   `unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1`。
 - 代理噪声：宿主 `NO_PROXY` 里带方括号的 IPv6 条目（如 `[::1]`）会让 httpx 把回环请求解析成
   `InvalidURL: Invalid port: ':1]'`。`app/tests/conftest.py` 有一个 autouse fixture 把这类条目
@@ -66,7 +93,10 @@ scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（
   不 import 私有名、不读 Studio 源码、不断言状态词表的形状：
   `app/tests/test_test_layering_guard.py` 是机械判据（Studio 读的 i18n 例外在文件里列明）。
 - Studio 的 DOM 行为由 `node --test app/tests/*.test.cjs` 覆盖，沿用既有 `vm` + fetch 替身 + DOM
-  替身；**不新开第二套前端测试框架**。
+  替身；**不新开第二套前端测试框架**。每个用例文件只放断言；共用装置放
+  `app/tests/approval_dom_harness.cjs` 这类非 `*.test.cjs` 的辅助文件。
+- 浏览器探针优先按 `data-od-id` 定位（左栏频道 `channel-<id>`、卡片 `task-card-<id>`…），不要用
+  纯文本选择器：同一个名字可能同时出现在左栏与看板筛选 chip，会命中两个元素。
 - Agent 行为由 `app/tests/scripted.py` 的脚本化替身固定（回应 / 忽略 / 失败 / 延迟 / 声明沉默）；
   **不新开 seam**——票面要求核实某项能力（例如 provider 真的收到工具调用）时，才允许在既有
   用例族里加进程内 stub，并在验收文档里写明理由。
