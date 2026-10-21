@@ -1796,24 +1796,27 @@ function syncTaskViewSeg() {
 
     「讨论」与「状态变更记录」是**同一个数据源的两个视图**：后端把每次任务变更
     （创建 / 标题 / 状态 / 指派）追加成一条 `kind='system'` 消息进该 task 的 target 消息流
-    （`CONTEXT.md` **任务**、ADR-0006）。`kind='system'` 的那些行进「状态变更记录」
-    与「关联消息」的语义分得开：后者是**人类 / Agent 主动发的、带 `task_ref` 指针的消息**
-    （`CONTEXT.md` **指针消息**），一个 kind 不会同时落在两边。
+    （`CONTEXT.md` **任务**、ADR-0006）。`kind='system'` 的那些行进「状态变更记录」，
+    其余（人类 / Agent 主动发起的）全部进「讨论」；带 `task_ref` 的指针消息就在讨论里
+    以 `.task-ref-chip` 就地显示（`CONTEXT.md` **指针消息**），不另开一段重复的正文。
+
+    #221：线程输入框发送时必然带 `task_ref`，所以「带 `task_ref` 的非 system 消息」
+    恒为「讨论」的子集，不可能承载独有信息——原先那一段「关联消息」因此去掉，
+    头部副行的条数改用「讨论」的计数（与 `#ttReplyTitle` 同一份）。
 
     原型那个伪造的 `TASK_HISTORY` 常量不移植：历史就是这一条流。 */
 function renderTaskThread() {
   const task = state.activeTask;
   if (!task) return;
   const channelName = task.channel_name;
-  const linked = linkedTaskMessages(task);
   const history = state.taskMessages.filter((message) => message.kind === 'system');
   const systemIds = new Set(history.map((message) => message.id));
   const replies = state.taskMessages.filter((message) => !systemIds.has(message.id));
 
-  // ── dock 头部：「任务线程」tag + mono #id + 「#频道名 · 关联消息 N 条」──
+  // ── dock 头部：「任务线程」tag + mono #id + 「#频道名 · 讨论 N 条」──
   $('#ttHeadId').textContent = '#' + String(task.id).slice(-6);
   const unread = Number(task.unread_count) || 0;
-  $('#ttHeadSub').textContent = t('task.threadHeadSub', { channel: channelName, count: linked.length })
+  $('#ttHeadSub').textContent = t('task.threadHeadSub', { channel: channelName, count: replies.length })
     + (unread ? t('task.threadUnread', { count: unread }) : '');
 
   // ── 摘要：标题（就地可编辑）+ 状态 pill + 指派 pill ──
@@ -1856,26 +1859,6 @@ function renderTaskThread() {
 
   // ── 指派 chips：该频道成员里的 Agent（见 `renderAssignChips` 的候选来源）──
   renderAssignChips(task);
-
-  // ── 关联消息 ──
-  const linkedBox = $('#ttLinked');
-  if (linked.length) {
-    const wrap = el('div', 'tt-linked');
-    linked.forEach((message) => {
-      const row = el('div', 'tt-linked-row');
-      const top = el('div', 'tt-linked-top');
-      top.appendChild(el('span', 'hash', '#' + channelName));
-      top.appendChild(el('span', null, message.author ? message.author.display_name : t('search.unknownAuthor')));
-      top.appendChild(el('span', 'card-tag', timeLabel(message.created_at)));
-      row.appendChild(top);
-      row.appendChild(el('div', 'tt-linked-body', message.body));
-      appendAttachmentList(row, message);
-      wrap.appendChild(row);
-    });
-    replaceChildren(linkedBox, [wrap]);
-  } else {
-    replaceChildren(linkedBox, [el('div', 'tt-empty', t('task.linkedEmpty'))]);
-  }
 
   // ── 讨论 · N 条 ──
   $('#ttReplyTitle').textContent = t('task.discussionCount', { count: replies.length });
@@ -1926,19 +1909,6 @@ function renderTaskThread() {
   // 任务线程的审批卡按 task target 铺；频道那份不会串进来。
   renderTaskApprovals();
   renderTyping();
-}
-
-/** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
-
-    数据面的事实：`task_ref` 必须与消息同 target（`db.py:append_message` 的校验，
-    `test_tasks.py` 逐条盯住），所以在任务线程里能出现的指针**就是指向这个任务自己的**。
-    于是这一段与「讨论」必然有重叠（一条回复可以同时挂了指针）——**这是数据本身的样子，
-    不是漏了去重**：票面明确说这两段是同一数据源的两个视图，`task_ref` 与 `kind='system'`
-    是两个正交字段（刚创建的 `system` 行 task_ref 为 null，人类回复可以带 task_ref），
-    所以「关联消息 ⊆ 讨论」是这个域的语义，而不是冗余展示。
-    该指针在「讨论」里另外以 `.task-ref-chip` 就地显示（已有行为，不另造一套）。 */
-function linkedTaskMessages(task) {
-  return state.taskMessages.filter((message) => message.kind !== 'system' && message.task_ref === task.id);
 }
 
 /** 指派 pill：点击展开 / 收起下方的指派 chips（原型：pill 只提示，chips 才是入口）。 */
