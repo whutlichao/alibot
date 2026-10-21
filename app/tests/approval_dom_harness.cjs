@@ -1,11 +1,17 @@
 /**
- * #153 / #209 共用的 Studio 审批 DOM 测试装置。
+ * #153 / #209 / #217 共用的 Studio 审批 DOM 测试装置。
  *
  * 这是一个**测试辅助文件**（不是 `*.test.cjs`，不会被 node glob 当用例执行）：
  * `vm` + `fetch` 替身 + DOM 替身与既有用例族同形，不新开框架、不新开 seam。
- * 两个用例文件各自只放断言：
+ * 用例文件各自只放断言：
  *   - `approval_ui.test.cjs`      审批卡本身（#153）
  *   - `approval_badge_ui.test.cjs` 线程关着时的角标 / 页签圆点（#209）
+ *   - `task_pointer_ui.test.cjs`  #217 的那一组（频道指针消息行上的角标）
+ *
+ * `#217` 为什么复用这里而不是在 `task_pointer_ui.test.cjs` 里再搭一套：指针消息行的角标要判
+ * 「live 帧到达 / 本地 600s 过期 / 不重新拉消息」，需要**假时钟 + 秒级与 12s 定时器 + live 帧
+ * 入口**这三样能力，而它们在本文件里已经只有一份。为此只补三处最小能力（不复制装置）：
+ * `messages` 初始载荷、`renderMessages` 导出、`#messageList` / `elementFor` 暴露。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -340,7 +346,7 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__approvalTest = { state, bindEvents, render, renderApprovalSurfaces,"
-        + " loadWorkspace, loadApprovalsFor, renderTaskBoard, renderTabs,"
+        + " loadWorkspace, loadApprovalsFor, renderTaskBoard, renderTabs, renderMessages,"
         + " handleStreamEvent, handleTaskStreamEvent, submitApproval,"
         + " renderTaskThread, openTask, approvalDisplayState, approvalRemainingSeconds,"
         + " approvalRecordsFor, t, dateNow: () => Date.now() };\n",
@@ -356,6 +362,8 @@ function createHarness(options) {
   api.state.channels = [channel()];
   api.state.dms = [];
   api.state.tasks = [];
+  // #217：频道消息流（`GET /api/channels/{id}/messages` 的项形状）由用例给出；默认空。
+  api.state.messages = (config.messages || []).map((message) => Object.assign({}, message));
   api.state.activeChannelId = "ch-1";
   api.state.mode = "channel";
   api.state.online = true;
@@ -370,6 +378,10 @@ function createHarness(options) {
     document,
     intervalFns,
     board: elementFor("#approvalBoard"),
+    // #217：消息流容器——指针消息行（及其角标）唯一的落点。
+    messageList: elementFor("#messageList"),
+    // 与 `messageList` 同一件事：用例要按选择器读某个既有控件（例如 composer 的草稿值）。
+    elementFor,
     taskSection: elementFor("#ttApprovalSection"),
     taskList: elementFor("#ttApprovals"),
     columns: elementFor("#taskColumns"),

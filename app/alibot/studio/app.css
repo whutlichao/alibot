@@ -1047,6 +1047,13 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 /* 关联消息：chip 是「这条消息在说哪个任务」的指针（`CONTEXT.md` **指针消息**）。 */
 .task-ref-chip { display: inline-flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); padding: 2px var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-pill); color: var(--accent-deep); background: var(--accent-soft); font-size: var(--fs-caption); }
 .task-ref-chip:hover { border-color: var(--accent-graphic); }
+/* #217：频道指针消息行上的「待审批 N」角标与任务卡片是**同一个** `.card-approval` 节点
+   （同一套警告色与等宽小字，不新造第二套视觉）。这里只补它在本行里与 chip 的对齐：
+   chip 自带 `margin-top`，角标跟在它后面，因此只补同一条外边距与之间的间隙——
+   只消费既有 token，不改 `.card-approval` 本身（否则看板会跟着变形）。
+   选择器带上 `.msg >` 这一层：任务线程的回复行（`.tt-reply-row > .msg-body`）同样可能有 chip，
+   本票只做频道指针消息行，不给线程加这一档间距。 */
+.msg > .msg-body > .card-approval { margin-top: var(--sp-2); margin-left: var(--sp-2); vertical-align: middle; }
 .tt-linked { display: flex; gap: var(--sp-4); flex-direction: column; }
 .tt-linked-row { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); background: var(--panel); }
 .tt-linked-top { display: flex; align-items: center; gap: var(--sp-4); font-size: 12px; color: var(--muted); }

@@ -3302,14 +3302,24 @@ function channelPendingTaskCount(channelId) {
   ).length;
 }
 
-/** 任务卡片 / 列表行的角标；没有 pending 时返回 `null`（不渲染空元素）。 */
-function taskApprovalBadgeNode(task) {
+/** 「待审批 N」角标本体（任务卡片 / 列表行 / 频道指针消息行共用同一个节点与同一对词条）。
+
+    `#217`：指针消息行要的是**同一套视觉**，因此这里返回的是同一个 `.card-approval` 节点。
+    `odId` 必填，由调用方给：卡片前缀 `task-approval-badge-`、消息行前缀 `message-approval-badge-`
+    —— 两个前缀本身保证不会撞成同一个 `data-od-id`（浏览器探针据此唯一定位）。
+    没有 pending 时返回 `null`（不渲染空元素）。 */
+function approvalBadgeNode(task, odId) {
   const count = taskPendingApprovalCount(task);
   if (!count) return null;
   const badge = el('span', 'card-approval', t('board.approvalBadge', { count }));
-  badge.setAttribute('data-od-id', 'task-approval-badge-' + task.id);
+  badge.setAttribute('data-od-id', odId);
   badge.setAttribute('aria-label', t('board.approvalBadgeAria', { title: task.title, count }));
   return badge;
+}
+
+/** 任务卡片 / 列表行的角标；没有 pending 时返回 `null`（不渲染空元素）。 */
+function taskApprovalBadgeNode(task) {
+  return approvalBadgeNode(task, 'task-approval-badge-' + task.id);
 }
 
 /** 页签圆点只画当前频道：DM 里任务页签整个不出现，圆点自然也不出现。 */
@@ -3322,11 +3332,16 @@ function renderTaskApprovalDot(isDm) {
   dot.setAttribute('aria-label', count ? t('tabs.tasksApprovalDot', { count }) : '');
 }
 
-/** 「target→pending 条数」这一派生集合的签名（只看任务 target：频道 target 不进看板/页签）。 */
+/** 「target→pending 条数」这一派生集合的签名。
+
+    读域与 `taskById()` 对齐：`activeTask` + `state.tasks` + `state.boardTasks`。只遍历
+    `state.tasks` 会漏掉「任务只出现在看板筛选结果 / 刚打开的线程里」这两种快照形态——那时
+    `taskById()` 能读到任务、签名却不含它的 target，消息流就不会跟着重铺（#217 review 抓到）。
+    按 target 去重；频道 target 不进签名（它不进看板 / 页签 / 指针消息行）。 */
 function taskApprovalSignature() {
   const seen = new Set();
   const parts = [];
-  state.tasks.forEach((task) => {
+  [state.activeTask, ...state.tasks, ...state.boardTasks].forEach((task) => {
     const targetId = task && task.target_id;
     if (!targetId || seen.has(targetId)) return;
     seen.add(targetId);
@@ -3336,13 +3351,24 @@ function taskApprovalSignature() {
   return parts.sort().join('|');
 }
 
-/** 只在派生集合变化时重铺看板/页签：未变化时不重建 DOM（不收起流转菜单、不丢滚动或焦点）。 */
+/** 只在派生集合变化时重铺看板 / 页签 / 消息流里的角标：未变化时不重建 DOM
+    （不收起流转菜单、不丢滚动或焦点）。 */
 function syncApprovalBadges() {
   const signature = taskApprovalSignature();
   if (signature === approvalBadgeSignature) return;
   approvalBadgeSignature = signature;
   renderTaskBoard();
-  renderTabs();
+  // #217：频道指针消息行上的角标读的是**同一个**派生集合（任务 target → pending 条数），
+  // 因此它挂在这一个出口上重铺，不另开第二条路径。纪律不变：`signature` 未变化时上面就
+  // 返回了，秒级 tick（只改倒计时文本）与未变化的 12s 轮询都不会重建消息行——重建会把正在
+  // 点的控件换掉，也会让滚动位置跳动。
+  // 两条收窄，都是为了不把「重铺消息流」变成一次多余的写：
+  //   - `approvals: false`：`renderApprovalSurfaces()` 在调用本函数**之前**已经铺过频道审批板；
+  //     让 `renderMessages()` 再铺一次会在同一拍里把审批卡整板重建两遍（按钮被换成新节点）。
+  //   - 只在消息视图中重铺：看板视图里消息流整个是 `hidden` 的，重铺只会清空它；切回消息视图
+  //     时 `render()` 会照常重铺（读数与这一拍同一个来源）。
+  if (state.mode === 'channel') renderMessages({ approvals: false });
+  else renderTabs();
 }
 
 function hasPendingApprovals() {
@@ -7138,7 +7164,13 @@ function renderConnection() {
   if (taskInput && taskSend) taskSend.disabled = !state.online || !taskInput.value.trim();
 }
 
-function renderMessages() {
+/** 铺消息流。
+
+    `options.approvals === false` 表示调用方**已经**铺过频道审批板（`renderApprovalSurfaces()`
+    在调 `syncApprovalBadges()` 之前就铺了），因此这一轮不再重复重建那一块——#217 的重铺出口
+    复用它时带上这个开关，审批板在同一拍里只被铺一次（否则正在点的审批按钮会被换掉）。
+    其余调用方不传，行为逐字不变。 */
+function renderMessages(options) {
   const target = activeTarget();
   const targetMode = state.mode === 'channel';
   $('#emptyNoChannel').hidden = !targetMode || Boolean(target);
@@ -7176,7 +7208,7 @@ function renderMessages() {
     }
   });
   replaceChildren($('#messageList'), nodes);
-  renderChannelApprovals(approvals, approvalTargetId);
+  if (!(options && options.approvals === false)) renderChannelApprovals(approvals, approvalTargetId);
   // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
   renderTabs();
 }
@@ -7560,6 +7592,14 @@ function appendTaskRefChip(body, message) {
   entry.dataset.openTask = message.task_pointer;
   entry.setAttribute('aria-label', t('msg.taskThreadEntryAria', { title: pointedTitle, count }));
   body.appendChild(entry);
+  // #217：该任务 target 有 pending 时，这一行显示与任务卡片**同款**的「待审批 N」角标
+  // （同一个节点工厂、同一对词条、同一个 `.card-approval` 类名）。归属只按
+  // `pointedTask.target_id`——频道 target 的 pending、别的任务的 pending 都不出现在这一行；
+  // 任务不在快照里（`pointedTask` 为 null）就没有读数，不画。
+  // 它是**纯呈现**：`<span>`，无 `data-open-task` / `role="button"` / `tabindex`，点击继续
+  // 冒泡到既有 chip 与 `#messageList` 的委托路径——整行的可点区域一个字都不变。
+  const badge = approvalBadgeNode(pointedTask, 'message-approval-badge-' + message.id);
+  if (badge) body.appendChild(badge);
 }
 
 function dayLabel(iso) {
