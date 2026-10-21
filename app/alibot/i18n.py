@@ -230,6 +230,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "模型通过任务工具提交了结构化动作",
         "seam.no_body": "模型没有产出可落库的正文（本轮自判不回应）",
         "seam.replied": "模型自主判断需要回应",
+        "seam.workspace_degraded": "Docker 工作区不可用，本轮停用工作区工具并继续对话：{error}",
         # ``silent``（#58）：声明来自**结构化通道**（declare_silence 工具），不是从正文猜的。
         "seam.silent": "模型经结构化通道（declare_silence 工具）声明本轮沉默，没有产出正文",
         "seam.silence_with_action": (
@@ -679,6 +680,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.task_action_only": "The model submitted a structured action through the task tool",
         "seam.no_body": "The model produced no storable body (it chose not to answer this round)",
         "seam.replied": "The model decided an answer was needed",
+        "seam.workspace_degraded": "Docker workspace unavailable; workspace tools are disabled for this round, conversation continues: {error}",
         "seam.silent": (
             "The model declared silence through the structured channel (the declare_silence tool) "
             "and produced no body"

@@ -1507,7 +1507,8 @@ class WakeOrchestrator:
         if self._workspace_unavailable is not None:
             workspace_reason = self._workspace_unavailable(str(agent.get("id") or ""))
             if workspace_reason:
-                return Availability(False, workspace_reason)
+                # Docker 不可用时适配器停用工作区工具，仍可完成对话（运行时升级）。
+                return Availability(True, workspace_reason)
         return Availability(True)
 
     # ─── 状态点（只表达后端事实） ─────────────────────────────────────────

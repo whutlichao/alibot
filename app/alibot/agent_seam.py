@@ -28,6 +28,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .i18n import SOURCE_LOCALE, Locale, render
+from .runtime import SessionOffloader, runtime_configs, runtime_prompt
 
 if TYPE_CHECKING:
     from .plan import PlanSession
@@ -645,6 +646,8 @@ class AgentScopeAgentSeam:
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
         usage_sink: Callable[[dict[str, Any]], None] | None = None,
+        runtime_root: Any | None = None,
+        target_name_of: Callable[[str], str] | None = None,
     ):
         self.timeout_seconds = timeout_seconds
         self._environ = environ
@@ -679,6 +682,42 @@ class AgentScopeAgentSeam:
         # 只是与 ``emit`` 同级的进程内观察面。测量工具据它区分「usage 缺失」与「usage=0」——
         # 后者是真实读数，前者不能当零成本。
         self._usage_sink = usage_sink
+        self._runtime_root = runtime_root
+        self._target_name_of = target_name_of
+
+    def _runtime_options(self, agent: dict[str, Any], target_id: str) -> dict[str, Any]:
+        from .workspace import session_partition_id
+
+        options = runtime_configs(agent, self._environ)
+        settings = self._workspace_settings(target_id, str(agent["id"]))
+        root = settings.root if settings is not None else self._runtime_root
+        if root is not None:
+            options["offloader"] = SessionOffloader(
+                root,
+                session_partition_id(str(agent["id"]), target_id),
+                docker=settings is not None and settings.is_docker,
+            )
+        return options
+
+    def _runtime_prompt(self, target_id: str, messages: list[dict[str, Any]]) -> str:
+        name = self._target_name_of(target_id) if self._target_name_of is not None else target_id
+        return runtime_prompt(name, len(messages))
+
+    async def _runtime_mount(self, settings: Any, member_id: str, target_id: str, warnings: list[str]) -> Any:
+        from .workspace import DockerWorkspaceUnavailable, assemble_workspace, session_partition_id
+
+        try:
+            return await assemble_workspace(
+                settings,
+                member_id=member_id,
+                session_id=session_partition_id(member_id, target_id),
+                locale=self._locale(),
+            )
+        except DockerWorkspaceUnavailable as error:
+            warning = render("seam.workspace_degraded", self._locale(), error=error)
+            _log.warning("%s", warning)
+            warnings.append(warning)
+            return None
 
     def _permission_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
         """一轮的权限配置；没有 workspace 也没有注入读路径时返回 ``None``。"""
@@ -1005,13 +1044,14 @@ class AgentScopeAgentSeam:
             direct_message=direct_message,
             structured_silence=supports_tool_calling(provider),
             with_web=bool(web_tools) and supports_tool_calling(provider),
-        )
+        ) + self._runtime_prompt(target_id, messages)
         task_actions: list[AgentTaskAction] = []
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
         # 它是一个进程内的事实列表，只在 ``_round`` 的 loop 里被工具线程追加，不落库。
         silence_declarations: list[None] = []
         member_names = {member_internal_name(member_id): member_id}
         reply_members: dict[str, str] = {}
+        workspace_warnings: list[str] = []
 
         async def _round() -> Any:
             # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
@@ -1038,7 +1078,6 @@ class AgentScopeAgentSeam:
                     effective_rules,
                 )
                 from .workspace import (
-                    assemble_workspace,
                     local_shell_tool,
                     release_workspace_mount,
                     session_partition_id,
@@ -1063,22 +1102,19 @@ class AgentScopeAgentSeam:
                 )
                 if settings is not None:
                     session_id = session_partition_id(member_id, target_id)
-                    mount = await assemble_workspace(
-                        settings,
-                        member_id=member_id,
-                        session_id=session_id,
-                        locale=self._locale(),
-                    )
+                    mount = await self._runtime_mount(settings, member_id, target_id, workspace_warnings)
                     # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
                     # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
-                    mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
+                    if mount is not None:
+                        mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
 
                 agent_options: dict[str, Any] = {
                     # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
                     "name": member_internal_name(member_id),
-                    "system_prompt": system_prompt,
+                    "system_prompt": "\n".join([system_prompt, *workspace_warnings]),
                     "model": model,
                     "state": AgentState(permission_context=context),
+                    **self._runtime_options(agent, target_id),
                 }
                 workspace_tools = list(mount.tools) if mount is not None else []
                 if mcp_assembly is not None:
@@ -1266,7 +1302,9 @@ class AgentScopeAgentSeam:
             )
 
         self._record_usage(reply, agent, target_id)
-        return self._outcome_from_reply(reply, task_actions, silence_declarations)
+        outcome = self._outcome_from_reply(reply, task_actions, silence_declarations)
+        outcome.reason = "\n".join([outcome.reason, *workspace_warnings])
+        return outcome
 
     def _run_team_round_stream(
         self,
@@ -1311,6 +1349,7 @@ class AgentScopeAgentSeam:
         names = dict(team.name_to_member)
         names.setdefault(member_internal_name(member_id), member_id)
         reply_members: dict[str, str] = {}
+        workspace_warnings: list[str] = []
 
         async def _round() -> Any:
             from agentscope.event import (
@@ -1329,7 +1368,6 @@ class AgentScopeAgentSeam:
                 effective_rules,
             )
             from .workspace import (
-                assemble_workspace,
                 local_shell_tool,
                 release_workspace_mount,
                 session_partition_id,
@@ -1366,12 +1404,9 @@ class AgentScopeAgentSeam:
                 if settings is None:
                     return None
                 session_id = session_partition_id(member_id_value, target_id)
-                mount = await assemble_workspace(
-                    settings,
-                    member_id=member_id_value,
-                    session_id=session_id,
-                    locale=self._locale(),
-                )
+                mount = await self._runtime_mount(settings, member_id_value, target_id, workspace_warnings)
+                if mount is None:
+                    return None
                 mounts.append(mount)
                 tools = list(mount.tools)
                 assembly = await self._assemble_mcp(target_id, member_id_value, mount, session_id)
@@ -1406,9 +1441,12 @@ class AgentScopeAgentSeam:
                 context, root = _permission_for(str(member["id"]))
                 options: dict[str, Any] = {
                     "name": member_internal_name(str(member["id"])),
-                    "system_prompt": prompt,
+                    "system_prompt": "\n".join(
+                        [prompt + self._runtime_prompt(target_id, messages), *workspace_warnings]
+                    ),
                     "model": model,
                     "state": AgentState(permission_context=context),
+                    **self._runtime_options(member, target_id),
                 }
                 if root:
                     options["middlewares"] = [WorkspacePathPermissionMiddleware(root)]
@@ -1640,7 +1678,9 @@ class AgentScopeAgentSeam:
                 reason=render("seam.team_no_leader_reply", self._locale()),
             )
         self._record_usage(reply, agent, target_id)
-        return self._outcome_from_reply(reply, task_actions, silence_declarations)
+        outcome = self._outcome_from_reply(reply, task_actions, silence_declarations)
+        outcome.reason = "\n".join([outcome.reason, *workspace_warnings])
+        return outcome
 
     def _record_usage(self, reply: Any, agent: Mapping[str, Any], target_id: str) -> None:
         """把最终 ``Msg.usage`` 交给观察口；不落库、不改本轮结论。

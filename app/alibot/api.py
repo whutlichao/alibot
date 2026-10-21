@@ -661,6 +661,16 @@ def create_app(
     ``approval_timeout_seconds`` 只用于把默认 10 分钟的审批等待缩短到测试可观察的尺度。
     """
     database = db if db is not None else open_database(data_dir)
+
+    def runtime_target_name(target_id: str) -> str:
+        target = database.get_target(target_id)
+        if target["kind"] == "channel":
+            return str(database.get_channel(target_id)["name"])
+        if target["kind"] == "dm":
+            return str(database.get_dm(target_id)["peer"]["display_name"])
+        task = database.task_for_target(target_id)
+        return str(task["title"]) if task else target_id
+
     events = EventBus()
     # 审批（#149）：进程内 broker 是等待/唤醒的唯一落点；启动时把上个进程残留的 pending 标
     # expired（D19：跨重启恢复不在首版）。默认等待 10 分钟；测试可注入更短的上界。
@@ -685,6 +695,8 @@ def create_app(
     else:
         member_seam = AgentScopeAgentSeam(
             locale_of=lambda: locale_of(database),
+            runtime_root=database.data_dir,
+            target_name_of=runtime_target_name,
             # workspace 装配钩子（#148）：频道显式配置 ``workspace_root`` 后这一轮才挂受限文件工具；
             # 未配置时读路径返回 None，行为逐字不变。
             workspace_of=database.workspace_settings_for_target,
