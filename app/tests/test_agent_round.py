@@ -329,7 +329,7 @@ def test_ignored_round_advances_the_cursor_so_it_is_not_reread(client: TestClien
     """ignored 是正常协议选择：它推进游标，同一批消息不会被反复送进适配层。
 
     触发用**Agent 作者**的消息（#189 起人类消息必答，不再是「可以忽略」的样本），断言不变：
-    每一轮只看到新到的那一条。
+    历史仍进入上下文，但第二轮基线只推进到新到的那一条。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     speaker = create_agent(client, name="发言者").json()["agent"]
@@ -342,7 +342,8 @@ def test_ignored_round_advances_the_cursor_so_it_is_not_reread(client: TestClien
     harness["scheduler"].drain()
 
     calls = harness["seam"].calls_for(agent["id"])
-    assert [call["bodies"] for call in calls] == [["第一条无关"], ["第二条无关"]]
+    assert [call["bodies"] for call in calls] == [["第一条无关"], ["第一条无关", "第二条无关"]]
+    assert [row["base_seq"] for row in outcomes(client, channel["id"])] == [1, 2]
 
 
 def test_status_point_starts_offline_without_a_model(client: TestClient, harness: dict) -> None:

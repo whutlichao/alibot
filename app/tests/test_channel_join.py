@@ -219,7 +219,7 @@ def test_joining_replaces_the_penetration_path_for_mentions(client: TestClient, 
     assert member_ids(client, channel["id"]) == [SPEC_OWNER_ID, agent["id"], insider["id"]]
 
 
-def test_the_channel_read_row_is_ready_so_history_is_never_redelivered(
+def test_the_channel_read_row_advances_while_history_remains_context(
     client: TestClient, harness: dict
 ) -> None:
     """加入时同步补 `channel_read`：它的消费游标是一条真实推进的位置，历史消息不**重复**投递。
@@ -227,7 +227,7 @@ def test_the_channel_read_row_is_ready_so_history_is_never_redelivered(
     口径与 `db.add_channel_member` 的既有行为**逐字一致**（票面明写复用该写点、不改它的语义）：
     加入时游标从 0 起，因此加入后第一次唤醒会读到该频道既有的历史——与「穿透加入」同一个起点，
     不是本票引入的行为；关键在于它们**只被投递一次**：一轮收口后游标推进，
-    下一次唤醒只看到新消息。
+    下一次唤醒仅对新消息作回应判断，历史继续作为上下文。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     insider = create_agent(client, name="甲").json()["agent"]
@@ -251,7 +251,7 @@ def test_the_channel_read_row_is_ready_so_history_is_never_redelivered(
     # 起点是 0（既有写点的语义）：历史与这条一起被读到，随后被标读推进。
     assert first[0]["seqs"] == [1, 2, 3]
 
-    # 第二轮：只看到新消息（不自己成文的那条），历史**没有**被重复投递。
+    # 第二轮带历史与自己的回复，但消费基线仍只到新消息。
     harness["seam"].replies[agent["id"]] = "第二条回复"
     posted = send(client, channel["id"], f"@{agent['display_name']} 再看一条")
     newest = posted.json()["message"]["seq"]
@@ -259,7 +259,9 @@ def test_the_channel_read_row_is_ready_so_history_is_never_redelivered(
 
     calls = harness["seam"].calls_for(agent["id"])
     assert len(calls) == 2
-    assert calls[1]["seqs"] == [newest], "加入前的历史消息被重复投递了"
+    assert calls[1]["seqs"] == list(range(1, newest + 1))
+    records = client.get(f"/api/channels/{channel['id']}/round-outcomes").json()["round_outcomes"]
+    assert [row for row in records if row["member_id"] == agent["id"]][-1]["base_seq"] == newest
 
 
 def test_joining_leaves_no_message_behind(client: TestClient) -> None:

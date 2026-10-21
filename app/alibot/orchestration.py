@@ -61,6 +61,7 @@ from .events import EventBus, agent_event
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
 from .plan import PlanSession
+from .runtime import context_window_messages
 from .service import WorkspaceService, remote_data_faces
 from .team import TeamRoundContext
 
@@ -901,6 +902,14 @@ class WakeOrchestrator:
             }
             mentioned = member_id in mentions
             base_seq = max(message["seq"] for message in pending)
+            # 历史只进模型输入：唤醒、回应纪律与读位仍使用上面的新消息基线。
+            inputs = (
+                pending
+                if history
+                else [message for message in self._db.list_messages(target_id) if message["seq"] <= base_seq][
+                    -context_window_messages(agent) :
+                ]
+            )
 
             self._emit_status(target_id, member_id, base_seq)
             self._events.publish(
@@ -956,7 +965,7 @@ class WakeOrchestrator:
                 try:
                     outcome = self._run_seam(
                         agent,
-                        pending,
+                        inputs,
                         mentioned=mentioned,
                         target_id=target_id,
                         task_context=task_context,
