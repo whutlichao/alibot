@@ -427,6 +427,41 @@ test("#215 已 approved 的卡收到相同调用 id 的终态帧 → 仍然忽�
   assert.equal(JSON.stringify(record.tool_calls), JSON.stringify(calls));
 });
 
+test("#215 已收口的卡仍回看整条记录的全部调用（明细不因重开逻辑丢失）", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url.startsWith("/api/approvals?")) {
+        return json({
+          approvals: [
+            approval({
+              state: "approved",
+              tool_calls: [
+                { id: "call-1", name: "Write", input: { path: "one.txt" } },
+                { id: "call-2", name: "Bash", input: { command: "npm test" } },
+              ],
+              decisions: [
+                { tool_call_id: "call-1", confirmed: true, rules: [] },
+                { tool_call_id: "call-2", confirmed: true, rules: [] },
+              ],
+              resolved_at: new Date(NOW).toISOString(),
+            }),
+          ],
+        });
+      }
+      return json({});
+    },
+  });
+
+  await harness.api.loadApprovalsFor("ch-1");
+  const card = cardIn(harness.board, "reply-1");
+  assert.equal(card.dataset.state, "approved");
+  // 已收口 ≠ 没有内容：明细与 aria-label 仍描述这一整条记录的调用。
+  assert.match(card.textContent, /one\.txt/);
+  assert.match(card.textContent, /npm test/);
+  assert.match(card.getAttribute("aria-label"), /Write/);
+  assert.match(card.getAttribute("aria-label"), /Bash/);
+});
+
 test("#215 快照重载后只显示/只提交未决策的调用（拒绝第二批不再被 409 卡死）", async () => {
   // 重开后整条记录里既有已决策的旧调用，也有新调用；12s 刷新与重连都读这一份。
   const record = approval({

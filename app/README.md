@@ -137,7 +137,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `target_read` | member_id, target_id, last_read_seq | 已读位置（未读的正本）。owner 的行是未读徽标基准，agent 的行是它自己的消费游标 |
 | `task` | id, target_id, channel_id, 标题, 状态, **`assignee_member_id`**(可空), **`claimed_at`** | 任务当前态在行上；`assignee_member_id` = 受派者；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点）。读路径载荷另派发 **`allowed_transitions`**（当前态的合法迁移目标，顺序固定五态、终态 `[]`；由迁移表派生，呈现面只读它，#191） |
 | `permission_rule` | id, scope_kind(`channel`/`agent`), scope_id, tool_name, pattern, behavior(`allow`/`deny`/`ask`), created_at | 权限规则是**配置**：三档行为，不暴露 BYPASS / DONT_ASK（ADR-0021 §四） |
-| `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四）。主键 `reply_id` 是**回复级**标识（#215）：一条回复里的第 N 次 ASK 复用同一行，`tool_calls` / `decisions` 只追加；重开时 `state` 回 `pending`、`resolved_at` 置 NULL、旧 `decisions` 保留 |
+| `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四）。主键 `reply_id` 是**回复级**标识（#215）：一条回复里的第 N 次 ASK 复用同一行，`tool_calls` / `decisions` 只追加；重开时 `state` 回 `pending`、`resolved_at` 置 NULL、`requested_at` 刷新到这一批的起点、旧 `decisions` 保留 |
 | `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明；`env_names` 只存变量**名**，值只从进程环境读（ADR-0021 §三） |
 | `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；字节在 `workspace_root/.alibot/skills/<scope_id>/`（Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级），只接受本机目录/上传 zip |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证**（兼容面，迁移后读路径优先读 `remote_consent_scope`） |
@@ -392,9 +392,12 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   ID**——同一条回复里第 N 个需要确认的工具调用会再发一次 `RequireUserConfirmEvent`，`reply_id` 与
   第一个相同。所以一条 `approval_request` 可以**多批确认**：记录已 `approved` / `denied` 时，`register`
   收到该记录**尚未包含**的调用就把它们合并进 `tool_calls`、把 `state` 复位 `pending`、清掉
-  `resolved_at`、按现有时长重开等待窗口，并只发布**新调用**的 `approval_required`；既有 `decisions`
+  `resolved_at`、把 `requested_at` 移到这一批的起点（前端倒计时按它判定）、按现有时长重开等待窗口，
+  并只发布**新调用**的 `approval_required`；既有 `decisions`
   是历史事实，原样保留，人类只需决策新调用。**重复登记同一批调用是幂等返回**（不重开、不发布），
-  `expired` 也不因迟到登记复活。
+  `expired` 也不因迟到登记复活。两处取舍要记住：重开时刷新 `requested_at` ⇒ **第一批的真实等待时长
+  不再可读**（为了让倒计时与新一批同口径）；收口判据是**全部历史决策** ⇒ 第一批被拒绝时，第二批即使
+  全批准，记录仍是 `denied`。
 - **MCP 声明**：`mcp_server` 存 transport / command / args / url 与 `env_names`——**只存变量名，
   值只从进程环境读**，库里不存密钥。远端 MCP（`http` / `sse`）未做数据面确认时**不连接**；
   stdio 不需要确认。装配层按 target 解析启用且已确认的声明，运行时读数（`connected` / `tools` /

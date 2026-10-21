@@ -3184,6 +3184,11 @@ function approvalPendingToolCalls(record) {
   );
 }
 
+/** 一组工具调用的 id 集合（空 id 也收，与后端 `_call_key` 同口径）。 */
+function approvalCallIds(calls) {
+  return new Set((calls || []).map((call) => String((call && call.id) || '')));
+}
+
 function approvalCardNode(targetId, record) {
   const replyId = String(record.reply_id || '');
   const displayState = approvalDisplayState(record);
@@ -3192,7 +3197,12 @@ function approvalCardNode(targetId, record) {
   card.dataset.approvalTarget = String(targetId);
   card.dataset.state = displayState;
   card.setAttribute('role', 'group');
-  const toolNames = approvalPendingToolCalls(record)
+  // 待审批时只问**未决策**的调用（#215）；已收口时回看这一整条记录的全部调用（决策是历史）。
+  const calls =
+    displayState === 'pending'
+      ? approvalPendingToolCalls(record)
+      : (record.tool_calls || []).slice();
+  const toolNames = calls
     .map((call) => String((call && call.name) || ''))
     .filter(Boolean)
     .join(', ');
@@ -3215,7 +3225,6 @@ function approvalCardNode(targetId, record) {
   head.appendChild(remaining);
   card.appendChild(head);
 
-  const calls = approvalPendingToolCalls(record);
   if (calls.length) {
     const tools = el('div', 'approval-tools');
     calls.forEach((call) => tools.appendChild(approvalToolNode(call)));
@@ -3409,11 +3418,12 @@ function upsertApproval(targetId, record) {
   renderApprovalSurfaces();
 }
 
-/** live `approval_required`：同一个 reply_id 的新帧只更新待办调用，不重置 requested_at。
+/** live `approval_required`：同一个 reply_id 的新帧只更新待办调用。
 
     #215：`reply_id` 是**一条回复**的标识，一条回复可以有多批确认——记录已经收口后，同一个
     `reply_id` 还会再来一帧，帧里只含这一批**新**调用。因此终态帧只在「没有新调用」时忽略
     （与后端 register 的幂等边界同形）；有新调用时按新帧重开，`decisions` 作为历史保留，
+    `tool_calls` 与后端一样是**累积全量**（呈现与提交各自用 `approvalPendingToolCalls` 过滤），
     倒计时从这一批重新起算。 */
 function absorbApprovalRequired(targetId, payload) {
   const replyId = String((payload && payload.reply_id) || '');
@@ -3421,9 +3431,7 @@ function absorbApprovalRequired(targetId, payload) {
   const map = approvalMapFor(targetId);
   const existing = map.get(replyId);
   const incoming = Array.isArray(payload && payload.tool_calls) ? payload.tool_calls : [];
-  const known = new Set(
-    ((existing && existing.tool_calls) || []).map((call) => String((call && call.id) || '')),
-  );
+  const known = approvalCallIds((existing && existing.tool_calls) || []);
   const fresh = incoming.filter((call) => !known.has(String((call && call.id) || '')));
   if (existing && approvalDisplayState(existing) !== 'pending' && !fresh.length) return;
   const reopened = Boolean(existing) && approvalDisplayState(existing) !== 'pending';
@@ -3431,8 +3439,12 @@ function absorbApprovalRequired(targetId, payload) {
     reply_id: replyId,
     target_id: targetId,
     member_id: String((payload && payload.member_id) || (existing && existing.member_id) || ''),
-    // 重开只展示这一批新调用：已决策的调用是历史，不再要求人类重复决策。
-    tool_calls: reopened ? fresh : incoming.length ? incoming : (existing && existing.tool_calls) || [],
+    // 与后端同形：镜像保存**累积**的调用，已决策的那些靠 decisions 过滤掉。
+    tool_calls: reopened
+      ? [...((existing && existing.tool_calls) || []), ...fresh]
+      : incoming.length
+        ? incoming
+        : (existing && existing.tool_calls) || [],
     state: 'pending',
     decisions: existing ? existing.decisions : [],
     // 重开是**新的一批**：倒计时从这一批重新起算（后端同时刷新了 requested_at）。

@@ -344,6 +344,53 @@ def test_a_new_tool_call_reopens_a_resolved_record_and_keeps_the_old_decisions(l
     assert [item["tool_call_id"] for item in final["decisions"]] == ["tc-a", "tc-b", "tc-c"]
 
 
+def test_reopening_restarts_the_waiting_window_with_the_existing_duration(library: Any) -> None:
+    """重开时按**现有时长**重开等待窗口：第一批的等待预算不会耗掉第二批的。"""
+    database, agent, channel = library
+    broker, _events = _broker(database, timeout=0.3)
+    _register(broker, channel, agent)
+    broker.submit(
+        "reply-1",
+        [
+            {"tool_call_id": "tc-a", "confirmed": True},
+            {"tool_call_id": "tc-b", "confirmed": True},
+        ],
+    )
+    # 把第一批排队中的决策取走（没有等待者时它们留在队列里）。
+    assert [item["tool_call_id"] for item in asyncio.run(broker.wait("reply-1")) or []] == [
+        "tc-a",
+        "tc-b",
+    ]
+    # 等到第一批的窗口早就过掉，再登记新调用。
+    time.sleep(0.4)
+    reopened = broker.register(
+        reply_id="reply-1",
+        target_id=channel["id"],
+        member_id=agent["id"],
+        tool_calls=[{"id": "tc-c", "name": "Write", "input": "{}"}],
+    )
+    assert reopened["state"] == "pending"
+
+    async def scenario() -> list[dict[str, Any]] | None:
+        task = asyncio.create_task(broker.wait("reply-1"))
+        await asyncio.sleep(0)
+        thread = threading.Thread(
+            target=lambda: broker.submit("reply-1", [{"tool_call_id": "tc-c", "confirmed": True}])
+        )
+        thread.start()
+        result = await task
+        thread.join(timeout=2)
+        return result
+
+    decisions = asyncio.run(scenario())
+
+    # 窗口确实重开过：否则这次 wait 会因为首批 deadline 已过而直接标 expired 返回 None。
+    assert decisions == [{"tool_call_id": "tc-c", "confirmed": True, "rules": []}]
+    final = database.get_approval_request("reply-1")
+    assert final is not None
+    assert final["state"] == "approved"
+
+
 def test_an_expired_record_is_not_reopened_by_a_late_registration(library: Any) -> None:
     """``expired`` 仍是终态：迟到登记不复活（超时 / 重启语义不变）。"""
     database, agent, channel = library
