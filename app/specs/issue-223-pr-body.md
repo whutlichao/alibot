@@ -40,3 +40,5 @@
 **Door:** two-way（纯前端呈现 + 词条；回滚即恢复旧 chip 文案，无迁移、无 schema 变化）
 
 **Blast Radius:** low（Studio 频道消息流里 `task_pointer` 那一行；后端载荷与未读口径不变，其它消费方不受影响）
+
+Closes #223
