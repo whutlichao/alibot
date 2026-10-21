@@ -185,6 +185,12 @@ const I18N_CATALOGS = {
     'header.channelPlaceholder': '发消息到 #{name} —— 输入 @ 提及 Agent',
     'typing.working': '{name} 正在回复…',
     'typing.stop': '停止本轮',
+    'agent.memoryLabel': '长期记忆',
+    'agent.memoryHint': '在本机记忆目录保存 Markdown，供这个 Agent 跨会话读取。',
+    'agent.contextWindow': '上下文条数',
+    'agent.contextTrigger': '上下文压缩阈值',
+    'agent.maxIters': '最大迭代次数',
+    'agent.runtimeDefaultHint': '数值留空时跟随默认配置。',
     'typing.stopNamed': '停止 {name} 的本轮',
 
     /* ─── composer 与 @ 补全 ────────────────────────────────────────── */
@@ -956,6 +962,12 @@ const I18N_CATALOGS = {
     'header.channelPlaceholder': 'Message #{name} — type @ to mention an agent',
     'typing.working': '{name} is replying…',
     'typing.stop': 'Stop round',
+    'agent.memoryLabel': 'Long-term memory',
+    'agent.memoryHint': 'Save Markdown in a local memory directory for this Agent to recall across sessions.',
+    'agent.contextWindow': 'Context messages',
+    'agent.contextTrigger': 'Context compression threshold',
+    'agent.maxIters': 'Maximum iterations',
+    'agent.runtimeDefaultHint': 'Leave numbers empty to follow the defaults.',
     'typing.stopNamed': 'Stop the current round for {name}',
 
     /* ─── Composer and @ completion ────────────────────────────────── */

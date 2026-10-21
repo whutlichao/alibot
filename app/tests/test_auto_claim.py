@@ -739,7 +739,7 @@ def test_the_claim_round_reason_carries_the_readable_suffix(client: TestClient, 
     assert outcome["reason"].endswith(
         i18n.render("reason.claim_round", i18n.SOURCE_LOCALE, reason="").split("；", 1)[-1]
     )
-    # 表列集不变（`reason` 是既有 TEXT 列，零 DDL）。
+    # reason 后缀仍使用既有字段；轮次结束原因是 schema 23 的共享字段。
     assert set(outcome) == {
         "id",
         "member_id",
@@ -752,6 +752,7 @@ def test_the_claim_round_reason_carries_the_readable_suffix(client: TestClient, 
         "consumed_budget",
         "merged",
         "reply_seq",
+        "finished_reason",
     }
 
 
@@ -866,34 +867,12 @@ def test_the_claim_round_is_mandatory_even_when_the_epoch_was_already_used(
     assert task_budget(client, fresh["id"])["used"] == 0
 
 
-def test_claim_keeps_the_schema_and_round_outcome_column_set_unchanged(
-    client: TestClient, harness: dict
-) -> None:
-    """[S12/S9 不变量] 本票**无新增 DDL**；`RoundOutcome` 字段集不变；认领轮不写新列。
-
-    这里**不再**钉 ``SCHEMA_VERSION`` 的字面量：它是一条**跨票递增的共享常量**，任何票都可以
-    合法推进它（例如 #112 把提醒的到点形态推到 13），用字面量钉它会把后续正常的 bump 变成假红。
-    「#117 那次交付没有新增 DDL」这个**一次性事实**已经由下面两条更硬的断言表达：
-    ``RoundOutcome`` 的字段集与 ``round_outcome`` 的列集——它们才是「没新增 DDL」的可观察落点。
-    """
-    import dataclasses
-
-    from alibot.agent_seam import RoundOutcome
-
-    assert [field.name for field in dataclasses.fields(RoundOutcome)] == [
-        "status",
-        "reason",
-        "messages",
-        "started_at",
-        "finished_at",
-        "consumed_budget",
-        "task_action",
-    ], "RoundOutcome 一字不动（ADR-0010 一）"
-
+def test_claim_uses_the_shared_round_outcome_fields(client: TestClient, harness: dict) -> None:
+    """认领沿用共享轮次结果读面；schema 23 的结束原因也保持同一份契约。"""
     channel, _ = channel_with_agent_and_auto_claim(client)
     task = new_task(client, channel["id"])
     drain(harness)
-    # `round_outcome` 的列集与基线相同（含认领轮）。
+    # 认领轮使用共享的轮次结果字段，不增加认领专属列。
     assert set(task_outcomes(client, task["id"])[0]) == {
         "id",
         "member_id",
@@ -906,6 +885,7 @@ def test_claim_keeps_the_schema_and_round_outcome_column_set_unchanged(
         "consumed_budget",
         "merged",
         "reply_seq",
+        "finished_reason",
     }
 
 

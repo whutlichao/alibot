@@ -385,6 +385,7 @@ def test_round_outcomes_still_read_the_same_shape_after_the_rename(client: TestC
         "consumed_budget",
         "merged",
         "reply_seq",
+        "finished_reason",
     }
 
 

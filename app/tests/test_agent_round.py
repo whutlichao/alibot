@@ -204,11 +204,15 @@ def test_round_outcome_distinguishes_replied_ignored_and_failed(client: TestClie
     send(client, channel["id"], "大家看一下")
     harness["scheduler"].drain()
 
-    by_member = {record["member_id"]: record["status"] for record in outcomes(client, channel["id"])}
+    # 人类唤醒下 ignored 按 failed 收口；甲回复后，乙才在非确定信号轮正常 ignored。
+    # 同毫秒结果按 id 排序，不把「最后一行碰巧是谁」当作成员唯一结论。
+    by_member: dict[str, set[str]] = {}
+    for record in outcomes(client, channel["id"]):
+        by_member.setdefault(record["member_id"], set()).add(record["status"])
     assert by_member == {
-        reply_agent["id"]: "replied",
-        ignore_agent["id"]: "ignored",
-        fail_agent["id"]: "failed",
+        reply_agent["id"]: {"replied"},
+        ignore_agent["id"]: {"failed", "ignored"},
+        fail_agent["id"]: {"failed"},
     }
 
 

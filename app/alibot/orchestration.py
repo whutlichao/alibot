@@ -1,4 +1,4 @@
-"""唤醒编排：消息落库之后，把「待读的新消息」交给成员面的 Agent 跑一轮。
+"""唤醒编排：消息落库之后，把新消息的回应纪律与历史上下文交给成员面的 Agent 跑一轮。
 
 五条纪律（spec #1 §4 / §5）：
 
@@ -175,6 +175,7 @@ class _Turn:
     repeat_bases: list[int]
     deferred_rounds: dict[str, _DeferredWake]
     reply_ids: set[str] = field(default_factory=set)
+    seen_reply_ids: set[str] = field(default_factory=set)
     interrupt: Callable[[str, str], bool] | None = None
 
 
@@ -892,8 +893,8 @@ class WakeOrchestrator:
                 # 瞬态轮次（无新消息）：按规格不落盘。
                 return None
             # 自动续跑轮（ADR-0027）把**整个 target 历史**交给模型：续跑的意义就是接上自己上一轮的
-            # 产出，只喂一条「继续」记录会让它从零重做。其它轮次逐字保持既有口径（只喂新消息、
-            # 且不含自己的消息）。
+            # 产出，只喂一条「继续」记录会让它从零重做。普通轮的 pending 仍只承载别人的新消息，
+            # 供早退与消费基线使用；模型的窗口输入在基线确定后独立装配。
             pending = (
                 self._db.list_messages(target_id)
                 if history
@@ -1102,7 +1103,12 @@ class WakeOrchestrator:
             if outcome.finished_reason == "interrupted":
                 self._events.publish(
                     target_id,
-                    {"type": "round.interrupted", "member_id": member_id, "outcome": record},
+                    {
+                        "type": "round.interrupted",
+                        "member_id": member_id,
+                        "reply_ids": sorted(turn.seen_reply_ids) if turn is not None else [],
+                        "outcome": record,
+                    },
                 )
             self._events.publish(
                 target_id,
@@ -1403,6 +1409,7 @@ class WakeOrchestrator:
                     if turn is not None and turn.target_id == record.target_id:
                         if record.type == "REPLY_START":
                             turn.reply_ids.add(record.reply_id)
+                            turn.seen_reply_ids.add(record.reply_id)
                             turn.interrupt = getattr(self._seam, "interrupt_round", None)
                         else:
                             turn.reply_ids.discard(record.reply_id)

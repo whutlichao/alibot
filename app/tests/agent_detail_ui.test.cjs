@@ -693,6 +693,10 @@ test("「编辑配置」预填当前配置，保存提交全部可写字段并�
     // 联网档是四档之一且**总是**提交：这个 Agent 没有覆盖，提交的是显式 null（= 跟随频道），
     // 而不是省略字段（省略只表示「保持原值」，没有清空语义）。
     web_access: null,
+    memory_mode: "off",
+    context_window_messages: null,
+    context_trigger_ratio: null,
+    react_max_iters: null,
   });
   assert.equal(harness.editOverlay.hidden, true, "保存成功要关掉弹窗");
   assert.equal(harness.memberList.textContent.includes("小明明"), true, "左栏名字跟着后端读数走");
@@ -1196,4 +1200,26 @@ test("显式入口不受频道影响：没有频道时点开关仍打开 dock �
       .textContent.includes(catalogText(harness, "zh-CN", "dock.openChannelFirst")),
     "空态提示仍是「先打开一个频道。」",
   );
+});
+
+test('Agent 编辑面读写长期记忆和上下文配置，清空数值提交显式 null', async () => {
+  const configured = agentDetail({ memory_mode: 'agentic', context_window_messages: 60, context_trigger_ratio: 0.6, react_max_iters: 45 });
+  const harness = createHarness({ fetch: async () => ({ ok: true, status: 200, json: async () => ({ agent: configured }) }) });
+  harness.load([configured]);
+  await harness.clickRow('mem-1');
+  await harness.overview.dispatchEvent({ type: 'click', target: harness.overview.querySelector('[data-agent-edit]') });
+  assert.equal(harness.elementFor('#agentEditMemory').checked, true);
+  assert.equal(harness.elementFor('#agentEditContextWindow').value, '60');
+  assert.equal(harness.elementFor('#agentEditContextTrigger').value, '0.6');
+  assert.equal(harness.elementFor('#agentEditMaxIters').value, '45');
+  harness.elementFor('#agentEditMemory').checked = false;
+  harness.elementFor('#agentEditContextWindow').value = '';
+  harness.elementFor('#agentEditContextTrigger').value = '';
+  harness.elementFor('#agentEditMaxIters').value = '';
+  await harness.elementFor('#agentEditSubmit').dispatchEvent({ type: 'click' });
+  const payload = harness.patches()[0].body;
+  assert.equal(payload.memory_mode, 'off');
+  assert.equal(payload.context_window_messages, null);
+  assert.equal(payload.context_trigger_ratio, null);
+  assert.equal(payload.react_max_iters, null);
 });

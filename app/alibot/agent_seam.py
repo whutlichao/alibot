@@ -2,7 +2,7 @@
 
 协作域的唤醒编排需要的全部框架能力被收敛成两个东西：
 
-1. ``AgentSeam``——「一个成员的一轮」这个动作：输入**成员**与该成员**待读的新消息**，
+1. ``AgentSeam``——「一个成员的一轮」这个动作：输入**成员**与该 target 的**上下文窗口**（回应纪律仍只由新消息决定），
    输出**零或多条待落库回复** + 一个**轮次结果**；轮次结果可带受限的结构化任务动作。
 2. ``AgentScopeAgentSeam``——真实实现，进程内直接调用 AgentScope 2.x（``Agent`` /
    ``agentscope.model`` / ``agentscope.credential``），不使用框架的 Agent Service。
@@ -723,6 +723,34 @@ class AgentScopeAgentSeam:
         options["state"] = store.load(options["state"].permission_context)
         return store
 
+    def _prepare_runtime_options(
+        self, agent: dict[str, Any], target_id: str, context: Any, root: str | None, mount: Any
+    ) -> tuple[dict[str, Any], SessionState | None, list[Any]]:
+        from agentscope.state import AgentState
+
+        from .permissions import WorkspacePathPermissionMiddleware
+
+        options = self._runtime_options(agent, target_id)
+        if isinstance(options.get("offloader"), SessionOffloader):
+            options["offloader"].docker = mount is not None and mount.settings.is_docker
+        options["state"] = AgentState(permission_context=context)
+        store = self._restore_state(options)
+        middlewares: list[Any] = [WorkspacePathPermissionMiddleware(root)] if root else []
+        tools: list[Any] = []
+        if agent.get("memory_mode") == "agentic" and isinstance(options.get("offloader"), SessionOffloader):
+            from .memory import assemble_memory
+
+            memory_middlewares, tools = assemble_memory(
+                options["offloader"].root,
+                str(agent["id"]),
+                options["state"].permission_context,
+                mount=mount,
+            )
+            middlewares.extend(memory_middlewares)
+        if middlewares:
+            options["middlewares"] = middlewares
+        return options, store, tools
+
     def _runtime_options(self, agent: dict[str, Any], target_id: str) -> dict[str, Any]:
         from .workspace import session_partition_id
 
@@ -1110,12 +1138,10 @@ class AgentScopeAgentSeam:
                     UserInterruptEvent,
                 )
                 from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
-                from agentscope.state import AgentState
                 from agentscope.types import ReplyFinishedReason
 
                 from .approval import ApprovalWaitTimeout
                 from .permissions import (
-                    WorkspacePathPermissionMiddleware,
                     build_permission_context,
                     effective_rules,
                 )
@@ -1150,13 +1176,15 @@ class AgentScopeAgentSeam:
                     if mount is not None:
                         mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
 
+                runtime_options, state_store, memory_tools = self._prepare_runtime_options(
+                    agent, target_id, context, str(root) if root else None, mount
+                )
                 agent_options: dict[str, Any] = {
                     # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
                     "name": member_internal_name(member_id),
                     "system_prompt": "\n".join([system_prompt, *workspace_warnings]),
                     "model": model,
-                    "state": AgentState(permission_context=context),
-                    **self._runtime_options(agent, target_id),
+                    **runtime_options,
                 }
                 workspace_tools = list(mount.tools) if mount is not None else []
                 if mcp_assembly is not None:
@@ -1169,6 +1197,7 @@ class AgentScopeAgentSeam:
                     and permission_mode != "read-only"
                 ):
                     workspace_tools.append(local_shell_tool(mount.root))
+                workspace_tools.extend(memory_tools)
                 toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
@@ -1182,11 +1211,8 @@ class AgentScopeAgentSeam:
                 )
                 if toolkit is not None:
                     agent_options["toolkit"] = toolkit
-                if root:
-                    agent_options["middlewares"] = [WorkspacePathPermissionMiddleware(str(root))]
-                state_store = self._restore_state(agent_options)
                 instance = _agent_instance(agent_options, plan=plan, member_id=member_id)
-                # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
+                # 一轮的一条 Msg：把窗口内历史（或续跑完整历史）合成输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
                 # 自动续跑轮（ADR-0027）会把**整个任务线程**交进来：自己的历史回复必须按
                 # assistant 角色回传，否则模型会把上一轮的产出读成「另一个人说的话」。
@@ -1421,12 +1447,10 @@ class AgentScopeAgentSeam:
                 UserInterruptEvent,
             )
             from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
-            from agentscope.state import AgentState
             from agentscope.types import ReplyFinishedReason
 
             from .approval import ApprovalWaitTimeout
             from .permissions import (
-                WorkspacePathPermissionMiddleware,
                 build_permission_context,
                 effective_rules,
             )
@@ -1463,28 +1487,41 @@ class AgentScopeAgentSeam:
                 )
                 return context, str(root) if root else None
 
+            prepared_options: dict[str, dict[str, Any]] = {}
+            members_by_id = {str(member["id"]): member for member in [agent, *team.members]}
+
             async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
-                """这一轮该成员的项目根工具（未配置 / 非 local 后端时没有；ADR-0021 §六）。"""
                 settings = self._workspace_settings(target_id, member_id_value)
-                if settings is None:
-                    return None
-                session_id = session_partition_id(member_id_value, target_id)
-                mount = await self._runtime_mount(settings, member_id_value, target_id, workspace_warnings)
-                if mount is None:
-                    return None
-                mounts.append(mount)
-                tools = list(mount.tools)
-                assembly = await self._assemble_mcp(target_id, member_id_value, mount, session_id)
-                mcp_assemblies.append(assembly)
-                tools.extend(assembly.tools)
-                permission_settings = self._permission_settings(target_id, member_id_value)
-                mode = str(
-                    (permission_settings or {}).get("mode")
-                    or (settings.permission_mode if settings is not None else "ask-writes")
+                mount = None
+                tools: list[Any] = []
+                if settings is not None:
+                    mount = await self._runtime_mount(
+                        settings, member_id_value, target_id, workspace_warnings
+                    )
+                if mount is not None:
+                    mounts.append(mount)
+                    tools.extend(mount.tools)
+                    assembly = await self._assemble_mcp(
+                        target_id, member_id_value, mount, session_partition_id(member_id_value, target_id)
+                    )
+                    mcp_assemblies.append(assembly)
+                    tools.extend(assembly.tools)
+                    permission_settings = self._permission_settings(target_id, member_id_value)
+                    mode = str(
+                        (permission_settings or {}).get("mode")
+                        or (settings.permission_mode if settings is not None else "ask-writes")
+                    )
+                    if getattr(mount, "allow_local_shell", False) and mode != "read-only":
+                        tools.append(local_shell_tool(mount.root))
+                context, root = _permission_for(member_id_value)
+                options, store, memory_tools = self._prepare_runtime_options(
+                    members_by_id[member_id_value], target_id, context, root, mount
                 )
-                if getattr(mount, "allow_local_shell", False) and mode != "read-only":
-                    tools.append(local_shell_tool(mount.root))
-                return tools
+                prepared_options[member_id_value] = options
+                if store is not None:
+                    state_stores[member_id_value] = store
+                tools.extend(memory_tools)
+                return tools or None
 
             async def _skills_for_member(member_id_value: str) -> list[Any]:
                 settings = self._workspace_settings(target_id, member_id_value)
@@ -1503,23 +1540,16 @@ class AgentScopeAgentSeam:
                 member_model = model_name_of(str(member.get("model_id") or ""))
                 model = self._build_model(member_provider, member_model, stream=stream)
                 models.append(model)
-                context, root = _permission_for(str(member["id"]))
                 options: dict[str, Any] = {
                     "name": member_internal_name(str(member["id"])),
                     "system_prompt": "\n".join(
                         [prompt + self._runtime_prompt(target_id, messages), *workspace_warnings]
                     ),
                     "model": model,
-                    "state": AgentState(permission_context=context),
-                    **self._runtime_options(member, target_id),
+                    **prepared_options[str(member["id"])],
                 }
-                if root:
-                    options["middlewares"] = [WorkspacePathPermissionMiddleware(root)]
                 if toolkit is not None:
                     options["toolkit"] = toolkit
-                store = self._restore_state(options)
-                if store is not None:
-                    state_stores[str(member["id"])] = store
                 instance = _agent_instance(options, plan=plan, member_id=str(member["id"]))
                 agents_by_id[str(member["id"])] = instance
                 return instance
@@ -1819,13 +1849,13 @@ class AgentScopeAgentSeam:
     ) -> RoundOutcome:
         """把最终 ``Msg`` 与结构化工具记录收口成一轮的结论（单 Agent / 队长共用）。"""
         reply_error = getattr(reply, "error", None)
-        if reply_error:
+        finished_reason = str(getattr(reply, "finished_reason", None) or "completed")
+        if reply_error or finished_reason == "error":
             return RoundOutcome(
                 status="failed",
-                reason=render("seam.reply_error", self._locale(), error=reply_error),
+                reason=render("seam.reply_error", self._locale(), error=reply_error or "error"),
             )
 
-        finished_reason = str(getattr(reply, "finished_reason", None) or "completed")
         if finished_reason == "interrupted":
             return RoundOutcome(
                 status="replied",

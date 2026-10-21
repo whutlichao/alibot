@@ -3785,8 +3785,7 @@ function recordLiveEvent(targetId, type, payload) {
       showTypingFor(key, payload.member_id);
     } else if (payload.event_type === 'REPLY_END') finishRoundFor(key, payload.reply_id);
   } else if (type === 'round.interrupted') {
-    delete state.activeRounds[key];
-    showTypingFor(key, null);
+    (payload.reply_ids || (payload.reply_id ? [payload.reply_id] : [])).forEach((replyId) => finishRoundFor(key, replyId));
   }
   return payload;
 }
@@ -3975,7 +3974,14 @@ function onStreamStatus(targetId, payload) {
 }
 
 function onStreamTyping(targetId, payload) {
-  showTypingFor(targetId, payload.active ? payload.member_id : null);
+  if (payload.active) showTypingFor(targetId, payload.member_id);
+  else {
+    const rounds = state.activeRounds[targetId] || {};
+    Object.keys(rounds).forEach((replyId) => {
+      if (rounds[replyId] === payload.member_id) delete rounds[replyId];
+    });
+    showTypingFor(targetId, Object.values(rounds)[0] || null);
+  }
   if (payload.active) {
     state.statuses[payload.member_id] = 'working';
   } else if (state.statuses[payload.member_id] === 'working') {
@@ -4780,6 +4786,10 @@ function openAgentEditModal(memberId) {
   renderAgentEditProviderSelect(preferred);
   renderEditTier('#agentEditEnabled', 'enabled', agent.enabled !== false);
   renderEditTier('#agentEditAutoClaim', 'autoClaim', agent.auto_claim === true);
+  $('#agentEditMemory').checked = agent.memory_mode === 'agentic';
+  $('#agentEditContextWindow').value = agent.context_window_messages == null ? '' : String(agent.context_window_messages);
+  $('#agentEditContextTrigger').value = agent.context_trigger_ratio == null ? '' : String(agent.context_trigger_ratio);
+  $('#agentEditMaxIters').value = agent.react_max_iters == null ? '' : String(agent.react_max_iters);
   // 联网档（#202 / 2026-10-21 修订）：`null` = 没有 Agent 级覆盖，选中「跟随频道（默认）」卡片。
   renderAgentEditWebAccess(agent.web_access);
   renderAgentEditNotice();
@@ -4879,6 +4889,10 @@ async function submitAgentEdit() {
     system_prompt: $('#agentEditPromptInput').value.trim(),
     enabled: editTierValue('#agentEditEnabled', 'enabled'),
     auto_claim: editTierValue('#agentEditAutoClaim', 'autoClaim'),
+    memory_mode: $('#agentEditMemory').checked ? 'agentic' : 'off',
+    context_window_messages: $('#agentEditContextWindow').value.trim() === '' ? null : Number($('#agentEditContextWindow').value),
+    context_trigger_ratio: $('#agentEditContextTrigger').value.trim() === '' ? null : Number($('#agentEditContextTrigger').value),
+    react_max_iters: $('#agentEditMaxIters').value.trim() === '' ? null : Number($('#agentEditMaxIters').value),
   };
   // 联网档（#202）：`follow` 是界面上的「跟随频道」档，提交 **`web_access: null`**——后端把它
   // 解释成「清除 Agent 级覆盖」（写库 NULL），所以从具体档位切回跟随频道真的会清掉覆盖，
@@ -8459,6 +8473,15 @@ function bindEvents() {
   $('#agentEditCancel').addEventListener('click', closeAgentEditModal);
   $('#agentEditClose').addEventListener('click', closeAgentEditModal);
   $('#agentEditSubmit').addEventListener('click', submitAgentEdit);
+  ['#agentEditContextWindow', '#agentEditContextTrigger', '#agentEditMaxIters'].forEach((selector) => {
+    const input = $(selector);
+    input.addEventListener('wheel', (event) => {
+      if (document.activeElement === input) {
+        event.preventDefault();
+        input.blur();
+      }
+    }, { passive: false });
+  });
   $('#agentEditRemoteConfirm').addEventListener('click', () => { confirmAgentEditRemoteFlow(); });
   $('#agentEditProviderSelect').addEventListener('pointerdown', () => { agentEditProviderTouched = true; });
   $('#agentEditProviderSelect').addEventListener('keydown', () => { agentEditProviderTouched = true; });

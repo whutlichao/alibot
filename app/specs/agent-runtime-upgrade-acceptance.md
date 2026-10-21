@@ -36,6 +36,17 @@
 - 绿证据：`scripts/check.sh --fast tests/test_runtime_interrupt.py tests/test_approval_seam.py tests/test_team_mode.py tests/test_agent_event_stream.py`，41 passed；ruff / mypy / pyright 全绿，Node 215 passed。
 - 观测：错误 target 409、正确中断 200、重复 409；轮次 finished_reason=interrupted，reply_seq=NULL，无 Agent 消息；事件可序列化为 SSE 且无 id；运行中 model client 关闭；挂起 Write 未执行、审批 expired；下一轮读取 middle_context，损坏状态不失败。
 
-## T5
+## T5 长期记忆与配置面
 
-实施中；最终补完整门禁与双轴 review。
+- 落点：`memory.py` 的 AgenticMemoryMiddleware、受限 backend 与权限中间件；既有单 Agent / team 装配点复用相同逻辑。记忆 off / null 时不挂、不创建目录；agentic 时只授予 `.alibot/memory/<member>/Memory/` 的编辑权，保留显式 deny/ask 规则。
+- 同一 member 的两个 target 会话通过真实 Read/Write 写回并召回 MEMORY.md；DM 没有 workspace 时只补 Read/Write/Edit，不能读项目文件。目录祖先符号链接、越界路径与文件符号链接经根检查拒绝。
+- PATCH 四字段沿用显式 null / 省略 / 具体值的三态；新建数值配置为 null，跟随环境与默认，schema DDL 默认仍为 40 / 0.7 / 30 / off。Studio 编辑弹窗有长期记忆开关与三项数值配置，空值提交 null。
+- 红证据：`.scratch/red-t5` / `.scratch/t5-red.log`，2 failed / 5 passed；`.scratch/t5-ui-red.log` 新增开关用例失败。
+- 绿证据：六个 runtime 测试文件合计 19 passed（随后增补 error 结束原因用例），`scripts/check.sh --fast` 的 ruff、mypy、pyright 全绿，Node 217 passed。完整门禁及两轴审查原始读数最终写入 `/tmp/alibot-agent-runtime/T5-report.md`。
+- 浏览器：ego-browser 在临时数据目录完成 45 / 0.6 / 35 / agentic 的表单保存，真实消息轮次出现停止按钮、点击后无 Agent 消息且读到 interrupted 结果。截图 `/tmp/alibot-agent-runtime/studio-runtime-settings.png`、`studio-stop-round.png`、`studio-round-interrupted.png`。滚动数字输入时的原生值漂移已修正并重验。
+- 全量门禁发现的旧断言同步：共享轮次结果读面新增 finished_reason；原来按同毫秒最后一行推断成员唯一结论的用例在开工隔离基线第二次运行也失败（`.scratch/outcome-order-baseline.log`），改为核对该成员真实产生的结果集合，不改生产排序或回应纪律。
+- 文档：CONTEXT 新增上下文窗口、轮次结束原因、长期记忆，并修订输入词条；ADR-0030 记录窗口 / 压缩 / 记忆与新消息纪律边界；README 同步 schema 23、端点、环境配置与降级。
+
+## 最终门禁与 review
+
+review 比较基线由 coordinator 确认为 `3863e39`。最终全量门禁、两轴发现与处理、提交清单、遗留和原始输出见 `/tmp/alibot-agent-runtime/T5-report.md`；测试仅使用临时库和脚本模型，无付费调用，未操作用户真实数据目录。

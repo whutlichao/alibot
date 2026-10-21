@@ -438,7 +438,24 @@ test('当前 reply_id 的停止按钮发中断请求，成功与中断事件都�
   assert.equal(line.children.length, 0);
 
   api.handleStreamEvent('ch-1', frame(start), 'agent_event');
-  api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1')), 'round.interrupted');
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1', { reply_ids: ['reply-stop'] })), 'round.interrupted');
   assert.equal(line.hidden, true);
   assert.equal(api.lastSeqOf('ch-1'), 0);
+});
+
+
+test('中断一轮只移除它的停止按钮，同 target 的其他成员继续显示', () => {
+  const { api, document } = createHarness();
+  api.state.agents.push({ id: 'mem-2', display_name: '第二位', enabled: true });
+  for (const [member_id, reply_id] of [['mem-1', 'r1'], ['mem-2', 'r2']]) {
+    api.handleStreamEvent('ch-1', frame(liveEvent('agent_event', 'ch-1', {
+      event_type: 'REPLY_START', member_id, reply_id, payload: {},
+    })), 'agent_event');
+  }
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1', { reply_ids: ['r1'] })), 'round.interrupted');
+  api.handleStreamEvent('ch-1', frame({ type: 'typing', member_id: 'mem-1', active: false }), 'typing');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  assert.ok(line.children.some((node) => node.dataset.replyId === 'r2'));
+  assert.ok(!line.children.some((node) => node.dataset.replyId === 'r1'));
 });

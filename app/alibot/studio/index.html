@@ -906,6 +906,23 @@
         </div>
         <div class="hint" data-i18n="agent.autoClaimNote">开启后：频道内新建的任务由编排交给它（一次只认领一个）；认领会写一条可读的系统记录、唤醒它，并为该任务重置一次回应预算——每张任务至多一次。</div>
       </div>
+      <div class="field">
+        <label for="agentEditMemory"><input type="checkbox" id="agentEditMemory" /> <span data-i18n="agent.memoryLabel">长期记忆</span></label>
+        <div class="hint" data-i18n="agent.memoryHint">在本机记忆目录保存 Markdown，供这个 Agent 跨会话读取。</div>
+      </div>
+      <div class="field">
+        <label for="agentEditContextWindow" data-i18n="agent.contextWindow">上下文条数</label>
+        <input class="input" type="number" min="1" step="1" id="agentEditContextWindow" placeholder="40" />
+      </div>
+      <div class="field">
+        <label for="agentEditContextTrigger" data-i18n="agent.contextTrigger">上下文压缩阈值</label>
+        <input class="input" type="number" min="0.01" max="0.9" step="0.01" id="agentEditContextTrigger" placeholder="0.7" />
+      </div>
+      <div class="field">
+        <label for="agentEditMaxIters" data-i18n="agent.maxIters">最大迭代次数</label>
+        <input class="input" type="number" min="1" step="1" id="agentEditMaxIters" placeholder="30" />
+        <div class="hint" data-i18n="agent.runtimeDefaultHint">数值留空时跟随默认配置。</div>
+      </div>
       <!-- 联网档（#202 / 2026-10-21 修订）：Agent 级入口。「跟随频道（默认）」= 不写 Agent 级覆盖，
            选中它保存时提交 `web_access: null`（库内列回到 NULL）；其余三档与频道设置里的同名同义。
            私聊没有频道可跟随，读路径回退默认档 `search`；DM 不装配 `fetch`。 -->

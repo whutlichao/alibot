@@ -129,7 +129,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
-| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省开启，仅在自主频道生效）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置）, **联网档**（`web_access`，可空 = 跟随频道） | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021 |
+| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省开启，仅在自主频道生效）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置）, **联网档**（`web_access`，可空 = 跟随频道）, **上下文窗口 / 压缩阈值 / 迭代上限 / 长期记忆档** | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021 |
 | `target` | id, kind(`channel`/`dm`/`task`), dm_peer_member_id, created_at | 一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果都挂 `target_id`。channel 型是**影子行**（id 与 `channel.id` 同值、只承载 `kind`） |
 | `target_member` | target_id, member_id | **成员关系**的正本（三种 kind 共用一张表）：唤醒面与未读口径的共同来源；频道成员就是它在 channel 型上的读法 |
 | `target_read` | member_id, target_id, last_read_seq | 已读位置（未读的正本）。owner 的行是未读徽标基准，agent 的行是它自己的消费游标 |
@@ -151,9 +151,9 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `team_run` / `team_assignment` | run: id, target_id, leader_member_id, base_seq, status(`running`/`completed`/`failed`/`interrupted`/`invalid-leader`), started_at, finished_at；assignment: team_run_id, target_id, task_id(可空), leader/member_id, tool_call_id, prompt, state(`started`/`succeeded`/`failed`/`interrupted`/`budget-exhausted`), jump_consumed, reply_excerpt, error | **team 模式的运行记录**（ADR-0018/0019/0022）：`target_id` 可以是 channel 型或该频道下的 task 型；task target 上 `task_id` 非空。它们**不是消息**：不占未读、不进搜索、不写频道消息；`jump_consumed` 只记「这次分派扣了一次跳」 |
 | `message` | id, target_id, seq, author_member_id, kind, 正文, **提及快照**, task_ref(可空), **task_pointer**(可空) | **append-only**，`UNIQUE(target_id, seq)`。`task_ref` = 同 target 的任务引用（任务线程内）；`task_pointer` = **频道 system 消息 → 本频道任务**的指针（只由后端在建任务时写入；部分唯一索引 + `BEFORE INSERT` 作用域触发器，ADR-0028） |
 | `attachment` | id, 原文件名, 大小, MIME, **相对路径**, 创建时间, **可空的 message_id** | 附件的元数据；**字节在数据目录**、不进 SQLite。`message_id` 为空 = 未发送的草稿（读取面不暴露）。绑定一次即不可变，**没有**删除路径 |
-| `round_outcome` | member_id, target_id, base_seq, status, reason, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `target_budget.used` |
+| `round_outcome` | member_id, target_id, base_seq, status, reason, finished_reason（旧行可空）, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `target_budget.used` |
 
-- **表清单与 `SCHEMA_VERSION = 21` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
+- **表清单与 `SCHEMA_VERSION = 23` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
   新增列/表的默认值必须与读路径解释一致——改一处就要同时改这张表。
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /
@@ -200,6 +200,18 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
   带可读 reason、起止时间、是否消耗预算、是否被合并。
 - **一轮至多一条频道消息**；落库路径只有一条。
 - 消费游标只在 `replied` / `ignored` / `silent` 推进；`failed` 不推进（下次唤醒会重新读到，但不是自动重放）。
+
+### Agent 运行时（schema 23 / ADR-0030）
+
+普通轮输入最近 40 条 target 消息（本人历史为 assistant），自动续跑使用完整历史；回应纪律、瞬态早退与 base_seq 仍只按新消息计算，历史不重新触发必答。上下文超过阈值时由 AgentScope 压缩；压缩消息与截断工具结果写入 `.alibot/sessions/<target--member>/offload/`。
+
+- `ALIBOT_CONTEXT_WINDOW_MESSAGES=40`、`ALIBOT_CONTEXT_TRIGGER_RATIO=0.7`、`ALIBOT_CONTEXT_RESERVE_RATIO=0.2`、`ALIBOT_CONTEXT_TOOL_RESULT_LIMIT=4000`、`ALIBOT_CONTEXT_MAX_IMAGE_NUM=5`、`ALIBOT_REACT_MAX_ITERS=30`、`ALIBOT_MODEL_MAX_RETRIES=2`。
+- Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 编辑弹窗可设置上下文条数、阈值、迭代上限及长期记忆开关。
+- 每轮按 Asia/Shanghai 重新注入 ISO 时间、target 名称与上下文用量；AgentState 原子保存到上述 session 分区的 `state.json`，恢复摘要及运行状态、按消息窗口重建 context。损坏状态降级为空白并记录日志；权限始终用当前配置。
+- `finished_reason` 为 `completed | interrupted | exceed_max_iters | error`，与 status 独立。旧行保持 NULL；达到迭代上限的部分正文可保留，reason 明示结论可能不完整。
+- `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失。审批超时仍为 failed。
+- `memory_mode=agentic` 使用 AgenticMemoryMiddleware，记忆在 `<root>/.alibot/memory/<member_id>/Memory/`，DM 的 root 为数据目录；只补 Read/Write/Edit 与该记忆目录的写权限，不创建工作区、不开放项目根。显式 deny/ask 规则仍生效；off / null 不挂中间件、不创建目录。
+- Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件仍写主机 `.alibot` 分区，可用 Docker 时路径显示为容器 bind mount 的 `/workspace/.alibot/...`。
 
 ### 穿透（点名一个未加入该频道的 Agent）
 

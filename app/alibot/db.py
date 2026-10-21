@@ -895,6 +895,7 @@ END;
 AGENT_COLUMNS = (
     "m.*, c.role, c.model_id, c.system_prompt, c.enabled, c.auto_claim, "
     "c.workspace_backend, c.permission_mode, c.allow_local_shell, c.docker_image, c.web_access, "
+    "c.context_window_messages, c.context_trigger_ratio, c.react_max_iters, c.memory_mode, "
     "c.updated_at AS config_updated_at"
 )
 
@@ -1464,6 +1465,10 @@ class Database:
             "docker_image": row["docker_image"] if "docker_image" in keys else None,
             # 联网档（#184 / ADR-0026 §二）：``NULL`` = 跟随频道那一档，不是一个“关闭”值。
             "web_access": row["web_access"] if "web_access" in keys else None,
+            "context_window_messages": row["context_window_messages"],
+            "context_trigger_ratio": row["context_trigger_ratio"],
+            "react_max_iters": row["react_max_iters"],
+            "memory_mode": row["memory_mode"],
             "config_updated_at": row["config_updated_at"] if "config_updated_at" in keys else None,
         }
 
@@ -1567,7 +1572,8 @@ class Database:
                 self._conn.execute(
                     "INSERT INTO agent_config(member_id, role, model_id, system_prompt, enabled, "
                     "workspace_backend, permission_mode, allow_local_shell, docker_image, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                    "context_window_messages, context_trigger_ratio, react_max_iters, "
+                    "created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
                     (
                         member_id,
                         clean_role,
@@ -1602,10 +1608,14 @@ class Database:
         allow_local_shell: bool | None = None,
         docker_image: str | None = None,
         web_access: Any = _UNSET,
+        context_window_messages: Any = _UNSET,
+        context_trigger_ratio: Any = _UNSET,
+        react_max_iters: Any = _UNSET,
+        memory_mode: Any = _UNSET,
     ) -> dict[str, Any]:
         """部分更新 Agent 配置（``None`` = 这次请求没提到这一字段，保持原值）。
 
-        ``web_access`` 是**例外**：它是允许显式清空的字段，用 ``_UNSET`` 区分「没提到」与
+        ``web_access`` 与四个运行时配置字段是**例外**：它们是允许显式清空的字段，用 ``_UNSET`` 区分「没提到」与
         「显式 ``null`` = 清除 Agent 级覆盖、回到跟随频道」（2026-10-21 人定，ADR-0026 §十五；
         与 ``update_channel_config`` 的同名字段同一口径）。
 
@@ -1619,6 +1629,28 @@ class Database:
         也不开世代**——配置变更不是一次对话动作（ADR-0011）。
         """
         self.get_agent(member_id)  # 存在性 + 「必须是 Agent」：不是就抛 NotFound
+        runtime_values = {
+            "context_window_messages": context_window_messages,
+            "context_trigger_ratio": context_trigger_ratio,
+            "react_max_iters": react_max_iters,
+            "memory_mode": memory_mode,
+        }
+        invalid_runtime: dict[str, str] = {}
+        for key, value in runtime_values.items():
+            if value is _UNSET or value is None:
+                continue
+            if key == "memory_mode":
+                valid = value in ("off", "agentic")
+            elif key == "context_trigger_ratio":
+                valid = isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 0.9
+            else:
+                valid = isinstance(value, int) and not isinstance(value, bool) and value > 0
+            if not valid:
+                invalid_runtime[key] = self._render_copy("error.field.agent_runtime_invalid", field=key)
+        if invalid_runtime:
+            raise DomainError(
+                "validation_failed", self._render_copy("error.agent_update_invalid"), fields=invalid_runtime
+            )
         clean_backend, clean_mode, clean_image = self._agent_workspace_values(
             workspace_backend=workspace_backend,
             permission_mode=permission_mode,
@@ -1706,6 +1738,10 @@ class Database:
                     # 「这次提到了吗」写法。第一个参数是「提到了」、第二个是「写成什么」——
                     # 显式 ``None`` 因此能落成 ``NULL``（回到跟随频道），而没提到保持原值。
                     "web_access = CASE WHEN ? THEN ? ELSE web_access END, "
+                    "context_window_messages = CASE WHEN ? THEN ? ELSE context_window_messages END, "
+                    "context_trigger_ratio = CASE WHEN ? THEN ? ELSE context_trigger_ratio END, "
+                    "react_max_iters = CASE WHEN ? THEN ? ELSE react_max_iters END, "
+                    "memory_mode = CASE WHEN ? THEN ? ELSE memory_mode END, "
                     "updated_at = ? WHERE member_id = ?",
                     (
                         clean["role"],
@@ -1720,6 +1756,14 @@ class Database:
                         clean_image,
                         clean_web_access is not _UNSET,
                         None if clean_web_access is _UNSET else clean_web_access,
+                        context_window_messages is not _UNSET,
+                        None if context_window_messages is _UNSET else context_window_messages,
+                        context_trigger_ratio is not _UNSET,
+                        None if context_trigger_ratio is _UNSET else context_trigger_ratio,
+                        react_max_iters is not _UNSET,
+                        None if react_max_iters is _UNSET else react_max_iters,
+                        memory_mode is not _UNSET,
+                        None if memory_mode is _UNSET else memory_mode,
                         utc_now(),
                         member_id,
                     ),

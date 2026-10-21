@@ -19,11 +19,15 @@ from tests.test_schema_migration import _build_library, _migrate_argv, _run, _sh
 
 
 @pytest.mark.parametrize(
-    ("finished_reason", "copy"),
-    [("exceed_max_iters", "达到迭代上限"), ("interrupted", "中断")],
+    ("finished_reason", "copy", "status"),
+    [
+        ("exceed_max_iters", "达到迭代上限", "replied"),
+        ("interrupted", "中断", "replied"),
+        ("error", "模型返回错误", "failed"),
+    ],
 )
 def test_finished_reason_and_readable_diagnosis_survive_http(
-    tmp_path: Path, monkeypatch, finished_reason: str, copy: str
+    tmp_path: Path, monkeypatch, finished_reason: str, copy: str, status: str
 ) -> None:
     async def reply(self, *args: Any, **kwargs: Any) -> Any:
         yield Msg(
@@ -46,7 +50,7 @@ def test_finished_reason_and_readable_diagnosis_survive_http(
         assert row["finished_reason"] == finished_reason
         assert copy in row["reason"]
         assert "模型自主判断需要回应" not in row["reason"]
-        assert row["status"] == "replied"
+        assert row["status"] == status
 
 
 def test_schema_22_upgrades_to_current_shape_and_keeps_old_finished_reason_null(tmp_path: Path) -> None:
