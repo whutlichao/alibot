@@ -18,9 +18,9 @@
 
 | 判定 | 行数 | 行号 |
 | --- | --- | --- |
-| 符合 | 21 | 1,3,7,9,10,11,12,14,15,18,19,21,22,24,26,27,29,35,36,37,40 |
-| 刻意偏离 | 14 | 2,5,13,16,20,25,28,30,31,32,34,38,39,43 |
-| 未采用 | 5 | 4,17,41,44,45 |
+| 符合 | 22 | 1,3,4,7,9,10,11,12,14,15,18,19,21,22,24,26,27,29,35,36,37,40 |
+| 刻意偏离 | 15 | 2,5,13,16,20,25,28,30,31,32,34,38,39,43,44 |
+| 未采用 | 3 | 17,41,45 |
 | 待修 | 3 | 6,8,33 |
 | 实测 | 2 | 23,42 |
 
@@ -33,7 +33,7 @@
 | 1 | 构造参数（name/system_prompt/model/toolkit/state） | agent/configure-agent.md | `agent_seam.py:1076-1082` `run_round_stream` | 符合 | `Agent.__init__` 签名含五项；`agent_options` 在 1076 组装 | toolkit 为空不传；state 只带 `permission_context` |
 | 2 | 无状态引擎 + AgentState 传入传出 | agent/run-agent.md | `agent_seam.py:1081`、`:1114-1125` | 刻意偏离 | `grep -n '"state": AgentState' app/alibot/agent_seam.py` → 1081、1411 | 每轮新建 Agent，历史靠库内消息重放；跨轮不回传 AgentState（D3） |
 | 3 | reply 事件流消费 | agent/run-agent.md | `agent_seam.py:1148` | 符合 | `grep -n 'yield_final_msg=True' app/alibot/agent_seam.py` → 1148 | `reply_stream(..., yield_final_msg=True)`，事件经 emit 直播 |
-| 4 | 中断 | agent/interrupt-agent.md | `agent_seam.py:1189`（仅审批超时） | 未采用 | `grep -n UserInterruptEvent app/alibot/agent_seam.py` → 1189、1573；`api.py` 无中断端点 | 人类面无中断入口；替代是 120s 单轮超时 + 600s 审批超时后收口 failed |
+| 4 | 中断 | agent/interrupt-agent.md | `api.py` 中断端点 + `agent_seam.py` 的 `interrupt_round` | 符合 | `grep -n 'rounds/{reply_id}/interrupt' app/alibot/api.py`；`grep -n 'def interrupt_round' app/alibot/*.py` | 运行中 `task.cancel()`、审批挂起回送 `UserInterruptEvent`；只接受当前 in-flight 的 `reply_id`，错误 target / 重复请求 409（ADR-0030） |
 | 5 | HITL 确认往返 | agent/human-in-the-loop.md | `agent_seam.py:1152`、`:1223`；`approval.py:96` | 刻意偏离 | `grep -n suggested_rules app/alibot/agent_seam.py` → 1219 | 回送 `ConfirmResult` 时剥掉 `suggested_rules`，规则由 broker 落库、下一轮生效（D2） |
 
 ## 6–9 model
@@ -138,7 +138,7 @@
 
 | # | 能力点 | 文档页 | 当前落点 | 判定 | 证据 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 44 | RAG + 长期记忆 | rag.md、long-term-memory.md | 未采用 | 未采用 | `grep 'RAGMiddleware\|embedding\|Mem0Middleware\|ReMeMiddleware'` 产品代码零命中 | 需求是消息/任务/成员三类检索（SQLite），不需要向量召回与跨会话记忆；后者会引入第二套事实源 |
+| 44 | RAG + 长期记忆 | rag.md、long-term-memory.md | `memory.py`（AgenticMemory 装配） | 刻意偏离 | `grep -n AgenticMemoryMiddleware app/alibot/memory.py`；`grep 'RAGMiddleware\|embedding'` 在 product 代码零命中 | RAG 未采用（检索走 SQLite）；长期记忆采用 `AgenticMemoryMiddleware`，作用域是成员记忆目录而非第二套消息正本（ADR-0030 / D12） |
 | 45 | 实时语音 / A2A / 终端 UI / Agent Service / deploy | realtime/overview.md、a2a.md、console.md、deploy/agent-service.md | 未采用 | 未采用 | import 面只有 16 个白名单模块（`test_agentscope_usage_guard.py` 守卫 2） | 产品形态是 Web 频道 + 进程内 Agent；没有终端/语音/跨进程 Agent 服务需求 |
 
 ## 待修去向
