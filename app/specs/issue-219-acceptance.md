@@ -203,6 +203,10 @@ Success: no issues found in 115 source files
 门禁全绿
 ```
 
+**CI 复核**（同一脚本，`.github/workflows/check.yml`）：PR #220 的 `check` 在 head `e7d6428` 上
+`conclusion: success`（run [39614729866](https://github.com/whutlichao/alibot/actions/runs/39614729866)），
+PR `mergeStateStatus: CLEAN`。
+
 （**没有跑 `ruff format`**；只跑了脚本里的 `--check`。`272 files` 是**代码定稿、两份 specs 尚未写入**
 时的读数；写完本文件与 PR body 后重跑同一命令 = `274 files already formatted`——该检查把 `app/**/*.md`
 也计入文件数，两份新增 specs 正好 +2，仍全过。）
@@ -346,4 +350,5 @@ AgentScope 2.0.10 的 `_final_reply_message`，升级需重核对）。
 - PR body 文件：`app/specs/issue-219-pr-body.md`
 - PR：[#220](https://github.com/whutlichao/alibot/pull/220)（`--body-file app/specs/issue-219-pr-body.md`，
   base `main`、head `issue-219-round-body`，`mergeable: MERGEABLE`）；body 含 `Closes #219`
-- `gh pr checks 220`：`check` 在 CI 中（本地 `scripts/check.sh` 已全绿，§4）
+- CI：`check` 在 head `e7d6428` 上 `success`（run 39614729866），PR `mergeStateStatus: CLEAN`
+  （本地 `scripts/check.sh` 读数见 §4）
