@@ -839,8 +839,8 @@
 </div>
 
 <!-- ─── 编辑 Agent 配置（`PATCH /api/agents/{id}` 的人类面入口，ADR-0011） ─────
-     字段集 = 端点的**可写字段**（显示名 / 角色 / 模型标识 / 系统提示 / 启用状态 / 自动认领任务），
-     一个不多一个不少。改到远端 provider 时沿用与「新建 Agent」同形的**远端数据流告知**块（同一套
+     字段集 = 端点的**可写字段**（显示名 / 角色 / 模型标识 / 系统提示 / 启用状态 / 自动认领任务 /
+     联网档），一个不多一个不少。改到远端 provider 时沿用与「新建 Agent」同形的**远端数据流告知**块（同一套
      「未确认就不发起远端调用」语义；保存后状态点由后端推导为未启用）。
      这里只写配置：不落消息、不唤醒、不消耗预算（「自动认领」也同此——它只影响**之后新建**的任务）。 -->
 <div class="overlay" id="agentEditOverlay" hidden data-od-id="agent-edit-overlay">
@@ -904,6 +904,31 @@
           </button>
         </div>
         <div class="hint" data-i18n="agent.autoClaimNote">开启后：频道内新建的任务由编排交给它（一次只认领一个）；认领会写一条可读的系统记录、唤醒它，并为该任务重置一次回应预算——每张任务至多一次。</div>
+      </div>
+      <!-- 联网档（#202 / 2026-10-21 修订）：Agent 级入口。「跟随频道（默认）」= 不写 Agent 级覆盖，
+           选中它保存时提交 `web_access: null`（库内列回到 NULL）；其余三档与频道设置里的同名同义。
+           私聊没有频道可跟随，读路径回退默认档 `search`；DM 不装配 `fetch`。 -->
+      <div class="field">
+        <label data-i18n="agent.webAccessLabel">联网</label>
+        <div class="radio-row" id="agentEditWebAccess" role="group" data-od-id="agent-edit-web-access">
+          <button class="radio-card" type="button" data-web-access="follow" data-od-id="agent-edit-web-access-follow">
+            <b data-i18n="agent.webAccessFollow">跟随频道（默认）</b>
+            <span data-i18n="agent.webAccessFollowHint">清除 Agent 级覆盖；私聊按默认档</span>
+          </button>
+          <button class="radio-card" type="button" data-web-access="off" data-od-id="agent-edit-web-access-off">
+            <b data-i18n="agent.webAccessOff">关闭</b>
+            <span data-i18n="agent.webAccessOffHint">不挂任何联网工具</span>
+          </button>
+          <button class="radio-card" type="button" data-web-access="search" data-od-id="agent-edit-web-access-search">
+            <b data-i18n="agent.webAccessSearch">只搜索</b>
+            <span data-i18n="agent.webAccessSearchHint">挂 web_search；查询词会离开本机</span>
+          </button>
+          <button class="radio-card" type="button" data-web-access="search+fetch" data-od-id="agent-edit-web-access-search-fetch">
+            <b data-i18n="agent.webAccessSearchFetch">搜索+抓取</b>
+            <span data-i18n="agent.webAccessSearchFetchHint">额外挂 fetch；每次抓取都要审批</span>
+          </button>
+        </div>
+        <div class="hint" data-i18n="agent.webAccessNote">跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。</div>
       </div>
       <div class="remote-notice" id="agentEditRemoteNotice" hidden data-od-id="edit-remote-notice">
         <div class="remote-notice-head">

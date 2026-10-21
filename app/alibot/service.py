@@ -25,6 +25,7 @@ from .agent_seam import (
     provider_of,
 )
 from .db import (
+    _UNSET,
     ALLOWED_ATTACHMENT_MIME_TYPES,
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENT_NAME_LENGTH,
@@ -655,7 +656,7 @@ class WorkspaceService:
         permission_mode: str | None = None,
         allow_local_shell: bool | None = None,
         docker_image: str | None = None,
-        web_access: str | None = None,
+        web_access: Any = _UNSET,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -675,6 +676,11 @@ class WorkspaceService:
         ``allow_local_shell`` / ``docker_image`` 写进同一条 ``agent_config`` 行；取值校验在库层
         （非法值整体拒绝）。写了任一项就清掉该成员的 Docker 失败短缓存，下一轮重新按新配置装配——
         改 ``docker_image`` 时池里的旧镜像容器也会在装配层因镜像不一致被替换。
+
+        联网档（#184 / #202）的 ``web_access`` 与上面几个字段不同：它是**三态**——
+        ``_UNSET``（没提到，保持原值）/ 具体档位 / 显式 ``None``（清除 Agent 级覆盖、回到跟随频道，
+        写库 ``NULL``；2026-10-21 人定，ADR-0026 §十五）。区分发生在请求体层
+        （``model_fields_set``），这里只把三态原样交给库层。
         """
         locale = self._locale()
         if model_id is not None:
