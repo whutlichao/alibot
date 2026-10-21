@@ -5,7 +5,7 @@
 **base**：`730b9c3`（main @ 派活时 HEAD）｜**branch**：`issue-210-impl`
 **worktree**：`/Users/apple/orca/workspaces/alibot/issue-210-stop-buttons`
 **代码提交**：`197b0c2`（修复 + 回归用例）｜本文件与 PR 正文随后续提交入 PR
-**PR**：<PR_LINK>
+**PR**：[#211](https://github.com/whutlichao/alibot/pull/211)（base `main`，head `issue-210-impl`）
 **采集时间**：2026-10-21｜**环境**：macOS（aarch64）、Python 3.11.13（仓库根 `.venv`）、Node v25.0.0
 **改动面**：`app/alibot/studio/app.js`（+24 / −8）、`app/alibot/studio/i18n.js`（+6 / −4）、
 `app/tests/sse_events_ui.test.cjs`（+112 / −12）、`app/specs/issue-210-acceptance.md`（新增）
