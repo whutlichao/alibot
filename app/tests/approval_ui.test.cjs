@@ -335,3 +335,144 @@ test("快照里 pending 消失（进程重启把 pending 标 expired）后卡片
   assert.equal(actionButtons(card).length, 0);
 });
 
+/* ─── 7. #215 同一条回复的第二批确认 ──────────────────────────────────── */
+
+test("#215 已 approved 的卡收到带新 tool_call 的 approval_required → 回到 pending 并显示新调用", async () => {
+  const harness = createHarness();
+  harness.api.handleStreamEvent(
+    "ch-1",
+    frame({
+      type: "approval_required",
+      reply_id: "reply-1",
+      member_id: "mem-1",
+      tool_calls: [{ id: "call-1", name: "Write", input: { path: "one.txt" } }],
+    }),
+    "approval_required",
+  );
+  await flush();
+  harness.api.handleStreamEvent(
+    "ch-1",
+    frame({
+      type: "approval_resolved",
+      reply_id: "reply-1",
+      state: "approved",
+      decisions: [{ tool_call_id: "call-1", confirmed: true }],
+    }),
+    "approval_resolved",
+  );
+  await flush();
+  assert.equal(cardIn(harness.board, "reply-1").dataset.state, "approved");
+
+  // 同一 reply_id 的第二批：只含新调用。
+  harness.api.handleStreamEvent(
+    "ch-1",
+    frame({
+      type: "approval_required",
+      reply_id: "reply-1",
+      member_id: "mem-1",
+      tool_calls: [{ id: "call-2", name: "Bash", input: { command: "npm test" } }],
+    }),
+    "approval_required",
+  );
+  await flush();
+
+  const card = cardIn(harness.board, "reply-1");
+  assert.equal(card.dataset.state, "pending");
+  assert.equal(byClass(card, "approval-state")[0].textContent, harness.api.t("approval.pending"));
+  assert.match(card.textContent, /Bash/);
+  assert.match(card.textContent, /npm test/);
+  // 重开是**新的一批**：倒计时从这一批重新起算（requested_at 被刷新，后端同口径）。
+  assert.equal(
+    byClass(card, "approval-remaining")[0].textContent,
+    harness.api.t("approval.remaining", { time: "10:00" }),
+  );
+  assert.equal(actionButtons(card).length, 2);
+});
+
+test("#215 已 approved 的卡收到相同调用 id 的终态帧 → 仍然忽略（幂等边界）", async () => {
+  const harness = createHarness();
+  const calls = [{ id: "call-1", name: "Write", input: { path: "one.txt" } }];
+  harness.api.handleStreamEvent(
+    "ch-1",
+    frame({ type: "approval_required", reply_id: "reply-1", member_id: "mem-1", tool_calls: calls }),
+    "approval_required",
+  );
+  await flush();
+  harness.api.handleStreamEvent(
+    "ch-1",
+    frame({
+      type: "approval_resolved",
+      reply_id: "reply-1",
+      state: "approved",
+      decisions: [{ tool_call_id: "call-1", confirmed: true }],
+    }),
+    "approval_resolved",
+  );
+  await flush();
+  const resolvedAt = harness.api.state.approvals.get("ch-1").get("reply-1").resolved_at;
+
+  harness.api.handleStreamEvent(
+    "ch-1",
+    frame({ type: "approval_required", reply_id: "reply-1", member_id: "mem-1", tool_calls: calls }),
+    "approval_required",
+  );
+  await flush();
+
+  const card = cardIn(harness.board, "reply-1");
+  assert.equal(card.dataset.state, "approved", "重复同一批调用不得把已收口的卡重新挂起");
+  assert.equal(actionButtons(card).length, 0);
+  const record = harness.api.state.approvals.get("ch-1").get("reply-1");
+  assert.equal(record.resolved_at, resolvedAt);
+  // 跨 vm 边界比较：按 JSON 比内容，不比引用身份。
+  assert.equal(JSON.stringify(record.tool_calls), JSON.stringify(calls));
+});
+
+test("#215 快照重载后只显示/只提交未决策的调用（拒绝第二批不再被 409 卡死）", async () => {
+  // 重开后整条记录里既有已决策的旧调用，也有新调用；12s 刷新与重连都读这一份。
+  const record = approval({
+    state: "pending",
+    tool_calls: [
+      { id: "call-1", name: "Write", input: { path: "one.txt" } },
+      { id: "call-2", name: "Bash", input: { command: "npm test" } },
+    ],
+    decisions: [{ tool_call_id: "call-1", confirmed: true, rules: [] }],
+    requested_at: new Date(NOW).toISOString(),
+  });
+  const postCalls = [];
+  const harness = createHarness({
+    fetch: (url, request) => {
+      if (url.startsWith("/api/approvals?")) return json({ approvals: [record] });
+      if (url === "/api/approvals/reply-1" && request.method === "POST") {
+        postCalls.push(JSON.parse(request.body));
+        return json({
+          approval: approval({
+            ...record,
+            state: "approved",
+            decisions: [
+              { tool_call_id: "call-1", confirmed: true, rules: [] },
+              { tool_call_id: "call-2", confirmed: false, rules: [] },
+            ],
+            resolved_at: new Date(NOW).toISOString(),
+          }),
+        });
+      }
+      return json({});
+    },
+  });
+
+  await harness.api.loadApprovalsFor("ch-1");
+  const card = cardIn(harness.board, "reply-1");
+  assert.equal(card.dataset.state, "pending");
+  assert.match(card.textContent, /npm test/, "只显示新调用");
+  assert.equal(card.textContent.includes("one.txt"), false, "已决策的旧调用不再要求人类决策");
+
+  const deny = actionButtons(card).find((button) => button.dataset.approvalAction === "deny");
+  assert.ok(deny);
+  await harness.board.dispatchEvent({ type: "click", target: deny });
+  await flush();
+
+  // 请求体只含新调用：旧调用（已确认）不能被这次「拒绝」带上，否则服务端按相反结论 409。
+  assert.deepEqual(postCalls, [{ decisions: [{ tool_call_id: "call-2", confirmed: false }] }]);
+  assert.equal(cardIn(harness.board, "reply-1").dataset.state, "approved");
+});
+
