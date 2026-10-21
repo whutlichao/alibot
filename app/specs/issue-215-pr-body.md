@@ -25,9 +25,9 @@ register(reply_id, tool_calls)                # reply_id = 回复级
  ├── db.py           # update_approval_request：resolved_at 哨兵（可显式写 NULL）+ requested_at
  └── studio/app.js  # absorbApprovalRequired 收窄；approvalPendingToolCalls 接线
  app/tests/
- ├── test_approval_seam.py  # +1 同轮两次 ASK 的端到端用例
- ├── test_approvals.py      # +4 幂等边界 / 重开保留旧决策 / expired 不复活 / 哨兵
- └── approval_ui.test.cjs   # +3 重开 / 幂等边界 / 快照重载只提交新调用
+ ├── test_approval_seam.py  # +2 同轮两次 ASK 端到端 / 失败出口不被吞
+ ├── test_approvals.py      # +5 幂等边界 / 重开保留旧决策 / deadline 重开 / expired 不复活 / 哨兵
+ └── approval_ui.test.cjs   # +4 重开 / 幂等边界 / 收口卡仍有明细 / 快照重载只提交新调用
  CONTEXT.md · app/README.md · docs/adr/0021-*.md   # 回复级 reply_id 的措辞同步
 ```
 
@@ -45,11 +45,11 @@ register(reply_id, tool_calls)                # reply_id = 回复级
   `7571556470743e71a9eeba5b7dcea2ee`）→ `tests 10 / pass 8 / fail 2`，两条 #215 用例红：
   `+ 'approved' - 'pending'` 与「已决策的旧调用不再要求人类决策」。
 - **After**（本分支）：
-  `-k second_ask` → `1 passed`；受影响 pytest 五件套 → `59 passed in 17.43s`；
-  `node --test tests/approval_ui.test.cjs` → `tests 10 / pass 10 / fail 0`。
-- **门禁**：`scripts/check.sh` exit 0 —— pytest `1051 passed, 10 skipped`、ruff check 全过、
-  `ruff format --check` `267 files already formatted`、mypy `114 source files` 无问题、pyright
-  `0 errors, 0 warnings`、node glob `236 pass / 0 fail`。
+  `-k "second_ask or terminal_record"` → `2 passed`；受影响 pytest 五件套 → `61 passed in 22.58s`；
+  `node --test tests/approval_ui.test.cjs` → `tests 11 / pass 11 / fail 0`。
+- **门禁**：`scripts/check.sh` exit 0 —— pytest `1053 passed, 10 skipped`、ruff check 全过、
+  `ruff format --check` `269 files already formatted`、mypy `114 source files` 无问题、pyright
+  `0 errors, 0 warnings`、node glob `237 pass / 0 fail`。
 - 逐条判据与读数：`app/specs/issue-215-acceptance.md`。
 
 ## Merge Danger
@@ -68,5 +68,7 @@ register(reply_id, tool_calls)                # reply_id = 回复级
 - `Database.update_approval_request` 的 `resolved_at` 改成哨兵：既有调用方（`_expire`、`submit`）行为逐字
   不变，仅 `register` 的重开分支显式传 `None` 以写回 NULL。
 - 有意取舍：重开会刷新 `requested_at`，**第一批的实际等待时长不再可读**——这是为了避免「新卡片一出现就
-  被本地判 expired、UI 无法决策」的死角（详见验收文档 §6）。
+  被本地判 expired、UI 无法决策」的死角（详见验收文档 §6，`CONTEXT.md` / `app/README.md` 已同步）。
+- 收口判据仍是**全部历史决策**：第一批被拒绝时，第二批即使全批准，记录仍 `denied`（复用既有分支，
+  不新造第二套收口路径）；这条也写进了两份文档。
 - 前端 `approval_required` 载荷形状未变（`reply_id` / `member_id` / `tool_calls`），无新 SSE 类型、无新端点。
