@@ -262,9 +262,11 @@ stub，且验收文档要写清理由。本票的理由：
 ## 6. 改动点（`git diff --stat main...HEAD`）
 
 ```text
- app/alibot/agent_seam.py              | 120 +++++++++---
+ app/alibot/agent_seam.py              | 124 +++++++++---
+ app/specs/issue-219-acceptance.md     | 346 +++++++++++++++++++++++++++++++++
+ app/specs/issue-219-pr-body.md        | 105 ++++++++++
  app/tests/test_round_body_assembly.py | 348 ++++++++++++++++++++++++++++++++++
- 2 files changed, 446 insertions(+), 22 deletions(-)
+ 4 files changed, 901 insertions(+), 22 deletions(-)
 ```
 
 `agent_seam.py` 的四处：
@@ -339,7 +341,8 @@ AgentScope 2.0.10 的 `_final_reply_message`，升级需重核对）。
 ## 8. PR
 
 - 分支：`issue-219-round-body`（base `main`，已 push）
-- 提交：`c7b146d`（实现 + 用例）、`6269a20`（review 收口）、`92dbc89`（本文件与 PR body）
+- 提交：`c7b146d`（实现 + 用例）、`6269a20`（review 收口）、`92dbc89`（本文件与 PR body）、
+  `da2c76c`（回填 PR 号）、`27d23f1`（docstring 写明 `_msg_text` 暂无内部调用者仍保留）
 - PR body 文件：`app/specs/issue-219-pr-body.md`
 - PR：[#220](https://github.com/whutlichao/alibot/pull/220)（`--body-file app/specs/issue-219-pr-body.md`，
   base `main`、head `issue-219-round-body`，`mergeable: MERGEABLE`）；body 含 `Closes #219`
