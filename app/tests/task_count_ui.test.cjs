@@ -12,6 +12,9 @@
  * 1. 从「新建任务」弹窗提交后，计数**立刻**等于新数量；
  * 2. 打开一条原先不在快照里的任务（搜索 / 卡片入口）后，计数同步增加；
  * 3. 看板的频道筛选态下计数仍按**未筛选的全量快照**算（不是筛选后的那几条）。
+ *
+ * #225 起，同一个装置也钉住「消息」页签（`#msgCount`）：它的计数派生自当前 target 的
+ * `unread_count`（后端未读口径），不是消息流条数；已读推进后由同一次 `render()` 刷新。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -177,6 +180,41 @@ function channel(id, name) {
   return { id, name, description: "", last_seq: 0, last_read_seq: 0, unread_count: 0 };
 }
 
+/** 一条频道消息（`GET /api/channels/{id}/messages` 的项形状；只留断言用到的字段）。 */
+function messageRecord(overrides) {
+  return Object.assign(
+    {
+      id: "msg_1",
+      target_id: "ch_1",
+      seq: 1,
+      kind: "human",
+      body: "一条消息",
+      created_at: "2026-10-20T09:00:00Z",
+      mention_snapshot: [],
+      task_ref: null,
+      task_pointer: null,
+      attachments: [],
+      author: { id: "m_1", kind: "agent", display_name: "Ada", avatar_slot: 1 },
+    },
+    overrides || {},
+  );
+}
+
+/** 一条私信（`GET /api/workspace` 快照里 `dms` 的项形状）。 */
+function dmRecord(overrides) {
+  return Object.assign(
+    {
+      id: "dm_1",
+      kind: "dm",
+      peer: { id: "m_1", kind: "agent", display_name: "Ada", avatar_slot: 1 },
+      last_seq: 0,
+      last_read_seq: 0,
+      unread_count: 0,
+    },
+    overrides || {},
+  );
+}
+
 /** 一条任务（`GET /api/tasks` 的行形状；只留这一族用例读到的字段）。 */
 function taskRecord(overrides) {
   return Object.assign(
@@ -212,6 +250,12 @@ function createHarness(options) {
   // 后端的任务表在替身里是**可变**的：`POST` 建出来的那一条，随后的 `GET /api/tasks` 就读得到
   // （与真实后端一致；否则「建成后计数变新数量」无从谈起）。
   const tasks = (config.tasks || []).map((task) => Object.assign({}, task));
+  // #225：「消息」页签读当前 target 的 `unread_count`。替身同样保持可变——`POST /read`
+  // 会把该 target 的未读归零并原样返回，前端随后由同一次 `render()` 把页签改成新读数。
+  const channels = [channel("ch_1", "设计系统重构"), channel("ch_2", "发布工程")];
+  if (Number.isInteger(config.channelUnread)) channels[0].unread_count = config.channelUnread;
+  const dms = (config.dms || []).map((dm) => Object.assign({}, dm));
+  const messages = (config.messages || []).map((message) => Object.assign({}, message));
 
   class FakeEventSource {
     constructor(url) {
@@ -252,6 +296,27 @@ function createHarness(options) {
     }
     if (method === "GET" && route === "/api/channels/ch_1/members") {
       return jsonResponse({ members: [agent] });
+    }
+    if (method === "GET" && /^\/api\/(channels|dms)\/[^/]+\/messages$/.test(route)) {
+      return jsonResponse({ messages: messages.slice() });
+    }
+    if (method === "POST" && /^\/api\/channels\/[^/]+\/read$/.test(route)) {
+      const id = decodeURIComponent(route.split("/")[3]);
+      const found = channels.find((item) => item.id === id);
+      if (found) found.unread_count = 0;
+      return jsonResponse({
+        channel: Object.assign({}, found),
+        channels: channels.map((item) => Object.assign({}, item)),
+      });
+    }
+    if (method === "POST" && /^\/api\/dms\/[^/]+\/read$/.test(route)) {
+      const id = decodeURIComponent(route.split("/")[3]);
+      const found = dms.find((item) => item.id === id);
+      if (found) found.unread_count = 0;
+      return jsonResponse({
+        dm: Object.assign({}, found),
+        dms: dms.map((item) => Object.assign({}, item)),
+      });
     }
     if (method === "GET" && /^\/api\/channels\/[^/]+\/config$/.test(route)) {
       return jsonResponse({
@@ -333,7 +398,7 @@ function createHarness(options) {
   vm.runInContext(
     source.replace(
       startup,
-      "\nglobalThis.__taskCountTest = { state, bindEvents, setViewMode, refreshTasks, openTask };"
+      "\nglobalThis.__taskCountTest = { state, bindEvents, setViewMode, refreshTasks, openTask, renderTabs, renderMessages, markCurrentRead };"
         + "\n",
     ),
     context,
@@ -344,9 +409,10 @@ function createHarness(options) {
   api.state.member = owner;
   api.state.members = [owner, agent];
   api.state.agents = [agent];
-  api.state.channels = [channel("ch_1", "设计系统重构"), channel("ch_2", "发布工程")];
-  api.state.dms = [];
-  api.state.activeChannelId = "ch_1";
+  api.state.channels = channels;
+  api.state.dms = dms;
+  api.state.activeChannelId = config.activeChannelId === undefined ? "ch_1" : config.activeChannelId;
+  api.state.messages = messages.map((message) => Object.assign({}, message));
   api.state.tasks = tasks.map((task) => Object.assign({}, task));
   api.state.boardTasks = api.state.tasks.slice();
   api.state.online = true;
@@ -359,6 +425,15 @@ function createHarness(options) {
     elementFor,
     taskCount() {
       return elementFor("#taskCount");
+    },
+    msgCount() {
+      return elementFor("#msgCount").textContent;
+    },
+    /** 消息流 GET 的次数（用户可观察事实：已读推进不该重拉消息流）。 */
+    messageGets() {
+      return calls.filter(
+        (call) => call.method === "GET" && /^\/api\/(channels|dms)\/[^/]+\/messages$/.test(call.url),
+      ).length;
     },
     /** 进入频道视图——页签（含计数）在这里第一次渲染，与真实启动同一个入口。 */
     showChannel() {
@@ -428,4 +503,57 @@ test("看板筛到别的频道时，页签计数仍按未筛选的全量快照�
 
   // 筛选是**看板的呈现状态**，计数问的是「这个频道里有几条任务」，两者不是同一个数字。
   assert.equal(harness.taskCount().textContent, "1", "筛选不得让页签计数变成筛选后的条数");
+});
+
+/* ─── 4. #225「消息」页签：计数是当前 target 的未读数，不是消息流条数 ────── */
+
+test("频道未读 3、消息流只有 1 条时，「消息」页签显示 3", () => {
+  const harness = createHarness({ channelUnread: 3, messages: [messageRecord()] });
+  harness.showChannel();
+
+  // 两个数字故意不同：读数来自后端未读口径（`unread_count`），不是消息流总条数（1）。
+  assert.equal(harness.msgCount(), "3", "页签读的是频道未读数（3），不是消息流条数（1）");
+});
+
+test("已读推进后「消息」页签立即变为 0，且不新增消息流 GET 请求", async () => {
+  const harness = createHarness({
+    channelUnread: 3,
+    messages: [messageRecord({ id: "msg_2", seq: 2 })],
+  });
+  harness.showChannel();
+  assert.equal(harness.msgCount(), "3", "起始按后端未读数渲染");
+  const messageGetsBefore = harness.messageGets();
+
+  // 与真实入口一致：进入频道后走 `markCurrentRead()` → `/read` → `render()`。
+  harness.api.markCurrentRead();
+  await settle();
+
+  assert.ok(
+    harness.posts().some((call) => call.url === "/api/channels/ch_1/read"),
+    "已读推进应当走既有 /read 端点",
+  );
+  assert.equal(harness.msgCount(), "0", "/read 把未读归零后，页签由同一次 render 改成 0");
+  assert.equal(
+    harness.messageGets(),
+    messageGetsBefore,
+    "已读推进不得重新拉取消息流",
+  );
+});
+
+test("私信 target 的「消息」页签同样按 unread_count 显示", () => {
+  const harness = createHarness({
+    dms: [dmRecord({ unread_count: 4 })],
+    activeChannelId: "dm_1",
+  });
+  harness.showChannel();
+
+  assert.equal(harness.msgCount(), "4", "私信页签同样读 target 的 unread_count");
+});
+
+test("没有当前 target 时「消息」页签显示 0", () => {
+  const harness = createHarness({ channelUnread: 3 });
+  harness.api.state.activeChannelId = null;
+  harness.showChannel();
+
+  assert.equal(harness.msgCount(), "0", "没有 target 时按 0 写，与「任务」页签同一形态");
 });

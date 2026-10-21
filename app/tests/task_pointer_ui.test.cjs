@@ -7,8 +7,10 @@
  * 1. 频道 system 行里的 `.task-ref-chip` 文案含**任务未读数**（`task.unread_count`，不是
  *    `task.message_count`）：0 未读时不显示计数段，>0 时是「· N 条未读」；aria-label 同步；
  * 2. 点 chip 走既有 `openTask`（可观察证据：请求 `GET /api/tasks/<id>/messages`）；
- * 3. `#msgCount` 把这条 system 消息计入（0 → 1）；
- * 4. 建任务成功后吸收返回的 `message`：立即出现在流里、页签计数 +1（不需要等下一次刷新）；
+ * 3. #225：`#msgCount` 是当前 target 的**未读数**（`unread_count`），不是消息流条数——
+ *    system 指针消息不计未读，因此它不增加页签计数；
+ * 4. 建任务成功后吸收返回的 `message`：立即出现在流里（不需要等下一次刷新），
+ *    但 system 指针消息未读为 0，页签计数保持 0；
  * 5. 任务不在快照里时按未读 0 处理，不显示计数、不编造读数；
  * 6. #223：打开线程完成已读（`openTask` → `markTaskRead`）与线程内新消息被吸收
  *    （`absorbTaskMessage` → `markTaskRead`）之后，频道流里同一任务的 chip 立即变为未读 0，
@@ -443,7 +445,15 @@ function createHarness(options) {
   api.state.members = [OWNER];
   api.state.agents = [];
   api.state.channels = [
-    { id: "ch_1", name: "设计系统重构", description: "", last_seq: 0, last_read_seq: 0, unread_count: 0 },
+    {
+      id: "ch_1",
+      name: "设计系统重构",
+      description: "",
+      last_seq: 0,
+      last_read_seq: 0,
+      // #225：「消息」页签读这里的未读数。用例可让它与消息流条数取不同值，以证明读的是未读。
+      unread_count: Number.isInteger(config.channelUnread) ? config.channelUnread : 0,
+    },
   ];
   api.state.dms = [];
   api.state.activeChannelId = "ch_1";
@@ -490,10 +500,11 @@ function createHarness(options) {
 /* ─── 1. 指针消息：chip 文案含未读数，点它打开任务线程 ─────────────────────── */
 
 test("频道指针消息渲染出进入任务线程的 chip，文案带任务未读数，点击打开线程", async () => {
-  const harness = createHarness({ tasks: [taskRecord()], messages: [pointerMessage()] });
+  // 频道未读（5）故意不等于消息流条数（1）：页签读数必须是前者。
+  const harness = createHarness({ tasks: [taskRecord()], messages: [pointerMessage()], channelUnread: 5 });
   harness.show();
 
-  assert.equal(harness.msgCount(), "1", "「消息」页签把这条 system 消息计入");
+  assert.equal(harness.msgCount(), "5", "「消息」页签读频道未读数，不是消息流条数");
   const chips = harness.chips();
   assert.equal(chips.length, 1, "指针消息只有一个入口 chip（task_ref 为 null，不额外渲染）");
   const chip = chips[0];
@@ -516,10 +527,10 @@ test("频道指针消息渲染出进入任务线程的 chip，文案带任务未
 
 /* ─── 2. 建任务成功后立即吸收返回的指针消息 ──────────────────────────────── */
 
-test("建任务成功后吸收返回的 message：流里立刻出现该行，页签计数 +1", async () => {
+test("建任务成功后吸收返回的 message：流里立刻出现该行，页签未读数不变", async () => {
   const harness = createHarness({ tasks: [] });
   harness.show();
-  assert.equal(harness.msgCount(), "0", "起始没有消息");
+  assert.equal(harness.msgCount(), "0", "起始未读为 0");
 
   await harness.click(harness.elementFor("#btnNewTask"));
   harness.elementFor("#taskCreateTitle").value = "写发布说明";
@@ -530,7 +541,11 @@ test("建任务成功后吸收返回的 message：流里立刻出现该行，页
     harness.findRequest("POST", "/api/channels/ch_1/tasks"),
     "应当提交到建任务端点",
   );
-  assert.equal(harness.msgCount(), "1", "返回的消息被吸收后，「消息」页签立刻 +1");
+  assert.equal(
+    harness.msgCount(),
+    "0",
+    "system 指针消息不计未读：被吸收后「消息」页签仍为 0",
+  );
   assert.match(harness.messageList.textContent, /任务已创建：写发布说明/);
   const chips = harness.chips();
   assert.equal(chips.length, 1);
