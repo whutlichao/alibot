@@ -1445,13 +1445,13 @@ const REMINDER_WITH_CHANNEL = {
   state: "pending",
 };
 
-/** 提醒弹窗那一段标记（从 overlay 起到下一个顶层注释为止）。 */
+/** 提醒弹窗那一段标记：只到下一个同级 overlay，避免扫描后续 Agent 表单。 */
 function remindersMarkup() {
   const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
   const start = html.indexOf('id="remindersOverlay"');
   assert.notEqual(start, -1, "index.html 里应有提醒弹窗");
   const rest = html.slice(start);
-  const end = rest.indexOf('<div class="toast-wrap"');
+  const end = rest.indexOf('<div class="overlay"');
   return rest.slice(0, end > 0 ? end : rest.length);
 }
 

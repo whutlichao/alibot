@@ -986,6 +986,13 @@ def _step_20_to_21(conn: sqlite3.Connection) -> int:
     return max(conn.execute(BACKFILL_AUTO_CLAIM_SQL).rowcount, 0)
 
 
+def _step_22_to_23(conn: sqlite3.Connection) -> int:
+    """运行时配置与可空的结束原因；既有轮次不回填。"""
+    _add_missing_columns(conn, "round_outcome")
+    _add_missing_columns(conn, "agent_config")
+    return 0
+
+
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(3, 4, "channel 型作用域数据搬迁（影子行 / 成员 / 已读 / 预算）", _step_3_to_4),
     MigrationStep(4, 5, "任务表与任务线程（task + message.task_ref + 触发器）", _step_4_to_5),
@@ -1046,6 +1053,7 @@ STEPS: tuple[MigrationStep, ...] = (
         "web provider credentials + explicit off level (web_provider_credential, web_access CHECK)",
         _step_21_to_22,
     ),
+    MigrationStep(22, 23, "agent runtime context/memory config + round finished_reason", _step_22_to_23),
 )
 
 

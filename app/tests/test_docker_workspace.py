@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from agentscope.message import ToolResultState
+from agentscope.message import TextBlock, ToolResultState
+from agentscope.model import ChatResponse
 from alibot import workspace as workspace_module
-from alibot.agent_seam import AgentScopeAgentSeam
 from alibot.db import open_database
 from alibot.events import EventBus
 from alibot.orchestration import WakeOrchestrator
@@ -42,6 +42,8 @@ from alibot.workspace import (
     sweep_idle_docker_workspaces,
     sweep_stale_docker_workspaces,
 )
+
+from tests.test_approval_seam import _ScriptedModel, _StubModelSeam
 
 
 def _run(coroutine: Any) -> Any:
@@ -379,7 +381,7 @@ def test_failed_initialization_is_readable_and_never_falls_back_to_local(
     reason = docker_unavailable_reason(member)
     assert reason and "Cannot connect" in reason
 
-    # 真 seam：这一轮失败且原因是 Docker（不是模型/凭证），并且没有创建本地 .alibot 工具。
+    # 真 seam：Docker 不可用时继续对话、原因可读；不回落到本地项目工具。
     data_dir = tmp_path / "data"
     database = open_database(data_dir)
     try:
@@ -395,7 +397,8 @@ def test_failed_initialization_is_readable_and_never_falls_back_to_local(
         database.close()
         database = open_database(data_dir)
         agent = database.get_agent(agent["id"])
-        seam = AgentScopeAgentSeam(
+        seam = _StubModelSeam(
+            _ScriptedModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]]),
             timeout_seconds=5.0,
             workspace_of=database.workspace_settings_for_target,
         )
@@ -405,7 +408,7 @@ def test_failed_initialization_is_readable_and_never_falls_back_to_local(
             mentioned=False,
             target_id=channel["id"],
         )
-        assert outcome.status == "failed"
+        assert outcome.status == "replied"
         assert "Docker" in outcome.reason and "Cannot connect" in outcome.reason
 
         orchestrator = WakeOrchestrator(
@@ -415,7 +418,7 @@ def test_failed_initialization_is_readable_and_never_falls_back_to_local(
             workspace_unavailable=docker_unavailable_reason,
         )
         availability = orchestrator.availability(agent)
-        assert availability.ok is False
+        assert availability.ok is True
         assert "Cannot connect" in availability.reason
     finally:
         database.close()

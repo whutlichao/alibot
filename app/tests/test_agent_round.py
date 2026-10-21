@@ -204,11 +204,15 @@ def test_round_outcome_distinguishes_replied_ignored_and_failed(client: TestClie
     send(client, channel["id"], "大家看一下")
     harness["scheduler"].drain()
 
-    by_member = {record["member_id"]: record["status"] for record in outcomes(client, channel["id"])}
+    # 人类唤醒下 ignored 按 failed 收口；甲回复后，乙才在非确定信号轮正常 ignored。
+    # 同毫秒结果按 id 排序，不把「最后一行碰巧是谁」当作成员唯一结论。
+    by_member: dict[str, set[str]] = {}
+    for record in outcomes(client, channel["id"]):
+        by_member.setdefault(record["member_id"], set()).add(record["status"])
     assert by_member == {
-        reply_agent["id"]: "replied",
-        ignore_agent["id"]: "ignored",
-        fail_agent["id"]: "failed",
+        reply_agent["id"]: {"replied"},
+        ignore_agent["id"]: {"failed", "ignored"},
+        fail_agent["id"]: {"failed"},
     }
 
 
@@ -329,7 +333,7 @@ def test_ignored_round_advances_the_cursor_so_it_is_not_reread(client: TestClien
     """ignored 是正常协议选择：它推进游标，同一批消息不会被反复送进适配层。
 
     触发用**Agent 作者**的消息（#189 起人类消息必答，不再是「可以忽略」的样本），断言不变：
-    每一轮只看到新到的那一条。
+    历史仍进入上下文，但第二轮基线只推进到新到的那一条。
     """
     agent = create_agent(client, name="小明").json()["agent"]
     speaker = create_agent(client, name="发言者").json()["agent"]
@@ -342,7 +346,8 @@ def test_ignored_round_advances_the_cursor_so_it_is_not_reread(client: TestClien
     harness["scheduler"].drain()
 
     calls = harness["seam"].calls_for(agent["id"])
-    assert [call["bodies"] for call in calls] == [["第一条无关"], ["第二条无关"]]
+    assert [call["bodies"] for call in calls] == [["第一条无关"], ["第一条无关", "第二条无关"]]
+    assert [row["base_seq"] for row in outcomes(client, channel["id"])] == [1, 2]
 
 
 def test_status_point_starts_offline_without_a_model(client: TestClient, harness: dict) -> None:

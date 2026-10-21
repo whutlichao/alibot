@@ -44,6 +44,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         # ─── 通用 ────────────────────────────────────────────────────────
         "common.list_sep": "、",
         # ─── HTTP 错误：机器可读的 code / fields 键不在这里 ───────────────
+        "error.round_not_running": "本轮已结束、已请求中断或不属于当前 target",
         "error.round_outcomes_immutable": "轮次结果不可编辑、不可删除：人类面不存在该端点",
         # 本键的**语义位置**是「预算的用量面不可写」（ADR-0007）。#54 打开上界写入口后它不能再
         # 宣称「不存在写端点」——那句在实机上已经是假话；留着键、改说边界：
@@ -229,7 +230,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.reply_error": "模型返回错误：{error}",
         "seam.task_action_only": "模型通过任务工具提交了结构化动作",
         "seam.no_body": "模型没有产出可落库的正文（本轮自判不回应）",
+        "error.field.agent_runtime_invalid": "运行时配置取值不合法：{field}",
         "seam.replied": "模型自主判断需要回应",
+        "seam.exceed_max_iters": "达到迭代上限，结论可能不完整",
+        "seam.interrupted": "本轮已由用户中断",
+        "seam.workspace_degraded": "Docker 工作区不可用，本轮停用工作区工具并继续对话：{error}",
         # ``silent``（#58）：声明来自**结构化通道**（declare_silence 工具），不是从正文猜的。
         "seam.silent": "模型经结构化通道（declare_silence 工具）声明本轮沉默，没有产出正文",
         "seam.silence_with_action": (
@@ -429,6 +434,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         # ─── 通用 ────────────────────────────────────────────────────────
         "common.list_sep": ", ",
         # ─── HTTP 错误 ───────────────────────────────────────────────────
+        "error.round_not_running": "This round has ended, was already interrupted, or belongs to another target",
         "error.round_outcomes_immutable": (
             "Round outcomes cannot be edited or deleted: the human surface has no such endpoint"
         ),
@@ -678,7 +684,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "seam.reply_error": "The model returned an error: {error}",
         "seam.task_action_only": "The model submitted a structured action through the task tool",
         "seam.no_body": "The model produced no storable body (it chose not to answer this round)",
+        "error.field.agent_runtime_invalid": "Invalid runtime configuration: {field}",
         "seam.replied": "The model decided an answer was needed",
+        "seam.exceed_max_iters": "Iteration limit reached; the conclusion may be incomplete",
+        "seam.interrupted": "This round was interrupted by the user",
+        "seam.workspace_degraded": "Docker workspace unavailable; workspace tools are disabled for this round, conversation continues: {error}",
         "seam.silent": (
             "The model declared silence through the structured channel (the declare_silence tool) "
             "and produced no body"

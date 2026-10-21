@@ -438,3 +438,14 @@ test("silent 的状态词沿用摘要行的低权重色位（--faint），不是
   assert.match(state, /var\(--faint\)/);
   assert.equal(/--error/.test(state), false, "silent 不是失败：不得用 --error 权重");
 });
+
+for (const [finished_reason, reason] of [
+  ['exceed_max_iters', '达到迭代上限，结论可能不完整'],
+  ['interrupted', '本轮已由用户中断'],
+]) {
+  test(`replied 的 ${finished_reason} 在消息流里呈现后端原因`, () => {
+    const harness = createHarness();
+    harness.show([HUMAN], [outcome({ status: 'replied', finished_reason, reason })]);
+    assert.ok(harness.messageList.textContent.includes(reason));
+  });
+}

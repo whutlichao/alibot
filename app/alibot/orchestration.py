@@ -1,4 +1,4 @@
-"""唤醒编排：消息落库之后，把「待读的新消息」交给成员面的 Agent 跑一轮。
+"""唤醒编排：消息落库之后，把新消息的回应纪律与历史上下文交给成员面的 Agent 跑一轮。
 
 五条纪律（spec #1 §4 / §5）：
 
@@ -38,7 +38,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from .agent_seam import (
@@ -61,6 +61,7 @@ from .events import EventBus, agent_event
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
 from .plan import PlanSession
+from .runtime import context_window_messages
 from .service import WorkspaceService, remote_data_faces
 from .team import TeamRoundContext
 
@@ -173,10 +174,31 @@ class _Turn:
     target_id: str
     repeat_bases: list[int]
     deferred_rounds: dict[str, _DeferredWake]
+    reply_ids: dict[str, str] = field(default_factory=dict)
+    seen_reply_ids: set[str] = field(default_factory=set)
+    interrupt: Callable[[str, str], bool] | None = None
 
 
 class WakeOrchestrator:
     """成员面的唯一入口：唤醒 → 读消息 → 自判 → 落库 → 记轮次结果。"""
+
+    def interrupt_round(self, target_id: str, reply_id: str) -> bool:
+        self._db.get_target(target_id)
+        with self._lock:
+            for turn in self._in_flight.values():
+                if turn.target_id == target_id and reply_id in turn.reply_ids and turn.interrupt is not None:
+                    return turn.interrupt(target_id, reply_id)
+        return False
+
+    def active_rounds(self, target_id: str) -> dict[str, str]:
+        """事件流重连时恢复停止句柄；只读当前 target 的进行中轮次。"""
+        with self._lock:
+            return {
+                reply_id: member_id
+                for turn in self._in_flight.values()
+                if turn.target_id == target_id
+                for reply_id, member_id in turn.reply_ids.items()
+            }
 
     def __init__(
         self,
@@ -881,8 +903,8 @@ class WakeOrchestrator:
                 # 瞬态轮次（无新消息）：按规格不落盘。
                 return None
             # 自动续跑轮（ADR-0027）把**整个 target 历史**交给模型：续跑的意义就是接上自己上一轮的
-            # 产出，只喂一条「继续」记录会让它从零重做。其它轮次逐字保持既有口径（只喂新消息、
-            # 且不含自己的消息）。
+            # 产出，只喂一条「继续」记录会让它从零重做。普通轮的 pending 仍只承载别人的新消息，
+            # 供早退与消费基线使用；模型的窗口输入在基线确定后独立装配。
             pending = (
                 self._db.list_messages(target_id)
                 if history
@@ -901,6 +923,14 @@ class WakeOrchestrator:
             }
             mentioned = member_id in mentions
             base_seq = max(message["seq"] for message in pending)
+            # 历史只进模型输入：唤醒、回应纪律与读位仍使用上面的新消息基线。
+            inputs = (
+                pending
+                if history
+                else [message for message in self._db.list_messages(target_id) if message["seq"] <= base_seq][
+                    -context_window_messages(agent) :
+                ]
+            )
 
             self._emit_status(target_id, member_id, base_seq)
             self._events.publish(
@@ -956,7 +986,7 @@ class WakeOrchestrator:
                 try:
                     outcome = self._run_seam(
                         agent,
-                        pending,
+                        inputs,
                         mentioned=mentioned,
                         target_id=target_id,
                         task_context=task_context,
@@ -987,7 +1017,8 @@ class WakeOrchestrator:
                         key = "reason.mention_silent"
                     else:
                         key = "reason.mention_ignored"
-                    outcome = RoundOutcome(
+                    outcome = replace(
+                        outcome,
                         status="failed",
                         reason=render(key, self._locale(), reason=outcome.reason),
                     )
@@ -996,11 +1027,13 @@ class WakeOrchestrator:
                 elif (
                     definite_signal
                     and outcome.status == "replied"
+                    and outcome.finished_reason == "completed"
                     and not outcome.messages
                     and outcome.task_action is None
                 ):
                     key = no_body_key if signal.mandatory else "reason.mention_no_body"
-                    outcome = RoundOutcome(
+                    outcome = replace(
+                        outcome,
                         status="failed",
                         reason=render(key, self._locale()),
                     )
@@ -1017,6 +1050,7 @@ class WakeOrchestrator:
                         finished_at=outcome.finished_at,
                         consumed_budget=outcome.consumed_budget,
                         task_action=outcome.task_action,
+                        finished_reason=outcome.finished_reason,
                     )
 
             finished_at = utc_now()
@@ -1040,6 +1074,7 @@ class WakeOrchestrator:
                             seq=committed.system_seq,
                         ),
                         task_action=outcome.task_action,
+                        finished_reason=outcome.finished_reason,
                     )
                 self._db.mark_read(target_id, base_seq, member_id=member_id)
             elif outcome.status in ("ignored", "silent") or (
@@ -1074,8 +1109,19 @@ class WakeOrchestrator:
                 consumed_budget=consumed_budget,
                 merged=False,
                 reply_seq=reply_seq,
+                finished_reason=outcome.finished_reason,
             )
             self._publish_outcome(target_id, base_seq, record)
+            if outcome.finished_reason == "interrupted":
+                self._events.publish(
+                    target_id,
+                    {
+                        "type": "round.interrupted",
+                        "member_id": member_id,
+                        "reply_ids": sorted(turn.seen_reply_ids) if turn is not None else [],
+                        "outcome": record,
+                    },
+                )
             self._events.publish(
                 target_id,
                 {
@@ -1369,6 +1415,16 @@ class WakeOrchestrator:
         leader_id = str(agent["id"])
 
         def emit(record: Any) -> None:
+            if record.type in ("REPLY_START", "REPLY_END"):
+                with self._lock:
+                    turn = self._in_flight.get(leader_id)
+                    if turn is not None and turn.target_id == record.target_id:
+                        if record.type == "REPLY_START":
+                            turn.reply_ids[record.reply_id] = record.member_id
+                            turn.seen_reply_ids.add(record.reply_id)
+                            turn.interrupt = getattr(self._seam, "interrupt_round", None)
+                        else:
+                            turn.reply_ids.pop(record.reply_id, None)
             # 事件只直播、不落库（ADR-0020）；emit 在编排的工作线程里同步调用，
             # ``EventBus.publish`` 对满队列丢事件、不阻塞模型调用。
             self._events.publish(record.target_id, agent_event(record))
@@ -1498,7 +1554,8 @@ class WakeOrchestrator:
         if self._workspace_unavailable is not None:
             workspace_reason = self._workspace_unavailable(str(agent.get("id") or ""))
             if workspace_reason:
-                return Availability(False, workspace_reason)
+                # Docker 不可用时适配器停用工作区工具，仍可完成对话（运行时升级）。
+                return Availability(True, workspace_reason)
         return Availability(True)
 
     # ─── 状态点（只表达后端事实） ─────────────────────────────────────────

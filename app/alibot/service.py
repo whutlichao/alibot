@@ -657,6 +657,10 @@ class WorkspaceService:
         allow_local_shell: bool | None = None,
         docker_image: str | None = None,
         web_access: Any = _UNSET,
+        context_window_messages: Any = _UNSET,
+        context_trigger_ratio: Any = _UNSET,
+        react_max_iters: Any = _UNSET,
+        memory_mode: Any = _UNSET,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -704,6 +708,10 @@ class WorkspaceService:
             allow_local_shell=allow_local_shell,
             docker_image=docker_image,
             web_access=web_access,
+            context_window_messages=context_window_messages,
+            context_trigger_ratio=context_trigger_ratio,
+            react_max_iters=react_max_iters,
+            memory_mode=memory_mode,
         )
         if any(
             value is not None

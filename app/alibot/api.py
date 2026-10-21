@@ -285,6 +285,10 @@ class AgentUpdate(BaseModel):
     # 联网档的 Agent 级覆盖（#184 / ADR-0026 §二、§十五）：缺省 = 不提（保持原值）；显式 ``null``
     # = 清除覆盖（写库 ``NULL`` = 跟随频道）。它因此**不**在下面的「显式 null 一律拒绝」名单里。
     web_access: str | None = None
+    context_window_messages: int | None = Field(default=None, strict=True, gt=0)
+    context_trigger_ratio: float | None = Field(default=None, strict=True, gt=0, le=0.9)
+    react_max_iters: int | None = Field(default=None, strict=True, gt=0)
+    memory_mode: str | None = None
 
     @field_validator(
         "display_name",
@@ -661,6 +665,16 @@ def create_app(
     ``approval_timeout_seconds`` 只用于把默认 10 分钟的审批等待缩短到测试可观察的尺度。
     """
     database = db if db is not None else open_database(data_dir)
+
+    def runtime_target_name(target_id: str) -> str:
+        target = database.get_target(target_id)
+        if target["kind"] == "channel":
+            return str(database.get_channel(target_id)["name"])
+        if target["kind"] == "dm":
+            return str(database.get_dm(target_id)["peer"]["display_name"])
+        task = database.task_for_target(target_id)
+        return str(task["title"]) if task else target_id
+
     events = EventBus()
     # 审批（#149）：进程内 broker 是等待/唤醒的唯一落点；启动时把上个进程残留的 pending 标
     # expired（D19：跨重启恢复不在首版）。默认等待 10 分钟；测试可注入更短的上界。
@@ -685,6 +699,8 @@ def create_app(
     else:
         member_seam = AgentScopeAgentSeam(
             locale_of=lambda: locale_of(database),
+            runtime_root=database.data_dir,
+            target_name_of=runtime_target_name,
             # workspace 装配钩子（#148）：频道显式配置 ``workspace_root`` 后这一轮才挂受限文件工具；
             # 未配置时读路径返回 None，行为逐字不变。
             workspace_of=database.workspace_settings_for_target,
@@ -943,6 +959,12 @@ def create_app(
         if target_id is not None:
             database.get_target(target_id)  # 不存在的 target ⇒ 404
         return {"approvals": database.list_approval_requests(target_id=target_id, state=state)}
+
+    @app.post("/api/targets/{target_id}/rounds/{reply_id}/interrupt")
+    def interrupt_round(target_id: str, reply_id: str) -> dict[str, Any]:
+        if not orchestrator.interrupt_round(target_id, reply_id):
+            raise DomainError("round_not_running", _render_copy("error.round_not_running"), status=409)
+        return {"interrupted": True, "target_id": target_id, "reply_id": reply_id}
 
     @app.post("/api/approvals/{reply_id}")
     def submit_approval(reply_id: str, payload: ApprovalSubmit) -> dict[str, Any]:
@@ -1576,7 +1598,8 @@ def create_app(
 
         可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
         ``auto_claim`` / ``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` /
-        ``docker_image`` / ``web_access``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        ``docker_image`` / ``web_access`` / ``context_window_messages`` / ``context_trigger_ratio`` /
+        ``react_max_iters`` / ``memory_mode``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
         校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
@@ -1605,6 +1628,20 @@ def create_app(
             allow_local_shell=payload.allow_local_shell,
             docker_image=payload.docker_image,
             web_access=web_access,
+            context_window_messages=(
+                payload.context_window_messages
+                if "context_window_messages" in payload.model_fields_set
+                else _UNSET
+            ),
+            context_trigger_ratio=(
+                payload.context_trigger_ratio
+                if "context_trigger_ratio" in payload.model_fields_set
+                else _UNSET
+            ),
+            react_max_iters=payload.react_max_iters
+            if "react_max_iters" in payload.model_fields_set
+            else _UNSET,
+            memory_mode=payload.memory_mode if "memory_mode" in payload.model_fields_set else _UNSET,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
@@ -1680,6 +1717,13 @@ def create_app(
                 )
 
             with events.subscribe(channel_id) as channel:
+                yield sse_frame(
+                    {
+                        "type": "round.active",
+                        "target_id": channel_id,
+                        "rounds": orchestrator.active_rounds(channel_id),
+                    }
+                )
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
@@ -1727,7 +1771,8 @@ def create_app(
         subscriber = subscription.__enter__()
         try:
             snapshot = service.task_messages(task_id, after_seq=after_seq)["messages"]
-            snapshot_outcomes = service.task_round_outcomes(task_id, after_seq=after_seq)
+            # 结束原因可能落在消息游标之前（轮次开始后还有新消息）；每次按 id 去重恢复全量结果。
+            snapshot_outcomes = service.task_round_outcomes(task_id)
         except Exception:
             subscription.__exit__(None, None, None)
             raise
@@ -1739,6 +1784,13 @@ def create_app(
                 for outcome in snapshot_outcomes:
                     yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
 
+                yield sse_frame(
+                    {
+                        "type": "round.active",
+                        "target_id": task["target_id"],
+                        "rounds": orchestrator.active_rounds(task["target_id"]),
+                    }
+                )
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
@@ -1808,6 +1860,13 @@ def create_app(
                     yield sse_frame(
                         {"type": "member_status", "seq": after_seq, "member_id": member_id, "status": status}
                     )
+                yield sse_frame(
+                    {
+                        "type": "round.active",
+                        "target_id": dm_id,
+                        "rounds": orchestrator.active_rounds(dm_id),
+                    }
+                )
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():

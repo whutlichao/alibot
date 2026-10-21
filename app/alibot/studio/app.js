@@ -253,6 +253,7 @@ const state = {
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
+  taskOutcomes: {},
   taskSeenSeqs: new Set(),
   taskStream: null,
   taskStreamTimer: null,
@@ -291,6 +292,7 @@ const state = {
   // 本层只做「消费 + 有界保留 + 未知 type 忽略」。
   liveEvents: new Map(),
   typing: {},
+  activeRounds: {},
   // 工作区设置（**语言偏好** / **消息密度** / **主题**）：正本是后端 `GET /api/settings`，
   // 前端只镜像它；切换时写回后端，不落浏览器存储。
   settings: {
@@ -1861,6 +1863,8 @@ function renderTaskThread() {
         // 正文直接用消息流同一套渲染（`.msg-text`，ADR-0016 的 14px / 68ch）：
         // 提及高亮、换行与量例都与主线一致，不另造一套（也不多套一层壳）。
         body.appendChild(messageText(message));
+        finishedOutcomeNodes(Object.values(state.taskOutcomes).filter((record) => record.base_seq === message.seq))
+          .forEach((node) => body.appendChild(node));
         appendAttachmentList(body, message);
         appendTaskRefChip(body, message);
         row.appendChild(body);
@@ -1878,6 +1882,8 @@ function renderTaskThread() {
         const li = el('li');
         li.appendChild(document.createTextNode((message.author ? message.author.display_name + ' ' : '') + message.body));
         li.appendChild(el('span', 'ts', timeLabel(message.created_at)));
+        finishedOutcomeNodes(Object.values(state.taskOutcomes).filter((record) => record.base_seq === message.seq))
+          .forEach((node) => li.appendChild(node));
         return li;
       })
       : [el('div', 'tt-empty', t('task.historyEmpty'))],
@@ -1887,6 +1893,7 @@ function renderTaskThread() {
   if (last && last.tagName === 'LI') last.classList.add('is-now');
   // 任务线程的审批卡按 task target 铺；频道那份不会串进来。
   renderTaskApprovals();
+  renderTyping();
 }
 
 /** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
@@ -2183,6 +2190,7 @@ function closeTaskDock() {
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
+  state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
   if (hadThread) settleDockFallback();
   else setDockMode(state.activeAgentId ? 'detail' : 'agent');
@@ -2204,6 +2212,7 @@ async function openTask(taskId) {
   state.activeTaskId = taskId;
   state.activeTask = taskById(taskId);
   state.taskMessages = [];
+  state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
   // `reveal`：点卡片是**人显式的打开**，于是它压过「上一次人把 dock 收起来了」这一位。
   setDockMode('task', true);
@@ -3753,6 +3762,8 @@ const LIVE_EVENT_TYPES = [
   'sop_event',
   'approval_required',
   'approval_resolved',
+  'round.interrupted',
+  'round.active',
 ];
 const LIVE_EVENTS_LIMIT = 256;
 
@@ -3775,6 +3786,18 @@ function recordLiveEvent(targetId, type, payload) {
   // 审批卡（#153）：live 帧是「本次会话内的变化」，快照兜底由 `loadApprovalsFor` 负责。
   if (type === 'approval_required') absorbApprovalRequired(key, payload);
   else if (type === 'approval_resolved') absorbApprovalResolved(key, payload);
+  if (type === 'agent_event' && payload.reply_id) {
+    if (payload.event_type === 'REPLY_START') {
+      const rounds = state.activeRounds[key] || (state.activeRounds[key] = {});
+      rounds[payload.reply_id] = payload.member_id;
+      showTypingFor(key, payload.member_id);
+    } else if (payload.event_type === 'REPLY_END') finishRoundFor(key, payload.reply_id);
+  } else if (type === 'round.interrupted') {
+    (payload.reply_ids || (payload.reply_id ? [payload.reply_id] : [])).forEach((replyId) => finishRoundFor(key, replyId));
+  } else if (type === 'round.active') {
+    state.activeRounds[key] = payload.rounds || {};
+    showTypingFor(key, Object.values(state.activeRounds[key])[0] || null);
+  }
   return payload;
 }
 
@@ -3852,6 +3875,7 @@ function connectStream(targetId, entry) {
     renderConnection();
     render();
     // 断开期间不可能有 in-flight 事实需要显示：清掉「正在回复」，等重连后的状态快照说实话。
+    delete state.activeRounds[targetId];
     showTypingFor(targetId, null);
     source.close();
     if (state.streams.get(targetId) !== entry) return; // 已被换掉（频道删除等）
@@ -3961,7 +3985,14 @@ function onStreamStatus(targetId, payload) {
 }
 
 function onStreamTyping(targetId, payload) {
-  showTypingFor(targetId, payload.active ? payload.member_id : null);
+  if (payload.active) showTypingFor(targetId, payload.member_id);
+  else {
+    const rounds = state.activeRounds[targetId] || {};
+    Object.keys(rounds).forEach((replyId) => {
+      if (rounds[replyId] === payload.member_id) delete rounds[replyId];
+    });
+    showTypingFor(targetId, Object.values(rounds)[0] || null);
+  }
   if (payload.active) {
     state.statuses[payload.member_id] = 'working';
   } else if (state.statuses[payload.member_id] === 'working') {
@@ -3976,7 +4007,7 @@ function onStreamTyping(targetId, payload) {
 function showTypingFor(targetId, memberId) {
   if (memberId) state.typing[targetId] = memberId;
   else delete state.typing[targetId];
-  if (state.activeChannelId === targetId) renderTyping();
+  if (state.activeChannelId === targetId || (state.activeTask && state.activeTask.target_id === targetId)) renderTyping();
 }
 
 function onStreamOutcome(targetId, payload) {
@@ -4007,6 +4038,10 @@ function onStreamOutcome(targetId, payload) {
   // 五种结果都要重建消息流：只有 `failed` 会被状态点推导拦住（`ignored` 等三态**不是**失败，
   // 状态点仍空闲），但它们的摘要行同样要在不刷新页面的情况下出现。
   if (state.activeChannelId === targetId && added) renderMessages();
+  if (state.activeTask && state.activeTask.target_id === targetId) {
+    state.taskOutcomes[outcome.id] = outcome;
+    renderTaskThread();
+  }
 }
 
 // 哪些成员在消息流里有轮次结果呈现（用于状态点变化时只重渲染该重的那部分）。
@@ -4508,6 +4543,7 @@ async function openAgentDetail(memberId) {
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
+  state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
   state.activeAgentId = memberId;
   state.agentDetailTab = 'overview';
@@ -4766,6 +4802,10 @@ function openAgentEditModal(memberId) {
   renderAgentEditProviderSelect(preferred);
   renderEditTier('#agentEditEnabled', 'enabled', agent.enabled !== false);
   renderEditTier('#agentEditAutoClaim', 'autoClaim', agent.auto_claim === true);
+  $('#agentEditMemory').checked = agent.memory_mode === 'agentic';
+  $('#agentEditContextWindow').value = agent.context_window_messages == null ? '' : String(agent.context_window_messages);
+  $('#agentEditContextTrigger').value = agent.context_trigger_ratio == null ? '' : String(agent.context_trigger_ratio);
+  $('#agentEditMaxIters').value = agent.react_max_iters == null ? '' : String(agent.react_max_iters);
   // 联网档（#202 / 2026-10-21 修订）：`null` = 没有 Agent 级覆盖，选中「跟随频道（默认）」卡片。
   renderAgentEditWebAccess(agent.web_access);
   renderAgentEditNotice();
@@ -4865,6 +4905,10 @@ async function submitAgentEdit() {
     system_prompt: $('#agentEditPromptInput').value.trim(),
     enabled: editTierValue('#agentEditEnabled', 'enabled'),
     auto_claim: editTierValue('#agentEditAutoClaim', 'autoClaim'),
+    memory_mode: $('#agentEditMemory').checked ? 'agentic' : 'off',
+    context_window_messages: $('#agentEditContextWindow').value.trim() === '' ? null : Number($('#agentEditContextWindow').value),
+    context_trigger_ratio: $('#agentEditContextTrigger').value.trim() === '' ? null : Number($('#agentEditContextTrigger').value),
+    react_max_iters: $('#agentEditMaxIters').value.trim() === '' ? null : Number($('#agentEditMaxIters').value),
   };
   // 联网档（#202）：`follow` 是界面上的「跟随频道」档，提交 **`web_access: null`**——后端把它
   // 解释成「清除 Agent 级覆盖」（写库 NULL），所以从具体档位切回跟随频道真的会清掉覆盖，
@@ -4997,12 +5041,47 @@ function rosterRow(member, agentsById) {
 }
 
 function renderTyping() {
-  const target = activeTarget();
-  const container = $('#typingLine');
+  renderTargetTyping($('#typingLine'), activeTarget());
+  renderTargetTyping($('#taskTypingLine'), state.activeTask ? { id: state.activeTask.target_id } : null);
+}
+
+function renderTargetTyping(container, target) {
+  if (!container) return;
   const memberId = target ? state.typing[target.id] : null;
   const agent = state.agents.find((item) => item.id === memberId);
   container.hidden = !agent;
   container.textContent = agent ? t('typing.working', { name: agent.display_name }) : '';
+  if (!target || !agent) return;
+  Object.entries(state.activeRounds[target.id] || {}).forEach(([replyId, activeMemberId]) => {
+    const button = el('button', 'btn small', t('typing.stop'));
+    button.type = 'button';
+    button.dataset.replyId = replyId;
+    button.setAttribute('aria-label', t('typing.stopNamed', { name: outcomeMemberName(activeMemberId) }));
+    button.disabled = !state.online;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api('/api/targets/' + encodeURIComponent(target.id) + '/rounds/' +
+          encodeURIComponent(replyId) + '/interrupt', { method: 'POST' });
+        finishRoundFor(target.id, replyId);
+      } catch (err) {
+        if (err.status === 409) finishRoundFor(target.id, replyId);
+        else {
+          button.disabled = false;
+          toast(err.message, 'err');
+        }
+      }
+    });
+    container.appendChild(button);
+  });
+}
+
+function finishRoundFor(targetId, replyId) {
+  const rounds = state.activeRounds[targetId] || {};
+  delete rounds[replyId];
+  const remaining = Object.values(rounds);
+  if (!remaining.length) delete state.activeRounds[targetId];
+  showTypingFor(targetId, remaining[0] || null);
 }
 
 /* ─── 频道回应预算（#54 / ADR-0007 / 规格 #31 §2）：读数是后端事实的镜像，写控件只表达**上界** ──
@@ -6833,6 +6912,7 @@ function renderMessages() {
         records
           .filter((record) => record.status === 'failed')
           .forEach((record) => nodes.push(roundOutcomeNode(record)));
+        nodes.push(...finishedOutcomeNodes(records));
       }
     }
   });
@@ -6840,6 +6920,13 @@ function renderMessages() {
   renderChannelApprovals(approvals, approvalTargetId);
   // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
   renderTabs();
+}
+
+function finishedOutcomeNodes(records) {
+  return records
+    .filter((record) => record.status === 'replied' &&
+      ['interrupted', 'exceed_max_iters'].includes(record.finished_reason))
+    .map(roundOutcomeSummaryLine);
 }
 
 /** 摘要行要覆盖的四种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */
@@ -8406,6 +8493,15 @@ function bindEvents() {
   $('#agentEditCancel').addEventListener('click', closeAgentEditModal);
   $('#agentEditClose').addEventListener('click', closeAgentEditModal);
   $('#agentEditSubmit').addEventListener('click', submitAgentEdit);
+  ['#agentEditContextWindow', '#agentEditContextTrigger', '#agentEditMaxIters'].forEach((selector) => {
+    const input = $(selector);
+    input.addEventListener('wheel', (event) => {
+      if (document.activeElement === input) {
+        event.preventDefault();
+        input.blur();
+      }
+    }, { passive: false });
+  });
   $('#agentEditRemoteConfirm').addEventListener('click', () => { confirmAgentEditRemoteFlow(); });
   $('#agentEditProviderSelect').addEventListener('pointerdown', () => { agentEditProviderTouched = true; });
   $('#agentEditProviderSelect').addEventListener('keydown', () => { agentEditProviderTouched = true; });

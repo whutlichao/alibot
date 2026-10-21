@@ -212,6 +212,7 @@ function message(seq, body) {
 }
 
 function createHarness() {
+  const requests = [];
   const elements = new Map();
 
   function newNode(tagName) {
@@ -246,7 +247,8 @@ function createHarness() {
 
   const context = vm.createContext({
     document,
-    fetch: async (url) => {
+    fetch: async (url, options) => {
+      requests.push({ url: String(url), options });
       if (String(url) === "/api/channels") {
         return {
           ok: true,
@@ -291,7 +293,7 @@ function createHarness() {
   api.state.online = true;
   api.state.ready = true;
   api.bindEvents();
-  return { api, document };
+  return { api, document, requests };
 }
 
 function frame(payload) {
@@ -416,4 +418,87 @@ test("任务线程消费新事件：按 target 归属，消息仍按 seq 去重"
   assert.equal(events.length, 1);
   assert.equal(events[0].type, "team_assignment");
   assert.equal(events[0].task_id, "task-1");
+});
+
+
+test('当前 reply_id 的停止按钮发中断请求，成功与中断事件都清掉指示', async () => {
+  const { api, document, requests } = createHarness();
+  const start = liveEvent('agent_event', 'ch-1', {
+    event_type: 'REPLY_START', member_id: 'mem-1', reply_id: 'reply-stop', payload: {},
+  });
+  api.handleStreamEvent('ch-1', frame(start), 'agent_event');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  const button = line.children.find((node) => node.tagName === 'button');
+  assert.ok(button);
+  assert.match(button.textContent, /停止本轮/);
+  await button.dispatchEvent({ type: 'click', target: button });
+  assert.ok(requests.some((request) => request.url === '/api/targets/ch-1/rounds/reply-stop/interrupt' && request.options.method === 'POST'));
+  assert.equal(line.hidden, true);
+  assert.equal(line.children.length, 0);
+
+  api.handleStreamEvent('ch-1', frame(start), 'agent_event');
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1', { reply_ids: ['reply-stop'] })), 'round.interrupted');
+  assert.equal(line.hidden, true);
+  assert.equal(api.lastSeqOf('ch-1'), 0);
+});
+
+
+test('中断一轮只移除它的停止按钮，同 target 的其他成员继续显示', () => {
+  const { api, document } = createHarness();
+  api.state.agents.push({ id: 'mem-2', display_name: '第二位', enabled: true });
+  for (const [member_id, reply_id] of [['mem-1', 'r1'], ['mem-2', 'r2']]) {
+    api.handleStreamEvent('ch-1', frame(liveEvent('agent_event', 'ch-1', {
+      event_type: 'REPLY_START', member_id, reply_id, payload: {},
+    })), 'agent_event');
+  }
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1', { reply_ids: ['r1'] })), 'round.interrupted');
+  api.handleStreamEvent('ch-1', frame({ type: 'typing', member_id: 'mem-1', active: false }), 'typing');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  assert.ok(line.children.some((node) => node.dataset.replyId === 'r2'));
+  assert.ok(!line.children.some((node) => node.dataset.replyId === 'r1'));
+});
+
+for (const [finished_reason, reason] of [
+  ['exceed_max_iters', '达到迭代上限，结论可能不完整'],
+  ['interrupted', '本轮已由用户中断'],
+]) {
+  test(`任务线程呈现 ${finished_reason} 的轮次文案且重连不重复`, () => {
+    const { api, document } = createHarness();
+    api.state.activeTaskId = 'task-1';
+    api.state.activeTask = {
+      id: 'task-1', target_id: 'tgt-task-1', channel_id: 'ch-1', channel_name: 'design',
+      title: '任务', status: 'open', allowed_transitions: [],
+    };
+    api.state.taskMessages = [{ ...message(1, '任务已创建'), kind: 'system' }];
+    const payload = { outcome: {
+      id: 'round-task-1', member_id: 'mem-1', base_seq: 1, status: 'replied',
+      finished_reason, reason, finished_at: '2026-10-21T09:00:00Z',
+    } };
+    api.handleTaskStreamEvent('task-1', frame(payload), 'round_outcome');
+    api.handleTaskStreamEvent('task-1', frame(payload), 'round_outcome');
+    const history = document.querySelector('#ttHistory');
+    assert.match(history.textContent, new RegExp(reason));
+    assert.equal(history.querySelectorAll('[data-od-id="round-reason-round-task-1"]').length, 1);
+    assert.match(document.querySelector('#ttReplyTitle').textContent, /0/);
+  });
+}
+
+test('重连快照恢复当前轮的停止按钮，空快照清掉旧指示', async () => {
+  const { api, document, requests } = createHarness();
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.active', 'ch-1', {
+    rounds: { 'reply-reconnected': 'mem-1' },
+  })), 'round.active');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  const button = line.querySelector('button');
+  assert.ok(button);
+  await button.dispatchEvent({ type: 'click', target: button });
+  assert.ok(requests.some((request) => request.url.includes('/reply-reconnected/interrupt')));
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.active', 'ch-1', {
+    rounds: {},
+  })), 'round.active');
+  assert.equal(line.hidden, true);
+  assert.equal(api.lastSeqOf('ch-1'), 0);
 });
