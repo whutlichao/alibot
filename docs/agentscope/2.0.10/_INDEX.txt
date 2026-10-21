@@ -1,0 +1,271 @@
+# AgentScope: Chinese AgentScope 2.0.10
+
+> ## Agent Instructions
+> For AgentScope Python, use https://docs.agentscope.io/stable/en/index for new projects. For existing projects, check the installed agentscope version and use matching versioned documentation.
+> The /latest/ alias points to the newest documentation and may move ahead of /stable/ when a development version exists. Do not mix AgentScope 1.x and 2.x APIs.
+> State the AgentScope version when providing installation commands or code examples. ReMe uses its own continuously updated /reme/latest/ documentation.
+
+## 2.0.10
+
+### 快速开始
+
+- [AgentScope 2.0 是什么？](https://docs.agentscope.io/zh/versions/2.0.10/index.md): 安全、高效、灵活、完备
+- [快速开始](https://docs.agentscope.io/zh/versions/2.0.10/quickstart.md): 快速上手 AgentScope 2.0
+- [更新日志](https://docs.agentscope.io/zh/versions/2.0.10/release-notes.md): AgentScope 版本改动和更新日志。
+
+### 核心模块
+
+- [消息与事件](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/message-and-event.md): 智能体通信，与前端流式数据传输
+- [计划模式](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/plan.md): 为智能体提供结构化任务清单，用于规划、追踪并协调复杂工作
+- [标准作业流程](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/sop.md): 把多步任务拆成逐个验收的里程碑，让智能体按固定顺序推进
+- [中间件](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/middleware.md): 在智能体生命周期的关键位置拦截并扩展行为
+- [RAG](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/rag.md): 为智能体构建检索增强生成（RAG）能力。
+- [长期记忆](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/long-term-memory.md): 基于智能体中间件实现的，跨会话长期记忆
+- [终端 UI](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/console.md): 在终端快速测试、验证智能体运行逻辑
+- [A2A 协议](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/a2a.md): 连接并与 A2A 协议后的智能体进行对话
+
+#### 智能体
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/agent/overview.md): AgentScope 的核心抽象：无状态的推理-行动循环引擎
+- [配置智能体](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/agent/configure-agent.md): 用模型、工具与配置对象组装一个智能体
+- [运行智能体](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/agent/run-agent.md): 运行智能体，处理它的回复、上下文与状态
+- [中断智能体](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/agent/interrupt-agent.md): 干净地停止运行中或暂停中的智能体，并从一致状态恢复
+- [人机交互](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/agent/human-in-the-loop.md): 暂停以等待用户确认或外部执行，再通过结果事件恢复
+
+#### 模型
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/model/overview.md): 通过凭证接入模型 API，并用模型卡片发现可用模型
+- [大语言模型](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/model/llm.md): 创建并调用对话模型，也可以接入你自己的模型 API
+- [语音合成](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/model/tts.md): 将文本转换为语音，支持标准与实时两种合成模式
+- [嵌入模型](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/model/embedding.md): 将文本与多媒体内容转换为向量，服务检索、RAG 与记忆
+
+#### 上下文管理
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/context/overview.md): 管理智能体的工作记忆，让长任务稳定推进
+- [感知环境](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/context/environment-awareness.md): 让智能体持续感知时间、任务、上下文用量与工具报错的变化
+- [压缩上下文](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/context/compress-context.md): 将上下文长度维护在预设的长度内
+- [卸载上下文](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/context/offload-context.md): 持久化被移除的内容，供智能体按需回查
+
+#### 工具
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/tool/overview.md): 通过 Toolkit 为智能体装配工具、MCP 服务与技能
+- [Python 函数工具](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/tool/python-tool.md): 基于类或普通函数构建工具，并控制它们的执行方式
+- [MCP](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/tool/mcp.md): 接入 MCP 服务并使用其工具
+- [Skill](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/tool/skill.md): 用 Markdown 指令集拓展智能体能力
+- [元工具](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/tool/manage-tools.md): 让智能体在运行时自主激活或停用工具组
+
+#### 流水线
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/pipeline/overview.md): 按照固化逻辑运行多智能体，并向外提供统一接口
+- [目标流水线](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/pipeline/goal.md): 让执行者反复工作，直到验证者认可结果
+- [团队流水线](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/pipeline/team.md): 由一个队长统筹多个各有专长的智能体，协作完成单个智能体难以独立完成的任务
+
+#### 权限系统
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/permission-system/overview.md): 规则、模式与工具内置检查如何共同决定每一次工具调用
+- [权限模式](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/permission-system/permission-mode.md): 根据智能体的部署方式选择合适的全局策略
+- [权限规则](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/permission-system/permission-rule.md): 为特定工具与调用编写允许、拒绝和询问规则
+- [工具内置检查](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/permission-system/tool-check.md): 工具在运行时对自身输入执行的安全分析
+
+#### 工作区
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/workspace/overview.md): 为智能体提供可执行、可持久化的运行环境
+- [运行工作区](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/workspace/run-workspace.md): 在任意后端上创建工作区，并接入智能体
+- [管理资源](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/workspace/manage-resources.md): 在运行时添加、移除 MCP 服务与技能
+- [MCP 网关](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/workspace/mcp-gateway.md): 沙箱类工作区如何把内部的 MCP 服务暴露给主机
+
+#### 实时语音智能体
+
+- [概述](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/realtime/overview.md): 让智能体用语音与用户对话，并在对话中调用工具完成任务
+- [语音到语音](https://docs.agentscope.io/zh/versions/2.0.10/building-blocks/realtime/speech-to-speech.md): 通过端到端的语音模型实现实时语音对话
+
+### 智能体即服务
+
+- [架构](https://docs.agentscope.io/zh/versions/2.0.10/deploy/agent-service.md): 把智能体部署为多租户、多会话的 HTTP 服务
+- [智能体团队](https://docs.agentscope.io/zh/versions/2.0.10/deploy/agent-team.md): Leader 智能体通过内置 team 工具派生并协调 worker 智能体
+- [SOP 服务](https://docs.agentscope.io/zh/versions/2.0.10/deploy/sop.md): 在智能体服务中保存标准作业流程，并让它在会话里自动推进
+- [资源共享](https://docs.agentscope.io/zh/versions/2.0.10/deploy/sharing.md): 以团队，组织为单位共享 API 凭证、智能体与知识库
+- [RAG 服务](https://docs.agentscope.io/zh/versions/2.0.10/deploy/rag.md): 一键式启动的多租户、分布式 RAG 服务
+- [工作区管理](https://docs.agentscope.io/zh/versions/2.0.10/deploy/workspace-manager.md): 在服务中分配、管理智能体的运行环境（Workspace）
+
+#### MCP 与技能中心
+
+- [概览](https://docs.agentscope.io/zh/versions/2.0.10/deploy/hub/overview.md): 快速接入不同来源的 MCP 与技能中心。
+- [MCP 中心](https://docs.agentscope.io/zh/versions/2.0.10/deploy/hub/mcp-hub.md): 让用户从一个来源安装 MCP 服务，并配置自己的凭证。
+- [技能中心](https://docs.agentscope.io/zh/versions/2.0.10/deploy/hub/skill-hub.md): 让用户安装他人发布的技能，并装配给自己的智能体。
+
+#### 消息渠道
+
+- [概览](https://docs.agentscope.io/zh/versions/2.0.10/deploy/channel/overview.md): 让 AgentScope 服务中的智能体入驻 IM 平台。
+- [会话路由](https://docs.agentscope.io/zh/versions/2.0.10/deploy/channel/routing.md): 决定 IM 平台来的消息交给哪个智能体、进入哪个会话。
+- [飞书](https://docs.agentscope.io/zh/versions/2.0.10/deploy/channel/feishu.md): 在飞书中与智能体服务里的智能体对话。
+- [钉钉](https://docs.agentscope.io/zh/versions/2.0.10/deploy/channel/dingtalk.md): 在钉钉中与智能体服务里的智能体对话。
+- [Discord](https://docs.agentscope.io/zh/versions/2.0.10/deploy/channel/discord.md): 在 Discord 中与智能体服务里的智能体对话。
+- [自定义渠道](https://docs.agentscope.io/zh/versions/2.0.10/deploy/channel/custom.md): 实现 ChannelBase，把智能体接入内置之外的平台。
+
+#### API
+
+##### agent
+
+- [[Deprecated] Legacy sectioned schema — use /schema/v2](https://docs.agentscope.io/api-reference/agent/[deprecated]-legacy-sectioned-schema-—-use-schemav2.md): Return the legacy sectioned JSON Schema fragments.
+- [Full AgentData JSON Schema for the agent form](https://docs.agentscope.io/api-reference/agent/full-agentdata-json-schema-for-the-agent-form.md): Return the full :class:`AgentData` JSON Schema.
+- [List all agents](https://docs.agentscope.io/api-reference/agent/list-all-agents.md): Return all agent records belonging to the authenticated user.
+- [Create a new agent](https://docs.agentscope.io/api-reference/agent/create-a-new-agent.md): Create and persist a new agent configuration.
+- [Delete an agent](https://docs.agentscope.io/api-reference/agent/delete-an-agent.md): Permanently delete an agent configuration.
+- [Update an agent](https://docs.agentscope.io/api-reference/agent/update-an-agent.md): Partially update an existing agent configuration.
+
+##### chat
+
+- [Trigger a chat run (fire-and-forget)](https://docs.agentscope.io/api-reference/chat/trigger-a-chat-run-fire-and-forget.md): Trigger a chat run for the specified session.
+
+##### credential
+
+- [List JSON schemas for all credential types](https://docs.agentscope.io/api-reference/credential/list-json-schemas-for-all-credential-types.md): Return JSON schemas for all registered credential types.
+- [List all credentials](https://docs.agentscope.io/api-reference/credential/list-all-credentials.md): Return all credential records belonging to the authenticated user.
+- [Create a new credential](https://docs.agentscope.io/api-reference/credential/create-a-new-credential.md): Store a new credential.
+- [Delete a credential](https://docs.agentscope.io/api-reference/credential/delete-a-credential.md): Permanently delete a credential.
+- [Update a credential](https://docs.agentscope.io/api-reference/credential/update-a-credential.md): Replace the payload of an existing credential.
+
+##### health
+
+- [Report service liveness and per-component readiness](https://docs.agentscope.io/api-reference/health/report-service-liveness-and-per-component-readiness.md): Report whether the service is ready to serve requests.
+
+##### hub
+
+- [List Mcp Hubs](https://docs.agentscope.io/api-reference/hub/list-mcp-hubs.md): Return every registered MCP hub.
+- [List Mcp Cards](https://docs.agentscope.io/api-reference/hub/list-mcp-cards.md): Browse or search one MCP hub's catalog.
+- [Get Mcp Card](https://docs.agentscope.io/api-reference/hub/get-mcp-card.md): Return one MCP card, including the inputs the user must fill.
+- [Install Mcp](https://docs.agentscope.io/api-reference/hub/install-mcp.md): Fill a card's template and add the result to the user's library.
+- [List Skill Hubs](https://docs.agentscope.io/api-reference/hub/list-skill-hubs.md): Return every registered skill hub.
+- [List Skill Cards](https://docs.agentscope.io/api-reference/hub/list-skill-cards.md): Browse or search one skill hub's catalog.
+- [Install Skill](https://docs.agentscope.io/api-reference/hub/install-skill.md): Add a skill card to the user's library.
+- [Get Skill Card](https://docs.agentscope.io/api-reference/hub/get-skill-card.md): Return one skill card, including its ``SKILL.md`` body.
+
+##### knowledge_bases
+
+- [List embedding models compatible with the KB dimension policy](https://docs.agentscope.io/api-reference/knowledge_bases/list-embedding-models-compatible-with-the-kb-dimension-policy.md): List embedding models the user can pick at KB-creation time.
+- [List available chunker types and their parameter schemas](https://docs.agentscope.io/api-reference/knowledge_bases/list-available-chunker-types-and-their-parameter-schemas.md): List every available chunker type with its parameter schema.
+- [JSON Schema for the KB middleware's tunable parameters](https://docs.agentscope.io/api-reference/knowledge_bases/json-schema-for-the-kb-middlewares-tunable-parameters.md): Return the parameter schema for :class:`agentscope.middleware.RAGMiddleware`.
+- [List file types the configured parsers can ingest](https://docs.agentscope.io/api-reference/knowledge_bases/list-file-types-the-configured-parsers-can-ingest.md): Advertise the union of media types and filename extensions every registered parser accepts.
+- [List the caller's knowledge bases](https://docs.agentscope.io/api-reference/knowledge_bases/list-the-callers-knowledge-bases.md): Return all knowledge bases owned by the authenticated user.
+- [Create a new knowledge base](https://docs.agentscope.io/api-reference/knowledge_bases/create-a-new-knowledge-base.md): Create a new knowledge base for the authenticated user.
+- [Delete a knowledge base](https://docs.agentscope.io/api-reference/knowledge_bases/delete-a-knowledge-base.md): Permanently delete a knowledge base.
+- [Update mutable fields on a knowledge base](https://docs.agentscope.io/api-reference/knowledge_bases/update-mutable-fields-on-a-knowledge-base.md): Update mutable fields on a knowledge base.
+- [List documents registered in a knowledge base](https://docs.agentscope.io/api-reference/knowledge_bases/list-documents-registered-in-a-knowledge-base.md): List every document registered against a knowledge base.
+- [Upload a document into a knowledge base](https://docs.agentscope.io/api-reference/knowledge_bases/upload-a-document-into-a-knowledge-base.md): Register an uploaded document and dispatch it for indexing.
+- [Batch-query indexing status of one or more documents](https://docs.agentscope.io/api-reference/knowledge_bases/batch-query-indexing-status-of-one-or-more-documents.md): Return the current lifecycle state of a batch of documents.
+- [Fetch the original uploaded file of a document](https://docs.agentscope.io/api-reference/knowledge_bases/fetch-the-original-uploaded-file-of-a-document.md): Stream the raw uploaded file back for preview or download.
+- [Delete a document from a knowledge base](https://docs.agentscope.io/api-reference/knowledge_bases/delete-a-document-from-a-knowledge-base.md): Remove a document and all its chunks from a knowledge base.
+- [Search a knowledge base by natural-language query](https://docs.agentscope.io/api-reference/knowledge_bases/search-a-knowledge-base-by-natural-language-query.md): Run a similarity search over a knowledge base.
+- [Browse one document's chunks in order](https://docs.agentscope.io/api-reference/knowledge_bases/browse-one-documents-chunks-in-order.md): Return one page of a document's chunks, ``chunk_index`` ascending.
+- [Mint a short-lived token for a browser-native fetch](https://docs.agentscope.io/api-reference/knowledge_bases/mint-a-short-lived-token-for-a-browser-native-fetch.md): Mint a token so a browser can fetch the raw file directly.
+
+##### mcp
+
+- [List Mcps](https://docs.agentscope.io/api-reference/mcp/list-mcps.md): Return every MCP the user has installed, ordered by name.
+- [Delete Mcp](https://docs.agentscope.io/api-reference/mcp/delete-mcp.md): Remove an MCP from the user's library.
+- [Update Mcp](https://docs.agentscope.io/api-reference/mcp/update-mcp.md): Rename, enable/disable, or re-key an installed MCP.
+
+##### schedule
+
+- [List all schedules](https://docs.agentscope.io/api-reference/schedule/list-all-schedules.md): List all schedules owned by the current user.
+- [Create a new schedule](https://docs.agentscope.io/api-reference/schedule/create-a-new-schedule.md): Create a new schedule and register it with the scheduler.
+- [Delete a schedule](https://docs.agentscope.io/api-reference/schedule/delete-a-schedule.md): Permanently delete a schedule.
+- [Update a schedule](https://docs.agentscope.io/api-reference/schedule/update-a-schedule.md): Partially update a schedule.
+- [List execution sessions for a schedule](https://docs.agentscope.io/api-reference/schedule/list-execution-sessions-for-a-schedule.md): Return all sessions triggered by a given schedule.
+
+##### sessions
+
+- [List sessions for an agent](https://docs.agentscope.io/api-reference/sessions/list-sessions-for-an-agent.md): Return all sessions for an agent as enriched :class:`SessionView` entries.
+- [Create a new session](https://docs.agentscope.io/api-reference/sessions/create-a-new-session.md): Create (or resume) a session for a given agent and workspace.
+- [Delete a session](https://docs.agentscope.io/api-reference/sessions/delete-a-session.md): Permanently delete a session and all its associated state.
+- [Update a session](https://docs.agentscope.io/api-reference/sessions/update-a-session.md): Update the model configuration of an existing session.
+- [Interrupt a running or HITL-parked chat run for a session](https://docs.agentscope.io/api-reference/sessions/interrupt-a-running-or-hitl-parked-chat-run-for-a-session.md): Request interruption of an in-progress reply for a session.
+- [List messages for a session](https://docs.agentscope.io/api-reference/sessions/list-messages-for-a-session.md): Return persisted messages for a session.
+- [Probe the session's high-level status](https://docs.agentscope.io/api-reference/sessions/probe-the-sessions-high-level-status.md): Return the unified :class:`SessionStatus` for a session.
+- [Subscribe to a session's event stream (SSE)](https://docs.agentscope.io/api-reference/sessions/subscribe-to-a-sessions-event-stream-sse.md): Subscribe to a session's live event stream.
+
+##### skill
+
+- [List Skills](https://docs.agentscope.io/api-reference/skill/list-skills.md): Return every skill the user has installed, ordered by name.
+- [Get Skill](https://docs.agentscope.io/api-reference/skill/get-skill.md): Return one installed skill, including its ``SKILL.md`` body.
+- [Delete Skill](https://docs.agentscope.io/api-reference/skill/delete-skill.md): Remove a skill from the user's library.
+
+##### sop
+
+- [The schema a procedure's editor is built from](https://docs.agentscope.io/api-reference/sop/the-schema-a-procedures-editor-is-built-from.md): Return :class:`SOPData`'s JSON Schema, unflattened.
+- [List procedures](https://docs.agentscope.io/api-reference/sop/list-procedures.md): Return the caller's procedures.
+- [Create a procedure](https://docs.agentscope.io/api-reference/sop/create-a-procedure.md): Store a new procedure.
+- [List runs](https://docs.agentscope.io/api-reference/sop/list-runs.md): Return the caller's runs, newest first.
+- [Read one run](https://docs.agentscope.io/api-reference/sop/read-one-run.md): Return one run and where it stands.
+- [Delete a run](https://docs.agentscope.io/api-reference/sop/delete-a-run.md): Delete one run and the conversations it opened.
+- [File a person's verdict on a step](https://docs.agentscope.io/api-reference/sop/file-a-persons-verdict-on-a-step.md): Answer a step that was waiting on a person.
+- [Read one procedure](https://docs.agentscope.io/api-reference/sop/read-one-procedure.md): Return one procedure.
+- [Delete a procedure and its runs](https://docs.agentscope.io/api-reference/sop/delete-a-procedure-and-its-runs.md): Delete a procedure, every run of it, and their sessions.
+- [Replace a procedure's contents](https://docs.agentscope.io/api-reference/sop/replace-a-procedures-contents.md): Rewrite a procedure; runs keep the copy they started with.
+- [Start a run](https://docs.agentscope.io/api-reference/sop/start-a-run.md): Open a run of a procedure and set it going in the background.
+
+##### workspace
+
+- [List Mcps](https://docs.agentscope.io/api-reference/workspace/list-mcps.md): Return all MCP clients with live tool list and health status.
+- [Add Mcp](https://docs.agentscope.io/api-reference/workspace/add-mcp.md): Add an MCP client to the session's workspace.
+- [Add Mcps From Library](https://docs.agentscope.io/api-reference/workspace/add-mcps-from-library.md): Put MCPs the user has already installed into this workspace.
+- [Remove Mcp](https://docs.agentscope.io/api-reference/workspace/remove-mcp.md): Remove an MCP client from the session's workspace by name.
+- [List Skills](https://docs.agentscope.io/api-reference/workspace/list-skills.md): Return all skills available in the session's workspace.
+- [Add Skill](https://docs.agentscope.io/api-reference/workspace/add-skill.md): Add a skill to the session's workspace from the given path.
+- [Upload Skill](https://docs.agentscope.io/api-reference/workspace/upload-skill.md): Install a skill from an uploaded folder.
+- [Add Skills From Library](https://docs.agentscope.io/api-reference/workspace/add-skills-from-library.md): Put skills the user has already installed into this workspace.
+- [Remove Skill](https://docs.agentscope.io/api-reference/workspace/remove-skill.md): Remove a skill from the session's workspace by name.
+- [List Workspace Directory](https://docs.agentscope.io/api-reference/workspace/list-workspace-directory.md): List one directory level, reachable from a session's workspace.
+- [Get Workspace Status](https://docs.agentscope.io/api-reference/workspace/get-workspace-status.md): Report where a session is pointed, and the git state of that place.
+- [Create Download Token](https://docs.agentscope.io/api-reference/workspace/create-download-token.md): Mint a short-lived token for a browser-native download.
+- [Read Workspace File](https://docs.agentscope.io/api-reference/workspace/read-workspace-file.md): Stream one file out of a session's workspace.
+
+##### model
+
+- [List all candidate models under the given credential type](https://docs.agentscope.io/api-reference/model/list-all-candidate-models-under-the-given-credential-type.md): Return all candidate models under the given credential type.
+
+##### realtime
+
+- [List realtime models for a credential provider](https://docs.agentscope.io/api-reference/realtime/list-realtime-models-for-a-credential-provider.md): Return realtime model cards supported by a credential provider.
+- [Get browser WebRTC configuration](https://docs.agentscope.io/api-reference/realtime/get-browser-webrtc-configuration.md): Return deployment-provided ICE servers for browser negotiation.
+- [Start a realtime session from a WebRTC offer](https://docs.agentscope.io/api-reference/realtime/start-a-realtime-session-from-a-webrtc-offer.md): Negotiate one browser peer connection for a persisted session.
+
+##### tts-model
+
+- [List all candidate TTS models under the given credential type](https://docs.agentscope.io/api-reference/tts-model/list-all-candidate-tts-models-under-the-given-credential-type.md): Return all candidate TTS models under the given credential type.
+
+##### embedding-model
+
+- [List all candidate embedding models under the given credential type](https://docs.agentscope.io/api-reference/embedding-model/list-all-candidate-embedding-models-under-the-given-credential-type.md): Return all candidate embedding models under the credential type.
+
+##### channels
+
+- [List Channel Types](https://docs.agentscope.io/api-reference/channels/list-channel-types.md): List supported channel types with their JSON schemas.
+- [List Channels](https://docs.agentscope.io/api-reference/channels/list-channels.md): List channels owned by the current user.
+- [Create Channel](https://docs.agentscope.io/api-reference/channels/create-channel.md): Create a channel.
+- [Start Credential Binding](https://docs.agentscope.io/api-reference/channels/start-credential-binding.md): Open a session and return the URL the operator must approve.
+- [Poll Credential Binding](https://docs.agentscope.io/api-reference/channels/poll-credential-binding.md): Report the session, asking the platform once when due.
+- [Cancel Credential Binding](https://docs.agentscope.io/api-reference/channels/cancel-credential-binding.md): Abandon the session, from whichever replica takes this call.
+- [Get Channel](https://docs.agentscope.io/api-reference/channels/get-channel.md): Get channel details.
+- [Delete Channel](https://docs.agentscope.io/api-reference/channels/delete-channel.md): Delete a channel.
+- [Update Channel](https://docs.agentscope.io/api-reference/channels/update-channel.md): Update routing / session / config / enabled.
+- [Enable Channel](https://docs.agentscope.io/api-reference/channels/enable-channel.md): Enable a channel.
+- [Disable Channel](https://docs.agentscope.io/api-reference/channels/disable-channel.md): Disable a channel.
+- [Channel Status](https://docs.agentscope.io/api-reference/channels/channel-status.md): The channel's live connection status.
+- [List Channel Sessions](https://docs.agentscope.io/api-reference/channels/list-channel-sessions.md): Sessions this channel spawned, newest first.
+- [List Chat Ids](https://docs.agentscope.io/api-reference/channels/list-chat-ids.md): Known chats for routing config: platform list ∪ passively seen.
+
+### 其他
+
+- [常见问题](https://docs.agentscope.io/zh/versions/2.0.10/others/faq.md): 解答使用 AgentScope 2.0 时的常见问题。
+- [版本迁移](https://docs.agentscope.io/zh/versions/2.0.10/others/change-log.md): AgentScope 2.0 与 1.0 的核心区别
+
+## OpenAPI Specs
+
+- [openapi](/en/versions/2.0.4/deploy/openapi.json)
+- [openapi](/en/versions/2.0.2/deploy/openapi.json)
+- [openapi](/en/versions/2.0.6/deploy/openapi.json)
+- [openapi](/en/versions/2.0.3/deploy/openapi.json)
+- [openapi](/en/versions/2.0.9/deploy/openapi.json)
+- [openapi](/en/versions/2.0.10/deploy/openapi.json)

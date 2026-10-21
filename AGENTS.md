@@ -56,6 +56,15 @@ Run the gates through `scripts/check.sh` (CI runs the same script); worktree/mer
 
 Standards sources and the judgement rules the reviewer enforces: see `docs/agents/review-rules.md`.
 
+### AgentScope 2.0
+
+产品进程内驱动 Agent 的框架，pin 在 `app/pyproject.toml`（当前 2.0.10）。**改任何触及 `agentscope` 的代码前，先读 `docs/agents/agentscope-2.md` §1（红线）**：版本 pin、import 白名单、1.x 符号、文档链接必须带 pin 版本。
+
+- 文档只查本地快照 `docs/agentscope/<pin>/`；不要引用 `/latest/`、`/stable/` 或无版本路径。
+- 机械守卫：`app/tests/test_agentscope_usage_guard.py`（随 `scripts/check.sh` 跑）。
+- 现状与偏差：`docs/agents/agentscope-2-audit.md`（45 行审计矩阵）、`docs/agents/agentscope-2-deviations.md`（偏离账本）。
+- 升级 AgentScope 版本是一张单独的票：改 pin → 重跑 `scripts/sync-agentscope-docs.sh` → 重核对审计矩阵的"EXP"行。
+
 ## 本机已知环境噪声
 
 - `GIT_CONFIG_COUNT` 已设而 `GIT_CONFIG_KEY_0` 缺失 ⇒ 任何 `git` / `gh` 立即 `fatal: missing config key`；`scripts/check.sh` 已内置 `unset`，手工命令前也先 `unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1`。

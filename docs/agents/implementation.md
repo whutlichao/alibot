@@ -22,6 +22,15 @@ scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（
 - **不要跑 `ruff format`**：它会整文件重排，把一次小改动变成不可 review 的大 diff。
   只跑 `ruff format --check`（脚本已含）。
 
+## AgentScope 的版本与守卫
+
+- 判据正本是 `docs/agents/agentscope-2.md`（红线在 §1）；机械守卫是
+  `app/tests/test_agentscope_usage_guard.py`，随 pytest 自动跑，不额外加命令。
+- **升级 `agentscope` pin 是一张单独的票**：改 pin → 跑 `scripts/sync-agentscope-docs.sh` 重抓快照 →
+  重核对 `docs/agents/agentscope-2-audit.md` 里标「EXP / 实测」的行 → 更新偏离账本的触发条件。
+- 快照（`docs/agentscope/<版本>/`）**不许手改**：守卫按 `MANIFEST.json` 的 sha256 校验，改了必红。
+- 文档站偶发 502，同步脚本已内置 4 路并发 + 3 轮补抓；仍失败就重跑，不要删页凑数。
+
 ## 环境
 
 - 虚拟环境在**仓库根** `.venv/`；新 worktree 用符号链接接上：`ln -s ../alibot/.venv .venv`。
