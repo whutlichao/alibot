@@ -8,6 +8,8 @@
 - ``message``        新消息落库（载荷与 ``GET /messages`` 的元素同形）
 - ``member_status``  成员状态点（``member_id`` + ``status`` ∈ 四态）
 - ``typing``         「正在回复」指示（``member_id``：该成员有一轮 in-flight）
+- ``round.active``   当前 target 的停止句柄快照（重连时从进程内轮次恢复，不落库、不推进游标）
+- ``round.interrupted`` 用户中断收口（不落消息）
 - ``round_outcome``  轮次结果（载荷与只读端点同形）
 - ``agent_event``    ``AgentEvent`` 白名单透传（ADR-0020；成员过程，不落库）
 - ``team_assignment`` 分派开始/成功/失败/预算耗尽（运行记录快照 ``GET /team-runs``）
@@ -48,6 +50,7 @@ LIVE_EVENT_TYPES = frozenset(
         "approval_required",
         "approval_resolved",
         "round.interrupted",
+        "round.active",
     }
 )
 

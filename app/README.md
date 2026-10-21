@@ -91,10 +91,10 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-### Schema 版本与迁移（15 → 22）
+### Schema 版本与迁移（15 → 23）
 
-本代码的 `SCHEMA_VERSION = 22`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
-推进到 22，由**七个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+本代码的 `SCHEMA_VERSION = 23`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
+推进到 23，由**八个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -105,6 +105,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `19 → 20` | `channel task pointer message` | `message.task_pointer`（可空，`REFERENCES task(id)`）+ 部分唯一索引 `idx_message_task_pointer`（一张任务至多一条）+ `message_task_pointer_is_scoped` 触发器（必须是 channel 型 target 的 system 消息，且任务属于该频道）。**不回填**旧任务 |
 | `20 → 21` | `auto claim defaults on` | `agent_config.auto_claim` 的 DDL 默认 `0 → 1`；按当前 `SCHEMA` **重建** `agent_config`（升级库的新插入也拿到 1），并把存量 `auto_claim = 0` 一次性回填为 `1`（只改这一列、不动 `updated_at`；报告真实改动行数，重放是空操作） |
 | `21 → 22` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
+| `22 → 23` | `agent runtime context and memory` | `round_outcome.finished_reason`（可空，旧行保持 NULL）；`agent_config.context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `memory_mode`（列默认 `40` / `0.7` / `30` / `'off'`；显式 NULL 跟随运行时默认） |
 
 - **只加不删；除 `20 → 21` 的显式回填外，不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——
   `mode='autonomous'`、`team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
@@ -112,7 +113,8 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
   `17 → 18` 的两列 `web_access` 也一律停在 `NULL`（= 未配置 / 跟随频道，读路径回退默认档 `search`，
   见下面的**联网档**）；`18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）；
   `19 → 20` 的 `message.task_pointer` 停在 `NULL`（= 不是指针消息）；
-  `21 → 22` 的两列 `web_access` 仍停在 `NULL`（同上，读路径回退默认档 `search`）。
+  `21 → 22` 的两列 `web_access` 仍停在 `NULL`（同上，读路径回退默认档 `search`）；
+  `22 → 23` 的旧轮次结束原因保持 `NULL`，Agent 的四列配置取列默认值。
   `20 → 21` 是一次**显式的语义变更**：它把存量 `auto_claim = 0` 一次性置 1（ADR-0029），
   因此升级会覆盖此前显式关闭的存量行；它**不回溯任务**，频道里既有的未认领任务保持原状。
 - **迁移是显式动作**：`python -m alibot --migrate --data-dir <数据目录>`；`--dry-run` 在数据目录内的临时
@@ -209,8 +211,8 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 编辑弹窗可设置上下文条数、阈值、迭代上限及长期记忆开关。
 - 每轮按 Asia/Shanghai 重新注入 ISO 时间、target 名称与上下文用量；AgentState 原子保存到上述 session 分区的 `state.json`，恢复摘要及运行状态、按消息窗口重建 context。损坏状态降级为空白并记录日志；权限始终用当前配置。
 - `finished_reason` 为 `completed | interrupted | exceed_max_iters | error`，与 status 独立。旧行保持 NULL；达到迭代上限的部分正文可保留，reason 明示结论可能不完整。
-- `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失。审批超时仍为 failed。
-- `memory_mode=agentic` 使用 AgenticMemoryMiddleware，记忆在 `<root>/.alibot/memory/<member_id>/Memory/`，DM 的 root 为数据目录；只补 Read/Write/Edit 与该记忆目录的写权限，不创建工作区、不开放项目根。显式 deny/ask 规则仍生效；off / null 不挂中间件、不创建目录。
+- `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失；SSE 重连通过当前 `round.active` 快照恢复按钮。审批超时仍为 failed。
+- `memory_mode=agentic` 使用 AgenticMemoryMiddleware，记忆在 `<root>/.alibot/memory/<member_id>/Memory/`，DM 的 root 为数据目录；补 Read/Write/Edit 与该记忆目录的写权限，不创建工作区、不开放项目根；Read 另可读取当前会话的卸载目录，记忆关闭时仅保留这个受限 Read。显式 deny/ask 规则仍生效；off / null 不挂中间件、不创建目录。
 - Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件仍写主机 `.alibot` 分区，可用 Docker 时路径显示为容器 bind mount 的 `/workspace/.alibot/...`。
 
 ### 穿透（点名一个未加入该频道的 Agent）

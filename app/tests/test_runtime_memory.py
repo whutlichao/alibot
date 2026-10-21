@@ -1,12 +1,15 @@
 """AgenticMemory 的跨会话写回与召回，DM 只有记忆目录的文件权限。"""
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
 from agentscope.agent import Agent
-from agentscope.message import TextBlock
+from agentscope.message import Msg, TextBlock
 from agentscope.middleware import AgenticMemoryMiddleware
 from agentscope.model import ChatResponse
+from alibot.runtime import SessionOffloader
 
 from tests.test_approval_seam import _ScriptedModel, _StubModelSeam, _tool_call
 
@@ -97,5 +100,46 @@ def test_dm_memory_tools_cannot_read_a_project_file(tmp_path: Path) -> None:
         direct_message=True,
     )
     assert outcome.status == "replied", outcome.reason
-    assert "path escapes memory directory" in model.inputs[-1]
+    assert "path escapes runtime directories" in model.inputs[-1]
     assert "private-project-content" not in "\n".join(model.inputs)
+
+
+@pytest.mark.parametrize("memory_mode", ["off", "agentic"])
+def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
+    tmp_path: Path, memory_mode: str
+) -> None:
+    path = asyncio.run(
+        SessionOffloader(tmp_path, "target--member").offload_context(
+            "session", [Msg(name="owner", content=[TextBlock(text="older-context-content")], role="user")]
+        )
+    )
+    other = asyncio.run(
+        SessionOffloader(tmp_path, "other--member").offload_context(
+            "other", [Msg(name="owner", content=[TextBlock(text="private-other-session")], role="user")]
+        )
+    )
+    secret = tmp_path / "project.txt"
+    secret.write_text("private-project-content")
+    escaped = Path(path).parent / "escaped.txt"
+    escaped.symlink_to(secret)
+    model = MemoryModel(
+        [
+            _tool_call("read-offload", "Read", {"file_path": path}),
+            _tool_call("read-other", "Read", {"file_path": other}),
+            _tool_call("read-escaped", "Read", {"file_path": str(escaped)}),
+            [ChatResponse(content=[TextBlock(text="已找回卸载上下文")], is_last=True)],
+        ]
+    )
+    outcome = _StubModelSeam(model, runtime_root=tmp_path).run_round(
+        {"id": "member", "model_id": "openai:stub", "memory_mode": memory_mode},
+        [{"body": "请读取卸载文件", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id="target",
+        direct_message=True,
+    )
+    assert outcome.status == "replied", outcome.reason
+    assert "older-context-content" in model.inputs[-1]
+    assert "private-other-session" not in "\n".join(model.inputs)
+    assert "private-project-content" not in "\n".join(model.inputs)
+    if memory_mode == "off":
+        assert not (tmp_path / ".alibot/memory").exists()

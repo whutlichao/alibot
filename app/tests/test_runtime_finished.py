@@ -18,6 +18,24 @@ from tests.test_approval_seam import _ScriptedModel, _StubModelSeam
 from tests.test_schema_migration import _build_library, _migrate_argv, _run, _shape
 
 
+@pytest.mark.parametrize("behavior", ["ignore", "silent", "empty-reply"])
+def test_reply_discipline_failure_keeps_the_completed_finished_reason(
+    client: TestClient, harness: dict, behavior: str
+) -> None:
+    from tests.scripted import EMPTY_REPLY, IGNORE, SILENT
+
+    agent = create_agent(client).json()["agent"]
+    channel = create_channel(client, member_ids=[agent["id"]]).json()["channel"]
+    harness["seam"].behaviors[agent["id"]] = {"ignore": IGNORE, "silent": SILENT, "empty-reply": EMPTY_REPLY}[
+        behavior
+    ]
+    send(client, channel["id"], "请回应")
+    harness["scheduler"].drain()
+    row = outcomes(client, channel["id"])[0]
+    assert row["status"] == "failed"
+    assert row["finished_reason"] == "completed"
+
+
 @pytest.mark.parametrize(
     ("finished_reason", "copy", "status"),
     [

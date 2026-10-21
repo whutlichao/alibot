@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import pytest
 from agentscope.agent import Agent
 from agentscope.message import TextBlock
 from agentscope.model import ChatResponse
@@ -14,7 +16,7 @@ from alibot.api import create_app
 from alibot.events import sse_frame
 from fastapi.testclient import TestClient
 
-from tests.conftest import create_agent, create_channel, messages, outcomes, send
+from tests.conftest import create_agent, create_channel, live_backend, messages, outcomes, send, sse_frames
 from tests.scripted import ManualScheduler
 from tests.test_approval_seam import _ScriptedModel, _StubModelSeam, _tool_call
 
@@ -35,6 +37,72 @@ class BlockingModel(_ScriptedModel):
         while not self.release.is_set():
             await asyncio.sleep(0.01)
         return await super()._call_api(*args, **kwargs)
+
+
+@pytest.mark.parametrize("collection", ["channels", "dms", "tasks"])
+def test_reconnected_sse_restores_the_current_interrupt_handle(tmp_path: Path, collection: str) -> None:
+    model = BlockingModel()
+    scheduler = ManualScheduler()
+    with (
+        live_backend(
+            tmp_path, scheduler=scheduler, seam=_StubModelSeam(model, runtime_root=tmp_path)
+        ) as base_url,
+        httpx.Client(base_url=base_url, trust_env=False, timeout=10) as http,
+    ):
+        agent = http.post(
+            "/api/agents",
+            json={
+                "name": "成员",
+                "role": "助手",
+                "model_id": "ollama:stub",
+                "system_prompt": "请回应",
+            },
+        ).json()["agent"]
+        if collection == "dms":
+            target = http.post("/api/dms", json={"agent_id": agent["id"]}).json()["dm"]
+        else:
+            target = http.post(
+                "/api/channels",
+                json={
+                    "name": "频道",
+                    "member_ids": [agent["id"]],
+                },
+            ).json()["channel"]
+            if collection == "tasks":
+                http.patch(
+                    f"/api/channels/{target['id']}/config",
+                    json={
+                        "mode": "team",
+                        "team_leader_member_id": agent["id"],
+                    },
+                )
+                target = http.post(f"/api/channels/{target['id']}/tasks", json={"title": "任务"}).json()[
+                    "task"
+                ]
+        if collection != "tasks":
+            http.post(f"/api/{collection}/{target['id']}/messages", json={"body": "请处理"})
+        thread = threading.Thread(target=scheduler.drain, daemon=True)
+        thread.start()
+        try:
+            assert model.started.wait(3)
+            replayed = sse_frames(http, target["id"], after_seq=1, target_collection=collection)
+            snapshot = next(event for event in replayed if event["type"] == "round.active")
+            assert list(snapshot["rounds"].values()) == [agent["id"]]
+            reply_id = next(iter(snapshot["rounds"]))
+            target_id = target.get("target_id", target["id"])
+            assert http.post(f"/api/targets/{target_id}/rounds/{reply_id}/interrupt").status_code == 200
+            thread.join(5)
+            assert not thread.is_alive()
+            replayed = sse_frames(http, target["id"], after_seq=1, target_collection=collection)
+            assert next(event for event in replayed if event["type"] == "round.active")["rounds"] == {}
+            if collection == "tasks":
+                assert any(
+                    event["type"] == "round_outcome" and event["outcome"]["finished_reason"] == "interrupted"
+                    for event in replayed
+                )
+        finally:
+            model.release.set()
+            thread.join(5)
 
 
 def test_interrupt_endpoint_only_stops_the_current_target_and_emits_an_sse_event(tmp_path: Path) -> None:

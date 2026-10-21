@@ -50,3 +50,16 @@
 ## 最终门禁与 review
 
 review 比较基线由 coordinator 确认为 `3863e39`。最终全量门禁、两轴发现与处理、提交清单、遗留和原始输出见 `/tmp/alibot-agent-runtime/T5-report.md`；测试仅使用临时库和脚本模型，无付费调用，未操作用户真实数据目录。
+
+## Standards
+
+- 初审 2 项硬违反：编排把必答轮判失败时丢失原结束原因；迁移说明仍写 schema 22。已改为保留原 RoundOutcome 字段，并同步 README / CONTEXT 的 22→23 说明。
+- 初审 1 项判断题：单 Agent 与 team 的中断收口有重复形状。保留两条控制流：单 Agent 经事件消费器结束挂起审批，team 逐参与者结束，事件转发和资源关闭顺序不同；没有引入跨两种生命周期的通用回调抽象。
+- 回归：`test_runtime_finished.py` 的三种正常完成但业务判失败行为仍保存 completed；隔离红证据 `.scratch/review-finished-red.log` 为 3 failed。
+
+## Spec
+
+- 初审 3 项 P2：任务线程缺结束文案；重连后丢失停止按钮；DM 无法读卸载文件。均已补齐。
+- 任务结果按 id 去重恢复全量，诊断挂到触发消息或 system 历史行，不计入消息数。SSE 每次连接从当前 target 的 in-flight 轮次生成 round.active 快照，频道 / DM / 任务均可恢复真实句柄。
+- DM 未启记忆时只补当前会话卸载目录的 Read；启记忆时同一个 Read 覆盖记忆与当前会话卸载，Write/Edit 仍只写记忆。其他会话和项目文件符号链接被 backend 拒绝；不增加项目根权限。
+- 隔离红证据：`.scratch/review-task-ui-red.log`（2 failed）、`.scratch/review-reconnect-red.log`（3 failed）、`.scratch/review-reconnect-ui-red.log`（1 failed）、`.scratch/review-offload-red.log`（2 failed）。定向绿证据 `.scratch/review-*.log`，最终读数随报告留存。

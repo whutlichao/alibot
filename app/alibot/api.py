@@ -1717,6 +1717,13 @@ def create_app(
                 )
 
             with events.subscribe(channel_id) as channel:
+                yield sse_frame(
+                    {
+                        "type": "round.active",
+                        "target_id": channel_id,
+                        "rounds": orchestrator.active_rounds(channel_id),
+                    }
+                )
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
@@ -1764,7 +1771,8 @@ def create_app(
         subscriber = subscription.__enter__()
         try:
             snapshot = service.task_messages(task_id, after_seq=after_seq)["messages"]
-            snapshot_outcomes = service.task_round_outcomes(task_id, after_seq=after_seq)
+            # 结束原因可能落在消息游标之前（轮次开始后还有新消息）；每次按 id 去重恢复全量结果。
+            snapshot_outcomes = service.task_round_outcomes(task_id)
         except Exception:
             subscription.__exit__(None, None, None)
             raise
@@ -1776,6 +1784,13 @@ def create_app(
                 for outcome in snapshot_outcomes:
                     yield sse_frame({"type": "round_outcome", "seq": outcome["base_seq"], "outcome": outcome})
 
+                yield sse_frame(
+                    {
+                        "type": "round.active",
+                        "target_id": task["target_id"],
+                        "rounds": orchestrator.active_rounds(task["target_id"]),
+                    }
+                )
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
@@ -1845,6 +1860,13 @@ def create_app(
                     yield sse_frame(
                         {"type": "member_status", "seq": after_seq, "member_id": member_id, "status": status}
                     )
+                yield sse_frame(
+                    {
+                        "type": "round.active",
+                        "target_id": dm_id,
+                        "rounds": orchestrator.active_rounds(dm_id),
+                    }
+                )
                 deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
                 while not shutting_down.is_set():
                     if await request.is_disconnected():

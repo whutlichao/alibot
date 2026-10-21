@@ -253,6 +253,7 @@ const state = {
   activeTaskId: null,
   activeTask: null,
   taskMessages: [],
+  taskOutcomes: {},
   taskSeenSeqs: new Set(),
   taskStream: null,
   taskStreamTimer: null,
@@ -1862,6 +1863,8 @@ function renderTaskThread() {
         // 正文直接用消息流同一套渲染（`.msg-text`，ADR-0016 的 14px / 68ch）：
         // 提及高亮、换行与量例都与主线一致，不另造一套（也不多套一层壳）。
         body.appendChild(messageText(message));
+        finishedOutcomeNodes(Object.values(state.taskOutcomes).filter((record) => record.base_seq === message.seq))
+          .forEach((node) => body.appendChild(node));
         appendAttachmentList(body, message);
         appendTaskRefChip(body, message);
         row.appendChild(body);
@@ -1879,6 +1882,8 @@ function renderTaskThread() {
         const li = el('li');
         li.appendChild(document.createTextNode((message.author ? message.author.display_name + ' ' : '') + message.body));
         li.appendChild(el('span', 'ts', timeLabel(message.created_at)));
+        finishedOutcomeNodes(Object.values(state.taskOutcomes).filter((record) => record.base_seq === message.seq))
+          .forEach((node) => li.appendChild(node));
         return li;
       })
       : [el('div', 'tt-empty', t('task.historyEmpty'))],
@@ -2185,6 +2190,7 @@ function closeTaskDock() {
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
+  state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
   if (hadThread) settleDockFallback();
   else setDockMode(state.activeAgentId ? 'detail' : 'agent');
@@ -2206,6 +2212,7 @@ async function openTask(taskId) {
   state.activeTaskId = taskId;
   state.activeTask = taskById(taskId);
   state.taskMessages = [];
+  state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
   // `reveal`：点卡片是**人显式的打开**，于是它压过「上一次人把 dock 收起来了」这一位。
   setDockMode('task', true);
@@ -3756,6 +3763,7 @@ const LIVE_EVENT_TYPES = [
   'approval_required',
   'approval_resolved',
   'round.interrupted',
+  'round.active',
 ];
 const LIVE_EVENTS_LIMIT = 256;
 
@@ -3786,6 +3794,9 @@ function recordLiveEvent(targetId, type, payload) {
     } else if (payload.event_type === 'REPLY_END') finishRoundFor(key, payload.reply_id);
   } else if (type === 'round.interrupted') {
     (payload.reply_ids || (payload.reply_id ? [payload.reply_id] : [])).forEach((replyId) => finishRoundFor(key, replyId));
+  } else if (type === 'round.active') {
+    state.activeRounds[key] = payload.rounds || {};
+    showTypingFor(key, Object.values(state.activeRounds[key])[0] || null);
   }
   return payload;
 }
@@ -4027,6 +4038,10 @@ function onStreamOutcome(targetId, payload) {
   // 五种结果都要重建消息流：只有 `failed` 会被状态点推导拦住（`ignored` 等三态**不是**失败，
   // 状态点仍空闲），但它们的摘要行同样要在不刷新页面的情况下出现。
   if (state.activeChannelId === targetId && added) renderMessages();
+  if (state.activeTask && state.activeTask.target_id === targetId) {
+    state.taskOutcomes[outcome.id] = outcome;
+    renderTaskThread();
+  }
 }
 
 // 哪些成员在消息流里有轮次结果呈现（用于状态点变化时只重渲染该重的那部分）。
@@ -4528,6 +4543,7 @@ async function openAgentDetail(memberId) {
   state.activeTaskId = null;
   state.activeTask = null;
   state.taskMessages = [];
+  state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
   state.activeAgentId = memberId;
   state.agentDetailTab = 'overview';
@@ -6896,10 +6912,7 @@ function renderMessages() {
         records
           .filter((record) => record.status === 'failed')
           .forEach((record) => nodes.push(roundOutcomeNode(record)));
-        records
-          .filter((record) => record.status === 'replied' &&
-            ['interrupted', 'exceed_max_iters'].includes(record.finished_reason))
-          .forEach((record) => nodes.push(roundOutcomeSummaryLine(record)));
+        nodes.push(...finishedOutcomeNodes(records));
       }
     }
   });
@@ -6907,6 +6920,13 @@ function renderMessages() {
   renderChannelApprovals(approvals, approvalTargetId);
   // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
   renderTabs();
+}
+
+function finishedOutcomeNodes(records) {
+  return records
+    .filter((record) => record.status === 'replied' &&
+      ['interrupted', 'exceed_max_iters'].includes(record.finished_reason))
+    .map(roundOutcomeSummaryLine);
 }
 
 /** 摘要行要覆盖的四种轮次结果（`failed` 直接展开，`replied` 由它自己的回复消息承载）。 */

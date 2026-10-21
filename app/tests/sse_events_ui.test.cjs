@@ -459,3 +459,46 @@ test('中断一轮只移除它的停止按钮，同 target 的其他成员继续
   assert.ok(line.children.some((node) => node.dataset.replyId === 'r2'));
   assert.ok(!line.children.some((node) => node.dataset.replyId === 'r1'));
 });
+
+for (const [finished_reason, reason] of [
+  ['exceed_max_iters', '达到迭代上限，结论可能不完整'],
+  ['interrupted', '本轮已由用户中断'],
+]) {
+  test(`任务线程呈现 ${finished_reason} 的轮次文案且重连不重复`, () => {
+    const { api, document } = createHarness();
+    api.state.activeTaskId = 'task-1';
+    api.state.activeTask = {
+      id: 'task-1', target_id: 'tgt-task-1', channel_id: 'ch-1', channel_name: 'design',
+      title: '任务', status: 'open', allowed_transitions: [],
+    };
+    api.state.taskMessages = [{ ...message(1, '任务已创建'), kind: 'system' }];
+    const payload = { outcome: {
+      id: 'round-task-1', member_id: 'mem-1', base_seq: 1, status: 'replied',
+      finished_reason, reason, finished_at: '2026-10-21T09:00:00Z',
+    } };
+    api.handleTaskStreamEvent('task-1', frame(payload), 'round_outcome');
+    api.handleTaskStreamEvent('task-1', frame(payload), 'round_outcome');
+    const history = document.querySelector('#ttHistory');
+    assert.match(history.textContent, new RegExp(reason));
+    assert.equal(history.querySelectorAll('[data-od-id="round-reason-round-task-1"]').length, 1);
+    assert.match(document.querySelector('#ttReplyTitle').textContent, /0/);
+  });
+}
+
+test('重连快照恢复当前轮的停止按钮，空快照清掉旧指示', async () => {
+  const { api, document, requests } = createHarness();
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.active', 'ch-1', {
+    rounds: { 'reply-reconnected': 'mem-1' },
+  })), 'round.active');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  const button = line.querySelector('button');
+  assert.ok(button);
+  await button.dispatchEvent({ type: 'click', target: button });
+  assert.ok(requests.some((request) => request.url.includes('/reply-reconnected/interrupt')));
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.active', 'ch-1', {
+    rounds: {},
+  })), 'round.active');
+  assert.equal(line.hidden, true);
+  assert.equal(api.lastSeqOf('ch-1'), 0);
+});

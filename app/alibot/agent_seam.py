@@ -745,8 +745,20 @@ class AgentScopeAgentSeam:
                 str(agent["id"]),
                 options["state"].permission_context,
                 mount=mount,
+                offloader=options["offloader"] if mount is None else None,
             )
             middlewares.extend(memory_middlewares)
+        elif mount is None and isinstance(options.get("offloader"), SessionOffloader):
+            from agentscope.tool import LocalBackend, Read
+
+            from .runtime_files import PartitionBackend, PartitionPermissionMiddleware
+
+            offloader = options["offloader"]
+            backend = PartitionBackend(
+                LocalBackend(), offloader.directory, str(offloader.visible_directory), writable=False
+            )
+            tools = [Read(backend=backend)]
+            middlewares.append(PartitionPermissionMiddleware(backend))
         if middlewares:
             options["middlewares"] = middlewares
         return options, store, tools

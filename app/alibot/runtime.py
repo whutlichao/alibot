@@ -87,6 +87,14 @@ class SessionOffloader:
         self.relative = Path(".alibot/sessions") / self.session_id / "offload"
         self.docker = docker
 
+    @property
+    def directory(self) -> Path:
+        return self.root / self.relative
+
+    @property
+    def visible_directory(self) -> Path:
+        return (Path("/workspace") if self.docker else self.root) / self.relative
+
     def _write(self, kind: str, data: bytes, suffix: str = ".json") -> str:
         from .workspace import ensure_state_partition
 
