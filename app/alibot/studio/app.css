@@ -1044,7 +1044,7 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .tt-reply-row .msg-body { flex: 1; min-width: 0; }
 .tt-reply-row .msg-text { line-height: 1.7; }
 .tt-empty { padding: 18px var(--sp-2); text-align: center; color: var(--faint); font-size: 12px; }
-/* 指针消息：chip 是「这条消息在说哪个任务」的指针（`CONTEXT.md` **指针消息**）。 */
+/* 任务 chip：`task_ref` 说的是「这条消息在说哪个任务」（`CONTEXT.md` **指针消息** 词条的第一个字段）。 */
 .task-ref-chip { display: inline-flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); padding: 2px var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-pill); color: var(--accent-deep); background: var(--accent-soft); font-size: var(--fs-caption); }
 .task-ref-chip:hover { border-color: var(--accent-graphic); }
 /* #217：频道指针消息行上的「待审批 N」角标与任务卡片是**同一个** `.card-approval` 节点
