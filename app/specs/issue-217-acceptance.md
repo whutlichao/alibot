@@ -4,6 +4,8 @@
 **Ticket**：[GitHub issue #217](https://github.com/whutlichao/alibot/issues/217)
 **base**：`d138d3f`（main @ 派活时 HEAD）｜**branch**：`issue-217-approval-badge`
 **worktree**：`/Users/apple/orca/workspaces/alibot/issue-217-approval-badge`
+**代码提交**：`d75f508`（实现 + 用例 + 本文件与 PR 正文）｜**PR**：[#218](https://github.com/whutlichao/alibot/pull/218)
+（base `main`，head `issue-217-approval-badge`；正文 `app/specs/issue-217-pr-body.md`）
 **采集时间**：2026-10-21｜**环境**：macOS（aarch64）、Python 3.11.13（worktree `.venv` 符号链接到主工作区
 `.venv`）、Node v25.0.0
 **改动面**：`app/alibot/studio/app.js`（+49 / −9）、`app/alibot/studio/app.css`（+7 / −0）、
