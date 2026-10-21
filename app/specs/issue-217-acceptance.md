@@ -37,7 +37,7 @@
 | 2 | 角标不是第二个点击目标：无 `data-open-task` / `role` / `tabindex`，点击继续走既有 chip 与 `#messageList` 委托 | 同上（`el('span', ...)`，只设文本 / `aria-label` / `data-od-id`） | 同上 | 断言 `tagName === 'SPAN'`、`data-open-task === null`、`role === null`、`tabindex === null`；点角标本身 **0** 次 `/api/tasks/t-1/messages`，点既有 chip **≥1** 次 |
 | 3 | 归属严格：count 只按 `pointedTask.target_id`；频道 target / 别的任务的 pending 不出现；`pointedTask` 为 null 不画 | 同上（`approvalBadgeNode(pointedTask, ...)` 内部走既有的 `taskPendingApprovalCount()`） | 同上 | 「归属严格」用例：快照里同时给 `ch-1`（频道 target）与 `tg-2`（别的任务）的 pending ⇒ 指针行 0 个角标，而 `task-approval-badge-t-2` 照常出现（读数确实到了，只是没串台） |
 | 4 | 派生集合变化时消息流跟着重铺：live 帧出现/消失、600s 过期消失，且**不重新请求** `/api/messages`；**不能**每 12s 无条件重铺 | `taskApprovalSignature()` 的读域与 `taskById()` 对齐（`activeTask` + `tasks` + `boardTasks`）；`syncApprovalBadges()` 的 signature 变化分支里重铺消息流（`renderMessages({ approvals: false })`，只在消息视图里；否则仍只 `renderTabs()`） | 同上 | live 帧用例：`approval_required` → 角标出现；`approval_resolved` → 消失；期间 `callsTo('/messages')` 计数不变。600s 用例：`clock.now = NOW + 600_000` 后跑 1s 倒计时那一支 ⇒ 角标消失。「未变化不重铺」由两条用例钉住：`签名未变化的周期刷新不重铺消息流`（节点对象同一）与 `一次签名变化只把频道审批板铺一次`（整板重建恰好一轮）；两条都做过变异验证（见 §7.3） |
-| 5 | 样式：`.card-approval` 已是行内 pill；只在 `app.css` 加最小对齐规则、只消费既有 token、**不改** `.card-approval` 本身 | `app/alibot/studio/app.css` 新增 `.msg-body > .card-approval`（`margin-top` / `margin-left` 用 `--sp-2`，`vertical-align`） | `grep -n "card-approval" app/alibot/studio/app.css` | 原有 `.card-approval` 规则**一字未动**（仍在 `#209` 那一段），新增规则只命中消息体里的角标 |
+| 5 | 样式：`.card-approval` 已是行内 pill；只在 `app.css` 加最小对齐规则、只消费既有 token、**不改** `.card-approval` 本身 | `app/alibot/studio/app.css` 新增 `.msg > .msg-body > .card-approval`（`margin-top` / `margin-left` 用 `--sp-2`，`vertical-align`） | `grep -n "card-approval" app/alibot/studio/app.css` | 原有 `.card-approval` 规则**一字未动**（仍在 `#209` 那一段），新增规则只命中频道消息行里的角标 |
 | 6 | 中英两份词表都不新增键 | `i18n.js` **未改** | `git status --short app/alibot/studio/i18n.js` | 空输出（文件未改） |
 | 约束 | 不改后端 / 不碰 schema / 不覆盖 `task_ref` 行 / 不加横幅 / 不新开测试框架 | `git status --short` | 同左 | 只有 4 个文件改动，全部在 Target 列内；`app/alibot/**/*.py` 无改动 |
 
@@ -72,7 +72,7 @@ $ scripts/red-evidence.sh HEAD app/tests/task_pointer_ui.test.cjs
 
 红读数要点：
 
-- 既有 5 条指针消息用例（`#198`）在基线上**全绿** ⇒ 装置与接缝没被新用例破坏；
+- 基线 `task_pointer_ui.test.cjs` 只有 **3** 条 #198 指针消息用例（`git show d138d3f:… | grep -c '^test('` = 3），它们在红证据里**全绿** ⇒ 装置与接缝没被新用例破坏；新增的 #217 用例是 **10** 条；
 - 8 条 #217 用例全红 ⇒ 缺的正是「角标本体」「消息流参与同一条重铺出口」「点角标不打开任何东西」，
   以及 review 之后补的两条读域/重铺边界用例（基线上没有这些实现，自然红）；
 - 两条**本来就该绿**的用例（无 pending 时不画、归属不串台）在基线上也是绿的——它们钉的是**不该发生**的
@@ -135,6 +135,14 @@ $ scripts/check.sh --studio          # exit=0
 环境：隔离数据目录 `/tmp/issue217-data2`（**不是** `~/Alibot`），本地服务 `127.0.0.1:8792`
 （`python -m alibot --data-dir /tmp/issue217-data2 --port 8792`），浏览器用 **ego-browser**
 （`ego lite` 0.6.0.12；本机可用，因此**没有**回退 Playwright）。
+
+> **复验必读（coordinator 复核时踩到）**：仓库根 `.venv` 的 editable 安装指向
+> `/Users/apple/orca/alibot/app`（main 的旧代码），因此在 worktree 里从**仓库根**直接
+> `python -m alibot` 会 serve **main 的 app.js**，指针消息行不会有角标。两种正确接法：
+> 从 `app/` 目录起（`cd app && ../.venv/bin/python -m alibot …`，本机这次就是这样跑的），
+> 或带上 `PYTHONPATH=<worktree>/app`。核对命令：
+> `cd app && ../.venv/bin/python -c "import alibot,pathlib;print(pathlib.Path(alibot.__file__).resolve())"`
+> → 必须指向本 worktree 的 `app/alibot/__init__.py`。
 
 隔离数据目录里构造的现场：
 

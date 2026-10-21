@@ -17,20 +17,23 @@ Closes #217
  syncApprovalBadges()                        # 「任务 target → pending 条数」的唯一出口
    signature 未变化 ────────→ return（秒级 tick / 未变化的 12s 轮询都不重铺）
    signature 变化 ──────────→ renderTaskBoard()  # 既有
-+                             renderMessages()   # 新增：消息行跟着同一个派生集合重铺
++                             renderMessages({ approvals: false })  # 只在消息视图里重铺消息行
 ```
 
 ```diff
  app/alibot/studio/
  ├── app.js   # approvalBadgeNode() 抽出共用的角标节点；appendTaskRefChip 追加角标；
--│            # syncApprovalBadges 的签名变化分支重铺消息流（原 renderTabs() 由 renderMessages() 内含）
-+│            # syncApprovalBadges 的签名变化分支重铺消息流
- └── app.css  # 只为 .msg-body > .card-approval 补对齐（既有 token，不动 .card-approval 本身）
+-│            # syncApprovalBadges 的签名变化分支只调 renderTabs()（不碰消息流、不碰审批板）
++│            # syncApprovalBadges 的签名变化分支重铺消息流（renderMessages({ approvals: false })，
++│            # 只在消息视图里；看板视图仍只刷页签）
+-└── app.css  # 没有指针消息行的角标样式
++└── app.css  # 只为 .msg > .msg-body > .card-approval 补对齐（既有 token，不动 .card-approval 本身）
  app/tests/
--├── approval_dom_harness.cjs  # 只补两处能力：messages 初始载荷、renderMessages / #messageList 暴露
--└── task_pointer_ui.test.cjs  # +6 条 #217 用例
-+├── approval_dom_harness.cjs  # 只补两处能力：messages 初始载荷、renderMessages / #messageList 暴露
-+└── task_pointer_ui.test.cjs   # +6 条 #217 用例
+-├── approval_dom_harness.cjs  # 只覆盖审批卡 / #209 的角标与圆点
+-└── task_pointer_ui.test.cjs  # 只有 #198 的 3 条指针消息用例（自建窄装置）
++├── approval_dom_harness.cjs  # +三处能力：messages 初始载荷、renderMessages 导出、
++│                             # #messageList / elementFor 暴露（装置仍只有一份）
++└── task_pointer_ui.test.cjs  # +10 条 #217 用例（复用上面那份装置，不复制第二套）
 ```
 
 三个要写进 review 的决定：
@@ -46,10 +49,13 @@ Closes #217
 ## Evidence
 
 - **Before**（隔离基线副本，只换测试不换产品代码）：
-  `scripts/red-evidence.sh HEAD app/tests/task_pointer_ui.test.cjs`（基线 `d138d3f`，基线 app.js md5
-  `bb30c379f3a55801d50f15ee1dc23783`）→ `tests 10 / pass 5 / fail 5`；5 条 #217 用例全红
-  （角标不存在 / live 帧不更新 / 600s 不收口 / 点角标不该开线程 / 重铺后 pending 断言失败）。
-  既有 5 条 #198 用例在基线上全绿 ⇒ 接缝与装置未被新用例破坏。
+  `scripts/red-evidence.sh d138d3f app/tests/task_pointer_ui.test.cjs`（基线 app.js md5
+  `bb30c379f3a55801d50f15ee1dc23783`）→ `tests 13 / pass 5 / fail 8`。新增的 **10** 条 #217 用例里
+  **8** 条红（角标不存在 / live 帧不更新 / 600s 不收口 / 点角标不该开线程 / 看板快照读域 /
+  重铺边界两条 / 重铺后草稿与 pending）；另 2 条（无 pending 不画、归属不串台）在基线上本就该绿——
+  它们钉的是「不该发生」的行为，作用是防止实现「一加就到处加」。
+  基线 `task_pointer_ui.test.cjs` 只有 **3** 条 #198 用例（`git show d138d3f:… | grep -c '^test('` = 3），
+  这 3 条在红证据里全绿 ⇒ 接缝与装置未被新用例破坏。
 - **After**（本分支）：
   `node --test app/tests/task_pointer_ui.test.cjs` → `tests 13 / pass 13 / fail 0`；
   票面指定的两份一起跑 → `tests 21 / pass 21 / fail 0`。
