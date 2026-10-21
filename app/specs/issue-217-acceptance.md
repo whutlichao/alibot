@@ -122,6 +122,9 @@ $ scripts/check.sh --studio          # exit=0
 ```
 
 - 本地**不跑** pytest 全量（票面：本票不跑；CI 会跑同一脚本）。
+- **PR 的 CI**（[run 39594464362](https://github.com/whutlichao/alibot/actions/runs/39594464362)）：
+  `check success`（2026-10-21T11:47:54Z → 12:00:36Z），即全量 pytest + 同一份 ruff / format / mypy /
+  pyright / node glob 在 CI 上也绿；PR #218 的 `mergeStateStatus` 为 `CLEAN`。
 - diff 只落 `app/alibot/studio/{app.js,app.css}` 与 `app/tests/*.cjs` + 两份 spec 文档，符合 Studio 窄档
   的适用面；`i18n.js` 与全部 `.py` 未改。
 
