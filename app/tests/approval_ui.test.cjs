@@ -1,18 +1,20 @@
 /**
- * #153：审批卡（规格 §4.6 第 4 条 / ADR-0021 §四）的 DOM 行为。
+ * #153 / #209：审批卡与「线程关着时的待审批提示」的 DOM 行为。
  *
  * 接缝沿用既有那一套（`vm` + `fetch` 替身 + DOM 替身；与 `run_panel_ui.test.cjs`
  * / `sse_events_ui.test.cjs` 同款），不新开第二套前端测试框架、不新开 seam。
  * 帧走真入口（`handleStreamEvent` / `handleTaskStreamEvent`），恢复走真入口
- * （`loadApprovalsFor` → `GET /api/approvals?target_id=&state=pending`），不是测试
- * 往 state 里塞渲染数据。
+ * （`loadApprovalsFor` → `GET /api/approvals?target_id=&state=pending`；#209 的全量读数
+ * 走 `GET /api/approvals?state=pending`），不是测试往 state 里塞渲染数据。
  *
  * 断言只落在外部可观察行为上：
  * 1. 恢复 / 实时插入都显示工具名、参数摘要、请求成员与 `requested_at + 600s` 倒计时；
  * 2. 允许 / 拒绝提交到 `POST /api/approvals/{reply_id}`，进入 resolved 后不再提交；
  * 3. 倒计时归零 / 重启后 pending 消失 ⇒ 显示 expired，动作消失；
  * 4. 只渲染 `{id,name,input}`，敏感键值掩码，不把凭证写进 DOM；
- * 5. 频道与任务线程各按自己的 target 显示，互不串台。
+ * 5. 频道与任务线程各按自己的 target 显示，互不串台；
+ * 6. #209：全量 pending 快照驱动任务卡片 / 列表行角标与任务页签圆点；resolved / 过期后消失；
+ *    周期刷新在线可见时一轮一次、离线 / 隐藏跳过、在途不叠加；频道 target 不串到任务面。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -178,17 +180,32 @@ function channel(id) {
   return { id: id || "ch-1", name: "design", last_seq: 0, last_read_seq: 0, unread_count: 0 };
 }
 
-function task() {
+function task(overrides) {
+  return Object.assign(
+    {
+      id: "t-1",
+      channel_id: "ch-1",
+      channel_name: "design",
+      target_id: "tg-1",
+      title: "修一处样式",
+      status: "todo",
+      assignee_member_id: null,
+      unread_count: 0,
+      last_seq: 0,
+    },
+    overrides || {},
+  );
+}
+
+function dm(id) {
   return {
-    id: "t-1",
-    channel_id: "ch-1",
-    channel_name: "design",
-    target_id: "tg-1",
-    title: "修一处样式",
-    status: "todo",
-    assignee_member_id: null,
-    unread_count: 0,
+    id: id || "dm-1",
+    kind: "dm",
+    name: "bob",
+    peer: { id: "mem-2", display_name: "Bob", avatar_slot: 2 },
     last_seq: 0,
+    last_read_seq: 0,
+    unread_count: 0,
   };
 }
 
@@ -283,6 +300,7 @@ function createHarness(options) {
   const document = {
     documentElement: new FakeNode("html"),
     activeElement: null,
+    hidden: false,
     querySelector: (selector) => elementFor(selector),
     querySelectorAll: () => [],
     createElement: (tagName) => new FakeNode(tagName),
@@ -314,8 +332,9 @@ function createHarness(options) {
     console,
     setTimeout: (fn) => setImmediate(fn),
     clearTimeout: () => {},
-    setInterval: (fn) => {
-      intervalFns.push(fn);
+    setInterval: (fn, ms) => {
+      // `#209`：周期刷新与审批倒计时都走同一个替身；保留间隔，用例据此挑出 10–15s 的那一条。
+      intervalFns.push({ fn, ms });
       return intervalFns.length;
     },
     clearInterval: () => {},
@@ -331,7 +350,8 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__approvalTest = { state, bindEvents, render, renderApprovalSurfaces,"
-        + " loadApprovalsFor, handleStreamEvent, handleTaskStreamEvent, submitApproval,"
+        + " loadApprovalsFor, renderTaskBoard, renderTabs,"
+        + " handleStreamEvent, handleTaskStreamEvent, submitApproval,"
         + " renderTaskThread, openTask, approvalDisplayState, approvalRemainingSeconds,"
         + " approvalRecordsFor, t, dateNow: () => Date.now() };\n",
     ),
@@ -357,17 +377,24 @@ function createHarness(options) {
     api,
     calls,
     clock,
+    document,
     intervalFns,
     board: elementFor("#approvalBoard"),
     taskSection: elementFor("#ttApprovalSection"),
     taskList: elementFor("#ttApprovals"),
+    columns: elementFor("#taskColumns"),
+    rows: elementFor("#taskListWrap"),
+    taskTab: elementFor("#tabTasks"),
+    taskDot: elementFor("#taskApprovalDot"),
     callsTo(fragment) {
       return calls.filter((call) => call.url.includes(fragment));
     },
-    startTask() {
-      api.state.activeTaskId = "t-1";
-      api.state.activeTask = task();
-      api.state.tasks = [task()];
+    startTask(overrides) {
+      const record = task(overrides);
+      api.state.activeTaskId = record.id;
+      api.state.activeTask = record;
+      api.state.tasks = [record];
+      api.state.boardTasks = [record];
       api.state.taskMessages = [];
     },
   };
@@ -381,6 +408,18 @@ function actionButtons(root) {
 
 function cardIn(root, replyId) {
   return byClass(root, "approval-card").find((card) => card.dataset.approvalId === replyId) || null;
+}
+
+/** 某次渲染里带 `data-od-id` 的节点（#209 的角标 / 圆点按它断言）。 */
+function odId(root, id) {
+  return descendants(root).find((node) => node.getAttribute("data-od-id") === id) || null;
+}
+
+/** #209 的有界周期刷新：从 bindEvents 注册的定时器里挑出 10–15s 的那一条并推进一轮。 */
+function periodicTick(harness) {
+  const entry = harness.intervalFns.find((item) => item.ms >= 10_000 && item.ms <= 15_000);
+  assert.ok(entry, "应用启动后应注册一个 10–15s 的全量待审批刷新定时器");
+  entry.fn();
 }
 
 /* ─── 1. 快照恢复 · 审批卡内容 · 倒计时 ───────────────────────────────────── */
@@ -697,4 +736,277 @@ test("快照里 pending 消失（进程重启把 pending 标 expired）后卡片
   assert.equal(card.dataset.state, "expired");
   assert.equal(byClass(card, "approval-state")[0].textContent, harness.api.t("approval.expired"));
   assert.equal(actionButtons(card).length, 0);
+});
+
+/* ─── 7. #209 全量读数：任务卡片 / 列表行角标 ─────────────────────────── */
+
+test("#209 全量 pending 快照（不带 target_id）驱动任务卡片与列表行「待审批 N」角标", async () => {
+  const first = task();
+  const second = task({ id: "t-2", target_id: "tg-2", title: "另一个任务" });
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return json({
+          approvals: [
+            approval({ reply_id: "r-1", target_id: "tg-1" }),
+            approval({ reply_id: "r-2", target_id: "tg-1" }),
+            // 频道 target 的 pending 也在同一份全量快照里：它不得变成任务角标。
+            approval({ reply_id: "r-ch", target_id: "ch-1" }),
+          ],
+        });
+      }
+      return json({});
+    },
+  });
+  harness.api.state.tasks = [first, second];
+  harness.api.state.boardTasks = [first, second];
+  harness.api.renderTaskBoard();
+
+  periodicTick(harness);
+  await flush();
+  await flush();
+
+  const requests = harness.callsTo("/api/approvals");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/approvals?state=pending");
+  assert.equal(requests[0].url.includes("target_id"), false, "全量读数不得带 target_id");
+
+  const badge = odId(harness.columns, "task-approval-badge-t-1");
+  assert.ok(badge, "有待审批的任务卡片应出现角标");
+  assert.equal(badge.textContent, harness.api.t("board.approvalBadge", { count: 2 }));
+  assert.match(badge.textContent, /2/);
+  const aria = badge.getAttribute("aria-label");
+  assert.match(aria, /修一处样式/);
+  assert.match(aria, /2/);
+  assert.equal(odId(harness.columns, "task-approval-badge-t-2"), null, "无 pending 的卡片不渲染角标");
+
+  harness.api.state.taskView = "list";
+  harness.api.renderTaskBoard();
+  const rowBadge = odId(harness.rows, "task-approval-badge-t-1");
+  assert.ok(rowBadge, "列表行应出现同一个角标");
+  assert.equal(rowBadge.textContent, harness.api.t("board.approvalBadge", { count: 2 }));
+  assert.equal(odId(harness.rows, "task-approval-badge-t-2"), null);
+});
+
+/* ─── 8. #209 任务页签圆点 ─────────────────────────────────────────────── */
+
+test("#209 当前频道有任务 pending 时任务页签圆点出现；DM 或该频道无 pending 时不出现", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return json({ approvals: [approval({ reply_id: "r-1", target_id: "tg-1" })] });
+      }
+      return json({});
+    },
+  });
+  harness.api.state.tasks = [task()];
+  harness.api.state.boardTasks = [task()];
+  periodicTick(harness);
+  await flush();
+  await flush();
+  harness.api.renderTabs();
+
+  assert.equal(harness.taskDot.hidden, false, "本频道有任务 pending ⇒ 圆点出现");
+  const aria = harness.taskDot.getAttribute("aria-label");
+  assert.match(aria, /1/);
+  assert.match(aria, /等待审批/);
+
+  const dmHarness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return json({ approvals: [approval({ reply_id: "r-1", target_id: "tg-1" })] });
+      }
+      return json({});
+    },
+  });
+  dmHarness.api.state.dms = [dm()];
+  dmHarness.api.state.activeChannelId = "dm-1";
+  dmHarness.api.state.tasks = [task()];
+  periodicTick(dmHarness);
+  await flush();
+  await flush();
+  dmHarness.api.renderTabs();
+  assert.equal(dmHarness.taskDot.hidden, true, "DM 下不出现任务页签圆点");
+
+  const emptyHarness = createHarness();
+  emptyHarness.api.state.tasks = [task()];
+  periodicTick(emptyHarness);
+  await flush();
+  await flush();
+  emptyHarness.api.renderTabs();
+  assert.equal(emptyHarness.taskDot.hidden, true, "本频道无任务 pending ⇒ 圆点不出现");
+});
+
+/* ─── 9. #209 resolved / 越过 600s 上界 ⇒ 角标与圆点消失 ──────────────── */
+
+test("#209 审批 resolved 后角标与圆点即时消失", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return json({
+          approvals: [
+            approval({ reply_id: "r-1", target_id: "tg-1" }),
+            approval({ reply_id: "r-2", target_id: "tg-1" }),
+          ],
+        });
+      }
+      return json({});
+    },
+  });
+  harness.startTask();
+  periodicTick(harness);
+  await flush();
+  await flush();
+  assert.ok(odId(harness.columns, "task-approval-badge-t-1"));
+  assert.equal(harness.taskDot.hidden, false);
+
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    frame({ type: "approval_resolved", reply_id: "r-1", state: "approved", decisions: [] }),
+    "approval_resolved",
+  );
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    frame({ type: "approval_resolved", reply_id: "r-2", state: "denied", decisions: [] }),
+    "approval_resolved",
+  );
+  await flush();
+
+  assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
+  assert.equal(harness.taskDot.hidden, true);
+});
+
+test("#209 越过 600s 上界后角标与圆点在下一次渲染/刷新后消失", async () => {
+  const harness = createHarness({
+    now: NOW,
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return json({
+          approvals: [
+            approval({ reply_id: "r-1", target_id: "tg-1", requested_at: new Date(NOW).toISOString() }),
+          ],
+        });
+      }
+      return json({});
+    },
+  });
+  harness.startTask();
+  periodicTick(harness);
+  await flush();
+  await flush();
+  assert.ok(odId(harness.columns, "task-approval-badge-t-1"));
+  assert.equal(harness.taskDot.hidden, false);
+
+  harness.clock.now = NOW + 600_000;
+  harness.api.renderApprovalSurfaces();
+
+  assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
+  assert.equal(harness.taskDot.hidden, true);
+});
+
+/* ─── 10. #209 周期刷新有界；离线 / 隐藏跳过；在途不叠加 ───────────────── */
+
+test("#209 周期刷新：在线可见时一轮恰好一次请求；离线 / 隐藏跳过；前一轮未返回不叠加", async () => {
+  let snapshotCalls = 0;
+  let hold = false;
+  const releases = [];
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        snapshotCalls += 1;
+        if (!hold) return json({ approvals: [] });
+        return new Promise((resolve) => {
+          releases.push(() => resolve(json({ approvals: [] })));
+        });
+      }
+      return json({});
+    },
+  });
+
+  hold = true;
+  periodicTick(harness);
+  periodicTick(harness);
+  await flush();
+  assert.equal(snapshotCalls, 1, "前一轮未返回时不得叠加第二个请求");
+  releases[0]();
+  await flush();
+  await flush();
+  hold = false;
+
+  harness.api.state.online = false;
+  periodicTick(harness);
+  await flush();
+  assert.equal(snapshotCalls, 1, "离线时跳过本轮");
+
+  harness.api.state.online = true;
+  harness.document.hidden = true;
+  periodicTick(harness);
+  await flush();
+  assert.equal(snapshotCalls, 1, "页面隐藏时跳过本轮");
+
+  harness.document.hidden = false;
+  periodicTick(harness);
+  await flush();
+  await flush();
+  assert.equal(snapshotCalls, 2, "在线可见时一轮恰好一次请求");
+});
+
+/* ─── 11. #209 频道 target 不串到任务面 ───────────────────────────────── */
+
+test("#209 频道 target 的 pending 只属于 #approvalBoard，不产生任务角标或页签圆点", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return json({ approvals: [approval({ reply_id: "r-ch", target_id: "ch-1" })] });
+      }
+      return json({});
+    },
+  });
+  harness.startTask();
+  harness.api.render();
+  periodicTick(harness);
+  await flush();
+  await flush();
+
+  assert.ok(cardIn(harness.board, "r-ch"), "频道 target 的审批卡仍显示在消息流");
+  assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
+  assert.equal(harness.taskDot.hidden, true);
+});
+
+/* ─── 12. #209 live 帧即时更新角标与圆点 ──────────────────────────────── */
+
+test("#209 任务线程 live approval_required / approval_resolved 即时更新角标与圆点", async () => {
+  const harness = createHarness();
+  harness.startTask();
+  harness.api.renderTaskBoard();
+  harness.api.renderTabs();
+  assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
+  assert.equal(harness.taskDot.hidden, true);
+
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    frame({
+      type: "approval_required",
+      reply_id: "r-live",
+      member_id: "mem-1",
+      tool_calls: [{ id: "call-live", name: "Bash", input: { command: "npm test" } }],
+    }),
+    "approval_required",
+  );
+  await flush();
+
+  const badge = odId(harness.columns, "task-approval-badge-t-1");
+  assert.ok(badge, "live 帧应即时生成任务角标");
+  assert.equal(badge.textContent, harness.api.t("board.approvalBadge", { count: 1 }));
+  assert.equal(harness.taskDot.hidden, false);
+
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    frame({ type: "approval_resolved", reply_id: "r-live", state: "denied", decisions: [] }),
+    "approval_resolved",
+  );
+  await flush();
+
+  assert.equal(odId(harness.columns, "task-approval-badge-t-1"), null);
+  assert.equal(harness.taskDot.hidden, true);
 });

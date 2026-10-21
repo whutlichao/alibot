@@ -1094,6 +1094,9 @@ async function loadWorkspace(options) {
     syncStreams();
     // 审批卡的恢复与消息流同一拍：打开视图先读 pending 快照（live 帧不补发）。
     await loadApprovalsFor(state.activeChannelId);
+    // #209：线程关着时的角标 / 圆点需要**全工作区**的 pending，不只是当前频道；
+    // 进入工作区与断线重连（`loadWorkspace` 的自动重试）都走这一处，读一次。
+    await loadPendingApprovals();
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -1253,6 +1256,8 @@ function renderTabs() {
   if (!messagesTab || !tasksTab) return;
   // DM 里没有任务板这个概念（任务恰好属于一个频道）：整个页签不出现，而不是点开看空态。
   tasksTab.hidden = isDm;
+  // #209：当前频道下有任务 target pending ⇒ 页签旁的小圆点（aria 名由它自己承担）。
+  renderTaskApprovalDot(isDm);
   const selected = state.mode === 'board' ? 'tasks' : 'messages';
   [messagesTab, tasksTab].forEach((tab) => {
     if (tab.hidden) return;
@@ -1387,6 +1392,9 @@ function taskCardNode(task) {
   const meta = el('div', 'card-meta');
   meta.appendChild(el('span', 'card-num', '#' + String(task.id).slice(-6)));
   meta.appendChild(el('span', 'card-tag', '#' + task.channel_name));
+  // #209：该任务 target 的 pending 条数（没有就不渲染空元素）。
+  const approvalBadge = taskApprovalBadgeNode(task);
+  if (approvalBadge) meta.appendChild(approvalBadge);
   if (task.assignee_member_id) {
     const owner = el('span', 'card-owner');
     owner.appendChild(avatarNode(taskMemberName(task.assignee_member_id), memberSlotOf(task.assignee_member_id), 'sm'));
@@ -1709,6 +1717,9 @@ function boardList() {
     } else {
       snip.appendChild(el('span', 'card-owner unassigned', t('task.unassigned')));
     }
+    // #209：列表行与卡片同一个角标（归属只看 task.target_id）。
+    const approvalBadge = taskApprovalBadgeNode(task);
+    if (approvalBadge) snip.appendChild(approvalBadge);
     if (task.unread_count > 0) {
       const unread = el('span', 'card-unread', task.unread_count);
       unread.setAttribute('aria-label', t('board.unreadAria', { count: task.unread_count }));
@@ -2988,6 +2999,11 @@ function refreshRunPanelFor(targetId) {
    的唯一判据。倒计时归零只改呈现（后端会在同一上界把记录标 expired）。 */
 
 const APPROVAL_TIMEOUT_SECONDS = 600;
+/* #209：线程关着时，任务看板 / 列表行 / 任务页签也要看得见 pending。读的是后端已有的
+   全工作区读数 `GET /api/approvals?state=pending`（不带 target_id），并按有界周期刷新：
+   10–15s 单例定时器；页面隐藏（`document.hidden`）或离线时跳过本轮；同一时刻最多一个
+   在途请求（不叠加）；失败静默——角标是提示，不是阻塞界面的一等公民。 */
+const APPROVAL_REFRESH_MS = 12000;
 const APPROVAL_REDACTED = '••••';
 // 只用于「input 里可能出现的敏感键」：凭证、令牌、口令与 cookie 一律掩码。
 const APPROVAL_SENSITIVE_KEY =
@@ -3001,6 +3017,10 @@ const APPROVAL_STATE_KEYS = {
 };
 
 let approvalTicker = null;
+// 全量读数的单例定时器 / 在途闸门 / 「target→pending 条数」这一派生集合的上一版签名。
+let approvalRefreshTimer = null;
+let approvalRefreshInFlight = false;
+let approvalBadgeSignature = '';
 
 function approvalMapFor(targetId) {
   let map = state.approvals.get(targetId);
@@ -3212,6 +3232,77 @@ function renderTaskApprovals() {
   replaceChildren(list, records.map((record) => approvalCardNode(targetId, record)));
 }
 
+/* ─── #209：线程关着时的待审批外显（卡片 / 列表行角标 + 任务页签圆点）──────
+   读数来自 `state.approvals`（全量快照 + live 帧的同一份镜像），归属**只**按
+   `task.target_id`：频道 target 的记录不在任何任务卡片上出现，反向亦然。
+   「N」按 `approvalDisplayState()` 判定——本地 600s 上界过期后它立刻不再计数。 */
+
+/** 某个 target 当前 pending 的条数（呈现态判据与审批卡一致）。 */
+function pendingApprovalCountForTarget(targetId) {
+  const map = state.approvals.get(targetId);
+  if (!map) return 0;
+  let count = 0;
+  map.forEach((record) => {
+    if (approvalDisplayState(record) === 'pending') count += 1;
+  });
+  return count;
+}
+
+function taskPendingApprovalCount(task) {
+  return task && task.target_id ? pendingApprovalCountForTarget(task.target_id) : 0;
+}
+
+/** 当前频道下「有任务在等审批」的任务数（页签圆点的 aria 名里的 N）。 */
+function channelPendingTaskCount(channelId) {
+  if (!channelId) return 0;
+  return state.tasks.filter(
+    (task) => task.channel_id === channelId && taskPendingApprovalCount(task) > 0,
+  ).length;
+}
+
+/** 任务卡片 / 列表行的角标；没有 pending 时返回 `null`（不渲染空元素）。 */
+function taskApprovalBadgeNode(task) {
+  const count = taskPendingApprovalCount(task);
+  if (!count) return null;
+  const badge = el('span', 'card-approval', t('board.approvalBadge', { count }));
+  badge.setAttribute('data-od-id', 'task-approval-badge-' + task.id);
+  badge.setAttribute('aria-label', t('board.approvalBadgeAria', { title: task.title, count }));
+  return badge;
+}
+
+/** 页签圆点只画当前频道：DM 里任务页签整个不出现，圆点自然也不出现。 */
+function renderTaskApprovalDot(isDm) {
+  const dot = $('#taskApprovalDot');
+  if (!dot) return;
+  const count = isDm ? 0 : channelPendingTaskCount(state.activeChannelId);
+  dot.hidden = count === 0;
+  // 隐藏时写空串而不是删属性：DOM 替身只保证 setAttribute（与既有用例族的替身同一条）。
+  dot.setAttribute('aria-label', count ? t('tabs.tasksApprovalDot', { count }) : '');
+}
+
+/** 「target→pending 条数」这一派生集合的签名（只看任务 target：频道 target 不进看板/页签）。 */
+function taskApprovalSignature() {
+  const seen = new Set();
+  const parts = [];
+  state.tasks.forEach((task) => {
+    const targetId = task && task.target_id;
+    if (!targetId || seen.has(targetId)) return;
+    seen.add(targetId);
+    const count = pendingApprovalCountForTarget(targetId);
+    if (count > 0) parts.push(targetId + ':' + count);
+  });
+  return parts.sort().join('|');
+}
+
+/** 只在派生集合变化时重铺看板/页签：未变化时不重建 DOM（不收起流转菜单、不丢滚动或焦点）。 */
+function syncApprovalBadges() {
+  const signature = taskApprovalSignature();
+  if (signature === approvalBadgeSignature) return;
+  approvalBadgeSignature = signature;
+  renderTaskBoard();
+  renderTabs();
+}
+
 function hasPendingApprovals() {
   for (const map of state.approvals.values()) {
     for (const record of map.values()) {
@@ -3271,6 +3362,8 @@ function syncApprovalTicker() {
 function renderApprovalSurfaces() {
   renderChannelApprovals();
   renderTaskApprovals();
+  // #209：live 帧 / 快照 / 本地过期的同一条出口——角标与圆点只在派生集合变化时重铺。
+  syncApprovalBadges();
   syncApprovalTicker();
 }
 
@@ -3348,6 +3441,66 @@ async function loadApprovalsFor(targetId) {
     }
   });
   renderApprovalSurfaces();
+}
+
+/** #209：全工作区 pending 读数（不带 `target_id`）。进入工作区 / 重连后读一次，
+    页面可见且在线时由 `startApprovalRefresh()` 有界周期刷新。
+
+    - 记录按 `record.target_id` 归属到既有的 `state.approvals`；
+    - 快照里消失的 pending 沿用 `loadApprovalsFor` 的语义标 `expired`（不伪造记录）；
+    - 「已知」集合在请求发出**之前**抓取：在途期间到达的 live 帧不会被这一轮误标过期；
+    - 同一时刻最多一个在途请求；失败静默返回（角标不阻塞界面、不 toast）。 */
+async function loadPendingApprovals() {
+  if (approvalRefreshInFlight) return;
+  approvalRefreshInFlight = true;
+  const known = new Map();
+  state.approvals.forEach((map, targetId) => {
+    map.forEach((record, replyId) => {
+      if (approvalDisplayState(record) !== 'pending') return;
+      if (!known.has(targetId)) known.set(targetId, new Set());
+      known.get(targetId).add(replyId);
+    });
+  });
+  let payload = null;
+  try {
+    payload = await api('/api/approvals?state=pending');
+  } catch {
+    return;
+  } finally {
+    approvalRefreshInFlight = false;
+  }
+  const records = Array.isArray(payload && payload.approvals) ? payload.approvals : [];
+  const seen = new Map();
+  records.forEach((record) => {
+    if (!record || !record.reply_id || !record.target_id) return;
+    const targetId = String(record.target_id);
+    const replyId = String(record.reply_id);
+    if (!seen.has(targetId)) seen.set(targetId, new Set());
+    seen.get(targetId).add(replyId);
+    approvalMapFor(targetId).set(replyId, { ...record, target_id: targetId });
+  });
+  known.forEach((replyIds, targetId) => {
+    const present = seen.get(targetId) || new Set();
+    const map = approvalMapFor(targetId);
+    replyIds.forEach((replyId) => {
+      if (present.has(replyId)) return;
+      const record = map.get(replyId);
+      if (record && approvalDisplayState(record) === 'pending') {
+        map.set(replyId, { ...record, state: 'expired', resolved_at: new Date().toISOString() });
+      }
+    });
+  });
+  renderApprovalSurfaces();
+}
+
+/** 周期刷新的单例定时器：页面隐藏或离线时整轮跳过；在途闸门在 `loadPendingApprovals` 里。 */
+function startApprovalRefresh() {
+  if (approvalRefreshTimer !== null || typeof setInterval !== 'function') return;
+  approvalRefreshTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (!state.online) return;
+    loadPendingApprovals();
+  }, APPROVAL_REFRESH_MS);
 }
 
 /** 提交失败（例如 409：另一处已决策 / 已过期）时按 target 重读真实状态，不猜。 */
@@ -8891,6 +9044,9 @@ function bindEvents() {
 
   window.addEventListener('online', () => loadWorkspace({ silent: true }));
   window.addEventListener('offline', () => { state.online = false; render(); });
+
+  // #209：全量 pending 的周期刷新是单例定时器；只在页面可见且在线时发请求（见 startApprovalRefresh）。
+  startApprovalRefresh();
 }
 
 /* ─── 启动 ──────────────────────────────────────────────────────────── */

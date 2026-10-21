@@ -185,6 +185,12 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .tab.is-active { color: var(--fg); border-bottom-color: var(--fg); }
 .tab .count { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); margin-left: 5px; }
 .tab.is-active .count { color: var(--selected-deep); }
+/* #209：任务页签旁的「有任务在等审批」圆点。它是纯视觉提示（条数在 aria-label 里），
+   只用既有 `--warn-graphic`，不新造色位；`[hidden]` 那条全局规则负责让它消失。 */
+.tab-approval-dot {
+  display: inline-block; width: 6px; height: 6px; margin-left: 5px; vertical-align: middle;
+  border-radius: var(--r-pill); background: var(--warn-graphic);
+}
 
 /* 消息流居中于 --stream-max(880px)；正文另受 68ch / 14px / 1.65 的局部例外约束。 */
 .stream { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9) var(--sp-4); }
@@ -916,6 +922,14 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .card-tag { font-family: var(--mono); font-size: var(--fs-mono-micro); padding: 1px 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
 .card-owner { margin-left: auto; display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
 .card-owner.unassigned { font-style: italic; color: var(--faint); }
+/* #209：任务卡片 / 列表行的「待审批 N」角标。警告色只用既有 `--warn-*` 一族；
+   它参与 `.card-meta` / `.r-snip` 的既有 flex 流，不绝对定位、不挤压卡片既有布局。 */
+.card-approval {
+  display: inline-flex; align-items: center; padding: 1px 6px; border-radius: var(--r-pill);
+  background: var(--warn-soft); color: var(--warn-deep);
+  font-family: var(--mono); font-size: var(--fs-mono-micro); font-weight: var(--fw-semi);
+  line-height: var(--lh-snug); white-space: nowrap;
+}
 /* 列内空态：只陈述「这一列还没有任务」这一事实。拖拽入口由卡片自己承担，
    空列不需要一句「拖拽任务到此」来承诺落点（落点提示是卡片拖起后才出现的状态）。 */
 .drop-hint { border: 1px dashed var(--border-strong); border-radius: var(--r-md); padding: 9px; text-align: center; font-size: 11px; color: var(--faint); }
