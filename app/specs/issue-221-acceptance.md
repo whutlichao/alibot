@@ -161,7 +161,7 @@ $ scripts/check.sh --studio
 
 ## 7. 提交与 PR
 
-- 提交：`daa6324`（实现 + 用例 + 证据）、`03cd07e`（双轴 review 收口）、本文件与 PR 正文另计一笔 docs 提交
+- 提交：`daa6324`（实现 + 用例 + 证据）、`03cd07e`（双轴 review 收口）、`071fc07`（验收记录与 PR 正文）
 - PR：[#222 fix(studio): 任务线程去掉与「讨论」重复的「关联消息」区块（#221）](https://github.com/whutlichao/alibot/pull/222)
 - PR 正文：`app/specs/issue-221-pr-body.md`（`gh pr create --body-file` 提交）
 - 分支：`issue-221-impl`（已推送，跟踪 `origin/issue-221-impl`）；目标：`main`
