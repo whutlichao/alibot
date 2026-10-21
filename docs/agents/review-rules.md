@@ -9,8 +9,9 @@
 1. `CONTEXT.md` 的 `## Language`：领域语言正本（词条、`_Avoid_`、措辞纪律）。
 2. `docs/adr/**`：每条都在记录一次取舍与被否方案；**不能就地改写历史决策**。
 3. `app/README.md`：架构、测试分层纪律、端点面、迁移纪律的既有登记。
-4. `AGENTS.md`：语言、codegraph、浏览器等协作约定。
-5. `docs/agents/**`：issue tracker、triage 标签、领域文档、实施与门禁约定（`implementation.md`）。
+4. `docs/agents/agentscope-2.md`：AgentScope 2.0 的用法规约（红线在 §1）；文档原话见 `docs/agentscope/<pin>/`。
+5. `AGENTS.md`：语言、codegraph、浏览器等协作约定。
+6. `docs/agents/**`：issue tracker、triage 标签、领域文档、实施与门禁约定（`implementation.md`）。
 
 工具已强制的（ruff / mypy / pyright / pytest / `scripts/check.sh`）**不用重复报**：跑不过就是红。
 
@@ -24,6 +25,7 @@
 | 迁移链连续、覆盖到 `SCHEMA_VERSION` | `app/tests/test_migration_chain_guard.py` |
 | 读路径不碰旧表名 | `app/tests/test_read_path_legacy_tables_guard.py` |
 | 两份词条表同键集、无裸中文 | `app/tests/test_backend_copy.py` / `app/tests/i18n_ui.test.cjs` |
+| AgentScope pin / import 白名单 / 1.x 符号 / 文档链接版本 / 快照完整性 | `app/tests/test_agentscope_usage_guard.py` |
 
 ## 判断题规则（reviewer 要逐条对照 diff）
 
@@ -40,11 +42,16 @@
 6. **文档与数据契约同步。** 新增状态 / kind / 端点时，`app/README.md` 与 `CONTEXT.md` 的相关段落
    要一起改；机械守卫只覆盖词表，其余仍靠 review。
 7. **验收证据要能被复跑。** 每条判据给命令与读数；只写「已通过」不算证据。
+8. **AgentScope 用法先查规约，再查快照。** 与 `docs/agents/agentscope-2.md` 冲突的写法直接打回；
+   规约没写、快照也没写的，先在验收文档里标「实测」并给出 `python -c` 读数，不许把推断写成
+   官方承诺。刻意偏离必须能指到 `docs/agents/agentscope-2-deviations.md` 的条目。
 
-## 两轴分工
+## 三轴分工
 
 - **Standards 轴**：本文件 + 上面的标准来源；重点看越界改动、重复形状、死代码、第四份同类表。
 - **Spec 轴**：票面正本（GitHub issue）+ 父规格（`app/specs/issue-*-spec.md`）+ ADR；
   重点看「票面要求的有没有做全」与「做了票面没要求的事」。
+- **AgentScope 轴**：`docs/agents/agentscope-2.md` §1–§8 + 审计矩阵 + 偏离账本；重点看
+  「有没有自创签名」「有没有跨版本写法」「偏差有没有登记」。
 
-两轴结论分开报，不互相抵消——一张 PR 可以「Spec 通过、Standards 不通过」，反之亦然。
+三轴结论分开报，不互相抵消——一张 PR 可以「Spec 通过、Standards 不通过」，反之亦然。
