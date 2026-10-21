@@ -46,6 +46,9 @@
   两份"上下文"会立刻分叉。跨重启恢复单 Agent 状态不在当前范围（D19 已划出）。
 - **再评估条件**：当需要**跨重启恢复单 Agent 上下文**（例如长工具链中断后续跑）**或**引入多会话
   并发（同一 Agent 多 session）时，再评估持久化 `AgentState`，并明确"消息表仍是正本"。
+- **现状（2026-10-21，ADR-0030）**：再评估条件已触发并收口——`AgentState` 现在每轮结束原子写入
+  `.alibot/sessions/<session_id>/state.json`，下一轮恢复摘要、工具缓存、Plan 与 middleware 状态；
+  消息 context 仍按数据库窗口重建，消息表仍是唯一正本（D12 / ADR-0030）。原文保留作判据来源。
 
 ---
 
@@ -153,3 +156,22 @@
   压缩很少触发，卸载没有收益。
 - **再评估条件**：当单轮上下文**可能超过模型窗口**（例如整段频道历史交入、长工具链累积）或需要
   回查被压缩内容时，再评估 `ContextConfig` + `Offloader`。
+- **现状（2026-10-21，ADR-0030）**：再评估条件已触发并收口——普通轮改为最近 40 条历史窗口，单 Agent
+  与 team 均显式传 `ContextConfig` / `InjectionConfig`，并实现 `SessionOffloader` 落
+  `.alibot/sessions/<id>/offload/`；本条偏离不再成立，原文保留作判据来源。
+
+---
+
+## D12 长期记忆只落成员记忆目录，不引入第二套消息正本
+
+- **偏离点**：审计矩阵第 44 行原把长期记忆判为「未采用」，理由是「会引入第二套事实源」。现采用
+  `AgenticMemoryMiddleware`（Markdown 文件），但作用域收窄到 `<root>/.alibot/memory/<member_id>/Memory/`：
+  只授予该目录写权限；DM 无 workspace 时只补 `Read/Write/Edit`，`Read` 另可读当前会话卸载目录，
+  不能读其他会话或项目文件。
+- **依据**：ADR-0030；`app/alibot/memory.py`；`app/alibot/runtime_files.py`。
+- **文档原话**：「运行中智能体自主创建各种 Markdown 格式的记忆文件，并通过一个固定的 `MEMORY.md`
+  文件维护所有记忆文件的索引」— `building-blocks/long-term-memory.md`。
+- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，且记忆默认关闭
+  （`memory_mode=off`），开启时也只写记忆目录、不碰项目根。既拿到跨会话召回，又不制造第二套对话事实。
+- **再评估条件**：当记忆需要跨成员共享、需要向量召回（RAG），或要默认开启时，再评估 ReMe/Mem0
+  与更强隔离；若框架把记忆迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。

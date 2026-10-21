@@ -30,8 +30,9 @@
 `docs/agentscope/**` 是原文快照，不归本仓管。
 
 **1.5 实验性与未采用模块。** `pipeline/team`、`sop` 已采用：按 2.0.10 文档照做并锁定当前行为
-（文档明写"实验阶段，接口可能调整"，升级必须重核对）。未采用的 `realtime` / `a2a` / `console` /
-`rag` / 长期记忆 不写、不引；要用先开票。
+（文档明写"实验阶段，接口可能调整"，升级必须重核对）。长期记忆已采用（ADR-0030：仅
+`memory_mode=agentic` 时装配 `AgenticMemoryMiddleware`，默认 `off`；见 D12）。未采用的 `realtime` /
+`a2a` / `console` / `rag` 不写、不引；要用先开票。
 
 ## §2 版本与文档
 
