@@ -7,6 +7,7 @@
  *   - `approval_ui.test.cjs`      审批卡本身（#153）
  *   - `approval_badge_ui.test.cjs` 线程关着时的角标 / 页签圆点（#209）
  *   - `task_pointer_ui.test.cjs`  #217 的那一组（频道指针消息行上的角标）
+ *   - `task_thread_ui.test.cjs`   #221 的那一组（任务线程头部的讨论条数 / 关联消息区块移除）
  *
  * `#217` 为什么复用这里而不是在 `task_pointer_ui.test.cjs` 里再搭一套：指针消息行的角标要判
  * 「live 帧到达 / 本地 600s 过期 / 不重新拉消息」，需要**假时钟 + 秒级与 12s 定时器 + live 帧
@@ -376,6 +377,8 @@ function createHarness(options) {
     calls,
     clock,
     document,
+    // #221：词条表正本（两份语言）供用例按 key 断言参数位 / 已删除的键。
+    catalogs: context.AlibotI18n.catalogs,
     intervalFns,
     board: elementFor("#approvalBoard"),
     // #217：消息流容器——指针消息行（及其角标）唯一的落点。

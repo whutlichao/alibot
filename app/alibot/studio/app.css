@@ -1044,7 +1044,7 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .tt-reply-row .msg-body { flex: 1; min-width: 0; }
 .tt-reply-row .msg-text { line-height: 1.7; }
 .tt-empty { padding: 18px var(--sp-2); text-align: center; color: var(--faint); font-size: 12px; }
-/* 关联消息：chip 是「这条消息在说哪个任务」的指针（`CONTEXT.md` **指针消息**）。 */
+/* 指针消息：chip 是「这条消息在说哪个任务」的指针（`CONTEXT.md` **指针消息**）。 */
 .task-ref-chip { display: inline-flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); padding: 2px var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-pill); color: var(--accent-deep); background: var(--accent-soft); font-size: var(--fs-caption); }
 .task-ref-chip:hover { border-color: var(--accent-graphic); }
 /* #217：频道指针消息行上的「待审批 N」角标与任务卡片是**同一个** `.card-approval` 节点
@@ -1054,11 +1054,6 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
    选择器带上 `.msg >` 这一层：任务线程的回复行（`.tt-reply-row > .msg-body`）同样可能有 chip，
    本票只做频道指针消息行，不给线程加这一档间距。 */
 .msg > .msg-body > .card-approval { margin-top: var(--sp-2); margin-left: var(--sp-2); vertical-align: middle; }
-.tt-linked { display: flex; gap: var(--sp-4); flex-direction: column; }
-.tt-linked-row { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); background: var(--panel); }
-.tt-linked-top { display: flex; align-items: center; gap: var(--sp-4); font-size: 12px; color: var(--muted); }
-.tt-linked-top .hash { font-family: var(--mono); color: var(--accent-deep); }
-.tt-linked-body { margin-top: 3px; font-size: 12.5px; color: var(--fg); line-height: var(--lh-snug); overflow-wrap: anywhere; }
 .tt-reply { border-top: 1px solid var(--border); padding: 11px var(--sp-7) var(--sp-6); background: var(--surface); }
 .tt-reply .composer-box { box-shadow: none; }
 .tt-reply textarea { min-height: 38px; max-height: 140px; }
