@@ -5047,16 +5047,32 @@ function renderTyping() {
 
 function renderTargetTyping(container, target) {
   if (!container) return;
-  const memberId = target ? state.typing[target.id] : null;
-  const agent = state.agents.find((item) => item.id === memberId);
-  container.hidden = !agent;
-  container.textContent = agent ? t('typing.working', { name: agent.display_name }) : '';
-  if (!target || !agent) return;
-  Object.entries(state.activeRounds[target.id] || {}).forEach(([replyId, activeMemberId]) => {
-    const button = el('button', 'btn small', t('typing.stop'));
+  const rounds = target ? (state.activeRounds[target.id] || {}) : {};
+  // 正在回复的成员按 `activeRounds` 的插入顺序去重：同一成员有多条在飞轮次时名字只说一次，
+  // 停止按钮仍按轮次各一个（按钮挂在 `reply_id` 上，不是挂在成员上）。
+  const memberIds = [];
+  Object.values(rounds).forEach((memberId) => {
+    if (memberId && memberIds.indexOf(memberId) === -1) memberIds.push(memberId);
+  });
+  // 一轮刚起步、`REPLY_START` 还没到的窗口里 `activeRounds` 还是空的，但 `typing` 事件
+  // 已经说了是谁；这一格退回那一个名字，好过让指示条闪一下消失。
+  const typingMemberId = target ? state.typing[target.id] : null;
+  if (!memberIds.length && typingMemberId) memberIds.push(typingMemberId);
+  container.hidden = memberIds.length === 0;
+  container.textContent = '';
+  if (!memberIds.length) return;
+  const names = memberIds.map((memberId) => outcomeMemberName(memberId));
+  const text = t('typing.working', { name: names.join(t('typing.nameSeparator')) });
+  // 用文本节点而不是 `container.textContent = ...`：下面还要 append 按钮，
+  // 文本节点会让「名字 + 按钮」在真实 DOM 与测试替身里都是同一份可观察文本。
+  container.appendChild(document.createTextNode(text));
+  if (!target) return;
+  Object.entries(rounds).forEach(([replyId, activeMemberId]) => {
+    const name = outcomeMemberName(activeMemberId);
+    const button = el('button', 'btn small', t('typing.stopNamedShort', { name }));
     button.type = 'button';
     button.dataset.replyId = replyId;
-    button.setAttribute('aria-label', t('typing.stopNamed', { name: outcomeMemberName(activeMemberId) }));
+    button.setAttribute('aria-label', t('typing.stopNamed', { name }));
     button.disabled = !state.online;
     button.addEventListener('click', async () => {
       button.disabled = true;
