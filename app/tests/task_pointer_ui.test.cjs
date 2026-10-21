@@ -9,13 +9,24 @@
  * 2. 点 chip 走既有 `openTask`（可观察证据：请求 `GET /api/tasks/<id>/messages`）；
  * 3. `#msgCount` 把这条 system 消息计入（0 → 1）；
  * 4. 建任务成功后吸收返回的 `message`：立即出现在流里、页签计数 +1（不需要等下一次刷新）；
- * 5. 任务不在快照里时计数如实显示 0，不编造。
+ * 5. 任务不在快照里时计数如实显示 0，不编造；
+ * 6. `#217`：该任务 target 有 pending 时，同一行出现与任务卡片同款的「待审批 N」角标，
+ *    文本 / aria 复用既有词条、count 严格按 target 归属；无 pending / 别的 target 的 pending
+ *    都不画；live `approval_resolved` 与本地 600s 过期都会让它消失，且**不**重新拉消息；
+ *    角标本身不是点击目标（可点区域仍只有既有 chip）。
+ *
+ * 装置分两份、各有唯一来源：前三条（#198）用文件上半部分的窄装置（只铺消息流 + 任务快照）；
+ * #217 的判据需要**审批时钟 / 定时器 / live 帧**，这些能力已经在 `approval_dom_harness.cjs`
+ * （#153 / #209 的共用装置）里，因此第 6 组用例复用那一份，不在本地再补第二套。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+
+// #217 的那组用例复用 #153 / #209 的共享装置（见文件头：时钟 / 定时器 / live 帧只有那一份）。
+const approvalHarness = require("./approval_dom_harness.cjs");
 
 const STUDIO_DIR = path.join(__dirname, "../alibot/studio");
 
@@ -494,4 +505,426 @@ test("任务不在快照里时 chip 的计数显示 0，不编造条数", () => 
   const chips = harness.chips();
   assert.equal(chips.length, 1);
   assert.match(chips[0].textContent, /进入任务线程 · 0 条/);
+});
+
+/* ─── 4. #217 指针消息行上的「待审批 N」角标 ───────────────────────────────
+   这一组复用 `approval_dom_harness.cjs`（假时钟 / 定时器 / live 帧的唯一一份装置）。
+   断言只落在用户可见面：角标文本与 aria 名、它出现与消失的时机、它不承载点击，
+   以及「不重新请求 `/api/messages`」这一条外部可观察事实。 */
+
+// 只取这一组用例需要的部分并**改别名**：`flush` / `byClass` / `createHarness` 在本文件上半部分
+// 已有同形的窄装置，同名声明会撞。
+const {
+  NOW,
+  createHarness: createApprovalHarness,
+  odId,
+  flush: approvalFlush,
+  byClass: approvalByClass,
+} = approvalHarness;
+
+/** 一条频道指针消息（#198 的 `task_pointer` 行），形状照 HTTP 面。 */
+function channelPointer(overrides) {
+  return Object.assign(
+    {
+      id: "msg-pointer",
+      target_id: "ch-1",
+      seq: 1,
+      kind: "system",
+      body: "任务已创建：修一处样式",
+      created_at: new Date(NOW - 120_000).toISOString(),
+      mention_snapshot: [],
+      task_ref: null,
+      task_pointer: "t-1",
+      attachments: [],
+      author: { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 },
+    },
+    overrides || {},
+  );
+}
+
+/** 指针消息行里的角标：只有 `.card-approval`（与任务卡片同一个类名，不是第二套视觉）。 */
+function pointerBadges(harness) {
+  return approvalByClass(harness.messageList, "card-approval");
+}
+
+/** 让 `#messageList` 里出现这个消息流（`setViewMode('channel')` 之外不额外重铺）。 */
+function showMessages(harness) {
+  harness.api.renderMessages();
+}
+
+test("#217 指针消息行的角标：有 pending 时出现，文本与 aria 名复用任务卡片同一对词条", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return approvalHarness.json({
+          approvals: [
+            approvalHarness.approval({ reply_id: "r-1", target_id: "tg-1" }),
+            approvalHarness.approval({ reply_id: "r-2", target_id: "tg-1" }),
+          ],
+        });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task()];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 0, "读数还没到时不画角标（不编造 0 以外的数）");
+
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  showMessages(harness);
+
+  const badges = pointerBadges(harness);
+  assert.equal(badges.length, 1, "该任务 target 有 pending ⇒ 指针消息行出现角标");
+  const badge = badges[0];
+  assert.equal(badge.textContent, harness.api.t("board.approvalBadge", { count: 2 }));
+  assert.match(badge.textContent, /待审批 2/);
+  assert.equal(
+    badge.getAttribute("aria-label"),
+    harness.api.t("board.approvalBadgeAria", { title: "修一处样式", count: 2 }),
+  );
+  assert.match(badge.getAttribute("aria-label"), /修一处样式/);
+  // 整行的可点区域仍是那一个既有 chip：角标既不挂 `data-open-task`，也不是按钮 / 可聚焦。
+  const chips = approvalByClass(harness.messageList, "task-ref-chip");
+  assert.equal(chips.length, 1, "入口仍是唯一的那个「进入任务线程」chip");
+  assert.equal(badge.getAttribute("data-open-task"), null);
+  assert.notEqual(badge.tagName, "button");
+  assert.equal(badge.getAttribute("role"), null);
+  assert.equal(badge.getAttribute("tabindex"), null);
+});
+
+test("#217 没有 pending 时指针消息行完全不渲染角标", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") return approvalHarness.json({ approvals: [] });
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task()];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  showMessages(harness);
+
+  assert.equal(pointerBadges(harness).length, 0, "没有 pending 时连空元素都不渲染");
+  assert.equal(approvalByClass(harness.messageList, "task-ref-chip").length, 1, "入口 chip 仍在");
+});
+
+test("#217 归属严格：频道 target 与别的任务的 pending 都不让这一行出现角标", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return approvalHarness.json({
+          approvals: [
+            // 频道 target（ch-1）自己的 pending：只属于 #approvalBoard。
+            approvalHarness.approval({ reply_id: "r-ch", target_id: "ch-1" }),
+            // 另一个任务的 pending（tg-2）：不属于这条指针消息指向的任务。
+            approvalHarness.approval({ reply_id: "r-other", target_id: "tg-2" }),
+          ],
+        });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task(), approvalHarness.task({ id: "t-2", target_id: "tg-2" })];
+  harness.api.state.boardTasks = harness.api.state.tasks.slice();
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  showMessages(harness);
+
+  assert.equal(pointerBadges(harness).length, 0, "指针消息行只认 pointedTask.target_id");
+  // 反向对照：别的任务自己的卡片角标照常出现（读数确实到了，只是没串台）。
+  harness.api.renderTaskBoard();
+  assert.ok(odId(harness.columns, "task-approval-badge-t-2"), "另一个任务的卡片角标照常出现");
+});
+
+test("#217 live approval_required / approval_resolved 让角标出现与消失，且没有新的 /api/messages 请求", async () => {
+  const harness = createApprovalHarness({ messages: [channelPointer()] });
+  // live 帧按「审批记录的 target」归属（`record.target_id`）——任务线程开着时由任务流推导；
+  // 这条路径与 #209 的第 12 条用例同一个入口，因此这里同样先把线程打开。
+  harness.startTask();
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 0, "起始没有 pending：这一行不画角标");
+  const messageRequestsBefore = harness.callsTo("/messages").length;
+
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    approvalHarness.frame({
+      type: "approval_required",
+      reply_id: "r-live",
+      member_id: "mem-1",
+      tool_calls: [{ id: "call-live", name: "Bash", input: { command: "npm test" } }],
+    }),
+    "approval_required",
+  );
+  await approvalFlush();
+  const badges = pointerBadges(harness);
+  assert.equal(badges.length, 1, "live approval_required 到达后角标出现（不重新拉消息）");
+  assert.equal(badges[0].textContent, harness.api.t("board.approvalBadge", { count: 1 }));
+
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    approvalHarness.frame({ type: "approval_resolved", reply_id: "r-live", state: "approved", decisions: [] }),
+    "approval_resolved",
+  );
+  await approvalFlush();
+
+  assert.equal(pointerBadges(harness).length, 0, "resolved 之后角标消失（不需要重新拉消息）");
+  assert.equal(
+    harness.callsTo("/messages").length,
+    messageRequestsBefore,
+    "角标出现 / 消失都不得触发任何 /messages 请求",
+  );
+  // 既有 chip 一字不动：整行的可点区域没有因为角标出现 / 消失而改变。
+  assert.equal(approvalByClass(harness.messageList, "task-ref-chip").length, 1);
+});
+
+test("#217 越过 requested_at + 600s 后，下一次秒级 tick 让角标消失", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return approvalHarness.json({
+          approvals: [
+            approvalHarness.approval({
+              reply_id: "r-1",
+              target_id: "tg-1",
+              requested_at: new Date(NOW).toISOString(),
+            }),
+          ],
+        });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task()];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 1);
+
+  harness.clock.now = NOW + 600_000;
+  const countdown = harness.intervalFns.find((item) => item.ms === 1000);
+  assert.ok(countdown, "pending 存在时应注册 1s 倒计时");
+  countdown.fn();
+  await approvalFlush();
+
+  assert.equal(pointerBadges(harness).length, 0, "本地上界过期后角标在同一个出口消失");
+});
+
+test("#217 重铺消息流保留 composer 草稿与 pending 消息（沿用既有 renderMessages，无新增保存/恢复）", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return approvalHarness.json({
+          approvals: [approvalHarness.approval({ reply_id: "r-1", target_id: "tg-1" })],
+        });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task()];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 0, "读数还没到");
+
+  // 重铺**之前**先摆好这两样：composer 里的草稿与 `state.pending` 里那条还没发出去的消息。
+  // 它们都不由消息流节点持有，因此重铺本来就该原样留着——这条用例钉的是「不新增保存/恢复」
+  // 这个承诺本身（如果有人开始在 renderMessages 里重建 composer，它会红）。
+  const composer = harness.elementFor("#composerInput");
+  composer.value = "写了一半的回复";
+  harness.api.state.pending = [
+    {
+      clientId: "pending-217",
+      target_id: "ch-1",
+      body: "还没发出去的草稿消息",
+      status: "pending",
+      created_at: new Date(NOW).toISOString(),
+      author: { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 },
+      attachments: [],
+    },
+  ];
+  showMessages(harness);
+  assert.ok(
+    approvalByClass(harness.messageList, "msg").some((node) => node.dataset.pending === "pending-217"),
+    "重铺前 pending 消息已在流里",
+  );
+
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+
+  assert.equal(pointerBadges(harness).length, 1, "派生集合变化 ⇒ 角标出现（消息流被重铺）");
+  assert.equal(composer.value, "写了一半的回复", "重铺不动 composer 里的草稿");
+  assert.ok(
+    approvalByClass(harness.messageList, "msg").some((node) => node.dataset.pending === "pending-217"),
+    "重铺后 pending 消息仍在流里",
+  );
+  assert.equal(
+    approvalByClass(harness.messageList, "task-ref-chip").length,
+    1,
+    "指针消息行仍是唯一那一条",
+  );
+});
+
+test("#217 指针消息行仍走既有 chip：点 chip 打开任务线程，点角标本身不触发任何打开", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return approvalHarness.json({
+          approvals: [approvalHarness.approval({ reply_id: "r-1", target_id: "tg-1" })],
+        });
+      }
+      if (/^\/api\/tasks\/t-1\/messages$/.test(url)) {
+        return approvalHarness.json({ task: approvalHarness.task(), messages: [] });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task()];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 1);
+
+  // 角标本身**不是**第二个点击目标：从它出发的事件在 `#messageList` 的委托里
+  // `closest('[data-open-task]')` 命中不到任何东西，因此不请求任务线程。
+  const badge = pointerBadges(harness)[0];
+  assert.ok(badge, "角标应在");
+  await harness.messageList.dispatchEvent({ type: "click", target: badge });
+  await approvalFlush();
+  assert.equal(
+    harness.callsTo("/api/tasks/t-1/messages").length,
+    0,
+    "点角标本身不打开任何东西（可点区域仍只有既有 chip）",
+  );
+
+  const chip = approvalByClass(harness.messageList, "task-ref-chip")[0];
+  assert.ok(chip, "既有 chip 仍在");
+  await harness.messageList.dispatchEvent({ type: "click", target: chip });
+  await approvalFlush();
+  assert.ok(
+    harness.callsTo("/api/tasks/t-1/messages").length >= 1,
+    "点既有 chip 仍走 openTask（整行可点区域逐字不变）",
+  );
+});
+
+test("#217 任务只在看板快照里（不在 state.tasks）时，live 帧仍让指针消息行的角标出现", async () => {
+  const harness = createApprovalHarness({ messages: [channelPointer()] });
+  // 筛选态下 `state.tasks` 与 `state.boardTasks` 不同源（`refreshTasks()` 两次查询）：
+  // 任务是 `taskById()` 读得到、`state.tasks` 里却没有的形态。签名必须覆盖这两种读域，
+  // 否则消息流不重铺、角标出不来（#217 review 抓到的漏洞）。
+  harness.api.state.tasks = [];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 0, "读数还没到");
+
+  // 帧自带 `target_id`（任务线程关着时 live 帧的真实来源），因此不需要 `activeTask` 兜底。
+  harness.api.handleTaskStreamEvent(
+    "t-1",
+    approvalHarness.frame({
+      type: "approval_required",
+      target_id: "tg-1",
+      reply_id: "r-board-only",
+      member_id: "mem-1",
+      tool_calls: [{ id: "call-board", name: "Write", input: { path: "board.txt" } }],
+    }),
+    "approval_required",
+  );
+  await approvalFlush();
+
+  const badges = pointerBadges(harness);
+  assert.equal(badges.length, 1, "任务只在看板快照里时，指针消息行也要跟着重铺");
+  assert.equal(
+    badges[0].getAttribute("data-od-id"),
+    "message-approval-badge-msg-pointer",
+    "消息行的角标有自己可定位的 data-od-id（与卡片的 task- 前缀分开）",
+  );
+});
+
+test("#217 一次签名变化只把频道审批板铺一次（消息流的重铺不重复铺它）", async () => {
+  // 两次读数：第一轮只有 tg-1 的 pending，第二轮多出 tg-9 的 —— 签名因此真的变化两次。
+  let snapshot = 0;
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        snapshot += 1;
+        const approvals = [approvalHarness.approval({ reply_id: "r-ch", target_id: "ch-1" })];
+        approvals.push(approvalHarness.approval({ reply_id: "r-t", target_id: "tg-1" }));
+        if (snapshot > 1) approvals.push(approvalHarness.approval({ reply_id: "r-t9", target_id: "tg-9" }));
+        return approvalHarness.json({ approvals });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task(), approvalHarness.task({ id: "t-9", target_id: "tg-9" })];
+  harness.api.state.boardTasks = harness.api.state.tasks.slice();
+
+  // 计数 `#approvalBoard` 的整板重建轮数：每次铺板都会先建一个 `.d-sec-title` 再整板重铺，
+  // 因此数它被追加的次数就是数整板重建的轮数。审批板里的按钮是点击目标，同一拍重建两次
+  // 会把正在按的那个换成新节点（#209 的纪律），所以一次签名变化必须恰好一轮。
+  let boardRenders = 0;
+  const rawAppend = harness.board.appendChild.bind(harness.board);
+  harness.board.appendChild = (child) => {
+    if (child.classList && child.classList.contains("d-sec-title")) boardRenders += 1;
+    return rawAppend(child);
+  };
+
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  assert.equal(boardRenders, 1, "第一次签名变化：频道审批板只铺一轮");
+  assert.equal(pointerBadges(harness).length, 1, "消息行的角标同时出现");
+
+  boardRenders = 0;
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  assert.equal(boardRenders, 1, "第二次签名变化：频道审批板仍只铺一轮（不被消息流的重铺带成两轮）");
+  assert.equal(pointerBadges(harness).length, 1);
+  assert.equal(approvalByClass(harness.board, "approval-card").length, 1, "频道审批板只放频道 target 的卡");
+});
+
+test("#217 签名未变化的周期刷新不重铺消息流（同一批节点还在）", async () => {
+  const harness = createApprovalHarness({
+    messages: [channelPointer()],
+    fetch: (url) => {
+      if (url === "/api/approvals?state=pending") {
+        return approvalHarness.json({
+          approvals: [approvalHarness.approval({ reply_id: "r-1", target_id: "tg-1" })],
+        });
+      }
+      return approvalHarness.json({});
+    },
+  });
+  harness.api.state.tasks = [approvalHarness.task()];
+  harness.api.state.boardTasks = [approvalHarness.task()];
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  showMessages(harness);
+  assert.equal(pointerBadges(harness).length, 1);
+
+  const rowBefore = approvalByClass(harness.messageList, "msg")[0];
+  assert.ok(rowBefore);
+  // 快照没有变化 ⇒ `loadPendingApprovals()` 不会进 `renderApprovalSurfaces()`，
+  // 更不会重铺消息流：节点对象必须还是同一个（重建会让正在点的控件 / 滚动位置丢）。
+  approvalHarness.periodicTick(harness);
+  await approvalFlush();
+  await approvalFlush();
+  assert.equal(approvalByClass(harness.messageList, "msg")[0], rowBefore, "未变化时不重建消息行");
 });
