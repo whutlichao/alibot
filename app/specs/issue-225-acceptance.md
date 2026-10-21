@@ -157,7 +157,8 @@ $ scripts/check.sh
 
 - 实现提交：`3aba123`（`fix(studio): 「消息」页签计数改为当前 target 未读数（#225）`；
   全量门禁在这一次上取得读数）
-- 验收记录提交：记录本节的 docs 提交（docs-only，代码未变，不重跑本地全量）
+- 验收记录提交：`640aa83`（`docs(specs): #225 验收记录与门禁读数`；docs-only，代码未变，
+  不重跑本地全量）
 - PR：[#226](https://github.com/whutlichao/alibot/pull/226)（base `main`，head `issue-225-message-tab-unread`）
 - PR 正文：`/tmp/issue-225-pr-body.md`（Summary / Evidence / Merge Danger，`Closes #225`；
   已通过 `gh pr create --body-file` 持久化到 PR #226）
