@@ -140,8 +140,10 @@ $ scripts/check.sh
 
 ## 6. 提交与 PR
 
-- 实现提交：`4f81ebd`（`fix(studio): 频道指针 chip 计数改为任务未读数，0 未读不显示计数（#223）`）
-- 验收 / PR 回填提交：`docs(specs): #223 回填 PR 与门禁读数`（PR #224 的最终 head）
+- 实现提交：`4f81ebd`（`fix(studio): 频道指针 chip 计数改为任务未读数，0 未读不显示计数（#223）`；
+  全量门禁在这一次上取得读数）
+- 验收 / PR 回填提交：`996c803`（`docs(specs): #223 回填 PR 与门禁读数`）
+- PR 正文回填：`da1891f`（补 `Closes #223`）；PR head 与分支最终提交一致（`gh pr view 224 --json headRefOid` 核对）
 - PR：[#224](https://github.com/whutlichao/alibot/pull/224)，正文 `app/specs/issue-223-pr-body.md`
   （Summary / Evidence / Merge Danger，`Closes #223`）
 - 全量门禁读数：§3（`scripts/check.sh` → 门禁全绿；CI 同脚本复核）
