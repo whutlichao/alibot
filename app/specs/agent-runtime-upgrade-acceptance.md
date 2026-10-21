@@ -27,6 +27,15 @@
 - 绿证据：运行迁移与链守卫时 64 passed，仅新增用例使用库文件路径代替数据目录一处失败；修正后 `scripts/check.sh --fast tests/test_runtime_finished.py` 为 3 passed、mypy/pyright/ruff 全绿、Node 214 passed。全量门禁在 T5 收尾重跑。
 - 备注：会话恢复时宿主误将原 Dispatch 标为 failed。coordinator 已明确指示不再修汇报通道、继续实现，review 基线固定为 3863e39，最终报告另写 `/tmp/alibot-agent-runtime/T5-report.md`。
 
-## T4–T5
+## T4 中断与状态持久化
+
+- 落点：POST `/api/targets/{target_id}/rounds/{reply_id}/interrupt`；编排只接受当前 in-flight turn 已发布的 reply_id；适配器跨线程取消该轮任务，审批挂起时回送 UserInterruptEvent，finally 内独立关闭 MCP、mount 与 model client。
+- 新事件 `round.interrupted` 为 live-only，不推进 SSE 游标；Studio 频道 / DM 的 typing 与任务线程旁都有停止按钮，点击使用实际 reply_id，成功或结束帧后移除。
+- AgentState 原子写入每成员每 target 的 `.alibot/sessions/<session_id>/state.json`；下一轮恢复摘要、工具缓存、Plan 与 middleware 状态。权限使用当前配置；消息 context 从数据库窗口重建，避免快照与历史输入重复拼接。损坏、越界符号链接及写失败记录可读日志后降级。
+- 红证据：`.scratch/red-t4` / `.scratch/t4-red.log`（2 failed）、`.scratch/t4-ui-red.log`（停止按钮失败）。
+- 绿证据：`scripts/check.sh --fast tests/test_runtime_interrupt.py tests/test_approval_seam.py tests/test_team_mode.py tests/test_agent_event_stream.py`，41 passed；ruff / mypy / pyright 全绿，Node 215 passed。
+- 观测：错误 target 409、正确中断 200、重复 409；轮次 finished_reason=interrupted，reply_seq=NULL，无 Agent 消息；事件可序列化为 SSE 且无 id；运行中 model client 关闭；挂起 Write 未执行、审批 expired；下一轮读取 middle_context，损坏状态不失败。
+
+## T5
 
 实施中；最终补完整门禁与双轴 review。

@@ -316,6 +316,11 @@ class ApprovalBroker:
             _log.info("expired %d pending approval request(s) on startup", len(expired))
         return expired
 
+    def interrupt(self, reply_id: str) -> bool:
+        """用户中断本轮时收掉挂起审批；不提交工具决策、不改变超时路径。"""
+        with self._lock:
+            return self._expire(reply_id)
+
     # ─── 唤醒 ─────────────────────────────────────────────────────────────
     def _deliver(self, session: _Session) -> None:
         """把尚未回送的决策交给等待中的 loop；没有等待者时留在队列里。"""

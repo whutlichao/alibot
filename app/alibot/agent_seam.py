@@ -28,7 +28,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
 from .i18n import SOURCE_LOCALE, Locale, render
-from .runtime import SessionOffloader, runtime_configs, runtime_prompt
+from .runtime import RuntimeTurn, SessionOffloader, SessionState, runtime_configs, runtime_prompt
 
 if TYPE_CHECKING:
     from .plan import PlanSession
@@ -689,6 +689,39 @@ class AgentScopeAgentSeam:
         self._usage_sink = usage_sink
         self._runtime_root = runtime_root
         self._target_name_of = target_name_of
+        self._controls: dict[tuple[str, str], RuntimeTurn] = {}
+        self._control_lock = threading.RLock()
+
+    def interrupt_round(self, target_id: str, reply_id: str) -> bool:
+        """只取消匹配 target / reply_id 的当前轮；已结束或已请求时返回 False。"""
+        with self._control_lock:
+            control = self._controls.get((target_id, reply_id))
+            if control is None or control.interrupted or control.task.done():
+                return False
+            control.interrupted = True
+            control.loop.call_soon_threadsafe(control.task.cancel)
+            return True
+
+    def _track_control(self, record: AgentEventRecord, control: RuntimeTurn) -> None:
+        key = (record.target_id, record.reply_id)
+        with self._control_lock:
+            if record.type == "REPLY_START":
+                self._controls[key] = control
+            elif record.type == "REPLY_END":
+                self._controls.pop(key, None)
+
+    def _release_control(self, control: RuntimeTurn) -> None:
+        with self._control_lock:
+            self._controls = {key: value for key, value in self._controls.items() if value is not control}
+
+    @staticmethod
+    def _restore_state(options: dict[str, Any]) -> SessionState | None:
+        offloader = options.get("offloader")
+        if not isinstance(offloader, SessionOffloader):
+            return None
+        store = SessionState(offloader.root, offloader.session_id)
+        options["state"] = store.load(options["state"].permission_context)
+        return store
 
     def _runtime_options(self, agent: dict[str, Any], target_id: str) -> dict[str, Any]:
         from .workspace import session_partition_id
@@ -1066,6 +1099,9 @@ class AgentScopeAgentSeam:
             model = self._build_model(provider, model_name, stream=emit is not None)
             mount: Any | None = None
             mcp_assembly: Any | None = None
+            instance: Any = None
+            state_store: SessionState | None = None
+            control = RuntimeTurn(asyncio.get_running_loop(), asyncio.current_task())
             try:
                 from agentscope.event import (
                     ConfirmResult,
@@ -1075,6 +1111,7 @@ class AgentScopeAgentSeam:
                 )
                 from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
                 from agentscope.state import AgentState
+                from agentscope.types import ReplyFinishedReason
 
                 from .approval import ApprovalWaitTimeout
                 from .permissions import (
@@ -1147,6 +1184,7 @@ class AgentScopeAgentSeam:
                     agent_options["toolkit"] = toolkit
                 if root:
                     agent_options["middlewares"] = [WorkspacePathPermissionMiddleware(str(root))]
+                state_store = self._restore_state(agent_options)
                 instance = _agent_instance(agent_options, plan=plan, member_id=member_id)
                 # 一轮的一条 Msg：把待读的新消息合成一次输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
@@ -1167,8 +1205,6 @@ class AgentScopeAgentSeam:
                 pending_reply_id: str | None = None
 
                 def _publish(item: Any) -> None:
-                    if emit is None:
-                        return
                     record = _agent_event_record(
                         item,
                         target_id=target_id,
@@ -1176,6 +1212,9 @@ class AgentScopeAgentSeam:
                         reply_members=reply_members,
                     )
                     if record is None:
+                        return
+                    self._track_control(record, control)
+                    if emit is None:
                         return
                     try:
                         emit(record)
@@ -1264,14 +1303,32 @@ class AgentScopeAgentSeam:
                     inputs = UserConfirmResultEvent(
                         reply_id=pending_reply_id, confirm_results=confirm_results
                     )
+            except asyncio.CancelledError:
+                if not control.interrupted:
+                    raise
+                if instance is not None and instance.state.has_awaiting_tool_calls(instance.name):
+                    await _consume(UserInterruptEvent(reply_id=instance.state.reply_id), register=False)
+                    if self._approvals is not None:
+                        self._approvals.interrupt(instance.state.reply_id)
+                return Msg(
+                    name=member_internal_name(member_id),
+                    role="assistant",
+                    content=[],
+                    finished_reason=ReplyFinishedReason.INTERRUPTED,
+                )
             finally:
+                self._release_control(control)
+                if instance is not None and state_store is not None:
+                    state_store.save(instance.state)
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
                 # MCP 客户端先关：Local 的 workspace.close 也会兜底，Docker 的容器留在池里，
                 # transport 绑定在当前 loop 上，不能带到下一轮。
                 if mcp_assembly is not None:
-                    await mcp_assembly.close()
+                    with suppress(Exception):
+                        await mcp_assembly.close()
                 if mount is not None:
-                    await release_workspace_mount(mount)
+                    with suppress(Exception):
+                        await release_workspace_mount(mount)
                 await _aclose_model_client(model)
 
         try:
@@ -1363,8 +1420,9 @@ class AgentScopeAgentSeam:
                 UserConfirmResultEvent,
                 UserInterruptEvent,
             )
-            from agentscope.message import ToolCallBlock, UserMsg
+            from agentscope.message import Msg, TextBlock, ToolCallBlock, UserMsg
             from agentscope.state import AgentState
+            from agentscope.types import ReplyFinishedReason
 
             from .approval import ApprovalWaitTimeout
             from .permissions import (
@@ -1381,6 +1439,8 @@ class AgentScopeAgentSeam:
             models: list[Any] = []
             mounts: list[Any] = []
             mcp_assemblies: list[Any] = []
+            state_stores: dict[str, SessionState] = {}
+            control = RuntimeTurn(asyncio.get_running_loop(), asyncio.current_task())
             agents_by_id: dict[str, Any] = {}
 
             def _permission_for(member_id_value: str) -> tuple[Any, str | None]:
@@ -1457,6 +1517,9 @@ class AgentScopeAgentSeam:
                     options["middlewares"] = [WorkspacePathPermissionMiddleware(root)]
                 if toolkit is not None:
                     options["toolkit"] = toolkit
+                store = self._restore_state(options)
+                if store is not None:
+                    state_stores[str(member["id"])] = store
                 instance = _agent_instance(options, plan=plan, member_id=str(member["id"]))
                 agents_by_id[str(member["id"])] = instance
                 return instance
@@ -1533,7 +1596,14 @@ class AgentScopeAgentSeam:
                     publish=team.publish,
                 )
                 inputs: Any = [
-                    UserMsg(name=_author_name(item), content=_body(item)) for item in messages
+                    Msg(
+                        name=_author_name(item),
+                        content=[TextBlock(text=_body(item))],
+                        role="assistant",
+                    )
+                    if str(item["author"]["id"]) == member_id
+                    else UserMsg(name=_author_name(item), content=_body(item))
+                    for item in messages
                 ] or None
                 parked: dict[str, str] = {}
                 current_reply_id: str | None = None
@@ -1574,8 +1644,6 @@ class AgentScopeAgentSeam:
                             )
                             parked[item.reply_id] = participant
                             current_reply_id = item.reply_id
-                        if emit is None:
-                            continue
                         record = _agent_event_record(
                             item,
                             target_id=target_id,
@@ -1584,10 +1652,13 @@ class AgentScopeAgentSeam:
                         )
                         if record is None:
                             continue
+                        self._track_control(record, control)
                         if record.type == "REPLY_START":
                             # 分派 SSE 的 reply_id 归属（#144）：成员按调用顺序串行运行，
                             # ReplyStart 的到达顺序即该成员的分派顺序。
                             pipeline.note_member_reply(record.member_id, record.reply_id)
+                        if emit is None:
+                            continue
                         try:
                             emit(record)
                         except Exception:  # 直播是观察面：回调失败不能改写这一轮的结论
@@ -1644,12 +1715,35 @@ class AgentScopeAgentSeam:
                         parked.pop(reply_id, None)
                         current_reply_id = None
                     inputs = UserConfirmResultEvent(reply_id=reply_id, confirm_results=confirm_results)
+            except asyncio.CancelledError:
+                if not control.interrupted:
+                    raise
+                for instance in agents_by_id.values():
+                    if instance.state.has_awaiting_tool_calls(instance.name):
+                        async for _ in instance.reply_stream(
+                            UserInterruptEvent(reply_id=instance.state.reply_id), yield_final_msg=True
+                        ):
+                            pass
+                        if self._approvals is not None:
+                            self._approvals.interrupt(instance.state.reply_id)
+                return Msg(
+                    name=member_internal_name(member_id),
+                    role="assistant",
+                    content=[],
+                    finished_reason=ReplyFinishedReason.INTERRUPTED,
+                )
             finally:
+                self._release_control(control)
+                for member_id_value, store in state_stores.items():
+                    if member_id_value in agents_by_id:
+                        store.save(agents_by_id[member_id_value].state)
                 # 后装配的先关（anyio cancel scope 按连接顺序嵌套）。
                 for assembly in reversed(mcp_assemblies):
-                    await assembly.close()
+                    with suppress(Exception):
+                        await assembly.close()
                 for mount in mounts:
-                    await release_workspace_mount(mount)
+                    with suppress(Exception):
+                        await release_workspace_mount(mount)
                 for model in models:
                     await _aclose_model_client(model)
 

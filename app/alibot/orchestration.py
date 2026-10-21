@@ -38,7 +38,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from .agent_seam import (
@@ -174,10 +174,20 @@ class _Turn:
     target_id: str
     repeat_bases: list[int]
     deferred_rounds: dict[str, _DeferredWake]
+    reply_ids: set[str] = field(default_factory=set)
+    interrupt: Callable[[str, str], bool] | None = None
 
 
 class WakeOrchestrator:
     """成员面的唯一入口：唤醒 → 读消息 → 自判 → 落库 → 记轮次结果。"""
+
+    def interrupt_round(self, target_id: str, reply_id: str) -> bool:
+        self._db.get_target(target_id)
+        with self._lock:
+            for turn in self._in_flight.values():
+                if turn.target_id == target_id and reply_id in turn.reply_ids and turn.interrupt is not None:
+                    return turn.interrupt(target_id, reply_id)
+        return False
 
     def __init__(
         self,
@@ -1089,6 +1099,11 @@ class WakeOrchestrator:
                 finished_reason=outcome.finished_reason,
             )
             self._publish_outcome(target_id, base_seq, record)
+            if outcome.finished_reason == "interrupted":
+                self._events.publish(
+                    target_id,
+                    {"type": "round.interrupted", "member_id": member_id, "outcome": record},
+                )
             self._events.publish(
                 target_id,
                 {
@@ -1382,6 +1397,15 @@ class WakeOrchestrator:
         leader_id = str(agent["id"])
 
         def emit(record: Any) -> None:
+            if record.type in ("REPLY_START", "REPLY_END"):
+                with self._lock:
+                    turn = self._in_flight.get(leader_id)
+                    if turn is not None and turn.target_id == record.target_id:
+                        if record.type == "REPLY_START":
+                            turn.reply_ids.add(record.reply_id)
+                            turn.interrupt = getattr(self._seam, "interrupt_round", None)
+                        else:
+                            turn.reply_ids.discard(record.reply_id)
             # 事件只直播、不落库（ADR-0020）；emit 在编排的工作线程里同步调用，
             # ``EventBus.publish`` 对满队列丢事件、不阻塞模型调用。
             self._events.publish(record.target_id, agent_event(record))

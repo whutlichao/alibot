@@ -184,6 +184,8 @@ const I18N_CATALOGS = {
     'header.dmPlaceholder': '发消息给 @{name} —— 可手动 @ 送达其他 Agent',
     'header.channelPlaceholder': '发消息到 #{name} —— 输入 @ 提及 Agent',
     'typing.working': '{name} 正在回复…',
+    'typing.stop': '停止本轮',
+    'typing.stopNamed': '停止 {name} 的本轮',
 
     /* ─── composer 与 @ 补全 ────────────────────────────────────────── */
     'composer.mentionLabel': '可提及的当前频道 Agent 成员',
@@ -953,6 +955,8 @@ const I18N_CATALOGS = {
     'header.dmPlaceholder': 'Message @{name} — you can still @ someone to reach them',
     'header.channelPlaceholder': 'Message #{name} — type @ to mention an agent',
     'typing.working': '{name} is replying…',
+    'typing.stop': 'Stop round',
+    'typing.stopNamed': 'Stop the current round for {name}',
 
     /* ─── Composer and @ completion ────────────────────────────────── */
     'composer.mentionLabel': 'Agent members of this channel that can be mentioned',

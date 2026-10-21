@@ -47,6 +47,7 @@ LIVE_EVENT_TYPES = frozenset(
         "sop_event",
         "approval_required",
         "approval_resolved",
+        "round.interrupted",
     }
 )
 

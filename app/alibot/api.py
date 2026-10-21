@@ -956,6 +956,12 @@ def create_app(
             database.get_target(target_id)  # 不存在的 target ⇒ 404
         return {"approvals": database.list_approval_requests(target_id=target_id, state=state)}
 
+    @app.post("/api/targets/{target_id}/rounds/{reply_id}/interrupt")
+    def interrupt_round(target_id: str, reply_id: str) -> dict[str, Any]:
+        if not orchestrator.interrupt_round(target_id, reply_id):
+            raise DomainError("round_not_running", _render_copy("error.round_not_running"), status=409)
+        return {"interrupted": True, "target_id": target_id, "reply_id": reply_id}
+
     @app.post("/api/approvals/{reply_id}")
     def submit_approval(reply_id: str, payload: ApprovalSubmit) -> dict[str, Any]:
         """提交一批决策：只接受 pending；同批重试幂等；相反结论 409。

@@ -212,6 +212,7 @@ function message(seq, body) {
 }
 
 function createHarness() {
+  const requests = [];
   const elements = new Map();
 
   function newNode(tagName) {
@@ -246,7 +247,8 @@ function createHarness() {
 
   const context = vm.createContext({
     document,
-    fetch: async (url) => {
+    fetch: async (url, options) => {
+      requests.push({ url: String(url), options });
       if (String(url) === "/api/channels") {
         return {
           ok: true,
@@ -291,7 +293,7 @@ function createHarness() {
   api.state.online = true;
   api.state.ready = true;
   api.bindEvents();
-  return { api, document };
+  return { api, document, requests };
 }
 
 function frame(payload) {
@@ -416,4 +418,27 @@ test("任务线程消费新事件：按 target 归属，消息仍按 seq 去重"
   assert.equal(events.length, 1);
   assert.equal(events[0].type, "team_assignment");
   assert.equal(events[0].task_id, "task-1");
+});
+
+
+test('当前 reply_id 的停止按钮发中断请求，成功与中断事件都清掉指示', async () => {
+  const { api, document, requests } = createHarness();
+  const start = liveEvent('agent_event', 'ch-1', {
+    event_type: 'REPLY_START', member_id: 'mem-1', reply_id: 'reply-stop', payload: {},
+  });
+  api.handleStreamEvent('ch-1', frame(start), 'agent_event');
+  const line = document.querySelector('#typingLine');
+  assert.equal(line.hidden, false);
+  const button = line.children.find((node) => node.tagName === 'button');
+  assert.ok(button);
+  assert.match(button.textContent, /停止本轮/);
+  await button.dispatchEvent({ type: 'click', target: button });
+  assert.ok(requests.some((request) => request.url === '/api/targets/ch-1/rounds/reply-stop/interrupt' && request.options.method === 'POST'));
+  assert.equal(line.hidden, true);
+  assert.equal(line.children.length, 0);
+
+  api.handleStreamEvent('ch-1', frame(start), 'agent_event');
+  api.handleStreamEvent('ch-1', frame(liveEvent('round.interrupted', 'ch-1')), 'round.interrupted');
+  assert.equal(line.hidden, true);
+  assert.equal(api.lastSeqOf('ch-1'), 0);
 });

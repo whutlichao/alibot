@@ -4,16 +4,29 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 import os
 import uuid
 from collections.abc import Mapping
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 CONTEXT_WINDOW_MESSAGES = 40
+_log = logging.getLogger(__name__)
+
+
+@dataclass(eq=False)
+class RuntimeTurn:
+    """只在一轮的 loop 存活；HTTP 线程通过 call_soon_threadsafe 请求取消。"""
+
+    loop: Any
+    task: Any
+    interrupted: bool = False
 
 
 def context_window_messages(agent: Mapping[str, Any]) -> int:
@@ -70,7 +83,8 @@ class SessionOffloader:
         from .workspace import safe_partition_id
 
         self.root = Path(root).resolve()
-        self.relative = Path(".alibot/sessions") / safe_partition_id(session_id) / "offload"
+        self.session_id = safe_partition_id(session_id)
+        self.relative = Path(".alibot/sessions") / self.session_id / "offload"
         self.docker = docker
 
     def _write(self, kind: str, data: bytes, suffix: str = ".json") -> str:
@@ -103,3 +117,52 @@ class SessionOffloader:
             {"url": f"workspace://{path}", "media_type": block.source.media_type}
         )
         return block.model_copy(update={"source": source})
+
+
+class SessionState:
+    """可恢复的框架运行状态；消息窗口始终从协作域正本重建。"""
+
+    def __init__(self, root: Path, session_id: str) -> None:
+        from .workspace import safe_partition_id
+
+        self.root = root
+        self.directory = root / ".alibot/sessions" / safe_partition_id(session_id)
+
+    def load(self, permission_context: Any) -> Any:
+        from agentscope.state import AgentState, ReplyContext
+
+        from .workspace import ensure_state_partition
+
+        try:
+            ensure_state_partition(str(self.root), str(self.directory))
+            path = self.directory / "state.json"
+            if path.is_symlink():
+                raise ValueError("state.json must not be a symlink")
+            state = AgentState.model_validate_json(path.read_text()) if path.exists() else AgentState()
+            # 每轮权限按当前配置重建；不能从旧快照恢复曾被撤销的权限或挂起审批。
+            state.permission_context = permission_context
+            state.reply_context = ReplyContext()
+            # 历史已由编排的窗口输入承载，避免把同一批消息在 state 与 inputs 中拼两遍。
+            # 压缩摘要、工具缓存、Plan 与 middleware 状态仍从完整快照恢复。
+            state.context = []
+            return state
+        except Exception:
+            _log.warning("Agent state load failed; using an empty state: %s", self.directory, exc_info=True)
+            return AgentState(permission_context=permission_context)
+
+    def save(self, state: Any) -> None:
+        from .workspace import ensure_state_partition
+
+        temporary = self.directory / f"{uuid.uuid4().hex}.tmp"
+        try:
+            ensure_state_partition(str(self.root), str(self.directory))
+            with temporary.open("x", encoding="utf-8") as stream:
+                stream.write(state.model_dump_json(indent=2))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.directory / "state.json")
+        except Exception:
+            _log.warning("Agent state save failed: %s", self.directory, exc_info=True)
+        finally:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)

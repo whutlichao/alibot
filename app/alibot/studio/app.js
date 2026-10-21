@@ -291,6 +291,7 @@ const state = {
   // 本层只做「消费 + 有界保留 + 未知 type 忽略」。
   liveEvents: new Map(),
   typing: {},
+  activeRounds: {},
   // 工作区设置（**语言偏好** / **消息密度** / **主题**）：正本是后端 `GET /api/settings`，
   // 前端只镜像它；切换时写回后端，不落浏览器存储。
   settings: {
@@ -1887,6 +1888,7 @@ function renderTaskThread() {
   if (last && last.tagName === 'LI') last.classList.add('is-now');
   // 任务线程的审批卡按 task target 铺；频道那份不会串进来。
   renderTaskApprovals();
+  renderTyping();
 }
 
 /** 关联消息 = 任务线程里**带 `task_ref` 指针的非 system 消息**。
@@ -3753,6 +3755,7 @@ const LIVE_EVENT_TYPES = [
   'sop_event',
   'approval_required',
   'approval_resolved',
+  'round.interrupted',
 ];
 const LIVE_EVENTS_LIMIT = 256;
 
@@ -3775,6 +3778,16 @@ function recordLiveEvent(targetId, type, payload) {
   // 审批卡（#153）：live 帧是「本次会话内的变化」，快照兜底由 `loadApprovalsFor` 负责。
   if (type === 'approval_required') absorbApprovalRequired(key, payload);
   else if (type === 'approval_resolved') absorbApprovalResolved(key, payload);
+  if (type === 'agent_event' && payload.reply_id) {
+    if (payload.event_type === 'REPLY_START') {
+      const rounds = state.activeRounds[key] || (state.activeRounds[key] = {});
+      rounds[payload.reply_id] = payload.member_id;
+      showTypingFor(key, payload.member_id);
+    } else if (payload.event_type === 'REPLY_END') finishRoundFor(key, payload.reply_id);
+  } else if (type === 'round.interrupted') {
+    delete state.activeRounds[key];
+    showTypingFor(key, null);
+  }
   return payload;
 }
 
@@ -3852,6 +3865,7 @@ function connectStream(targetId, entry) {
     renderConnection();
     render();
     // 断开期间不可能有 in-flight 事实需要显示：清掉「正在回复」，等重连后的状态快照说实话。
+    delete state.activeRounds[targetId];
     showTypingFor(targetId, null);
     source.close();
     if (state.streams.get(targetId) !== entry) return; // 已被换掉（频道删除等）
@@ -3976,7 +3990,7 @@ function onStreamTyping(targetId, payload) {
 function showTypingFor(targetId, memberId) {
   if (memberId) state.typing[targetId] = memberId;
   else delete state.typing[targetId];
-  if (state.activeChannelId === targetId) renderTyping();
+  if (state.activeChannelId === targetId || (state.activeTask && state.activeTask.target_id === targetId)) renderTyping();
 }
 
 function onStreamOutcome(targetId, payload) {
@@ -4997,12 +5011,47 @@ function rosterRow(member, agentsById) {
 }
 
 function renderTyping() {
-  const target = activeTarget();
-  const container = $('#typingLine');
+  renderTargetTyping($('#typingLine'), activeTarget());
+  renderTargetTyping($('#taskTypingLine'), state.activeTask ? { id: state.activeTask.target_id } : null);
+}
+
+function renderTargetTyping(container, target) {
+  if (!container) return;
   const memberId = target ? state.typing[target.id] : null;
   const agent = state.agents.find((item) => item.id === memberId);
   container.hidden = !agent;
   container.textContent = agent ? t('typing.working', { name: agent.display_name }) : '';
+  if (!target || !agent) return;
+  Object.entries(state.activeRounds[target.id] || {}).forEach(([replyId, activeMemberId]) => {
+    const button = el('button', 'btn small', t('typing.stop'));
+    button.type = 'button';
+    button.dataset.replyId = replyId;
+    button.setAttribute('aria-label', t('typing.stopNamed', { name: outcomeMemberName(activeMemberId) }));
+    button.disabled = !state.online;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await api('/api/targets/' + encodeURIComponent(target.id) + '/rounds/' +
+          encodeURIComponent(replyId) + '/interrupt', { method: 'POST' });
+        finishRoundFor(target.id, replyId);
+      } catch (err) {
+        if (err.status === 409) finishRoundFor(target.id, replyId);
+        else {
+          button.disabled = false;
+          toast(err.message, 'err');
+        }
+      }
+    });
+    container.appendChild(button);
+  });
+}
+
+function finishRoundFor(targetId, replyId) {
+  const rounds = state.activeRounds[targetId] || {};
+  delete rounds[replyId];
+  const remaining = Object.values(rounds);
+  if (!remaining.length) delete state.activeRounds[targetId];
+  showTypingFor(targetId, remaining[0] || null);
 }
 
 /* ─── 频道回应预算（#54 / ADR-0007 / 规格 #31 §2）：读数是后端事实的镜像，写控件只表达**上界** ──

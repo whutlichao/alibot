@@ -44,6 +44,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         # ─── 通用 ────────────────────────────────────────────────────────
         "common.list_sep": "、",
         # ─── HTTP 错误：机器可读的 code / fields 键不在这里 ───────────────
+        "error.round_not_running": "本轮已结束、已请求中断或不属于当前 target",
         "error.round_outcomes_immutable": "轮次结果不可编辑、不可删除：人类面不存在该端点",
         # 本键的**语义位置**是「预算的用量面不可写」（ADR-0007）。#54 打开上界写入口后它不能再
         # 宣称「不存在写端点」——那句在实机上已经是假话；留着键、改说边界：
@@ -432,6 +433,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         # ─── 通用 ────────────────────────────────────────────────────────
         "common.list_sep": ", ",
         # ─── HTTP 错误 ───────────────────────────────────────────────────
+        "error.round_not_running": "This round has ended, was already interrupted, or belongs to another target",
         "error.round_outcomes_immutable": (
             "Round outcomes cannot be edited or deleted: the human surface has no such endpoint"
         ),
