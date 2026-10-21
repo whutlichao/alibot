@@ -165,7 +165,9 @@ $ scripts/check.sh --studio
 - PR：[#222 fix(studio): 任务线程去掉与「讨论」重复的「关联消息」区块（#221）](https://github.com/whutlichao/alibot/pull/222)
 - PR 正文：`app/specs/issue-221-pr-body.md`（`gh pr create --body-file` 提交）
 - 分支：`issue-221-impl`（已推送，跟踪 `origin/issue-221-impl`）；目标：`main`
-- CI：初推 head 的 check 由 CI 全量复核（本地未跑全量 pytest——无 `.py` 改动）
+- CI：[run 39623122330](https://github.com/whutlichao/alibot/actions/runs/39623122330) ⇒ **success on `9bedf5d`**
+  （全量 `scripts/check.sh`；本地未跑全量 pytest——无 `.py` 改动）。其后只有 docs-only 提交，
+  CI 对最终 head 跑同一脚本复核。
 
 ---
 
