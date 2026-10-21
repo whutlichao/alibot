@@ -1131,10 +1131,12 @@ class AgentScopeAgentSeam:
         reply_members: dict[str, str] = {}
         workspace_warnings: list[str] = []
         # 这一轮那个 Agent 的 ``state.context``：本轮累积 assistant 消息在这里，落库正文以它为
-        # 正本（:func:`_round_body`）。它在 ``asyncio.run`` 的协程里被赋值，收口在同一个线程读。
-        round_state: dict[str, Any] = {}
+        # 正本（:func:`_round_body`）。它在 ``asyncio.run`` 的协程 ``finally`` 里被赋值一次，
+        # 收口在同一个线程读——不把 ``instance`` 本身带出协程（那会让 loop 关闭后的引用悬着）。
+        round_context: list[Any] = []
 
         async def _round() -> Any:
+            nonlocal round_context
             # 模型（连同它建出来的 provider 客户端）在**这一轮的 loop 里建、也在这一轮里关**：
             # 两件事都在同一个 ``asyncio.run`` 的协程内完成，中间不允许跨到下一个 loop。
             # 客户端若带着活连接活过这一轮，它的 ``__del__`` 会在之后的某个 loop 里去关一个属于
@@ -1359,11 +1361,10 @@ class AgentScopeAgentSeam:
                 )
             finally:
                 self._release_control(control)
-                # 落库正文的正本要在**保存之前**从活的 state 里取：``save`` 只写盘，不改内存，
-                # 但把「这一轮看到了哪些块」显式记下来，比事后再去读一遍实例更不容易被后续改动
-                # 悄悄改掉（context 是同一个 list 对象，这里只存引用，没有深拷贝开销）。
+                # 落库正文的正本要在**保存之前**从活的 state 里取：``context`` 就是本轮那条
+                # 累积 assistant 消息所在的 list（同一对象，不拷贝），``save`` 只写盘、不改它。
                 if instance is not None:
-                    round_state["context"] = instance.state.context
+                    round_context = instance.state.context
                 if instance is not None and state_store is not None:
                     state_store.save(instance.state)
                 # 关闭落在 ``finally``：超时与异常路径同样要收干净（且仍在同一个 loop 内）。
@@ -1411,7 +1412,7 @@ class AgentScopeAgentSeam:
 
         self._record_usage(reply, agent, target_id)
         outcome = self._outcome_from_reply(
-            reply, task_actions, silence_declarations, state_context=round_state.get("context")
+            reply, task_actions, silence_declarations, state_context=round_context
         )
         outcome.reason = "\n".join([outcome.reason, *workspace_warnings])
         return outcome
@@ -1460,9 +1461,6 @@ class AgentScopeAgentSeam:
         names.setdefault(member_internal_name(member_id), member_id)
         reply_members: dict[str, str] = {}
         workspace_warnings: list[str] = []
-        # 队长这一轮的 ``state.context``（累积 assistant 消息在那里）。成员各有自己的上下文，
-        # 但成员的消息只作为 ``ToolResult`` 回到队长、不落 target 消息（D2），因此这里只认队长。
-        leader_context: list[Any] = []
 
         async def _round() -> Any:
             from agentscope.event import (
@@ -1789,10 +1787,6 @@ class AgentScopeAgentSeam:
                 )
             finally:
                 self._release_control(control)
-                # 队长的累积 assistant 消息要在保存前留下引用（理由同单 Agent 轮次）。
-                leader_instance = agents_by_id.get(member_id)
-                if leader_instance is not None:
-                    leader_context.extend(leader_instance.state.context)
                 for member_id_value, store in state_stores.items():
                     if member_id_value in agents_by_id:
                         store.save(agents_by_id[member_id_value].state)
@@ -1836,12 +1830,11 @@ class AgentScopeAgentSeam:
                 reason=render("seam.team_no_leader_reply", self._locale()),
             )
         self._record_usage(reply, agent, target_id)
-        # 队长轮次的正本是**队长**那条累积 assistant 消息（``_final_reply_message`` 取到的
-        # ``reply`` 就是它）；成员的消息不进本轮结论（D2）。``leader_context`` 让提取器按
-        # ``reply.id`` 找回它，而不是假设「尾部那条就是全部正文」。
-        outcome = self._outcome_from_reply(
-            reply, task_actions, silence_declarations, state_context=leader_context
-        )
+        # 队长轮次不用另传上下文：``_final_reply_message`` 返回的就是队长 ``state.context`` 里
+        # 那条**累积** assistant 消息本身（它不是最后一**次模型调用**的快照），``_round_body`` 退回读
+        # ``reply`` 时读到的就是这一轮的全部正文段。成员的消息只作为 ``ToolResult`` 回到队长、
+        # 不落 target 消息（D2），因此这里也不需要成员的上下文。
+        outcome = self._outcome_from_reply(reply, task_actions, silence_declarations)
         outcome.reason = "\n".join([outcome.reason, *workspace_warnings])
         return outcome
 
@@ -1887,7 +1880,8 @@ class AgentScopeAgentSeam:
 
         ``state_context`` 是**这一轮**那个 Agent 的 ``state.context``：落库正文的正本是其中与
         ``reply.id`` 相同的那条累积 assistant 消息（:func:`_round_body`），不是 ``reply`` 自己的
-        最后一跳。不传时退回只读 ``reply``——单段场景的行为因此逐字不变。
+        最后一**次模型调用**。不传时退回只读 ``reply``：单段场景读到的仍是同一条消息，判定顺序、
+        状态词与 ``messages`` 条数一律不变；唯一差别是按判据 3 每段会先 ``strip()``。
         """
         reply_error = getattr(reply, "error", None)
         finished_reason = str(getattr(reply, "finished_reason", None) or "completed")
@@ -1904,7 +1898,7 @@ class AgentScopeAgentSeam:
                 finished_reason=finished_reason,
             )
         if finished_reason == "exceed_max_iters":
-            # 迭代上限也会丢正文：它拿到的同样是最后一跳的 ``Msg``，所以走同一个提取器。
+            # 迭代上限也会丢正文：它拿到的同样是最后一**次模型调用**的 ``Msg``，所以走同一个提取器。
             text = _round_body(state_context, reply)
             return RoundOutcome(
                 status="replied",
@@ -2377,27 +2371,40 @@ def _body(message: dict[str, Any]) -> str:
     return str(message.get("body") or "")
 
 
-def _msg_text(message: Any) -> str:
-    """**单条** ``Msg`` 的纯文本（``content`` 可能是 str 或内容块列表）。
+def _text_segments(message: Any) -> list[str]:
+    """一条 ``Msg`` 里的 ``text`` 段，按块序、**原样**（不 strip、不拼接、不丢空段）。
 
-    按块序**无分隔**地连起来，只是为了「把这条消息读成一串」，不是一轮的落库正文。一轮的正本是
-    累积 assistant 消息里**多段**用户可见正文、段间要空行，见 :func:`_round_body`——两个提取器
-    的分工就这一句，别拿这个去拼一轮。
+    这是「哪些块算正文」的**唯一**判定：只认 ``getattr(block, "text", None)`` 且类型是 ``str``，
+    于是 ``hint`` / ``thinking`` / ``tool_call`` / ``tool_result`` / ``data`` 都自然落空（它们没有
+    ``text`` 属性），不需要按块类型白名单去认——框架将来加一种没有 ``text`` 的块也不会误拼。
+
+    两个调用者各取所需：:func:`_msg_text` 要「这条消息的纯文本」，:func:`_round_body` 要「一轮的
+    正文段落」。所以这里返回**原始**段，拼接与 trim 的口径留给各自的调用者。
     """
     content = getattr(message, "content", None)
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                chunks.append(block)
-            else:
-                text = getattr(block, "text", None)
-                if isinstance(text, str):
-                    chunks.append(text)
-        return "".join(chunks)
-    return ""
+        return [content]
+    if not isinstance(content, list):
+        return []
+    segments: list[str] = []
+    for block in content:
+        text = block if isinstance(block, str) else getattr(block, "text", None)
+        if isinstance(text, str):
+            segments.append(text)
+    return segments
+
+
+def _msg_text(message: Any) -> str:
+    """**单条** ``Msg`` 的纯文本（``content`` 可能是 str 或内容块列表），按块序无分隔相连。
+
+    它回答的是「把这条消息读成一串」，不是「一轮的落库正文」。谁用哪个：
+
+    - **一轮的落库正文**一律走 :func:`_round_body`（按块序、段间空行、每段 trim）：本轮累积
+      assistant 消息里可能有**多段**用户可见正文，无分隔地连起来会把两句话粘成一句。
+    - ``_msg_text`` 留给**单条**消息的取文本场景（team 轮次的成员结论、事件路径上的文本摘要）：
+      那些地方要的就是「这条消息说了什么」，不是「这一轮交付了什么」。
+    """
+    return "".join(_text_segments(message))
 
 
 def _round_assistant_message(state_context: Sequence[Any] | None, reply: Any) -> Any:
@@ -2419,30 +2426,16 @@ def _round_body(state_context: Sequence[Any] | None, reply: Any) -> str:
 
     正本为什么不是 ``reply`` 参数本身：AgentScope 的 ReAct 循环里，一轮 = ``state.context`` 尾部
     那**一条**累积 assistant ``Msg``，每次模型调用的块都 append 进去（``AgentState.append_context``）。
-    模型常常「正文 → 工具调用 → 正文」，而最终 ``Msg`` 只带**最后一跳**的块；只读它会静默丢掉前面的
-    正文（#219：任务线程的进展简报没落库，落库的只有「上面就是这轮的实质进展简报」）。
+    模型常常「正文 → 工具调用 → 正文」，而最终 ``Msg`` 只带**最后一次模型调用**的块；只读它会静默
+    丢掉前面的正文（#219：任务线程的进展简报没落库，落库的只有「上面就是这轮的实质进展简报」）。
 
-    只拼 ``text`` 块：``hint`` / ``thinking`` / ``tool_call`` / ``tool_result`` / ``data`` 都不是用户
-    可见正文（它们没有 ``text`` 属性，这里也不按类型白名单去认）。段间用一个空行分隔，每段先
-    ``strip()``、空段跳过，因此不会产生连续空行或首尾空白。没有任何正文时返回 ``""``——空正文 ⇒
+    哪些块算正文由 :func:`_text_segments` 判定。段间用一个空行分隔，每段先 ``strip()``、空段跳过，
+    因此不会产生连续空行或首尾空白（这条对单段同样生效）。没有任何正文时返回 ``""``——空正文 ⇒
     ``ignored`` 的既有路径不变。
 
     调用点是 :meth:`AgentScopeAgentSeam._outcome_from_reply` 的两条收口分支（正常完成与
     ``exceed_max_iters``）：一轮仍只落**一条**消息，变的是这条消息的正文取哪几段。
     """
     message = _round_assistant_message(state_context, reply)
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        # 纯字符串正文只可能是**一段**（框架也允许这种形状）：单条消息的取文本工具就够。
-        return _msg_text(message).strip()
-    if not isinstance(content, list):
-        return ""
-    segments: list[str] = []
-    for block in content:
-        text = block if isinstance(block, str) else getattr(block, "text", None)
-        if not isinstance(text, str):
-            continue
-        stripped = text.strip()
-        if stripped:
-            segments.append(stripped)
-    return "\n\n".join(segments)
+    stripped = (segment.strip() for segment in _text_segments(message))
+    return "\n\n".join(segment for segment in stripped if segment)
