@@ -1264,7 +1264,10 @@ function renderTabs() {
     tab.classList.toggle('is-active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
   });
-  $('#msgCount').textContent = target ? renderedMessages().length : 0;
+  // 「消息」页签计数的**唯一**写入点（#225）：派生自当前 target 的 `unread_count`（后端未读口径，
+  // 与左栏未读徽标 / 任务指针 chip 同一份事实），不是消息流条数。没有 target 时按 0 写，
+  // 与「任务」页签同一形态；未读为 0 也照写 0，不隐藏计数节点。
+  $('#msgCount').textContent = target ? target.unread_count : 0;
   renderTaskCount();
 }
 
@@ -3706,7 +3709,8 @@ async function submitTask() {
     const payload = await api(channelPath(channelId, '/tasks'), { method: 'POST', body: { title } });
     closeTaskModal();
     // 建任务在频道流里留下一条 system 指针消息（#198）：把它当作一条到达的消息吸收，
-    // 于是「消息 N」页签计数立刻 +1，人不用等下一次整页刷新。其它频道只对齐频道列表读数。
+    // 于是消息流立刻出现该行，人不用等下一次整页刷新（system 不计未读，页签读数不变）。
+    // 其它频道只对齐频道列表读数。
     // 任务先补进快照：chip 的未读数读 `taskById(...).unread_count`（#223），快照没到就按 0 处理，
     // 不显示计数段。
     if (payload.message) {
@@ -7183,7 +7187,7 @@ function renderMessages(options) {
   });
   replaceChildren($('#messageList'), nodes);
   if (!(options && options.approvals === false)) renderChannelApprovals(approvals, approvalTargetId);
-  // 页签里的消息计数就是「消息流条数」，与这一处渲染同一个来源，因此跟着它一起刷新。
+  // 页签计数跟着消息面重铺一起刷新（计数本身读 target 的未读数，见 `renderTabs()`）。
   renderTabs();
 }
 
