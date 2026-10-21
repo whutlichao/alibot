@@ -595,7 +595,11 @@ live `approval_*` 帧仍只补本次会话内的变化。
 ./scripts/check.sh            # 全量门禁：pytest + ruff check + ruff format --check + mypy + pyright + node --test（glob）
 ./scripts/check.sh --fast     # 开发循环：除全量 pytest 外的一切（秒级）
 ./scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（路径相对 app/）
+./scripts/check.sh --studio   # Studio 窄档：--fast + 审批 HTTP 契约 + 前端静态守卫（diff 只在 studio/** + *.test.cjs）
 ```
+
+`--studio` 不替代 CI 的全量 pytest；动到 `.py` / schema / 构建配置时仍用全量。红证据（隔离基线
+上的先失败后通过）用 `scripts/red-evidence.sh <base-rev> <test-file>`，它不会碰当前工作区。
 
 `pytest` 是 HTTP + SSE 黑盒契约测试（每条用例独立临时数据目录）；ruff / mypy / pyright 的配置分别
 在 `app/pyproject.toml` / 仓库根 `mypy.ini` / 仓库根 `pyrightconfig.json`。**不要在命令行补 `-q`**
