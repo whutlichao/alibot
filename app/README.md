@@ -416,8 +416,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 - **workspace_root 不在数据目录内**：它指向用户的**项目目录**，不进入整目录备份的复制。**备份数据目录
   ≠ 备份项目文件**——项目文件要用户自己备份（见上面的备份口径）。
 - **两个后端**：`local`（默认）或 `docker`（每 Agent/会话一个容器，`host_workdir=workspace_root`，
-  容器内固定根 `/workspace`；另把该成员的**全局家目录**与**公共技能库**只读挂到 `/alibot-home/agents/<member_id>`
-  与 `/alibot-home/skills`，数据目录不进容器，宿主目录缺失则该条挂载跳过）。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
+  容器内固定根 `/workspace`；另把该成员的**全局家目录**与**公共技能库**只读挂到
+  `/alibot-home/agents/<member_id>` 与 `/alibot-home/skills`，数据目录不进容器，宿主目录缺失则
+  跳过该条挂载）。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
   逐次审批、无沙箱；默认只开受限文件工具。Docker 里的 Bash 在容器内，不需要那条本地通道。
 - **Docker 不可用时是显式失败**：没有 daemon / 镜像起不来 ⇒ 该成员状态点 **`offline`**、
   `enabled_reason` 可读，**绝不静默回落本地 shell**；失败原因短 TTL 缓存（改配置会立即清掉重试），

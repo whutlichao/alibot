@@ -69,11 +69,13 @@
 
 ## 门禁读数
 
+合并集成分支最新 tip（`1fcf08e merge(#233)`）后，从 worktree 根运行：
+
 ```sh
 scripts/check.sh --fast
 # ruff check: All checks passed!
-# ruff format --check: 292 files already formatted
-# mypy（仓库根）: Success: no issues found in 119 source files
+# ruff format --check: 295 files already formatted
+# mypy（仓库根）: Success: no issues found in 120 source files
 # pyright: 0 errors, 0 warnings, 0 informations
 # node --test（glob）: tests 258 / pass 258 / fail 0
 # 门禁全绿
@@ -98,4 +100,9 @@ docker info --format '{{.ServerVersion}}'
 - 宿主 bind 源只做 `abspath`、不做 `realpath`：挂载源来自 HOME 派生的固定两级路径，规格未要求
   对 bind 源做守卫；全局层**读取**的根外 symlink 防护仍由 #230 的 `resolve_global_read_path` 承担。
 - 零 schema 变更：未改 `app/alibot/db.py`，`SCHEMA_VERSION` 仍为 23。
+- **集成分支合入**：收尾时 `git merge --no-ff agent-home-layers-integration` 合入 `1fcf08e
+  merge(#233)`（MCP 声明三层合并）。合并后重跑上述受影响 pytest（`101 passed, 8 skipped`）与
+  `scripts/check.sh --fast`（门禁全绿）。合入的 #233 在 `app/alibot/agent_seam.py` 留了一个
+  `ruff format --check` 会拒绝的空行（`_with_assembly_notes` 之后），本票顺手补一个空行修正；
+  除这一行空白外未改动 #233 的代码。
 - 范围外未做：全局规则 / 技能 / 记忆 / MCP 的装配语义、数据目录解析、任何新文件工具根、权限档变更。

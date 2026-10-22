@@ -1295,6 +1295,7 @@ class AgentScopeAgentSeam:
 
         def _with_assembly_notes(reason: str) -> str:
             return "\n".join([reason, *assembly_notes]) if assembly_notes else reason
+
         # 这一轮那个 Agent 的 ``state.context``：本轮累积 assistant 消息在这里，落库正文以它为
         # 正本（:func:`_round_body`）。它在 ``asyncio.run`` 的协程 ``finally`` 里被赋值一次，
         # 收口在同一个线程读——不把 ``instance`` 本身带出协程（那会让 loop 关闭后的引用悬着）。
