@@ -711,6 +711,9 @@ def create_app(
             mcp_of=database.mcp_servers_for_target,
             # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
             skills_of=database.skills_for_target,
+            # 未合并的项目技能两层（#232）：保留「频道级被 Agent 级覆盖」的落选行，供四层合并
+            # 生成运行期提示；返回形状是新增路径，既有 ``skills_for_target`` 语义不变。
+            skill_layers_of=database.skill_layers_for_target,
             # 联网配置（#186 / ADR-0026 §二）：``web_access`` 未配置时不挂任何联网工具。这条读路径
             # **不经过** workspace——两个配置位同级但不同开关（频道没配项目根时联网仍可生效）。
             web_of=database.web_settings_for_target,
