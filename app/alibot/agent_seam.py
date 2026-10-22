@@ -647,8 +647,10 @@ class AgentScopeAgentSeam:
         permission_of: Callable[[str, str], Any] | None = None,
         mcp_of: Callable[[str, str], Any] | None = None,
         skills_of: Callable[[str, str], Any] | None = None,
+        skill_layers_of: Callable[[str, str], Any] | None = None,
         web_of: Callable[[str, str], Any] | None = None,
         global_home: str | os.PathLike[str] | None = None,
+        global_mcp_consent_of: Callable[[str], bool] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
         usage_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -675,11 +677,19 @@ class AgentScopeAgentSeam:
         # 字节在频道项目根的 ``.alibot/skills/`` 下，装配层再核一次 hash。不注入时这一轮不挂
         # Skill——未配置技能的工作区行为逐字不变。
         self._skills_of = skills_of
+        # 未合并的项目技能读路径（#232）：生产是 ``Database.skill_layers_for_target``。它保留
+        # 「项目频道级被项目 Agent 级覆盖」的行，装配层才能为落选者生成提示；未注入时退回
+        # ``skills_of`` 的已合并结果（行为与 #232 之前逐字相同）。
+        self._skill_layers_of = skill_layers_of
         # 全局层读路径（#230 / ADR-0031 Seam A）：生产是 ``workspace.global_home_root()``，
         # 测试传临时全局根。**默认 None** = 未接线，这一轮的三段规则里只剩
         # ``agent_config.system_prompt``，行为与 #230 之前逐字相同。全局层只读、不建目录、
         # 不进入文件工具根。
         self._global_home = str(global_home) if global_home is not None else None
+        # 全局远端 MCP 的确认状态读路径（#233 / ADR-0031 §三）：生产是
+        # ``Database.has_remote_consent_scope('mcp', 合成标识)``。**默认 None** = 远端全局条目
+        # 一律按未确认处理（不连接，运行期读数给出可读原因）；它只读既有确认行，不写库。
+        self._global_mcp_consent_of = global_mcp_consent_of
         # 联网配置读路径（#186）：生产是 ``Database.web_settings_for_target``（``web_access`` /
         # 权限档 / 已确认的 web provider）。**不挂在 workspace 上面**——``web_access`` 是独立配
         # 置位，频道没配项目根时它也生效（ADR-0026 §二）。不注入时这一轮不挂联网工具。
@@ -827,17 +837,53 @@ class AgentScopeAgentSeam:
             "agent_rules": [],
         }
 
-    def _mcp_declarations(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """本轮启用的 MCP 声明；未注入读路径时为空。读路径失败只记 debug，不拖垮一轮。"""
-        if self._mcp_of is None:
-            return []
-        try:
-            return [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
-        except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
-            _log.debug("mcp declaration lookup failed", exc_info=True)
-            return []
+    def _mcp_declarations(self, target_id: str, member_id: str, notes: list[str]) -> list[dict[str, Any]]:
+        """本轮胜出的 MCP 声明（项目 Agent 级 → 项目频道级 → 全局成员家目录）。
 
-    async def _assemble_mcp(self, target_id: str, member_id: str, mount: Any, session_id: str) -> Any:
+        未注入读路径 / 读路径失败时项目层为空，不拖垮一轮。全局层是**纯文件**、只读；同名
+        落选条目各追加一条只进 ``RoundOutcome.reason`` 的可读提示（名字 + 胜出层），**不进**
+        provider system prompt。
+        """
+        project_rows: list[dict[str, Any]] = []
+        if self._mcp_of is not None:
+            try:
+                project_rows = [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
+            except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
+                _log.debug("mcp declaration lookup failed", exc_info=True)
+        agent_rows = [row for row in project_rows if str(row.get("scope_kind") or "agent") == "agent"]
+        channel_rows = [row for row in project_rows if str(row.get("scope_kind") or "") == "channel"]
+        global_rows: list[dict[str, Any]] = []
+        if self._global_home is not None:
+            from .mcp import load_global_mcp_declarations
+
+            global_rows = load_global_mcp_declarations(
+                self._global_home, member_id, consent_of=self._global_mcp_consent_of
+            )
+        from .mcp import merge_mcp_layers
+
+        winners, losers = merge_mcp_layers(
+            (("agent", agent_rows), ("channel", channel_rows), ("global", global_rows))
+        )
+        locale = self._locale()
+        for name, layer in losers:
+            notes.append(
+                render(
+                    "mcp.assembly.shadowed",
+                    locale,
+                    name=name,
+                    layer=render(f"mcp.layer.{layer}", locale),
+                )
+            )
+        return winners
+
+    async def _assemble_mcp(
+        self,
+        target_id: str,
+        member_id: str,
+        mount: Any,
+        session_id: str,
+        notes: list[str],
+    ) -> Any:
         """把声明挂到这一轮的工作区；任何失败都只影响 MCP 工具，不改变轮次结论。"""
         from .mcp import MCPAssembly, assemble_mcp_tools
 
@@ -848,7 +894,7 @@ class AgentScopeAgentSeam:
         try:
             return await assemble_mcp_tools(
                 mount.workspace,
-                self._mcp_declarations(target_id, member_id),
+                self._mcp_declarations(target_id, member_id, notes),
                 member_id=member_id,
                 session_id=session_id,
                 environ=self._environ,
@@ -873,16 +919,94 @@ class AgentScopeAgentSeam:
             _log.debug("skill lookup failed", exc_info=True)
             return []
 
-    def _skills_for(self, target_id: str, member_id: str, settings: Any) -> list[Any]:
-        """把启用技能读成 AgentScope ``Skill``；Docker 后端的 ``dir`` 指向容器内挂载路径。"""
+    def _skill_layers(self, target_id: str, member_id: str) -> list[tuple[str, list[dict[str, Any]]]]:
+        """项目层两级的**未合并**行（Agent 级在频道级之前）；读失败只记 debug。"""
+        from .skills import SKILL_LAYER_PROJECT_AGENT, SKILL_LAYER_PROJECT_CHANNEL
+
+        if self._skill_layers_of is not None:
+            try:
+                raw = self._skill_layers_of(target_id, member_id) or {}
+            except Exception:  # 配置读不出来等价于没有项目技能；不阻塞其他工具
+                _log.debug("skill layer lookup failed", exc_info=True)
+                raw = {}
+            if isinstance(raw, Mapping):
+                return [
+                    (
+                        SKILL_LAYER_PROJECT_AGENT,
+                        [dict(item) for item in raw.get("agent") or []],
+                    ),
+                    (
+                        SKILL_LAYER_PROJECT_CHANNEL,
+                        [dict(item) for item in raw.get("channel") or []],
+                    ),
+                ]
+        # 未注入未合并读路径：退回既有已合并结果，仅按 scope_kind 分层（落选者已在库层丢失）。
         rows = self._skill_rows(target_id, member_id)
-        if not rows or settings is None:
+        return [
+            (
+                SKILL_LAYER_PROJECT_AGENT,
+                [row for row in rows if row.get("scope_kind") == "agent"],
+            ),
+            (
+                SKILL_LAYER_PROJECT_CHANNEL,
+                [row for row in rows if row.get("scope_kind") != "agent"],
+            ),
+        ]
+
+    def _skills_for(
+        self,
+        target_id: str,
+        member_id: str,
+        settings: Any,
+        notes: list[str] | None = None,
+    ) -> list[Any]:
+        """按四层归属装配技能：项目 Agent 级 → 项目频道级 → 全局成员家目录 → 全局公共库。
+
+        - 无项目根（私信 / 未配置 workspace）⇒ 零技能，既有门控逐字不变；
+        - 全局层只在有项目根时读取；全局根未接线或目录缺失 ⇒ 该层零条，不创建目录；
+        - 同名只装配胜出的一条；每个落选条目追加一条只进 ``RoundOutcome.reason`` 的提示
+          （``notes``），**不**进入 provider 的 system prompt。
+        """
+        if settings is None:
             return []
-        from .skills import load_skills
+        from .skills import (
+            SKILL_LAYER_GLOBAL_MEMBER,
+            SKILL_LAYER_GLOBAL_PUBLIC,
+            load_global_skills,
+            load_skills,
+            merge_skill_layers,
+        )
         from .workspace import DOCKER_WORKDIR
 
         container_root = DOCKER_WORKDIR if settings.is_docker else None
-        return load_skills(rows, root=settings.root, container_root=container_root)
+        # 各层**声明**（项目层行含 enabled，全局层是已校验的文件技能）按优先级合并；
+        # 先排出胜出者再过滤 enabled：停用的项目 Agent 级仍挡住同名频道级（既有语义）。
+        layers: list[tuple[str, Sequence[Any]]] = [
+            (layer, rows) for layer, rows in self._skill_layers(target_id, member_id)
+        ]
+        if self._global_home is not None:
+            global_layers = load_global_skills(self._global_home, member_id, docker=settings.is_docker)
+            layers.append((SKILL_LAYER_GLOBAL_MEMBER, global_layers[SKILL_LAYER_GLOBAL_MEMBER]))
+            layers.append((SKILL_LAYER_GLOBAL_PUBLIC, global_layers[SKILL_LAYER_GLOBAL_PUBLIC]))
+
+        winners, merged_notes = merge_skill_layers(layers, locale=self._locale())
+        if notes is not None:
+            notes.extend(merged_notes)
+
+        project_rows: list[dict[str, Any]] = []
+        file_skills: list[Any] = []
+        for _layer, entry in winners:
+            if isinstance(entry, Mapping):
+                if entry.get("enabled", True):
+                    project_rows.append(dict(entry))
+            else:
+                file_skills.append(entry)
+        project_skills = (
+            load_skills(project_rows, root=settings.root, container_root=container_root)
+            if project_rows
+            else []
+        )
+        return [*project_skills, *file_skills]
 
     def _rule_layers(self, member_id: str, project_root: str | None) -> tuple[str | None, str | None]:
         """本轮的两段文件规则：``(全局基座, 项目补充)``（ADR-0031 §二）。
@@ -1171,6 +1295,14 @@ class AgentScopeAgentSeam:
         member_names = {member_internal_name(member_id): member_id}
         reply_members: dict[str, str] = {}
         workspace_warnings: list[str] = []
+        # 装配层的运行期提示（#232 技能四层落选 / #233 落选 MCP）：**只**拼进
+        # ``RoundOutcome.reason``，绝不进 provider system prompt（``workspace_warnings``
+        # 会同时进两处，不能复用它）。
+        assembly_notes: list[str] = []
+
+        def _with_assembly_notes(reason: str) -> str:
+            return "\n".join([reason, *assembly_notes]) if assembly_notes else reason
+
         # 这一轮那个 Agent 的 ``state.context``：本轮累积 assistant 消息在这里，落库正文以它为
         # 正本（:func:`_round_body`）。它在 ``asyncio.run`` 的协程 ``finally`` 里被赋值一次，
         # 收口在同一个线程读——不把 ``instance`` 本身带出协程（那会让 loop 关闭后的引用悬着）。
@@ -1232,7 +1364,9 @@ class AgentScopeAgentSeam:
                     # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
                     # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
                     if mount is not None:
-                        mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
+                        mcp_assembly = await self._assemble_mcp(
+                            target_id, member_id, mount, session_id, assembly_notes
+                        )
 
                 runtime_options, state_store, memory_tools = self._prepare_runtime_options(
                     agent, target_id, context, str(root) if root else None, mount, self._global_home
@@ -1264,7 +1398,7 @@ class AgentScopeAgentSeam:
                     silence_declarations=silence_declarations,
                     workspace_tools=workspace_tools or None,
                     web_tools=web_tools,
-                    skills=self._skills_for(target_id, member_id, settings),
+                    skills=self._skills_for(target_id, member_id, settings, assembly_notes),
                     with_plan=plan is not None,
                 )
                 if toolkit is not None:
@@ -1427,7 +1561,9 @@ class AgentScopeAgentSeam:
             self._record_usage(None, agent, target_id)
             return RoundOutcome(
                 status="failed",
-                reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
+                reason=_with_assembly_notes(
+                    render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}")
+                ),
             )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
             from .approval import ApprovalWaitTimeout
@@ -1437,17 +1573,25 @@ class AgentScopeAgentSeam:
             if isinstance(error, ApprovalWaitTimeout):
                 return RoundOutcome(
                     status="failed",
-                    reason=render("seam.approval_timeout", self._locale(), seconds=f"{error.seconds:.0f}"),
+                    reason=_with_assembly_notes(
+                        render(
+                            "seam.approval_timeout",
+                            self._locale(),
+                            seconds=f"{error.seconds:.0f}",
+                        )
+                    ),
                 )
             if isinstance(error, DockerWorkspaceUnavailable):
-                return RoundOutcome(status="failed", reason=str(error))
+                return RoundOutcome(status="failed", reason=_with_assembly_notes(str(error)))
             return RoundOutcome(
                 status="failed",
-                reason=render(
-                    "seam.call_failed",
-                    self._locale(),
-                    type=type(error).__name__,
-                    error=error,
+                reason=_with_assembly_notes(
+                    render(
+                        "seam.call_failed",
+                        self._locale(),
+                        type=type(error).__name__,
+                        error=error,
+                    )
                 ),
             )
 
@@ -1455,7 +1599,7 @@ class AgentScopeAgentSeam:
         outcome = self._outcome_from_reply(
             reply, task_actions, silence_declarations, state_context=round_context
         )
-        outcome.reason = "\n".join([outcome.reason, *workspace_warnings])
+        outcome.reason = "\n".join([outcome.reason, *workspace_warnings, *assembly_notes])
         return outcome
 
     def _run_team_round_stream(
@@ -1507,6 +1651,13 @@ class AgentScopeAgentSeam:
         names.setdefault(member_internal_name(member_id), member_id)
         reply_members: dict[str, str] = {}
         workspace_warnings: list[str] = []
+        # 每个成员各自的技能/MCP 落选提示；只进 ``RoundOutcome.reason``，不进任何 system prompt。
+        assembly_notes: list[str] = []
+
+        def _with_assembly_notes(reason: str) -> str:
+            # 同一提示可能来自多个成员：按出现顺序去重，避免队长的 reason 里重复同一行。
+            notes = list(dict.fromkeys(assembly_notes))
+            return "\n".join([reason, *notes]) if notes else reason
 
         async def _round() -> Any:
             from agentscope.event import (
@@ -1573,7 +1724,11 @@ class AgentScopeAgentSeam:
                     mounts.append(mount)
                     tools.extend(mount.tools)
                     assembly = await self._assemble_mcp(
-                        target_id, member_id_value, mount, session_partition_id(member_id_value, target_id)
+                        target_id,
+                        member_id_value,
+                        mount,
+                        session_partition_id(member_id_value, target_id),
+                        assembly_notes,
                     )
                     mcp_assemblies.append(assembly)
                     tools.extend(assembly.tools)
@@ -1599,7 +1754,7 @@ class AgentScopeAgentSeam:
                 settings = self._workspace_settings(target_id, member_id_value)
                 if settings is None:
                     return []
-                return self._skills_for(target_id, member_id_value, settings)
+                return self._skills_for(target_id, member_id_value, settings, assembly_notes)
 
             def _build_agent(
                 member: dict[str, Any],
@@ -1863,28 +2018,32 @@ class AgentScopeAgentSeam:
             self._record_usage(None, agent, target_id)
             return RoundOutcome(
                 status="failed",
-                reason=render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}"),
+                reason=_with_assembly_notes(
+                    render("seam.timeout", self._locale(), seconds=f"{self.timeout_seconds:.0f}")
+                ),
             )
         except Exception as error:  # 框架 / 网络 / 凭证的任何失败都收口成一轮 failed
             from .workspace import DockerWorkspaceUnavailable
 
             self._record_usage(None, agent, target_id)
             if isinstance(error, DockerWorkspaceUnavailable):
-                return RoundOutcome(status="failed", reason=str(error))
+                return RoundOutcome(status="failed", reason=_with_assembly_notes(str(error)))
             return RoundOutcome(
                 status="failed",
-                reason=render(
-                    "seam.call_failed",
-                    self._locale(),
-                    type=type(error).__name__,
-                    error=error,
+                reason=_with_assembly_notes(
+                    render(
+                        "seam.call_failed",
+                        self._locale(),
+                        type=type(error).__name__,
+                        error=error,
+                    )
                 ),
             )
         if reply is None:
             self._record_usage(None, agent, target_id)
             return RoundOutcome(
                 status="failed",
-                reason=render("seam.team_no_leader_reply", self._locale()),
+                reason=_with_assembly_notes(render("seam.team_no_leader_reply", self._locale())),
             )
         self._record_usage(reply, agent, target_id)
         # 队长轮次不用另传上下文：``_final_reply_message`` 返回的就是队长 ``state.context`` 里
@@ -1892,7 +2051,7 @@ class AgentScopeAgentSeam:
         # ``reply`` 时读到的就是这一轮的全部正文段。成员的消息只作为 ``ToolResult`` 回到队长、
         # 不落 target 消息（D2），因此这里也不需要成员的上下文。
         outcome = self._outcome_from_reply(reply, task_actions, silence_declarations)
-        outcome.reason = "\n".join([outcome.reason, *workspace_warnings])
+        outcome.reason = "\n".join([outcome.reason, *workspace_warnings, *dict.fromkeys(assembly_notes)])
         return outcome
 
     def _record_usage(self, reply: Any, agent: Mapping[str, Any], target_id: str) -> None:

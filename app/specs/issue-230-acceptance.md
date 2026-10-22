@@ -21,6 +21,7 @@
 | 11 | 为后续票提供 Docker 全局挂载点常量与成员家目录解析 | `workspace.GLOBAL_HOME_DIRNAME`、`DOCKER_GLOBAL_HOME`、`global_member_home`、`docker_global_member_home`、`docker_global_skills_home` | `test_global_member_home_and_docker_mount_constants` |
 | 12 | **下游复用入口**：#232 技能 / #233 `mcp.json` / #234 记忆共用同一道只读守卫，不各写一套 realpath 检查 | `workspace.resolve_global_read_path(root, *parts)`（公开；与 `_read_layer_text` 共用 `_resolve_read_path` 内核，只读、不创建） | `test_resolve_global_read_path_guards_and_returns_only_existing_paths`（合法路径 / 缺失 / 根外祖先 symlink / 根外目标 symlink / 调用前后目录清单不变） |
 | 13 | 测试 HOME 与全局根都指向临时目录；零 schema 变更、`SCHEMA_VERSION` 不 bump | 测试 `isolated_home` autouse fixture；未改 `db.py` | `git diff 357aa89 -- app/alibot/db.py` 为 0 行；`SCHEMA_VERSION` 仍为 23 |
+| 14 | **测试卫生**：所有 pytest 进程的 HOME（及 Windows 的 `USERPROFILE`）指向 `tmp_path_factory` 临时目录，走真实 seam 的 HTTP 用例不可能读到开发者的真实 `~/.alibot` | `app/tests/conftest.py` 的 `_isolate_home`（session autouse） | `app/tests/test_home_isolation.py::test_home_is_isolated_to_the_pytest_temporary_root`（红：`HOME 没有被指向 pytest 临时根：/Users/apple`；绿：通过） |
 
 ### 段落标签
 
@@ -44,12 +45,18 @@
 ../.venv/bin/python -m pytest tests/test_global_rules.py
 # 18 passed in 6.81s
 
-../.venv/bin/python -m pytest tests/test_global_rules.py tests/test_skill_assembly.py \
-  tests/test_local_workspace.py tests/test_agent_round.py tests/test_team_mode.py \
-  tests/test_team_budget.py tests/test_team_visibility.py tests/test_team_task_threads.py \
-  tests/test_plan.py tests/test_sop.py tests/test_web_assembly.py \
-  tests/test_test_layering_guard.py tests/test_agentscope_usage_guard.py
-# 177 passed in 38.91s
+../.venv/bin/python -m pytest tests/test_home_isolation.py tests/test_global_rules.py \
+  tests/test_data_dir_resolution.py tests/test_agent_smoke.py
+# 红（fixture 之前）：AssertionError: HOME 没有被指向 pytest 临时根：/Users/apple
+# 绿（fixture 之后）：26 passed, 1 skipped in 14.56s
+
+../.venv/bin/python -m pytest tests/test_global_rules.py tests/test_data_dir_resolution.py \
+  tests/test_skill_assembly.py tests/test_local_workspace.py tests/test_agent_round.py \
+  tests/test_team_mode.py tests/test_team_budget.py tests/test_team_visibility.py \
+  tests/test_team_task_threads.py tests/test_plan.py tests/test_sop.py \
+  tests/test_web_assembly.py tests/test_test_layering_guard.py \
+  tests/test_agentscope_usage_guard.py
+# 185 passed in 46.06s（已合入集成分支 #231 的 tip）
 ```
 
 ## 门禁读数
@@ -59,14 +66,14 @@
 ```sh
 scripts/check.sh --fast
 # ruff check: All checks passed!
-# ruff format --check: 286 files already formatted
-# mypy（仓库根）: Success: no issues found in 116 source files
+# ruff format --check: 290 files already formatted
+# mypy（仓库根）: Success: no issues found in 118 source files
 # pyright: 0 errors, 0 warnings, 0 informations
 # node --test（glob）: tests 258 / pass 258 / fail 0
 # 门禁全绿
 
 scripts/check.sh
-# 全量：pytest + 上述各段 + node --test → 门禁全绿
+# 全量：pytest 1088 passed, 10 skipped + ruff / format / mypy / pyright / node 全绿 → 门禁全绿
 ```
 
 ## 范围与偏差
