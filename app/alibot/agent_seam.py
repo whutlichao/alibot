@@ -650,6 +650,7 @@ class AgentScopeAgentSeam:
         skill_layers_of: Callable[[str, str], Any] | None = None,
         web_of: Callable[[str, str], Any] | None = None,
         global_home: str | os.PathLike[str] | None = None,
+        global_mcp_consent_of: Callable[[str], bool] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
         usage_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -685,6 +686,10 @@ class AgentScopeAgentSeam:
         # ``agent_config.system_prompt``，行为与 #230 之前逐字相同。全局层只读、不建目录、
         # 不进入文件工具根。
         self._global_home = str(global_home) if global_home is not None else None
+        # 全局远端 MCP 的确认状态读路径（#233 / ADR-0031 §三）：生产是
+        # ``Database.has_remote_consent_scope('mcp', 合成标识)``。**默认 None** = 远端全局条目
+        # 一律按未确认处理（不连接，运行期读数给出可读原因）；它只读既有确认行，不写库。
+        self._global_mcp_consent_of = global_mcp_consent_of
         # 联网配置读路径（#186）：生产是 ``Database.web_settings_for_target``（``web_access`` /
         # 权限档 / 已确认的 web provider）。**不挂在 workspace 上面**——``web_access`` 是独立配
         # 置位，频道没配项目根时它也生效（ADR-0026 §二）。不注入时这一轮不挂联网工具。
@@ -825,17 +830,53 @@ class AgentScopeAgentSeam:
             "agent_rules": [],
         }
 
-    def _mcp_declarations(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """本轮启用的 MCP 声明；未注入读路径时为空。读路径失败只记 debug，不拖垮一轮。"""
-        if self._mcp_of is None:
-            return []
-        try:
-            return [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
-        except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
-            _log.debug("mcp declaration lookup failed", exc_info=True)
-            return []
+    def _mcp_declarations(self, target_id: str, member_id: str, notes: list[str]) -> list[dict[str, Any]]:
+        """本轮胜出的 MCP 声明（项目 Agent 级 → 项目频道级 → 全局成员家目录）。
 
-    async def _assemble_mcp(self, target_id: str, member_id: str, mount: Any, session_id: str) -> Any:
+        未注入读路径 / 读路径失败时项目层为空，不拖垮一轮。全局层是**纯文件**、只读；同名
+        落选条目各追加一条只进 ``RoundOutcome.reason`` 的可读提示（名字 + 胜出层），**不进**
+        provider system prompt。
+        """
+        project_rows: list[dict[str, Any]] = []
+        if self._mcp_of is not None:
+            try:
+                project_rows = [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
+            except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
+                _log.debug("mcp declaration lookup failed", exc_info=True)
+        agent_rows = [row for row in project_rows if str(row.get("scope_kind") or "agent") == "agent"]
+        channel_rows = [row for row in project_rows if str(row.get("scope_kind") or "") == "channel"]
+        global_rows: list[dict[str, Any]] = []
+        if self._global_home is not None:
+            from .mcp import load_global_mcp_declarations
+
+            global_rows = load_global_mcp_declarations(
+                self._global_home, member_id, consent_of=self._global_mcp_consent_of
+            )
+        from .mcp import merge_mcp_layers
+
+        winners, losers = merge_mcp_layers(
+            (("agent", agent_rows), ("channel", channel_rows), ("global", global_rows))
+        )
+        locale = self._locale()
+        for name, layer in losers:
+            notes.append(
+                render(
+                    "mcp.assembly.shadowed",
+                    locale,
+                    name=name,
+                    layer=render(f"mcp.layer.{layer}", locale),
+                )
+            )
+        return winners
+
+    async def _assemble_mcp(
+        self,
+        target_id: str,
+        member_id: str,
+        mount: Any,
+        session_id: str,
+        notes: list[str],
+    ) -> Any:
         """把声明挂到这一轮的工作区；任何失败都只影响 MCP 工具，不改变轮次结论。"""
         from .mcp import MCPAssembly, assemble_mcp_tools
 
@@ -846,7 +887,7 @@ class AgentScopeAgentSeam:
         try:
             return await assemble_mcp_tools(
                 mount.workspace,
-                self._mcp_declarations(target_id, member_id),
+                self._mcp_declarations(target_id, member_id, notes),
                 member_id=member_id,
                 session_id=session_id,
                 environ=self._environ,
@@ -1247,12 +1288,13 @@ class AgentScopeAgentSeam:
         member_names = {member_internal_name(member_id): member_id}
         reply_members: dict[str, str] = {}
         workspace_warnings: list[str] = []
-        # 技能四层合并的落选提示（#232）：只拼进 ``RoundOutcome.reason``，**不**进 system prompt。
+        # 装配层的运行期提示（#232 技能四层落选 / #233 落选 MCP）：**只**拼进
+        # ``RoundOutcome.reason``，绝不进 provider system prompt（``workspace_warnings``
+        # 会同时进两处，不能复用它）。
         assembly_notes: list[str] = []
 
         def _with_assembly_notes(reason: str) -> str:
             return "\n".join([reason, *assembly_notes]) if assembly_notes else reason
-
         # 这一轮那个 Agent 的 ``state.context``：本轮累积 assistant 消息在这里，落库正文以它为
         # 正本（:func:`_round_body`）。它在 ``asyncio.run`` 的协程 ``finally`` 里被赋值一次，
         # 收口在同一个线程读——不把 ``instance`` 本身带出协程（那会让 loop 关闭后的引用悬着）。
@@ -1314,7 +1356,9 @@ class AgentScopeAgentSeam:
                     # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
                     # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
                     if mount is not None:
-                        mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
+                        mcp_assembly = await self._assemble_mcp(
+                            target_id, member_id, mount, session_id, assembly_notes
+                        )
 
                 runtime_options, state_store, memory_tools = self._prepare_runtime_options(
                     agent, target_id, context, str(root) if root else None, mount
@@ -1599,7 +1643,7 @@ class AgentScopeAgentSeam:
         names.setdefault(member_internal_name(member_id), member_id)
         reply_members: dict[str, str] = {}
         workspace_warnings: list[str] = []
-        # 每个成员各自的四层合并落选提示；只进 ``RoundOutcome.reason``，不进任何 system prompt。
+        # 每个成员各自的技能/MCP 落选提示；只进 ``RoundOutcome.reason``，不进任何 system prompt。
         assembly_notes: list[str] = []
 
         def _with_assembly_notes(reason: str) -> str:
@@ -1672,7 +1716,11 @@ class AgentScopeAgentSeam:
                     mounts.append(mount)
                     tools.extend(mount.tools)
                     assembly = await self._assemble_mcp(
-                        target_id, member_id_value, mount, session_partition_id(member_id_value, target_id)
+                        target_id,
+                        member_id_value,
+                        mount,
+                        session_partition_id(member_id_value, target_id),
+                        assembly_notes,
                     )
                     mcp_assemblies.append(assembly)
                     tools.extend(assembly.tools)
