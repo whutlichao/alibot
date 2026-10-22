@@ -258,11 +258,20 @@ def test_project_layers_keep_both_scopes_while_the_merged_reader_is_unchanged(
     layers = database.mcp_layers_for_target(channel_id, agent_id)
 
     # 优先级从高到低（Agent 级在前），同名两条都在：合并与落选提示由装配层负责。
-    assert [(row["scope_kind"], row["name"], row["command"]) for row in layers] == [
+    # 层内顺序没有契约：`created_at` 只有毫秒精度、`id` 是随机前缀，同一毫秒插入的两行
+    # 先后不确定（`ORDER BY created_at, id`），因此只断言「Agent 级整体在频道级之前」与内容。
+    assert len(layers) == 3
+    seen_channel = False
+    for row in layers:
+        if row["scope_kind"] == "agent":
+            assert not seen_channel, layers
+        else:
+            seen_channel = True
+    assert {(row["scope_kind"], row["name"], row["command"]) for row in layers} == {
         ("agent", "shared", "agent-cmd"),
         ("channel", "shared", "channel-cmd"),
         ("channel", "channel-only", "channel-only-cmd"),
-    ]
+    }
     # 既有合并读路径保持原形状：同名只留 Agent 级那一条。
     merged = database.mcp_servers_for_target(channel_id, agent_id)
     assert len(merged) == 2
