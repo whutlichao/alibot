@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import os
 import posixpath
 import re
@@ -29,6 +30,7 @@ import time
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agentscope.message import TextBlock, ToolResultState
@@ -38,10 +40,26 @@ from agentscope.workspace import DockerBackend, DockerWorkspace, LocalWorkspace,
 
 from .i18n import SOURCE_LOCALE, Locale, render
 
+_log = logging.getLogger(__name__)
+
 #: 本仓共享的框架状态命名空间（规格 §3.6）：与用户项目文件分开。
 ALIBOT_DIR = ".alibot"
 AGENTS_DIR = "agents"
 SESSIONS_DIR = "sessions"
+
+#: 全局层（Agent 家目录）根的目录名：固定挂在用户 HOME 下（ADR-0031），
+#: **不随** ``--data-dir`` / ``ALIBOT_DATA_DIR`` 移动。
+GLOBAL_HOME_DIRNAME = ".alibot"
+
+#: Docker 容器内的全局层挂载点前缀（ADR-0031 §三）。本票只提供常量与路径解析，
+#: bind 落地由后续票负责；它**不是**文件工具的根。
+DOCKER_GLOBAL_HOME = "/alibot-home"
+
+#: 规则落点：全局基座 ``agents/<member_id>/rules/AGENTS.md``；项目补充
+#: ``.alibot/rules/<member_id>/AGENTS.md``。
+RULES_DIR = "rules"
+RULES_FILE = "AGENTS.md"
+SKILLS_DIR = "skills"
 
 #: Docker 工作区在容器内的固定根（AgentScope ``DockerWorkspace.workdir``）。
 DOCKER_WORKDIR = "/workspace"
@@ -210,6 +228,120 @@ def resolve_in_root(raw: Any, root: str) -> str:
     if not _within(real, root):
         raise WorkspaceRootViolation(raw, root)
     return real
+
+
+def global_home_root(environ: Mapping[str, str] | None = None) -> str:
+    """全局层根：固定为 ``<HOME>/.alibot``（ADR-0031）。
+
+    它**只**看 HOME，**不读** ``--data-dir`` / ``ALIBOT_DATA_DIR``：数据目录覆盖只改变数据
+    目录本身，不移动全局层。
+    """
+    source = os.environ if environ is None else environ
+    home = str(source.get("HOME") or "").strip()
+    if not home:
+        home = os.path.expanduser("~")
+    return os.path.join(home, GLOBAL_HOME_DIRNAME)
+
+
+def global_member_home(member_id: str, *, root: str | None = None) -> str:
+    """成员家目录 ``<全局根>/agents/<member_id>``（Agent 家目录解析的唯一入口）。"""
+    base = root if root is not None else global_home_root()
+    return os.path.join(base, AGENTS_DIR, safe_partition_id(member_id))
+
+
+def docker_global_member_home(member_id: str) -> str:
+    """容器内成员家目录 ``/alibot-home/agents/<member_id>``（后续票的只读挂载目标）。"""
+    return posixpath.join(DOCKER_GLOBAL_HOME, AGENTS_DIR, safe_partition_id(member_id))
+
+
+def docker_global_skills_home() -> str:
+    """容器内公共技能库挂载点 ``/alibot-home/skills``（后续票的只读挂载目标）。"""
+    return posixpath.join(DOCKER_GLOBAL_HOME, SKILLS_DIR)
+
+
+def _resolve_read_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """只读路径守卫的内核：``(realpath, None)`` 或 ``(None, 原因)``。
+
+    原因只有两种：``escape``（根外 symlink 祖先 / 根外目标）与 ``absent``（不存在）。
+    """
+    root_real = os.path.realpath(root)
+    candidate = os.path.join(root_real, *parts)
+    real = os.path.realpath(candidate)
+    if not _within(real, root_real):
+        return None, "escape"
+    if not os.path.exists(real):
+        return None, "absent"
+    return real, None
+
+
+def resolve_global_read_path(root: str, *parts: str) -> str | None:
+    """全局层**公开只读守卫**（#232 技能 / #233 MCP / #234 记忆共用）。
+
+    以 ``root`` 自己的 ``realpath`` 为根，拒绝根外 symlink 祖先与根外目标；路径不存在
+    （含父目录缺失、断链）返回 ``None``，调用方按「该层缺席」处理。它**只读**：不创建、
+    不写入任何目录或文件，也不把这一层变成文件工具的工作根。
+    """
+    if not root:
+        return None
+    real, _reason = _resolve_read_path(root, parts)
+    return real
+
+
+def _read_layer_text(root: str | None, parts: tuple[str, ...], *, layer: str) -> str | None:
+    """只读读取一层里的一份文本；任何降级都返回 ``None`` 并记一条可读日志。
+
+    守卫与 :func:`resolve_global_read_path` **共用同一个内核**：以**自己的根**做
+    ``realpath``，根外 symlink 祖先与根外目标一律拒绝（ADR-0031 §三）。缺失 / 不可读 /
+    非 UTF-8 都只是「这一段缺席」，不创建目录、不写占位、不阻断本轮。
+    """
+    if root is None:
+        return None
+    root_real = os.path.realpath(root)
+    real, reason = _resolve_read_path(root_real, parts)
+    if real is None:
+        candidate = os.path.join(root_real, *parts)
+        if reason == "escape":
+            _log.warning("%s rule path escapes its root: %s", layer, candidate)
+        else:
+            _log.info("%s rule file is absent: %s", layer, candidate)
+        return None
+    try:
+        data = Path(real).read_bytes()
+    except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
+        _log.info("%s rule file is absent: %s", layer, real)
+        return None
+    except OSError as error:
+        _log.warning("%s rule file is unreadable: %s (%s)", layer, real, error)
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        _log.warning("%s rule file is not UTF-8: %s (%s)", layer, real, error)
+        return None
+    if not text:
+        _log.info("%s rule file is empty: %s", layer, real)
+        return None
+    return text
+
+
+def read_global_rules(global_root: str, member_id: str) -> str | None:
+    """读取全局基座 ``agents/<member_id>/rules/AGENTS.md``；缺席时返回 ``None``。"""
+    return _read_layer_text(
+        global_root,
+        (AGENTS_DIR, safe_partition_id(member_id), RULES_DIR, RULES_FILE),
+        layer="global layer",
+    )
+
+
+def read_project_rules(project_root: str | None, member_id: str) -> str | None:
+    """读取项目补充 ``.alibot/rules/<member_id>/AGENTS.md``；无项目根时直接缺席。"""
+    if project_root is None:
+        return None
+    return _read_layer_text(
+        project_root,
+        (ALIBOT_DIR, RULES_DIR, safe_partition_id(member_id), RULES_FILE),
+        layer="project layer",
+    )
 
 
 def _reject_dotdot_segments(pattern: Any, root: str) -> None:
