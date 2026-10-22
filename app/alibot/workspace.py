@@ -27,7 +27,7 @@ import posixpath
 import re
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -259,6 +259,24 @@ def docker_global_skills_home() -> str:
     return posixpath.join(DOCKER_GLOBAL_HOME, SKILLS_DIR)
 
 
+def docker_global_binds(member_id: str, *, global_root: str | None = None) -> tuple[tuple[str, str], ...]:
+    """全局层的两条只读 bind 规格 ``(宿主源, 容器内目标)``，顺序固定。
+
+    - 成员家目录 ``<全局根>/agents/<member_id>`` → ``/alibot-home/agents/<member_id>``；
+    - 公共技能库 ``<全局根>/skills`` → ``/alibot-home/skills``。
+
+    宿主目录**不存在就跳过**该条，且这里**只判断、不创建**（ADR-0031：全局层是人的维护面，
+    不能依赖 Docker daemon 对不存在的 bind 源自动建目录）。数据目录（``<全局根>/data``）与
+    全局根整根都**不在**返回结果里。
+    """
+    base = global_root if global_root is not None else global_home_root()
+    candidates = (
+        (global_member_home(member_id, root=base), docker_global_member_home(member_id)),
+        (os.path.join(base, SKILLS_DIR), docker_global_skills_home()),
+    )
+    return tuple((host, target) for host, target in candidates if os.path.isdir(host))
+
+
 def _resolve_read_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
     """只读路径守卫的内核：``(realpath, None)`` 或 ``(None, 原因)``。
 
@@ -449,6 +467,10 @@ class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
     #: 频道级的容器出网开关；缺省 ``False``，于是「忘记赋值」也不会放开出网。
     docker_egress: bool = False
 
+    #: 全局层只读 bind 规格 ``(宿主源, 容器内目标)``；由装配点在 ``initialize()`` 之前赋值，
+    #: 缺省空元组 = 没有全局层（不创建目录、不挂载）。
+    global_binds: tuple[tuple[str, str], ...] = ()
+
     async def _create_and_start_container(self) -> None:
         """覆写上游创建路径，把 ``HostConfig.NetworkMode`` 写进容器配置（#187）。
 
@@ -466,6 +488,7 @@ class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
             env=self.env,
             host_workdir=self.host_workdir,
             network_mode=docker_network_mode(self.docker_egress),
+            global_binds=self.global_binds,
         )
         self._container = await self._client.containers.create_or_replace(
             name=f"as_ws_{self.workspace_id}",
@@ -586,13 +609,18 @@ def docker_container_config(
     env: Mapping[str, str] | None,
     host_workdir: str | None,
     network_mode: str,
+    global_binds: Sequence[tuple[str, str]] = (),
 ) -> dict[str, Any]:
-    """容器配置 dict（含 ``HostConfig``）：上游 2.0.10 的构造 + 网络策略。
+    """容器配置 dict（含 ``HostConfig``）：上游 2.0.10 的构造 + 网络策略 + 全局层只读挂载。
 
     逐字对齐 ``DockerWorkspace._create_and_start_container`` 的 config（镜像 / ``sleep infinity`` /
-    working dir / label / env / bind mount），唯一多出来的是 ``HostConfig["NetworkMode"]``——
-    上游**没有任何**网络参数位（``create_or_replace(config=…)`` 也不接收）。抽成纯函数是为了让
-    「网络模式与 bind mount 都写进了容器配置」这条判据**不需要 daemon** 就能断言。
+    working dir / label / env / bind mount），唯一多出来的是 ``HostConfig["NetworkMode"]`` 与
+    ``global_binds`` 追加的只读条目——上游**没有任何**网络或额外 bind 的参数位
+    （``create_or_replace(config=…)`` 也不接收）。抽成纯函数是为了让「网络模式与 bind mount 都写进了
+    容器配置」这条判据**不需要 daemon** 就能断言。
+
+    ``global_binds`` 每项是 ``(宿主源, 容器内目标)``，按给定顺序追加在 ``/workspace:rw`` 之后，
+    统一带 ``:ro``；调用方（:func:`docker_global_binds`）已剔除不存在的宿主目录。
     """
     config: dict[str, Any] = {
         "Image": image_tag,
@@ -607,8 +635,13 @@ def docker_container_config(
         config["Env"] = [f"{name}={value}" for name, value in env.items()]
 
     host_config: dict[str, Any] = {"NetworkMode": network_mode}
+    binds: list[str] = []
     if host_workdir is not None:
-        host_config["Binds"] = [f"{os.path.abspath(host_workdir)}:{DOCKER_WORKDIR}:rw"]
+        binds.append(f"{os.path.abspath(host_workdir)}:{DOCKER_WORKDIR}:rw")
+    for host_source, container_target in global_binds:
+        binds.append(f"{os.path.abspath(host_source)}:{container_target}:ro")
+    if binds:
+        host_config["Binds"] = binds
     config["HostConfig"] = host_config
     return config
 
@@ -733,6 +766,7 @@ class _DockerEntry:
     active: int = 0
     image: str | None = None
     egress: bool = False
+    global_binds: tuple[tuple[str, str], ...] = ()
 
 
 _pool: dict[tuple[str, str], _DockerEntry] = {}
@@ -901,6 +935,8 @@ async def assemble_docker_workspace(
     key = (member, session)
     workspace_id = docker_workspace_id(member, session)
     container_name = f"as_ws_{workspace_id}"
+    # 全局层只读 bind 规格（宿主目录缺失则少一条）；在池复用判定与 initialize() 之前算好。
+    global_binds = docker_global_binds(member)
 
     # CI（Linux runner）回归：容器以 root 创建 `/workspace/.alibot/...`，bind mount 上这些
     # 目录的属主是容器 root；host 在 initialize 之后再 `makedirs` 会拿 PermissionError。
@@ -916,10 +952,13 @@ async def assemble_docker_workspace(
     with _pool_lock:
         pooled = _pool.get(key)
     if pooled is not None and (
-        pooled.image != settings.docker_image or pooled.egress != settings.docker_egress
+        pooled.image != settings.docker_image
+        or pooled.egress != settings.docker_egress
+        or pooled.global_binds != global_binds
     ):
-        # 配置写路径改了镜像 / 出网开关：池里的容器按旧配置建的，不能复用（否则「改了配置却没
-        # 生效」）。删掉旧容器后按新配置重建；镜像本身不随容器删除。
+        # 配置写路径改了镜像 / 出网开关，或全局层目录后来才建（bind 规格变化）：池里的容器按
+        # 旧配置建的，不能复用（否则「改了配置却没生效」）。删掉旧容器后按新配置重建；
+        # 镜像本身不随容器删除。
         with _pool_lock:
             if _pool.get(key) is pooled:
                 _pool.pop(key, None)
@@ -970,8 +1009,9 @@ async def assemble_docker_workspace(
         options["base_image"] = image
 
     workspace = ProjectDockerWorkspace(**options)
-    # 出网开关必须在 initialize() 之前赋值：容器就是在那一步创建的（#187）。
+    # 出网开关与全局 bind 都必须在 initialize() 之前赋值：容器就是在那一步创建的（#187 / #235）。
     workspace.docker_egress = settings.docker_egress
+    workspace.global_binds = global_binds
     try:
         await asyncio.wait_for(workspace.initialize(), timeout=timeout)
     except Exception as error:
@@ -996,6 +1036,7 @@ async def assemble_docker_workspace(
         active=1,
         image=image,
         egress=settings.docker_egress,
+        global_binds=global_binds,
     )
     with _pool_lock:
         _pool[key] = entry
