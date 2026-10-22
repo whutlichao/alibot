@@ -70,6 +70,33 @@ def _sanitize_proxy_environment() -> Iterator[None]:
                 os.environ[key] = value
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """把 HOME 指向临时目录：测试绝不读写开发者的真实 ``~/.alibot``。
+
+    ADR-0031 的全局层根固定为 ``$HOME/.alibot``（只看 HOME，不随 ``--data-dir`` 移动），
+    #230 的 ``create_app`` 又无条件接线它。若测试不隔离 HOME，一台已经建过全局层的开发机
+    会让所有走真实 seam 的 HTTP 用例读到真实规则；本机 / CI 恰好没有该目录时不会红，于是这是
+    一个只在开发机上发作的隐性依赖（规格 T1 / #230 的测试卫生判据）。
+
+    ``USERPROFILE`` 一并隔离：Windows 的 ``os.path.expanduser('~')`` 走的是它。子进程用例
+    若自己传 HOME（如 ``test_data_dir_resolution``），仍以它自己的临时 HOME 为准。
+    """
+    home = tmp_path_factory.mktemp("home")
+    keys = ("HOME", "USERPROFILE")
+    saved = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ[key] = str(home)
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def build_app(
     data_dir: Path,
     scheduler: ManualScheduler | None = None,
