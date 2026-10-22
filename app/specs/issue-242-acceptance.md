@@ -33,10 +33,10 @@
 | 1 | 无规则时 `ask-writes` / `trusted-writes` 下 `fetch` 判定 **ALLOW** | `web.py` `fetch_tool()` 给 `FetchTool` 传 `permission=PermissionDecision(behavior=ALLOW, …)`（`FunctionTool.__init__` 的既有参数，AgentScope 2.0.10 实测支持） | `pytest tests/test_permissions.py -k "allowed_without_rules"` | `1 passed`：两档均 `ALLOW` |
 | 2 | `read-only` 下仍 **DENY**（且不装配） | 装配闸门 `settings.get("mode") != "read-only"` 逐字未动；EXPLORE 不调用 `check_permissions` | 同上 + `pytest tests/test_web_assembly.py -k read_only` | `ALLOW`/`ALLOW`/`DENY`；`fetch not in tools` |
 | 3 | **deny 规则仍拒绝、ask 规则仍拉回审批**（本票最关键的判据） | 规则判定在工具 `check_permissions` **之前**（引擎顺序：deny → ask → 只读 → 工具 → allow → 兜底）；`match_rule` 未改 | `pytest tests/test_permissions.py -k "win_over_the_tools_own_allow"` | `1 passed`：两种写档下 deny → `DENY`、ask → `ASK`；未命中的 host 仍 `ALLOW` |
-| 4 | 装配层：`fetch` 直接执行、无审批记录 | 无规则路径 | `pytest tests/test_web_assembly.py -k "runs_without_approval"` | `1 passed`：1 条出网请求、`list_approval_requests == []`、无 `REQUIRE_USER_CONFIRM` 事件 |
+| 4 | 装配层：`fetch` 直接执行、无审批记录 | 无规则路径 | `pytest tests/test_web_assembly.py -k "runs_without_approval"` | `2 passed`：1 条出网请求、`list_approval_requests == []`、无 `REQUIRE_USER_CONFIRM` 事件 |
 | 5 | 装配层：ask 规则存在时仍走审批 | `_run_with_decision` 等真实 `ApprovalBroker` | `pytest tests/test_web_assembly.py -k "ask_rule_still"` | `1 passed`：审批记录 `denied`、被拒绝的 host 零请求 |
 | 6 | 装配层：deny 规则仍零请求 | 同上 | `pytest tests/test_web_assembly.py -k "deny_rule_blocks"` | `1 passed`：零请求、无审批记录（deny 不是审批） |
-| 7 | 装配闸门四条逐字保留；`'off'` / `'search'` / DM 行为不变 | `agent_seam._web_tools()` 只改了注释措辞，四条闸门未动 | `pytest tests/test_web_assembly.py` | `47 passed`（含 `off` / `search` / DM / 能力闸门 / 容器出网） |
+| 7 | 装配闸门四条逐字保留；`'off'` / `'search'` / DM 行为不变 | `agent_seam._web_tools()` 只改了注释措辞，四条闸门未动 | `pytest tests/test_web_assembly.py` | `21 passed`（含 `off` / `search` / DM / 能力闸门 / 容器出网） |
 | 8 | 系统提示如实描述 | `agent_seam._web_prompt_note()` | `pytest tests/test_web_assembly.py -k "mounts_both"` | `1 passed`：提示仍含「暴露给第三方」，不再声称逐次审批 |
 | 9 | `i18n.js` zh-CN / en 成对更新 | `agent.webAccessSearchFetchHint`、`channelConfig.webAccess.search+fetchNote` 各两表共 4 处 | `node --test app/tests/i18n_ui.test.cjs app/tests/agent_detail_ui.test.cjs app/tests/channel_config_ui.test.cjs` | `105 passed`（键集成对 / 无空值 / 参数位一致 / 无裸中文） |
 | 10 | ADR-0026 追加修订节，不改既有节正文 | `docs/adr/0026-…md` 追加「修订（2026-10-22，#242）」§十六：明确推翻 §三表格两行与 §三末段「它默认 ASK」，保留「不设 bypass_immune」「host 级规则可表达」，写明理由与 `read-only` 不变 | `tail -30 docs/adr/0026-…md` | 见 §4 |
