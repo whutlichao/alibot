@@ -419,6 +419,8 @@ ADR 已记录数据面扩大；实施票需要新增一个人脸确认入口（�
 
 ## 10. Answer（本票收口）
 
+本 worktree 内没有独立的票据正本文件；Answer 落在本设计笔记，并由 `worker_done` 摘要报告 coordinator。
+
 ### 10.1 交付物
 
 | 文件 | 动作 |
@@ -455,7 +457,7 @@ Q7 与推荐不同（人定允许远端），设计按人定执行并在 ADR 里
 
 | 项 | 读数 |
 | --- | --- |
-| 提交序列 | `c9d5291`（设计与 ADR）→ `e84ee58`（Answer 回填）→ `62a58f1`（Agent 词条对齐）→ `5010599`（边界表述收紧，内容定稿） |
+| 提交序列 | `c9d5291`（设计与 ADR）→ `e84ee58`（Answer 回填）→ `62a58f1`（Agent 词条对齐）→ `5010599`（边界表述收紧，内容定稿）；其后仅 Answer / PR 回填提交 |
 | 改动 | 内容定稿时 `git diff --stat origin/main...HEAD`：3 files changed, **672 insertions(+)**, **11 deletions(-)**（`CONTEXT.md`、ADR-0031、本设计笔记；不含本 Answer 回填本身） |
 | 源码 / 测试 / 迁移 / CI | 零改动；`SCHEMA_VERSION` 仍为 **23**，未 bump |
 | PR | **#227**（`https://github.com/whutlichao/alibot/pull/227`），base `main`，head `alibot-home-layout-design` |
