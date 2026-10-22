@@ -184,8 +184,8 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg>
           </button>
           <!-- 频道头部的**运行面板入口**（#155 / 规格 §4.6）：成员过程 / 分派 / Plan / SOP 的
-               只读过程面。它是右侧 dock 的**第四形态**（与成员面板 / 任务线程 / Agent 详情
-               共用同一个 380px 容器），频道与任务线程都能打开；私信下由 app.js 隐藏。 -->
+               只读过程面。它是右侧 dock 的**第三种形态**（与成员面板 / 任务线程共用同一个
+               380px 容器），频道与任务线程都能打开；私信下由 app.js 隐藏。 -->
           <button class="icon-btn" id="btnRunPanel" type="button" data-od-id="btn-run-panel" data-i18n-attr="title:runPanel.entryTitle,aria-label:runPanel.entryTitle" title="运行面板" aria-label="运行面板">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" /></svg>
           </button>
@@ -307,11 +307,45 @@
         <div class="composer-note" data-i18n="composer.note">消息不可编辑、不可删除，是永久记录 · 本机单用户，后端只监听 loopback · 启用远端模型前会先告知出境数据面</div>
       </div>
     </footer>
+
+    <!-- Agent 详情是**主线视图**（`state.mode === 'agent'`）：它占据整条右侧，dock 让位。
+         所有详情区块在同一页纵向铺开（事实 / 当前状态 / 配置 / 运行时 / 全局 MCP / 系统提示），
+         没有页签：可编辑字段直接长在「配置」区块里，底部出现固定保存条（只有草稿与后端读数
+         不一致时才显示）。区块内容全部是后端读数或草稿，因此由 `app.js` 渲染；这里只有骨架。
+         事实的每个数字都来自后端既有事实（`GET /api/agents/{id}` 的 `stats`，由 `round_outcome`
+         与任务行聚合）；运行时**只**呈现 `agent_config` 里真实存在的字段——原型的内存 / 延迟 /
+         工具权限 / 温度 / Token 消耗 / 上下文占用一律不出现（本仓没有那些数据面）。 -->
+    <section class="agent-page" id="viewAgent" hidden data-od-id="agent-detail">
+      <div class="agent-page-head" data-od-id="agent-detail-head">
+        <div class="dock-id">
+          <div class="meta">
+            <div class="agent-page-name"><span id="adName"></span> <span class="dock-tag" data-i18n="agentDetail.tag" data-od-id="agent-detail-tag">Agent</span></div>
+            <div class="dock-role"><span class="presence" id="adPresence"></span><span id="adStatusText"></span></div>
+          </div>
+          <button class="icon-btn" type="button" id="btnAgentDetailClose" data-i18n-attr="aria-label:agentDetail.closeAria" aria-label="关闭 Agent 详情" data-od-id="btn-agent-detail-close">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+          </button>
+        </div>
+      </div>
+      <div class="agent-page-scroll">
+        <div class="agent-page-inner" id="adBody" data-od-id="agent-detail-body"></div>
+      </div>
+      <!-- 底部保存条：只在草稿与后端读数不一致时出现（`hidden` 由 app.js 裁决）。
+           它是页面级的固定条，不随 `#adBody` 的整块重铺消失——因此错误原文与焦点不会被换掉。 -->
+      <div class="agent-save-bar" id="adSaveBar" hidden data-od-id="agent-detail-save-bar">
+        <span class="agent-save-note" data-i18n="agentDetail.unsaved">有未保存的改动</span>
+        <div class="form-error" id="adSaveError" hidden role="alert"></div>
+        <span class="sep"></span>
+        <button class="btn" type="button" id="adDiscard" data-i18n="agentDetail.discard" data-od-id="agent-detail-discard">放弃</button>
+        <button class="btn btn-primary" type="button" id="adSave" data-i18n="agentDetail.save" data-od-id="agent-detail-save">保存</button>
+      </div>
+    </section>
   </main>
 
-  <!-- ─── 右侧详情面板：**双形态**容器（原型 `.dock` 的做法）：
-       `#dockAgent` 频道成员（默认）与 `#dockTask` 任务线程，由 app.js 按当前形态切换显示。
-       任务线程的入口是看板卡片，不是页签——「点卡片 → dock 出线程」是同一组交互。 ─── -->
+  <!-- ─── 右侧详情面板：**三形态**容器（原型 `.dock` 的做法）：
+       `#dockAgent` 频道成员（默认）、`#dockTask` 任务线程与 `#dockRun` 运行面板，由 app.js
+       按当前形态切换显示。任务线程的入口是看板卡片，不是页签——「点卡片 → dock 出线程」
+       是同一组交互。Agent 详情**不在**这里：它是主线视图 `#viewAgent`（整条右侧，dock 让位）。 ─── -->
   <aside class="dock" id="dock" hidden data-od-id="detail-dock" data-i18n-attr="aria-label:dock.label" aria-label="详情面板">
     <div class="dock-agent" id="dockAgent">
       <div class="dock-head">
@@ -406,7 +440,7 @@
         </div>
       </div>
     </div>
-    <!-- dock 形态 D：**运行面板**（#155 / 规格 §4.6）——与「频道成员」「任务线程」「Agent 详情」
+    <!-- dock 形态 C：**运行面板**（#155 / 规格 §4.6）——与「频道成员」「任务线程」
          共用同一个 380px 容器。频道与任务线程都能打开（入口分别是频道头的 `#btnRunPanel`
          与任务线程头的 `#btnThreadRunPanel`）。正文整段由 app.js 铺：按 team_run / member
          分组的分派与耗时、live `agent_event` 流、Plan 三态、SOP 步骤与 verdict。
@@ -427,31 +461,6 @@
         </div>
       </div>
       <div class="dock-scroll" id="rpBody" data-od-id="run-panel-body"></div>
-    </div>
-    <!-- dock 形态 C：**Agent 详情**（本票）——与「频道成员」「任务线程」共用同一个 380px 容器。
-         只有「概览」「运行时」两个页签：**日志页签不做**（用户人定 D24，另立 backlog 票 #72）。
-         概览的每个数字都来自后端既有事实（`GET /api/agents/{id}` 的 `stats`，由 `round_outcome`
-         与任务行聚合）；运行时**只**呈现 `agent_config` 里真实存在的字段——原型的内存 / 延迟 /
-         工具权限 / 温度 / Token 消耗 / 上下文占用一律不出现（本仓没有那些数据面）。
-         两页的内容都是后端读数，因此由 `app.js` 渲染；这里只有骨架与两个页签。 -->
-    <div class="agent-detail" id="dockDetail" hidden data-od-id="agent-detail">
-      <div class="dock-head" data-od-id="agent-detail-head">
-        <div class="dock-id">
-          <div class="meta">
-            <div class="dock-name"><span id="adName"></span> <span class="dock-tag" data-i18n="agentDetail.tag" data-od-id="agent-detail-tag">Agent</span></div>
-            <div class="dock-role"><span class="presence" id="adPresence"></span><span id="adStatusText"></span></div>
-          </div>
-          <button class="icon-btn" type="button" id="btnAgentDetailClose" data-i18n-attr="aria-label:agentDetail.closeAria" aria-label="关闭 Agent 详情" data-od-id="btn-agent-detail-close">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-          </button>
-        </div>
-      </div>
-      <div class="dock-tabs" role="tablist" data-i18n-attr="aria-label:agentDetail.tabsLabel" aria-label="Agent 详情视图" data-od-id="agent-detail-tabs">
-        <button class="dock-tab is-active" type="button" role="tab" id="adTabOverview" data-adtab="overview" aria-selected="true" aria-controls="adOverview" data-i18n="agentDetail.tabOverview" data-od-id="agent-detail-tab-overview">概览</button>
-        <button class="dock-tab" type="button" role="tab" id="adTabRuntime" data-adtab="runtime" aria-selected="false" aria-controls="adRuntime" data-i18n="agentDetail.tabRuntime" data-od-id="agent-detail-tab-runtime">运行时</button>
-      </div>
-      <div class="dock-scroll" id="adOverview" role="tabpanel" aria-labelledby="adTabOverview" data-od-id="agent-detail-overview"></div>
-      <div class="dock-scroll" id="adRuntime" role="tabpanel" aria-labelledby="adTabRuntime" hidden data-od-id="agent-detail-runtime"></div>
     </div>
   </aside>
 </div>
@@ -831,136 +840,6 @@
       <span class="sep"></span>
       <button class="btn" type="button" id="remindersCancel" data-i18n="common.cancel">取消</button>
       <button class="btn btn-primary" type="button" id="reminderAddSubmit" data-i18n="reminder.add" data-od-id="reminder-add">添加提醒</button>
-    </div>
-  </div>
-</div>
-
-<!-- ─── 编辑 Agent 配置（`PATCH /api/agents/{id}` 的人类面入口，ADR-0011） ─────
-     字段集 = 端点的**可写字段**（显示名 / 角色 / 模型标识 / 系统提示 / 启用状态 / 自动认领任务 /
-     联网档），一个不多一个不少。改到远端 provider 时沿用与「新建 Agent」同形的**远端数据流告知**块（同一套
-     「未确认就不发起远端调用」语义；保存后状态点由后端推导为未启用）。
-     这里只写配置：不落消息、不唤醒、不消耗预算（「自动认领」也同此——它只影响**之后新建**的任务）。 -->
-<div class="overlay" id="agentEditOverlay" hidden data-od-id="agent-edit-overlay">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="agentEditTitle" data-od-id="agent-edit-modal">
-    <div class="modal-head">
-      <div style="flex:1">
-        <h2 id="agentEditTitle" data-i18n="agentDetail.editTitle" data-od-id="agent-edit-title">编辑配置</h2>
-        <div class="sub" data-i18n="agentDetail.editSub">保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。</div>
-      </div>
-      <button class="icon-btn" type="button" id="agentEditClose" data-i18n-attr="aria-label:common.close" aria-label="关闭" data-od-id="agent-edit-close">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-      </button>
-    </div>
-    <div class="modal-body" data-od-id="agent-edit-body">
-      <div class="field">
-        <label for="agentEditName" data-i18n="agent.nameLabel">名称</label>
-        <input class="input" id="agentEditName" autocomplete="off" data-od-id="agent-edit-name" />
-      </div>
-      <div class="field">
-        <label for="agentEditRole" data-i18n="agent.roleLabel">角色</label>
-        <input class="input" id="agentEditRole" autocomplete="off" data-od-id="agent-edit-role" />
-      </div>
-      <div class="field">
-        <label for="agentEditProviderSelect" data-i18n="agent.providerLabel">模型提供商</label>
-        <select class="input" id="agentEditProviderSelect" data-od-id="agent-edit-provider"></select>
-        <div class="hint" id="agentEditProviderHint"></div>
-      </div>
-      <div class="field">
-        <label for="agentEditModelInput" data-i18n="agent.modelLabel">模型名</label>
-        <input class="input" id="agentEditModelInput" autocomplete="off" data-od-id="agent-edit-model" />
-        <div class="hint"><span data-i18n="agent.modelHintPrefix">保存为 </span><span class="mono">provider:model</span><span data-i18n="agent.modelHintSuffix"> 形式的模型标识。</span></div>
-      </div>
-      <div class="field">
-        <label for="agentEditPromptInput" data-i18n="agent.promptLabel">系统提示</label>
-        <textarea class="textarea" id="agentEditPromptInput" data-od-id="agent-edit-prompt"></textarea>
-      </div>
-      <div class="field">
-        <label data-i18n="agent.enabledLabel">启用状态</label>
-        <div class="radio-row" id="agentEditEnabled" role="group" data-od-id="agent-edit-enabled">
-          <button class="radio-card" type="button" data-enabled="on" data-od-id="agent-edit-enabled-on">
-            <b data-i18n="agent.enabledOn">启用</b>
-            <span data-i18n="agent.enabledOnHint">正常参与频道与任务</span>
-          </button>
-          <button class="radio-card" type="button" data-enabled="off" data-od-id="agent-edit-enabled-off">
-            <b data-i18n="agent.enabledOff">停用</b>
-            <span data-i18n="agent.enabledOffHint">不产出回复</span>
-          </button>
-        </div>
-        <div class="hint" data-i18n="agentDetail.pauseNote">暂停只写配置：它仍会被唤醒并留下一条可读原因的失败轮次结果，只是不产出回复。</div>
-      </div>
-      <div class="field">
-        <label data-i18n="agent.autoClaimLabel">自动认领任务</label>
-        <div class="radio-row" id="agentEditAutoClaim" role="group" data-od-id="agent-edit-auto-claim">
-          <button class="radio-card" type="button" data-auto-claim="on" data-od-id="agent-edit-auto-claim-on">
-            <b data-i18n="agent.autoClaimOn">开启</b>
-            <span data-i18n="agent.autoClaimOnHint">新建任务后由编排接手</span>
-          </button>
-          <button class="radio-card" type="button" data-auto-claim="off" data-od-id="agent-edit-auto-claim-off">
-            <b data-i18n="agent.autoClaimOff">关闭</b>
-            <span data-i18n="agent.autoClaimOffHint">新建任务保持未认领</span>
-          </button>
-        </div>
-        <div class="hint" data-i18n="agent.autoClaimNote">开启后：频道内新建的任务由编排交给它（一次只认领一个）；认领会写一条可读的系统记录、唤醒它，并为该任务重置一次回应预算——每张任务至多一次。</div>
-      </div>
-      <div class="field">
-        <label for="agentEditMemory"><input type="checkbox" id="agentEditMemory" /> <span data-i18n="agent.memoryLabel">长期记忆</span></label>
-        <div class="hint" data-i18n="agent.memoryHint">在本机记忆目录保存 Markdown，供这个 Agent 跨会话读取。</div>
-      </div>
-      <div class="field">
-        <label for="agentEditContextWindow" data-i18n="agent.contextWindow">上下文条数</label>
-        <input class="input" type="number" min="1" step="1" id="agentEditContextWindow" placeholder="40" />
-      </div>
-      <div class="field">
-        <label for="agentEditContextTrigger" data-i18n="agent.contextTrigger">上下文压缩阈值</label>
-        <input class="input" type="number" min="0.01" max="0.9" step="0.01" id="agentEditContextTrigger" placeholder="0.7" />
-      </div>
-      <div class="field">
-        <label for="agentEditMaxIters" data-i18n="agent.maxIters">最大迭代次数</label>
-        <input class="input" type="number" min="1" step="1" id="agentEditMaxIters" placeholder="30" />
-        <div class="hint" data-i18n="agent.runtimeDefaultHint">数值留空时跟随默认配置。</div>
-      </div>
-      <!-- 联网档（#202 / 2026-10-21 修订）：Agent 级入口。「跟随频道（默认）」= 不写 Agent 级覆盖，
-           选中它保存时提交 `web_access: null`（库内列回到 NULL）；其余三档与频道设置里的同名同义。
-           私聊没有频道可跟随，读路径回退默认档 `search`；DM 不装配 `fetch`。 -->
-      <div class="field">
-        <label data-i18n="agent.webAccessLabel">联网</label>
-        <div class="radio-row" id="agentEditWebAccess" role="group" data-od-id="agent-edit-web-access">
-          <button class="radio-card" type="button" data-web-access="follow" data-od-id="agent-edit-web-access-follow">
-            <b data-i18n="agent.webAccessFollow">跟随频道（默认）</b>
-            <span data-i18n="agent.webAccessFollowHint">清除 Agent 级覆盖；私聊按默认档</span>
-          </button>
-          <button class="radio-card" type="button" data-web-access="off" data-od-id="agent-edit-web-access-off">
-            <b data-i18n="agent.webAccessOff">关闭</b>
-            <span data-i18n="agent.webAccessOffHint">不挂任何联网工具</span>
-          </button>
-          <button class="radio-card" type="button" data-web-access="search" data-od-id="agent-edit-web-access-search">
-            <b data-i18n="agent.webAccessSearch">只搜索</b>
-            <span data-i18n="agent.webAccessSearchHint">挂 web_search；查询词会离开本机</span>
-          </button>
-          <button class="radio-card" type="button" data-web-access="search+fetch" data-od-id="agent-edit-web-access-search-fetch">
-            <b data-i18n="agent.webAccessSearchFetch">搜索+抓取</b>
-            <span data-i18n="agent.webAccessSearchFetchHint">额外挂 fetch；每次抓取都要审批</span>
-          </button>
-        </div>
-        <div class="hint" data-i18n="agent.webAccessNote">跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。</div>
-      </div>
-      <div class="remote-notice" id="agentEditRemoteNotice" hidden data-od-id="edit-remote-notice">
-        <div class="remote-notice-head">
-          <span class="dot"></span>
-          <b id="agentEditRemoteTitle" data-i18n="agent.remoteTitleStatic">启用远端模型前需要你确认一次</b>
-        </div>
-        <p class="remote-notice-body" id="agentEditRemoteBody"></p>
-        <div class="remote-notice-foot">
-          <span class="hint" id="agentEditRemoteHint"></span>
-          <button class="btn btn-sm btn-primary" id="agentEditRemoteConfirm" type="button" data-i18n="agent.remoteConfirm" data-od-id="edit-remote-ack">我已了解，确认发送</button>
-        </div>
-      </div>
-      <div class="form-error" id="agentEditFormError" hidden role="alert"></div>
-    </div>
-    <div class="modal-foot">
-      <span class="sep"></span>
-      <button class="btn" type="button" id="agentEditCancel" data-i18n="common.cancel">取消</button>
-      <button class="btn btn-primary" type="button" id="agentEditSubmit" data-i18n="agentDetail.save" data-od-id="agent-edit-submit">保存</button>
     </div>
   </div>
 </div>

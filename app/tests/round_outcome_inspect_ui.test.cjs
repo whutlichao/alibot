@@ -6,10 +6,10 @@
  *
  * 断言只落在**外部可观察行为**上：
  * 1. 失败块里的按钮由**自己**携带失败成员的 id（不写死成员、不按名字匹配）；
- * 2. dock 收起时点它，打开的是**该成员**的详情：`GET /api/agents/<member_id>` 被请求，
- *    dock 切到 detail 形态；
- * 3. dock 已经停在**另一个成员**的详情时点它，仍切到失败成员（这是本票修复的行为）；
- * 4. dock 停在运行面板时点它，run 面板被收掉（否则下一次整体重绘会盖回 run）。
+ * 2. 点它打开的是**该成员**的整页详情：`GET /api/agents/<member_id>` 被请求，
+ *    `state.mode === 'agent'` 且 `#dock` 让位（详情不再是 dock 的第三形态）；
+ * 3. 已经停在**另一个成员**的详情时点它，仍切到失败成员（这是本票修复的行为）；
+ * 4. 运行面板开着时点它，run 面板被收掉（否则下一次整体重绘会盖回 run）。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -389,7 +389,7 @@ function createHarness() {
     memberList,
     dock: elementFor("#dock"),
     dockAgent: elementFor("#dockAgent"),
-    dockDetail: elementFor("#dockDetail"),
+    viewAgent: elementFor("#viewAgent"),
     detailName: elementFor("#adName"),
     /** 装一批消息 + 一批轮次结果，然后按真实的渲染入口画一遍消息流。 */
     show(messages, outcomes) {
@@ -446,9 +446,9 @@ test("点「看成员状态」打开失败成员的详情，而不是只把成�
   await until(() => harness.requested("/api/agents/" + AGENT.id), "应当读取失败成员的详情正本");
 
   assert.equal(harness.api.state.activeAgentId, AGENT.id);
-  assert.equal(harness.dock.hidden, false, "dock 打开");
-  assert.equal(harness.dockDetail.hidden, false, "切到 detail 形态");
-  assert.equal(harness.dockAgent.hidden, true, "成员列表形态让位");
+  assert.equal(harness.api.state.mode, "agent", "详情是主线视图");
+  assert.equal(harness.viewAgent.hidden, false, "整页详情可见");
+  assert.equal(harness.dock.hidden, true, "详情占据整条右侧，dock 让位");
   assert.equal(harness.detailName.textContent, AGENT.display_name);
 });
 
@@ -469,9 +469,9 @@ test("dock 停在另一个成员详情时，点失败块的按钮仍切到失败
 
   assert.equal(harness.api.state.activeAgentId, AGENT.id);
   assert.equal(harness.detailName.textContent, AGENT.display_name, "面板标题跟着换成失败成员");
-  assert.equal(harness.dock.hidden, false);
-  assert.equal(harness.dockDetail.hidden, false);
-  assert.equal(harness.dockAgent.hidden, true);
+  assert.equal(harness.api.state.mode, "agent");
+  assert.equal(harness.viewAgent.hidden, false);
+  assert.equal(harness.dock.hidden, true);
 });
 
 /* ─── 4. dock 停在运行面板时也能切过去（run 不再压回来） ────────────────── */
@@ -487,6 +487,7 @@ test("dock 停在运行面板时，点失败块也切到该成员详情并收掉
   // `render()` 的形态推导以 run 为先：不先收掉它，下一次整体重绘会把详情盖回 run 面板。
   assert.equal(harness.api.state.runPanel.open, false, "run 面板必须被收掉");
   assert.equal(harness.api.state.activeAgentId, AGENT.id);
-  assert.equal(harness.dock.hidden, false);
-  assert.equal(harness.dockDetail.hidden, false);
+  assert.equal(harness.api.state.mode, "agent");
+  assert.equal(harness.viewAgent.hidden, false);
+  assert.equal(harness.dock.hidden, true);
 });
