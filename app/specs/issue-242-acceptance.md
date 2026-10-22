@@ -40,7 +40,7 @@
 | 8 | 系统提示如实描述 | `agent_seam._web_prompt_note()` | `pytest tests/test_web_assembly.py -k "mounts_both"` | `1 passed`：提示仍含「暴露给第三方」，不再声称逐次审批 |
 | 9 | `i18n.js` zh-CN / en 成对更新 | `agent.webAccessSearchFetchHint`、`channelConfig.webAccess.search+fetchNote` 各两表共 4 处 | `node --test app/tests/i18n_ui.test.cjs app/tests/agent_detail_ui.test.cjs app/tests/channel_config_ui.test.cjs` | `105 passed`（键集成对 / 无空值 / 参数位一致 / 无裸中文） |
 | 10 | ADR-0026 追加修订节，不改既有节正文 | `docs/adr/0026-…md` 追加「修订（2026-10-22，#242）」§十六：明确推翻 §三表格两行与 §三末段「它默认 ASK」，保留「不设 bypass_immune」「host 级规则可表达」，写明理由与 `read-only` 不变 | `tail -30 docs/adr/0026-…md` | 见 §4 |
-| 11 | README / CONTEXT 无残留旧措辞 | `app/README.md` 联网档小节、`CONTEXT.md`「联网档」词条 | `rg -n "每次抓取都要审批\|逐次审批" app/README.md CONTEXT.md docs/adr/0026*.md` | 见 §4：README / CONTEXT 只剩「**不再**逐次审批」与本机 shell 的无关句；ADR 的旧句是历史节原文，修订节已声明推翻范围 |
+| 11 | README / CONTEXT / ADR **无未声明失效的旧句** | `app/README.md` 联网档小节、`CONTEXT.md`「联网档」词条、ADR §十六 的推翻声明 | `rg -n "每次抓取都要审批\|逐次审批" app/README.md CONTEXT.md docs/adr/0026*.md` | 见 §4：README / CONTEXT 只剩「**不再**逐次审批」与本机 shell 的无关句。ADR 里「逐次审批」分三类：(a) 标题与 §三历史正文——保留，§十六 已声明推翻；(b) #199 修订节首段的援引句「§三 … `fetch` 逐次审批 … 仍逐字有效」——由 §十六 显式声明失效；(c) 新 §十六 的「不再逐次审批」——新行为 |
 | 12 | 工具本体仍非只读（`read-only` 装配闸门的前提） | `fetch_tool(... is_read_only=False)` 未改 | `pytest tests/test_web_tools.py -k read_only_difference` | `1 passed`：`search.is_read_only is True` / `page.is_read_only is False` |
 | 约束 | 不覆盖 `check_permissions`、不改 `match_rule`、不改 `permissions.py` | `git diff e989eec -- app/alibot/permissions.py` | 同左 | 空 diff；`web.py` 的 `FetchTool` 仍只覆写 `match_rule` |
 | 约束 | 不跑 `ruff format` | 命令清单 | — | 只经 `scripts/check.sh` 跑 `ruff format --check` |
@@ -155,8 +155,11 @@ CONTEXT.md:285           # 「**不再**逐次审批」——新行为的如实�
 ```
 
 判读：README / CONTEXT 里不再有任何「fetch 每次抓取要审批」的旧说法；剩余 `逐次审批` 命中要么是
-本地 shell（本票范围外），要么是「**不再**逐次审批」的新否定句。ADR 的旧句全部落在历史节，新修订节
-已逐条声明推翻范围（§三表格两行 + §三末段「它默认 ASK」；#199 修订节里重复的括注随之失效）。
+本地 shell（本票范围外），要么是「**不再**逐次审批」的新否定句。ADR 里「逐次审批」的出现位置分三类：
+(a) 标题与 §三历史正文——保留，§十六 已声明推翻；(b) #199 修订节首段的援引句「§三 … `fetch`
+逐次审批 … 仍逐字有效」——由 §十六 **显式声明失效**（本 follow-up 补的条目，原 §十六 只声明了
+§三表格两行与 §三末段，与 #199 首段自相矛盾）；(c) 新 §十六 的「不再逐次审批」——新行为。
+因此判据从「无旧措辞」收紧为「**无未声明失效的旧句**」。
 
 另：`agent.webAccessNote` / en 对应词条里「私聊不装配 fetch」的句子仍然成立，按票面**保留**；
 `i18n.js` 里同一区块的注释把「私聊没有审批面」改为「私聊的权限档固定 read-only」（与实现事实一致）。

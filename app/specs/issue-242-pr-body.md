@@ -53,7 +53,13 @@ app/specs/issue-242-acceptance.md
 
 ## Merge Danger
 
-**Door:** two-way（无 schema / 迁移 / 公共 API 破坏，回滚即恢复逐次审批）。
+**Door:** one-way
+
+**触发项：权限** —— 本 PR 改变 `fetch` 在 `ask-writes` / `trusted-writes` 下的**默认审批行为**
+（从每次 ASK 变为直接执行），属于 merge-danger 触发项「认证 / 权限 / 密钥」：任意一项成立，
+整个 PR 就是单向门，拿不准一律按单向门处理。权限的默认语义是使用者的安全契约，不适用
+「回滚一下就能恢复」这类按回滚成本判门的论证。**合并方式由人类决定**——coordinator 不自动合并
+单向门。
 
 **需要人审的语义变更**：本 PR 改变 `fetch` 的**默认审批行为**——`ask-writes` 下从「每次 ASK」变为
 「直接执行」。这是 coordinator 已获授权的产品决策（2026-10-22 人定，ADR-0026 修订节 §十六），但按
