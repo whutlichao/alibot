@@ -453,6 +453,13 @@ function badgeOf(row) {
   return row.children.find((child) => child.classList && child.classList.contains("badge")) || null;
 }
 
+/** 整份 rail（频道 / 私信 / Agent 三段）里 `aria-current="true"` 的行。 */
+function currentRows(harness) {
+  return [harness.channelList, harness.dmList, harness.memberList]
+    .flatMap((root) => root.children || [])
+    .filter((row) => row.getAttribute("aria-current") === "true");
+}
+
 /** 三份名单里每一行按钮的对象身份（键 = 后端 id）。 */
 function rowIdentities(harness) {
   const collect = (root, key) => {
@@ -704,6 +711,59 @@ test("成员集合真的变了：新增行插入、消失行摘掉，其余行�
     ["ch-3", "ch-1"],
     "顺序按后端事实排",
   );
+});
+
+/* ─── 5. 当前行只有一行：Agent 详情与频道 / 私信不同时呈现 ─────────────── */
+
+test("打开 Agent 详情时 rail 只有 Agent 行是当前行，关闭后频道行恢复", async () => {
+  const harness = createHarness();
+  harness.api.render();
+  await settle();
+
+  // 起始：当前频道行是唯一的当前行。
+  const before = rowIdentities(harness);
+  assert.equal(before.channels.get("ch-1").getAttribute("aria-current"), "true");
+  assert.equal(before.channels.get("ch-1").classList.contains("is-active"), true);
+  assert.equal(before.members.get("mem-1").getAttribute("aria-current"), "false");
+  assert.equal(currentRows(harness).length, 1, "起始只有一行当前行");
+
+  // 打开 Agent 详情：`activeAgentId` 是「打开着哪一个成员」的唯一正本，
+  // 频道 / 私信行就此让位（不再呈现当前行）。
+  harness.api.state.activeAgentId = "mem-1";
+  harness.api.render();
+  await settle();
+
+  const opened = rowIdentities(harness);
+  const agentRow = opened.members.get("mem-1");
+  // 先看整份 rail 的计数：重叠时这里会读出 2 行 `aria-current="true"`。
+  assert.equal(
+    currentRows(harness).length,
+    1,
+    "整份 rail 在同一时刻至多一行是当前行，实际："
+      + describe(currentRows(harness).map((row) => ({ op: "current", node: row }))),
+  );
+  assert.equal(agentRow.classList.contains("is-active"), true, "Agent 行是当前行");
+  assert.equal(agentRow.getAttribute("aria-current"), "true");
+  ["ch-1", "ch-2"].forEach((id) => {
+    const row = opened.channels.get(id);
+    assert.equal(row.classList.contains("is-active"), false, "频道行不得同时是当前行：" + id);
+    assert.equal(row.getAttribute("aria-current"), "false", "频道行 aria-current 让位：" + id);
+  });
+  assert.equal(opened.dms.get("dm-1").classList.contains("is-active"), false, "私信行不得是当前行");
+  assert.equal(opened.dms.get("dm-1").getAttribute("aria-current"), "false");
+  assert.deepEqual(currentRows(harness), [agentRow], "整份 rail 恰好一行 aria-current=true");
+
+  // 关闭详情：频道行按原判据恢复当前行，Agent 行让位。
+  harness.api.state.activeAgentId = null;
+  harness.api.render();
+  await settle();
+
+  const closed = rowIdentities(harness);
+  assert.equal(closed.channels.get("ch-1").classList.contains("is-active"), true, "频道行恢复当前行");
+  assert.equal(closed.channels.get("ch-1").getAttribute("aria-current"), "true");
+  assert.equal(closed.members.get("mem-1").classList.contains("is-active"), false, "Agent 行让位");
+  assert.equal(closed.members.get("mem-1").getAttribute("aria-current"), "false");
+  assert.deepEqual(currentRows(harness), [closed.channels.get("ch-1")], "整份 rail 仍恰好一行当前行");
 });
 
 test("空态显隐：没有 Agent 时空态出现，有 Agent 时收起来", async () => {

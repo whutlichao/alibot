@@ -4546,9 +4546,16 @@ function channelRowNode(channel) {
   return row;
 }
 
+/** 频道 / 私信行是否是当前行：Agent 详情开着时整份 rail 只有 Agent 行算当前行
+    （`activeAgentId` 是「打开着哪一个成员」的唯一正本），这两段让位；关闭详情后
+    它们按 `activeChannelId` 恢复原判据。整份 rail 因此同一时刻至多一行当前行。 */
+function targetRowIsCurrent(targetId) {
+  return !state.activeAgentId && targetId === state.activeChannelId;
+}
+
 /** 就地改写一行频道：当前行、名字、未读徽标。 */
 function paintChannelRow(row, channel) {
-  syncActiveRow(row, channel.id === state.activeChannelId);
+  syncActiveRow(row, targetRowIsCurrent(channel.id));
   setRailCellText(row, 'grow', channel.name);
   syncUnreadBadge(row, channel.unread_count, 'unread-' + channel.id);
 }
@@ -4574,7 +4581,7 @@ function dmRowNode(dm, status) {
 /** 就地改写一行私信：当前行、头像与名字、状态点、未读徽标。 */
 function paintDmRow(row, dm, status) {
   const peer = dm.peer;
-  syncActiveRow(row, dm.id === state.activeChannelId);
+  syncActiveRow(row, targetRowIsCurrent(dm.id));
   syncAvatarCell(row, peer.display_name, peer.avatar_slot, 'sm');
   setRailCellText(row, 'grow', peer.display_name);
   syncPresenceCell(row, status);
