@@ -394,7 +394,7 @@ def test_a_consented_provider_mounts_the_tools_and_the_probe_is_live(
     assert [request.url for request in no_outbound_requests.requests] == [FETCH_URL]
 
 
-# ─── 4. fetch 走既有审批：ASK → 拒绝后 DENIED、本轮继续 ──────────────────────
+# ─── 4. fetch 默认不审批（#242）；人工规则仍可收紧 ──────────────────────────
 def _run_with_decision(
     seam: Any,
     database: Any,
@@ -420,7 +420,7 @@ def _run_with_decision(
             reply_id = pending[0]["reply_id"]
             break
         time.sleep(0.01)
-    assert reply_id is not None, "fetch 没有产生审批记录"
+    assert reply_id is not None, "ask 规则没有产生审批记录"
     broker = seam._approvals
     assert broker is not None
     broker.submit(reply_id, [{"tool_call_id": "tc-fetch", "confirmed": confirmed}])
@@ -429,10 +429,13 @@ def _run_with_decision(
     return result["outcome"]
 
 
-def test_fetch_asks_and_a_denial_is_a_denied_tool_result_with_the_round_continuing(
+def test_fetch_runs_without_approval_in_ask_writes(
     library: Any, no_outbound_requests: _RecordingTransport
 ) -> None:
-    """``ask-writes`` 下调用 `fetch` 产生 ``approval_request``；拒绝后工具没执行、本轮仍收口。"""
+    """``ask-writes`` 下调用 `fetch` **不再产生** ``approval_request``：工具直接执行、本轮照常收口。
+
+    #242（2026-10-22 人定）：开启 ``search+fetch`` 本身已是一次人类授权，逐次审批退化成机械点击。
+    """
     database, agent, channel = library
     _configure(database, channel, web_access="search+fetch", mode="ask-writes", consent=["brave"])
     events: list[Any] = []
@@ -445,40 +448,33 @@ def test_fetch_asks_and_a_denial_is_a_denied_tool_result_with_the_round_continui
         approvals=ApprovalBroker(database, EventBus(), timeout_seconds=5.0),
     )
 
-    outcome = _run_with_decision(seam, database, agent, channel, confirmed=False, emit=events.append)
+    outcome = _run_round(seam, database, agent, channel, emit=events.append)
 
     assert outcome.status == "replied", outcome.reason
-    assert no_outbound_requests.requests == [], "被拒绝的工具不能执行"
-    assert [row["state"] for row in database.list_approval_requests(channel["id"])] == ["denied"]
-    denied = [
-        record.type
-        for record in events
-        if record.type == "TOOL_RESULT_END" and record.payload.get("state") == "denied"
-    ]
-    assert denied, [record.type for record in events]
+    assert [request.url for request in no_outbound_requests.requests] == [FETCH_URL]
+    assert database.list_approval_requests(channel["id"]) == [], "fetch 不该再产生审批记录"
+    assert not [record for record in events if record.type == "REQUIRE_USER_CONFIRM"], (
+        "fetch 不再走审批：本轮不该出现确认请求事件"
+    )
 
 
-def test_an_allowed_host_skips_the_approval_and_other_hosts_still_ask(
-    library: Any, stub_provider: str, no_outbound_requests: _RecordingTransport
+def test_an_ask_rule_still_puts_a_host_back_behind_approval(
+    library: Any, no_outbound_requests: _RecordingTransport
 ) -> None:
-    """``permission_rule(fetch, pattern=<host>, allow)`` 放行该 host；别的 host 仍 ASK。"""
+    """``permission_rule(fetch, pattern=<host>, ask)`` 是人工收紧：该 host 回到审批，拒绝后不执行。
+
+    规则判定在工具自身 ``ALLOW`` **之前**（引擎顺序 deny → ask → 只读 → 工具 → allow → 兜底），
+    因此自动放行不会把人工配的 ask 规则吃掉。
+    """
     database, agent, channel = library
     _configure(database, channel, web_access="search+fetch", mode="ask-writes", consent=["brave"])
     database.create_permission_rule(
         scope_kind="agent",
         scope_id=agent["id"],
         tool_name="fetch",
-        pattern="api.example.com",
-        behavior="allow",
+        pattern="internal.example.net",
+        behavior="ask",
     )
-    _StubProviderHandler.tool_call = _fetch_tool_call("https://api.example.com/x")
-    # 先跑一轮被放行的：不该出现审批，且真的发出请求。
-    outcome = _run_round(_seam(database), database, agent, channel)
-    assert outcome.status == "replied", outcome.reason
-    assert database.list_approval_requests(channel["id"]) == []
-    assert len(no_outbound_requests.requests) == 1
-
-    # 换一个 host：规则不匹配，仍要 ASK（这里直接拒绝掉，不产生第二个请求）。
     other = _ScriptedModel([_fetch_call("https://internal.example.net/x"), _text_reply()])
     seam = _ModelSubstitutingSeam(
         other,
@@ -490,7 +486,70 @@ def test_an_allowed_host_skips_the_approval_and_other_hosts_still_ask(
     outcome = _run_with_decision(seam, database, agent, channel, confirmed=False)
     assert outcome.status == "replied", outcome.reason
     assert [row["state"] for row in database.list_approval_requests(channel["id"])] == ["denied"]
-    assert len(no_outbound_requests.requests) == 1, "被拒绝的 host 没有发请求"
+    assert no_outbound_requests.requests == [], "被拒绝的 host 没有发请求"
+
+
+def test_a_deny_rule_blocks_a_host_even_though_fetch_defaults_to_allow(
+    library: Any, no_outbound_requests: _RecordingTransport
+) -> None:
+    """``permission_rule(fetch, pattern=<host>, deny)`` 仍拒绝：deny 规则在工具 ``ALLOW`` 之前判定。"""
+    database, agent, channel = library
+    _configure(database, channel, web_access="search+fetch", mode="ask-writes", consent=["brave"])
+    database.create_permission_rule(
+        scope_kind="agent",
+        scope_id=agent["id"],
+        tool_name="fetch",
+        pattern="internal.example.net",
+        behavior="deny",
+    )
+    seam = _ModelSubstitutingSeam(
+        _ScriptedModel([_fetch_call("https://internal.example.net/x"), _text_reply()]),
+        timeout_seconds=10.0,
+        permission_of=database.permission_settings_for_target,
+        web_of=database.web_settings_for_target,
+    )
+
+    outcome = _run_round(seam, database, agent, channel)
+
+    assert outcome.status == "replied", outcome.reason
+    assert no_outbound_requests.requests == [], "被 deny 的 host 没有发请求"
+    assert database.list_approval_requests(channel["id"]) == [], "deny 不是审批，是直接拒绝"
+
+
+def test_every_host_runs_without_approval_when_no_rule_narrows_it(
+    library: Any, stub_provider: str, no_outbound_requests: _RecordingTransport
+) -> None:
+    """没有规则时，任意 host 都自动放行（含配了 allow 规则的 host——allow 现在只是冗余）。"""
+    database, agent, channel = library
+    _configure(database, channel, web_access="search+fetch", mode="ask-writes", consent=["brave"])
+    database.create_permission_rule(
+        scope_kind="agent",
+        scope_id=agent["id"],
+        tool_name="fetch",
+        pattern="api.example.com",
+        behavior="allow",
+    )
+    _StubProviderHandler.tool_call = _fetch_tool_call("https://api.example.com/x")
+    # 配了 allow 规则的 host：不该出现审批，且真的发出请求。
+    outcome = _run_round(_seam(database), database, agent, channel)
+    assert outcome.status == "replied", outcome.reason
+    assert database.list_approval_requests(channel["id"]) == []
+    assert len(no_outbound_requests.requests) == 1
+
+    # 规则不匹配的 host：现在也自动放行（#242 之前这里要 ASK）。
+    other = _ModelSubstitutingSeam(
+        _ScriptedModel([_fetch_call("https://internal.example.net/x"), _text_reply()]),
+        timeout_seconds=10.0,
+        permission_of=database.permission_settings_for_target,
+        web_of=database.web_settings_for_target,
+    )
+    outcome = _run_round(other, database, agent, channel)
+    assert outcome.status == "replied", outcome.reason
+    assert database.list_approval_requests(channel["id"]) == []
+    assert [request.url for request in no_outbound_requests.requests] == [
+        "https://api.example.com/x",
+        "https://internal.example.net/x",
+    ]
 
 
 # ─── 5. 能力闸门：provider 不能携带工具 ⇒ 不装配联网工具 ────────────────────

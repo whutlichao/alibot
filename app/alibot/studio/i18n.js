@@ -424,7 +424,7 @@ const I18N_CATALOGS = {
       '开启后：频道内新建的任务由编排交给它（一次只认领一个）；认领会写一条可读的系统记录、唤醒它，并为该任务重置一次回应预算——每张任务至多一次。',
     // 「联网档」的 Agent 级入口（#202）：默认档「跟随频道（默认）」= 不写 Agent 级覆盖，选中它
     // 提交显式 null（清除覆盖）；私聊里没有频道，按默认档「只搜索」。其余三档与频道设置里的
-    // 那三档同名同义；`fetch` 只在频道 / 任务线程装配（私聊没有审批面）。
+    // 那三档同名同义；`fetch` 只在频道 / 任务线程装配（私聊的权限档固定 read-only）。
     'agent.webAccessLabel': '联网',
     'agent.webAccessFollow': '跟随频道（默认）',
     'agent.webAccessFollowHint': '清除 Agent 级覆盖；私聊按默认档',
@@ -433,7 +433,7 @@ const I18N_CATALOGS = {
     'agent.webAccessSearch': '只搜索',
     'agent.webAccessSearchHint': '挂 web_search；查询词会离开本机',
     'agent.webAccessSearchFetch': '搜索+抓取',
-    'agent.webAccessSearchFetchHint': '额外挂 fetch；每次抓取都要审批',
+    'agent.webAccessSearchFetchHint': '额外挂 fetch；开启后不再逐次审批，可按 host 配 deny / ask 规则收紧',
     'agent.webAccessNote': '跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。',
 
     /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：一页分区块 + 就地编辑 ──
@@ -623,7 +623,7 @@ const I18N_CATALOGS = {
     'channelConfig.webAccess.search': '只搜索',
     'channelConfig.webAccess.searchNote': '挂 web_search；查询词会离开本机',
     'channelConfig.webAccess.search+fetch': '搜索+抓取',
-    'channelConfig.webAccess.search+fetchNote': '额外挂 fetch；每次抓取都要审批',
+    'channelConfig.webAccess.search+fetchNote': '额外挂 fetch；开启后不再逐次审批，可按 host 配 deny / ask 规则收紧',
     'channelConfig.webAccessHint': '未配置时默认「只搜索」；只有「关闭」会移除联网工具。',
     'webProviders.loadFailed': '暂时读不到联网 provider 状态：{reason}',
     'webProviders.active': '当前 provider',
@@ -1225,7 +1225,7 @@ const I18N_CATALOGS = {
     'agent.webAccessSearch': 'Search only',
     'agent.webAccessSearchHint': 'Mount web_search; queries leave this machine',
     'agent.webAccessSearchFetch': 'Search + fetch',
-    'agent.webAccessSearchFetchHint': 'Also mount fetch; every fetch asks first',
+    'agent.webAccessSearchFetchHint': 'Also mount fetch; it no longer asks every time — narrow it per host with deny / ask rules',
     'agent.webAccessNote':
       'Follow channel = no agent-level override (submit null); a direct message uses the default "search only" level and never mounts fetch.',
 
@@ -1435,7 +1435,7 @@ const I18N_CATALOGS = {
     'channelConfig.webAccess.search': 'Search only',
     'channelConfig.webAccess.searchNote': 'Mount web_search; queries leave this machine',
     'channelConfig.webAccess.search+fetch': 'Search + fetch',
-    'channelConfig.webAccess.search+fetchNote': 'Also mount fetch; every fetch asks first',
+    'channelConfig.webAccess.search+fetchNote': 'Also mount fetch; it no longer asks every time — narrow it per host with deny / ask rules',
     'channelConfig.webAccessHint': 'Unset means "search only"; only "off" removes the web tools.',
     'webProviders.loadFailed': 'Could not read web provider status: {reason}',
     'webProviders.active': 'Active provider',

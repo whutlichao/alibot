@@ -459,7 +459,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   安装只接受**本机目录或上传 zip**（校验 `SKILL.md` front matter、路径与 hash），**不做远程市场/下载**。
   Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级；删除只删配置与工作区副本，
   不删用户源目录。
-- **联网档（#184 / #199 / #202 / ADR-0026 §二修订 / §十四 / §十五）**：`channel.web_access` 是频道默认值、
+- **联网档（#184 / #199 / #202 / #242 / ADR-0026 §二修订 / §十四 / §十五 / 2026-10-22 修订节）**：`channel.web_access` 是频道默认值、
   `agent_config.web_access` 是 Agent 级覆盖（`NULL` = 跟随频道），取值 `NULL` / `'off'` / `'search'` /
   `'search+fetch'`。读路径三态合并 `agent_config.web_access or channel.web_access or 'search'`：
   **未配置默认开启搜索**，只有 `'off'` 才不挂任何联网工具。**私聊（DM）没有频道**：DM 的读路径
@@ -468,9 +468,12 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   永不装配；人类面入口是 Agent 详情页「配置」区块里的「联网」四档（**跟随频道（默认）** + 三档；选中跟随频道
   提交显式 `null` = 清除 Agent 级覆盖，读回 `null` 也选中它）。它**不是**
   `allow_local_shell` 的同义词——那个的风险面是本机任意进程，这个是数据出网。工具面是
-  `app/alibot/web.py` 的 `web_search`（只读，只送查询词）与 `fetch`（非只读，逐次审批，
+  `app/alibot/web.py` 的 `web_search`（只读，只送查询词）与 `fetch`（非只读，但**不再逐次审批**，
   `permission_rule` 的 `pattern` 是 **host**）：`read-only`
-  档只装 `web_search`；`ask-writes` / `trusted-writes` 装 `fetch` 且每次 ASK。网络请求 **不进**
+  档只装 `web_search`；`ask-writes` / `trusted-writes` 装 `fetch`，**开启 `search+fetch` 即视为一次
+  人类授权、调用直接执行**（2026-10-22 人定，#242 / ADR-0026 修订节）。人工收紧仍走规则：`deny` /
+  `ask` 规则在工具自身的放行之前判定，因此 `permission_rule(fetch, pattern=<host>, behavior='deny')`
+  仍拒绝、`behavior='ask'` 仍把该 host 拉回审批；`behavior='allow'` 成为冗余但无害。网络请求 **不进**
   `target_budget.used`（那是回应预算，ADR-0026 §六）。
 - **搜索 provider（#199）**：带凭据的五家 `brave` / `tavily` / `perplexity` / `jina` / `exa`（Exa 有 key
   走 REST），以及免凭据回退 `exa-mcp`（Exa 公开 MCP，JSON-RPC + SSE）。解析顺序唯一：

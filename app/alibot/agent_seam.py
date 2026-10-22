@@ -1133,7 +1133,7 @@ class AgentScopeAgentSeam:
             )
         ]
         # 未知取值（写路径的 CHECK 拦住了）退化成「只挂只读的搜索」：fail-safe 的方向是多装只读工具，
-        # 而不是把需要逐次审批的 fetch 多装上去。
+        # 而不是把会出网的 fetch 多装上去（fetch 在 search+fetch 下默认放行，装配闸门才是它的边界）。
         if access == FETCH_ACCESS_LEVEL and settings.get("mode") != "read-only":
             tools.append(fetch_tool(egress=egress))
         return tools
@@ -2163,8 +2163,9 @@ def _web_prompt_note() -> str:
     """
     return (
         "你本轮配有联网工具：web_search 只送出查询词与条数；fetch 会把目标 URL 送出本机，"
-        "可能把内网地址或带凭据的地址暴露给第三方，因此每次调用都要人类逐次审批"
-        "（按 host 的权限规则可放行）。不要用它们访问本机或内网地址。"
+        "可能把内网地址或带凭据的地址暴露给第三方。开启联网档「搜索+抓取」本身已是一次人类授权，"
+        "因此 fetch 不再逐次审批；人类仍可按 host 配 deny / ask 规则收紧（那样这一处调用会回到审批）。"
+        "不要用它们访问本机或内网地址。"
     )
 
 

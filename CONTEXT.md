@@ -282,7 +282,9 @@ _Avoid_: 隐私协议（它是运行时的一次确认，不是一份文档）�
 **联网档 (Web Access)**:
 频道级的联网能力配置（`channel.web_access`，Agent 可覆盖）：`NULL` = **未配置**（读路径回退默认档
 `'search'`）、`'off'` = **显式关闭**（不装配任何联网工具）、`'search'` = 只有 `web_search`、
-`'search+fetch'` = 再加 `fetch`。它与 `allow_local_shell` 是**两个**开关：后者的风险面是本机任意进程，
+`'search+fetch'` = 再加 `fetch`。`search+fetch` 下 `fetch` **不再逐次审批**（2026-10-22 人定，#242 /
+ADR-0026 修订节）：开启该档即视为一次人类授权；`permission_rule` 的 deny / ask 规则仍可收紧，
+`read-only` 档仍不装配 `fetch`。它与 `allow_local_shell` 是**两个**开关：后者的风险面是本机任意进程，
 前者是数据出网；它也不等于「容器能出网」（那是下面那条）。默认开启搜索（2026-10-20 人定，ADR-0026
 修订节），关闭必须显式写 `'off'`。Agent 级覆盖（`agent_config.web_access`）的 `NULL` = **跟随频道**；
 `PATCH /api/agents/{id}` 的**显式 `null` = 清除覆盖、回到跟随频道**（与频道侧同一口径，2026-10-21
