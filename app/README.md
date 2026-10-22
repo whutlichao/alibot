@@ -252,7 +252,7 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 普通轮输入最近 40 条 target 消息（本人历史为 assistant），自动续跑使用完整历史；回应纪律、瞬态早退与 base_seq 仍只按新消息计算，历史不重新触发必答。上下文超过阈值时由 AgentScope 压缩；压缩消息与截断工具结果写入 `.alibot/sessions/<target--member>/offload/`。
 
 - `ALIBOT_CONTEXT_WINDOW_MESSAGES=40`、`ALIBOT_CONTEXT_TRIGGER_RATIO=0.7`、`ALIBOT_CONTEXT_RESERVE_RATIO=0.2`、`ALIBOT_CONTEXT_TOOL_RESULT_LIMIT=4000`、`ALIBOT_CONTEXT_MAX_IMAGE_NUM=5`、`ALIBOT_REACT_MAX_ITERS=30`、`ALIBOT_MODEL_MAX_RETRIES=2`。
-- Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 编辑弹窗可设置上下文条数、阈值、迭代上限及长期记忆开关。
+- Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 详情页的「配置」区块可设置上下文条数、阈值、迭代上限及长期记忆开关。
 - 每轮按 Asia/Shanghai 重新注入 ISO 时间、target 名称与上下文用量；AgentState 原子保存到上述 session 分区的 `state.json`，恢复摘要及运行状态、按消息窗口重建 context。损坏状态降级为空白并记录日志；权限始终用当前配置。
 - `finished_reason` 为 `completed | interrupted | exceed_max_iters | error`，与 status 独立。旧行保持 NULL；达到迭代上限的部分正文可保留，reason 明示结论可能不完整。
 - `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失；SSE 重连通过当前 `round.active` 快照恢复按钮。审批超时仍为 failed。
@@ -465,7 +465,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   **未配置默认开启搜索**，只有 `'off'` 才不挂任何联网工具。**私聊（DM）没有频道**：DM 的读路径
   回退到 Agent 级配置 + 默认档（`agent_config.web_access or 'search'`），`mode` 固定 `read-only`、
   `backend=local` / `docker_egress=False` / `egress_hosts=[]`，因此 DM 只挂 `web_search`、`fetch`
-  永不装配；人类面入口是 Agent 编辑弹窗的「联网」四档（**跟随频道（默认）** + 三档；选中跟随频道
+  永不装配；人类面入口是 Agent 详情页「配置」区块里的「联网」四档（**跟随频道（默认）** + 三档；选中跟随频道
   提交显式 `null` = 清除 Agent 级覆盖，读回 `null` 也选中它）。它**不是**
   `allow_local_shell` 的同义词——那个的风险面是本机任意进程，这个是数据出网。工具面是
   `app/alibot/web.py` 的 `web_search`（只读，只送查询词）与 `fetch`（非只读，逐次审批，
@@ -619,18 +619,23 @@ live `approval_*` 帧仍只补本次会话内的变化。
 
 ### Agent 详情与配置编辑（`PATCH /api/agents/{id}`，ADR-0011）
 
-右侧 dock 的**第三形态**是 Agent 详情（入口：左栏 Agent 行、成员面板里的名字），含「概览」与「运行时」
-两个页签；**日志页签不做**（用户人定 D24，入口另立 backlog 票 #72）。
+Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Agent 行、成员面板里的名字、
+失败轮次块的「看成员状态」）：它占据整条右侧，右侧 dock 在那种视图下让位，关闭后回到进入前的视图
+与 dock 开合。所有区块在同一页纵向铺开——事实 / 当前状态 / 配置 / 运行时 / 全局 MCP / 系统提示，
+**没有页签**（「概览 / 运行时」两个页签与本票一起删除；日志页签仍不做，用户人定 D24，入口另立
+backlog 票 #72）。可编辑字段直接长在「配置」区块里，控件只写草稿，草稿与后端读数不一致时页面底部
+出现固定保存条（保存 / 放弃）；关闭详情、切换成员或切换主线视图时草稿作废，不弹二次确认。
 
-- **概览的四个数字全部来自既有事实**，由后端在 `stats` 里聚合，前端不自己算：
+- **「事实」区块的四个数字全部来自既有事实**，由后端在 `stats` 里聚合，前端不自己算：
   `channel_count` = 它是成员的 channel 型 target 数；`round_count` = 它的 `round_outcome` 行数；
   `completed_task_count` = 指派给它且 `status='done'` 的任务行数；`success_rate` =
   `replied ÷ (replied + ignored + failed)`（分母**不含 `silent`**：`silent` 与 `merged` /
   `budget-exhausted` 一样不计入分母——`db.py` 的 `AGENT_STATS_ROUND_SQL` 只把
   `replied` / `ignored` / `failed` 数进分母；没有样本时为 `null`，界面显示「—」）。原型里的 Token 消耗 / 上下文占用 / 内存 / 延迟在本仓**没有数据面**，
   因此不呈现。
-- **运行时页签只呈现 `agent_config` 里真实存在的字段**：`model_id`、`provider`、`is_remote`、
-  远端数据流告知状态、`role`、`system_prompt`、`enabled`、`auto_claim`（外加可用性推导出的当前状态）。
+- **「运行时」区块只呈现 `agent_config` 里真实存在的只读字段**：`model_id`、`provider`、`is_remote`、
+  远端数据流告知状态。可编辑的那几项长在「配置」区块里，不在只读区块重复一份互相矛盾的读数；
+  当前状态与未启用原因单独占「当前状态」区块（可用性推导，同样只读）。
   Agent 级 workspace 覆盖（`workspace_backend` / `permission_mode` / `allow_local_shell` /
   `docker_image`）目前**只经 API 读写**（详情/编辑 UI 尚未暴露这四个控件）；`GET` / 列表响应逐字
   带回落库值，`null` 表示「跟随频道默认」。
@@ -638,9 +643,9 @@ live `approval_*` 帧仍只补本次会话内的变化。
   `system_prompt` / `enabled` / `auto_claim` / `workspace_backend` / `permission_mode` /
   `allow_local_shell` / `docker_image` / `web_access`，**任一字段不合法则整体不写**（不得部分写入）；
   `model_id`
-  沿用与创建同一套校验与**远端数据流告知**语义。「自动认领任务」开关就在这个既有编辑面里
-  （不另造第二个编辑面），**缺省开启**（#195 / ADR-0029）、只在自主频道生效，写它只影响
-  **之后新建**的任务；升级时的存量回填见上文「存量回填」。
+  沿用与创建同一套校验与**远端数据流告知**语义。「自动认领任务」开关就在详情页的「配置」区块里
+  （不另造第二个编辑面，独立的「编辑配置」弹窗已删除），**缺省开启**（#195 / ADR-0029）、
+  只在自主频道生效，写它只影响**之后新建**的任务；升级时的存量回填见上文「存量回填」。
 - **配置变更不是发言**：不落消息、不唤醒、不消耗预算、不开世代（ADR-0011 与 ADR-0007 的边界：
   人类面可写配置类取值）。`auto_claim` 同此——它是编排在**新建任务之后**读的配置，不是动作。
 - **「暂停」= 写 `enabled = 0`**，复用既有可用性判定：状态点为**未启用**、`enabled_reason` 可读；

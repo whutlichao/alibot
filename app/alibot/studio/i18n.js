@@ -284,7 +284,7 @@ const I18N_CATALOGS = {
     'dock.join': '加入',
     'dock.joinAria': '把 {name} 加入当前频道',
 
-    /* ─── 运行面板（#155 / 规格 §4.6；dock 第四形态）──────────────────── */
+    /* ─── 运行面板（#155 / 规格 §4.6；dock 第三种形态）────────────────── */
     'runPanel.entryTitle': '运行面板',
     'runPanel.taskEntryTitle': '任务运行面板',
     'runPanel.tag': '运行面板',
@@ -436,14 +436,13 @@ const I18N_CATALOGS = {
     'agent.webAccessSearchFetchHint': '额外挂 fetch；每次抓取都要审批',
     'agent.webAccessNote': '跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。',
 
-    /* ─── Agent 详情（dock 第三形态）：概览 + 运行时两个页签（日志页签不做，D24） ──
-       概览的每个数字都由**后端既有事实**推导（`stats`：`round_outcome` 聚合 + 任务行），
-       运行时**只**放 `agent_config` 里真实存在的字段。原型的内存 / 延迟 / 工具权限 / 温度 /
-       Token 消耗 / 上下文占用在本仓没有数据面，因此这里也没有它们的词条（不是漏了）。 */
+    /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：一页分区块 + 就地编辑 ──
+       详情不再是 dock 的形态（用户 2026-10-22 裁定）：它占据整条右侧，dock 让位。
+       所有区块在同一页纵向铺开，**没有页签**（`tabOverview` / `tabRuntime` / `tabsLabel`
+       随页签一起删除）。事实的每个数字都由**后端既有事实**推导（`stats`：`round_outcome`
+       聚合 + 任务行），运行时**只**放 `agent_config` 里真实存在的字段。原型的内存 / 延迟 /
+       工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，因此这里也没有它们的词条。 */
     'agentDetail.tag': 'Agent',
-    'agentDetail.tabsLabel': 'Agent 详情视图',
-    'agentDetail.tabOverview': '概览',
-    'agentDetail.tabRuntime': '运行时',
     'agentDetail.closeAria': '关闭 Agent 详情',
     'agentDetail.openAria': '查看 {name} 的详情',
     'agentDetail.sectionFacts': '事实',
@@ -460,10 +459,10 @@ const I18N_CATALOGS = {
     'agentDetail.sectionStatus': '当前状态',
     'agentDetail.kvStatus': '当前状态',
     'agentDetail.kvReason': '未启用原因',
-    'agentDetail.sectionActions': '操作',
+    'agentDetail.sectionConfig': '配置',
+    'agentDetail.configNote': '改动先留在草稿里；保存时整份字段一起提交，任一字段不合法时后端整体不写。',
     'agentDetail.pause': '暂停',
     'agentDetail.resume': '恢复',
-    'agentDetail.edit': '编辑配置',
     'agentDetail.pauseNote':
       '暂停只写配置：它仍会被唤醒并留下一条可读原因的失败轮次结果，只是不产出回复。',
     'agentDetail.sectionRuntime': '运行时',
@@ -477,21 +476,9 @@ const I18N_CATALOGS = {
     'agentDetail.consentAck': '已确认',
     'agentDetail.consentPending': '未确认（启用前会先告知）',
     'agentDetail.consentNotNeeded': '本机提供商：不需要确认',
-    'agentDetail.kvRole': '角色',
     'agentDetail.kvPrompt': '系统提示',
-    'agentDetail.kvEnabled': '启用状态',
-    'agentDetail.enabledOn': '已启用',
-    'agentDetail.enabledOff': '已暂停',
-    'agentDetail.kvAutoClaim': '自动认领任务',
-    'agentDetail.autoClaimOn': '已开启',
-    'agentDetail.autoClaimOff': '已关闭',
     // 联网档（#202 / 2026-10-21 修订）：读数缺失（`null`）= 没有 Agent 级覆盖 = 跟随频道，
-    // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在运行时页签里替人推断私聊的生效档。
-    'agentDetail.kvWebAccess': '联网档',
-    'agentDetail.webAccessFollow': '跟随频道',
-    'agentDetail.webAccessOff': '已关闭',
-    'agentDetail.webAccessSearch': '只搜索',
-    'agentDetail.webAccessSearchFetch': '搜索+抓取',
+    // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在详情页里替人推断私聊的生效档。
     // 全局 MCP（#236 / ADR-0031 D8）：成员家目录 mcp.json 是**只读素材层**。这里只展示真实条目
     // 与运行期读数，只对远端未确认条目给一个确认动作；不渲染编辑 / 启停 / 删除，也不写回文件。
     'agentDetail.globalMcpTitle': '全局 MCP（只读）',
@@ -507,12 +494,9 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpRuntimeIdle': '尚无运行期读数',
     'agentDetail.globalMcpRuntimeConnected': '运行期已连接',
     'agentDetail.emptyField': '（未填写）',
-    'agentDetail.editTitle': '编辑配置',
-    'agentDetail.editSub': '保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。',
     'agentDetail.save': '保存',
-    'agentDetail.saveFailed': '保存失败：{reason}',
-    'agentDetail.pauseFailed': '暂停失败：{reason}',
-    'agentDetail.resumeFailed': '恢复失败：{reason}',
+    'agentDetail.discard': '放弃',
+    'agentDetail.unsaved': '有未保存的改动',
 
     /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
        两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
@@ -816,8 +800,6 @@ const I18N_CATALOGS = {
     'toast.agentUpdated': '已保存 {name} 的配置。',
     'toast.agentDetailFailed': '读取 Agent 详情失败：{reason}',
     'toast.globalMcpConsentFailed': '确认全局 MCP 条目失败：{reason}',
-    'toast.agentPaused': '已暂停 {name}：它仍会被唤醒并留下失败轮次结果，只是不产出回复。',
-    'toast.agentResumed': '已恢复 {name}。',
   },
 
   en: {
@@ -1086,7 +1068,7 @@ const I18N_CATALOGS = {
     'dock.join': 'Join',
     'dock.joinAria': 'Add {name} to the current channel',
 
-    /* ─── Run panel (#155 / spec §4.6; dock's fourth form) ─────────── */
+    /* ─── Run panel (#155 / spec §4.6; dock's third form) ──────────── */
     'runPanel.entryTitle': 'Run panel',
     'runPanel.taskEntryTitle': 'Task run panel',
     'runPanel.tag': 'Run panel',
@@ -1247,15 +1229,15 @@ const I18N_CATALOGS = {
     'agent.webAccessNote':
       'Follow channel = no agent-level override (submit null); a direct message uses the default "search only" level and never mounts fetch.',
 
-    /* ─── Agent detail (dock form C): overview + runtime tabs (no log tab, D24) ──
-       Every number on the overview is derived from **backend facts** (`stats`: aggregates over
-       `round_outcome` plus task rows); the runtime tab carries **only** fields that really exist in
-       `agent_config`. Memory / latency / tool permissions / temperature / token usage / context
-       usage have no data surface in this repo, so there are no strings for them here. */
+    /* ─── Agent detail (main view `state.mode === 'agent'`): one page of sections, edited in place ──
+       The detail is no longer a dock form (user decision 2026-10-22): it takes the whole right side
+       and the dock steps aside. Every section sits on the same page in one column — **no tabs**
+       (`tabOverview` / `tabRuntime` / `tabsLabel` were removed with the tabs). Every number is
+       derived from **backend facts** (`stats`: aggregates over `round_outcome` plus task rows);
+       the runtime section carries **only** fields that really exist in `agent_config`.
+       Memory / latency / tool permissions / temperature / token usage / context usage have no data
+       surface in this repo, so there are no strings for them here. */
     'agentDetail.tag': 'Agent',
-    'agentDetail.tabsLabel': 'Agent detail views',
-    'agentDetail.tabOverview': 'Overview',
-    'agentDetail.tabRuntime': 'Runtime',
     'agentDetail.closeAria': 'Close agent details',
     'agentDetail.openAria': 'Open the details of {name}',
     'agentDetail.sectionFacts': 'Facts',
@@ -1274,10 +1256,11 @@ const I18N_CATALOGS = {
     'agentDetail.sectionStatus': 'Current status',
     'agentDetail.kvStatus': 'Current status',
     'agentDetail.kvReason': 'Why it is disabled',
-    'agentDetail.sectionActions': 'Actions',
+    'agentDetail.sectionConfig': 'Configuration',
+    'agentDetail.configNote':
+      'Edits stay in a draft; saving submits every field at once and the backend writes nothing if any field is invalid.',
     'agentDetail.pause': 'Pause',
     'agentDetail.resume': 'Resume',
-    'agentDetail.edit': 'Edit configuration',
     'agentDetail.pauseNote':
       'Pausing only writes configuration: it is still woken and still leaves a failed round outcome with a readable reason — it just produces no reply.',
     'agentDetail.sectionRuntime': 'Runtime',
@@ -1291,22 +1274,10 @@ const I18N_CATALOGS = {
     'agentDetail.consentAck': 'Acknowledged',
     'agentDetail.consentPending': 'Not acknowledged (you will be told before enabling)',
     'agentDetail.consentNotNeeded': 'Local provider: no acknowledgement needed',
-    'agentDetail.kvRole': 'Role',
     'agentDetail.kvPrompt': 'System prompt',
-    'agentDetail.kvEnabled': 'Enabled',
-    'agentDetail.enabledOn': 'Enabled',
-    'agentDetail.enabledOff': 'Paused',
-    'agentDetail.kvAutoClaim': 'Auto-claim tasks',
-    'agentDetail.autoClaimOn': 'On',
-    'agentDetail.autoClaimOff': 'Off',
     // Web access (#202 / 2026-10-21 revision): a missing value (`null`) means there is no
     // agent-level override, i.e. "follow channel" — a reading, not an empty field; an override
-    // shows its level. The runtime tab never derives the level that is live in a DM.
-    'agentDetail.kvWebAccess': 'Web access',
-    'agentDetail.webAccessFollow': 'Follow channel',
-    'agentDetail.webAccessOff': 'Off',
-    'agentDetail.webAccessSearch': 'Search only',
-    'agentDetail.webAccessSearchFetch': 'Search + fetch',
+    // shows its level. The detail page never derives the level that is live in a DM.
     // Global MCP (#236 / ADR-0031 D8): the member's home mcp.json is a read-only source layer.
     // Only real entries and runtime readings are shown; only an unacknowledged remote entry gets
     // an acknowledge action. No edit / enable / delete, and nothing is written back to the file.
@@ -1324,13 +1295,9 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpRuntimeIdle': 'No runtime reading yet',
     'agentDetail.globalMcpRuntimeConnected': 'Connected at runtime',
     'agentDetail.emptyField': '(empty)',
-    'agentDetail.editTitle': 'Edit configuration',
-    'agentDetail.editSub':
-      'Saving only writes agent configuration: no message, no wake-up, no budget consumed.',
     'agentDetail.save': 'Save',
-    'agentDetail.saveFailed': 'Could not save: {reason}',
-    'agentDetail.pauseFailed': 'Could not pause: {reason}',
-    'agentDetail.resumeFailed': 'Could not resume: {reason}',
+    'agentDetail.discard': 'Discard',
+    'agentDetail.unsaved': 'Unsaved changes',
 
     /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
        Both values state existence and persistence only: reminders live in the backend and
@@ -1659,9 +1626,6 @@ const I18N_CATALOGS = {
     'toast.agentUpdated': 'Saved the configuration of {name}.',
     'toast.agentDetailFailed': 'Could not read the agent details: {reason}',
     'toast.globalMcpConsentFailed': 'Could not acknowledge the global MCP entry: {reason}',
-    'toast.agentPaused':
-      'Paused {name}: it is still woken and still leaves a failed round outcome — it just produces no reply.',
-    'toast.agentResumed': 'Resumed {name}.',
   },
 };
 

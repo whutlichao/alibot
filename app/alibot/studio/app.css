@@ -443,24 +443,33 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .modal-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-8) var(--sp-7); }
 .modal-foot .sep { flex: 1; }
 
-/* ─── dock 形态 C：Agent 详情（概览 / 运行时） ────────────────────────────
-   形态与 `.task-thread` 同构（竖直 flex 撑满容器）。`.dock-tabs` / `.kv` / `.stat-grid`
-   的形状照设计系统切片 `screens/agent-detail.html`（:71-73 页签、:86-104 的 `.d-sec` 与四格），
-   但只消费本仓已有的 token 名：零裸色值、不新造色位。 */
-.agent-detail { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.agent-detail .dock-role { display: flex; align-items: center; gap: var(--sp-3); }
-.dock-tabs {
-  display: flex; gap: var(--sp-2); padding: var(--sp-4) var(--sp-6) 0;
-  border-bottom: 1px solid var(--border);
+/* ─── Agent 详情：**主线视图**（整条右侧），一页分区块 ────────────────────
+   它不是 dock 的形态（用户 2026-10-22 裁定）：`state.mode === 'agent'` 时它占据 `.main` 的
+   整块内容区，dock 让位。区块骨架（`.d-sec` / `.stat-grid` / `.kv`）沿用既有语汇，形状照
+   设计系统切片 `screens/agent-detail.html`（:86-104 的四格与分区），但只消费本仓已有的
+   token 名：零裸色值、不新造色位。 */
+.agent-page { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.agent-page-head {
+  display: flex; align-items: center; gap: var(--sp-5);
+  padding: 13px var(--sp-9); border-bottom: 1px solid var(--border); background: var(--surface);
 }
-.dock-tab {
-  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-sm) var(--r-sm) 0 0;
-  color: var(--muted); font-size: var(--fs-sm); font-weight: var(--fw-semi);
-  border-bottom: 2px solid transparent;
+.agent-page-name {
+  font-size: var(--fs-heading); font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight);
+  display: flex; align-items: center; gap: 7px; min-width: 0;
 }
-.dock-tab:hover { color: var(--fg); }
-/* 当前页签用 `--selected` 族（与 `.rail` 的当前位置同一档位语义）。 */
-.dock-tab.is-active { color: var(--fg); border-bottom-color: var(--selected-graphic); }
+.agent-page-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-page-head .dock-role { display: flex; align-items: center; gap: var(--sp-3); }
+/* 正文：与消息流同一个阅读宽度（`--stream-max`），于是「整条右侧」不等于「一行拉满」。 */
+.agent-page-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9) var(--sp-10); }
+.agent-page-inner { max-width: var(--stream-max); margin: 0 auto; }
+/* 底部保存条：页面级固定条（不随 `#adBody` 的整块重铺消失，因此错误原文与焦点不会被换掉）。 */
+.agent-save-bar {
+  display: flex; align-items: center; gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-9); border-top: 1px solid var(--border); background: var(--surface);
+}
+.agent-save-bar .sep { flex: 1; }
+.agent-save-note { font-size: var(--fs-sm); color: var(--muted); }
+.agent-save-bar .form-error { margin: 0; }
 
 /* 一行「键 / 值」：键是 mono 小字（与 `.d-sec-title` 同一语汇），值靠左对齐撑满。 */
 .kv { display: flex; align-items: baseline; gap: var(--sp-4); padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
@@ -474,12 +483,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .stat { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5); background: var(--panel); }
 .stat .n { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--fs-body-lg); font-weight: var(--fw-black); color: var(--fg); }
 .stat .l { font-size: var(--fs-caption); color: var(--muted); margin-top: var(--sp-2); }
-/* 系统提示是**多行文本**：保留换行，不让它被折成一段（它是配置数据的原文）。 */
-.prompt-body {
-  font-size: var(--fs-sm); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere;
-  border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5);
-  background: var(--panel); max-height: 220px; overflow-y: auto;
-}
 .agent-actions { display: flex; gap: var(--sp-4); }
 .agent-actions .btn { flex: 1; }
 /* 成员面板里**打开详情**的那个控件：它是名字本身（卡片里已有「加入」按钮，不能嵌套按钮）。 */
@@ -1059,8 +1062,8 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .tt-reply { border-top: 1px solid var(--border); padding: 11px var(--sp-7) var(--sp-6); background: var(--surface); }
 .tt-reply .composer-box { box-shadow: none; }
 .tt-reply textarea { min-height: 38px; max-height: 140px; }
-/* ─── dock 形态 D：运行面板（#155 / 规格 §4.6）───────────────────────────
-   与 `.task-thread` / `.agent-detail` 同构（竖直 flex 撑满 380px 容器）。
+/* ─── dock 形态 C：运行面板（#155 / 规格 §4.6）───────────────────────────
+   与 `.task-thread` 同构（竖直 flex 撑满 380px 容器）。
    零裸色值：状态 pill 的色位只走 `--online-text` / `--working-text` / `--error`
    （与既有状态点同一张词表），卡片与分隔线走 `--border` / `--panel` 族。 */
 .run-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
