@@ -390,7 +390,9 @@ def test_bad_global_entries_are_skipped_and_logged(
         database.close()
 
 
-def test_missing_global_layers_yield_zero_and_are_never_created(tmp_path: Path, stub_provider: str) -> None:
+def test_missing_global_layers_yield_zero_and_are_never_created(
+    tmp_path: Path, stub_provider: str, caplog: pytest.LogCaptureFixture
+) -> None:
     database, agent, channel, project, global_root = _seed(tmp_path)
     try:
         _create_project_skill(
@@ -399,12 +401,16 @@ def test_missing_global_layers_yield_zero_and_are_never_created(tmp_path: Path, 
             scope_id=agent["id"],
             prepared=_install_project_skill(tmp_path, project, agent["id"], "project-only", "项目技能"),
         )
-        # 全局根根本不存在：全局层零条、不报错、不创建目录。
+        # 全局根根本不存在：全局层零条、不报错、不创建目录，但每层留一条可读记录（D9）。
         assert not global_root.exists()
-        outcome = _round(_seam(database, global_root), database.get_agent(agent["id"]), channel["id"])
+        with caplog.at_level(logging.INFO, logger="alibot.skills"):
+            outcome = _round(_seam(database, global_root), database.get_agent(agent["id"]), channel["id"])
         assert outcome.status == "replied", outcome.reason
         assert not global_root.exists()
         assert "项目技能" in _system_text(_PlainReplyHandler.request_bodies[0])
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        assert "global skill layer is absent" in logged
+        assert str(global_root / "agents" / agent["id"] / "skills") in logged
 
         # 只有公共库、没有成员家目录：成员层零条，公共库照常。
         _write_global_skill(global_root / "skills", "public-only", "公共技能")

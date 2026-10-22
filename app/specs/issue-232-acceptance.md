@@ -71,3 +71,13 @@ scripts/check.sh --fast
   （比票面最低要求更严；日志可读，其余技能照常）。
 - **团队提示去重**：不同成员产生同一行提示时在收口处按出现顺序去重；单个落选条目仍各有一条。
 - **本票不做**：全局 MCP 声明、全局规则 / 记忆、Docker bind 实际落地、全局技能 UI 端点。
+
+## 合入后修正：全局技能层缺席时的可读记录（D9）
+
+双轴 code-review 的 Spec 轴指出：规则 / 记忆 / MCP 在全局层缺席时都留一条可读日志，只有技能层
+`_global_skill_layer` 在 `resolve_global_read_path` 返回 `None` 时静默返回空列表，与 D9
+「本轮继续并记可读提示」不一致（功能上仍是零条、不创建、不报错）。
+
+修法：目录缺席时 `_log.info("global skill layer is absent: %s", <期望路径>)`，与另三层同口径；
+`test_missing_global_layers_yield_zero_and_are_never_created` 增加 `caplog` 断言（INFO 记录含
+成员层期望路径）。读数为 `8 passed`。

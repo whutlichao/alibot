@@ -636,6 +636,8 @@ def _global_skill_layer(
 
     directory = resolve_global_read_path(global_root, *parts)
     if directory is None:
+        # 全局层是人的维护面，缺席是正常状态：本轮零条，但留一条可读记录（D9）。
+        _log.info("global skill layer is absent: %s", posixpath.join(global_root, *parts))
         return []
     try:
         entries = sorted(Path(directory).iterdir(), key=lambda item: item.name)
