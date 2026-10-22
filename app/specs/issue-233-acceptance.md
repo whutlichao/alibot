@@ -133,3 +133,20 @@ scripts/check.sh --fast
   全局规则 / 技能 / 记忆、Docker bind 实际落地、任何 schema 变更。
 - **日志语言**：沿用仓库既有日志风格（英文、含文件路径与字段名），不做 i18n；用户可见的落选提示走
   `i18n.CATALOGS` 的中英成对词条。
+
+## 合入后修正：层内顺序断言的 flakiness（协调者 gate 修复）
+
+合入集成分支后，`test_project_layers_keep_both_scopes_while_the_merged_reader_is_unchanged`
+在整文件运行时约 50% 概率红（连续 6 次：3 红 3 绿；单用例重复运行则 3/3 绿）。
+
+**根因**：断言了 `mcp_layers_for_target` 的插入顺序，但实现是
+`ORDER BY CASE scope_kind WHEN 'agent' THEN 0 ELSE 1 END, ms.created_at, ms.id`；`utc_now()`
+只有毫秒精度（`db.py:1198-1200`），同一毫秒内插入的两条 channel 行 `created_at` 相等，而
+`new_id()` 是随机 `uuid4` 前缀（`db.py:1288`），tie-break 随机。生产语义只保证「Agent 级在
+频道级之前」，层内顺序没有契约。
+
+**修法**（只改测试，不动生产 SQL / 时间戳精度）：断言改为
+`len(layers) == 3` + 「所有 agent 行都在 channel 行之前」+ 三元组集合相等；保留「同名两条都在」
+与「既有合并读路径形状不变」两条判据。
+
+**读数**：修复后 `pytest tests/test_global_mcp.py` 连续 10 次全绿（`13 passed`）。
