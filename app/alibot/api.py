@@ -707,8 +707,10 @@ def create_app(
             workspace_of=database.workspace_settings_for_target,
             # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
             permission_of=database.permission_settings_for_target,
-            # MCP 声明（#151）：启用 + 已确认的远端声明由装配层物化为 MCPClient；未配置时为空。
-            mcp_of=database.mcp_servers_for_target,
+            # MCP 声明（#151 / #233）：项目两层由装配层按「Agent 级 → 频道级 → 全局」合并，
+            # 因此这里给**未合并**读路径（保留落选者以生成可读提示）；启用 + 已确认的远端声明
+            # 由装配层物化为 MCPClient；未配置时为空。
+            mcp_of=database.mcp_layers_for_target,
             # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
             skills_of=database.skills_for_target,
             # 联网配置（#186 / ADR-0026 §二）：``web_access`` 未配置时不挂任何联网工具。这条读路径
@@ -717,6 +719,9 @@ def create_app(
             # 全局层（#230 / ADR-0031 Seam A）：规则基座 / 项目补充的只读读路径。全局根固定为
             # ``~/.alibot``，只看 HOME，不随 ``--data-dir`` / ``ALIBOT_DATA_DIR`` 移动。
             global_home=global_home_root(),
+            # 全局远端 MCP 的确认状态（#233）：全局条目没有库行，按合成标识
+            # ``global:<member_id>:<name>`` 从既有 ``remote_consent_scope('mcp', …)`` 读取。
+            global_mcp_consent_of=lambda scope_id: database.has_remote_consent_scope("mcp", scope_id),
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
