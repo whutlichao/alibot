@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from agentscope.middleware import MiddlewareBase
-from agentscope.permission import AdditionalWorkingDirectory, PermissionEngine, PermissionMode
+from agentscope.permission import (
+    AdditionalWorkingDirectory,
+    PermissionBehavior,
+    PermissionDecision,
+    PermissionEngine,
+    PermissionMode,
+)
 from agentscope.tool import BackendBase
 
 
@@ -45,6 +51,23 @@ class PartitionBackend(BackendBase):
                 continue
             return str(normalized)
         raise PermissionError(f"path escapes runtime directories: {path!r}")
+
+    def is_read_only(self, path: str) -> bool:
+        """路径是否落在只读目录（local 用 realpath 比对，容忍 ``/var`` ↔ ``/private/var`` 这类别名）。"""
+        requested = Path(path)
+        if not requested.is_absolute():
+            requested = self.visible_dir / requested
+        normalized = Path(os.path.normpath(requested))
+        real = Path(os.path.realpath(requested))
+        for _, visible in self.read_only_dirs:
+            for candidate in (normalized, real):
+                for base in (visible, Path(os.path.realpath(visible))):
+                    try:
+                        candidate.relative_to(base)
+                        return True
+                    except ValueError:
+                        continue
+        return False
 
     async def exec_shell(
         self, command: list[str], *, cwd: str | None = None, timeout: float | None = None
@@ -99,6 +122,12 @@ class PartitionPermissionMiddleware(MiddlewareBase):
         try:
             tool_input["file_path"] = self.backend.resolve(path, write=write)
         except PermissionError:
+            if write and self.backend.is_read_only(path):
+                # 只读目录（会话卸载 / 全局记忆）不是合法写入目标：直接拒绝，不转成 ASK。
+                return PermissionDecision(
+                    behavior=PermissionBehavior.DENY,
+                    message=f"Error: path is read-only: {path!r}",
+                )
             return await next_handler()
         if str(getattr(input_kwargs.get("tool_call"), "state", "")) == "allowed":
             return await next_handler(tool_input=tool_input)
