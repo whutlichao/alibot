@@ -64,26 +64,70 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 
 **本机存储不做应用层端到端加密**；磁盘上的数据库按操作系统文件权限保护。产品文案**不声称 E2EE**。
 
-### 数据目录：备份方式就是复制目录
+### 数据目录：默认在隐藏根下，备份方式仍是复制目录
 
 | 项 | 值 |
 | --- | --- |
 | 默认端口 | `8788`（`--port` 可改） |
-| 默认数据目录 | `~/Alibot/`（可见、可直接复制） |
-| 覆盖方式 | `--data-dir <路径>` 或环境变量 `ALIBOT_DATA_DIR` |
+| 默认数据目录 | `~/.alibot/data/`（隐藏根下；旧 `~/Alibot/` 只做**兼容读取**） |
+| 覆盖方式 | `--data-dir <路径>` 或环境变量 `ALIBOT_DATA_DIR`（只改数据目录本身，**不移动**全局层根） |
 | 库文件 | `<数据目录>/alibot.db`（单文件 SQLite，WAL 模式） |
 | 附件字节 | `<数据目录>/attachments/<附件标识>`（**不进 SQLite**；库里只存相对路径，因此整个数据目录可整体搬迁） |
+| 迁移审计台账 | `<数据目录>/schema-migrations.jsonl` |
 | 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾、浏览器带 `last_seq` 重连） |
 
-改名不保留兼容：只有 `ALIBOT_*` 环境变量生效，旧前缀 `WORKSPLICE_*` 与旧数据目录 `~/Worksplice`
-一律不再被识别，也不做迁移（那是另一个项目的目录）。
+数据目录按**固定优先级**解析（结果是确定值，不靠时间戳或遍历顺序）：
 
-备份：`cp -R ~/Alibot ~/Alibot-backup-$(date +%F)`。恢复：反向复制回去。
+1. `--data-dir` 或 `ALIBOT_DATA_DIR`：使用显式值（既有语义不变）；
+2. 新默认 `~/.alibot/data/` 已存在：使用新默认；
+3. 旧 `~/Alibot` 已存在：继续用旧位置，并给一条可读兼容提示；
+4. 两者都不存在：新建 `~/.alibot/data/`。
+
+启动时打印**实际数据目录**与来源（显式覆盖 / 新默认 / 旧位置兼容 / 新建）。新旧同时存在时确定地选
+新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
+`~/.alibot/agents/` 与 `~/.alibot/skills/` 是人的维护面，应用不创建。
+旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
+本节的兼容读取只针对 `~/Alibot`。
+
+备份 / 恢复（显式路径，可直接执行）：
+
+```sh
+# 数据目录（库 + 附件 + 迁移台账，整目录 = 备份单位）
+mkdir -p ~/.alibot-backups
+cp -R ~/.alibot/data ~/.alibot-backups/data-$(date +%F)
+# 恢复：反向复制回去（先停应用）
+cp -R ~/.alibot-backups/data-YYYY-MM-DD ~/.alibot/data
+# 若仍在使用旧位置做兼容读取，把上面的 ~/.alibot/data 换成 ~/Alibot。
+
+# 全局层：不在数据目录备份内，必须单独备份
+cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
+cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
+# 恢复：反向复制回去（全局层只由人维护，应用只读、不自动创建）
+```
+
 库文件旁边可能有 `-wal` / `-shm` 两个伴随文件，一起复制即可。
 **附件字节在 `<数据目录>/attachments/` 里**（#67）：只备份 `alibot.db` 的备份**不再是完整备份**，
 它会是「有元数据、没字节」的半份——备份单位是**整个数据目录**。
 **迁移前会自动备份**：`--migrate` 在动手之前把整个数据目录复制成同级的
 `<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>`；**备份失败就不迁移**（不会退化成"放行 + 一句警告"）。
+
+从旧默认位置搬到新默认位置是**显式动作**（启动绝不自动搬移）：
+**停应用 → 整目录复制 → 校验 → 指向新位置**，复制前先做整目录备份。
+
+```sh
+# 1) 停应用；2) 复制前先整目录备份
+mkdir -p ~/.alibot-backups
+cp -R ~/Alibot ~/.alibot-backups/legacy-$(date +%F)
+# 3) 整目录复制（库 + 附件 + 迁移台账一起过去；不要只复制 alibot.db）
+mkdir -p ~/.alibot
+cp -R ~/Alibot ~/.alibot/data
+# 4) 校验：库可打开、附件数量一致、台账存在
+python -m alibot --migrate --dry-run --data-dir ~/.alibot/data
+ls ~/Alibot/attachments | wc -l
+ls ~/.alibot/data/attachments | wc -l
+test -f ~/.alibot/data/schema-migrations.jsonl
+# 5) 指向新位置：不传 --data-dir 即自动使用新默认；旧 ~/Alibot 此后被忽略（不删除）
+```
 
 从首版升级（ADR-0015）：**启动仍然拒绝** schema 版本与本版不等的库（不猜、不跳过），但报错正文会直接给出
 迁移命令与备份指引；把旧库升到本版要**显式**执行 `python -m alibot --migrate --data-dir <数据目录>`
@@ -622,7 +666,7 @@ live `approval_*` 帧仍只补本次会话内的变化。
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
 已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、
 Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要行与两种语言说法）由上面的 Node 内置测试
-单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
+单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/.alibot/data` 与旧 `~/Alibot`。
 
 上面这条纪律、以及「本文件的词表必须跟着 `db.py` 走」，都有**机械判据**：
 `app/tests/test_test_layering_guard.py`（不读 Studio 源码 / 不断言词表形状 / 不 import 私有名）、
