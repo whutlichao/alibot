@@ -216,7 +216,11 @@ CONTEXT.md:285           # 「**不再**逐次审批」——新行为的如实�
 
 ## 6. 提交与 PR
 
-（待回填 commit、PR 号与 body 路径）
+- `6f40028` `feat(web): 联网档 search+fetch 下 fetch 不再逐次审批（#242）`（产品代码 + 测试）
+- `816b218` `docs(specs): #242 修订 ADR-0026 并同步联网档文档与验收取证`（文档 + 本文件 + PR body）
+- 分支：`fetch-no-approval`（已推送 `origin/fetch-no-approval`）
+- PR：[#243](https://github.com/whutlichao/alibot/pull/243)，body 正本 `app/specs/issue-242-pr-body.md`
+  （Summary / Evidence / Merge Danger / `Closes #242`）
 
 ---
 
