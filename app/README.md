@@ -568,6 +568,8 @@ live `approval_*` 帧仍只补本次会话内的变化。
 | `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim`、Agent 级 workspace 四项与 `web_access`、`stats`） |
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）；`web_access: null` 是**清除 Agent 级覆盖**（回到跟随频道，写库 `NULL`；缺省该字段 = 保持原值，其它字段的显式 `null` 仍 400）。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
+| `GET /api/agents/{id}/global-mcp-servers` | 该成员全局 `~/.alibot/agents/<id>/mcp.json` 的**只读**条目 + 进程内 `runtime` 读数：`{name, transport, is_remote, consented, runtime}`。只列出文件里真实存在的条目；**没有**编辑 / 启停 / 删除，也不写回全局层 |
+| `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 全局远端 MCP（`http` / `sse`）的数据面确认（幂等；写 `remote_consent_scope('mcp', 'global:<member_id>:<name>')`，只存时间）。stdio 不接受；名字不在该成员 `mcp.json` 里 ⇒ 400 且不写行。确认后下一轮装配才连接；未确认时运行期读数为 `consent_required` |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
 | `POST /api/remote-data-flow/ack` | 确认一次告知 `{provider}`（幂等） |

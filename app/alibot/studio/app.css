@@ -467,6 +467,8 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .kv:last-child { border-bottom: 0; }
 .kv .k { flex: 0 0 74px; color: var(--faint); font-family: var(--mono); font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wide); text-transform: uppercase; }
 .kv .v { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
+/* 全局 MCP 只读行（#236）：正文是一句读数 + 远端条目的确认按钮；不出现编辑 / 启停 / 删除。 */
+.global-mcp-row .v { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
 /* 四个数字（订阅频道数 / 消息处理数 / 完成任务数 / 成功率）：数字等宽、标签小字。 */
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
 .stat { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5); background: var(--panel); }

@@ -492,6 +492,20 @@ const I18N_CATALOGS = {
     'agentDetail.webAccessOff': '已关闭',
     'agentDetail.webAccessSearch': '只搜索',
     'agentDetail.webAccessSearchFetch': '搜索+抓取',
+    // 全局 MCP（#236 / ADR-0031 D8）：成员家目录 mcp.json 是**只读素材层**。这里只展示真实条目
+    // 与运行期读数，只对远端未确认条目给一个确认动作；不渲染编辑 / 启停 / 删除，也不写回文件。
+    'agentDetail.globalMcpTitle': '全局 MCP（只读）',
+    'agentDetail.globalMcpNote': '来自该成员家目录的 mcp.json；这里只读取，不编辑、不启停、不删除。',
+    'agentDetail.globalMcpEmpty': '全局 mcp.json 里没有声明。',
+    'agentDetail.globalMcpRemote': '远端（数据会离开本机）',
+    'agentDetail.globalMcpLocal': '本机',
+    'agentDetail.globalMcpConsented': '已确认',
+    'agentDetail.globalMcpConsentPending': '未确认（确认前不连接）',
+    'agentDetail.globalMcpNoConsent': '本机条目：不需要确认',
+    'agentDetail.globalMcpConfirm': '确认使用',
+    'agentDetail.globalMcpConfirmed': '已确认：{name}',
+    'agentDetail.globalMcpRuntimeIdle': '尚无运行期读数',
+    'agentDetail.globalMcpRuntimeConnected': '运行期已连接',
     'agentDetail.emptyField': '（未填写）',
     'agentDetail.editTitle': '编辑配置',
     'agentDetail.editSub': '保存只写 Agent 配置：不落消息、不唤醒、不消耗预算。',
@@ -801,6 +815,7 @@ const I18N_CATALOGS = {
     'toast.remoteAckFailed': '确认失败：{reason}',
     'toast.agentUpdated': '已保存 {name} 的配置。',
     'toast.agentDetailFailed': '读取 Agent 详情失败：{reason}',
+    'toast.globalMcpConsentFailed': '确认全局 MCP 条目失败：{reason}',
     'toast.agentPaused': '已暂停 {name}：它仍会被唤醒并留下失败轮次结果，只是不产出回复。',
     'toast.agentResumed': '已恢复 {name}。',
   },
@@ -1292,6 +1307,22 @@ const I18N_CATALOGS = {
     'agentDetail.webAccessOff': 'Off',
     'agentDetail.webAccessSearch': 'Search only',
     'agentDetail.webAccessSearchFetch': 'Search + fetch',
+    // Global MCP (#236 / ADR-0031 D8): the member's home mcp.json is a read-only source layer.
+    // Only real entries and runtime readings are shown; only an unacknowledged remote entry gets
+    // an acknowledge action. No edit / enable / delete, and nothing is written back to the file.
+    'agentDetail.globalMcpTitle': 'Global MCP (read-only)',
+    'agentDetail.globalMcpNote':
+      "From this member's global mcp.json; read-only here — no edit, enable/disable, or delete.",
+    'agentDetail.globalMcpEmpty': 'No declarations in the global mcp.json.',
+    'agentDetail.globalMcpRemote': 'Remote (data leaves this machine)',
+    'agentDetail.globalMcpLocal': 'Local',
+    'agentDetail.globalMcpConsented': 'Acknowledged',
+    'agentDetail.globalMcpConsentPending': 'Not acknowledged (not connected yet)',
+    'agentDetail.globalMcpNoConsent': 'Local entry: no acknowledgement needed',
+    'agentDetail.globalMcpConfirm': 'Acknowledge',
+    'agentDetail.globalMcpConfirmed': 'Acknowledged: {name}',
+    'agentDetail.globalMcpRuntimeIdle': 'No runtime reading yet',
+    'agentDetail.globalMcpRuntimeConnected': 'Connected at runtime',
     'agentDetail.emptyField': '(empty)',
     'agentDetail.editTitle': 'Edit configuration',
     'agentDetail.editSub':
@@ -1627,6 +1658,7 @@ const I18N_CATALOGS = {
     'toast.remoteAckFailed': 'Acknowledgement failed: {reason}',
     'toast.agentUpdated': 'Saved the configuration of {name}.',
     'toast.agentDetailFailed': 'Could not read the agent details: {reason}',
+    'toast.globalMcpConsentFailed': 'Could not acknowledge the global MCP entry: {reason}',
     'toast.agentPaused':
       'Paused {name}: it is still woken and still leaves a failed round outcome — it just produces no reply.',
     'toast.agentResumed': 'Resumed {name}.',

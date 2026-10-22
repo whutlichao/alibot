@@ -227,6 +227,9 @@ function createHarness(options) {
       body: request.body ? JSON.parse(request.body) : null,
     });
     if (config.fetch) return config.fetch(String(url), request);
+    if (String(url).endsWith("/global-mcp-servers")) {
+      return { ok: true, status: 200, json: async () => ({ global_mcp_servers: [] }) };
+    }
     if (String(url).startsWith("/api/agents/")) {
       return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
     }
@@ -1222,4 +1225,106 @@ test('Agent 编辑面读写长期记忆和上下文配置，清空数值提交�
   assert.equal(payload.context_window_messages, null);
   assert.equal(payload.context_trigger_ratio, null);
   assert.equal(payload.react_max_iters, null);
+});
+
+test("Agent 详情的全局 MCP 小节是只读行：stdio 不可确认，确认动作按成员 + 名字发出", async () => {
+  const servers = [
+    { name: "notes", transport: "stdio", is_remote: false, consented: false, runtime: null },
+    {
+      name: "remote",
+      transport: "http",
+      is_remote: true,
+      consented: false,
+      runtime: { connected: false, error: "需要确认远端数据面" },
+    },
+  ];
+  const harness = createHarness({
+    fetch: async (url, init) => {
+      const method = (init && init.method) || "GET";
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers" && method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ global_mcp_servers: servers.map((server) => ({ ...server })) }),
+        };
+      }
+      if (
+        String(url) === "/api/agents/mem-1/global-mcp-servers/remote/consent"
+        && method === "POST"
+      ) {
+        servers[1] = { ...servers[1], consented: true };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ global_mcp_server: { ...servers[1] }, consent: {} }),
+        };
+      }
+      if (String(url) === "/api/agents/mem-1") {
+        return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await harness.elementFor("#adTabRuntime").dispatchEvent({ type: "click" });
+
+  const localRow = byDataset(harness.runtime, "globalMcpServer", "notes");
+  const remoteRow = byDataset(harness.runtime, "globalMcpServer", "remote");
+  assert.ok(localRow, "stdio 条目仍要只读展示");
+  assert.ok(remoteRow, "远端条目要出现在只读列表里");
+
+  // 只读行：不渲染编辑 / 启停 / 删除控件。
+  for (const selector of [
+    "[data-global-mcp-edit]",
+    "[data-global-mcp-toggle]",
+    "[data-global-mcp-delete]",
+  ]) {
+    assert.equal(harness.runtime.querySelector(selector), null, "全局条目不得出现：" + selector);
+  }
+  // stdio 不在「可确认」的那一半里；远端未确认条目有确认按钮。
+  assert.equal(localRow.querySelector("[data-global-mcp-consent]"), null, "stdio 不可确认");
+  const confirmButton = remoteRow.querySelector("[data-global-mcp-consent]");
+  assert.ok(confirmButton, "远端未确认条目要能确认");
+  assert.equal(
+    textOf(confirmButton),
+    catalogText(harness, "zh-CN", "agentDetail.globalMcpConfirm"),
+  );
+  // 运行期读数原样呈现（确认前是可读的 consent_required 原因）。
+  assert.ok(remoteRow.textContent.includes("需要确认远端数据面"));
+
+  // 新增文案 zh-CN / en 成对。
+  [
+    "agentDetail.globalMcpTitle",
+    "agentDetail.globalMcpNote",
+    "agentDetail.globalMcpEmpty",
+    "agentDetail.globalMcpRemote",
+    "agentDetail.globalMcpLocal",
+    "agentDetail.globalMcpConsented",
+    "agentDetail.globalMcpConsentPending",
+    "agentDetail.globalMcpConfirm",
+    "agentDetail.globalMcpRuntimeIdle",
+    "agentDetail.globalMcpRuntimeConnected",
+    "agentDetail.globalMcpConfirmed",
+  ].forEach((key) => {
+    assert.ok(harness.catalogs["zh-CN"][key], "zh-CN 缺词条：" + key);
+    assert.ok(harness.catalogs.en[key], "en 缺词条：" + key);
+  });
+
+  await harness.runtime.dispatchEvent({ type: "click", target: confirmButton });
+  await flush();
+  await flush();
+
+  const posts = harness.calls.filter((call) => call.method === "POST");
+  assert.deepEqual(
+    posts.map((call) => call.url),
+    ["/api/agents/mem-1/global-mcp-servers/remote/consent"],
+  );
+  // 确认后按后端读数重铺：按钮消失、行显示「已确认」。
+  const refreshed = byDataset(harness.runtime, "globalMcpServer", "remote");
+  assert.equal(refreshed.querySelector("[data-global-mcp-consent]"), null);
+  assert.ok(
+    refreshed.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.globalMcpConsented")),
+    "确认后要读回已确认",
+  );
 });

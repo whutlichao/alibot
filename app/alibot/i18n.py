@@ -285,6 +285,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_scope_invalid": "MCP 声明作用域只能是 channel 或 agent",
         "error.mcp_scope_unknown": "MCP 声明作用域不存在：{scope_id}",
         "error.mcp_server_not_found": "MCP 声明不存在：{server_id}",
+        "error.global_mcp_declaration_not_found": "该成员的全局 mcp.json 里没有这个声明：{name}",
         "error.mcp_server_conflict": "同一作用域内已存在同名 MCP 声明：{name}",
         "error.mcp_consent_local": "stdio MCP 在本机运行，不需要远端数据面确认",
         "error.skill_scope_invalid": "Skill 作用域只能是 channel 或 agent",
@@ -760,6 +761,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_scope_invalid": "An MCP declaration scope must be channel or agent",
         "error.mcp_scope_unknown": "No such MCP declaration scope: {scope_id}",
         "error.mcp_server_not_found": "No such MCP declaration: {server_id}",
+        "error.global_mcp_declaration_not_found": (
+            "No such declaration in this member's global mcp.json: {name}"
+        ),
         "error.mcp_server_conflict": "An MCP declaration with that name already exists in this scope: {name}",
         "error.mcp_consent_local": "A stdio MCP runs locally and needs no remote data-flow acknowledgement",
         "error.skill_scope_invalid": "A skill scope must be channel or agent",

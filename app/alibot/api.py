@@ -33,6 +33,8 @@
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
+- ``GET  /api/agents/{id}/global-mcp-servers`` 全局 mcp.json 的只读条目 + 运行期读数
+- ``POST /api/agents/{id}/global-mcp-servers/{name}/consent`` 全局远端 MCP 的数据面确认
 - ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
 - ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）
 - ``GET  /api/approvals``                      待审批 / 历史审批快照（供运行面板恢复）
@@ -749,7 +751,14 @@ def create_app(
         scheduler=orchestrator.scheduler,
         agent_factory=getattr(member_seam, "sop_agent", None),
     )
-    service = WorkspaceService(database, orchestrator=orchestrator, events=events, sops=sop_runner)
+    service = WorkspaceService(
+        database,
+        orchestrator=orchestrator,
+        events=events,
+        sops=sop_runner,
+        # 全局层（#230 / #236）：与成员面同一根，只看 HOME，不随数据目录覆盖移动。
+        global_home=global_home_root(),
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -1660,6 +1669,26 @@ def create_app(
     @app.get("/api/agents/{member_id}/status")
     def get_agent_status(member_id: str) -> dict[str, Any]:
         return service.member_status(member_id)
+
+    @app.get("/api/agents/{member_id}/global-mcp-servers")
+    def list_global_mcp_servers(member_id: str) -> dict[str, Any]:
+        """该成员全局 ``mcp.json`` 的只读条目 + 运行期读数（#236）。
+
+        只列出文件里真实存在的条目，字段是名字 / transport / 是否远端 / 是否已确认 / 进程内
+        ``runtime``。全局层由人维护：这里**没有**编辑、启停、删除，也不写回文件。
+        """
+        return service.global_mcp_servers(member_id)
+
+    @app.post("/api/agents/{member_id}/global-mcp-servers/{name}/consent")
+    def consent_global_mcp_server(member_id: str, name: str) -> dict[str, Any]:
+        """按「成员 + 名字」确认一条**全局远端** MCP 声明（幂等）。
+
+        写入口只接受该成员全局 ``mcp.json`` 里真实存在且 transport 为 ``http`` / ``sse`` 的条目；
+        stdio 是本机进程，不需要也不接受确认。确认行仍是 ``remote_consent_scope('mcp', …)``，
+        ``scope_id`` 是合成标识 ``global:<member_id>:<name>``；只存时间。全局文件是只读素材层：
+        这条写入**不**改文件、不新增库表、不改 schema。
+        """
+        return service.confirm_global_mcp_server(member_id, name)
 
     @app.get("/api/member-statuses")
     def get_member_statuses() -> dict[str, Any]:
