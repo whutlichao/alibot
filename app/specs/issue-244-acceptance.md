@@ -172,4 +172,6 @@ d194d0a0bc057f492861e4591ff969938a04ae6a3fe4de32c68d517008346204  03-task-thread
 ## 6. 交付
 
 - 分支：`run-panel-empty-guidance`（从 `16f6400` 切出；本票未合并集成分支，PR 目标 `main`）。
-- PR：创建后回填编号与正文路径（见下）。
+- 实现 commit：`edae51d`；验收文档 commit：`856a1d0`（PR 创建前的分支 tip）。
+- PR：[#245](https://github.com/whutlichao/alibot/pull/245)，正文文件 `app/specs/issue-244-pr-body.md`，
+  正文按 pr skill 的 Summary / Evidence / Merge Danger 三段写，并带 `Closes #244`。
