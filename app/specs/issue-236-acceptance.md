@@ -52,25 +52,21 @@
 # cd app && ../.venv/bin/python -m pytest tests/test_global_mcp_consent.py
 5 passed in 0.48s
 
-# 受影响 pytest（test_global_mcp_consent / test_remote_data_flow / test_mcp_servers /
-#   test_global_mcp / test_backend_copy / test_agent_detail / test_global_skills /
-#   test_test_layering_guard / test_docs_vocabulary_guard）
-85 passed in 12.38s
+# 受影响 pytest（合入集成 tip 后；含 #234 的 test_global_memory）
+#   test_global_mcp_consent / test_remote_data_flow / test_mcp_servers / test_global_mcp /
+#   test_backend_copy / test_agent_detail / test_global_skills / test_global_memory
+82 passed in 11.44s
 
-# node --test app/tests/agent_detail_ui.test.cjs        → 25 pass / 0 fail
-# node --test app/tests/i18n_ui.test.cjs               → 53 pass / 0 fail
-# node --test app/tests/*.test.cjs                     → 259 pass / 0 fail
-# .venv/bin/python -m ruff check app                   → All checks passed!
-# .venv/bin/python -m mypy                             → Success: no issues found in 121 source files
-# pyright app/alibot app/tests                         → 0 errors, 0 warnings, 0 informations
+# scripts/check.sh --fast（合并前另跑过 test_test_layering_guard / test_docs_vocabulary_guard：均通过）
+→ 门禁全绿（ruff check / ruff format --check / mypy / pyright / node glob 全通过；
+  node --test app/tests/*.test.cjs → 259 pass / 0 fail）
 ```
 
 ## 已知偏差 / 风险
 
-1. **`scripts/check.sh --fast` 的格式检查在本分支基线上已红**：`ruff format --check app` 只报
-   `app/alibot/agent_seam.py`（缺少一个空行），该文件在本票中**未改动**：
-   `git diff --stat 1fcf08e -- app/alibot/agent_seam.py` 为空。其余门禁（ruff check / mypy /
-   pyright / node glob）均通过；本票新增/修改的 Python 文件已格式化。
+1. **切出时的基线格式红已由集成分支解决**：`1fcf08e` 的 `app/alibot/agent_seam.py` 缺一个空行，
+   当时 `ruff format --check` 会红（该文件本票未改动）。收尾把 `agent-home-layers-integration`
+   （含 #234）`--no-ff` 合入后，`scripts/check.sh --fast` 已全绿。
 2. 列表没有额外的 `can_consent` 字段：可确认性由 `is_remote && !consented` 派生，避免同一事实
    有两个来源；stdio 的 `consented` 恒为 `false`。
 3. 写入口的错误码统一是 `validation_failed`（400），成员不存在沿用既有 `NotFound`（404 +
