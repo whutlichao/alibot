@@ -73,3 +73,5 @@
    `error.agent_not_found`）；三类失败都在任何写入之前返回。
 4. 本票只动人类面与既有确认行；全局 `mcp.json` 的解析/合并仍归 #233，全局条目的安装/编辑/删除
    仍明确不在范围内。
+5. **`CONTEXT.md` 未改动**（术语词典受 spec #228 保护）；端点清单只写入 `app/README.md` 的
+   HTTP 契约表与 `api.py` 模块 docstring。
