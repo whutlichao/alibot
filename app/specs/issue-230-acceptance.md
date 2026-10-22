@@ -44,12 +44,13 @@
 ../.venv/bin/python -m pytest tests/test_global_rules.py
 # 18 passed in 6.81s
 
-../.venv/bin/python -m pytest tests/test_global_rules.py tests/test_skill_assembly.py \
-  tests/test_local_workspace.py tests/test_agent_round.py tests/test_team_mode.py \
-  tests/test_team_budget.py tests/test_team_visibility.py tests/test_team_task_threads.py \
-  tests/test_plan.py tests/test_sop.py tests/test_web_assembly.py \
-  tests/test_test_layering_guard.py tests/test_agentscope_usage_guard.py
-# 177 passed in 38.91s
+../.venv/bin/python -m pytest tests/test_global_rules.py tests/test_data_dir_resolution.py \
+  tests/test_skill_assembly.py tests/test_local_workspace.py tests/test_agent_round.py \
+  tests/test_team_mode.py tests/test_team_budget.py tests/test_team_visibility.py \
+  tests/test_team_task_threads.py tests/test_plan.py tests/test_sop.py \
+  tests/test_web_assembly.py tests/test_test_layering_guard.py \
+  tests/test_agentscope_usage_guard.py
+# 185 passed in 46.06s（已合入集成分支 #231 的 tip）
 ```
 
 ## 门禁读数
@@ -59,8 +60,8 @@
 ```sh
 scripts/check.sh --fast
 # ruff check: All checks passed!
-# ruff format --check: 286 files already formatted
-# mypy（仓库根）: Success: no issues found in 116 source files
+# ruff format --check: 289 files already formatted
+# mypy（仓库根）: Success: no issues found in 117 source files
 # pyright: 0 errors, 0 warnings, 0 informations
 # node --test（glob）: tests 258 / pass 258 / fail 0
 # 门禁全绿
