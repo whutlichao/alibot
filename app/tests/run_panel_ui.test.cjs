@@ -175,11 +175,11 @@ function channel(id, name) {
   return { id, name, description: "", last_seq: 0, last_read_seq: 0, unread_count: 0 };
 }
 
-function configPayload() {
+function configPayload(mode) {
   return {
     config: {
       channel_id: "ch_1",
-      mode: "team",
+      mode: mode || "team",
       team_scope: "channel+task",
       team_leader_member_id: "m_1",
       leader_available: true,
@@ -851,6 +851,138 @@ test("没有运行 / Plan / 事件 / SOP 时显示各段空态", async () => {
   assert.match(text, /还没有 SOP 运行/);
 });
 
+/* ─── 7b. 自主模式频道的空态解释（#155 入口保留，但空态要说清原因与去处）───── */
+test("自主模式频道：运行与 Plan 空态解释原因与去处；成员事件 / SOP 空态保持原样", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/channels/ch_1/config") {
+        return { ok: true, status: 200, json: async () => configPayload("autonomous") };
+      }
+      if (url.includes("/team-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ target_id: "ch_1", runs: [], has_more: false }),
+        };
+      }
+      if (url.includes("/plan")) {
+        return { ok: true, status: 200, json: async () => ({ plan: { target_id: "ch_1", members: [] } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.openChannelPanel();
+
+  assert.equal(
+    harness.callsTo("/api/channels/ch_1/config").length,
+    1,
+    "频道面板打开时按既有读取路径读一次配置",
+  );
+  const text = harness.body.textContent;
+  assert.match(text, /自主模式频道没有队长，不产生 team 运行与分派/, "运行空态解释模式原因");
+  assert.match(text, /频道设置 → 协作模式/, "引导复用既有频道设置入口的术语");
+  assert.match(text, /队长制/, "说明切到队长制才有 team 运行");
+  assert.match(text, /自主模式频道的对话不产生 Plan/, "Plan 空态解释模式原因");
+  assert.match(text, /任务运行面板/, "Plan 空态指向任务线程头的入口");
+  assert.match(text, /还没有成员事件（仅直播/, "成员事件空态维持原语义");
+  assert.match(text, /还没有 SOP 运行/, "SOP 空态维持原语义");
+  assert.doesNotMatch(text, /还没有 team 运行记录/);
+  assert.doesNotMatch(text, /还没有 Plan。/);
+});
+
+test("team 模式频道：沿用原空态文案，不出现自主模式解释", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/channels/ch_1/config") {
+        return { ok: true, status: 200, json: async () => configPayload("team") };
+      }
+      if (url.includes("/team-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ target_id: "ch_1", runs: [], has_more: false }),
+        };
+      }
+      if (url.includes("/plan")) {
+        return { ok: true, status: 200, json: async () => ({ plan: { target_id: "ch_1", members: [] } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.openChannelPanel();
+
+  const text = harness.body.textContent;
+  assert.match(text, /还没有 team 运行记录/);
+  assert.match(text, /还没有 Plan。/);
+  assert.doesNotMatch(text, /自主模式/);
+  assert.doesNotMatch(text, /队长制/);
+});
+
+test("任务线程运行面板：即使所属频道是自主模式，空态也沿用原文案", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/channels/ch_1/config") {
+        return { ok: true, status: 200, json: async () => configPayload("autonomous") };
+      }
+      if (url.startsWith("/api/targets/tg_1/team-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ target_id: "tg_1", runs: [], has_more: false }),
+        };
+      }
+      if (url.startsWith("/api/targets/tg_1/plan")) {
+        return { ok: true, status: 200, json: async () => ({ plan: { target_id: "tg_1", members: [] } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  harness.api.state.channelConfigs = { ch_1: configPayload("autonomous").config };
+  await harness.openTaskPanel();
+
+  const text = harness.body.textContent;
+  assert.match(text, /还没有 team 运行记录/);
+  assert.match(text, /还没有 Plan。/);
+  assert.doesNotMatch(text, /自主模式/);
+});
+
+test("频道配置读取失败：退回通用空态，不误报为自主模式", async () => {
+  const harness = createHarness({
+    fetch: (url) => {
+      if (url === "/api/channels/ch_1/config") {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: "internal", message: "配置暂时不可用" } }),
+        };
+      }
+      if (url.includes("/team-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ target_id: "ch_1", runs: [], has_more: false }),
+        };
+      }
+      if (url.includes("/plan")) {
+        return { ok: true, status: 200, json: async () => ({ plan: { target_id: "ch_1", members: [] } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.loadChannel();
+  await harness.openChannelPanel();
+
+  assert.equal(harness.callsTo("/api/channels/ch_1/config").length, 1, "尝试读取配置");
+  const text = harness.body.textContent;
+  assert.match(text, /还没有 team 运行记录/);
+  assert.match(text, /还没有 Plan。/);
+  assert.doesNotMatch(text, /自主模式/);
+  assert.doesNotMatch(text, /队长制/);
+});
+
 test("快照读取失败显示可读原因与重试；重试成功后铺上内容", async () => {
   let fail = true;
   const harness = createHarness({
@@ -939,6 +1071,8 @@ test("运行面板的新词条在两份词条表里都取到值", () => {
     "runPanel.sectionPlan",
     "runPanel.sectionSop",
     "runPanel.eventsEmpty",
+    "runPanel.runsEmptyAutonomous",
+    "runPanel.planEmptyAutonomous",
     "runPanel.state.budgetExhausted",
     "runPanel.verdictPassed",
   ];

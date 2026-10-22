@@ -2702,7 +2702,16 @@ function runPanelPlanGroups(live) {
   return [...groups.values()];
 }
 
-function runPanelPlanSection(live) {
+/** 频道运行面板的协作模式：只读 `state.channelConfigs` 的缓存（正本在后端）。
+    `null` = 任务面板 / 没有频道 / 配置还没读回——前端不推算模式，读不到就按通用空态铺。 */
+function runPanelChannelMode() {
+  const panel = state.runPanel;
+  if (panel.taskId || !panel.channelId) return null;
+  const config = state.channelConfigs[panel.channelId];
+  return config ? config.mode : null;
+}
+
+function runPanelPlanSection(live, autonomousChannel) {
   const section = el('div', 'd-sec');
   section.dataset.odId = 'rp-plan';
   section.appendChild(el('div', 'd-sec-title', t('runPanel.sectionPlan')));
@@ -2710,7 +2719,8 @@ function runPanelPlanSection(live) {
     .map((group) => ({ ...group, tasks: group.tasks.filter((task) => !task.deleted_at) }))
     .filter((group) => group.tasks.length);
   if (!groups.length) {
-    section.appendChild(el('div', 'tt-empty', t('runPanel.planEmpty')));
+    const emptyKey = autonomousChannel ? 'runPanel.planEmptyAutonomous' : 'runPanel.planEmpty';
+    section.appendChild(el('div', 'tt-empty', t(emptyKey)));
     return section;
   }
   groups.forEach((group) => {
@@ -2875,18 +2885,22 @@ function renderRunPanel() {
   }
   const live = runPanelLiveEvents();
   const overlay = runPanelOverlayEvents(live);
+  // 自主模式频道没有队长 ⇒ 不会产生 team 运行 / 分派 / Plan；空态要把这件事和「去哪看」讲清楚。
+  // 只认后端读回的缓存（见 `runPanelChannelMode`），任务面板与其它模式都沿用原空态。
+  const autonomousChannel = runPanelChannelMode() === 'autonomous';
   const runsSection = el('div', 'd-sec');
   runsSection.dataset.odId = 'rp-runs';
   runsSection.appendChild(el('div', 'd-sec-title', t('runPanel.sectionRuns')));
   if (!panel.runs.length) {
-    runsSection.appendChild(el('div', 'tt-empty', t('runPanel.runsEmpty')));
+    const emptyKey = autonomousChannel ? 'runPanel.runsEmptyAutonomous' : 'runPanel.runsEmpty';
+    runsSection.appendChild(el('div', 'tt-empty', t(emptyKey)));
   } else {
     panel.runs.forEach((run) => runsSection.appendChild(runPanelRunCard(run, live)));
   }
   replaceChildren(body, [
     runsSection,
     runPanelEventsSection(live),
-    runPanelPlanSection(overlay),
+    runPanelPlanSection(overlay, autonomousChannel),
     runPanelSopSection(overlay),
   ]);
 }
@@ -2918,6 +2932,17 @@ function openRunPanel(options) {
   if (panel.channelId && channelAgentMembers(panel.channelId) === null) {
     refreshChannelMembers(panel.channelId).then(() => {
       if (state.runPanel.open && state.runPanel.channelId === panel.channelId) renderRunPanel();
+    });
+  }
+  // 频道面板的空态解释依赖协作模式：缓存未命中时按既有读取路径读一次（同一频道的在飞
+  // 读取会复用），读回后若面板仍开在同一个频道就重绘。读失败返回 null ⇒ 保持未缓存、
+  // 继续铺通用空态，**不**把读不到误报成自主模式。
+  if (panel.channelId && !panel.taskId && !state.channelConfigs[panel.channelId]) {
+    const channelId = panel.channelId;
+    loadTaskChannelConfig(channelId).then(() => {
+      if (!state.runPanel.open || state.runPanel.taskId) return;
+      if (state.runPanel.channelId !== channelId) return;
+      renderRunPanel();
     });
   }
   loadRunPanelSnapshot();
