@@ -19,7 +19,8 @@
 | 9 | 全局根固定 `~/.alibot/`，`--data-dir` / `ALIBOT_DATA_DIR` 不改变规则读取位置 | `workspace.global_home_root()` 只看 HOME；`api.create_app` 显式接线 | `test_global_root_ignores_the_data_dir_override` |
 | 10 | 只读守卫以自己根做 realpath，拒绝根外 symlink 祖先与根外目标 | `workspace._read_layer_text` 的 `_within(realpath(candidate), realpath(root))` | `test_symlink_outside_the_global_root_is_rejected`（祖先 symlink / 目标 symlink 两种形态） |
 | 11 | 为后续票提供 Docker 全局挂载点常量与成员家目录解析 | `workspace.GLOBAL_HOME_DIRNAME`、`DOCKER_GLOBAL_HOME`、`global_member_home`、`docker_global_member_home`、`docker_global_skills_home` | `test_global_member_home_and_docker_mount_constants` |
-| 12 | 测试 HOME 与全局根都指向临时目录；零 schema 变更、`SCHEMA_VERSION` 不 bump | 测试 `isolated_home` autouse fixture；未改 `db.py` | `git diff 357aa89 -- app/alibot/db.py` 为 0 行；`SCHEMA_VERSION` 仍为 23 |
+| 12 | **下游复用入口**：#232 技能 / #233 `mcp.json` / #234 记忆共用同一道只读守卫，不各写一套 realpath 检查 | `workspace.resolve_global_read_path(root, *parts)`（公开；与 `_read_layer_text` 共用 `_resolve_read_path` 内核，只读、不创建） | `test_resolve_global_read_path_guards_and_returns_only_existing_paths`（合法路径 / 缺失 / 根外祖先 symlink / 根外目标 symlink / 调用前后目录清单不变） |
+| 13 | 测试 HOME 与全局根都指向临时目录；零 schema 变更、`SCHEMA_VERSION` 不 bump | 测试 `isolated_home` autouse fixture；未改 `db.py` | `git diff 357aa89 -- app/alibot/db.py` 为 0 行；`SCHEMA_VERSION` 仍为 23 |
 
 ### 段落标签
 
@@ -32,7 +33,7 @@
 
 | 切片 | 红（实现前） | 绿（实现后） |
 | --- | --- | --- |
-| 单 Agent 三段顺序 | `pytest tests/test_global_rules.py` → `ImportError: cannot import name 'global_home_root' from 'alibot.workspace'`（collection error） | `17 passed`（最终，见下） |
+| 单 Agent 三段顺序 | `pytest tests/test_global_rules.py` → `ImportError: cannot import name 'global_home_root' from 'alibot.workspace'`（collection error） | `18 passed`（最终，见下） |
 | team 队长 / 成员 | `tests/test_global_rules.py::test_team_leader_and_member_each_get_the_three_rule_segments` → `AssertionError: assert '全局基座：\n全局基座正文…' in '配置段正文：你是严谨的工程师。…'` | 同用例通过 |
 | 降级 / 守卫 | helper 在切片 1 按票面一次性落地；对应用例首次运行即绿，作为行为锁保留（不含未实现的推断分支） | 同用例通过 |
 | 创建纪律 / 根固定 / SOP 排除 | 回归守卫；本票没有改动这些既有路径 | 同用例通过 |
@@ -41,7 +42,7 @@
 
 ```sh
 ../.venv/bin/python -m pytest tests/test_global_rules.py
-# 17 passed in 6.71s
+# 18 passed in 6.81s
 
 ../.venv/bin/python -m pytest tests/test_global_rules.py tests/test_skill_assembly.py \
   tests/test_local_workspace.py tests/test_agent_round.py tests/test_team_mode.py \

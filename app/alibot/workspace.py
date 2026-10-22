@@ -259,23 +259,55 @@ def docker_global_skills_home() -> str:
     return posixpath.join(DOCKER_GLOBAL_HOME, SKILLS_DIR)
 
 
-def _read_layer_text(root: str | None, parts: tuple[str, ...], *, layer: str) -> str | None:
-    """只读读取一层里的一份文本；任何降级都返回 ``None`` 并记一条可读日志。
+def _resolve_read_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """只读路径守卫的内核：``(realpath, None)`` 或 ``(None, 原因)``。
 
-    守卫以**自己的根**做 ``realpath``：根外 symlink 祖先与根外目标一律拒绝（ADR-0031 §三）。
-    缺失 / 不可读 / 非 UTF-8 都只是「这一段缺席」，不创建目录、不写占位、不阻断本轮。
+    原因只有两种：``escape``（根外 symlink 祖先 / 根外目标）与 ``absent``（不存在）。
     """
-    if root is None:
-        return None
     root_real = os.path.realpath(root)
     candidate = os.path.join(root_real, *parts)
     real = os.path.realpath(candidate)
     if not _within(real, root_real):
-        _log.warning("%s rule path escapes its root: %s", layer, candidate)
+        return None, "escape"
+    if not os.path.exists(real):
+        return None, "absent"
+    return real, None
+
+
+def resolve_global_read_path(root: str, *parts: str) -> str | None:
+    """全局层**公开只读守卫**（#232 技能 / #233 MCP / #234 记忆共用）。
+
+    以 ``root`` 自己的 ``realpath`` 为根，拒绝根外 symlink 祖先与根外目标；路径不存在
+    （含父目录缺失、断链）返回 ``None``，调用方按「该层缺席」处理。它**只读**：不创建、
+    不写入任何目录或文件，也不把这一层变成文件工具的工作根。
+    """
+    if not root:
+        return None
+    real, _reason = _resolve_read_path(root, parts)
+    return real
+
+
+def _read_layer_text(root: str | None, parts: tuple[str, ...], *, layer: str) -> str | None:
+    """只读读取一层里的一份文本；任何降级都返回 ``None`` 并记一条可读日志。
+
+    守卫与 :func:`resolve_global_read_path` **共用同一个内核**：以**自己的根**做
+    ``realpath``，根外 symlink 祖先与根外目标一律拒绝（ADR-0031 §三）。缺失 / 不可读 /
+    非 UTF-8 都只是「这一段缺席」，不创建目录、不写占位、不阻断本轮。
+    """
+    if root is None:
+        return None
+    root_real = os.path.realpath(root)
+    real, reason = _resolve_read_path(root_real, parts)
+    if real is None:
+        candidate = os.path.join(root_real, *parts)
+        if reason == "escape":
+            _log.warning("%s rule path escapes its root: %s", layer, candidate)
+        else:
+            _log.info("%s rule file is absent: %s", layer, candidate)
         return None
     try:
         data = Path(real).read_bytes()
-    except FileNotFoundError:
+    except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
         _log.info("%s rule file is absent: %s", layer, real)
         return None
     except OSError as error:

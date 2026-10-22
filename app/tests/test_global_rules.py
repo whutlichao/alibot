@@ -36,6 +36,7 @@ from alibot.workspace import (
     docker_global_skills_home,
     global_home_root,
     global_member_home,
+    resolve_global_read_path,
     session_partition_id,
 )
 
@@ -676,3 +677,33 @@ def test_global_member_home_and_docker_mount_constants(tmp_path: Path) -> None:
     )
     assert docker_global_member_home("mem_1") == "/alibot-home/agents/mem_1"
     assert docker_global_skills_home() == "/alibot-home/skills"
+
+
+# ─── 11. 下游复用入口（#232 / #233 / #234）：公开只读守卫 ────────────────
+def test_resolve_global_read_path_guards_and_returns_only_existing_paths(tmp_path: Path) -> None:
+    global_root = _global_root(tmp_path)
+    legal = _write_global_rule(global_root, "mem_reader", GLOBAL_RULE)
+    outside = tmp_path / "outside"
+    (outside / "rules").mkdir(parents=True)
+    (outside / "rules" / "AGENTS.md").write_text("根外秘密。\n", encoding="utf-8")
+    # 根外 symlink 祖先。
+    os.symlink(outside, global_root / "agents" / "mem_ancestor")
+    # 根外目标 symlink。
+    target_rules = global_root / "agents" / "mem_target" / "rules"
+    target_rules.mkdir(parents=True)
+    os.symlink(outside / "rules" / "AGENTS.md", target_rules / "AGENTS.md")
+
+    before = _listing(global_root)
+    # 成员家目录内的合法路径：返回 realpath（只读，不创建任何东西）。
+    assert resolve_global_read_path(str(global_root), "agents", "mem_reader", "rules", "AGENTS.md") == str(
+        legal.resolve()
+    )
+    # 路径不存在（含父目录缺失）⇒ None，由调用方按「该层缺席」处理。
+    assert resolve_global_read_path(str(global_root), "agents", "mem_reader", "rules", "missing.md") is None
+    assert resolve_global_read_path(str(global_root), "agents", "nobody", "rules", "AGENTS.md") is None
+    # 根外 symlink 祖先 / 根外目标一律拒绝。
+    assert resolve_global_read_path(str(global_root), "agents", "mem_ancestor", "rules", "AGENTS.md") is None
+    assert resolve_global_read_path(str(global_root), "agents", "mem_target", "rules", "AGENTS.md") is None
+
+    # 守卫只读：调用前后全局根的目录清单不变。
+    assert _listing(global_root) == before
