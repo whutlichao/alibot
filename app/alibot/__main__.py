@@ -23,6 +23,7 @@ from .db import (
     Database,
     SchemaVersionMismatch,
     default_data_dir,
+    resolve_data_dir,
 )
 
 REMOTE_ENV = "ALIBOT_ALLOW_REMOTE"
@@ -337,7 +338,10 @@ def _run_dry_run(data_dir: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    data_dir = Path(args.data_dir).expanduser() if args.data_dir else default_data_dir()
+    # 数据目录按固定优先级解析（规格 D2）：显式覆盖 → 新默认已存在 → 旧位置兼容 → 新建。
+    # 解析本身只读；创建只发生在下面非迁移启动路径的「新建」分支。
+    resolution = resolve_data_dir(args.data_dir)
+    data_dir = resolution.path
 
     # ``--repair-targets`` 是 ``--migrate`` 的**弃用别名**（ADR-0015 §五 / 规格 D11）：两条旗标走
     # **同一个入口**（本分支）、同一条「形态步骤 + 逐版链」、同一个退出码集合 ``{0, 3, 4, 5}``。
@@ -361,6 +365,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.repair_targets:
             print(REPAIR_TARGETS_DEPRECATION_NOTICE)
         return _run_dry_run(data_dir) if args.dry_run else _run_migrate(data_dir)
+
+    # 非迁移的启动路径：先打印**实际数据目录与来源**，再走 loopback 闸门。
+    # 「新建」只在这里创建新默认路径（连同 ``~/.alibot`` 父目录）；``agents/`` 与 ``skills/`` 不被创建。
+    if resolution.source == "created":
+        data_dir.mkdir(parents=True, exist_ok=True)
+    print(f"数据目录（备份即复制该目录）： {data_dir}")
+    print(f"数据目录来源： {resolution.source_label}")
+    if resolution.notice:
+        print(resolution.notice)
 
     if not _is_loopback(args.host) and os.environ.get(REMOTE_ENV) != "1":
         print(
@@ -387,7 +400,6 @@ def main(argv: list[str] | None = None) -> int:
         return DATA_NOT_ACCEPTED_EXIT_CODE
 
     print(f"alibot 工作台： http://{args.host}:{args.port}/studio/")
-    print(f"数据目录（备份即复制该目录）： {data_dir}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
