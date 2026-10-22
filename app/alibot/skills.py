@@ -40,9 +40,13 @@ import frontmatter
 
 from .i18n import Locale, render
 from .workspace import (
+    AGENTS_DIR,
     ALIBOT_DIR,
     WorkspaceConfigError,
+    docker_global_member_home,
+    docker_global_skills_home,
     ensure_state_partition,
+    resolve_global_read_path,
     safe_partition_id,
     validate_workspace_root,
 )
@@ -51,6 +55,21 @@ _log = logging.getLogger(__name__)
 
 #: ``<workspace_root>/.alibot/skills``（与 AgentScope 自己的 ``skills/`` 分区分开命名）。
 SKILLS_DIR = "skills"
+
+# ─── 四层归属（#232 / ADR-0031 D4）─────────────────────────────────────────
+#: 优先级从高到低；合并时先出现者胜出。项目层两级由库维护，全局层两级是纯文件。
+SKILL_LAYER_PROJECT_AGENT = "project-agent"
+SKILL_LAYER_PROJECT_CHANNEL = "project-channel"
+SKILL_LAYER_GLOBAL_MEMBER = "global-member"
+SKILL_LAYER_GLOBAL_PUBLIC = "global-public"
+
+#: 运行期提示里的层名（两种语言同键集，见 ``i18n.CATALOGS``）。
+_SKILL_LAYER_LABEL_KEYS = {
+    SKILL_LAYER_PROJECT_AGENT: "skill.layer.project-agent",
+    SKILL_LAYER_PROJECT_CHANNEL: "skill.layer.project-channel",
+    SKILL_LAYER_GLOBAL_MEMBER: "skill.layer.global-member",
+    SKILL_LAYER_GLOBAL_PUBLIC: "skill.layer.global-public",
+}
 #: 技能根目录里的清单文件。
 SKILL_MANIFEST = "SKILL.md"
 #: AgentScope 的技能名是 prompt 里的标识符：只接受无路径分隔符的短 slug。
@@ -595,6 +614,149 @@ def load_skills(
             )
         )
     return skills
+
+
+def _skill_layer_label(layer: str, locale: Locale | None = None) -> str:
+    key = _SKILL_LAYER_LABEL_KEYS.get(layer)
+    return render(key, locale) if key else layer
+
+
+def _global_skill_layer(
+    global_root: str,
+    parts: tuple[str, ...],
+    *,
+    container_dir: str | None,
+) -> list[Any]:
+    """读一层全局技能（成员家目录或公共库）；目录缺失 / 条目损坏都只跳过。
+
+    全部读取经 :func:`workspace.resolve_global_read_path`：以全局根自己的 ``realpath`` 为根，
+    根外 symlink 祖先与根外目标一律拒绝。这里**只读**，绝不创建目录或写占位文件。
+    """
+    from agentscope.skill import Skill
+
+    directory = resolve_global_read_path(global_root, *parts)
+    if directory is None:
+        return []
+    try:
+        entries = sorted(Path(directory).iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        _log.warning("cannot list global skill layer %s: %s", directory, error)
+        return []
+
+    skills: list[Any] = []
+    for entry in entries:
+        name = entry.name
+        if not SKILL_NAME_PATTERN.fullmatch(name):
+            _log.warning("skip global skill with invalid name: %r", name)
+            continue
+        skill_dir = resolve_global_read_path(global_root, *parts, name)
+        if skill_dir is None:
+            _log.warning("skip global skill %r: path is missing or escapes the global root", name)
+            continue
+        if not os.path.isdir(skill_dir):
+            _log.warning("skip global skill %r: not a directory", name)
+            continue
+        manifest_path = resolve_global_read_path(global_root, *parts, name, SKILL_MANIFEST)
+        if manifest_path is None:
+            _log.warning("skip global skill %r: SKILL.md is missing or escapes the global root", name)
+            continue
+        try:
+            _skill_files(Path(skill_dir))
+        except (SkillValidationError, OSError) as error:
+            _log.warning("skip global skill %r: cannot read its files: %s", name, error)
+            continue
+        manifest = _load_manifest_markdown(Path(skill_dir))
+        if manifest is None:
+            _log.warning("skip global skill %r: SKILL.md is not readable", name)
+            continue
+        loaded_name, description, markdown, updated_at = manifest
+        if loaded_name != name:
+            _log.warning("skip global skill %r: manifest name %r does not match", name, loaded_name)
+            continue
+        visible_dir = posixpath.join(container_dir, name) if container_dir is not None else skill_dir
+        skills.append(
+            Skill(
+                name=name,
+                description=description,
+                dir=visible_dir,
+                markdown=markdown,
+                updated_at=updated_at,
+            )
+        )
+    return skills
+
+
+def load_global_skills(
+    global_root: str,
+    member_id: str,
+    *,
+    docker: bool = False,
+) -> dict[str, list[Any]]:
+    """读全局层的两层技能（纯文件，不进库）。
+
+    - 成员家目录：``<全局根>/agents/<member_id>/skills/<name>/SKILL.md``；
+    - 公共技能库：``<全局根>/skills/<name>/SKILL.md``。
+
+    目录缺失 ⇒ 该层零条、不报错、不创建。``docker`` 为真时 ``Skill.dir`` 换成容器内可见路径
+    （``/alibot-home/agents/<member_id>/skills/<name>`` 与 ``/alibot-home/skills/<name>``），
+    字节仍从宿主全局根读取；挂载缺失时宿主目录通常也不存在，于是按「该层缺席」降级。
+    """
+    member_parts = (AGENTS_DIR, safe_partition_id(member_id), SKILLS_DIR)
+    member_container = posixpath.join(docker_global_member_home(member_id), SKILLS_DIR) if docker else None
+    return {
+        SKILL_LAYER_GLOBAL_MEMBER: _global_skill_layer(
+            global_root, member_parts, container_dir=member_container
+        ),
+        SKILL_LAYER_GLOBAL_PUBLIC: _global_skill_layer(
+            global_root,
+            (SKILLS_DIR,),
+            container_dir=docker_global_skills_home() if docker else None,
+        ),
+    }
+
+
+def _entry_name(entry: Any) -> str:
+    if isinstance(entry, Mapping):
+        return _variant(entry.get("name"))
+    return _variant(getattr(entry, "name", ""))
+
+
+def merge_skill_layers(
+    layers: Sequence[tuple[str, Sequence[Any]]],
+    *,
+    locale: Locale | None = None,
+) -> tuple[list[tuple[str, Any]], list[str]]:
+    """按「先出现者胜出」合并各层技能声明：返回 (``(胜出层, 条目)`` 列表, 落选提示)。
+
+    ``layers`` 必须按优先级从高到低排列（项目 Agent 级 → 项目频道级 → 全局成员家目录 →
+    全局公共技能库）。去重键是技能名；条目可以是**未装配的库行**（``Mapping``，装配层随后
+    按 ``enabled`` 过滤并读字节），也可以是已加载的 ``Skill`` 对象。每个落选条目产生一条
+    含「名字 + 胜出层」的可读提示，调用方只把它拼进运行期 ``reason``，**不**放进 provider
+    的 system prompt。
+    """
+    winners: list[tuple[str, Any]] = []
+    notes: list[str] = []
+    winning_layer: dict[str, str] = {}
+    for layer, entries in layers:
+        for entry in entries:
+            name = _entry_name(entry)
+            if not name:
+                continue
+            existing = winning_layer.get(name)
+            if existing is not None:
+                notes.append(
+                    render(
+                        "skill.assembly.shadowed",
+                        locale,
+                        name=name,
+                        winner=_skill_layer_label(existing, locale),
+                        loser=_skill_layer_label(layer, locale),
+                    )
+                )
+                continue
+            winning_layer[name] = layer
+            winners.append((layer, entry))
+    return winners, notes
 
 
 def archive_payload(raw: bytes) -> BinaryIO:

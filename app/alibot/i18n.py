@@ -242,6 +242,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         "seam.approval_timeout": "审批等待超时（{seconds} 秒）：本轮失败",
+        # ─── 技能四层合并（#232 / ADR-0031 D4）────────────────────────────
+        "skill.layer.project-agent": "项目 Agent 级",
+        "skill.layer.project-channel": "项目频道级",
+        "skill.layer.global-member": "全局成员家目录",
+        "skill.layer.global-public": "全局公共技能库",
+        "skill.assembly.shadowed": ("技能「{name}」装配{winner}的版本，忽略{loser}的同名条目"),
         # ─── Docker 工作区（#150 / ADR-0021 §二） ─────────────────────────
         "workspace.docker-daemon": "Docker 不可用：{error}",
         "workspace.docker-dependency": "Docker 后端缺少依赖：{error}（请安装 aiodocker）",
@@ -699,6 +705,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         "seam.approval_timeout": "Approval wait timed out ({seconds} seconds); this round failed",
+        "skill.layer.project-agent": "project agent scope",
+        "skill.layer.project-channel": "project channel scope",
+        "skill.layer.global-member": "global member home",
+        "skill.layer.global-public": "global public skill library",
+        "skill.assembly.shadowed": (
+            "Skill {name}: the version from the {winner} is used; "
+            "the same-name entry from the {loser} is ignored"
+        ),
         "workspace.docker-daemon": "Docker is unavailable: {error}",
         "workspace.docker-dependency": "The Docker backend is missing a dependency: {error} (install aiodocker)",
         "workspace.docker-consent": (

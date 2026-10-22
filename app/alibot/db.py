@@ -3922,6 +3922,37 @@ class Database:
                 merged[skill["name"]] = skill
         return [skill for skill in merged.values() if skill["enabled"]]
 
+    def skill_layers_for_target(self, target_id: str, member_id: str) -> dict[str, list[dict[str, Any]]]:
+        """**未合并**的两级项目技能行（含停用），供四层装配生成落选提示（#232）。
+
+        :meth:`skills_for_target` 在库层就把「项目频道级被项目 Agent 级覆盖」的行丢掉了，
+        装配层因此看不到落选者。本方法保留两层原始行、不按名字合并，返回
+        ``{"agent": [...], "channel": [...]}``；两条路径共享同一 target→channel 解析口径。
+
+        这里**不**过滤 ``enabled``：装配层先把各层按名字排出胜出者，再只装配启用的胜出者。
+        否则停用的 Agent 级技能会消失，频道级同名条目就会违规复活（既有语义是「停用 Agent
+        级 = 该成员没有这个技能」）。``load_skills`` 不读 ``enabled``，过滤由装配层负责。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            agent_rows = self._conn.execute(
+                "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? ORDER BY created_at, id",
+                (member_id,),
+            ).fetchall()
+            channel_rows = (
+                []
+                if channel_id is None
+                else self._conn.execute(
+                    "SELECT * FROM skill WHERE scope_kind = 'channel' AND scope_id = ? "
+                    "ORDER BY created_at, id",
+                    (channel_id,),
+                ).fetchall()
+            )
+        return {
+            "agent": [self._skill_payload(row) for row in agent_rows],
+            "channel": [self._skill_payload(row) for row in channel_rows],
+        }
+
     # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
     @staticmethod
     def _approval_payload(row: sqlite3.Row) -> dict[str, Any]:
