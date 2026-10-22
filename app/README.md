@@ -446,6 +446,13 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   值只从进程环境读**，库里不存密钥。远端 MCP（`http` / `sse`）未做数据面确认时**不连接**；
   stdio 不需要确认。装配层按 target 解析启用且已确认的声明，运行时读数（`connected` / `tools` /
   `error`）只回进程内事实。
+  **全局层（ADR-0031 / #233）**：另有纯文件声明 `~/.alibot/agents/<member_id>/mcp.json`，顶层形状
+  为 `{"servers": [...]}`（条目形状与库内声明同一套校验：transport / command / args / url /
+  `env_names` / `enabled`），应用只读、不创建，也不进 `mcp_server` 表。装配按「项目 Agent 级 →
+  项目频道级 → 全局成员家目录」合并，同名只装配并连接胜出条目；落选条目各一条只进
+  `RoundOutcome.reason` 的可读提示（**不进** system prompt）。全局远端条目按合成标识
+  `global:<member_id>:<name>` 记 `remote_consent_scope('mcp', …)`，确认前不连接；全局 stdio 的
+  cwd 仍是项目侧成员分区（Docker 内 `/workspace`），不是全局层。
 - **Skill**：`skill` 只存元数据与内容 hash，字节在 `<workspace_root>/.alibot/skills/<scope_id>/`；
   安装只接受**本机目录或上传 zip**（校验 `SKILL.md` front matter、路径与 hash），**不做远程市场/下载**。
   Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级；删除只删配置与工作区副本，

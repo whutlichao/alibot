@@ -310,6 +310,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.skill_conflict": "同一作用域内已存在同名 Skill：{name}",
         "mcp.runtime.consent_required": "远端 MCP 尚未确认数据面告知，未连接：{name}",
         "mcp.runtime.connect_failed": "MCP 连接失败：{name}",
+        # 三层合并（#233）：落选条目只进 ``RoundOutcome.reason``，**不进** system prompt。
+        "mcp.assembly.shadowed": "MCP 声明「{name}」被更高优先级的{layer}同名声明覆盖，本轮未装配",
+        "mcp.layer.agent": "项目 Agent 级",
+        "mcp.layer.channel": "项目频道级",
+        "mcp.layer.global": "全局成员家目录",
         "error.approval_not_found": "审批请求不存在：{reply_id}",
         "error.approval_state_conflict": "审批请求已是 {state}，不能再提交决策",
         "error.approval_tool_call_unknown": "未知的待审批工具调用：{tool_call_id}",
@@ -786,6 +791,13 @@ CATALOGS: dict[str, dict[str, str]] = {
             "The remote MCP has not been acknowledged for its data flow yet; not connected: {name}"
         ),
         "mcp.runtime.connect_failed": "MCP connection failed: {name}",
+        "mcp.assembly.shadowed": (
+            'MCP declaration "{name}" is shadowed by a same-name declaration in {layer}; '
+            "not assembled this round"
+        ),
+        "mcp.layer.agent": "the project agent scope",
+        "mcp.layer.channel": "the project channel scope",
+        "mcp.layer.global": "the global member home",
         "error.approval_not_found": "No such approval request: {reply_id}",
         "error.approval_state_conflict": "The approval request is already {state}; no further decisions are accepted",
         "error.approval_tool_call_unknown": "Unknown tool call awaiting approval: {tool_call_id}",
