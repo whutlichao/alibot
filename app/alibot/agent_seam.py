@@ -730,7 +730,13 @@ class AgentScopeAgentSeam:
         return store
 
     def _prepare_runtime_options(
-        self, agent: dict[str, Any], target_id: str, context: Any, root: str | None, mount: Any
+        self,
+        agent: dict[str, Any],
+        target_id: str,
+        context: Any,
+        root: str | None,
+        mount: Any,
+        global_home: str | None = None,
     ) -> tuple[dict[str, Any], SessionState | None, list[Any]]:
         from agentscope.state import AgentState
 
@@ -752,6 +758,7 @@ class AgentScopeAgentSeam:
                 options["state"].permission_context,
                 mount=mount,
                 offloader=options["offloader"] if mount is None else None,
+                global_home=global_home,
             )
             middlewares.extend(memory_middlewares)
         elif mount is None and isinstance(options.get("offloader"), SessionOffloader):
@@ -1228,7 +1235,7 @@ class AgentScopeAgentSeam:
                         mcp_assembly = await self._assemble_mcp(target_id, member_id, mount, session_id)
 
                 runtime_options, state_store, memory_tools = self._prepare_runtime_options(
-                    agent, target_id, context, str(root) if root else None, mount
+                    agent, target_id, context, str(root) if root else None, mount, self._global_home
                 )
                 agent_options: dict[str, Any] = {
                     # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
@@ -1580,7 +1587,7 @@ class AgentScopeAgentSeam:
                 context, root = _permission_for(member_id_value)
                 member_project_roots[member_id_value] = root
                 options, store, memory_tools = self._prepare_runtime_options(
-                    members_by_id[member_id_value], target_id, context, root, mount
+                    members_by_id[member_id_value], target_id, context, root, mount, self._global_home
                 )
                 prepared_options[member_id_value] = options
                 if store is not None:
