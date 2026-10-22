@@ -180,3 +180,30 @@ Docker 网络策略、`app/specs/issue-<n>-acceptance.md` 的判据与读数。
   与 `off` / `search` / `search+fetch`；读回 `null` 时选中「跟随频道」。Agent 详情「运行时」页签
   在有覆盖时显示档位、无覆盖时显示「跟随频道」（不再显示空字段文案）。
 
+
+## 修订（2026-10-22，#242）
+
+### 十六、`search+fetch` 下 `fetch` 不再逐次审批（推翻 §三表格里「每次调用 ASK」与 §三末段「它默认 ASK」）
+
+- **人定（2026-10-22，#242）**：联网档为 `search+fetch` 时，`fetch` **不再逐次审批**。实现方式是给
+  工具自身一个 `behavior=ALLOW` 的 `PermissionDecision`（`FunctionTool.__init__` 的 `permission` 参数），
+  **不**覆盖 `check_permissions`、**不**改 `match_rule` 的 host 级规则语义。
+- **推翻**本文 §三表格里 `ask-writes` / `trusted-writes` 两行的「**每次调用 ASK**」与 §三末段
+  「`fetch` 没有「根内」这个概念，因此不能沿用那条自动放行；它默认 ASK」这两句。
+- **保留** §三的另外两条：`fetch` **不设** `bypass_immune`；host 级规则可表达「允许 / 拒绝抓取这个
+  host」。规则能力一条都没删——`allow` 规则现在只是冗余（工具已默认放行），`deny` / `ask` 规则
+  **仍然是人工收紧的通道**：引擎的判定顺序是 deny 规则 → ask 规则 → 只读快速通道 → 工具
+  `check_permissions` → allow 规则 → 兜底，工具返回的 ALLOW 位于 deny / ask 规则**之后**，因此
+  `permission_rule(tool_name='fetch', pattern=<host>, behavior='deny')` 仍拒绝、`behavior='ask'`
+  仍把该 host 拉回审批。
+- **理由**：开启 `search+fetch` 本身已是人类的一次显式授权（配合 §四的 provider 数据面确认），
+  逐次审批在实践里退化成机械点击——人会被迫一路点「同意」，审批这一信号本身因此失效。
+  deny / ask 规则保留了「只想放开一部分 host」与「把某个 host 单独盯住」这两种真实需求。
+- **`read-only` 档不变**：§三的权限档闸门逐字保留——`read-only` 下 `fetch` **永不装配**。
+  EXPLORE 模式下引擎不调用 `check_permissions`，装配闸门是唯一防线，因此这条闸门不能动。
+  装配层的其余三条闸门（`web_access == 'search+fetch'`、数据面确认、provider 解析）同样逐字保留；
+  `'off'` / `'search'` / DM 的行为逐字不变（DM 固定 `read-only`，`fetch` 仍不装配）。
+- **同步面**：`_web_prompt_note()`、`i18n.js` 的 `agent.webAccessSearchFetchHint` /
+  `channelConfig.webAccess.search+fetchNote`（zh-CN / en 成对）、`app/README.md`、`CONTEXT.md` 的
+  「联网档」条目都改成如实描述；§一 / §二 / §四–§七 的正文**不改写**。
+- 本节的票面正本：#242（`app/specs/issue-242-acceptance.md`）。
