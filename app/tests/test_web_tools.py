@@ -650,7 +650,12 @@ def test_fetch_truncates_a_huge_body_and_says_so() -> None:
 
 
 def test_fetch_and_web_search_declare_their_read_only_difference() -> None:
-    """ADR-0026 §三：search 只读、fetch 不是（它按执行处理、逐次审批）。"""
+    """ADR-0026 §三：search 只读、fetch 不是（它按执行处理）。
+
+    #242（2026-10-22 人定）之后 ``fetch`` 不再逐次审批，但它**仍不是只读**：``is_read_only``
+    描述的是「这次调用改不改本地状态 / 送不送出数据」，不是「要不要审批」。两者分开，才能让
+    ``read-only`` 档的装配闸门继续成立。
+    """
     search = search_tool(provider="brave", transport=StubTransport(), environ={"BRAVE_API_KEY": "k"})
     page = fetch_tool(transport=StubTransport())
 

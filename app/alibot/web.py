@@ -34,6 +34,7 @@ from html.parser import HTMLParser
 from typing import Any, Literal, Protocol, TypeAlias
 
 from agentscope.message import TextBlock, ToolResultState
+from agentscope.permission import PermissionBehavior, PermissionDecision
 from agentscope.tool import FunctionTool, ToolChunk
 
 from .i18n import SOURCE_LOCALE, Locale, render
@@ -899,7 +900,17 @@ def fetch_tool(
     max_chars: int = FETCH_DEFAULT_MAX_CHARS,
     egress: EgressPolicy | None = None,
 ) -> Any:
-    """构造 ``fetch`` 工具：**不是**只读（ADR-0026 §三：抓取按执行处理，逐次审批）。
+    """构造 ``fetch`` 工具：**不是**只读，但**不再逐次审批**（ADR-0026 修订节 2026-10-22 / #242）。
+
+    权限判定给工具自身一个 ``behavior=ALLOW`` 的 ``PermissionDecision``：``ask-writes`` /
+    ``trusted-writes`` 下 ``fetch`` 直接执行。开启 ``search+fetch`` 本身已是一次人类显式授权
+    （配合 §四的 provider 数据面确认），逐次审批在实践里退化成机械点击。
+
+    这**不是**把人工收紧的通道拆掉：引擎的判定顺序是 deny 规则 → ask 规则 → 只读快速通道 →
+    工具 ``check_permissions`` → allow 规则 → 兜底，工具返回的 ALLOW 位于 deny / ask 规则**之后**，
+    因此 ``permission_rule(tool_name='fetch', pattern=<host>, behavior='deny')`` 仍拒绝、
+    ``behavior='ask'`` 仍把该 host 拉回审批；``behavior='allow'`` 成为冗余但无害。
+    ``read-only`` 档下本工具**不装配**（EXPLORE 不调用 ``check_permissions``，装配闸门是唯一防线）。
 
     ``max_bytes`` / ``max_chars`` 是本票的硬上限（读多少字节、转成纯文本后保留多少字符）；
     ``timeout_seconds`` 是显式默认值，装配层（#186）可按需覆盖。
@@ -913,9 +924,10 @@ def fetch_tool(
     def fetch(url: str) -> ToolChunk:
         """按 URL 抓取网页，把正文转成纯文本返回。
 
-        警告：这会离开本机——目标地址（可能含内网地址或带 token 的 query）会被第三方看到，
-        因此每次调用都需要人类逐次审批（按 host 的权限规则可放行；read-only 档不装配本工具）。
-        只接受 http / https。正文有硬上限：超出的部分被截断，并在结果里说明。
+        警告：这会离开本机——目标地址（可能含内网地址或带 token 的 query）会被第三方看到。
+        联网档开启「搜索+抓取」即视为一次人类授权，本工具因此不再逐次审批；人类仍可按 host 配
+        deny / ask 规则收紧。read-only 档不装配本工具。只接受 http / https。正文有硬上限：
+        超出的部分被截断，并在结果里说明。
 
         Args:
             url: 要抓取的 http / https 地址。
@@ -959,7 +971,16 @@ def fetch_tool(
     async def call_fetch(url: str) -> ToolChunk:
         return await asyncio.to_thread(fetch, url)
 
-    return FetchTool(call_fetch, name=FETCH_TOOL_NAME, is_read_only=False)
+    return FetchTool(
+        call_fetch,
+        name=FETCH_TOOL_NAME,
+        is_read_only=False,
+        permission=PermissionDecision(
+            behavior=PermissionBehavior.ALLOW,
+            message="联网档开启「搜索+抓取」即视为一次人类授权；按 host 的 deny / ask 规则仍可收紧。",
+            decision_reason="fetch 由联网档的显式授权覆盖（ADR-0026 修订 2026-10-22 / #242）",
+        ),
+    )
 
 
 class FetchTool(FunctionTool):
@@ -970,8 +991,9 @@ class FetchTool(FunctionTool):
     「允许抓取这个 host」），因此这里把**两侧**都收成 host 再比；规则侧的归一化在
     ``permissions._matched_pattern``，两份都调用同一份 :func:`url_host`。
 
-    刻意**不**覆盖 ``check_permissions``：它继承 ``FunctionTool`` 的 ASK，于是
-    ``ask-writes`` / ``trusted-writes`` 都逐次审批，而 allow 规则（host 级）仍能把它放行——
+    刻意**不**覆盖 ``check_permissions``：它只返回构造时给的 ``PermissionDecision``（ALLOW，
+    ADR-0026 修订节 2026-10-22 / #242），于是 ``ask-writes`` / ``trusted-writes`` 下 ``fetch``
+    直接执行。人工收紧仍走规则：deny / ask 规则在工具判定**之前**，因此照样能挡住它——
     这正是「不设 ``bypass_immune``」的落点（与 ``AskEveryTimeBash`` 刻意相反）。
     """
 

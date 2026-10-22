@@ -209,13 +209,16 @@ def test_agent_rules_override_channel_rules_for_the_same_key() -> None:
     ]
 
 
-# ─── #186：fetch 的 host 归一化（ADR-0026 §三） ───────────────────────────────
+# ─── #186 / #242：fetch 的 host 归一化（ADR-0026 §三 + 2026-10-22 修订） ────────
 #
 # ``fetch`` 的输入是**完整 URL**，而人类配置的 pattern 是 **host**（「允许抓取这个 host」）。
 # 框架的 ``match_rule`` 默认只认工具名级规则（``rule_content is None``），因此两个落点必须成对：
 # ``permissions._matched_pattern`` 把规则侧收成 host，``web`` 的 fetch 工具把输入侧收成 host。
 # host 提取只有一份实现（``web.url_host``），#187 的容器出网白名单复用同一份。下面这组用例是
 # 本票点名「最容易漏」的那条判据的取证面。
+#
+# #242（2026-10-22 人定）之后 ``fetch`` 默认 **ALLOW**（开启 ``search+fetch`` 即一次人类授权），
+# 因此这组用例里凡要区分「命中 / 未命中」的地方都用 ``ask`` 规则取证：命中 ⇒ ASK，未命中 ⇒ 默认 ALLOW。
 
 
 def _web_decide(
@@ -234,11 +237,15 @@ def _fetch_rule(pattern: str, behavior: str = "allow") -> list[dict[str, str]]:
 
 
 def test_a_fetch_host_rule_matches_the_full_url_input() -> None:
-    """``pattern='api.example.com'`` 必须匹配该 host 的完整 URL：大小写 / 端口 / 路径 / query 全归一。"""
+    """``pattern='api.example.com'`` 必须匹配该 host 的完整 URL：大小写 / 端口 / 路径 / query 全归一。
+
+    用 ``ask`` 规则取证：``fetch`` 默认已自动放行（本票 2026-10-22 人定），因此只有**收紧**的规则
+    还能把「命中 / 未命中」区分开——命中 ⇒ ASK，未命中 ⇒ 落回默认的 ALLOW。
+    """
     from alibot.web import fetch_tool
 
     tool = fetch_tool()
-    rules = _fetch_rule("api.example.com")
+    rules = _fetch_rule("api.example.com", "ask")
 
     for url in (
         "https://api.example.com/x",
@@ -247,11 +254,11 @@ def test_a_fetch_host_rule_matches_the_full_url_input() -> None:
         "http://api.example.com:80/query?a=1",
         "api.example.com/relative-form",
     ):
-        assert _web_decide("ask-writes", tool, {"url": url}, rules) is PermissionBehavior.ALLOW, url
-
-    # 其他 host 仍 ASK：规则是 host 级的，不是「fetch 的全部调用」。
-    for url in ("https://other.example.net/", "https://example.com/", "https://api.example.com.evil.test/"):
         assert _web_decide("ask-writes", tool, {"url": url}, rules) is PermissionBehavior.ASK, url
+
+    # 其他 host 不受这条规则影响：规则是 host 级的，不是「fetch 的全部调用」。
+    for url in ("https://other.example.net/", "https://example.com/", "https://api.example.com.evil.test/"):
+        assert _web_decide("ask-writes", tool, {"url": url}, rules) is PermissionBehavior.ALLOW, url
 
 
 def test_a_fetch_host_rule_written_as_a_url_normalizes_the_same_way() -> None:
@@ -259,68 +266,79 @@ def test_a_fetch_host_rule_written_as_a_url_normalizes_the_same_way() -> None:
     from alibot.web import fetch_tool
 
     tool = fetch_tool()
-    rules = _fetch_rule("HTTPS://API.Example.com:8443/docs?x=1")
+    rules = _fetch_rule("HTTPS://API.Example.com:8443/docs?x=1", "ask")
 
     assert (
-        _web_decide("ask-writes", tool, {"url": "https://api.example.com/a"}, rules)
-        is PermissionBehavior.ALLOW
+        _web_decide("ask-writes", tool, {"url": "https://api.example.com/a"}, rules) is PermissionBehavior.ASK
     )
     assert (
         _web_decide("ask-writes", tool, {"url": "https://api.example.com.evil.test/a"}, rules)
-        is PermissionBehavior.ASK
+        is PermissionBehavior.ALLOW
     )
 
 
-def test_fetch_asks_in_both_write_modes_and_is_denied_in_read_only() -> None:
-    """``ask-writes`` / ``trusted-writes`` 都逐次 ASK；``read-only`` 没有「询问」这一档 ⇒ DENY。"""
+def test_fetch_is_allowed_without_rules_in_both_write_modes_and_denied_in_read_only() -> None:
+    """``ask-writes`` / ``trusted-writes`` 无规则时 **ALLOW**；``read-only`` 没有「询问」这一档 ⇒ DENY。
+
+    ALLOW 的来源是工具自身的 ``PermissionDecision``（开启 ``search+fetch`` 本身已是一次人类授权），
+    不是只读快速通道：``fetch`` 的 ``is_read_only`` 仍为 ``False``（见 ``test_web_tools``）。
+    """
     from alibot.web import fetch_tool
 
     tool = fetch_tool()
     url = {"url": "https://api.example.com/x"}
 
-    assert _web_decide("ask-writes", tool, url) is PermissionBehavior.ASK
-    assert _web_decide("trusted-writes", tool, url) is PermissionBehavior.ASK
+    assert _web_decide("ask-writes", tool, url) is PermissionBehavior.ALLOW
+    assert _web_decide("trusted-writes", tool, url) is PermissionBehavior.ALLOW
     assert _web_decide("read-only", tool, url) is PermissionBehavior.DENY
 
 
-def test_fetch_has_no_bypass_immune_so_the_host_rule_can_allow_it() -> None:
-    """ADR-0026 §三：``fetch`` **不设** ``bypass_immune``（与本地 shell 刻意相反）。
+def test_deny_and_ask_rules_still_win_over_the_tools_own_allow() -> None:
+    """本票最关键的判据：规则的判定在工具自身 ``ALLOW`` **之前**，人工收紧仍然有效。
 
-    判据形状是「allow 规则能不能把它变成自动放行」：``fetch`` 能（人类可以一次配好常用域名），
-    ``AskEveryTimeBash`` 不能。
+    ``PermissionEngine`` 的顺序是 deny 规则 → ask 规则 → 只读快速通道 → 工具 ``check_permissions``
+    → allow 规则 → 兜底；工具返回 ALLOW 只发生在第 4 步，因此 deny / ask 规则照样能挡住它。
+    """
+    from alibot.web import fetch_tool
+
+    tool = fetch_tool()
+    url = {"url": "https://api.example.com/x"}
+
+    for mode in ("ask-writes", "trusted-writes"):
+        assert (
+            _web_decide(mode, tool, url, _fetch_rule("api.example.com", "deny")) is PermissionBehavior.DENY
+        ), mode
+        assert (
+            _web_decide(mode, tool, url, _fetch_rule("api.example.com", "ask")) is PermissionBehavior.ASK
+        ), mode
+
+    # 规则只收紧它命中的 host：别的 host 仍是默认的自动放行。
+    assert (
+        _web_decide(
+            "ask-writes", tool, {"url": "https://other.example.net/x"}, _fetch_rule("api.example.com", "deny")
+        )
+        is PermissionBehavior.ALLOW
+    )
+
+
+def test_a_host_allow_rule_is_redundant_but_harmless_and_local_shell_still_asks() -> None:
+    """ADR-0026 §三「``fetch`` 不设 ``bypass_immune``」仍成立，但 allow 规则现在只是冗余。
+
+    本票之后 ``fetch`` 默认放行，``allow`` 规则不再改变结论（能力保留、不得删除）；与本地 shell 的
+    对比仍然成立：``AskEveryTimeBash`` 的 ASK 带 ``bypass_immune``，allow 规则对它无效。
     """
     from alibot.web import fetch_tool
     from alibot.workspace import local_shell_tool
 
     url = {"url": "https://api.example.com/x"}
 
+    assert _web_decide("ask-writes", fetch_tool(), url) is PermissionBehavior.ALLOW
     assert (
         _web_decide("ask-writes", fetch_tool(), url, _fetch_rule("api.example.com"))
         is PermissionBehavior.ALLOW
     )
     assert (
         _web_decide("ask-writes", local_shell_tool("/tmp"), {"command": "ls"}, _fetch_rule(""))
-        is PermissionBehavior.ASK
-    )
-
-
-def test_deny_and_ask_rules_also_match_a_fetch_host() -> None:
-    """三种行为都在 host 上判定：deny 优先于 allow，ask 把该 host 强制回到审批。"""
-    from alibot.web import fetch_tool
-
-    tool = fetch_tool()
-    url = {"url": "https://api.example.com/x"}
-
-    assert _web_decide("trusted-writes", tool, url, _fetch_rule("api.example.com", "deny")) is (
-        PermissionBehavior.DENY
-    )
-    assert (
-        _web_decide(
-            "ask-writes",
-            tool,
-            url,
-            _fetch_rule("api.example.com", "allow") + _fetch_rule("api.example.com", "ask"),
-        )
         is PermissionBehavior.ASK
     )
 
@@ -340,9 +358,13 @@ def test_a_pattern_that_yields_no_host_does_not_match_everything() -> None:
     """取不出 host 的 pattern（通配也不是本票的能力）只匹配不到，绝不退化成「全部调用」。"""
     from alibot.web import fetch_tool
 
+    # 坏 pattern 不命中任何输入 ⇒ 落回默认的 ALLOW；若它退化成「全部调用」，这里会变成 ASK。
     assert (
         _web_decide(
-            "ask-writes", fetch_tool(), {"url": "https://api.example.com/x"}, _fetch_rule("*.example.com")
+            "ask-writes",
+            fetch_tool(),
+            {"url": "https://api.example.com/x"},
+            _fetch_rule("*.example.com", "ask"),
         )
-        is PermissionBehavior.ASK
+        is PermissionBehavior.ALLOW
     )
