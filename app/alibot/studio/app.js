@@ -7461,8 +7461,9 @@ function roundOutcomeNode(record) {
   if (status) head.appendChild(el('span', 'msg-outcome-state', disabled ? t('outcome.stateDisabled') : t('outcome.stateFailed')));
   if (!disabled && agent) {
     // 从失败现场直接打开成员详情，不用人先找到右上角那个图标。
+    // 成员 id 由按钮**自己**携带：点击委托据此打开这一个成员（不写死成员、不按名字匹配）。
     const inspect = el('button', 'msg-outcome-act', t('outcome.inspect'));
-    inspect.dataset.dockToggle = '1';
+    inspect.dataset.inspectMember = record.member_id;
     head.appendChild(inspect);
   }
   head.appendChild(el('span', 'msg-time', timeLabel(record.finished_at)));
@@ -9226,11 +9227,14 @@ function bindEvents() {
       if (next) next.focus();
       return;
     }
-    const inspect = event.target.closest('[data-dock-toggle]');
+    const inspect = event.target.closest('[data-inspect-member]');
     if (inspect) {
-      // 只打开面板，不滚动页面：失败现场就在眼前，人不需要先去找那个图标。
-      setDockOpen(true);
-      renderDock();
+      // 从失败现场打开**该成员**的详情：dock 停在成员列表 / 别的成员详情 / 任务线程，
+      // 或者已经收起，都切过去（`openAgentDetail` 负责收任务流、切形态并压过 dismissed）。
+      // 运行面板不开在 `openAgentDetail` 的收口里，且 `render()` 的形态推导以它为先：
+      // 不先收掉它，下一次整体重绘就会把刚打开的详情又盖回 run 面板。
+      if (state.runPanel.open) closeRunPanel();
+      openAgentDetail(inspect.dataset.inspectMember);
       return;
     }
     const retry = event.target.closest('[data-retry]');
