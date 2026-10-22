@@ -73,12 +73,35 @@ DM 额外把全局目录放进 `PartitionBackend.read_only_dirs`：记忆 `Read`
 ```sh
 scripts/check.sh --fast
 # ruff check: All checks passed!
-# ruff format --check: 290 files already formatted
-# mypy（仓库根）: Success: no issues found in 118 source files
+# ruff format --check: 295 files already formatted
+# mypy（仓库根）: Success: no issues found in 121 source files
 # pyright: 0 errors, 0 warnings, 0 informations
 # node --test（glob）: tests 258 / pass 258 / fail 0
 # 门禁全绿
+
+scripts/check.sh
+# 全量（合并前在 9736950 上跑）：exit 0 / 门禁全绿（pytest 段通过后跑完 ruff / mypy /
+# pyright / node 258 pass）
 ```
+
+合并集成分支（`agent-home-layers-integration` @ `1fcf08e`，含 #232 / #233）后复跑：
+
+```sh
+../.venv/bin/python -m pytest tests/test_runtime_memory.py tests/test_global_memory.py \
+  tests/test_agent_round.py tests/test_team_mode.py tests/test_agent_smoke.py
+# 72 passed, 1 skipped in 14.41s
+
+../.venv/bin/python -m pytest tests/test_runtime_memory.py tests/test_global_memory.py \
+  tests/test_agent_round.py tests/test_team_mode.py tests/test_agent_smoke.py \
+  tests/test_global_rules.py tests/test_global_skills.py tests/test_global_mcp.py \
+  tests/test_home_isolation.py tests/test_local_workspace.py tests/test_approval_seam.py \
+  tests/test_runtime_interrupt.py tests/test_mcp_assembly.py
+# 160 passed, 2 skipped in 52.91s
+```
+
+合并提交：`7f5cfff`（`--no-ff`，父提交 `9736950` 本票实现 / `1fcf08e` 集成 tip）。合并无冲突；
+合并后 `ruff format --check` 发现集成分支自带的 `agent_seam.py` 少一个空行，已在合并提交内补齐
+（纯格式，无行为变化）。
 
 ## 范围与偏差
 
