@@ -403,7 +403,8 @@ function createHarness(options) {
     source.replace(
       startup,
       "\nglobalThis.__railIdentityTest = { state, bindEvents, render, renderChannels, renderDms,"
-        + " renderMembers, onStreamMessage, onStreamStatus, onStreamTyping, setLocale, t };\n",
+        + " renderMembers, openAgentDetail, closeAgentDetail, onStreamMessage, onStreamStatus,"
+        + " onStreamTyping, setLocale, t };\n",
     ),
     context,
     { filename: appPath },
@@ -727,10 +728,10 @@ test("打开 Agent 详情时 rail 只有 Agent 行是当前行，关闭后频道
   assert.equal(before.members.get("mem-1").getAttribute("aria-current"), "false");
   assert.equal(currentRows(harness).length, 1, "起始只有一行当前行");
 
-  // 打开 Agent 详情：`activeAgentId` 是「打开着哪一个成员」的唯一正本，
-  // 频道 / 私信行就此让位（不再呈现当前行）。
-  harness.api.state.activeAgentId = "mem-1";
-  harness.api.render();
+  // 走**真实入口**（左栏 Agent 行的点击路径就是 `openAgentDetail()`）：
+  // 打开详情只重绘它负责的那几段，不调用整体 `render()`。`activeAgentId` 是
+  // 「打开着哪一个成员」的唯一正本，频道 / 私信行必须就此让位。
+  await harness.api.openAgentDetail("mem-1");
   await settle();
 
   const opened = rowIdentities(harness);
@@ -753,9 +754,8 @@ test("打开 Agent 详情时 rail 只有 Agent 行是当前行，关闭后频道
   assert.equal(opened.dms.get("dm-1").getAttribute("aria-current"), "false");
   assert.deepEqual(currentRows(harness), [agentRow], "整份 rail 恰好一行 aria-current=true");
 
-  // 关闭详情：频道行按原判据恢复当前行，Agent 行让位。
-  harness.api.state.activeAgentId = null;
-  harness.api.render();
+  // 关闭详情（同一个真实入口的另一端）：频道行按原判据恢复当前行，Agent 行让位。
+  harness.api.closeAgentDetail();
   await settle();
 
   const closed = rowIdentities(harness);

@@ -4639,6 +4639,16 @@ function renderMembers() {
   $('#memberListEmpty').hidden = agents.length > 0;
 }
 
+/** 左栏三段的同一次收敛：`activeAgentId` / `activeChannelId` 变了之后，「当前行」必须
+    **立刻**在三段里各就各位（整份 rail 至多一行），而不是等下一次整体 `render()`。
+    打开 / 关闭 Agent 详情走的是局部重绘路径（`openAgentDetail()` / `leaveAgentView()`），
+    只重绘 Agent 段会让频道 / 私信行停在上一帧的当前行上。 */
+function renderRailRows() {
+  renderChannels();
+  renderDms();
+  renderMembers();
+}
+
 function statusOf(agent) {
   if (agent && typeof agent.status === 'string') return agent.status;
   return state.statuses[agent && agent.id] || 'offline';
@@ -4970,7 +4980,9 @@ async function openAgentDetail(memberId) {
   state.globalMcpServers = [];
   state.globalMcpError = '';
   setViewMode('agent');
-  renderMembers();
+  // 详情一打开，频道 / 私信行就得让位：这条路径不经过整体 `render()`，只重绘 Agent 段
+  // 会把频道行留在「当前行」上（两行同时高亮）。
+  renderRailRows();
   renderAgentDetail();
   await refreshAgentDetail(memberId);
 }
@@ -4992,12 +5004,15 @@ function closeAgentDetail() {
 }
 
 /** 切主线视图时离开详情（导航动作的公共出口）：丢弃草稿、清掉 `activeAgentId`。
-    与关闭详情同一条语义（不弹二次确认），但**不**恢复 dock 的开合——导航动作自己决定。 */
+    与关闭详情同一条语义（不弹二次确认），但**不**恢复 dock 的开合——导航动作自己决定。
+    离开后左栏三段的当前行立刻按 `activeChannelId` 重新落位：不经过整体 `render()` 的
+    出口（例如打开任务线程）否则会把 Agent 行留在当前行上。 */
 function leaveAgentView() {
   if (!state.activeAgentId) return;
   state.activeAgentId = null;
   resetAgentEditDraft();
   clearAgentDetail();
+  renderRailRows();
 }
 
 /** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。 */
