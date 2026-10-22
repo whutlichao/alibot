@@ -183,6 +183,11 @@ const state = {
   agentDetailTab: 'overview',
   // 编辑配置弹窗当前编辑的成员（`null` = 弹窗关着）。
   agentEditId: null,
+  // Agent 详情里的**全局 MCP 只读小节**（#236）：列表是 `GET
+  // /api/agents/{id}/global-mcp-servers` 的镜像；`error` 只用于把读取失败讲人话。
+  // 它不是业务正本（真值在成员家目录的 mcp.json + 确认行），切换成员时整体作废。
+  globalMcpServers: [],
+  globalMcpError: '',
   // 成员名册（频道成员的**只读**全名单）当前锁定的频道 id；`null` = 弹窗关着。
   // 名册回答「打开它的那个频道里有谁」，因此它在打开时锁定频道，不跟着激活频道跑。
   rosterChannelId: null,
@@ -4794,6 +4799,9 @@ async function openAgentDetail(memberId) {
   state.taskSeenSeqs = new Set();
   state.activeAgentId = memberId;
   state.agentDetailTab = 'overview';
+  // 全局条目是**这个成员**的文件：换人时先清空，避免把上一位的读数铺到新面板上。
+  state.globalMcpServers = [];
+  state.globalMcpError = '';
   // 同上：点 Agent 行是显式打开，`reveal` 压过「人把 dock 收起来过」这一位。
   setDockMode('detail', true);
   renderMembers();
@@ -4819,8 +4827,44 @@ async function refreshAgentDetail(memberId) {
     renderMembers();
     renderDock();
     renderAgentDetail();
+    await loadGlobalMcpServers(memberId);
   } catch (err) {
     toast(t('toast.agentDetailFailed', { reason: err.message }), 'err');
+  }
+}
+
+/** 读**这一个**成员的全局 `mcp.json` 条目（只读列表 + 运行期读数）。
+    列表失败只影响这一小节：详情其余读数照常可用；未知响应（测试替身默认 `{}`）按空列表处理。 */
+async function loadGlobalMcpServers(memberId) {
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-servers');
+    if (state.activeAgentId !== memberId) return; // 已经切到别人：不把旧读数铺到新面板上
+    state.globalMcpServers = Array.isArray(payload && payload.global_mcp_servers)
+      ? payload.global_mcp_servers
+      : [];
+    state.globalMcpError = '';
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    state.globalMcpServers = [];
+    state.globalMcpError = err.message;
+  }
+  if (state.activeAgentId === memberId) renderAgentDetail();
+}
+
+/** 按「成员 + 名字」确认一条全局远端声明；确认后按后端读数重铺列表。 */
+async function confirmGlobalMcpServer(name) {
+  const memberId = state.activeAgentId;
+  if (!memberId) return;
+  try {
+    await api(
+      '/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-servers/'
+        + encodeURIComponent(name) + '/consent',
+      { method: 'POST' },
+    );
+    await loadGlobalMcpServers(memberId);
+    toast(t('agentDetail.globalMcpConfirmed', { name }));
+  } catch (err) {
+    toast(t('toast.globalMcpConsentFailed', { reason: err.message }), 'err');
   }
 }
 
@@ -4956,7 +5000,59 @@ function agentRuntimeNodes(agent) {
   const body = el('div', 'prompt-body', agent.system_prompt || t('agentDetail.emptyField'));
   body.setAttribute('data-od-id', 'agent-detail-prompt');
   promptSection.appendChild(body);
-  return [section, promptSection];
+  return [section, globalMcpSection(), promptSection];
+}
+
+/** 全局 MCP 小节（#236）：**只读**展示成员家目录 `mcp.json` 里的真实条目。
+    全局层由人维护，因此这里没有编辑 / 启停 / 删除；只对远端未确认条目给一个确认动作。 */
+function globalMcpSection() {
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('agentDetail.globalMcpTitle', 'agent-detail-section-global-mcp'));
+  section.appendChild(el('div', 'hint', t('agentDetail.globalMcpNote')));
+  if (state.globalMcpError) {
+    section.appendChild(el('div', 'hint', state.globalMcpError));
+  } else if (!state.globalMcpServers.length) {
+    section.appendChild(el('div', 'hint', t('agentDetail.globalMcpEmpty')));
+  } else {
+    state.globalMcpServers.forEach((server) => section.appendChild(globalMcpRowNode(server)));
+  }
+  return section;
+}
+
+/** 一行全局条目：名字 + transport / 是否远端 / 是否已确认 / 运行期读数（+ 远端确认按钮）。 */
+function globalMcpRowNode(server) {
+  const row = el('div', 'kv global-mcp-row');
+  row.dataset.globalMcpServer = server.name;
+  row.setAttribute('data-od-id', 'global-mcp-' + server.name);
+  row.appendChild(el('div', 'k', server.name));
+  const value = el('div', 'v');
+  const facts = [
+    server.transport,
+    server.is_remote ? t('agentDetail.globalMcpRemote') : t('agentDetail.globalMcpLocal'),
+    server.is_remote
+      ? (server.consented
+        ? t('agentDetail.globalMcpConsented')
+        : t('agentDetail.globalMcpConsentPending'))
+      : t('agentDetail.globalMcpNoConsent'),
+    globalMcpRuntimeText(server.runtime),
+  ];
+  value.appendChild(document.createTextNode(facts.join(' · ')));
+  if (server.is_remote && !server.consented) {
+    const button = el('button', 'btn btn-sm', t('agentDetail.globalMcpConfirm'));
+    button.type = 'button';
+    button.dataset.globalMcpConsent = server.name;
+    button.setAttribute('data-od-id', 'global-mcp-consent');
+    value.appendChild(button);
+  }
+  row.appendChild(value);
+  return row;
+}
+
+/** 运行期读数的说法：`null` = 还没装配过；连接失败时直接呈现后端那句可读原因。 */
+function globalMcpRuntimeText(runtime) {
+  if (!runtime) return t('agentDetail.globalMcpRuntimeIdle');
+  if (runtime.connected) return t('agentDetail.globalMcpRuntimeConnected');
+  return runtime.error || t('agentDetail.globalMcpRuntimeIdle');
 }
 
 /** 远端数据流告知的**状态**（不是文案本身）：本机 provider 不需要确认，远端 provider 看库里的记录。 */
@@ -8886,6 +8982,11 @@ function bindEvents() {
     }
     const edit = event.target.closest('[data-agent-edit]');
     if (edit) openAgentEditModal(edit.dataset.agentEdit);
+  });
+  // 全局 MCP 只读行里的确认动作也由每次重铺的节点承载，因此同样走委派。
+  $('#adRuntime').addEventListener('click', (event) => {
+    const consent = event.target.closest('[data-global-mcp-consent]');
+    if (consent) confirmGlobalMcpServer(consent.dataset.globalMcpConsent);
   });
 
   // 页签：两个页签在同一内容区切换（任务的唯一入口）。

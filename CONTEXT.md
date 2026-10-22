@@ -566,7 +566,8 @@ _Avoid_: 授权（那是权限规则）；确认框（那是呈现）；把拒�
 **全局层（ADR-0031）**：另有文件型声明 `~/.alibot/agents/<member_id>/mcp.json`，纯人工维护、不进
 `mcp_server` 表；同名时项目层覆盖全局层（项目 Agent 级 > 项目频道级 > 全局成员家目录）。全局远端
 条目按合成标识 `global:<member_id>:<name>` 记 `remote_consent_scope('mcp', …)`，确认前不连接；
-不新增 `scope_kind`，`env_names` 口径不变。
+不新增 `scope_kind`，`env_names` 口径不变。人类面按「成员 + 名字」只读列出并提供确认入口
+（`GET/POST /api/agents/{id}/global-mcp-servers…`），不提供编辑 / 启停 / 删除，也不写回文件。
 _Avoid_: 工具服务器（泛称）；密钥表（没有任何值落库）；把 MCP 当远程市场（本仓只支持显式配置的本机/远端连接）；把全局 `mcp.json` 当成库内声明的第二张表（它是文件，没有库行）
 
 **Skill**:
