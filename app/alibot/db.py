@@ -27,12 +27,13 @@ import threading
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
 from .i18n import SOURCE_LOCALE, locale_of, render
+from .mcp import InvalidMCPDeclaration, normalize_mcp_declaration
 from .permissions import effective_rules
 from .reminder_delivery import reminder_state
 from .web import SEARCH_PROVIDERS, egress_hosts, mask_credential
@@ -45,11 +46,9 @@ OWNER_AVATAR_SLOT = 4
 # 前端 studio/app.js 的同名常量必须与本值一致。
 AVATAR_SLOT_COUNT = 5
 
-# MCP 声明名同时是 AgentScope 的 MCPClient 名（工具名 ``mcp__{name}__{tool}``），框架只接受
-# ``[a-zA-Z0-9_-]+``；这里在写路径就拒绝，避免「存得进去、装配时才炸」。
-MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-# ``env_names`` 只存变量**名**：这个形状同时排除了 ``KEY=value`` 这类把值写进名字的输入。
-MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+# MCP 声明名的形状同时是 AgentScope 的 MCPClient 名（工具名 ``mcp__{name}__{tool}``），
+# ``env_names`` 只存变量**名**。两份形状与校验的唯一实现在
+# ``mcp.normalize_mcp_declaration``（库写路径与全局 ``mcp.json`` 读路径共用）。
 
 # schema 版本（`schema_meta.schema_version`）。闸门见 `_assert_schema_compatible`：不等就**拒绝**。
 # 迁移**不是**启动路径的一步，而是显式命令 `python -m alibot --migrate`（ADR-0015 取代 ADR-0004
@@ -135,7 +134,11 @@ DEFAULT_MESSAGE_DENSITY = "comfortable"
 DEFAULT_THEME = "system"
 
 DEFAULT_PORT = 8788
-DEFAULT_DATA_DIR_NAME = "Alibot"
+# 数据目录与全局层共享隐藏根 ``~/.alibot/``（ADR-0031）：新默认是它下面的 ``data/``。
+# 旧默认 ``~/Alibot`` 只做**兼容读取**，搬迁永远是人的显式动作。
+DATA_DIR_ROOT_NAME = ".alibot"
+DEFAULT_DATA_DIR_NAME = "data"
+LEGACY_DATA_DIR_NAME = "Alibot"
 DATA_DIR_ENV = "ALIBOT_DATA_DIR"
 DATABASE_FILE_NAME = "alibot.db"
 
@@ -1197,16 +1200,108 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def default_data_dir() -> Path:
-    """默认数据目录：``~/Alibot``（可见、可直接复制），可用环境变量覆盖。"""
+DataDirSource = Literal["explicit", "new-default", "legacy-compat", "created"]
+
+# 启动输出里给「这个数据目录是从哪来的」用的可读标签（规格 D2 / D12）。
+DATA_DIR_SOURCE_LABELS: dict[DataDirSource, str] = {
+    "explicit": "显式覆盖",
+    "new-default": "新默认",
+    "legacy-compat": "旧位置兼容",
+    "created": "新建",
+}
+
+
+@dataclass(frozen=True)
+class DataDirResolution:
+    """一次数据目录解析的结果：实际路径、来源，以及可选的可读提示。
+
+    **解析本身是只读的**：它只做 ``exists()`` 判定，不创建、不删除、不搬移任何目录。创建只发生在
+    进程启动路径的「新建」分支（见 ``__main__.main``），且只会建新默认路径及其 ``~/.alibot`` 父目录。
+    """
+
+    path: Path
+    source: DataDirSource
+    notice: str | None = None
+
+    @property
+    def source_label(self) -> str:
+        return DATA_DIR_SOURCE_LABELS[self.source]
+
+
+def new_default_data_dir() -> Path:
+    """新默认数据目录：``~/.alibot/data/``（ADR-0031）。"""
+    return Path.home() / DATA_DIR_ROOT_NAME / DEFAULT_DATA_DIR_NAME
+
+
+def legacy_data_dir() -> Path:
+    """旧默认数据目录：``~/Alibot``（只做兼容读取）。"""
+    return Path.home() / LEGACY_DATA_DIR_NAME
+
+
+def resolve_data_dir(explicit: Path | str | None = None) -> DataDirResolution:
+    """按固定优先级解析数据目录（规格 D2）——结果是确定值，不依赖时间戳或遍历顺序。
+
+    1. ``explicit``（``--data-dir``）或 ``ALIBOT_DATA_DIR``：使用显式值，既有语义不变；
+    2. 新默认 ``~/.alibot/data/`` 已存在：使用新默认；
+    3. 旧 ``~/Alibot`` 已存在：继续用旧位置，并给一条可读兼容提示；
+    4. 两者都不存在：新建 ``~/.alibot/data/``（创建由启动路径执行）。
+
+    新旧同时存在时**确定地选新默认**并说明旧位置被忽略。本函数**不删除、不搬移、不合并**两份数据。
+    """
+    if explicit is not None and str(explicit) != "":
+        return DataDirResolution(Path(explicit).expanduser(), "explicit")
+
     override = os.environ.get(DATA_DIR_ENV)
     if override:
-        return Path(override).expanduser()
-    return Path.home() / DEFAULT_DATA_DIR_NAME
+        return DataDirResolution(Path(override).expanduser(), "explicit")
+
+    new_default = new_default_data_dir()
+    legacy = legacy_data_dir()
+    if new_default.exists():
+        notice = None
+        if legacy.exists():
+            notice = (
+                f"提示：检测到旧数据目录 {legacy}；由于新默认 {new_default} 已存在，已忽略旧位置。"
+                "两份数据均未删除、未搬移、未合并。"
+            )
+        return DataDirResolution(new_default, "new-default", notice)
+    if legacy.exists():
+        return DataDirResolution(
+            legacy,
+            "legacy-compat",
+            (
+                f"提示：新默认 {new_default} 不存在，继续使用旧数据目录 {legacy} 做兼容读取；"
+                "数据未搬移。迁移是显式动作：停应用 → 整目录复制 → 校验 → 指向新位置。"
+            ),
+        )
+    return DataDirResolution(new_default, "created")
+
+
+def default_data_dir() -> Path:
+    """当前默认数据目录（解析后的实际路径），可用环境变量覆盖。
+
+    保留这个窄接口供既有调用方使用；需要来源与提示时用 :func:`resolve_data_dir`。
+    """
+    return resolve_data_dir().path
 
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+# MCP 声明形状的校验实现在 ``mcp.normalize_mcp_declaration``：字段标识 → (错误 fields 键,
+# 既有本地化错误码)。全局 ``mcp.json`` 读路径不经过这里，只记日志并跳过坏条目。
+_MCP_DECLARATION_ERRORS: dict[str, tuple[str, str]] = {
+    "name": ("name", "error.mcp_name_invalid"),
+    "transport": ("transport", "error.mcp_transport_invalid"),
+    "args": ("args", "error.mcp_args_invalid"),
+    "env_names": ("env_names", "error.mcp_env_names_invalid"),
+    "command": ("command", "error.mcp_command_required"),
+    "url": ("url", "error.mcp_url_required"),
+    "url_invalid": ("url", "error.mcp_url_invalid"),
+    "url_sse": ("url", "error.mcp_sse_url_invalid"),
+    "url_http": ("url", "error.mcp_http_url_invalid"),
+}
 
 
 class Database:
@@ -3328,78 +3423,19 @@ class Database:
             raise DomainError("validation_failed", message, fields={"scope_id": message})
 
     def _normalize_mcp_declaration(self, values: Mapping[str, Any]) -> dict[str, Any]:
-        """校验并收敛一条声明的**完整**形态（创建与部分更新共用）。"""
-        name = str(values.get("name") or "").strip()
-        if not MCP_SERVER_NAME_PATTERN.fullmatch(name):
-            message = self._render_copy("error.mcp_name_invalid")
-            raise DomainError("validation_failed", message, fields={"name": message})
+        """校验并收敛一条声明的**完整**形态（创建与部分更新共用）。
 
-        transport = str(values.get("transport") or "").strip()
-        if transport not in ("stdio", "http", "sse"):
-            message = self._render_copy("error.mcp_transport_invalid")
-            raise DomainError("validation_failed", message, fields={"transport": message})
-
-        raw_args = values.get("args")
-        if raw_args is None:
-            raw_args = []
-        if not isinstance(raw_args, (list, tuple)) or any(not isinstance(item, str) for item in raw_args):
-            message = self._render_copy("error.mcp_args_invalid")
-            raise DomainError("validation_failed", message, fields={"args": message})
-        args = list(raw_args)
-
-        raw_env_names = values.get("env_names")
-        if raw_env_names is None:
-            raw_env_names = []
-        if not isinstance(raw_env_names, (list, tuple)):
-            message = self._render_copy("error.mcp_env_names_invalid")
-            raise DomainError("validation_failed", message, fields={"env_names": message})
-        env_names: list[str] = []
-        for item in raw_env_names:
-            if not isinstance(item, str):
-                message = self._render_copy("error.mcp_env_names_invalid")
-                raise DomainError("validation_failed", message, fields={"env_names": message})
-            clean = item.strip()
-            if not MCP_ENV_NAME_PATTERN.fullmatch(clean):
-                message = self._render_copy("error.mcp_env_names_invalid")
-                raise DomainError("validation_failed", message, fields={"env_names": message})
-            if clean not in env_names:
-                env_names.append(clean)
-
-        command = str(values.get("command") or "").strip()
-        url = str(values.get("url") or "").strip()
-        if transport == "stdio":
-            if not command:
-                message = self._render_copy("error.mcp_command_required")
-                raise DomainError("validation_failed", message, fields={"command": message})
-            url = ""
-        else:
-            if not url:
-                message = self._render_copy("error.mcp_url_required")
-                raise DomainError("validation_failed", message, fields={"url": message})
-            parts = urlsplit(url)
-            if parts.scheme not in ("http", "https") or not parts.netloc:
-                message = self._render_copy("error.mcp_url_invalid")
-                raise DomainError("validation_failed", message, fields={"url": message})
-            looks_sse = parts.path.endswith("/sse") or parts.path.endswith("/messages/")
-            if transport == "sse" and not looks_sse:
-                message = self._render_copy("error.mcp_sse_url_invalid")
-                raise DomainError("validation_failed", message, fields={"url": message})
-            if transport == "http" and looks_sse:
-                # AgentScope 按 URL path 选传输：http 声明指向 /sse 会被静默当成 sse。
-                # 在写路径拒绝，避免「声明一种、实际另一种」。
-                message = self._render_copy("error.mcp_http_url_invalid")
-                raise DomainError("validation_failed", message, fields={"url": message})
-            command = ""
-
-        return {
-            "name": name,
-            "transport": transport,
-            "command": command,
-            "args": args,
-            "url": url,
-            "env_names": env_names,
-            "enabled": bool(values.get("enabled", True)),
-        }
+        形状语义的唯一实现在 ``mcp.normalize_mcp_declaration``（全局 ``mcp.json`` 读路径复用
+        同一份）；这里只把字段错误翻译成既有的本地化错误码与文案。
+        """
+        try:
+            return normalize_mcp_declaration(values)
+        except InvalidMCPDeclaration as error:
+            field, key = _MCP_DECLARATION_ERRORS.get(
+                error.field, ("transport", "error.mcp_transport_invalid")
+            )
+            message = self._render_copy(key)
+            raise DomainError("validation_failed", message, fields={field: message}) from None
 
     def _assert_mcp_name_free_locked(
         self, *, scope_kind: str, scope_id: str, name: str, exclude_id: str | None = None
@@ -3595,6 +3631,28 @@ class Database:
                 # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
                 merged[server["name"]] = server
         return [server for server in merged.values() if server["enabled"]]
+
+    def mcp_layers_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
+        """**未合并**的两层声明（优先级从高到低：项目 Agent 级 → 项目频道级）。
+
+        与 :meth:`mcp_servers_for_target` 同一 target→channel 解析口径，但保留同名落选者与
+        停用行——装配层需要它们生成「名字 + 胜出层」的运行期提示，并在合并后再过滤 enabled。
+        DM / 未知 target 没有频道上下文，返回空。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            if channel_id is None:
+                return []
+            rows = self._conn.execute(
+                self._mcp_select_sql(
+                    " WHERE (ms.scope_kind = 'channel' AND ms.scope_id = ?) "
+                    "OR (ms.scope_kind = 'agent' AND ms.scope_id = ?) "
+                    "ORDER BY CASE ms.scope_kind WHEN 'agent' THEN 0 ELSE 1 END, "
+                    "ms.created_at, ms.id"
+                ),
+                (channel_id, member_id),
+            ).fetchall()
+        return [self._mcp_server_payload(row) for row in rows]
 
     # ─── Skill（#152 / 规格 §3.6 / §4.3 / ADR-0021 §三） ─────────────────────
 
@@ -3839,6 +3897,37 @@ class Database:
                 # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
                 merged[skill["name"]] = skill
         return [skill for skill in merged.values() if skill["enabled"]]
+
+    def skill_layers_for_target(self, target_id: str, member_id: str) -> dict[str, list[dict[str, Any]]]:
+        """**未合并**的两级项目技能行（含停用），供四层装配生成落选提示（#232）。
+
+        :meth:`skills_for_target` 在库层就把「项目频道级被项目 Agent 级覆盖」的行丢掉了，
+        装配层因此看不到落选者。本方法保留两层原始行、不按名字合并，返回
+        ``{"agent": [...], "channel": [...]}``；两条路径共享同一 target→channel 解析口径。
+
+        这里**不**过滤 ``enabled``：装配层先把各层按名字排出胜出者，再只装配启用的胜出者。
+        否则停用的 Agent 级技能会消失，频道级同名条目就会违规复活（既有语义是「停用 Agent
+        级 = 该成员没有这个技能」）。``load_skills`` 不读 ``enabled``，过滤由装配层负责。
+        """
+        with self._lock:
+            channel_id = self._channel_id_for_target_locked(target_id)
+            agent_rows = self._conn.execute(
+                "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? ORDER BY created_at, id",
+                (member_id,),
+            ).fetchall()
+            channel_rows = (
+                []
+                if channel_id is None
+                else self._conn.execute(
+                    "SELECT * FROM skill WHERE scope_kind = 'channel' AND scope_id = ? "
+                    "ORDER BY created_at, id",
+                    (channel_id,),
+                ).fetchall()
+            )
+        return {
+            "agent": [self._skill_payload(row) for row in agent_rows],
+            "channel": [self._skill_payload(row) for row in channel_rows],
+        }
 
     # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
     @staticmethod

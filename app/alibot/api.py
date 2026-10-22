@@ -33,6 +33,8 @@
 - ``GET  /api/agents``                         Agent 成员 + 模型配置 + 四态状态点
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
+- ``GET  /api/agents/{id}/global-mcp-servers`` 全局 mcp.json 的只读条目 + 运行期读数
+- ``POST /api/agents/{id}/global-mcp-servers/{name}/consent`` 全局远端 MCP 的数据面确认
 - ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
 - ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）
 - ``GET  /api/approvals``                      待审批 / 历史审批快照（供运行面板恢复）
@@ -119,6 +121,7 @@ from .sop import SOPRunner
 from .workspace import (
     clear_docker_failure,
     docker_unavailable_reason,
+    global_home_root,
     shutdown_docker_workspaces,
     start_docker_reaper,
     sweep_stale_docker_workspaces,
@@ -706,13 +709,24 @@ def create_app(
             workspace_of=database.workspace_settings_for_target,
             # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
             permission_of=database.permission_settings_for_target,
-            # MCP 声明（#151）：启用 + 已确认的远端声明由装配层物化为 MCPClient；未配置时为空。
-            mcp_of=database.mcp_servers_for_target,
+            # MCP 声明（#151 / #233）：项目两层由装配层按「Agent 级 → 频道级 → 全局」合并，
+            # 因此这里给**未合并**读路径（保留落选者以生成可读提示）；启用 + 已确认的远端声明
+            # 由装配层物化为 MCPClient；未配置时为空。
+            mcp_of=database.mcp_layers_for_target,
             # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
             skills_of=database.skills_for_target,
+            # 未合并的项目技能两层（#232）：保留「频道级被 Agent 级覆盖」的落选行，供四层合并
+            # 生成运行期提示；返回形状是新增路径，既有 ``skills_for_target`` 语义不变。
+            skill_layers_of=database.skill_layers_for_target,
             # 联网配置（#186 / ADR-0026 §二）：``web_access`` 未配置时不挂任何联网工具。这条读路径
             # **不经过** workspace——两个配置位同级但不同开关（频道没配项目根时联网仍可生效）。
             web_of=database.web_settings_for_target,
+            # 全局层（#230 / ADR-0031 Seam A）：规则基座 / 项目补充的只读读路径。全局根固定为
+            # ``~/.alibot``，只看 HOME，不随 ``--data-dir`` / ``ALIBOT_DATA_DIR`` 移动。
+            global_home=global_home_root(),
+            # 全局远端 MCP 的确认状态（#233）：全局条目没有库行，按合成标识
+            # ``global:<member_id>:<name>`` 从既有 ``remote_consent_scope('mcp', …)`` 读取。
+            global_mcp_consent_of=lambda scope_id: database.has_remote_consent_scope("mcp", scope_id),
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
@@ -737,7 +751,14 @@ def create_app(
         scheduler=orchestrator.scheduler,
         agent_factory=getattr(member_seam, "sop_agent", None),
     )
-    service = WorkspaceService(database, orchestrator=orchestrator, events=events, sops=sop_runner)
+    service = WorkspaceService(
+        database,
+        orchestrator=orchestrator,
+        events=events,
+        sops=sop_runner,
+        # 全局层（#230 / #236）：与成员面同一根，只看 HOME，不随数据目录覆盖移动。
+        global_home=global_home_root(),
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -1648,6 +1669,26 @@ def create_app(
     @app.get("/api/agents/{member_id}/status")
     def get_agent_status(member_id: str) -> dict[str, Any]:
         return service.member_status(member_id)
+
+    @app.get("/api/agents/{member_id}/global-mcp-servers")
+    def list_global_mcp_servers(member_id: str) -> dict[str, Any]:
+        """该成员全局 ``mcp.json`` 的只读条目 + 运行期读数（#236）。
+
+        只列出文件里真实存在的条目，字段是名字 / transport / 是否远端 / 是否已确认 / 进程内
+        ``runtime``。全局层由人维护：这里**没有**编辑、启停、删除，也不写回文件。
+        """
+        return service.global_mcp_servers(member_id)
+
+    @app.post("/api/agents/{member_id}/global-mcp-servers/{name}/consent")
+    def consent_global_mcp_server(member_id: str, name: str) -> dict[str, Any]:
+        """按「成员 + 名字」确认一条**全局远端** MCP 声明（幂等）。
+
+        写入口只接受该成员全局 ``mcp.json`` 里真实存在且 transport 为 ``http`` / ``sse`` 的条目；
+        stdio 是本机进程，不需要也不接受确认。确认行仍是 ``remote_consent_scope('mcp', …)``，
+        ``scope_id`` 是合成标识 ``global:<member_id>:<name>``；只存时间。全局文件是只读素材层：
+        这条写入**不**改文件、不新增库表、不改 schema。
+        """
+        return service.confirm_global_mcp_server(member_id, name)
 
     @app.get("/api/member-statuses")
     def get_member_statuses() -> dict[str, Any]:

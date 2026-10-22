@@ -18,23 +18,219 @@ AgentScope 的 :class:`agentscope.mcp.MCPClient`：
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .i18n import SOURCE_LOCALE, Locale, render
+
+_log = logging.getLogger(__name__)
 
 #: 声明允许的传输；与 ``mcp_server.transport`` 的 CHECK 一致。
 MCP_TRANSPORTS: tuple[str, ...] = ("stdio", "http", "sse")
 
 #: 远端传输（需要一次数据面确认）。
 REMOTE_MCP_TRANSPORTS: frozenset[str] = frozenset({"http", "sse"})
+
+# MCP 声明名同时是 AgentScope 的 MCPClient 名（工具名 ``mcp__{name}__{tool}``），框架只接受
+# ``[a-zA-Z0-9_-]+``。写路径与全局文件读路径共用这一份形状。
+MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# ``env_names`` 只存变量**名**：这个形状同时排除了 ``KEY=value`` 这类把值写进名字的输入。
+MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+#: 全局成员家目录里的文件型声明（ADR-0031 §一）。
+GLOBAL_MCP_FILENAME = "mcp.json"
+
+
+class InvalidMCPDeclaration(ValueError):
+    """一条声明的形状不合法；``field`` 指出是哪个字段（供写路径渲染既有错误文案）。"""
+
+    def __init__(self, field: str) -> None:
+        self.field = field
+        super().__init__(f"invalid MCP declaration: {field}")
+
+
+def normalize_mcp_declaration(values: Mapping[str, Any]) -> dict[str, Any]:
+    """校验并收敛一条声明的**完整**形态（库写路径与全局文件读路径共用的唯一实现）。
+
+    语义与 ``mcp_server`` 表的既有约束逐字一致：名字 / transport / args / ``env_names`` /
+    command 与 URL 的形状；``stdio`` 必须有 command，远端必须有 http(s) URL，且 ``sse`` 与
+    ``http`` 的 URL path 不能互相冒充。非法时抛 :class:`InvalidMCPDeclaration`。
+    """
+    name = str(values.get("name") or "").strip()
+    if not MCP_SERVER_NAME_PATTERN.fullmatch(name):
+        raise InvalidMCPDeclaration("name")
+
+    transport = str(values.get("transport") or "").strip()
+    if transport not in MCP_TRANSPORTS:
+        raise InvalidMCPDeclaration("transport")
+
+    raw_args = values.get("args")
+    if raw_args is None:
+        raw_args = []
+    if not isinstance(raw_args, (list, tuple)) or any(not isinstance(item, str) for item in raw_args):
+        raise InvalidMCPDeclaration("args")
+    args = list(raw_args)
+
+    raw_env_names = values.get("env_names")
+    if raw_env_names is None:
+        raw_env_names = []
+    if not isinstance(raw_env_names, (list, tuple)):
+        raise InvalidMCPDeclaration("env_names")
+    env_names: list[str] = []
+    for item in raw_env_names:
+        if not isinstance(item, str):
+            raise InvalidMCPDeclaration("env_names")
+        clean = item.strip()
+        if not MCP_ENV_NAME_PATTERN.fullmatch(clean):
+            raise InvalidMCPDeclaration("env_names")
+        if clean not in env_names:
+            env_names.append(clean)
+
+    command = str(values.get("command") or "").strip()
+    url = str(values.get("url") or "").strip()
+    if transport == "stdio":
+        if not command:
+            raise InvalidMCPDeclaration("command")
+        url = ""
+    else:
+        if not url:
+            raise InvalidMCPDeclaration("url")
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise InvalidMCPDeclaration("url_invalid")
+        looks_sse = parts.path.endswith("/sse") or parts.path.endswith("/messages/")
+        if transport == "sse" and not looks_sse:
+            raise InvalidMCPDeclaration("url_sse")
+        if transport == "http" and looks_sse:
+            # AgentScope 按 URL path 选传输：http 声明指向 /sse 会被静默当成 sse。
+            raise InvalidMCPDeclaration("url_http")
+        command = ""
+
+    return {
+        "name": name,
+        "transport": transport,
+        "command": command,
+        "args": args,
+        "url": url,
+        "env_names": env_names,
+        "enabled": bool(values.get("enabled", True)),
+    }
+
+
+def load_global_mcp_declarations(
+    global_home: str | os.PathLike[str] | None,
+    member_id: str,
+    *,
+    consent_of: Callable[[str], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """读 ``<全局根>/agents/<member_id>/mcp.json``（纯文件，**只读、不创建**）。
+
+    文件顶层形状固定为 ``{"servers": [ {name, transport, command, args, url, env_names,
+    enabled?}, ... ]}``；条目形状与库里项目声明完全同一套校验
+    （:func:`normalize_mcp_declaration`）。文件缺失 / 非法 JSON / 顶层形状不对 ⇒ 全局层零条
+    + 一条可读日志；单条目非法 ⇒ 跳过该条 + 日志。项目层不受影响。
+
+    每条全局声明补齐合成标识 ``global:<member_id>:<name>``（``id`` 与 ``scope_id`` 同一值），
+    并推导 ``is_remote`` / ``consent_required``；远端条目的 ``consented`` 由注入的
+    ``consent_of(合成标识)`` 从既有确认行读取，未注入时按未确认处理。
+    """
+    if not global_home:
+        return []
+    from .workspace import AGENTS_DIR, resolve_global_read_path, safe_partition_id
+
+    # 守卫的根是**全局根**（不是成员家目录）：成员家目录本身是指向根外的 symlink 时也要拒绝。
+    path = resolve_global_read_path(
+        str(global_home), AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
+    )
+    if path is None:
+        _log.debug("global MCP declaration file is absent: %s", member_id)
+        return []
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
+        return []
+    except (OSError, UnicodeDecodeError) as error:
+        _log.warning("global MCP declaration file is unreadable: %s (%s)", path, error)
+        return []
+    try:
+        payload = json.loads(raw)
+    except ValueError as error:
+        _log.warning("global MCP declaration file is not valid JSON: %s (%s)", path, error)
+        return []
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("servers"), list):
+        _log.warning("global MCP declaration file has no `servers` array: %s", path)
+        return []
+
+    declarations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(payload["servers"]):
+        if not isinstance(entry, Mapping):
+            _log.warning("global MCP declaration #%d is not an object: %s", index, path)
+            continue
+        try:
+            normalized = normalize_mcp_declaration(entry)
+        except InvalidMCPDeclaration as error:
+            _log.warning("global MCP declaration #%d is invalid (%s): %s", index, error.field, path)
+            continue
+        name = str(normalized["name"])
+        if name in seen:
+            # 同一层内重名没有既有优先级可依：首条生效，其余跳过并留日志。
+            _log.warning("duplicate global MCP declaration is ignored: %s (%s)", name, path)
+            continue
+        seen.add(name)
+        is_remote = normalized["transport"] in REMOTE_MCP_TRANSPORTS
+        scope_id = f"global:{member_id}:{name}"
+        consented = False
+        if is_remote and consent_of is not None:
+            try:
+                consented = bool(consent_of(scope_id))
+            except Exception:  # 确认行读不出来按未确认处理，不拖垮整轮
+                _log.debug("global MCP consent lookup failed", exc_info=True)
+                consented = False
+        declarations.append(
+            {
+                **normalized,
+                "id": scope_id,
+                "scope_id": scope_id,
+                "is_remote": is_remote,
+                "consent_required": is_remote,
+                "consented": consented if is_remote else False,
+            }
+        )
+    return declarations
+
+
+def merge_mcp_layers(
+    layers: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
+) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+    """按层优先级合并声明：每名恰好一条，返回 ``(胜出集合, 落选 [(名字, 胜出层)])``。
+
+    ``layers`` 按优先级从高到低给出（``agent`` → ``channel`` → ``global``）；同名先出现者胜出。
+    启停过滤在合并之后做，与项目层既有「先同名覆盖、再过滤 enabled」的语义逐字一致。
+    """
+    winners: dict[str, dict[str, Any]] = {}
+    winning_layer: dict[str, str] = {}
+    losers: list[tuple[str, str]] = []
+    for layer, declarations in layers:
+        for declaration in declarations:
+            name = str(declaration.get("name") or "")
+            if name in winners:
+                losers.append((name, winning_layer[name]))
+                continue
+            winners[name] = dict(declaration)
+            winning_layer[name] = layer
+    return [item for item in winners.values() if item.get("enabled", True)], losers
+
 
 #: 进程内的装配结果（按 server id）。它**不是**持久事实：重启即清空，库里没有对应列。
 _runtime: dict[str, dict[str, Any]] = {}

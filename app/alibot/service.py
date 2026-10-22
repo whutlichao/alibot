@@ -39,6 +39,7 @@ from .db import (
 )
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
+from .mcp import load_global_mcp_declarations, runtime_status
 from .mentions import parse_mentions
 from .team import TEAM_SCOPE
 from .web import (
@@ -48,7 +49,7 @@ from .web import (
     describe_search_provider,
     web_env,
 )
-from .workspace import clear_docker_failure
+from .workspace import clear_docker_failure, global_home_root
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
@@ -99,12 +100,17 @@ class WorkspaceService:
         orchestrator: WakeOrchestrator | None = None,
         events: EventBus | None = None,
         sops: SOPRunner | None = None,
+        *,
+        global_home: str | None = None,
     ):
         self._db = db
         self._member_id = member_id
         self._orchestrator = orchestrator
         self._events = events
         self._sops = sops
+        # 全局层的根（#230 / ADR-0031）：只看 HOME，不随 --data-dir / ALIBOT_DATA_DIR 移动。
+        # 未注入时在读路径现取 ``global_home_root()``，于是测试改 HOME 即可指向临时全局根。
+        self._global_home_override = global_home
 
     # ─── 文案的语言偏好（ADR-0009 第二层：读库，不读请求头） ────────────────
     def _locale(self) -> Locale:
@@ -925,6 +931,66 @@ class WorkspaceService:
             "consent": record,
             "consents": self._db.list_remote_consents(),
             "agents": self.agents(),
+        }
+
+    # ─── 全局 MCP 声明（#236 / ADR-0031 D8：人类面按「成员 + 名字」定位） ───
+    def global_mcp_servers(self, member_id: str) -> dict[str, Any]:
+        """该成员全局 ``mcp.json`` 的**只读**条目与运行期读数。
+
+        全局声明是纯文件层：这里只读、不创建、不写回；列表只含文件里真实存在的条目
+        （坏条目由加载层跳过并留日志）。条目字段只有名字 / transport / 是否远端 / 是否已确认 /
+        进程内 ``runtime``——编辑、启停、删除都不在本仓的人类面里。
+        """
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        return {"member_id": member_id, "global_mcp_servers": self._global_mcp_views(member_id)}
+
+    def _global_mcp_views(self, member_id: str) -> list[dict[str, Any]]:
+        """全局声明的展示形态；确认态读既有 ``remote_consent_scope('mcp', 合成标识)``。"""
+        declarations = load_global_mcp_declarations(
+            self._global_home(),
+            member_id,
+            consent_of=lambda scope_id: self._db.has_remote_consent_scope("mcp", scope_id),
+        )
+        return [
+            {
+                "name": declaration["name"],
+                "transport": declaration["transport"],
+                "is_remote": declaration["is_remote"],
+                "consented": declaration["consented"],
+                "runtime": runtime_status(str(declaration["id"])),
+            }
+            for declaration in declarations
+        ]
+
+    def _global_home(self) -> str:
+        return self._global_home_override if self._global_home_override is not None else global_home_root()
+
+    def confirm_global_mcp_server(self, member_id: str, name: str) -> dict[str, Any]:
+        """确认该成员全局 ``mcp.json`` 的一条远端声明（#236 / D8）。
+
+        写进既有 ``remote_consent_scope('mcp', 'global:<member_id>:<name>')``：幂等、只存时间、
+        重启后仍有效；**不新增** ``scope_kind``、不改表、不 bump ``SCHEMA_VERSION``。确认之后，
+        下一轮装配经同一个 ``has_remote_consent_scope`` 读到 ``consented=True``，不再走
+        ``consent_required`` 分支。
+        """
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        locale = self._locale()
+        clean = (name or "").strip()
+        declarations = load_global_mcp_declarations(self._global_home(), member_id)
+        declaration = next((item for item in declarations if item["name"] == clean), None)
+        if declaration is None:
+            message = render("error.global_mcp_declaration_not_found", locale, name=clean)
+            raise DomainError("validation_failed", message, fields={"name": message})
+        if not declaration["is_remote"]:
+            # stdio 是本机进程：不需要确认，也不接受确认——绝不写确认行。
+            message = render("error.mcp_consent_local", locale)
+            raise DomainError("validation_failed", message, fields={"transport": message})
+        consent = self._db.record_remote_consent_scope("mcp", str(declaration["id"]))
+        return {
+            "global_mcp_server": next(
+                row for row in self._global_mcp_views(member_id) if row["name"] == declaration["name"]
+            ),
+            "consent": consent,
         }
 
     # ─── 消息 ─────────────────────────────────────────────────────────────

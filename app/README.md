@@ -64,26 +64,70 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 
 **本机存储不做应用层端到端加密**；磁盘上的数据库按操作系统文件权限保护。产品文案**不声称 E2EE**。
 
-### 数据目录：备份方式就是复制目录
+### 数据目录：默认在隐藏根下，备份方式仍是复制目录
 
 | 项 | 值 |
 | --- | --- |
 | 默认端口 | `8788`（`--port` 可改） |
-| 默认数据目录 | `~/Alibot/`（可见、可直接复制） |
-| 覆盖方式 | `--data-dir <路径>` 或环境变量 `ALIBOT_DATA_DIR` |
+| 默认数据目录 | `~/.alibot/data/`（隐藏根下；旧 `~/Alibot/` 只做**兼容读取**） |
+| 覆盖方式 | `--data-dir <路径>` 或环境变量 `ALIBOT_DATA_DIR`（只改数据目录本身，**不移动**全局层根） |
 | 库文件 | `<数据目录>/alibot.db`（单文件 SQLite，WAL 模式） |
 | 附件字节 | `<数据目录>/attachments/<附件标识>`（**不进 SQLite**；库里只存相对路径，因此整个数据目录可整体搬迁） |
+| 迁移审计台账 | `<数据目录>/schema-migrations.jsonl` |
 | 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾、浏览器带 `last_seq` 重连） |
 
-改名不保留兼容：只有 `ALIBOT_*` 环境变量生效，旧前缀 `WORKSPLICE_*` 与旧数据目录 `~/Worksplice`
-一律不再被识别，也不做迁移（那是另一个项目的目录）。
+数据目录按**固定优先级**解析（结果是确定值，不靠时间戳或遍历顺序）：
 
-备份：`cp -R ~/Alibot ~/Alibot-backup-$(date +%F)`。恢复：反向复制回去。
+1. `--data-dir` 或 `ALIBOT_DATA_DIR`：使用显式值（既有语义不变）；
+2. 新默认 `~/.alibot/data/` 已存在：使用新默认；
+3. 旧 `~/Alibot` 已存在：继续用旧位置，并给一条可读兼容提示；
+4. 两者都不存在：新建 `~/.alibot/data/`。
+
+启动时打印**实际数据目录**与来源（显式覆盖 / 新默认 / 旧位置兼容 / 新建）。新旧同时存在时确定地选
+新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
+`~/.alibot/agents/` 与 `~/.alibot/skills/` 是人的维护面，应用不创建。
+旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
+本节的兼容读取只针对 `~/Alibot`。
+
+备份 / 恢复（显式路径，可直接执行）：
+
+```sh
+# 数据目录（库 + 附件 + 迁移台账，整目录 = 备份单位）
+mkdir -p ~/.alibot-backups
+cp -R ~/.alibot/data ~/.alibot-backups/data-$(date +%F)
+# 恢复：反向复制回去（先停应用）
+cp -R ~/.alibot-backups/data-YYYY-MM-DD ~/.alibot/data
+# 若仍在使用旧位置做兼容读取，把上面的 ~/.alibot/data 换成 ~/Alibot。
+
+# 全局层：不在数据目录备份内，必须单独备份
+cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
+cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
+# 恢复：反向复制回去（全局层只由人维护，应用只读、不自动创建）
+```
+
 库文件旁边可能有 `-wal` / `-shm` 两个伴随文件，一起复制即可。
 **附件字节在 `<数据目录>/attachments/` 里**（#67）：只备份 `alibot.db` 的备份**不再是完整备份**，
 它会是「有元数据、没字节」的半份——备份单位是**整个数据目录**。
 **迁移前会自动备份**：`--migrate` 在动手之前把整个数据目录复制成同级的
 `<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>`；**备份失败就不迁移**（不会退化成"放行 + 一句警告"）。
+
+从旧默认位置搬到新默认位置是**显式动作**（启动绝不自动搬移）：
+**停应用 → 整目录复制 → 校验 → 指向新位置**，复制前先做整目录备份。
+
+```sh
+# 1) 停应用；2) 复制前先整目录备份
+mkdir -p ~/.alibot-backups
+cp -R ~/Alibot ~/.alibot-backups/legacy-$(date +%F)
+# 3) 整目录复制（库 + 附件 + 迁移台账一起过去；不要只复制 alibot.db）
+mkdir -p ~/.alibot
+cp -R ~/Alibot ~/.alibot/data
+# 4) 校验：库可打开、附件数量一致、台账存在
+python -m alibot --migrate --dry-run --data-dir ~/.alibot/data
+ls ~/Alibot/attachments | wc -l
+ls ~/.alibot/data/attachments | wc -l
+test -f ~/.alibot/data/schema-migrations.jsonl
+# 5) 指向新位置：不传 --data-dir 即自动使用新默认；旧 ~/Alibot 此后被忽略（不删除）
+```
 
 从首版升级（ADR-0015）：**启动仍然拒绝** schema 版本与本版不等的库（不猜、不跳过），但报错正文会直接给出
 迁移命令与备份指引；把旧库升到本版要**显式**执行 `python -m alibot --migrate --data-dir <数据目录>`
@@ -372,7 +416,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 - **workspace_root 不在数据目录内**：它指向用户的**项目目录**，不进入整目录备份的复制。**备份数据目录
   ≠ 备份项目文件**——项目文件要用户自己备份（见上面的备份口径）。
 - **两个后端**：`local`（默认）或 `docker`（每 Agent/会话一个容器，`host_workdir=workspace_root`，
-  容器内固定根 `/workspace`）。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
+  容器内固定根 `/workspace`；另把该成员的**全局家目录**与**公共技能库**只读挂到
+  `/alibot-home/agents/<member_id>` 与 `/alibot-home/skills`，数据目录不进容器，宿主目录缺失则
+  跳过该条挂载）。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
   逐次审批、无沙箱；默认只开受限文件工具。Docker 里的 Bash 在容器内，不需要那条本地通道。
 - **Docker 不可用时是显式失败**：没有 daemon / 镜像起不来 ⇒ 该成员状态点 **`offline`**、
   `enabled_reason` 可读，**绝不静默回落本地 shell**；失败原因短 TTL 缓存（改配置会立即清掉重试），
@@ -402,6 +448,13 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   值只从进程环境读**，库里不存密钥。远端 MCP（`http` / `sse`）未做数据面确认时**不连接**；
   stdio 不需要确认。装配层按 target 解析启用且已确认的声明，运行时读数（`connected` / `tools` /
   `error`）只回进程内事实。
+  **全局层（ADR-0031 / #233）**：另有纯文件声明 `~/.alibot/agents/<member_id>/mcp.json`，顶层形状
+  为 `{"servers": [...]}`（条目形状与库内声明同一套校验：transport / command / args / url /
+  `env_names` / `enabled`），应用只读、不创建，也不进 `mcp_server` 表。装配按「项目 Agent 级 →
+  项目频道级 → 全局成员家目录」合并，同名只装配并连接胜出条目；落选条目各一条只进
+  `RoundOutcome.reason` 的可读提示（**不进** system prompt）。全局远端条目按合成标识
+  `global:<member_id>:<name>` 记 `remote_consent_scope('mcp', …)`，确认前不连接；全局 stdio 的
+  cwd 仍是项目侧成员分区（Docker 内 `/workspace`），不是全局层。
 - **Skill**：`skill` 只存元数据与内容 hash，字节在 `<workspace_root>/.alibot/skills/<scope_id>/`；
   安装只接受**本机目录或上传 zip**（校验 `SKILL.md` front matter、路径与 hash），**不做远程市场/下载**。
   Agent 级按 member 分区、频道级是频道分区，装配时 Agent 级同名覆盖频道级；删除只删配置与工作区副本，
@@ -515,6 +568,8 @@ live `approval_*` 帧仍只补本次会话内的变化。
 | `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim`、Agent 级 workspace 四项与 `web_access`、`stats`） |
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）；`web_access: null` 是**清除 Agent 级覆盖**（回到跟随频道，写库 `NULL`；缺省该字段 = 保持原值，其它字段的显式 `null` 仍 400）。响应同形 `agent` + `agents` + `members` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
+| `GET /api/agents/{id}/global-mcp-servers` | 该成员全局 `~/.alibot/agents/<id>/mcp.json` 的**只读**条目 + 进程内 `runtime` 读数：`{name, transport, is_remote, consented, runtime}`。只列出文件里真实存在的条目；**没有**编辑 / 启停 / 删除，也不写回全局层 |
+| `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 全局远端 MCP（`http` / `sse`）的数据面确认（幂等；写 `remote_consent_scope('mcp', 'global:<member_id>:<name>')`，只存时间）。stdio 不接受；名字不在该成员 `mcp.json` 里 ⇒ 400 且不写行。确认后下一轮装配才连接；未确认时运行期读数为 `consent_required` |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
 | `POST /api/remote-data-flow/ack` | 确认一次告知 `{provider}`（幂等） |
@@ -622,7 +677,7 @@ live `approval_*` 帧仍只补本次会话内的变化。
 Python 测试只断言**外部可观察行为**（消息出现与顺序、轮次结果、状态点、事件流帧、seq 单调性、
 已读位置、未读计数、不可变性、重启后一致），不检查内部函数或前端 DOM；Studio 的 DOM 行为（搜索面、
 Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要行与两种语言说法）由上面的 Node 内置测试
-单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/Alibot`。
+单独覆盖。每条 pytest 用例的库都在 `tmp_path` 下，**不触碰** `~/.alibot/data` 与旧 `~/Alibot`。
 
 上面这条纪律、以及「本文件的词表必须跟着 `db.py` 走」，都有**机械判据**：
 `app/tests/test_test_layering_guard.py`（不读 Studio 源码 / 不断言词表形状 / 不 import 私有名）、

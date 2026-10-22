@@ -34,7 +34,11 @@ from alibot.workspace import (
     DockerWorkspaceUnavailable,
     WorkspaceSettings,
     assemble_workspace,
+    docker_global_member_home,
+    docker_global_skills_home,
     docker_unavailable_reason,
+    global_home_root,
+    global_member_home,
     release_workspace_mount,
     reset_docker_workspace,
     session_partition_id,
@@ -173,6 +177,74 @@ def test_docker_mounts_the_channel_root_and_tools_work_inside_the_container(
             await release_workspace_mount(mount)
 
     _run(scenario())
+
+
+# ─── 1b. 全局层只读挂载（#235）：成员家目录 + 公共技能库，数据目录不可见 ─────
+@requires_docker
+def test_docker_mounts_the_global_layer_read_only(docker_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """两条全局 bind 在容器内可读、写失败；``data/`` 不可见；``/alibot-home`` 不是文件工具根。"""
+    home = docker_root.parent / "home"
+    monkeypatch.setenv("HOME", str(home))
+    member = _unique("mem")
+    session = session_partition_id(member, "ch_global")
+    member_home = Path(global_member_home(member))
+    (member_home / "rules").mkdir(parents=True)
+    (member_home / "rules" / "AGENTS.md").write_text("全局基座规则\n", encoding="utf-8")
+    skills_home = Path(global_home_root()) / "skills"
+    skills_home.mkdir(parents=True)
+    (skills_home / "shared.txt").write_text("公共技能\n", encoding="utf-8")
+    data_home = Path(global_home_root()) / "data"
+    data_home.mkdir()
+    (data_home / "alibot.db").write_text("secret\n", encoding="utf-8")
+    before = sorted(path.name for path in Path(global_home_root()).iterdir())
+
+    async def scenario() -> None:
+        mount = await assemble_workspace(
+            _settings(docker_root),
+            member_id=member,
+            session_id=session,
+            locale="zh-CN",
+        )
+        try:
+            bash = _tool(mount, "Bash")
+            target = docker_global_member_home(member)
+
+            # 容器轮次里全局规则基座可读（与 local 后端同一份宿主文件）。
+            chunk = await _latest_chunk(bash, command=f"cat {target}/rules/AGENTS.md")
+            assert chunk.state is not ToolResultState.ERROR, _text(chunk)
+            assert "全局基座规则" in _text(chunk)
+
+            chunk = await _latest_chunk(bash, command=f"cat {docker_global_skills_home()}/shared.txt")
+            assert chunk.state is not ToolResultState.ERROR, _text(chunk)
+            assert "公共技能" in _text(chunk)
+
+            # 只读挂载：容器内写入失败。
+            chunk = await _latest_chunk(
+                bash, command=f"printf x > {target}/written.txt 2>&1 || echo write-denied"
+            )
+            assert "write-denied" in _text(chunk), "成员家目录必须是只读挂载"
+            chunk = await _latest_chunk(
+                bash,
+                command=f"printf x > {docker_global_skills_home()}/written.txt 2>&1 || echo write-denied",
+            )
+            assert "write-denied" in _text(chunk), "公共技能库必须是只读挂载"
+
+            # 数据目录（库 / 附件 / 台账）不进容器。
+            chunk = await _latest_chunk(
+                bash, command="test -e /alibot-home/data && echo visible || echo absent"
+            )
+            assert "absent" in _text(chunk), "数据目录不得进容器"
+
+            # 文件工具根仍只认 /workspace。
+            chunk = await _latest_chunk(_tool(mount, "Read"), file_path=f"{target}/rules/AGENTS.md")
+            assert chunk.state is ToolResultState.ERROR, "/alibot-home 不是文件工具的合法输入"
+        finally:
+            await release_workspace_mount(mount)
+
+    _run(scenario())
+    assert sorted(path.name for path in Path(global_home_root()).iterdir()) == before, (
+        "一轮结束后全局层不得被应用创建/写入新条目"
+    )
 
 
 # ─── 2. 隔离：容器外路径不可见、/tmp 与 /root 私有；文件工具仍锚在 /workspace ──
@@ -542,6 +614,72 @@ def test_changed_docker_image_discards_the_pooled_container(
         workspace_module.clear_docker_failure(key[0])
 
     assert deleted == [old.container_name], "旧镜像容器必须被删掉，而不是被复用"
+    assert key not in workspace_module._pool
+
+
+def test_a_global_layer_created_later_discards_the_pooled_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全局目录在容器建立后才出现：bind 规格变化 ⇒ 旧容器不得复用（否则新挂载永远不生效）。"""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    root = tmp_path / "project"
+    root.mkdir()
+    member = _unique("mem")
+    session = session_partition_id(member, "ch_global_binds")
+    workspace_id = workspace_module.docker_workspace_id(
+        workspace_module.safe_partition_id(member), workspace_module.safe_partition_id(session)
+    )
+    key = (
+        workspace_module.safe_partition_id(member),
+        workspace_module.safe_partition_id(session),
+    )
+    old = workspace_module._DockerEntry(
+        key=key,
+        workspace=object(),  # type: ignore[arg-type]  # 这条用例只验证池的失效判定
+        settings=_settings(root, docker_image="img:1"),
+        root=str(root),
+        member_id=key[0],
+        session_id=key[1],
+        workspace_id=workspace_id,
+        container_name=f"as_ws_{workspace_id}",
+        last_used=0.0,
+        active=0,
+        image="img:1",
+        global_binds=(),
+    )
+    # 容器已经按「没有全局层」建好；此后人手工建了成员家目录。
+    Path(global_member_home(member)).mkdir(parents=True)
+    deleted: list[str] = []
+
+    async def fake_delete(name: str) -> None:
+        deleted.append(name)
+
+    async def absent(image_name: str) -> bool:
+        assert image_name == "img:1"
+        return False
+
+    monkeypatch.setattr(workspace_module, "_delete_container", fake_delete)
+    monkeypatch.setattr(workspace_module, "_image_present_locally", absent)
+    workspace_module.clear_docker_failure(key[0])
+    with workspace_module._pool_lock:
+        workspace_module._pool[key] = old
+    try:
+        with pytest.raises(DockerWorkspaceUnavailable):
+            _run(
+                assemble_workspace(
+                    _settings(root, docker_image="img:1", docker_image_consented=False),
+                    member_id=member,
+                    session_id=session,
+                    locale="zh-CN",
+                )
+            )
+    finally:
+        with workspace_module._pool_lock:
+            workspace_module._pool.pop(key, None)
+        workspace_module.clear_docker_failure(key[0])
+
+    assert deleted == [old.container_name], "bind 规格变化后旧容器必须被删掉，而不是被复用"
     assert key not in workspace_module._pool
 
 

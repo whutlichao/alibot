@@ -242,6 +242,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         "seam.approval_timeout": "审批等待超时（{seconds} 秒）：本轮失败",
+        # ─── 技能四层合并（#232 / ADR-0031 D4）────────────────────────────
+        "skill.layer.project-agent": "项目 Agent 级",
+        "skill.layer.project-channel": "项目频道级",
+        "skill.layer.global-member": "全局成员家目录",
+        "skill.layer.global-public": "全局公共技能库",
+        "skill.assembly.shadowed": ("技能「{name}」装配{winner}的版本，忽略{loser}的同名条目"),
         # ─── Docker 工作区（#150 / ADR-0021 §二） ─────────────────────────
         "workspace.docker-daemon": "Docker 不可用：{error}",
         "workspace.docker-dependency": "Docker 后端缺少依赖：{error}（请安装 aiodocker）",
@@ -279,6 +285,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_scope_invalid": "MCP 声明作用域只能是 channel 或 agent",
         "error.mcp_scope_unknown": "MCP 声明作用域不存在：{scope_id}",
         "error.mcp_server_not_found": "MCP 声明不存在：{server_id}",
+        "error.global_mcp_declaration_not_found": "该成员的全局 mcp.json 里没有这个声明：{name}",
         "error.mcp_server_conflict": "同一作用域内已存在同名 MCP 声明：{name}",
         "error.mcp_consent_local": "stdio MCP 在本机运行，不需要远端数据面确认",
         "error.skill_scope_invalid": "Skill 作用域只能是 channel 或 agent",
@@ -304,6 +311,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.skill_conflict": "同一作用域内已存在同名 Skill：{name}",
         "mcp.runtime.consent_required": "远端 MCP 尚未确认数据面告知，未连接：{name}",
         "mcp.runtime.connect_failed": "MCP 连接失败：{name}",
+        # 三层合并（#233）：落选条目只进 ``RoundOutcome.reason``，**不进** system prompt。
+        "mcp.assembly.shadowed": "MCP 声明「{name}」被更高优先级的{layer}同名声明覆盖，本轮未装配",
+        "mcp.layer.agent": "项目 Agent 级",
+        "mcp.layer.channel": "项目频道级",
+        "mcp.layer.global": "全局成员家目录",
         "error.approval_not_found": "审批请求不存在：{reply_id}",
         "error.approval_state_conflict": "审批请求已是 {state}，不能再提交决策",
         "error.approval_tool_call_unknown": "未知的待审批工具调用：{tool_call_id}",
@@ -699,6 +711,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         "seam.approval_timeout": "Approval wait timed out ({seconds} seconds); this round failed",
+        "skill.layer.project-agent": "project agent scope",
+        "skill.layer.project-channel": "project channel scope",
+        "skill.layer.global-member": "global member home",
+        "skill.layer.global-public": "global public skill library",
+        "skill.assembly.shadowed": (
+            "Skill {name}: the version from the {winner} is used; "
+            "the same-name entry from the {loser} is ignored"
+        ),
         "workspace.docker-daemon": "Docker is unavailable: {error}",
         "workspace.docker-dependency": "The Docker backend is missing a dependency: {error} (install aiodocker)",
         "workspace.docker-consent": (
@@ -741,6 +761,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_scope_invalid": "An MCP declaration scope must be channel or agent",
         "error.mcp_scope_unknown": "No such MCP declaration scope: {scope_id}",
         "error.mcp_server_not_found": "No such MCP declaration: {server_id}",
+        "error.global_mcp_declaration_not_found": (
+            "No such declaration in this member's global mcp.json: {name}"
+        ),
         "error.mcp_server_conflict": "An MCP declaration with that name already exists in this scope: {name}",
         "error.mcp_consent_local": "A stdio MCP runs locally and needs no remote data-flow acknowledgement",
         "error.skill_scope_invalid": "A skill scope must be channel or agent",
@@ -772,6 +795,13 @@ CATALOGS: dict[str, dict[str, str]] = {
             "The remote MCP has not been acknowledged for its data flow yet; not connected: {name}"
         ),
         "mcp.runtime.connect_failed": "MCP connection failed: {name}",
+        "mcp.assembly.shadowed": (
+            'MCP declaration "{name}" is shadowed by a same-name declaration in {layer}; '
+            "not assembled this round"
+        ),
+        "mcp.layer.agent": "the project agent scope",
+        "mcp.layer.channel": "the project channel scope",
+        "mcp.layer.global": "the global member home",
         "error.approval_not_found": "No such approval request: {reply_id}",
         "error.approval_state_conflict": "The approval request is already {state}; no further decisions are accepted",
         "error.approval_tool_call_unknown": "Unknown tool call awaiting approval: {tool_call_id}",
