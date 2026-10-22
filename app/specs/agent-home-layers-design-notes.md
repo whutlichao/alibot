@@ -455,13 +455,13 @@ Q7 与推荐不同（人定允许远端），设计按人定执行并在 ADR 里
 
 | 项 | 读数 |
 | --- | --- |
-| 设计提交 | `c9d5291`（`docs(adr): 全局层与项目层设计（ADR-0031）`） |
-| 改动 | 3 files changed, 661 insertions(+), 10 deletions(-)：`CONTEXT.md`、ADR-0031、本设计笔记 |
-| 源码 / 测试 / 迁移 / CI | 零改动；`SCHEMA_VERSION` 未 bump |
-| PR | **#227**（`https://github.com/whutlichao/alibot/pull/227`），base `main` |
+| 提交序列 | `c9d5291`（设计与 ADR）→ `e84ee58`（Answer 回填）→ `62a58f1`（Agent 词条对齐）→ `5010599`（边界表述收紧，内容定稿） |
+| 改动 | 内容定稿时 `git diff --stat origin/main...HEAD`：3 files changed, **672 insertions(+)**, **11 deletions(-)**（`CONTEXT.md`、ADR-0031、本设计笔记；不含本 Answer 回填本身） |
+| 源码 / 测试 / 迁移 / CI | 零改动；`SCHEMA_VERSION` 仍为 **23**，未 bump |
+| PR | **#227**（`https://github.com/whutlichao/alibot/pull/227`），base `main`，head `alibot-home-layout-design` |
 | PR 正文 | `pr` skill 体例；本地路径 `.scratch/agent-home-layers-pr-body.md`（该目录被 `.gitignore` 忽略，不入库） |
 | PR 正文要点 | Door = **two-way**；Blast Radius = **docs-only** |
 | 门禁 | 本票不跑源码门禁（票面明确不跑）；G-docs 结论见 §10.3 |
 
-开工时工作区为 clean；交付前复核 `git status`，确认分支 diff 只落在 ADR、设计笔记与 `CONTEXT.md`。
+开工时工作区为 clean；交付前 `git status --short` 为空，分支 diff 只落在 ADR、设计笔记与 `CONTEXT.md`。
 
