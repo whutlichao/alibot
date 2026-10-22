@@ -452,8 +452,15 @@ Q7 与推荐不同（人定允许远端），设计按人定执行并在 ADR 里
 
 ### 10.4 证据与读数
 
-- 改动文件清单与 `git diff --stat`：见本票提交与 PR 正文的 Evidence 段。
-- 本票不跑源码门禁（票面明确不跑）；`scripts/check.sh` 的 G-docs 不在脚本内，本票以本节的逐条自查
-  作为 G-docs 结论。
-- 工作区 `git status` 在开工时为 clean；交付前再核对一次，确认 diff 只落在 ADR、设计笔记与
-  `CONTEXT.md`。
+| 项 | 读数 |
+| --- | --- |
+| 设计提交 | `c9d5291`（`docs(adr): 全局层与项目层设计（ADR-0031）`） |
+| 改动 | 3 files changed, 661 insertions(+), 10 deletions(-)：`CONTEXT.md`、ADR-0031、本设计笔记 |
+| 源码 / 测试 / 迁移 / CI | 零改动；`SCHEMA_VERSION` 未 bump |
+| PR | **#227**（`https://github.com/whutlichao/alibot/pull/227`），base `main` |
+| PR 正文 | `pr` skill 体例；本地路径 `.scratch/agent-home-layers-pr-body.md`（该目录被 `.gitignore` 忽略，不入库） |
+| PR 正文要点 | Door = **two-way**；Blast Radius = **docs-only** |
+| 门禁 | 本票不跑源码门禁（票面明确不跑）；G-docs 结论见 §10.3 |
+
+开工时工作区为 clean；交付前复核 `git status`，确认分支 diff 只落在 ADR、设计笔记与 `CONTEXT.md`。
+
