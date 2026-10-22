@@ -75,8 +75,8 @@ D11 的 seam 总数 = 2 不变：① 是 Seam A 既有构造器上的新增注�
 | --- | --- |
 | 分支 | `agent-home-layers-tickets` |
 | 本票 diff 面 | 只新增 `app/specs/` 下三份 Markdown |
-| 提交 | 待创建后回填 |
-| PR | 待创建后回填（base `main`，body = `app/specs/agent-home-layers-tickets-pr-body.md`） |
+| 提交 | `c3cf4b6`（父提交 = `e5f0028`，即 `origin/main`） |
+| PR | **#238**（base `main`，body = `app/specs/agent-home-layers-tickets-pr-body.md`） |
 
 ## 7. 遗留
 

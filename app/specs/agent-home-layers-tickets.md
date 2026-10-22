@@ -152,6 +152,8 @@ gh api --method POST repos/whutlichao/alibot/issues/236/dependencies/blocked_by 
 | 原生依赖 | 5 条边（见 §1.2），读数 `0 / 0 / 1 / 1 / 1 / 1 / 1` |
 | 零源码改动 | `git diff origin/main -- app/alibot/ app/tests/ docs/adr/ CONTEXT.md` **为空** |
 | 本票 diff 面 | 只新增 `app/specs/` 下三份 Markdown（票图、Answer、PR 正文） |
+| 提交 | `c3cf4b6`（父提交 = `e5f0028`，即 `origin/main`；PR 号回填提交见 tracker #237） |
+| PR | **#238**（base `main`，body = `app/specs/agent-home-layers-tickets-pr-body.md`） |
 
 ---
 
