@@ -9,27 +9,33 @@ from __future__ import annotations
 from .db import (
     DEFAULT_DATA_DIR_NAME,
     DEFAULT_PORT,
+    LEGACY_DATA_DIR_NAME,
     OWNER_AVATAR_SLOT,
     OWNER_DISPLAY_NAME,
     OWNER_ID,
     Database,
+    DataDirResolution,
     DomainError,
     NotFound,
     SchemaVersionMismatch,
     default_data_dir,
     open_database,
+    resolve_data_dir,
 )
 
 __all__ = [
     "DEFAULT_DATA_DIR_NAME",
     "DEFAULT_PORT",
+    "LEGACY_DATA_DIR_NAME",
     "OWNER_AVATAR_SLOT",
     "OWNER_DISPLAY_NAME",
     "OWNER_ID",
+    "DataDirResolution",
     "Database",
     "DomainError",
     "NotFound",
     "SchemaVersionMismatch",
     "default_data_dir",
     "open_database",
+    "resolve_data_dir",
 ]

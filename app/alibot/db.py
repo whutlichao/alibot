@@ -27,6 +27,7 @@ import threading
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -135,7 +136,11 @@ DEFAULT_MESSAGE_DENSITY = "comfortable"
 DEFAULT_THEME = "system"
 
 DEFAULT_PORT = 8788
-DEFAULT_DATA_DIR_NAME = "Alibot"
+# 数据目录与全局层共享隐藏根 ``~/.alibot/``（ADR-0031）：新默认是它下面的 ``data/``。
+# 旧默认 ``~/Alibot`` 只做**兼容读取**，搬迁永远是人的显式动作。
+DATA_DIR_ROOT_NAME = ".alibot"
+DEFAULT_DATA_DIR_NAME = "data"
+LEGACY_DATA_DIR_NAME = "Alibot"
 DATA_DIR_ENV = "ALIBOT_DATA_DIR"
 DATABASE_FILE_NAME = "alibot.db"
 
@@ -1197,12 +1202,89 @@ def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def default_data_dir() -> Path:
-    """默认数据目录：``~/Alibot``（可见、可直接复制），可用环境变量覆盖。"""
+DataDirSource = Literal["explicit", "new-default", "legacy-compat", "created"]
+
+# 启动输出里给「这个数据目录是从哪来的」用的可读标签（规格 D2 / D12）。
+DATA_DIR_SOURCE_LABELS: dict[DataDirSource, str] = {
+    "explicit": "显式覆盖",
+    "new-default": "新默认",
+    "legacy-compat": "旧位置兼容",
+    "created": "新建",
+}
+
+
+@dataclass(frozen=True)
+class DataDirResolution:
+    """一次数据目录解析的结果：实际路径、来源，以及可选的可读提示。
+
+    **解析本身是只读的**：它只做 ``exists()`` 判定，不创建、不删除、不搬移任何目录。创建只发生在
+    进程启动路径的「新建」分支（见 ``__main__.main``），且只会建新默认路径及其 ``~/.alibot`` 父目录。
+    """
+
+    path: Path
+    source: DataDirSource
+    notice: str | None = None
+
+    @property
+    def source_label(self) -> str:
+        return DATA_DIR_SOURCE_LABELS[self.source]
+
+
+def new_default_data_dir() -> Path:
+    """新默认数据目录：``~/.alibot/data/``（ADR-0031）。"""
+    return Path.home() / DATA_DIR_ROOT_NAME / DEFAULT_DATA_DIR_NAME
+
+
+def legacy_data_dir() -> Path:
+    """旧默认数据目录：``~/Alibot``（只做兼容读取）。"""
+    return Path.home() / LEGACY_DATA_DIR_NAME
+
+
+def resolve_data_dir(explicit: Path | str | None = None) -> DataDirResolution:
+    """按固定优先级解析数据目录（规格 D2）——结果是确定值，不依赖时间戳或遍历顺序。
+
+    1. ``explicit``（``--data-dir``）或 ``ALIBOT_DATA_DIR``：使用显式值，既有语义不变；
+    2. 新默认 ``~/.alibot/data/`` 已存在：使用新默认；
+    3. 旧 ``~/Alibot`` 已存在：继续用旧位置，并给一条可读兼容提示；
+    4. 两者都不存在：新建 ``~/.alibot/data/``（创建由启动路径执行）。
+
+    新旧同时存在时**确定地选新默认**并说明旧位置被忽略。本函数**不删除、不搬移、不合并**两份数据。
+    """
+    if explicit is not None and str(explicit) != "":
+        return DataDirResolution(Path(explicit).expanduser(), "explicit")
+
     override = os.environ.get(DATA_DIR_ENV)
     if override:
-        return Path(override).expanduser()
-    return Path.home() / DEFAULT_DATA_DIR_NAME
+        return DataDirResolution(Path(override).expanduser(), "explicit")
+
+    new_default = new_default_data_dir()
+    legacy = legacy_data_dir()
+    if new_default.exists():
+        notice = None
+        if legacy.exists():
+            notice = (
+                f"提示：检测到旧数据目录 {legacy}；由于新默认 {new_default} 已存在，已忽略旧位置。"
+                "两份数据均未删除、未搬移、未合并。"
+            )
+        return DataDirResolution(new_default, "new-default", notice)
+    if legacy.exists():
+        return DataDirResolution(
+            legacy,
+            "legacy-compat",
+            (
+                f"提示：新默认 {new_default} 不存在，继续使用旧数据目录 {legacy} 做兼容读取；"
+                "数据未搬移。迁移是显式动作：停应用 → 整目录复制 → 校验 → 指向新位置。"
+            ),
+        )
+    return DataDirResolution(new_default, "created")
+
+
+def default_data_dir() -> Path:
+    """当前默认数据目录（解析后的实际路径），可用环境变量覆盖。
+
+    保留这个窄接口供既有调用方使用；需要来源与提示时用 :func:`resolve_data_dir`。
+    """
+    return resolve_data_dir().path
 
 
 def new_id(prefix: str) -> str:
