@@ -648,6 +648,7 @@ class AgentScopeAgentSeam:
         mcp_of: Callable[[str, str], Any] | None = None,
         skills_of: Callable[[str, str], Any] | None = None,
         web_of: Callable[[str, str], Any] | None = None,
+        global_home: str | os.PathLike[str] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
         usage_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -674,6 +675,11 @@ class AgentScopeAgentSeam:
         # 字节在频道项目根的 ``.alibot/skills/`` 下，装配层再核一次 hash。不注入时这一轮不挂
         # Skill——未配置技能的工作区行为逐字不变。
         self._skills_of = skills_of
+        # 全局层读路径（#230 / ADR-0031 Seam A）：生产是 ``workspace.global_home_root()``，
+        # 测试传临时全局根。**默认 None** = 未接线，这一轮的三段规则里只剩
+        # ``agent_config.system_prompt``，行为与 #230 之前逐字相同。全局层只读、不建目录、
+        # 不进入文件工具根。
+        self._global_home = str(global_home) if global_home is not None else None
         # 联网配置读路径（#186）：生产是 ``Database.web_settings_for_target``（``web_access`` /
         # 权限档 / 已确认的 web provider）。**不挂在 workspace 上面**——``web_access`` 是独立配
         # 置位，频道没配项目根时它也生效（ADR-0026 §二）。不注入时这一轮不挂联网工具。
@@ -870,6 +876,21 @@ class AgentScopeAgentSeam:
 
         container_root = DOCKER_WORKDIR if settings.is_docker else None
         return load_skills(rows, root=settings.root, container_root=container_root)
+
+    def _rule_layers(self, member_id: str, project_root: str | None) -> tuple[str | None, str | None]:
+        """本轮的两段文件规则：``(全局基座, 项目补充)``（ADR-0031 §二）。
+
+        未注入全局根时两段都缺席——不读盘、不建目录，行为与 #230 之前逐字相同。全局层根
+        固定由装配点注入（生产 = ``workspace.global_home_root()``），不随数据目录移动。
+        """
+        if self._global_home is None:
+            return None, None
+        from .workspace import read_global_rules, read_project_rules
+
+        return (
+            read_global_rules(self._global_home, member_id),
+            read_project_rules(project_root, member_id),
+        )
 
     def _team_run_for(self, target_id: str, member_id: str) -> str | None:
         if self._team_run_of is None:
@@ -1114,6 +1135,17 @@ class AgentScopeAgentSeam:
         # 联网工具只在这一轮解析**一次**：``_system_prompt`` 要不要自陈它们的风险，与工具集里
         # 真的有没有它们，必须是同一个事实。
         web_tools = self._web_tools(target_id, member_id)
+        # 规则三段（#230）：项目补充只在有项目根的轮次存在；私信没有项目根，因此只有
+        # 「全局基座 → 配置」两段。未注入全局根时 `_rule_layers` 返回 (None, None)。
+        project_root = None
+        if self._global_home is not None:
+            try:
+                rule_settings = self._workspace_settings(target_id, member_id)
+            except Exception:  # 配置读不出来等价于没有项目补充；不拖垮一轮
+                _log.debug("workspace settings lookup failed for rules", exc_info=True)
+                rule_settings = None
+            project_root = rule_settings.root if rule_settings is not None else None
+        global_base, project_supplement = self._rule_layers(member_id, project_root)
         system_prompt = _system_prompt(
             agent,
             mentioned=mentioned,
@@ -1122,6 +1154,8 @@ class AgentScopeAgentSeam:
             direct_message=direct_message,
             structured_silence=supports_tool_calling(provider),
             with_web=bool(web_tools) and supports_tool_calling(provider),
+            global_base=global_base,
+            project_supplement=project_supplement,
         ) + self._runtime_prompt(target_id, messages)
         task_actions: list[AgentTaskAction] = []
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
@@ -1445,15 +1479,20 @@ class AgentScopeAgentSeam:
         from .team import build_team_pipeline, member_internal_name
 
         provider = provider_of(str(agent.get("model_id") or ""))
-        system_prompt = _system_prompt(
-            agent,
-            mentioned=mentioned,
-            task_context=task_context,
-            signal=signal,
-            direct_message=direct_message,
-            structured_silence=supports_tool_calling(provider),
-            leader=True,
-        )
+
+        def _leader_prompt(global_base: str | None = None, project_supplement: str | None = None) -> str:
+            return _system_prompt(
+                agent,
+                mentioned=mentioned,
+                task_context=task_context,
+                signal=signal,
+                direct_message=direct_message,
+                structured_silence=supports_tool_calling(provider),
+                leader=True,
+                global_base=global_base,
+                project_supplement=project_supplement,
+            )
+
         task_actions: list[AgentTaskAction] = []
         silence_declarations: list[None] = []
         member_id = str(agent["id"])
@@ -1512,6 +1551,8 @@ class AgentScopeAgentSeam:
 
             prepared_options: dict[str, dict[str, Any]] = {}
             members_by_id = {str(member["id"]): member for member in [agent, *team.members]}
+            # 每个成员这一轮的项目根（`_permission_for` 的读数）：项目补充规则要从它起算。
+            member_project_roots: dict[str, str | None] = {}
 
             async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
                 settings = self._workspace_settings(target_id, member_id_value)
@@ -1537,6 +1578,7 @@ class AgentScopeAgentSeam:
                     if getattr(mount, "allow_local_shell", False) and mode != "read-only":
                         tools.append(local_shell_tool(mount.root))
                 context, root = _permission_for(member_id_value)
+                member_project_roots[member_id_value] = root
                 options, store, memory_tools = self._prepare_runtime_options(
                     members_by_id[member_id_value], target_id, context, root, mount
                 )
@@ -1590,9 +1632,12 @@ class AgentScopeAgentSeam:
                     skills=await _skills_for_member(member_id),
                     with_plan=plan is not None,
                 )
+                leader_global, leader_project = self._rule_layers(
+                    member_id, member_project_roots.get(member_id)
+                )
                 leader_agent = _build_agent(
                     agent,
-                    system_prompt,
+                    _leader_prompt(leader_global, leader_project),
                     toolkit=leader_toolkit,
                     stream=emit is not None,
                 )
@@ -1604,6 +1649,9 @@ class AgentScopeAgentSeam:
                     member_skills = await _skills_for_member(member_id_value)
                     # 联网配置按**该成员自己**的 member id 读（Agent 级覆盖），不拿队长的。
                     member_web_tools = self._web_tools(target_id, member_id_value)
+                    member_global, member_project = self._rule_layers(
+                        member_id_value, member_project_roots.get(member_id_value)
+                    )
                     member_agents.append(
                         (
                             member,
@@ -1614,6 +1662,8 @@ class AgentScopeAgentSeam:
                                     member,
                                     with_web=bool(member_web_tools)
                                     and supports_tool_calling(member_provider),
+                                    global_base=member_global,
+                                    project_supplement=member_project,
                                 ),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
                                 # 配置了项目根时挂受限文件工具；Plan 轮次则始终有自己的四工具。
@@ -1952,12 +2002,26 @@ def _web_prompt_note() -> str:
     )
 
 
-def _team_member_prompt(member: Mapping[str, Any], *, with_web: bool = False) -> str:
-    """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。"""
+def _team_member_prompt(
+    member: Mapping[str, Any],
+    *,
+    with_web: bool = False,
+    global_base: str | None = None,
+    project_supplement: str | None = None,
+) -> str:
+    """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。
+
+    规则三段与单 Agent 路径同一顺序与同一标签（#230）：全局基座 → 配置 → 项目补充；
+    其余身份句与 team 说明仍在配置段之后。
+    """
     parts: list[str] = []
+    if global_base:
+        parts.append(f"{_GLOBAL_RULE_LABEL}\n{global_base}")
     base = str(member.get("system_prompt") or "").strip()
     if base:
         parts.append(base)
+    if project_supplement:
+        parts.append(f"{_PROJECT_RULE_LABEL}\n{project_supplement}")
     role = str(member.get("role") or "").strip()
     if role:
         parts.append(f"你的角色：{role}")
@@ -2045,6 +2109,12 @@ _DIRECT_MESSAGE_RUBRIC = (
 )
 
 
+#: 规则三段的**可读段落标签**（ADR-0031 §二）：从系统提示就能看出哪一段来自全局层、
+#: 哪一段来自项目层。只在对应段真的存在时出现——不写空标题、不写占位。
+_GLOBAL_RULE_LABEL = "全局基座："
+_PROJECT_RULE_LABEL = "项目补充："
+
+
 def _system_prompt(
     agent: dict[str, Any],
     *,
@@ -2055,6 +2125,8 @@ def _system_prompt(
     structured_silence: bool = False,
     leader: bool = False,
     with_web: bool = False,
+    global_base: str | None = None,
+    project_supplement: str | None = None,
 ) -> str:
     """把成员配置里的系统提示 + 本轮的回应 rubric + 任务上下文合成一次调用的 system prompt。
 
@@ -2085,12 +2157,21 @@ def _system_prompt(
     ``with_web``（#186）只在**这一轮真的挂了联网工具**时为真，补一段边界句（:func:`_web_prompt_note`）；
     它与 ``structured_silence`` 同一形状：提示里提到某个工具，工具就真的在手上。默认 False，因此未
     配置 ``web_access`` 的频道与 #186 之前逐字相同。
+
+    ``global_base`` / ``project_supplement``（#230 / ADR-0031）是规则三段里的两段**文件规则**：
+    全局基座排在配置段之前，项目补充排在配置段之后（「只在 ``base`` 前后插入两段」）。两段都是
+    原样拼接、不解析、不裁剪；``None`` 表示该段缺席（文件缺失 / 不可读 / 非 UTF-8 / 无项目根），
+    此时不写标签。默认都 None，未接线时输出与 #230 之前逐字相同。
     """
     base = str(agent.get("system_prompt") or "").strip()
     role = str(agent.get("role") or "").strip()
     parts = []
+    if global_base:
+        parts.append(f"{_GLOBAL_RULE_LABEL}\n{global_base}")
     if base:
         parts.append(base)
+    if project_supplement:
+        parts.append(f"{_PROJECT_RULE_LABEL}\n{project_supplement}")
     if role:
         parts.append(f"你的角色：{role}")
     if leader:

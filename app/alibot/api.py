@@ -119,6 +119,7 @@ from .sop import SOPRunner
 from .workspace import (
     clear_docker_failure,
     docker_unavailable_reason,
+    global_home_root,
     shutdown_docker_workspaces,
     start_docker_reaper,
     sweep_stale_docker_workspaces,
@@ -713,6 +714,9 @@ def create_app(
             # 联网配置（#186 / ADR-0026 §二）：``web_access`` 未配置时不挂任何联网工具。这条读路径
             # **不经过** workspace——两个配置位同级但不同开关（频道没配项目根时联网仍可生效）。
             web_of=database.web_settings_for_target,
+            # 全局层（#230 / ADR-0031 Seam A）：规则基座 / 项目补充的只读读路径。全局根固定为
+            # ``~/.alibot``，只看 HOME，不随 ``--data-dir`` / ``ALIBOT_DATA_DIR`` 移动。
+            global_home=global_home_root(),
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
