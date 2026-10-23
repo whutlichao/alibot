@@ -17,6 +17,7 @@
  * 8. 新增词条在两份词条表里都取到值；
  * 9. 频道头的**协作模式 pill**：不必打开弹窗就看出「自主」/「队长制 · 队长名」，
  *    私信下隐藏，读不到配置时隐藏，保存后按响应立刻更新，切频道按新频道读数重铺。
+ * 10. 重铺频道设置正文（档位选择 / 保存 / 资源读回）后，`#channelConfigOverlay` 的滚动位置保持不变。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -36,6 +37,7 @@ class FakeNode {
     this.listeners = new Map();
     this.hidden = false;
     this.disabled = false;
+    this.scrollTop = 0;
     this.value = "";
     this.id = "";
     this.type = "";
@@ -359,6 +361,18 @@ function createHarness(options) {
   api.state.online = true;
   api.state.ready = true;
   api.bindEvents();
+
+  // Chromium 实测行为（ego-browser 探针）：重铺正文移除最后一个（持焦的）子节点时，
+  // 滚动容器会被同步拉回顶部。这不是应用行为，替身必须照实模拟，否则「重铺丢滚动位置」
+  // 在用例里不可见。
+  const overlayNode = elementFor("#channelConfigOverlay");
+  const bodyNode = elementFor("#channelConfigBody");
+  const baseRemoveChild = bodyNode.removeChild.bind(bodyNode);
+  bodyNode.removeChild = (child) => {
+    const removed = baseRemoveChild(child);
+    if (bodyNode.children.length === 0) overlayNode.scrollTop = 0;
+    return removed;
+  };
 
   const harness = {
     api,
@@ -1224,4 +1238,37 @@ test("联网区块：切换默认 provider 与清除凭据", async () => {
   const deleted = harness.calls.find((call) => call.method === "DELETE");
   assert.equal(deleted.url, "/api/web-providers/tavily/credential");
   assert.equal(textOf(harness.body, "web-provider-status-tavily"), "未配置");
+});
+
+/* ─── 11. 重铺正文保持滚动位置 ──────────────────────────────────────────── */
+/* 真实指针点击档位按钮后按钮持有焦点；重铺把持焦节点移除的 Chromium 行为由 harness 的
+   `removeChild` 模拟（见上方注释）。该保持对**所有**重铺路径成立，因此四组档位卡各点一次。 */
+test("选择任一组档位卡后，弹窗保持重铺前的 scrollTop", async () => {
+  const harness = createHarness();
+  harness.loadChannel();
+  await harness.open();
+
+  const cases = [
+    { label: "协作模式", key: "configMode", from: "autonomous", to: "team" },
+    { label: "默认后端", key: "configBackend", from: "local", to: "docker" },
+    { label: "默认权限档", key: "configPermission", from: "ask-writes", to: "read-only" },
+    { label: "联网", key: "configWebAccess", from: "search", to: "off" },
+  ];
+
+  for (const item of cases) {
+    harness.overlay.scrollTop = 420;
+    assert.ok(byDataset(harness.body, item.key, item.from), item.label + " 的旧档位应当存在");
+    const target = byDataset(harness.body, item.key, item.to);
+    assert.ok(target, item.label + " 的新档位应当存在");
+
+    await harness.click(target);
+
+    assert.equal(harness.overlay.scrollTop, 420, item.label + "：重铺后保持重铺前的 scrollTop");
+    const on = byDataset(harness.body, item.key, item.to);
+    const off = byDataset(harness.body, item.key, item.from);
+    assert.equal(pressed(on), "true", item.label + "：新档位 aria-pressed");
+    assert.equal(on.classList.contains("is-on"), true, item.label + "：新档位 is-on");
+    assert.equal(pressed(off), "false", item.label + "：同组旧档位 aria-pressed");
+    assert.equal(off.classList.contains("is-on"), false, item.label + "：同组旧档位 is-on");
+  }
 });

@@ -6548,8 +6548,19 @@ function channelConfigLeaderOptions(view) {
   return options;
 }
 
-/** 弹窗的唯一渲染落点：读数与写控件都从这里出，于是两者不会各说一份。 */
+/** 弹窗的唯一渲染落点：读数与写控件都从这里出，于是两者不会各说一份。
+    重铺正文会移除持焦的档位按钮，Chromium 会因此把滚动容器同步拉回顶部（ego 实测，不是
+    应用里的显式赋值）；所以铺前记下 `#channelConfigOverlay.scrollTop`、铺后写回。新内容更短时
+    由浏览器按上限自然截断；overlay 不存在时安全跳过。 */
 function renderChannelConfigModal() {
+  const overlay = $('#channelConfigOverlay');
+  const scrollTop = overlay ? overlay.scrollTop : 0;
+  renderChannelConfigModalContent();
+  if (overlay) overlay.scrollTop = scrollTop;
+}
+
+/** 正文重建；滚动位置由 `renderChannelConfigModal()` 在铺前铺后统一保持。 */
+function renderChannelConfigModalContent() {
   const view = state.channelConfig;
   const body = $('#channelConfigBody');
   if (!body) return;
@@ -7486,12 +7497,6 @@ async function submitChannelConfig() {
   if (!channelId || !view.config) return;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
-  const renderWithScrollPreserved = () => {
-    const overlay = $('#channelConfigOverlay');
-    const scrollTop = overlay.scrollTop;
-    renderChannelConfigModal();
-    overlay.scrollTop = scrollTop;
-  };
   const root = String(view.draft.workspaceRoot || '').trim();
   const body = {
     mode: view.draft.mode,
@@ -7509,7 +7514,7 @@ async function submitChannelConfig() {
     view.draft = channelConfigDraftFrom(payload.config);
     view.error = '';
     view.loading = false;
-    renderWithScrollPreserved();
+    renderChannelConfigModal();
     toast(t('channelConfig.saved'));
   } catch (err) {
     if (state.channelConfig.channelId !== channelId) return;
@@ -7517,7 +7522,7 @@ async function submitChannelConfig() {
       box.textContent = t('channelConfig.saveFailed', { reason: err.message });
       box.hidden = false;
     }
-    renderWithScrollPreserved();
+    renderChannelConfigModal();
   }
 }
 
