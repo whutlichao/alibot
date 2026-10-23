@@ -152,6 +152,45 @@ PROVIDER_CREDENTIAL_TYPE: dict[str, str] = {
     "ollama": "ollama_credential",
 }
 
+# provider → 这一轮要构造的模型类与 MultiAgentFormatter（#205）。
+#
+# 模型类不能只靠 ``credential_class.get_chat_model_class()``：``openai`` 与
+# ``openai-response`` **共用** ``openai_credential``，但前者是 Chat Completions、后者是
+# Responses API，工厂只返回前者。凭据解析仍只有一份（同一个 credential 类 + 同一个
+# ``read_api_key``），这里只把「用这份凭据建哪个模型」显式列出来。
+#
+# formatter 必须逐 provider 覆盖：默认 ChatFormatter 会丢掉 ``Msg.name``，而本仓的多作者轮次
+# （历史里他人的 ``UserMsg(name=…)`` 与自己的 assistant 历史）靠名字区分发言者。11 家模型
+# 构造函数的 ``formatter=`` 参数已按 2.0.10 wheel 实测（见
+# ``app/tests/test_agentscope_model_alignment.py``）。
+PROVIDER_MODEL_CLASS: dict[str, str] = {
+    "dashscope": "DashScopeChatModel",
+    "openai": "OpenAIChatModel",
+    "openai-response": "OpenAIResponseModel",
+    "anthropic": "AnthropicChatModel",
+    "gemini": "GeminiChatModel",
+    "deepseek": "DeepSeekChatModel",
+    "moonshot": "MoonshotChatModel",
+    "minimax": "MiniMaxChatModel",
+    "volcengine": "VolcengineChatModel",
+    "xai": "XAIChatModel",
+    "ollama": "OllamaChatModel",
+}
+
+PROVIDER_FORMATTER_CLASS: dict[str, str] = {
+    "dashscope": "DashScopeMultiAgentFormatter",
+    "openai": "OpenAIMultiAgentFormatter",
+    "openai-response": "OpenAIResponseMultiAgentFormatter",
+    "anthropic": "AnthropicMultiAgentFormatter",
+    "gemini": "GeminiMultiAgentFormatter",
+    "deepseek": "DeepSeekMultiAgentFormatter",
+    "moonshot": "MoonshotMultiAgentFormatter",
+    "minimax": "MiniMaxMultiAgentFormatter",
+    "volcengine": "VolcengineMultiAgentFormatter",
+    "xai": "XAIMultiAgentFormatter",
+    "ollama": "OllamaMultiAgentFormatter",
+}
+
 PROVIDERS = tuple(PROVIDER_KEY_ENV)
 
 
@@ -1145,14 +1184,26 @@ class AgentScopeAgentSeam:
         ``stream`` 只在有事件观察者（``emit``）时为真：没有观察者时保持既有的非流式调用，
         provider 请求形状与 #140 之前逐字相同；有观察者时打开流式，框架才会产出
         ``TextBlockDelta`` / ``ToolCall*`` 这类增量事件。
+
+        模型类与 formatter 按 provider 显式映射（``PROVIDER_MODEL_CLASS`` /
+        ``PROVIDER_FORMATTER_CLASS``）：``openai-response`` 建 Responses API 模型，
+        formatter 则保证多作者轮次的名字出现在送进模型的载荷里。
         """
         from agentscope import credential as cred
+        from agentscope import formatter as formatters
+        from agentscope import model as models
+
+        formatter = getattr(formatters, PROVIDER_FORMATTER_CLASS[provider])()
+        model_class = getattr(models, PROVIDER_MODEL_CLASS[provider])
 
         if provider == "ollama":
             ollama = cred.OllamaCredential(host=os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST))
-            from agentscope.model import OllamaChatModel
-
-            return OllamaChatModel(credential=ollama, model=model_name, stream=stream)
+            return model_class(
+                credential=ollama,
+                model=model_name,
+                stream=stream,
+                formatter=formatter,
+            )
 
         api_key = read_api_key(provider, self._environ, locale=self._locale())
         credential_type = PROVIDER_CREDENTIAL_TYPE[provider]
@@ -1168,12 +1219,12 @@ class AgentScopeAgentSeam:
         # 用 model_validate 而不是派生专属构造参数：providers 的凭证形状不一致
         # （``api_key`` / ``host`` / ``api_host``），model_validate 是框架自己的反序列化入口。
         credential = credential_class.model_validate({"api_key": api_key} if api_key else {})
-        chat_model_class = credential_class.get_chat_model_class()
-        return chat_model_class(
+        return model_class(
             credential=credential,
             model=model_name,
-            parameters=chat_model_class.Parameters(),
+            parameters=model_class.Parameters(),
             stream=stream,
+            formatter=formatter,
         )
 
     # ─── SOP 参与者（#147）：按 member id 装配一个可被 ``SOPStep`` 驱动的 Agent ──
@@ -1390,6 +1441,9 @@ class AgentScopeAgentSeam:
                 ):
                     workspace_tools.append(local_shell_tool(mount.root))
                 workspace_tools.extend(memory_tools)
+                # read-only（EXPLORE）轮次不注入 Plan 四工具，也不开 Plan run：四工具在
+                # EXPLORE 下必然被拒，模型只会看到一份用不了的清单（#205）。
+                round_plan = _round_plan(plan, permission_mode)
                 toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
@@ -1399,11 +1453,11 @@ class AgentScopeAgentSeam:
                     workspace_tools=workspace_tools or None,
                     web_tools=web_tools,
                     skills=self._skills_for(target_id, member_id, settings, assembly_notes),
-                    with_plan=plan is not None,
+                    with_plan=round_plan is not None,
                 )
                 if toolkit is not None:
                     agent_options["toolkit"] = toolkit
-                instance = _agent_instance(agent_options, plan=plan, member_id=member_id)
+                instance = _agent_instance(agent_options, plan=round_plan, member_id=member_id)
                 # 一轮的一条 Msg：把窗口内历史（或续跑完整历史）合成输入，回复累积成恰好一条 Msg。
                 # UserMsg 是 2.x 建用户消息的入口（它自己把文本包成 TextBlock）。
                 # 自动续跑轮（ADR-0027）会把**整个任务线程**交进来：自己的历史回复必须按
@@ -1687,7 +1741,7 @@ class AgentScopeAgentSeam:
             control = RuntimeTurn(asyncio.get_running_loop(), asyncio.current_task())
             agents_by_id: dict[str, Any] = {}
 
-            def _permission_for(member_id_value: str) -> tuple[Any, str | None]:
+            def _permission_for(member_id_value: str) -> tuple[Any, str | None, str]:
                 settings = self._workspace_settings(target_id, member_id_value)
                 permission_settings = self._permission_settings(target_id, member_id_value)
                 mode = str(
@@ -1705,7 +1759,11 @@ class AgentScopeAgentSeam:
                     ),
                     root=str(root) if root else None,
                 )
-                return context, str(root) if root else None
+                return context, str(root) if root else None, mode
+
+            def _plan_for(member_id_value: str) -> PlanSession | None:
+                """read-only 成员轮次不注入 Plan 四工具、也不开 Plan run（#205）。"""
+                return _round_plan(plan, _permission_for(member_id_value)[2])
 
             prepared_options: dict[str, dict[str, Any]] = {}
             members_by_id = {str(member["id"]): member for member in [agent, *team.members]}
@@ -1732,14 +1790,9 @@ class AgentScopeAgentSeam:
                     )
                     mcp_assemblies.append(assembly)
                     tools.extend(assembly.tools)
-                    permission_settings = self._permission_settings(target_id, member_id_value)
-                    mode = str(
-                        (permission_settings or {}).get("mode")
-                        or (settings.permission_mode if settings is not None else "ask-writes")
-                    )
-                    if getattr(mount, "allow_local_shell", False) and mode != "read-only":
-                        tools.append(local_shell_tool(mount.root))
-                context, root = _permission_for(member_id_value)
+                context, root, mode = _permission_for(member_id_value)
+                if mount is not None and getattr(mount, "allow_local_shell", False) and mode != "read-only":
+                    tools.append(local_shell_tool(mount.root))
                 member_project_roots[member_id_value] = root
                 options, store, memory_tools = self._prepare_runtime_options(
                     members_by_id[member_id_value], target_id, context, root, mount, self._global_home
@@ -1760,6 +1813,7 @@ class AgentScopeAgentSeam:
                 member: dict[str, Any],
                 prompt: str,
                 *,
+                round_plan: PlanSession | None,
                 toolkit: Any = None,
                 stream: bool = False,
             ) -> Any:
@@ -1777,12 +1831,14 @@ class AgentScopeAgentSeam:
                 }
                 if toolkit is not None:
                     options["toolkit"] = toolkit
-                instance = _agent_instance(options, plan=plan, member_id=str(member["id"]))
+                instance = _agent_instance(options, plan=round_plan, member_id=str(member["id"]))
                 agents_by_id[str(member["id"])] = instance
                 return instance
 
             try:
                 leader_web_tools = self._web_tools(target_id, member_id)
+                # 队长与成员各自按**自己这一轮生效的权限档**决定 Plan 工具面（#205）。
+                leader_plan = _plan_for(member_id)
                 leader_toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
@@ -1792,7 +1848,7 @@ class AgentScopeAgentSeam:
                     workspace_tools=await _workspace_tools_for(member_id),
                     web_tools=leader_web_tools,
                     skills=await _skills_for_member(member_id),
-                    with_plan=plan is not None,
+                    with_plan=leader_plan is not None,
                 )
                 leader_global, leader_project = self._rule_layers(
                     member_id, member_project_roots.get(member_id)
@@ -1800,6 +1856,7 @@ class AgentScopeAgentSeam:
                 leader_agent = _build_agent(
                     agent,
                     _leader_prompt(leader_global, leader_project),
+                    round_plan=leader_plan,
                     toolkit=leader_toolkit,
                     stream=emit is not None,
                 )
@@ -1807,6 +1864,7 @@ class AgentScopeAgentSeam:
                 for member in team.members:
                     member_id_value = str(member["id"])
                     member_provider = provider_of(str(member.get("model_id") or ""))
+                    member_plan = _plan_for(member_id_value)
                     workspace_tools = await _workspace_tools_for(member_id_value)
                     member_skills = await _skills_for_member(member_id_value)
                     # 联网配置按**该成员自己**的 member id 读（Agent 级覆盖），不拿队长的。
@@ -1828,7 +1886,8 @@ class AgentScopeAgentSeam:
                                     project_supplement=member_project,
                                 ),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
-                                # 配置了项目根时挂受限文件工具；Plan 轮次则始终有自己的四工具。
+                                # 配置了项目根时挂受限文件工具；非 read-only 的 Plan 轮次才有四工具。
+                                round_plan=member_plan,
                                 toolkit=(
                                     _round_toolkit(
                                         member_provider,
@@ -1839,12 +1898,12 @@ class AgentScopeAgentSeam:
                                         workspace_tools=workspace_tools,
                                         web_tools=member_web_tools,
                                         skills=member_skills,
-                                        with_plan=plan is not None,
+                                        with_plan=member_plan is not None,
                                     )
                                     if workspace_tools
                                     or member_skills
                                     or member_web_tools
-                                    or plan is not None
+                                    or member_plan is not None
                                     else None
                                 ),
                             ),
@@ -2436,6 +2495,18 @@ def _system_prompt(
                 f"{option_names if option_names else '暂无其他 Agent'}"
             )
     return "\n\n".join(parts)
+
+
+def _round_plan(plan: PlanSession | None, permission_mode: str) -> PlanSession | None:
+    """这一轮生效的 Plan 会话：read-only（EXPLORE）轮次为 ``None``。
+
+    判据只看**本轮生效的权限档**（``permission_settings["mode"]`` 优先，其次
+    ``WorkspaceSettings.permission_mode``，默认 ``ask-writes``），由调用方算好传入。
+    Plan 四工具在 EXPLORE 下必然被拒，因此这类轮次既不给工具面、也不开 Plan run（#205）。
+    """
+    if plan is None or permission_mode == "read-only":
+        return None
+    return plan
 
 
 def _agent_instance(options: dict[str, Any], *, plan: PlanSession | None, member_id: str) -> Any:
