@@ -56,18 +56,14 @@ def _global_memory_parts(global_home: str, member_id: str) -> tuple[str, ...]:
     return tuple(Path(member_home).relative_to(Path(global_home)).parts)
 
 
-def _global_memory_path(global_home: str, member_id: str) -> str:
-    """全局 ``MEMORY.md`` 的候选路径（家目录根下）。"""
-    return os.path.join(global_home, *_global_memory_parts(global_home, member_id), MEMORY_FILE)
-
-
 def _read_global_memory(global_home: str, member_id: str, *, log: bool = True) -> str | None:
     """只读读取全局 ``MEMORY.md``；任何降级返回 ``None`` 并记一条可读日志。
 
     ``log=False`` 供中间件在同一轮内只记一次：降级按「这一段缺席」处理，不改变本轮结论。
     """
-    candidate = _global_memory_path(global_home, member_id)
-    real = resolve_global_read_path(global_home, *_global_memory_parts(global_home, member_id), MEMORY_FILE)
+    parts = _global_memory_parts(global_home, member_id)
+    candidate = os.path.join(global_home, *parts, MEMORY_FILE)
+    real = resolve_global_read_path(global_home, *parts, MEMORY_FILE)
     if real is None:
         if log:
             _log.info("global memory file is absent or unreadable: %s", candidate)

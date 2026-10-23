@@ -20,6 +20,19 @@ CONTEXT_WINDOW_MESSAGES = 40
 _log = logging.getLogger(__name__)
 
 
+def session_relative_dir(session_id: str, *, in_project: bool) -> Path:
+    """会话分区相对某个根的路径（ADR-0032 §四的**唯一**公式）。
+
+    有项目根 ``.alibot/sessions/<session_id>``；无项目根 ``sessions/<session_id>``（不再套
+    ``.alibot``）。:class:`SessionOffloader` 与 :class:`SessionState` 都从这里派生，
+    避免两处各写一遍同一路径。
+    """
+    from .workspace import safe_partition_id
+
+    base = Path(".alibot/sessions") if in_project else Path("sessions")
+    return base / safe_partition_id(session_id)
+
+
 @dataclass(eq=False)
 class RuntimeTurn:
     """只在一轮的 loop 存活；HTTP 线程通过 call_soon_threadsafe 请求取消。"""
@@ -92,16 +105,10 @@ class SessionOffloader:
         docker: bool = False,
         in_project: bool = True,
     ) -> None:
-        from .workspace import safe_partition_id
-
         self.root = Path(root).resolve()
-        self.session_id = safe_partition_id(session_id)
+        self.session_id = session_relative_dir(session_id, in_project=in_project).name
         self.in_project = in_project
-        self.relative = (
-            Path(".alibot/sessions") / self.session_id / "offload"
-            if in_project
-            else Path("sessions") / self.session_id / "offload"
-        )
+        self.relative = session_relative_dir(self.session_id, in_project=in_project) / "offload"
         self.docker = docker
 
     @property
@@ -153,12 +160,9 @@ class SessionState:
     """
 
     def __init__(self, root: Path, session_id: str, *, in_project: bool = True) -> None:
-        from .workspace import safe_partition_id
-
         self.root = root
         self.in_project = in_project
-        base = Path(".alibot/sessions") if in_project else Path("sessions")
-        self.directory = root / base / safe_partition_id(session_id)
+        self.directory = root / session_relative_dir(session_id, in_project=in_project)
 
     def load(self, permission_context: Any) -> Any:
         from agentscope.state import AgentState, ReplyContext

@@ -62,7 +62,8 @@ RULES_FILE = "AGENTS.md"
 MEMORY_FILE = "MEMORY.md"
 SKILLS_DIR = "skills"
 
-#: 家目录内**应用可写**的文件名集合：``MEMORY.md`` 与 ``<topic>.md``（只允许根下、不允许子目录）。
+#: **会写盘的文件工具名**：只有它们受家目录白名单约束（``Read`` / ``Glob`` / ``Grep`` 只读，不查）。
+#: 白名单本身是 :func:`is_memory_file_path`——家目录根下的 ``MEMORY.md`` 与 ``<topic>.md``；
 #: ``AGENTS.md``、``mcp.json``、``skills/`` 与任意子目录一律只读（ADR-0032 §三）。
 MEMORY_WRITE_TOOLS = frozenset({"Write", "Edit"})
 
@@ -102,15 +103,6 @@ class WorkspaceRootViolation(Exception):
         self.raw = raw
         self.root = root
         super().__init__(f"path escapes workspace root: {raw!r}")
-
-
-class WorkspaceReadOnlyViolation(Exception):
-    """家目录内的写入落在记忆白名单之外（``AGENTS.md`` / ``mcp.json`` / 子目录）。"""
-
-    def __init__(self, raw: Any, home: str) -> None:
-        self.raw = raw
-        self.home = home
-        super().__init__(f"path is read-only: {raw!r}")
 
 
 class WorkspaceConfigError(Exception):
@@ -1100,6 +1092,11 @@ async def assemble_docker_workspace(
     key = (member, session)
     workspace_id = docker_workspace_id(member, session)
     container_name = f"as_ws_{workspace_id}"
+    # 长期记忆开启时先建成员家目录这一级（ADR-0032 §三允许，且**不**建 skills/ 与 mcp.json）：
+    # bind 规格按「宿主目录是否存在」计算，晚建就会让**第一轮**看不到全局家目录。
+    if global_home is not None:
+        with suppress(WorkspaceConfigError, OSError):
+            ensure_member_home(global_home, member)
     # 全局层 bind 规格（宿主目录缺失则少一条）；在池复用判定与 initialize() 之前算好。
     global_binds = docker_global_binds(member)
 
@@ -1133,6 +1130,10 @@ async def assemble_docker_workspace(
     if pooled is not None:
         if await _rebind_entry(pooled):
             with _pool_lock:
+                # 记忆开关是**每轮**入参（`memory_mode` 可随时改）：池里的容器可以复用，但
+                # 文件工具的记忆白名单必须按本轮取值重算，否则 off→agentic 挂不上、
+                # agentic→off 又仍然放行（ADR-0032 §三「未开启两处都不挂」）。
+                pooled.global_home = global_home
                 pooled.active += 1
                 pooled.last_used = time.monotonic()
             clear_docker_failure(member)

@@ -7,6 +7,7 @@
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,9 +21,21 @@ from tests.test_approval_seam import _ScriptedModel, _StubModelSeam, _tool_call
 
 
 class MemoryModel(_ScriptedModel):
+    """记录每次模型输入；召回调用固定返回空选择。
+
+    ``generate_structured_output`` 被重写为**直接返回空选择**：记忆中间件的异步召回会对家目录里
+    的 ``<topic>.md`` / ``AGENTS.md`` 发起一次结构化选择调用，而脚本模型按顺序消费脚本，多一次
+    调用就会让「读 / 写记忆」的脚本错位。召回不是本文件的判据（落点与白名单才是）。
+    """
+
     def __init__(self, script: Any) -> None:
         super().__init__(script)
         self.inputs: list[str] = []
+
+    async def generate_structured_output(
+        self, messages: list[Any], structured_model: Any, **kwargs: Any
+    ) -> Any:
+        return SimpleNamespace(finished_reason="completed", usage=None, content={"selected_files": []})
 
     async def _call_api(
         self,
@@ -109,7 +122,7 @@ def test_memory_off_creates_no_memory_directory_and_adds_no_middleware(
         target_id="target",
     )
     assert outcome.status == "replied", outcome.reason
-    assert not (tmp_path / ".alibot/memory").exists()
+    # 数据目录侧：不再出现 ``.alibot`` 镜像层（ADR-0032 §四），连 ``sessions/`` 也只在有轮次时建。
     assert not (tmp_path / "data" / ".alibot").exists()
     assert not _member_home(global_root).exists(), "关闭长期记忆时两处都不建目录"
     assert not any(isinstance(item, AgenticMemoryMiddleware) for item in middlewares)
@@ -140,7 +153,7 @@ def test_dm_memory_tools_cannot_read_a_project_file(tmp_path: Path, global_root:
 def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
     tmp_path: Path, global_root: Path, memory_mode: str
 ) -> None:
-    """无项目根的会话状态在 ``<数据目录>/sessions/``（ADR-0032 §四）。"""
+    """卸载文件可读、别的会话与项目文件不可读（落点在 ``<数据目录>/sessions/``）。"""
     data_root = tmp_path / "data"
     path = asyncio.run(
         SessionOffloader(data_root, "target--member", in_project=False).offload_context(
@@ -222,3 +235,56 @@ def test_project_round_sessions_land_under_the_project_alibot_partition(
     assert outcome.status == "replied", outcome.reason
     assert (project / ".alibot" / "sessions" / "channel--member" / "state.json").is_file()
     assert not (project / "sessions").exists(), "项目根下不出现裸 sessions/"
+
+
+def test_dm_round_does_not_inject_a_second_global_memory_segment(tmp_path: Path, global_root: Path) -> None:
+    """无项目根时全局 ``MEMORY.md`` 只经记忆中间件出现一次（ADR-0032 §三：同一文件不重复）。"""
+    memory = _member_home(global_root) / "MEMORY.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text("全局记忆：只用简体中文。", encoding="utf-8")
+    model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
+    outcome = _dm_seam(model, tmp_path, global_root).run_round(
+        {"id": "member", "model_id": "openai:stub", "memory_mode": "agentic"},
+        [{"body": "你好", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id="target",
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    system_prompt = model.inputs[-1]
+    assert system_prompt.count("全局记忆：只用简体中文。") == 1, "同一个文件不得在提示里出现两次"
+    assert "来源：" not in system_prompt, "无项目根时不该有第二段全局段落（那是宿主只读注入的标记）"
+
+
+def test_project_round_rejects_writing_the_project_rules_file(tmp_path: Path, global_root: Path) -> None:
+    """项目侧 ``AGENTS.md`` 与全局侧一样只读（ADR-0032 §三：规则文件只由人维护）。"""
+    from alibot.workspace import WorkspaceSettings
+
+    project = tmp_path / "project"
+    project.mkdir()
+    rules = project / ".alibot" / "agents" / "member" / "AGENTS.md"
+    rules.parent.mkdir(parents=True)
+    rules.write_text("项目补充规则\n", encoding="utf-8")
+    before = (rules.stat().st_mtime_ns, rules.read_bytes())
+    model = MemoryModel(
+        [
+            _tool_call("read-rules", "Read", {"file_path": str(rules)}),
+            _tool_call("write-rules", "Write", {"file_path": str(rules), "content": "篡改"}),
+            [ChatResponse(content=[TextBlock(text="拒绝")], is_last=True)],
+        ]
+    )
+    seam = _StubModelSeam(
+        model,
+        workspace_of=lambda *_: WorkspaceSettings(root=str(project), permission_mode="trusted-writes"),
+        global_home=str(global_root),
+    )
+    outcome = seam.run_round(
+        {"id": "member", "model_id": "openai:stub", "memory_mode": "agentic"},
+        [{"body": "改规则", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id="channel",
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    assert "path is read-only" in model.inputs[-1]
+    assert (rules.stat().st_mtime_ns, rules.read_bytes()) == before
