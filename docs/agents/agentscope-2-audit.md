@@ -18,13 +18,13 @@
 
 | 判定 | 行数 | 行号 |
 | --- | --- | --- |
-| 符合 | 24 | 1,3,4,7,9,10,11,12,14,15,18,19,21,22,24,26,27,29,35,36,37,40,41,43 |
+| 符合 | 27 | 1,3,4,6,7,8,9,10,11,12,14,15,18,19,21,22,24,26,27,29,33,35,36,37,40,41,43 |
 | 刻意偏离 | 14 | 2,5,13,16,20,25,28,30,31,32,34,38,39,44 |
 | 未采用 | 2 | 17,45 |
-| 待修 | 3 | 6,8,33 |
+| 待修 | 0 | — |
 | 实测 | 2 | 23,42 |
 
-> 待修三行统一挂 **#205**；刻意偏离对应账本 D1–D12（部分条目覆盖多行）。
+> 待修已清零：6 / 8 / 33 三行由 **#205** 收口。刻意偏离对应账本 D1–D12（部分条目覆盖多行）。
 
 ## 1–5 agent
 
@@ -40,9 +40,9 @@
 
 | # | 能力点 | 文档页 | 当前落点 | 判定 | 证据 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 6 | 内置模型与自定义 ChatModelBase | model/llm.md | `agent_seam.py:873` `_build_model`；`:902` `get_chat_model_class` | **待修** #205 | `.venv/bin/python -c "from agentscope.credential import OpenAICredential as C;print(C.get_chat_model_class().__name__)"` → `OpenAIChatModel` | 11 家内置模型走 credential 工厂；`openai-response` 未建成 `OpenAIResponseModel` |
+| 6 | 内置模型与自定义 ChatModelBase | model/llm.md | `agent_seam.py:1181` `_build_model`；`:166` `PROVIDER_MODEL_CLASS` | 符合 | `cd app && OPENAI_API_KEY=sk-x ../.venv/bin/python -c "from alibot.agent_seam import AgentScopeAgentSeam; m=AgentScopeAgentSeam()._build_model('openai-response','gpt-5'); print(type(m).__name__, type(m.formatter).__name__)"` → `OpenAIResponseModel OpenAIResponseMultiAgentFormatter` | 11 家内置模型按 provider 显式映射；`openai` 与 `openai-response` 共用 `openai_credential`，后者建 Responses API 模型 |
 | 7 | credential 白名单与 api_key 解析 | model/overview.md | `agent_seam.py:140` `PROVIDER_CREDENTIAL_TYPE`；`:597` `read_api_key` | 符合 | `grep -n 'PROVIDER_CREDENTIAL_TYPE\|def read_api_key' app/alibot/agent_seam.py` | 11 家 provider 与凭据类型一一对应；key 只从环境白名单读 |
-| 8 | formatter 与 provider 对应 | model/llm.md | `agent_seam.py:903-908`（未传 formatter） | **待修** #205 | `grep -c formatter app/alibot/agent_seam.py` → 0 | 默认 ChatFormatter 丢 `name`；多作者轮次的发言者不可区分 |
+| 8 | formatter 与 provider 对应 | model/llm.md | `agent_seam.py:180` `PROVIDER_FORMATTER_CLASS`；`:1196` 注入 `formatter=` | 符合 | `cd app && ../.venv/bin/python -m pytest tests/test_agentscope_model_alignment.py -k "openai_response or every_provider or multi_agent"` → `13 passed, 5 deselected` | 11 家 provider 各用对应 MultiAgentFormatter；多作者轮次的 `name` 进入模型载荷 |
 | 9 | usage/token 记账 | message-and-event.md | `agent_seam.py:1645` `_record_usage` | 符合 | `grep -n 'getattr(reply, "usage"' app/alibot/agent_seam.py` → 1654 | 读最终 `Msg.usage` 四字段交给 sink；不落库、不改轮次结论 |
 
 ## 10–13 message / event
@@ -102,7 +102,7 @@
 
 | # | 能力点 | 文档页 | 当前落点 | 判定 | 证据 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 33 | 计划模式工具面 | plan.md | `plan.py:38/43/50`；`agent_seam.py:2026-2031`、`:1971-1982` | **待修** #205 | 实测 `TaskCreate/TaskList`：DEFAULT/ACCEPT_EDITS → ALLOW，**EXPLORE → DENY** | 注入只看 `plan is not None`，read-only 轮次拿到必然被拒的工具面 |
+| 33 | 计划模式工具面 | plan.md | `plan.py:38/43/50`；`agent_seam.py:1446`/`:2500` 单 Agent；`:1841`/`:1867` team | 符合 | `cd app && ../.venv/bin/python -c "import asyncio; from agentscope.permission import PermissionEngine, PermissionContext, PermissionMode; from agentscope.tool import TaskCreate; print([(m.name, asyncio.run(PermissionEngine(PermissionContext(mode=m)).check_permission(TaskCreate(), {})).behavior.name) for m in (PermissionMode.EXPLORE, PermissionMode.DEFAULT, PermissionMode.ACCEPT_EDITS)])"` → `[('EXPLORE', 'DENY'), ('DEFAULT', 'ALLOW'), ('ACCEPT_EDITS', 'ALLOW')]`；`cd app && ../.venv/bin/python -m pytest tests/test_agentscope_model_alignment.py -k "plan_tools_or_open_a_plan_run or plan_tool_surfaces"` → `5 passed, 13 deselected` | read-only 轮次既不注入四工具、也不开 Plan run（单 Agent 与 team 队长/成员同一判据） |
 | 34 | plan run 与任务五态边界 | plan.md | `plan.py:136/162/174`；`db.py:4428/178/200` | 刻意偏离 | 三态 `pending/in_progress/completed` 与五态 `todo/in_progress/in_review/done/closed` 并存、无映射 | 任务五态归 `task` 行（ADR-0006）；两套状态机并列（D8） |
 
 ## 35–36 sop
@@ -143,10 +143,4 @@
 
 ## 待修去向
 
-| 行号 | 问题 | 票 |
-| --- | --- | --- |
-| 行 6 | `openai-response` 建成 `OpenAIChatModel` | #205 |
-| 行 8 | 多作者对话未传 `MultiAgentFormatter` | #205 |
-| 行 33 | plan 四工具在 EXPLORE 轮次仍注入 | #205 |
-
-修完后：把对应行判定改成「符合」、证据列补新命令读数，并删掉本表对应行。
+无。行 6 / 8 / 33 已由 **#205** 收口（判定改「符合」，证据列已补可复跑命令与读数）。
