@@ -522,6 +522,13 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 （ADR-0020）。否则浏览器会把 `Last-Event-ID` 推进到库里不存在的游标，重连补拉就会与消息游标混淆。
 新事件断线不补发，运行面板以 `GET /team-runs` / `GET /plan` / `GET /sop-runs/{id}` 的快照兜底；
 审批卡以 `GET /api/approvals?target_id=&state=pending` 兜底；`after_seq` 补拉仍只覆盖消息与轮次结果。
+
+**Studio 另有一条整页共用的全局流 `GET /api/events`**：任意 target 的事件都经它透传，帧里的
+`target_id` 是归属正本。它是**纯 live** 的——不接受 `after_seq`、不读库补拉、也不写 `id:` 行
+（重连补齐由前端 `loadWorkspace({silent, keepActive})` 的全量重取承担）。理由：浏览器对单一
+origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `EventSource` 会把连接池占满，
+之后的 `fetch` 与刷新都排队。三个 per-target 端点全部保留、语义不变；任务 dock 的
+`/api/tasks/{id}/events` 仍是独立一条（全局流 + 任务流 = 2 条）。
 线程关着时，Studio 另用 `GET /api/approvals?state=pending`（不带 `target_id`）读一次全工作区 pending，
 并在页面可见且在线时按 12s 有界刷新，驱动任务看板卡片 / 列表行角标与任务页签圆点（#209）；
 live `approval_*` 帧仍只补本次会话内的变化。
@@ -565,6 +572,7 @@ live `approval_*` 帧仍只补本次会话内的变化。
 | `GET /api/channels/{id}/budget` | 有界响应预算（后端持久事实）：`{epoch_seq, limit, used, remaining, source, pending_limit}`。`limit` = 当前人类世代的**有效上界**（`remaining` 按它算），`source` = `channel-override` / `built-in-default`，`pending_limit` = 已保存、**从下一个人类世代起生效**的上界（无待生效差异时 `null`）。频道覆盖存 `channel_budget_limit`，本世代生效值存 `target_budget.applied_limit` 快照 |
 | `PATCH /api/channels/{id}/budget` | 保存回应预算**上界** `{budget_limit}`，只接受固定档位 `3` / `5` / `10`（默认 3）；其它取值**整体拒绝**、不留半成品。**用量不可写**：请求体带 `used`（或 `remaining` / `epoch_seq` / `applied_limit`）一律整体拒绝。成功返回刷新后的读数（与 `GET` 同形）；当前世代不被回溯改写，新值从**下一个人类世代**生效 |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
+| `GET /api/events` | 全局事件流（SSE，纯 live：不补拉、不发 `id:` 行；Studio 整页只用这一条） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
 | `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
 | `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；`auto_claim` 缺省开启，见 ADR-0029） |

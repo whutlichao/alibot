@@ -24,6 +24,12 @@
 **补拉的正本是数据库，不是这个总线**：总线的缓冲只覆盖「订阅那一刻之后」的事件，而
 「重连带 ``last_seq`` 补拉错过的消息」由事件流端点直接读库补齐（见 ``api.py`` 的
 频道与任务事件流）。所以这里不需要保留历史，只要把当下的广播送达。
+
+**两种订阅形状**：``subscribe(target_id)`` 收一个 target 的事件，``subscribe_all()`` 收全部
+target 的事件（整页一条全局流，连接数与 target 数解耦，避开浏览器对单一 origin 的 6 条
+HTTP/1.1 连接上限）。后者不改变任何帧语义——它只是把同一份广播多投一份，载荷里的
+``target_id`` 就是归属正本；全局流**不补拉**，重连补齐由前端
+``loadWorkspace({silent, keepActive})`` 的全量重取承担。
 """
 
 from __future__ import annotations
@@ -61,6 +67,10 @@ class EventBus:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._subscribers: dict[str, set[queue.Queue[dict[str, Any]]]] = {}
+        # 全局订阅者（``subscribe_all``）：一条连接收**全部 target** 的事件。
+        # 浏览器对单一 origin 的 HTTP/1.1 并发连接只有 6 条，per-target 各开一条会把连接池占满
+        # （见 ``api.py`` 的 ``GET /api/events``）；全局通道让连接数与 target 数解耦。
+        self._all_subscribers: set[queue.Queue[dict[str, Any]]] = set()
 
     def publish(self, target_id: str, event: Mapping[str, Any]) -> dict[str, Any]:
         """广播一条事件；返回实际送出的载荷（补上 ``target_id``）。"""
@@ -68,8 +78,13 @@ class EventBus:
         payload.setdefault("target_id", target_id)
         with self._lock:
             subscribers = list(self._subscribers.get(target_id, ()))
+            # 全局订阅者与单 target 订阅者拿到**同一份**载荷：归属已在上面补齐，前端据此分流。
+            all_subscribers = list(self._all_subscribers)
         for subscriber in subscribers:
             # 跟不上的订阅者只会漏事件、不会阻塞写路径；它的下一次标读/刷新走 HTTP 全量。
+            with suppress(queue.Full):
+                subscriber.put_nowait(payload)
+        for subscriber in all_subscribers:
             with suppress(queue.Full):
                 subscriber.put_nowait(payload)
         return payload
@@ -88,6 +103,22 @@ class EventBus:
                     group.discard(channel)
                     if not group:
                         self._subscribers.pop(target_id, None)
+
+    @contextmanager
+    def subscribe_all(self) -> Iterator[queue.Queue[dict[str, Any]]]:
+        """订阅**全部 target** 的事件（与 :meth:`subscribe` 同形：同样的容量、同样的 ``finally`` 摘除）。
+
+        载荷与单 target 订阅者收到的完全一致（``publish`` 已用 ``setdefault`` 补上归属），因此
+        订阅方不需要另建一套分流规则——``target_id`` 就是归属正本。
+        """
+        channel: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=QUEUE_LIMIT)
+        with self._lock:
+            self._all_subscribers.add(channel)
+        try:
+            yield channel
+        finally:
+            with self._lock:
+                self._all_subscribers.discard(channel)
 
 
 def is_live_only(event: Mapping[str, Any]) -> bool:

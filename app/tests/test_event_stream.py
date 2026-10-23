@@ -832,3 +832,119 @@ def test_task_round_emits_agent_events_on_the_task_target(live: dict) -> None:
     outcome_frame = next(frame for frame in frames if frame["data"].get("type") == "round_outcome")
     assert outcome_frame["id"] == str(outcome_frame["data"]["seq"])
     assert outcome_frame["data"]["outcome"]["target_id"] == task["target_id"]
+
+
+# ─── 全局事件流（`GET /api/events`）：整页一条连接，连接数与 target 数解耦 ──────────
+#
+# 背景：per-target 各开一条常驻 `EventSource` 时，6 个 target（2 频道 + 4 私信）就把浏览器的
+# HTTP/1.1 连接池占满，之后任何 fetch 与 F5 的文档请求都在排队。全局流是新增的一条路，
+# 既有三个 per-target 端点与它们的补拉语义全部保留。
+
+
+def test_event_bus_subscribe_all_receives_every_target_with_attribution() -> None:
+    """全局订阅收**任意 target** 的事件，载荷与单 target 订阅者拿到的完全一致。
+
+    ``target_id`` 就是归属正本：前端全局流靠它分流，不另立一套规则。
+    """
+    bus = EventBus()
+    with bus.subscribe("ch_A") as one_target, bus.subscribe_all() as everything:
+        first = bus.publish("ch_A", {"type": "message", "seq": 3})
+        second = bus.publish("dm_B", {"type": "typing", "member_id": "mem-1", "active": True})
+
+        assert everything.get_nowait() == first, "全局订阅者看到的载荷与 target 订阅者同形"
+        assert one_target.get_nowait() == first
+        assert everything.get_nowait() == second, "其它 target 的事件也到全局订阅者"
+        assert first["target_id"] == "ch_A"
+        assert second["target_id"] == "dm_B", "归属由 publish 补齐，前端据此分流"
+        assert one_target.empty(), "单 target 订阅者不跨 target 收事件"
+
+
+def test_event_bus_subscribe_all_stops_receiving_after_the_context_exits() -> None:
+    """全局订阅的释放路径：``finally`` 里摘除之后不再收到任何事件（连接关掉不泄漏）。"""
+    bus = EventBus()
+    with bus.subscribe_all() as everything:
+        bus.publish("ch_A", {"type": "message", "seq": 1})
+        assert everything.get_nowait()["seq"] == 1
+    bus.publish("ch_A", {"type": "message", "seq": 2})
+    assert everything.empty(), "退订后不得再收到事件"
+
+    # 再次订阅是一个新的通道，不会复活旧的那一个。
+    with bus.subscribe_all() as again:
+        bus.publish("dm_B", {"type": "message", "seq": 3})
+        assert again.get_nowait()["seq"] == 3
+        assert everything.empty()
+
+
+def test_global_event_stream_forwards_any_target_without_id_lines(live: dict) -> None:
+    """``GET /api/events`` 把**任意 target** 的事件透传给一条连接，帧里没有 ``id:`` 行。
+
+    全局流不补拉（不接受 ``after_seq``、不读库），重连补齐由前端 ``loadWorkspace`` 的全量重取
+    承担；因此它不该推进浏览器的 ``Last-Event-ID``——那是 per-target 流的游标。
+    """
+    http = live["http"]
+    agent = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+    channel = _channel_with(http, agent["id"])
+    http.post("/api/dms", json={"agent_id": agent["id"]}).json()  # 只造一个别的 target
+    live["scheduler"].drain()
+
+    frames, stop, reader = _start_reader(http, "/api/events")
+    try:
+        # 全局流连接时不发任何快照帧，因此「订阅已建立」只能由一条真的到达的帧证明。
+        # 反复发一条总线事件直到读线程看到它（事件不补拉，丢了的帧没有第二条路）；
+        # 此后那条**一次性**的真实消息就不可能落空。
+        events = live["app"].state.events
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            events.publish("dm_other", {"type": "typing", "member_id": "mem_live", "active": True})
+            if any(frame["data"].get("type") == "typing" for frame in frames):
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError(f"等不到全局流的订阅建立；已收到的帧：{frames}")
+
+        http.post(f"/api/channels/{channel['id']}/messages", json={"body": "全局流看到这条"})
+        _wait_frames(
+            frames,
+            lambda items: any(item["data"].get("type") == "message" for item in items),
+            label="全局流里的频道消息",
+        )
+    finally:
+        _stop_reader(stop, reader)
+
+    typing_frame = next(frame for frame in frames if frame["data"].get("type") == "typing")
+    assert typing_frame["data"]["target_id"] == "dm_other", "非订阅 target 的事件也经全局流透传"
+    assert typing_frame["id"] is None
+
+    message_frame = next(frame for frame in frames if frame["data"].get("type") == "message")
+    assert message_frame["id"] is None, "全局流不写 id 行（不推进 Last-Event-ID）"
+    assert message_frame["data"]["target_id"] == channel["id"], "帧里的归属来自 publish 补齐"
+    assert message_frame["data"]["message"]["seq"] == 1
+    # 全局流没有单一 target 的语义：连接时不发补拉快照，也不发 `round.active`。
+    assert [frame["data"].get("type") for frame in frames if frame["data"].get("type") != "typing"] == [
+        "message"
+    ]
+
+
+def test_global_event_stream_rotates_and_sends_no_replay_before_it(data_dir: Path, monkeypatch) -> None:
+    """到 ``SSE_STREAM_MAX_SECONDS`` 发 ``event: rotate`` 后正常收尾，且轮换前没有任何补拉帧。"""
+    monkeypatch.setenv("ALIBOT_SSE_ROTATE_SECONDS", "1")
+    scheduler, seam = ManualScheduler(), ScriptedAgentSeam()
+    with (
+        live_backend(data_dir, scheduler=scheduler, seam=seam) as base_url,
+        httpx.Client(base_url=base_url, timeout=httpx.Timeout(30.0, read=None), trust_env=False) as http,
+    ):
+        names: list[str] = []
+        with http.stream("GET", "/api/events") as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            current = ""
+            for line in response.iter_lines():
+                text = line.decode() if isinstance(line, bytes) else line
+                if text.startswith("event: "):
+                    current = text[len("event: ") :]
+                    names.append(current)
+                elif text.startswith("data: ") and current == "rotate":
+                    break
+
+    # 全局流不补拉：轮换帧是连接建立后的**第一**个命名事件（之前只有 keep-alive 注释）。
+    assert names == ["rotate"], names
