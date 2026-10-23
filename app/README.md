@@ -74,6 +74,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | 库文件 | `<数据目录>/alibot.db`（单文件 SQLite，WAL 模式） |
 | 附件字节 | `<数据目录>/attachments/<附件标识>`（**不进 SQLite**；库里只存相对路径，因此整个数据目录可整体搬迁） |
 | 迁移审计台账 | `<数据目录>/schema-migrations.jsonl` |
+| 会话状态（无项目根） | `<数据目录>/sessions/<target_id>--<member_id>/`（`state.json` 与 `offload/`；ADR-0032 §四） |
 | 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾；前端按既有纪律重连：per-target 流带 `last_seq`，全局流重开后全量重取） |
 
 数据目录按**固定优先级**解析（结果是确定值，不靠时间戳或遍历顺序）：
@@ -85,7 +86,9 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 
 启动时打印**实际数据目录**与来源（显式覆盖 / 新默认 / 旧位置兼容 / 新建）。新旧同时存在时确定地选
 新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
-`~/.alibot/agents/` 与 `~/.alibot/skills/` 是人的维护面，应用不创建。
+`~/.alibot/skills/` 是人的维护面，应用不创建。`~/.alibot/agents/<member_id>/` 这一级由应用按需创建
+（长期记忆开启时，连同根下的 `MEMORY.md`），但**不**创建 `AGENTS.md`、不创建 `mcp.json`、不创建
+`~/.alibot/skills/`（ADR-0032 §三）。
 旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
 本节的兼容读取只针对 `~/Alibot`。
 
@@ -100,9 +103,11 @@ cp -R ~/.alibot-backups/data-YYYY-MM-DD ~/.alibot/data
 # 若仍在使用旧位置做兼容读取，把上面的 ~/.alibot/data 换成 ~/Alibot。
 
 # 全局层：不在数据目录备份内，必须单独备份
+# agents/ 里既有人的维护面（AGENTS.md / mcp.json / skills/），也有应用写入的记忆
+# （MEMORY.md 与 <topic>.md，ADR-0032）——整目录复制即可覆盖两者。
 cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
 cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
-# 恢复：反向复制回去（全局层只由人维护，应用只读、不自动创建）
+# 恢复：反向复制回去
 ```
 
 库文件旁边可能有 `-wal` / `-shm` 两个伴随文件，一起复制即可。
@@ -249,15 +254,22 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 
 ### Agent 运行时（schema 23 / ADR-0030）
 
-普通轮输入最近 40 条 target 消息（本人历史为 assistant），自动续跑使用完整历史；回应纪律、瞬态早退与 base_seq 仍只按新消息计算，历史不重新触发必答。上下文超过阈值时由 AgentScope 压缩；压缩消息与截断工具结果写入 `.alibot/sessions/<target--member>/offload/`。
+普通轮输入最近 40 条 target 消息（本人历史为 assistant），自动续跑使用完整历史；回应纪律、瞬态早退与 base_seq 仍只按新消息计算，历史不重新触发必答。上下文超过阈值时由 AgentScope 压缩；压缩消息与截断工具结果写入会话分区：有项目根时 `.alibot/sessions/<target--member>/offload/`，无项目根时 `<数据目录>/sessions/<target--member>/offload/`（ADR-0032 §四）。
 
 - `ALIBOT_CONTEXT_WINDOW_MESSAGES=40`、`ALIBOT_CONTEXT_TRIGGER_RATIO=0.7`、`ALIBOT_CONTEXT_RESERVE_RATIO=0.2`、`ALIBOT_CONTEXT_TOOL_RESULT_LIMIT=4000`、`ALIBOT_CONTEXT_MAX_IMAGE_NUM=5`、`ALIBOT_REACT_MAX_ITERS=30`、`ALIBOT_MODEL_MAX_RETRIES=2`。
 - Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 详情页的「配置」区块可设置上下文条数、阈值、迭代上限及长期记忆开关。
 - 每轮按 Asia/Shanghai 重新注入 ISO 时间、target 名称与上下文用量；AgentState 原子保存到上述 session 分区的 `state.json`，恢复摘要及运行状态、按消息窗口重建 context。损坏状态降级为空白并记录日志；权限始终用当前配置。
 - `finished_reason` 为 `completed | interrupted | exceed_max_iters | error`，与 status 独立。旧行保持 NULL；达到迭代上限的部分正文可保留，reason 明示结论可能不完整。
 - `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失；SSE 重连通过当前 `round.active` 快照恢复按钮。审批超时仍为 failed。
-- `memory_mode=agentic` 使用 AgenticMemoryMiddleware，记忆在 `<root>/.alibot/memory/<member_id>/Memory/`，DM 的 root 为数据目录；补 Read/Write/Edit 与该记忆目录的写权限，不创建工作区、不开放项目根；Read 另可读取当前会话的卸载目录，记忆关闭时仅保留这个受限 Read。显式 deny/ask 规则仍生效；off / null 不挂中间件、不创建目录。
-- Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件仍写主机 `.alibot` 分区，可用 Docker 时路径显示为容器 bind mount 的 `/workspace/.alibot/...`。
+- `memory_mode=agentic` 使用 AgenticMemoryMiddleware，落点是**同构扁平的家目录**（ADR-0032）：
+  有项目根时 workdir 是 `<workspace_root>/.alibot/agents/<member_id>/`，全局家目录
+  `~/.alibot/agents/<member_id>/` 作为**受白名单约束的额外可写目录**同时挂上，其 `MEMORY.md` 另以
+  带标签段落注入 system prompt；**无项目根**（DM / 频道未配项目根 / task 无频道根）时全局家目录是
+  唯一落点，`MEMORY.md` 与 `<topic>.md` 直接放在根下。家目录内应用**可写**的只有根下的 `MEMORY.md`
+  与 `<topic>.md`；`AGENTS.md`、`mcp.json`、`skills/` 与任意子目录一律只读（写请求返回可读拒绝）。
+  补 Read/Write/Edit 与该记忆目录的写权限，不创建工作区、不开放项目根；Read 另可读取当前会话的卸载
+  目录，记忆关闭时仅保留这个受限 Read。显式 deny/ask 规则仍生效；off / null 不挂中间件、不创建目录。
+- Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件写会话分区：有项目根时是主机 `.alibot/sessions/`（Docker 下显示为 `/workspace/.alibot/sessions/...`），无项目根时是 `<数据目录>/sessions/`（ADR-0032 §四）。
 
 ### 穿透（点名一个未加入该频道的 Agent）
 
@@ -416,9 +428,10 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 - **workspace_root 不在数据目录内**：它指向用户的**项目目录**，不进入整目录备份的复制。**备份数据目录
   ≠ 备份项目文件**——项目文件要用户自己备份（见上面的备份口径）。
 - **两个后端**：`local`（默认）或 `docker`（每 Agent/会话一个容器，`host_workdir=workspace_root`，
-  容器内固定根 `/workspace`；另把该成员的**全局家目录**与**公共技能库**只读挂到
+  容器内固定根 `/workspace`；另把该成员的**全局家目录**以 `:rw`、**公共技能库**以 `:ro` 挂到
   `/alibot-home/agents/<member_id>` 与 `/alibot-home/skills`，数据目录不进容器，宿主目录缺失则
-  跳过该条挂载）。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
+  跳过该条挂载。成员家目录可写是为了记忆（ADR-0032 §五）；白名单是**应用面**的约束，容器内 Bash
+  本来就能写 `/workspace`，因此不是沙箱承诺）。无项目根的轮次不装配 Docker。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
   逐次审批、无沙箱；默认只开受限文件工具。Docker 里的 Bash 在容器内，不需要那条本地通道。
 - **Docker 不可用时是显式失败**：没有 daemon / 镜像起不来 ⇒ 该成员状态点 **`offline`**、
   `enabled_reason` 可读，**绝不静默回落本地 shell**；失败原因短 TTL 缓存（改配置会立即清掉重试），
@@ -448,7 +461,8 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   值只从进程环境读**，库里不存密钥。远端 MCP（`http` / `sse`）未做数据面确认时**不连接**；
   stdio 不需要确认。装配层按 target 解析启用且已确认的声明，运行时读数（`connected` / `tools` /
   `error`）只回进程内事实。
-  **全局层（ADR-0031 / #233）**：另有纯文件声明 `~/.alibot/agents/<member_id>/mcp.json`，顶层形状
+  **全局层（ADR-0031 / #233）**：另有纯文件声明 `~/.alibot/agents/<member_id>/mcp.json`（家目录根下，
+  ADR-0032 不改这个位置），顶层形状
   为 `{"servers": [...]}`（条目形状与库内声明同一套校验：transport / command / args / url /
   `env_names` / `enabled`），应用只读、不创建，也不进 `mcp_server` 表。装配按「项目 Agent 级 →
   项目频道级 → 全局成员家目录」合并，同名只装配并连接胜出条目；落选条目各一条只进

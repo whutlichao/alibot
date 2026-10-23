@@ -774,7 +774,7 @@ class AgentScopeAgentSeam:
         offloader = options.get("offloader")
         if not isinstance(offloader, SessionOffloader):
             return None
-        store = SessionState(offloader.root, offloader.session_id)
+        store = SessionState(offloader.root, offloader.session_id, in_project=offloader.in_project)
         options["state"] = store.load(options["state"].permission_context)
         return store
 
@@ -802,7 +802,7 @@ class AgentScopeAgentSeam:
             from .memory import assemble_memory
 
             memory_middlewares, tools = assemble_memory(
-                options["offloader"].root,
+                root,
                 str(agent["id"]),
                 options["state"].permission_context,
                 mount=mount,
@@ -820,22 +820,31 @@ class AgentScopeAgentSeam:
                 LocalBackend(), offloader.directory, str(offloader.visible_directory), writable=False
             )
             tools = [Read(backend=backend)]
-            middlewares.append(PartitionPermissionMiddleware(backend))
+            middlewares.append(PartitionPermissionMiddleware(backend, strict=True))
         if middlewares:
             options["middlewares"] = middlewares
         return options, store, tools
 
     def _runtime_options(self, agent: dict[str, Any], target_id: str) -> dict[str, Any]:
+        """框架运行参数与会话状态落点（ADR-0032 §四）。
+
+        有项目根：``<项目根>/.alibot/sessions/<session_id>/``（local 与 docker 都保持现状）；
+        无项目根（DM / 未配项目根的频道）：``<数据目录>/sessions/<session_id>/``——不再套一层
+        ``.alibot``，也不再写 ``<数据目录>/.alibot/**``。两者都没有（未接线 ``runtime_root``）
+        时这一轮不落会话状态，行为与 #148 之前逐字相同。
+        """
         from .workspace import session_partition_id
 
         options = runtime_configs(agent, self._environ)
         settings = self._workspace_settings(target_id, str(agent["id"]))
+        in_project = settings is not None
         root = settings.root if settings is not None else self._runtime_root
         if root is not None:
             options["offloader"] = SessionOffloader(
                 root,
                 session_partition_id(str(agent["id"]), target_id),
                 docker=settings is not None and settings.is_docker,
+                in_project=in_project,
             )
         return options
 
@@ -843,7 +852,20 @@ class AgentScopeAgentSeam:
         name = self._target_name_of(target_id) if self._target_name_of is not None else target_id
         return runtime_prompt(name, len(messages))
 
-    async def _runtime_mount(self, settings: Any, member_id: str, target_id: str, warnings: list[str]) -> Any:
+    async def _runtime_mount(
+        self,
+        settings: Any,
+        member_id: str,
+        target_id: str,
+        warnings: list[str],
+        *,
+        memory_enabled: bool = False,
+    ) -> Any:
+        """装配一轮的工作区。
+
+        ``memory_enabled`` 决定全局家目录要不要作为**记忆写入白名单**同时挂给文件工具（ADR-0032 §五）：
+        未开启长期记忆时它不进入白名单，行为与 #235 之前逐字相同。
+        """
         from .workspace import DockerWorkspaceUnavailable, assemble_workspace, session_partition_id
 
         try:
@@ -852,6 +874,7 @@ class AgentScopeAgentSeam:
                 member_id=member_id,
                 session_id=session_partition_id(member_id, target_id),
                 locale=self._locale(),
+                global_home=self._global_home if memory_enabled else None,
             )
         except DockerWorkspaceUnavailable as error:
             warning = render("seam.workspace_degraded", self._locale(), error=error)
@@ -1411,7 +1434,13 @@ class AgentScopeAgentSeam:
                 )
                 if settings is not None:
                     session_id = session_partition_id(member_id, target_id)
-                    mount = await self._runtime_mount(settings, member_id, target_id, workspace_warnings)
+                    mount = await self._runtime_mount(
+                        settings,
+                        member_id,
+                        target_id,
+                        workspace_warnings,
+                        memory_enabled=agent.get("memory_mode") == "agentic",
+                    )
                     # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
                     # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
                     if mount is not None:
@@ -1776,7 +1805,11 @@ class AgentScopeAgentSeam:
                 tools: list[Any] = []
                 if settings is not None:
                     mount = await self._runtime_mount(
-                        settings, member_id_value, target_id, workspace_warnings
+                        settings,
+                        member_id_value,
+                        target_id,
+                        workspace_warnings,
+                        memory_enabled=members_by_id[member_id_value].get("memory_mode") == "agentic",
                     )
                 if mount is not None:
                     mounts.append(mount)

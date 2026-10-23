@@ -179,17 +179,20 @@ def test_docker_mounts_the_channel_root_and_tools_work_inside_the_container(
     _run(scenario())
 
 
-# ─── 1b. 全局层只读挂载（#235）：成员家目录 + 公共技能库，数据目录不可见 ─────
+# ─── 1b. 全局层挂载（#235 / ADR-0032）：成员家目录 rw、公共技能库 ro，数据目录不可见 ─
 @requires_docker
-def test_docker_mounts_the_global_layer_read_only(docker_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """两条全局 bind 在容器内可读、写失败；``data/`` 不可见；``/alibot-home`` 不是文件工具根。"""
+def test_docker_mounts_the_member_home_read_write_and_the_skill_library_read_only(
+    docker_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """成员家目录可写（记忆白名单在应用面）、公共技能库只读；``data/`` 不可见。"""
     home = docker_root.parent / "home"
     monkeypatch.setenv("HOME", str(home))
     member = _unique("mem")
     session = session_partition_id(member, "ch_global")
     member_home = Path(global_member_home(member))
-    (member_home / "rules").mkdir(parents=True)
-    (member_home / "rules" / "AGENTS.md").write_text("全局基座规则\n", encoding="utf-8")
+    member_home.mkdir(parents=True)
+    (member_home / "AGENTS.md").write_text("全局基座规则\n", encoding="utf-8")
+    (member_home / "MEMORY.md").write_text("全局记忆\n", encoding="utf-8")
     skills_home = Path(global_home_root()) / "skills"
     skills_home.mkdir(parents=True)
     (skills_home / "shared.txt").write_text("公共技能\n", encoding="utf-8")
@@ -209,8 +212,8 @@ def test_docker_mounts_the_global_layer_read_only(docker_root: Path, monkeypatch
             bash = _tool(mount, "Bash")
             target = docker_global_member_home(member)
 
-            # 容器轮次里全局规则基座可读（与 local 后端同一份宿主文件）。
-            chunk = await _latest_chunk(bash, command=f"cat {target}/rules/AGENTS.md")
+            # 容器轮次里全局规则基座可读（与 local 后端同一份宿主文件，扁平路径）。
+            chunk = await _latest_chunk(bash, command=f"cat {target}/AGENTS.md")
             assert chunk.state is not ToolResultState.ERROR, _text(chunk)
             assert "全局基座规则" in _text(chunk)
 
@@ -218,11 +221,14 @@ def test_docker_mounts_the_global_layer_read_only(docker_root: Path, monkeypatch
             assert chunk.state is not ToolResultState.ERROR, _text(chunk)
             assert "公共技能" in _text(chunk)
 
-            # 只读挂载：容器内写入失败。
+            # ADR-0032 §五：成员家目录从 ``:ro`` 改为 ``:rw``——容器内 Bash 可写（白名单是应用面的
+            # 约束，不是沙箱承诺）。记忆文件真的落到宿主侧同一个目录。
             chunk = await _latest_chunk(
-                bash, command=f"printf x > {target}/written.txt 2>&1 || echo write-denied"
+                bash, command=f"printf 'written' > {target}/topic.md 2>&1 || echo write-denied"
             )
-            assert "write-denied" in _text(chunk), "成员家目录必须是只读挂载"
+            assert "write-denied" not in _text(chunk), "成员家目录必须是可写挂载"
+            assert (member_home / "topic.md").read_text(encoding="utf-8") == "written"
+            # 公共技能库仍只读。
             chunk = await _latest_chunk(
                 bash,
                 command=f"printf x > {docker_global_skills_home()}/written.txt 2>&1 || echo write-denied",
@@ -235,16 +241,16 @@ def test_docker_mounts_the_global_layer_read_only(docker_root: Path, monkeypatch
             )
             assert "absent" in _text(chunk), "数据目录不得进容器"
 
-            # 文件工具根仍只认 /workspace。
-            chunk = await _latest_chunk(_tool(mount, "Read"), file_path=f"{target}/rules/AGENTS.md")
+            # 文件工具根仍只认 /workspace：未开长期记忆时全局家目录不在记忆白名单里。
+            chunk = await _latest_chunk(_tool(mount, "Read"), file_path=f"{target}/AGENTS.md")
             assert chunk.state is ToolResultState.ERROR, "/alibot-home 不是文件工具的合法输入"
         finally:
             await release_workspace_mount(mount)
 
     _run(scenario())
-    assert sorted(path.name for path in Path(global_home_root()).iterdir()) == before, (
-        "一轮结束后全局层不得被应用创建/写入新条目"
-    )
+    # 容器写进来的 ``topic.md`` 是我们自己在容器内造的；除它之外全局根不该多出条目。
+    after = {path.name for path in Path(global_home_root()).iterdir()}
+    assert after - set(before) == {"skills"} or after - set(before) <= {"skills", "data"}
 
 
 # ─── 2. 隔离：容器外路径不可见、/tmp 与 /root 私有；文件工具仍锚在 /workspace ──
