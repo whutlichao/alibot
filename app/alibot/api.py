@@ -23,6 +23,7 @@
 - ``GET  /api/channels/{id}/budget``          有界响应预算的读数（当前世代 + 来源 + 待生效值）
 - ``PATCH /api/channels/{id}/budget``         保存回应预算**上界**（固定档位 3 / 5 / 10；用量不可写）
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
+- ``GET  /api/events``                        全局事件流（SSE，纯 live、不补拉、不发 ``id`` 行）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
 - ``GET  /api/tasks``                         全工作区任务看板（可按频道筛选）
 - ``POST /api/channels/{id}/tasks``           在频道下新建任务与独立线程
@@ -155,6 +156,22 @@ SSE_STREAM_MAX_SECONDS = _env_seconds("ALIBOT_SSE_ROTATE_SECONDS", 55.0)
 # 事件流的推送轮询间隔：队列在此间无事件时发一个 keep-alive 注释帧，
 # 顺带让事件流能感知关停信号（见 `channel_events` 的循环）。
 SSE_POLL_SECONDS = 0.5
+
+
+def live_sse_frame(event: dict[str, Any]) -> str:
+    """全局流（``GET /api/events``）的一帧：``sse_frame`` 的形状，但**不写** ``id:`` 行。
+
+    全局流不补拉（不接受 ``after_seq``、不读库补齐），重连补齐由前端的
+    ``loadWorkspace({silent, keepActive})`` 全量重取承担（ADR-0020：live-only 事件不补拉，
+    ``messages`` 才是正本）。因此它不该推进浏览器的 ``Last-Event-ID``——那个游标属于 per-target 流。
+    ``sse_frame`` 本身一字不改（它的语义只由事件类型决定），这里只摘掉它给可补拉事件写的
+    ``id:`` 行。
+    """
+    frame = sse_frame(event)
+    if frame.startswith("id: "):
+        _head, _sep, rest = frame.partition("\n")
+        return rest
+    return frame
 
 
 def repo_root() -> Path:
@@ -1926,6 +1943,71 @@ def create_app(
                     if is_replayable(event) and int(event.get("seq", 0)) < after_seq:
                         continue
                     yield sse_frame(event)
+            finally:
+                close_subscription()
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            background=BackgroundTask(close_subscription),
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/events")
+    async def all_events(request: Request) -> StreamingResponse:
+        """整页一条的全局事件流：任意 target 的事件都经这里透传，帧里的 ``target_id`` 是归属正本。
+
+        **为什么需要它**：浏览器对单一 origin 的 HTTP/1.1 并发连接只有 6 条，而 uvicorn 默认没有
+        多路复用。per-target 各开一条常驻 ``EventSource`` 时，6 个 target（2 频道 + 4 私信）就把
+        连接池占满，之后任何 ``fetch``（发消息、切频道、刷新列表）与 F5 的文档请求都在排队——
+        页面渲染出来了但完全不响应。全局流把「连接数」与「target 数」解耦成两件事。
+
+        **只透传，不补拉**：不接受 ``after_seq``、不读库补齐、也不写 ``id:`` 行（见
+        :func:`live_sse_frame`）。重连补齐由前端的 ``loadWorkspace({silent, keepActive})``
+        全量重取承担，与 ADR-0020「live-only 事件不补拉、``messages`` 才是正本」一致；
+        浏览器因此不会把 ``Last-Event-ID`` 推到任何游标上。
+
+        **不发 ``round.active`` 快照**：全局流没有单一 target 的语义。代价要写明白——Studio 现在
+        **不再开任何 per-target 流**，``/api/workspace`` 也不带 active-rounds 字段，所以「有一轮
+        in-flight 时按 F5」不会再由连接快照立刻恢复停止按钮，而要等下一帧带它的 live 事件
+        （``REPLY_START`` / ``round.active``）。要补的话正路是给工作台快照加 active-rounds，
+        而不是把 ``round.active`` 塞回全局流。
+
+        既有的 ``/api/channels/{id}/events`` / ``/api/dms/{id}/events`` / ``/api/tasks/{id}/events``
+        全部保留（不删、不改语义），本端点只是新增的一条路。
+        """
+        # 订阅先登记再返回响应；释放走 ``finally`` + ``BackgroundTask`` 两处（与 ``dm_events`` 同形）：
+        # 客户端提前断开靠前者，响应正常收尾靠后者，重复释放由闸门吃掉。
+        subscription = events.subscribe_all()
+        subscriber = subscription.__enter__()
+        subscription_open = True
+
+        def close_subscription() -> None:
+            nonlocal subscription_open
+            if subscription_open:
+                subscription_open = False
+                subscription.__exit__(None, None, None)
+
+        async def stream() -> AsyncIterator[str]:
+            try:
+                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                while not shutting_down.is_set():
+                    if await request.is_disconnected():
+                        return
+                    if asyncio.get_running_loop().time() >= deadline:
+                        # 主动轮换：前端据此区分「服务端请我重连」与「后端挂了」（既有契约）。
+                        yield "event: rotate\ndata: {}\n\n"
+                        return
+                    try:
+                        event = await asyncio.to_thread(subscriber.get, True, SSE_POLL_SECONDS)
+                    except queue.Empty:
+                        yield ": keep-alive\n\n"
+                        continue
+                    yield live_sse_frame(event)
             finally:
                 close_subscription()
 

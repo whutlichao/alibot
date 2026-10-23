@@ -294,7 +294,9 @@ const state = {
   members: [],
   channelMembers: {},
   statuses: {},
-  streams: new Map(),
+  // 整页**一条**全局事件流（`GET /api/events`）的承载对象：`{ source, timer, rotating }`。
+  // 连接数与 target 数因此彻底解耦（浏览器对单一 origin 的 HTTP/1.1 并发连接只有 6 条）。
+  stream: null,
   seenSeqs: new Map(),
   // live-only 运行事件（ADR-0020 / 规格 §4.5）：按 **target_id** 归属，只活在本会话内存里。
   // 它们不是消息正本：不进 `messages` / 未读 / 搜索 / seq 游标。运行面板（#155）从这里取；
@@ -3944,7 +3946,9 @@ function markCurrentRead() {
   const target = activeTarget();
   if (!target) return;
   const rendered = renderedMessages();
-  const maxSeq = Math.max(target.last_seq, ...rendered.filter((m) => m.seq).map((m) => m.seq), 0);
+  // 「看到哪一条」的唯一表达式是 `lastSeqOf`：后端 `last_seq` 与本地已见集合的较大值。
+  // 全局流没有 per-target 游标，但这份读数仍是标读的上界（到达即已读）。
+  const maxSeq = Math.max(lastSeqOf(target.id), ...rendered.filter((m) => m.seq).map((m) => m.seq), 0);
   if (maxSeq <= target.last_read_seq) return;
   scheduleRead(target.id, maxSeq);
 }
@@ -4051,13 +4055,19 @@ async function deliver(pending) {
   }
 }
 
-/* ─── 事件流（SSE）：按 seq 追加渲染；断线重连带 last_seq 补拉 ──────────────
-   重连策略：断线时**主动关掉连接、稍后用最新游标重开**，而不是依赖浏览器带
-   `Last-Event-ID` 自动重连 —— 后者会用最初那个 `after_seq` 重新请求整段历史，
-   然后靠前端去重才能不掉包。用最新游标重开让「重连带 last_seq 补拉」这件事只有一条路径，
-   也就不会因为「去重写漏了一处」而出现重复或错序。
+/* ─── 事件流（SSE）：整页一条全局流；断线后带最新事实重开 ──────────────────
+   为什么是**一条全局流**：浏览器对单一 origin 的 HTTP/1.1 并发连接上限是 6 条，而 uvicorn 没有
+   多路复用。按 target 各开一条常驻 `EventSource`（2 频道 + 4 私信就是 6 条）会把连接池占满，
+   之后任何 `fetch`（发消息、切频道、刷新列表）与 F5 的文档请求都在排队——页面渲染出来了但
+   完全不响应。全局流把「连接数」与「target 数」解耦成两件事。
+
+   重连策略不变：断线时**主动关掉连接、稍后重开**，而不是依赖浏览器带 `Last-Event-ID` 自动重连
+   ——全局流不补拉（它没有单一 target 的游标），断线期间的变化由重连成功后的
+   `loadWorkspace({ silent: true, keepActive: true })` 全量重取补齐。
 */
 const STREAM_RETRY_MS = 1500;
+// 整页唯一的全局事件流端点：任意 target 的事件都从这里来，`target_id` 是帧内的归属正本。
+const GLOBAL_EVENT_PATH = '/api/events';
 
 /* live-only 运行事件（规格 §4.5 / ADR-0020）：`agent_event` / `team_assignment` / `plan_update` /
    `sop_event` / `approval_*`。它们没有可补拉的 seq，因此：
@@ -4115,46 +4125,26 @@ function recordLiveEvent(targetId, type, payload) {
 let wasOffline = false;
 
 function syncStreams() {
-  const wanted = new Set([
-    ...state.channels.map((channel) => channel.id),
-    ...state.dms.map((dm) => dm.id),
-  ]);
-  state.streams.forEach((_entry, targetId) => {
-    if (!wanted.has(targetId)) {
-      closeStream(targetId);
-    }
-  });
-  wanted.forEach((targetId) => {
-    if (!state.streams.has(targetId)) openStream(targetId);
-  });
+  // 整页**至多一条**流：target 集合的增减不再开关连接（连接数与 target 数解耦）。
+  // 全局流收到任意 target 的事件，归属由帧里的 `target_id` 给出（见 `handleGlobalStreamEvent`）。
+  if (typeof EventSource === 'undefined') return; // 测试替身 / 极旧浏览器：没有流也不抛
+  if (state.stream) return;
+  const entry = { source: null, timer: null, rotating: false };
+  state.stream = entry;
+  connectStream(entry);
 }
 
-function closeStream(targetId) {
-  const entry = state.streams.get(targetId);
-  if (!entry) return;
-  state.streams.delete(targetId);
-  if (entry.timer) clearTimeout(entry.timer);
-  if (entry.source) entry.source.close();
-}
-
-function openStream(targetId) {
-  const entry = { source: null, timer: null };
-  state.streams.set(targetId, entry);
-  connectStream(targetId, entry);
-}
-
-function connectStream(targetId, entry) {
-  // 每一轮重连都重新取一次游标：它就是「我已经看到哪一条」的最新事实。
-  const cursor = lastSeqOf(targetId);
-  const source = new EventSource(targetPath(targetId, '/events') + '?after_seq=' + cursor);
+function connectStream(entry) {
+  if (typeof EventSource === 'undefined') return;
+  // 全局流不带 target、不带游标：它不补拉（重连补齐由 `loadWorkspace` 的全量重取承担）。
+  const source = new EventSource(GLOBAL_EVENT_PATH);
   entry.source = source;
   // 服务端的例行轮换（event: rotate）不算掉线：它只是要求重新连一次。
   entry.rotating = false;
   source.addEventListener('rotate', () => {
     entry.rotating = true;
     source.close();
-    if (state.streams.get(targetId) !== entry) return;
-    entry.timer = setTimeout(() => connectStream(targetId, entry), 250);
+    entry.timer = setTimeout(() => connectStream(entry), 250);
   });
   source.onopen = () => {
     const recovered = state.streamState !== 'open';
@@ -4168,11 +4158,12 @@ function connectStream(targetId, entry) {
       loadWorkspace({ silent: true, keepActive: true });
     }
     // 运行面板的 live 事件不补拉（ADR-0020）：重连成功后按快照兜底，把断线期间
-    // 的分派 / Plan / SOP 变化读回来。面板没开或不是这个 target 时是空操作。
+    // 的分派 / Plan / SOP 变化读回来。面板没开时是空操作。
     if (recovered) {
-      refreshRunPanelFor(targetId);
-      // 审批同理：审批帧不补发，重连后按 pending 快照恢复；消失的 pending 显示 expired。
-      loadApprovalsFor(targetId);
+      refreshRunPanelFor();
+      // 审批同理：审批帧不补发。全局流一断开就是**所有** target 都漏了帧，
+      // 因此按全工作区 pending 兜底（与 `loadWorkspace` 同一个写入口），不猜是哪一个 target。
+      loadPendingApprovals({ render: true });
     }
   };
   source.onerror = () => {
@@ -4185,15 +4176,39 @@ function connectStream(targetId, entry) {
     renderConnection();
     render();
     // 断开期间不可能有 in-flight 事实需要显示：清掉「正在回复」，等重连后的状态快照说实话。
-    delete state.activeRounds[targetId];
-    showTypingFor(targetId, null);
+    // 全局流断了就是**所有** target 都断了；唯一例外是任务 dock 自己那条流（`connectTaskStream`），
+    // 它还活着，它的「正在回复」不该被这里抹掉。
+    const taskTargetId = state.activeTask ? state.activeTask.target_id : null;
+    Object.keys(state.activeRounds).forEach((key) => {
+      if (key !== taskTargetId) delete state.activeRounds[key];
+    });
+    Object.keys(state.typing).forEach((key) => {
+      if (key !== taskTargetId) delete state.typing[key];
+    });
+    renderTyping();
     source.close();
-    if (state.streams.get(targetId) !== entry) return; // 已被换掉（频道删除等）
-    entry.timer = setTimeout(() => connectStream(targetId, entry), STREAM_RETRY_MS);
+    entry.timer = setTimeout(() => connectStream(entry), STREAM_RETRY_MS);
   };
   ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {
-    source.addEventListener(type, (event) => handleStreamEvent(targetId, event, type));
+    source.addEventListener(type, (event) => handleGlobalStreamEvent(event, type));
   });
+}
+
+/** 全局流的帧分流：`payload.target_id` 是归属正本，然后完全复用既有的按 target 消费。
+
+    缺 `target_id` 的帧**丢弃**：不猜归属，也不写任何 target 的 `seenSeqs`——那份集合同时是
+    「我已经看到哪一条」的游标（`lastSeqOf`），错记一次就会让全量重取的兜底少一条。
+*/
+function handleGlobalStreamEvent(event, type) {
+  let payload = null;
+  try {
+    payload = JSON.parse(event.data);
+  } catch {
+    return; // 解不开的帧直接丢弃：它不可能是后端发出的
+  }
+  const targetId = payload && payload.target_id;
+  if (!targetId) return;
+  handleStreamEvent(targetId, event, type);
 }
 
 function handleStreamEvent(targetId, event, type) {

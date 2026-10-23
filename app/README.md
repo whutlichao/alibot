@@ -3,7 +3,7 @@
 在 #① 的频道消息闭环之上，把 **Agent 做成数据库里的成员行 + 模型配置**：新建 Agent（名称 +
 角色 + 模型 + 系统提示）→ 启用远端模型前显式告知并确认数据面 → 在频道里 `@` 它 → 后端进程内的
 AgentScope agent 真的读到这条消息并**自判**回应 / 忽略 / 失败 → 回复不经刷新就出现在消息流里，
-断线后带 `last_seq` 自动补齐。
+断线后自动补齐（per-target 流带 `last_seq` 补拉，工作台唯一那条全局流靠全量重取，见「实时呈现」）。
 
 本目录服务两面（规格 §1）：**HTTP 面属于人类面**（浏览器与人自己的脚本），**成员面**由后端进程内
 的唤醒编排驱动。Agent 的任何动作**不经 HTTP**，因此没有 agent 令牌，也不存在「以某成员名义调
@@ -74,7 +74,7 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 | 库文件 | `<数据目录>/alibot.db`（单文件 SQLite，WAL 模式） |
 | 附件字节 | `<数据目录>/attachments/<附件标识>`（**不进 SQLite**；库里只存相对路径，因此整个数据目录可整体搬迁） |
 | 迁移审计台账 | `<数据目录>/schema-migrations.jsonl` |
-| 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾、浏览器带 `last_seq` 重连） |
+| 事件流单连接寿命 | `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒，到期服务端主动收尾；前端按既有纪律重连：per-target 流带 `last_seq`，全局流重开后全量重取） |
 
 数据目录按**固定优先级**解析（结果是确定值，不靠时间戳或遍历顺序）：
 
@@ -516,19 +516,30 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | `approval_resolved` | 审批结果回执（`reply_id` / `state` / `decisions`） | 否 |
 
 **补拉由后端读库完成**：连接建立时先发 `seq > after_seq` 的消息与轮次结果，再发一份当前状态点
-快照，然后进入实时推送。前端**带最新 `last_seq` 重连**，因此重连既不会漏也不会重复。
+快照，然后进入实时推送。per-target 流的**前端带最新 `last_seq` 重连**，因此重连既不会漏也不会重复
+（全局流不补拉，它靠全量重取，见下）。
 
 **只有 `message` 与 `round_outcome` 的 SSE 帧带 `id: <seq>`**；其余事件是 **live-only**，不发 `id` 行
 （ADR-0020）。否则浏览器会把 `Last-Event-ID` 推进到库里不存在的游标，重连补拉就会与消息游标混淆。
 新事件断线不补发，运行面板以 `GET /team-runs` / `GET /plan` / `GET /sop-runs/{id}` 的快照兜底；
 审批卡以 `GET /api/approvals?target_id=&state=pending` 兜底；`after_seq` 补拉仍只覆盖消息与轮次结果。
+
 线程关着时，Studio 另用 `GET /api/approvals?state=pending`（不带 `target_id`）读一次全工作区 pending，
 并在页面可见且在线时按 12s 有界刷新，驱动任务看板卡片 / 列表行角标与任务页签圆点（#209）；
 live `approval_*` 帧仍只补本次会话内的变化。
 
+**Studio 另有一条整页共用的全局流 `GET /api/events`**：任意 target 的事件都经它透传，帧里的
+`target_id` 是归属正本。它是**纯 live** 的——不接受 `after_seq`、不读库补拉、也不写 `id:` 行
+（重连补齐由前端 `loadWorkspace({silent, keepActive})` 的全量重取承担）。理由：浏览器对单一
+origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `EventSource` 会把连接池占满，
+之后的 `fetch` 与刷新都排队。三个 per-target 端点全部保留、语义不变；任务 dock 的
+`/api/tasks/{id}/events` 仍是独立一条（全局流 + 任务流 = 2 条；任务 target 的帧两条都在收，运行面板
+按 id 合并渲染，不会出现两行）。
+
 单条连接在 `ALIBOT_SSE_ROTATE_SECONDS`（默认 55 秒）后由服务端主动收尾并先发一个
 `event: rotate` 帧：前端据此**区分「例行轮换」与「后端不可达」**，不会因为轮换而误报掉线，
-随后立刻带最新 `last_seq` 重连。这个轮换同时保证优雅关停不会卡在长连接上。
+随后立刻重连（per-target 流带最新 `last_seq`；全局流重开后由 `loadWorkspace` 全量重取补齐）。
+这个轮换同时保证优雅关停不会卡在长连接上。
 
 状态点四态（`--online` 空闲 / `--working` 正在回复 / `--error` 出错 / `--offline` 未启用）
 **只表达后端事实**，不从任何会话存活推导；`working` 脉冲在 `prefers-reduced-motion: reduce` 下关闭。
@@ -565,6 +576,7 @@ live `approval_*` 帧仍只补本次会话内的变化。
 | `GET /api/channels/{id}/budget` | 有界响应预算（后端持久事实）：`{epoch_seq, limit, used, remaining, source, pending_limit}`。`limit` = 当前人类世代的**有效上界**（`remaining` 按它算），`source` = `channel-override` / `built-in-default`，`pending_limit` = 已保存、**从下一个人类世代起生效**的上界（无待生效差异时 `null`）。频道覆盖存 `channel_budget_limit`，本世代生效值存 `target_budget.applied_limit` 快照 |
 | `PATCH /api/channels/{id}/budget` | 保存回应预算**上界** `{budget_limit}`，只接受固定档位 `3` / `5` / `10`（默认 3）；其它取值**整体拒绝**、不留半成品。**用量不可写**：请求体带 `used`（或 `remaining` / `epoch_seq` / `applied_limit`）一律整体拒绝。成功返回刷新后的读数（与 `GET` 同形）；当前世代不被回溯改写，新值从**下一个人类世代**生效 |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
+| `GET /api/events` | 全局事件流（SSE，纯 live：不补拉、不发 `id:` 行；Studio 整页只用这一条） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
 | `GET /api/agents` | Agent 成员 + 模型配置（含 **`auto_claim`**）+ 四态状态点 + 「为什么未启用」+ **概览读数**（`stats`） |
 | `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；`auto_claim` 缺省开启，见 ADR-0029） |
