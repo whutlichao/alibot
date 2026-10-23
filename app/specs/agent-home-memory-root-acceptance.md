@@ -87,9 +87,9 @@ scripts/check.sh
 读数（本地，macOS，2026-10-24）：
 
 ```text
-1162 passed, 11 skipped in 670.01s (0:11:10)      ← pytest（全量）
+1164 passed, 11 skipped in 647.54s (0:10:47)      ← pytest（全量）
 All checks passed!                                ← ruff check app
-309 files already formatted                       ← ruff format --check app
+310 files already formatted                       ← ruff format --check app
 Success: no issues found in 123 source files      ← mypy（仓库根）
 0 errors, 0 warnings, 0 informations              ← pyright app/alibot app/tests
 ℹ tests 284  ℹ pass 284  ℹ fail 0                 ← node --test app/tests/*.test.cjs

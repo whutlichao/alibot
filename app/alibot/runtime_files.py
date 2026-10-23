@@ -41,8 +41,11 @@ class PartitionBackend(BackendBase):
       ``None`` 表示整棵子树可写（既有行为）。
     - ``read_only_dirs``：只读分区（会话卸载目录）。
     - ``writable_dirs``：**额外**的可写分区（有项目根时的全局家目录），每项自带白名单。
-    - ``anchor_relative``：相对路径是否锚到主分区。有项目根的轮次里相对路径仍从**频道项目根**
-      起算，因此那时为 ``False``——相对路径直接判成「不在本分区」，交给项目根的守卫。
+
+    相对路径只有一个锚点：**主分区**（``visible_dir``，记忆家目录）。有项目根的轮次里相对路径属于
+    项目根——那一层由 :class:`PartitionPermissionMiddleware` 的 ``strict=False`` 先把路径锚到
+    进程 cwd 再交给项目根守卫，本类拿到的已是绝对路径；家目录对它们只是「显式白名单例外」
+    （ADR-0032 §五）。不存在第二个开关，因此不会出现「注释说锚项目根、实参恒锚家目录」。
     """
 
     def __init__(
@@ -55,7 +58,6 @@ class PartitionBackend(BackendBase):
         read_only_dirs: tuple[tuple[Path, str], ...] = (),
         writable_dirs: tuple[tuple[Path, str, Any], ...] = (),
         write_filter: Any = None,
-        anchor_relative: bool = True,
     ) -> None:
         self.backend = backend
         self.host_dir = host_dir.absolute()
@@ -67,7 +69,6 @@ class PartitionBackend(BackendBase):
             for host, visible, write_filter_of in writable_dirs
         ]
         self.write_filter = write_filter
-        self.anchor_relative = anchor_relative
 
     # ── 路径解析 ────────────────────────────────────────────────────────────
     @staticmethod
@@ -101,9 +102,13 @@ class PartitionBackend(BackendBase):
         return roots
 
     def resolve(self, path: str, *, write: bool = False) -> str:
+        """绝对路径原样归一化；相对路径锚到主分区（直接调 backend 时的机械默认值）。
+
+        工具调用的锚点不在这里：:class:`PartitionPermissionMiddleware` 的宽松档会先把相对路径
+        锚到进程 cwd（项目根守卫的地盘），本类只拿到绝对路径。锚点开关只有 ``strict`` 一个。
+        """
         requested = Path(path)
-        relative_input = not requested.is_absolute()
-        if relative_input and self.anchor_relative:
+        if not requested.is_absolute():
             requested = self.visible_dir / requested
         normalized = Path(os.path.normpath(requested))
         if write:
@@ -112,8 +117,6 @@ class PartitionBackend(BackendBase):
                 if relative is None:
                     continue
                 if write_filter_of is not None and not write_filter_of(relative):
-                    if relative_input and not self.anchor_relative:
-                        break  # 相对路径从项目根起算：交给项目根的守卫，不在这里判只读
                     raise ReadOnlyPathError(path)
                 return str(normalized)
             raise PermissionError(f"path escapes runtime directories: {path!r}")
@@ -187,6 +190,8 @@ class PartitionPermissionMiddleware(MiddlewareBase):
     没有 ``WorkspaceRootGuard`` 把相对路径锚到项目根）。此时相对路径锚到记忆分区，且越界
     与只读一律给出可读拒绝；为假时（有项目根）相对路径仍从频道项目根起算，本层只拦家目录
     白名单与登记工作目录。
+
+    ``strict`` 是工具调用相对路径锚点的**唯一**判据：严格档锚到本分区，宽松档交给项目根守卫。
     """
 
     def __init__(self, backend: PartitionBackend, *, strict: bool = False) -> None:
@@ -194,7 +199,11 @@ class PartitionPermissionMiddleware(MiddlewareBase):
         self.strict = strict
 
     def _anchor(self, path: str) -> str:
-        """相对路径的锚点：严格档锚到分区，宽松档锚到进程 cwd（交给项目根守卫）。"""
+        """相对路径的锚点：严格档锚到分区（记忆家目录），宽松档锚到进程 cwd 交给项目根守卫。
+
+        宽松档**不**锚到家目录：有项目根的轮次里相对路径属于项目根，家目录只是绝对路径的
+        显式白名单例外（ADR-0032 §五）。``strict`` 是这一判断的唯一判据。
+        """
         if self.strict or os.path.isabs(path):
             return path
         return os.path.join(os.getcwd(), path)

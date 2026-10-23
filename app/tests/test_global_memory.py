@@ -19,10 +19,12 @@ from agentscope.agent import Agent
 from agentscope.message import TextBlock
 from agentscope.middleware import AgenticMemoryMiddleware
 from agentscope.model import ChatResponse
+from agentscope.permission import PermissionDecision
 from agentscope.tool import LocalBackend
 from alibot.memory import GlobalMemoryReadMiddleware, assemble_memory
 from alibot.permissions import build_permission_context
-from alibot.workspace import WorkspaceSettings
+from alibot.runtime_files import PartitionBackend, PartitionPermissionMiddleware
+from alibot.workspace import WorkspaceSettings, is_memory_file_path
 
 from tests.test_approval_seam import _ScriptedModel, _StubModelSeam, _tool_call
 
@@ -86,6 +88,18 @@ def _global_memory(global_root: Path, content: str = GLOBAL_TEXT) -> Path:
 
 def _snapshot(path: Path) -> tuple[int, bytes]:
     return path.stat().st_mtime_ns, path.read_bytes()
+
+
+async def _check_write(middleware: PartitionPermissionMiddleware, path: str) -> Any:
+    """跑一次 ``Write`` 的权限判定；放行时返回下游标记，拒绝时返回 ``PermissionDecision``。"""
+    tool = SimpleNamespace(name="Write")
+
+    async def _next(**_kwargs: Any) -> str:
+        return "delegated"
+
+    return await middleware.on_check_permission(
+        None, {"tool": tool, "tool_input": {"file_path": path}, "tool_call": None}, _next
+    )
 
 
 def _listing(root: Path) -> list[str]:
@@ -357,6 +371,63 @@ def test_dm_working_directories_are_the_global_home_only(
     assert outcome.status == "replied", outcome.reason
     directories = captured[0]["state"].permission_context.working_directories
     assert set(directories) == {str(_global_home(global_root))}
+
+
+def test_a_relative_path_in_a_project_round_stays_under_the_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相对路径的锚点只有 ``strict`` 一处：有项目根时它锚项目根，**不**锚到记忆家目录。
+
+    端到端事实：相对路径的 ``MEMORY.md`` 落到 ``<项目根>/MEMORY.md``，全局家目录里的
+    ``MEMORY.md`` 字节不变（家目录不是第二个工作根，ADR-0032 §五）。
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    global_root = _global_root(tmp_path, monkeypatch)
+    global_memory = _global_memory(global_root)
+    before = _snapshot(global_memory)
+    monkeypatch.chdir(project)
+    model = _MemoryModel(
+        [
+            _tool_call("write-relative", "Write", {"file_path": "MEMORY.md", "content": "项目相对记忆。"}),
+            [ChatResponse(content=[TextBlock(text="写好了")], is_last=True)],
+        ]
+    )
+    seam = _StubModelSeam(
+        model,
+        workspace_of=lambda *_: WorkspaceSettings(root=str(project), permission_mode="trusted-writes"),
+        global_home=str(global_root),
+    )
+    outcome = seam.run_round(
+        {"id": MEMBER, "model_id": "openai:stub", "memory_mode": "agentic"},
+        [{"body": "写记忆", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id="channel",
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    assert (project / "MEMORY.md").read_text(encoding="utf-8") == "项目相对记忆。"
+    assert _snapshot(global_memory) == before, "相对路径不得被锚到记忆家目录"
+
+
+def test_the_strict_flag_alone_decides_whether_a_relative_path_is_reanchored(tmp_path: Path) -> None:
+    """``strict`` 是相对路径锚点的**唯一**判据（区分“删除 ``anchor_relative``”与“恒为 ``True``”）。
+
+    严格档（无项目根：本层是唯一准入面）把相对路径锚到记忆分区，因此根下的 ``AGENTS.md``
+    撞上白名单 → 可读拒绝；宽松档（有项目根）**不**锚家目录，相对路径原样交给项目根守卫，
+    本层不自行判只读。旧实现（``anchor_relative`` 恒 ``True``）会让宽松档也锚到家目录，
+    于是 ``strict=False`` 的那一行变成 ``path is read-only``，这条断言就会失败。
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    backend = PartitionBackend(LocalBackend(), home, str(home), write_filter=is_memory_file_path)
+    decisions = {
+        strict: asyncio.run(_check_write(PartitionPermissionMiddleware(backend, strict=strict), "AGENTS.md"))
+        for strict in (True, False)
+    }
+
+    assert "path is read-only" in str(getattr(decisions[True], "message", "")), decisions[True]
+    assert not isinstance(decisions[False], PermissionDecision), "宽松档不得把相对路径锚到记忆家目录"
 
 
 # ─── 5. 守卫与降级：越界 symlink、缺失、非 UTF-8、不可读 ────────────────

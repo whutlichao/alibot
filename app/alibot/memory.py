@@ -211,8 +211,10 @@ def assemble_memory(
             path=str(visible), source="alibot-memory"
         )
     middlewares = [
-        # 记忆工具是本轮唯一的文件工具时（无项目根 / 工作区没装配起来）才由这一层兜住路径：
-        # 有项目根的轮次里相对路径仍从项目根起算，这一层只负责家目录白名单与工作目录登记。
+        # 相对路径的锚点只有一处：本层 ``strict``。无项目根（或工作区没装配起来）时它是唯一准入面，
+        # 相对路径锚到记忆家目录；有项目根时为 ``False``，相对路径仍从项目根起算、交给
+        # ``WorkspacePathPermissionMiddleware`` + ``WorkspaceRootGuard``，本层只负责家目录白名单
+        # 与工作目录登记（全局家目录只是绝对路径的显式例外，不是第二个工作根）。
         PartitionPermissionMiddleware(backend, strict=mount is None),
         *global_middlewares,
         AgenticMemoryMiddleware(workdir=str(visible_workdir), memory_dir=".", backend=backend),
