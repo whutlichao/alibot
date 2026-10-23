@@ -1971,8 +1971,11 @@ def create_app(
         全量重取承担，与 ADR-0020「live-only 事件不补拉、``messages`` 才是正本」一致；
         浏览器因此不会把 ``Last-Event-ID`` 推到任何游标上。
 
-        **不发 ``round.active`` 快照**：全局流没有单一 target 的语义，各 target 的停止句柄快照仍由
-        既有的 per-target 流或 ``loadWorkspace`` 的快照提供。这里只透传总线事件，保持最小面。
+        **不发 ``round.active`` 快照**：全局流没有单一 target 的语义。代价要写明白——Studio 现在
+        **不再开任何 per-target 流**，``/api/workspace`` 也不带 active-rounds 字段，所以「有一轮
+        in-flight 时按 F5」不会再由连接快照立刻恢复停止按钮，而要等下一帧带它的 live 事件
+        （``REPLY_START`` / ``round.active``）。要补的话正路是给工作台快照加 active-rounds，
+        而不是把 ``round.active`` 塞回全局流。
 
         既有的 ``/api/channels/{id}/events`` / ``/api/dms/{id}/events`` / ``/api/tasks/{id}/events``
         全部保留（不删、不改语义），本端点只是新增的一条路。

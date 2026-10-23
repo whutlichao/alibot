@@ -4129,10 +4129,6 @@ function syncStreams() {
   // 全局流收到任意 target 的事件，归属由帧里的 `target_id` 给出（见 `handleGlobalStreamEvent`）。
   if (typeof EventSource === 'undefined') return; // 测试替身 / 极旧浏览器：没有流也不抛
   if (state.stream) return;
-  openStream();
-}
-
-function openStream() {
   const entry = { source: null, timer: null, rotating: false };
   state.stream = entry;
   connectStream(entry);
@@ -4148,7 +4144,6 @@ function connectStream(entry) {
   source.addEventListener('rotate', () => {
     entry.rotating = true;
     source.close();
-    if (state.stream !== entry) return;
     entry.timer = setTimeout(() => connectStream(entry), 250);
   });
   source.onopen = () => {
@@ -4166,7 +4161,7 @@ function connectStream(entry) {
     // 的分派 / Plan / SOP 变化读回来。面板没开时是空操作。
     if (recovered) {
       refreshRunPanelFor();
-      // 审批同理：审批帧不补发。全局流一段开就是**所有** target 都漏了帧，
+      // 审批同理：审批帧不补发。全局流一断开就是**所有** target 都漏了帧，
       // 因此按全工作区 pending 兜底（与 `loadWorkspace` 同一个写入口），不猜是哪一个 target。
       loadPendingApprovals({ render: true });
     }
@@ -4192,7 +4187,6 @@ function connectStream(entry) {
     });
     renderTyping();
     source.close();
-    if (state.stream !== entry) return; // 已被换掉（关停等）
     entry.timer = setTimeout(() => connectStream(entry), STREAM_RETRY_MS);
   };
   ['message', 'member_status', 'typing', 'round_outcome', ...LIVE_EVENT_TYPES].forEach((type) => {

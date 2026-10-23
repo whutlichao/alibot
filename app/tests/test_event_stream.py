@@ -925,15 +925,23 @@ def test_global_event_stream_forwards_any_target_without_id_lines(live: dict) ->
     ]
 
 
-def test_global_event_stream_rotates_and_sends_no_replay_before_it(data_dir: Path, monkeypatch) -> None:
-    """到 ``SSE_STREAM_MAX_SECONDS`` 发 ``event: rotate`` 后正常收尾，且轮换前没有任何补拉帧。"""
-    monkeypatch.setenv("ALIBOT_SSE_ROTATE_SECONDS", "1")
+def test_global_event_stream_rotates_and_sends_no_replay_before_it(data_dir: Path) -> None:
+    """到 ``SSE_STREAM_MAX_SECONDS`` 发 ``event: rotate`` 后正常收尾，且轮换前没有任何补拉帧。
+
+    这里**不**改 ``ALIBOT_SSE_ROTATE_SECONDS``：那个环境变量在 ``alibot.api`` **导入期**就被绑成
+    模块常量（``SSE_STREAM_MAX_SECONDS``），而本文件早已导入它，``monkeypatch.setenv`` 对已导入的
+    模块无效（既有 ``test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage`` 也有这层
+    局限）。要真正缩短只能改产品读 env 的时机——那是另一张票。本用例因此跑默认寿命（55 秒），
+    也顺便验证到期后**流会自己结束**：轮换帧之后迭代器应当收尾，不再有命名事件。
+    """
     scheduler, seam = ManualScheduler(), ScriptedAgentSeam()
     with (
         live_backend(data_dir, scheduler=scheduler, seam=seam) as base_url,
-        httpx.Client(base_url=base_url, timeout=httpx.Timeout(30.0, read=None), trust_env=False) as http,
+        httpx.Client(base_url=base_url, timeout=httpx.Timeout(90.0, read=None), trust_env=False) as http,
     ):
         names: list[str] = []
+        after_rotate: list[str] = []
+        rotated = False
         with http.stream("GET", "/api/events") as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
@@ -942,9 +950,15 @@ def test_global_event_stream_rotates_and_sends_no_replay_before_it(data_dir: Pat
                 text = line.decode() if isinstance(line, bytes) else line
                 if text.startswith("event: "):
                     current = text[len("event: ") :]
-                    names.append(current)
+                    if rotated:
+                        after_rotate.append(current)
+                    else:
+                        names.append(current)
                 elif text.startswith("data: ") and current == "rotate":
-                    break
+                    rotated = True
+                    # 不 break：继续读到 EOF，验证「发完 rotate 就正常收尾」。
 
     # 全局流不补拉：轮换帧是连接建立后的**第一**个命名事件（之前只有 keep-alive 注释）。
     assert names == ["rotate"], names
+    assert rotated, "没等到 event: rotate"
+    assert after_rotate == [], f"rotate 之后还有帧，流没收尾：{after_rotate}"

@@ -289,6 +289,9 @@ function createHarness(options) {
   const config = options || {};
   const sources = [];
   const requests = [];
+  // 重连纪律的读数：`setTimeout(fn, delay)` 的 delay 原样记下来，用例才能断言“250ms / 1500ms”
+  // 这两个既有契约值（否则只证明了“会重连”，证明不了节奇）。
+  const timerDelays = [];
   const elements = new Map();
 
   class FakeEventSource {
@@ -362,7 +365,10 @@ function createHarness(options) {
     URLSearchParams,
     window: { addEventListener: () => {}, matchMedia: () => ({ matches: false }) },
     console,
-    setTimeout: (fn) => setImmediate(fn),
+    setTimeout: (fn, delay) => {
+      timerDelays.push(delay);
+      return setImmediate(fn);
+    },
     clearTimeout: () => {},
   };
   if (!config.noEventSource) globals.EventSource = FakeEventSource;
@@ -402,6 +408,7 @@ function createHarness(options) {
     api,
     sources,
     requests,
+    timerDelays,
     document,
     elementFor,
     targets: [...CHANNELS, ...DMS],
@@ -543,6 +550,7 @@ test("onerror ⇒ 不可达 + reconnecting，onopen 恢复并只保留一条流"
   await flush();
   assert.equal(harness.sources.length, 2, "重连只重开那一条全局流");
   assert.equal(harness.sources[1].url, "/api/events");
+  assert.ok(harness.timerDelays.includes(1500), `断线重连的既有节奇是 1500ms：${harness.timerDelays}`);
 
   harness.sources[1].onopen();
   assert.equal(harness.api.state.online, true, "onopen 恢复线上态");
@@ -565,6 +573,7 @@ test("rotate 只是例行轮换：不算掉线，250ms 后重连那一条流", a
   await flush();
   assert.equal(harness.sources.length, 2, "轮换后仍是一条流");
   assert.equal(first.closed, true);
+  assert.ok(harness.timerDelays.includes(250), `例行轮换的重连节奇是 250ms：${harness.timerDelays}`);
 });
 
 test("EventSource 不存在（测试替身 / 极旧浏览器）时 syncStreams 不抛错", async () => {
