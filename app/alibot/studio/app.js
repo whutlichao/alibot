@@ -4546,9 +4546,16 @@ function channelRowNode(channel) {
   return row;
 }
 
+/** 频道 / 私信行是否是当前行：Agent 详情开着时整份 rail 只有 Agent 行算当前行
+    （`activeAgentId` 是「打开着哪一个成员」的唯一正本），这两段让位；关闭详情后
+    它们按 `activeChannelId` 恢复原判据。整份 rail 因此同一时刻至多一行当前行。 */
+function targetRowIsCurrent(targetId) {
+  return !state.activeAgentId && targetId === state.activeChannelId;
+}
+
 /** 就地改写一行频道：当前行、名字、未读徽标。 */
 function paintChannelRow(row, channel) {
-  syncActiveRow(row, channel.id === state.activeChannelId);
+  syncActiveRow(row, targetRowIsCurrent(channel.id));
   setRailCellText(row, 'grow', channel.name);
   syncUnreadBadge(row, channel.unread_count, 'unread-' + channel.id);
 }
@@ -4574,7 +4581,7 @@ function dmRowNode(dm, status) {
 /** 就地改写一行私信：当前行、头像与名字、状态点、未读徽标。 */
 function paintDmRow(row, dm, status) {
   const peer = dm.peer;
-  syncActiveRow(row, dm.id === state.activeChannelId);
+  syncActiveRow(row, targetRowIsCurrent(dm.id));
   syncAvatarCell(row, peer.display_name, peer.avatar_slot, 'sm');
   setRailCellText(row, 'grow', peer.display_name);
   syncPresenceCell(row, status);
@@ -4630,6 +4637,16 @@ function renderMembers() {
     (row, member) => paintMemberRow(row, member, statusOfMember(member)),
   );
   $('#memberListEmpty').hidden = agents.length > 0;
+}
+
+/** 左栏三段的同一次收敛：`activeAgentId` / `activeChannelId` 变了之后，「当前行」必须
+    **立刻**在三段里各就各位（整份 rail 至多一行），而不是等下一次整体 `render()`。
+    打开 / 关闭 Agent 详情走的是局部重绘路径（`openAgentDetail()` / `leaveAgentView()`），
+    只重绘 Agent 段会让频道 / 私信行停在上一帧的当前行上。 */
+function renderRailRows() {
+  renderChannels();
+  renderDms();
+  renderMembers();
 }
 
 function statusOf(agent) {
@@ -4963,7 +4980,9 @@ async function openAgentDetail(memberId) {
   state.globalMcpServers = [];
   state.globalMcpError = '';
   setViewMode('agent');
-  renderMembers();
+  // 详情一打开，频道 / 私信行就得让位：这条路径不经过整体 `render()`，只重绘 Agent 段
+  // 会把频道行留在「当前行」上（两行同时高亮）。
+  renderRailRows();
   renderAgentDetail();
   await refreshAgentDetail(memberId);
 }
@@ -4985,12 +5004,15 @@ function closeAgentDetail() {
 }
 
 /** 切主线视图时离开详情（导航动作的公共出口）：丢弃草稿、清掉 `activeAgentId`。
-    与关闭详情同一条语义（不弹二次确认），但**不**恢复 dock 的开合——导航动作自己决定。 */
+    与关闭详情同一条语义（不弹二次确认），但**不**恢复 dock 的开合——导航动作自己决定。
+    离开后左栏三段的当前行立刻按 `activeChannelId` 重新落位：不经过整体 `render()` 的
+    出口（例如打开任务线程）否则会把 Agent 行留在当前行上。 */
 function leaveAgentView() {
   if (!state.activeAgentId) return;
   state.activeAgentId = null;
   resetAgentEditDraft();
   clearAgentDetail();
+  renderRailRows();
 }
 
 /** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。 */
