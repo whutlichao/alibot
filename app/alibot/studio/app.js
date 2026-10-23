@@ -1054,8 +1054,15 @@ function reminderRowNode(reminder) {
 }
 
 /* ─── 后端状态 → 前端 ───────────────────────────────────────────────── */
+// 工作台是否已**成功**载入过一轮。不能用 `state.ready`：它在失败分支也会置 true，
+// 而「首载失败 → 重连成功」的那一次仍属于票面说的「首次成功载入」，必须贴底。
+let workspaceLoaded = false;
+
 async function loadWorkspace(options) {
   const settings = options || {};
+  // 只有首次成功载入才把消息流停在最新一条；之后的重载（断线重连、`{ silent: true,
+  // keepActive: true }` 的静默刷新）不得强制滚动——用户可能正停在历史的某个位置。
+  const firstSuccessfulLoad = !workspaceLoaded;
   try {
     // 设置面先读：语言偏好与密度档位要在第一帧就是用户选的那一档。
     try {
@@ -1106,6 +1113,8 @@ async function loadWorkspace(options) {
     // （#209；全量读数已覆盖当前频道，不再另外按 target 读一次——live 帧不补发）。
     // `render: true`：刚进入工作区时消息面可能刚重建，无条件铺一次。
     await loadPendingApprovals({ render: true });
+    // 整轮读数都落地了才算「成功载入」：中途任何一步抛错都会走 catch，重连那一次才补得上贴底。
+    workspaceLoaded = true;
   } catch (err) {
     state.online = false;
     state.ready = true;
@@ -1117,6 +1126,8 @@ async function loadWorkspace(options) {
     scheduleReconnect();
   }
   render();
+  // 首次成功载入：消息面刚重建，贴到最新一条。
+  if (firstSuccessfulLoad && workspaceLoaded) scrollToBottom();
   // 正在查看的频道：读完快照后立即标读（刷新/重开浏览器走的就是这条路）。
   markCurrentRead();
 }
