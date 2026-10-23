@@ -134,6 +134,60 @@ test -f ~/.alibot/data/schema-migrations.jsonl
 # 5) 指向新位置：不传 --data-dir 即自动使用新默认；旧 ~/Alibot 此后被忽略（不删除）
 ```
 
+### 记忆与规则落点搬迁（ADR-0032）
+
+ADR-0032 起规则与记忆落点是**同构扁平的家目录**（见下面的「记忆落点」表）。应用**只读新路径**，
+旧路径一律不读取、不搬移、不删除——搬迁是人的显式动作，先备份再复制：
+
+```sh
+# 0) 停应用；先备份整个全局层（规则 / 技能 / 记忆都在这棵树里）
+mkdir -p ~/.alibot-backups
+cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
+
+# 1) 全局层：rules/AGENTS.md → AGENTS.md，memory/Memory/* → 根下
+for home in ~/.alibot/agents/*/; do
+  [ -d "$home/rules" ] && cp -n "$home/rules/AGENTS.md" "$home/AGENTS.md" 2>/dev/null
+  [ -d "$home/memory/Memory" ] && cp -n "$home/memory/Memory/"*.md "$home/" 2>/dev/null
+done
+
+# 2) 项目层：<ws>/.alibot/rules/<id>/AGENTS.md → <ws>/.alibot/agents/<id>/AGENTS.md
+#            <ws>/.alibot/memory/<id>/Memory/*.md → <ws>/.alibot/agents/<id>/
+for ws in /path/to/your/projects/*; do
+  for old in "$ws"/.alibot/rules/*/; do
+    [ -d "$old" ] || continue
+    id=$(basename "$old")
+    mkdir -p "$ws/.alibot/agents/$id"
+    cp -n "$old/AGENTS.md" "$ws/.alibot/agents/$id/AGENTS.md" 2>/dev/null
+  done
+  for old in "$ws"/.alibot/memory/*/Memory/; do
+    [ -d "$old" ] || continue
+    id=$(basename "$(dirname "$(dirname "$old")")")
+    mkdir -p "$ws/.alibot/agents/$id"
+    cp -n "$old"/*.md "$ws/.alibot/agents/$id/" 2>/dev/null
+  done
+done
+
+# 3) 数据目录侧的旧镜像层（无项目根轮次的旧落点）：
+#    ~/.alibot/data/.alibot/memory/<id>/Memory/*.md → ~/.alibot/agents/<id>/
+for old in ~/.alibot/data/.alibot/memory/*/Memory/; do
+  [ -d "$old" ] || continue
+  id=$(basename "$(dirname "$(dirname "$old")")")
+  mkdir -p ~/.alibot/agents/$id
+  cp -n "$old"/*.md ~/.alibot/agents/$id/ 2>/dev/null
+done
+
+# 4) 校验：新路径上有文件、旧路径原样还在（应用不再读它们，但搬迁前不删）
+ls ~/.alibot/agents/*/MEMORY.md ~/.alibot/agents/*/AGENTS.md 2>/dev/null
+```
+
+旧路径（`data/.alibot/memory/**`、`<ws>/.alibot/memory/**`、`<ws>/.alibot/rules/**`、
+`~/.alibot/agents/<id>/rules/**`、`.../memory/Memory/**`）在搬迁后可以自行清理——应用**不会**替你删。
+
+**旧 sessions 可直接弃用**：`~/.alibot/data/.alibot/sessions/**` 与
+`<ws>/.alibot/sessions/**` 里的旧 `state.json` 是**运行状态**，不是事实正本；消息正本在库里，
+所以丢掉它只影响下一轮的续接质量（压缩摘要与工具缓存需要重新积累），不会丢消息。无项目根的轮次
+现在落在 `<数据目录>/sessions/`（ADR-0032 §四），旧镜像层不再被写入。
+
 从首版升级（ADR-0015）：**启动仍然拒绝** schema 版本与本版不等的库（不猜、不跳过），但报错正文会直接给出
 迁移命令与备份指引；把旧库升到本版要**显式**执行 `python -m alibot --migrate --data-dir <数据目录>`
 （迁移前自动备份整目录、单事务收口、幂等；`--migrate --dry-run` 在临时副本上预演完整链，并打出原库
