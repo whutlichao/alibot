@@ -246,9 +246,9 @@ EXIT=0
 | 项 | 值 |
 | --- | --- |
 | worktree | 干净（`git status --short` 空；`.venv` 是本地符号链接、已被 gitignore） |
-| 提交 | `06a8530` fix（实现 + 前端/后端用例 + README）/ `b2cb0af` refactor（双轴 review 收敛：文档同步 + app.js 清死代码 + 用例真实性）/ 本文件与 PR body 随第三个提交入库 |
+| 提交 | `06a8530` fix（实现 + 前端/后端用例 + README）/ `b2cb0af` refactor（双轴 review 收敛：文档同步 + app.js 清死代码 + 用例真实性）/ `651cc1a` docs（本文件与 PR body）/ 最后一笔 docs 只回填 PR 号 |
 | 分支 | `studio-global-event-stream` 已推送 |
-| PR | PRURL_PLACEHOLDER，head = 本票最终提交 |
+| PR | [#251](https://github.com/whutlichao/alibot/pull/251)，head = 本票最终提交 |
 | issue | [#250](https://github.com/whutlichao/alibot/issues/250)（`ready-for-agent` 标签），PR body 带 `Closes #250` |
 
 ---
