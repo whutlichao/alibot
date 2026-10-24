@@ -139,6 +139,104 @@ Success: no issues found in 125 source files
 这一新事实的旧断言（`test_global_mcp` / `test_global_skills` ×2 / `test_home_isolation`），已按新契约改写
 （只过滤/允许 `agents/<id>/reme/**`，技能与 MCP 层仍零创建）。
 
+## 远端 CI 红 → 绿（follow-up：修 #268 门禁）
+
+PR #268 的首个远端读数**不是**绿：本地 `scripts/check.sh` 全绿，CI 在 `f3c7d1b` 上红。
+
+### 红读数（远端）
+
+```text
+run:   https://github.com/whutlichao/alibot/actions/runs/40109384338
+head:  f3c7d1b220802897a5821fd9eb60942fe5e603f2
+结果:  exit 1，14m9s，13 failed / 1169 passed / 2 skipped
+```
+
+13 条失败全部是 `pytest.PytestUnraisableExceptionWarning`，根对象是 pin 住的 ReMe 未关闭文件句柄：
+
+```text
+ResourceWarning: unclosed file <_io.TextIOWrapper name='.../site-packages/reme/components/tokenizer/stopwords' mode='r' encoding='utf-8'>
+Exception ignored in: <_io.FileIO name='.../site-packages/reme/components/tokenizer/stopwords' mode='rb' closefd=True>
+```
+
+受害者（GC 落点，不是肇事者）集中在 `tests/test_global_mcp.py`（3）、`tests/test_global_rules.py`（6）、
+`tests/test_global_skills.py`（4）；`app/pyproject.toml` 的 `filterwarnings = ["error"]` 把这条 warning
+变成失败。
+
+### 根因
+
+- pinned `agentscope==2.0.10` 的 `ReMeMiddleware` 把嵌入应用的启动**懒放**在第一个 job 里
+  （`_run_job` → `_ensure_started()`）；`close()` 只在 `_started` 为真时关应用。
+- 本轮的检索是**可被取消的后台 task**：`on_reply` 开 `asyncio.create_task(self._search(...))`，
+  收尾的 `finally` 对它 `cancel()` + `await`。取消若落在上游 `aiofiles` 的
+  `AiofilesContextManager.__aenter__` 里（`_open` 正在 `run_in_executor` 里同步 `open()`），
+  已经打开的原始文件就没人关：`__aexit__` 不会执行，`close()` 也救不了（应用还没标记 started）。
+- 远端没有开 tracemalloc，取消的精确落点不可见；但本地按这一机制确定性复现出的 warning 与 CI
+  逐字同类，且修复后同一读数消失。
+- 该句柄只在 GC 时报 `ResourceWarning`，于是失败落在**之后任一条**测试上——CI 上就是 36–42%
+  区间的那 13 条；本地是否复现取决于取消恰好落在哪个 await 上，是夹在时间窗里的竞态。
+
+### 判据化复现（本地，修复前红）
+
+正常跑全量在本机绿（1173 passed / 11 skipped；另加「每轮测试前后 `gc.collect()`」的仓库外插件
+也是 1173 passed），因为取消没有落进那个窗口。因此把窗口放大成确定的：替换
+`aiofiles.threadpool.sync_open` 为「先 set 事件再 sleep 0.3s」，等事件后取消一条检索。
+
+```text
+$ cd app && ../.venv/bin/python -m pytest \
+    tests/test_runtime_memory.py::test_a_cancelled_assembly_does_not_leak_the_tokenizer_file
+E       AssertionError: ReMe 的启动不能发生在可取消的后台检索里
+FAILED tests/test_runtime_memory.py::test_a_cancelled_assembly_does_not_leak_the_tokenizer_file
+ERROR tests/test_runtime_memory.py::test_a_cancelled_assembly_does_not_leak_the_tokenizer_file
+  - pytest.PytestUnraisableExceptionWarning: Exception ignored in: <_io.FileIO
+    name='.../reme/components/tokenizer/stopwords' mode='rb' closefd=True>
+1 failed, 1 error in 0.70s
+```
+
+与远端 CI 的 warning 逐字同类（同一个 stopwords 句柄、同一个 `Exception ignored in`）。
+
+### 修复（装配层收口，不改第三方、不改 pin）
+
+`app/alibot/memory.py`：
+
+- `assemble_memory` 返回前**确定性启动**：新增 `_start_middleware()` 调 pinned 2.0.10 的私有
+  `ReMeMiddleware._ensure_started()`，并包一层 `asyncio.shield`——取消照旧传出去，但启动先跑完，
+  再交给调用方 `close()`；启动失败则降级为「这一轮没有记忆」并记日志（不改变轮次结论）。
+- 于是「启动」不再发生在任何可取消的后台检索里；CI 上那些轮次的检索任务只会 `run_job`，
+  不再碰到 `aiofiles` 的开启窗口。
+- 私有成员按 §2.3 的「wheel 实测」处置，并在偏离账本登记 **D13**（版本 pin、私有符号、再评估条件）。
+
+同一命令修复后：
+
+```text
+$ cd app && ../.venv/bin/python -m pytest \
+    tests/test_runtime_memory.py::test_a_cancelled_assembly_does_not_leak_the_tokenizer_file
+1 passed in 2.70s
+```
+
+同一文件的装配用例同时钉住「返回前已启动」：`_FakeReMeMiddleware.started == 1`。
+
+### 修复后读数
+
+本地全量 `scripts/check.sh`（仓库根，退出 0）：
+
+```text
+== pytest（全量）
+1174 passed, 11 skipped in 740.87s (0:12:20)
+
+== ruff check
+All checks passed!
+== ruff format --check
+329 files already formatted
+== mypy（仓库根）
+Success: no issues found in 125 source files
+== pyright
+0 errors, 0 warnings, 0 informations
+== node --test app/tests/*.test.cjs
+ℹ tests 319 / pass 319 / fail 0
+```
+
+`Closes #267` 与 Door=**单向门**不变；本 follow-up **不合并**。
+
 ## 双轴 review（Standards + Spec）
 
 两个只读 reviewer 并行跑 `git diff main...HEAD`（单提交 `d73f2b4`），票面正本 = issue #267 正文，
