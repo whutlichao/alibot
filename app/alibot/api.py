@@ -1683,6 +1683,21 @@ def create_app(
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 
+    @app.delete("/api/agents/{member_id}")
+    def delete_agent(member_id: str) -> dict[str, Any]:
+        """软删除一个 Agent（人类面动作）：行保留、移出全部频道与任务线程。
+
+        这是**配置 / 身份类**写路径，不是一次发言：不落消息、不唤醒、不消耗预算、不开世代，
+        历史消息 / 任务 / DM target / ``round_outcome`` 一律保留（消息 append-only，ADR-0001）。
+        只接受未删除的 Agent；owner、未知 id 与已删除的成员都是可读 404——因此第二次删除
+        也给出「已不存在」的 404，而不是静默的幂等 204。
+
+        响应形状与 ``POST`` / ``PATCH`` 同一条纪律（``deleted`` + 最新 ``agents`` / ``members``）：
+        前端一次调用就能关闭详情、刷新左栏与成员面板。
+        """
+        deleted = service.delete_agent(member_id)
+        return {"deleted": deleted, "agents": service.agents(), "members": database.list_members()}
+
     @app.get("/api/agents/{member_id}/status")
     def get_agent_status(member_id: str) -> dict[str, Any]:
         return service.member_status(member_id)
@@ -2071,16 +2086,16 @@ def create_app(
 
     @app.api_route(
         "/api/agents/{member_id}",
-        methods=["PUT", "DELETE"],
+        methods=["PUT"],
         include_in_schema=False,
     )
-    def no_agent_mutation(member_id: str) -> JSONResponse:
-        """Agent 是成员行，只能创建与编辑（编辑走上面的 ``PATCH``）：本票没有删除端点。
+    def no_agent_replacement(member_id: str) -> JSONResponse:
+        """Agent 的整体替换（``PUT``）不开放：删除已由上面的 ``DELETE`` 承担。
 
-        ``PUT`` 也不留：整体替换一个配置对象会绕开「部分更新」这条显式的语义（每个字段缺省
-        即保持原值，而整体替换里缺省就是清空），两者混在一个路径上迟早会被读错。
+        整体替换一个配置对象会绕开「部分更新」这条显式的语义（每个字段缺省即保持原值，
+        而整体替换里缺省就是清空），两者混在一个路径上迟早会被读错。
         """
-        return _not_found(_render_copy("error.agent_delete_unsupported"))
+        return _not_found(_render_copy("error.agent_replace_unsupported"))
 
     # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
     app.mount("/studio", NoCacheStaticFiles(directory=str(studio_dir()), html=True), name="studio")

@@ -247,6 +247,8 @@ const I18N_CATALOGS = {
     'task.repliesEmpty': '还没有讨论，来写第一条回复',
     'task.historyEmpty': '暂无变更记录',
     'task.unassigned': '未认领',
+    // 删除后的任务历史仍指向原成员 id；成员表里已没有它时显示这句可读回退（不露裸 id）。
+    'task.deletedAssignee': '已删除的成员',
     'task.unassignedPill': '未认领 · 点击指派',
     'task.reassignHint': '· 改派',
     'task.assignUnavailable': '暂时读不到该频道的成员表：指派候选不可用。',
@@ -412,11 +414,6 @@ const I18N_CATALOGS = {
     'agent.create': '创建 Agent',
     'agent.providerLocalHint': '本机模型：不离开本机，不需要数据流确认。',
     'agent.providerRemoteHint': '远端模型：启用前需要先确认数据会离开本机（见下方告知）。',
-    'agent.enabledLabel': '启用状态',
-    'agent.enabledOn': '启用',
-    'agent.enabledOnHint': '正常参与频道与任务',
-    'agent.enabledOff': '停用',
-    'agent.enabledOffHint': '不产出回复',
     'agent.autoClaimLabel': '自动认领任务',
     'agent.autoClaimOn': '开启',
     'agent.autoClaimOnHint': '新建任务后由编排接手',
@@ -482,6 +479,16 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': '已确认：{name}',
     'agentDetail.globalMcpRuntimeIdle': '尚无运行期读数',
     'agentDetail.globalMcpRuntimeConnected': '运行期已连接',
+    // 危险操作（本票）：暂停 / 删除搬进页面最后一个区块。说明必须点明两者的后果，
+    // 删除的确认文案带 Agent 名称与「不可撤销」——人在第二次点击前就能读到代价。
+    'agentDetail.sectionDanger': '危险操作',
+    'agentDetail.dangerHint':
+      '危险：暂停只停止产出回复（它仍会被唤醒并留下一条可读原因的失败轮次结果）；删除会把这个 Agent 从 Agent 列表与全部频道中移除，私信、历史消息与任务保留。以下动作请确认后再执行。',
+    'agentDetail.delete': '删除',
+    'agentDetail.deleteConfirm':
+      '确认删除「{name}」？它会立即从 Agent 列表与全部频道中移除并关闭详情；私信、历史消息与任务保留，但这个 Agent 无法恢复，操作不可撤销。',
+    'agentDetail.deleteConfirmAction': '确认删除',
+    'agentDetail.deleteCancel': '取消',
     'agentDetail.save': '保存',
     'agentDetail.discard': '放弃',
     'agentDetail.unsaved': '有未保存的改动',
@@ -786,6 +793,8 @@ const I18N_CATALOGS = {
     'toast.remoteAck': '已记录数据流告知确认：{provider}。',
     'toast.remoteAckFailed': '确认失败：{reason}',
     'toast.agentUpdated': '已保存 {name} 的配置。',
+    'toast.agentDeleted': '已删除 Agent「{name}」。',
+    'toast.agentDeleteFailed': '删除 Agent 失败：{reason}',
     'toast.agentDetailFailed': '读取 Agent 详情失败：{reason}',
     'toast.globalMcpConsentFailed': '确认全局 MCP 条目失败：{reason}',
   },
@@ -1015,6 +1024,9 @@ const I18N_CATALOGS = {
     'task.repliesEmpty': 'No discussion yet — write the first reply',
     'task.historyEmpty': 'No change history yet',
     'task.unassigned': 'Unclaimed',
+    // Task history still points at the original member id after a delete; when the member table
+    // no longer has it, show this readable fallback instead of the raw id.
+    'task.deletedAssignee': 'Deleted member',
     'task.unassignedPill': 'Unclaimed · click to assign',
     'task.reassignHint': '· reassign',
     'task.assignUnavailable': 'The channel member list is not readable right now: no assignee candidates.',
@@ -1190,11 +1202,6 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': 'Local model: it never leaves this machine and needs no data-flow consent.',
     'agent.providerRemoteHint':
       'Remote model: enabling it first requires confirming that data leaves this machine (see the notice below).',
-    'agent.enabledLabel': 'Enabled',
-    'agent.enabledOn': 'Enabled',
-    'agent.enabledOnHint': 'Takes part in channels and tasks',
-    'agent.enabledOff': 'Disabled',
-    'agent.enabledOffHint': 'Produces no replies',
     'agent.autoClaimLabel': 'Auto-claim tasks',
     'agent.autoClaimOn': 'On',
     'agent.autoClaimOnHint': 'The orchestrator takes new tasks',
@@ -1269,6 +1276,17 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': 'Acknowledged: {name}',
     'agentDetail.globalMcpRuntimeIdle': 'No runtime reading yet',
     'agentDetail.globalMcpRuntimeConnected': 'Connected at runtime',
+    // Danger zone (this ticket): pause / delete moved to the last section of the page. The note
+    // spells out both consequences; the delete confirmation carries the agent name and
+    // "cannot be undone", so the cost is readable before the second click.
+    'agentDetail.sectionDanger': 'Danger zone',
+    'agentDetail.dangerHint':
+      'Danger: pausing only stops replies (the agent is still woken and leaves a failed round outcome with a readable reason); deleting removes this agent from the agent list and every channel, while DMs, message history and tasks are kept. Confirm before taking either action.',
+    'agentDetail.delete': 'Delete',
+    'agentDetail.deleteConfirm':
+      'Delete “{name}”? It will be removed from the agent list and every channel immediately and this detail view will close. DMs, message history and tasks are kept, but the agent cannot be restored — this cannot be undone.',
+    'agentDetail.deleteConfirmAction': 'Delete permanently',
+    'agentDetail.deleteCancel': 'Cancel',
     'agentDetail.save': 'Save',
     'agentDetail.discard': 'Discard',
     'agentDetail.unsaved': 'Unsaved changes',
@@ -1598,6 +1616,8 @@ const I18N_CATALOGS = {
     'toast.remoteAck': 'Recorded the data-flow acknowledgement for {provider}.',
     'toast.remoteAckFailed': 'Acknowledgement failed: {reason}',
     'toast.agentUpdated': 'Saved the configuration of {name}.',
+    'toast.agentDeleted': 'Deleted the agent “{name}”.',
+    'toast.agentDeleteFailed': 'Could not delete the agent: {reason}',
     'toast.agentDetailFailed': 'Could not read the agent details: {reason}',
     'toast.globalMcpConsentFailed': 'Could not acknowledge the global MCP entry: {reason}',
   },

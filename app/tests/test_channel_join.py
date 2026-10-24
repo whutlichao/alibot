@@ -4,10 +4,9 @@
 一致）：不 import 实现内部模块、不连数据库、不读表结构。成员关系一律从 ``GET /channels/{id}/members``
 与「它收到了哪些 seq」这两条外部事实读出来。
 
-一处**已实现但不可达**的校验分支（不测，理由见验收文档）：`member_id` 已删除 → 校验失败。
-首版没有删除成员的 HTTP 端点（``DELETE /api/agents/{id}`` 明确回 404），因此该分支在 HTTP 面
-无法到达；按人类裁定不为此引入直连数据库的准备性夹具，以免破坏本仓「只走 HTTP 面」的硬约定。
-代码里保留该判据（与 `create_channel` 的 `member_ids` 校验同口径），供将来加删除端点时直接生效。
+`member_id` 已删除 → 校验失败这条分支，在本票新增 `DELETE /api/agents/{id}` 之后已经能从 HTTP 面
+到达；删除面本身的契约（行保留、移出全部频道、二次 404）见 `test_agent_detail.py`。本文件不重复
+那组用例，也不为此引入直连数据库的准备性夹具，以免破坏本仓「只走 HTTP 面」的硬约定。
 """
 
 from __future__ import annotations

@@ -650,6 +650,7 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `POST /api/agents` | 新建 Agent `{name, role, model_id, system_prompt, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?}`；校验失败**整体不创建**（workspace 四项缺省 = 跟随频道 / 内置镜像；`auto_claim` 缺省开启，见 ADR-0029） |
 | `GET /api/agents/{id}` | 单个 Agent（含可读的 `enabled_reason`、`auto_claim`、Agent 级 workspace 四项与 `web_access`、`stats`） |
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）；`web_access: null` 是**清除 Agent 级覆盖**（回到跟随频道，写库 `NULL`；缺省该字段 = 保持原值，其它字段的显式 `null` 仍 400）。响应同形 `agent` + `agents` + `members` |
+| `DELETE /api/agents/{id}` | **软删除**一个 Agent：写 `member.deleted_at` 并删掉它在 `target_member` 的全部行（移出全部频道与任务线程）。消息 / 任务 / DM target / `agent_config` / `round_outcome` 保留，不重写任务指派；不落消息、不唤醒、不消耗预算。只接受未删除的 `kind='agent'`；owner、未知 id、二次删除一律可读 404 `not_found`。响应 `{deleted, agents, members}` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/agents/{id}/global-mcp-servers` | 该成员全局 `~/.alibot/agents/<id>/mcp.json` 的**只读**条目 + 进程内 `runtime` 读数：`{name, transport, is_remote, consented, runtime}`。只列出文件里真实存在的条目；**没有**编辑 / 启停 / 删除，也不写回全局层 |
 | `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 全局远端 MCP（`http` / `sse`）的数据面确认（幂等；写 `remote_consent_scope('mcp', 'global:<member_id>:<name>')`，只存时间）。stdio 不接受；名字不在该成员 `mcp.json` 里 ⇒ 400 且不写行。确认后下一轮装配才连接；未确认时运行期读数为 `consent_required` |
@@ -700,14 +701,18 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 不改名、不覆盖；与消息同口径，**没有**删除附件的端点（`PUT` / `PATCH` / `DELETE` 都回 404）。
 附件**不进搜索**（命中本体仍是文本），也**不进成员面**（附件内容不喂给 Agent）。
 
-### Agent 详情与配置编辑（`PATCH /api/agents/{id}`，ADR-0011）
+### Agent 详情、配置编辑与软删除（`PATCH` / `DELETE /api/agents/{id}`）
+
+配置写路径的取舍见 ADR-0011；删除这一组取舍（完整软删除、不级联、不可恢复、清 `target_member`、
+二次删除 404）记录在本票验收文档 `app/specs/agent-danger-zone-delete-acceptance.md`。
 
 Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Agent 行、成员面板里的名字、
 失败轮次块的「看成员状态」）：它占据整条右侧，右侧 dock 在那种视图下让位，关闭后回到进入前的视图
-与 dock 开合。所有区块在同一页纵向铺开——统计 / 系统提示 / 配置 / 全局 MCP，**没有页签**（「概览 /
-运行时」两个页签已删除；日志页签仍不做，用户人定 D24，入口另立 backlog 票 #72）。系统提示
+与 dock 开合。所有区块在同一页纵向铺开——统计 / 系统提示 / 配置 / 全局 MCP / 危险操作，**没有页签**
+（「概览 / 运行时」两个页签已删除；日志页签仍不做，用户人定 D24，入口另立 backlog 票 #72）。系统提示
 紧贴统计之下（用户 2026-10-24 反馈：它是这页上最常改的一格，不该排在页面最底）。
-可编辑字段直接长在「配置」区块里，控件只写草稿，草稿与后端读数不一致时页面底部
+配置字段直接长在「配置」区块里（**`enabled` 除外**：它的唯一界面入口是「危险操作」区块的暂停 / 恢复
+按钮，配置区没有「启用状态」档位），控件只写草稿，草稿与后端读数不一致时页面底部
 出现固定保存条（保存 / 放弃）；关闭详情、切换成员或切换主线视图时草稿作废，不弹二次确认。
 
 - **「统计」区块的四个数字全部来自既有事实**，由后端在 `stats` 里聚合，前端不自己算：
@@ -735,7 +740,18 @@ Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Age
   人类面可写配置类取值）。`auto_claim` 同此——它是编排在**新建任务之后**读的配置，不是动作。
 - **「暂停」= 写 `enabled = 0`**，复用既有可用性判定：状态点为**未启用**、`enabled_reason` 可读；
   已知代价是它**仍会被唤醒**并落一条可读原因的 `failed` 轮次结果，只是不产出回复——「从唤醒面排除」
-  是唤醒面的另一个决策，本轮不做。
+  是唤醒面的另一个决策，本轮不做。按钮与这句代价说明住在页面最后的「危险操作」区块里，语义不变
+  （点击仍只写草稿里的 `enabled`）。
+- **「危险操作」区块**（用户 2026-10-24 反馈：暂停与删除是危险动作，不该和常规配置混在一起）：
+  区块标题 + 一句点明暂停与删除后果的危险说明，随后是暂停 / 恢复与删除按钮，最后是删除的两步确认区。
+  危险说明与确认文案写的是实际行为：删除把这个 Agent 从 **Agent 列表与全部频道**中移除，
+  **私信、历史消息与任务保留**。
+  第一次点「删除」**只展开确认区**（文案带 Agent 名称与不可逆后果），不发请求；「取消」收起确认区；
+  第二次点「确认删除」才发 `DELETE /api/agents/{id}`。请求进行中禁用按钮，离线（`state.online === false`）
+  时暂停与删除都禁用。删除成功后按响应刷新 `agents` / `members`、关闭详情并回到进入前的视图，给一条
+  可读 toast；失败留在当前页、本地镜像不变，原因按后端那一句显示。任务指派者已不在成员表里时，
+  `taskMemberName()` 以 `workspaceLoaded`（工作台**成功**载入过一轮）为判据：已成功载入且查不到 ⇒
+  「已删除的成员」，尚未成功载入 ⇒ 中性「成员」；两种情况都不把裸 `mem_...` id 露给用户。
 
 ### 未读口径
 

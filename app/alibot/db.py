@@ -1526,7 +1526,7 @@ class Database:
         with self._lock:
             row = self._conn.execute(
                 AGENT_SELECT_SQL + "FROM member m LEFT JOIN agent_config c ON c.member_id = m.id "
-                "WHERE m.id = ? AND m.kind = 'agent'",
+                "WHERE m.id = ? AND m.kind = 'agent' AND m.deleted_at IS NULL",
                 (member_id,),
             ).fetchone()
         if row is None:
@@ -1869,6 +1869,43 @@ class Database:
                 raise
         # 读回落库后的那一份（不是把入参回显出去）：调用方看到的是**持久化事实**。
         return self.get_agent(member_id)
+
+    def delete_agent(self, member_id: str) -> str:
+        """完整软删除一个 Agent：写 ``deleted_at`` 并把它移出全部 ``target_member``。
+
+        语义（票面已定）：
+
+        - **行保留**：``member`` / ``agent_config`` / DM target / 消息 / 任务 / ``round_outcome``
+          一律不动——历史消息的作者仍能按行渲染（读路径的 ``author.deleted`` 机制）；
+        - 只删它在 ``target_member`` 的全部行（= 移出全部频道与任务线程）；
+        - 只接受 ``kind='agent'`` 且**未删除**的成员；其余（owner / 未知 id / 已删除）都是 404，
+          于是二次删除给出的正是「已不存在」，不是静默幂等；
+        - 删除是配置 / 身份类写路径：**不落消息、不唤醒、不消耗预算、不开世代**，也不改
+          ``task.assignee_member_id``（任务历史保持原样）。
+
+        读与写在同一个锁里，因此第二次进入不可能读到「刚刚被别人删掉」的那一行。
+        """
+        clean_id = str(member_id).strip()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM member WHERE id = ? AND kind = 'agent' AND deleted_at IS NULL",
+                (clean_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(self._render_copy("error.agent_not_found", member_id=clean_id))
+            now = utc_now()
+            self._begin()
+            try:
+                self._conn.execute(
+                    "UPDATE member SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+                    (now, clean_id),
+                )
+                self._conn.execute("DELETE FROM target_member WHERE member_id = ?", (clean_id,))
+                self._commit()
+            except Exception:
+                self._rollback()
+                raise
+        return clean_id
 
     def agent_stats(self, member_id: str | None = None) -> dict[str, dict[str, Any]]:
         """按成员聚合的**只读既有事实**（Agent 概览页每个数字的唯一来源）——不新增数据面。
