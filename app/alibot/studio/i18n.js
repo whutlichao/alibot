@@ -273,7 +273,6 @@ const I18N_CATALOGS = {
     'dock.replyInputLabel': '任务消息正文',
     'dock.replyHint': 'Enter 回复 · Shift+Enter 换行',
     'dock.replySend': '回复',
-    'dock.dmNoJoin': '私信固定只有 owner 与对方 Agent，不提供加入或离开操作。',
     'dock.openChannelFirst': '先打开一个频道。',
     'dock.joined': '已加入（{count}）',
     'dock.membersUnavailable': '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开面板即可。',
@@ -1047,8 +1046,6 @@ const I18N_CATALOGS = {
     'dock.replyInputLabel': 'Task message body',
     'dock.replyHint': 'Enter to reply · Shift+Enter for a new line',
     'dock.replySend': 'Reply',
-    'dock.dmNoJoin':
-      'A direct message always holds exactly the owner and the peer agent; there is no join or leave action.',
     'dock.openChannelFirst': 'Open a channel first.',
     'dock.joined': 'Joined ({count})',
     'dock.membersUnavailable':

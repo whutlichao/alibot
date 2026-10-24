@@ -718,7 +718,11 @@ function commandList() {
     { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', run: showTaskBoard },
     { id: 'new-channel', group: 'cmd.groupAction', label: t('rail.newChannel'), run: openChannelModal },
     { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), run: () => openTaskModal() },
-    { id: 'toggle-dock', group: 'cmd.groupAction', label: t('dock.toggle'), run: toggleDock },
+    // 私信下 dock 没有可显示的形态（见 `dockAvailable()`），命令面板里就不列这条命令——
+    // 与频道头入口同一条判据，不留一个按下去什么都不发生的条目。
+    ...(dockAvailable()
+      ? [{ id: 'toggle-dock', group: 'cmd.groupAction', label: t('dock.toggle'), run: toggleDock }]
+      : []),
     ...state.channels.map((channel) => ({
       id: 'channel:' + channel.id,
       group: 'cmd.groupChannels',
@@ -2202,6 +2206,8 @@ function setDockOpen(open) {
 
 /** 详情面板的开合（rail 图标与命令面板里的「切换详情面板」共用同一个动作，不各写一遍）。 */
 function toggleDock() {
+  // 频道头开关 / 命令面板 / 移动端抽屉共用同一个动作：没有可显示的形态（私信）时无效。
+  if (!dockAvailable()) return;
   const dock = $('#dock');
   if (dock) setDockOpen(dock.hidden);
 }
@@ -2221,6 +2227,13 @@ function dockFallbackMode() {
   if (state.activeTaskId) return 'task';
   if (activeChannel()) return 'agent';
   return null;
+}
+
+/** dock 当前有没有**可显示的形态**。判据是形态而不是 `isDm` 一刀切：
+    「成员」形态只属于频道；任务线程 / 运行面板是独立形态，私信下仍算可用，
+    因此线程 / 运行面板开着时入口还必须留着。私信且两者都没有 → 没有可显示的东西。 */
+function dockAvailable() {
+  return Boolean(state.runPanel.open) || dockFallbackMode() !== null;
 }
 
 /** 两条关闭路径共用的收尾：有落点就切到那个形态，没有落点就收起 dock。
@@ -4428,6 +4441,10 @@ function render() {
   setDockMode(
     state.runPanel.open ? 'run' : (state.activeTaskId ? 'task' : 'agent'),
   );
+  // 「私信下不把面板留在右侧」的唯一落点：切 target 与重载工作台都经过 `render()`，
+  // 因此不靠每个入口各关一次。有任务线程 / 运行面板时 `dockAvailable()` 为真，
+  // 这条不会误关一个独立形态。
+  if (!dockAvailable() && $('#dock') && !$('#dock').hidden) setDockOpen(false);
   if (state.activeTask) renderTaskThread();
   syncTaskViewSeg();
   renderHeader();
@@ -4762,13 +4779,9 @@ function renderDock() {
   const container = $('#dockMembers');
   if (!container) return;
   if (!channel) {
-    const target = activeTarget();
-    replaceChildren(
-      container,
-      [el('div', 'rail-empty', target && target.kind === 'dm'
-        ? t('dock.dmNoJoin')
-        : t('dock.openChannelFirst'))],
-    );
+    // 私信下 dock 不可能可见（`render()` 会收起它），因此这里只剩「没有频道」这一种空态；
+    // 不再按 `target.kind === 'dm'` 分叉出一句私信专用文案（那是死代码）。
+    replaceChildren(container, [el('div', 'rail-empty', t('dock.openChannelFirst'))]);
     return;
   }
   const groups = dockGroups(channel.id);
@@ -5101,10 +5114,12 @@ function closeAgentDetail() {
   setViewMode(state.mode);
   // 形态落到共用判据上：打开详情时任务线程与运行面板都被主动关掉了（「dock 一次只显示
   // 一种形态」），因此这里能恢复的形态只有「频道成员」；开合才是进入前要记住的那一位。
+  // `render()` 已经收起了没有形态的 dock（私信），这里不得再把它重新打开——否则会留下
+  // 一个开关已隐藏、只能按 ESC 关掉的空面板。
   setDockMode(dockFallbackMode() || 'agent');
   renderMembers();
   render();
-  setDockOpen(Boolean(back.dockOpen));
+  setDockOpen(Boolean(back.dockOpen) && dockAvailable());
 }
 
 /** 切主线视图时离开详情（导航动作的公共出口）：丢弃草稿、清掉 `activeAgentId`。
@@ -7727,6 +7742,9 @@ function renderHeader() {
   $('#btnChannelSettings').hidden = isDm;
   // 运行面板（#155）属于协作运行的频道 / 任务线程：私信没有 team 运行，入口随之隐藏。
   $('#btnRunPanel').hidden = isDm;
+  // 详情面板的开关同理：私信下没有成员面板（任务线程 / 运行面板开着时 dock 仍可用），
+  // 没有可显示的形态就不留一个按下去什么都不发生的按钮。
+  $('#btnDockToggle').hidden = !dockAvailable();
   // DM 的标题带 `@` 前缀（原型 `renderHeader()` 的 DM 分支写的就是 `'@' + m.name`）。
   $('#chanHash').hidden = isDm;
   $('#chanTitle').textContent = isDm ? '@' + name : name;
