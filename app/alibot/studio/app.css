@@ -95,6 +95,16 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 /* 分组标题右侧的 `+` 已随「新建私信」弹窗一起删除（DM 入口改到 Agent 详情的「发送消息」），
    因此这里不再有 `.group-label button` 的形状。 */
+/* 「已归档」是左栏唯一的可折叠分组：标题是原生 `<button>`（键盘可达，焦点环走全局
+   `:focus-visible`），视觉语汇仍是 `.group-label`（等宽 / 字距 / 字重不变，只把浏览器
+   给按钮的默认底色与边框清掉）。chevron 只表示展开方向——折叠向右、展开向下——方向由
+   `aria-expanded` 这**同一条正本**驱动，不另算一份状态。 */
+.group-label.is-toggle {
+  width: 100%; background: none; border: 0; cursor: pointer; text-align: left;
+}
+.group-label.is-toggle:hover { color: var(--muted); }
+.group-chevron { flex: 0 0 auto; transition: transform var(--dur-fast) var(--ease); }
+.group-label[aria-expanded="true"] .group-chevron { transform: rotate(90deg); }
 .rail-empty { padding: var(--sp-3) var(--sp-5); font-size: var(--fs-sm); color: var(--faint); line-height: var(--lh-snug); }
 
 .nav-row {

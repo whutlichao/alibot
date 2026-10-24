@@ -270,6 +270,9 @@ const state = {
   taskStream: null,
   taskStreamTimer: null,
   dms: [],
+  // 「已归档」私信段的展开态：**会话内的呈现状态**（不是业务正本，不写任何浏览器存储）。
+  // 默认折叠；用户点标题才置位。`renderDmArchiveSection()` 是它唯一的裁决点。
+  dmArchiveExpanded: false,
   // 主 composer 里还没发送的附件草稿（上传成功后拿到标识与元数据；随下一条消息绑定）。
   // 它**不是**业务正本：正本是库里的附件行（+ 数据目录里的字节）。
   composerAttachments: [],
@@ -4634,16 +4637,36 @@ function paintDmRow(row, dm) {
   syncUnreadBadge(row, dm.unread_count, 'unread-' + dm.id);
 }
 
+/** 「已归档」段的呈现裁决（**唯一**落点）：组显隐、列表显隐、标题按钮的展开态。
+
+    `hasArchived` 由调用方从 `state.dms` 用同一个 `dmIsArchived()` 判据数出来——组显隐与
+    行归属因此不会各自漂。展开态住 `state.dmArchiveExpanded`（默认 `false`：首次加载、刷新、
+    从别的视图回到工作台都折叠，除非用户本次会话点开）。折叠只调 `hidden`，**不清空行**：
+    已读 / 未读与行节点在展开 / 收起之间原样保留。属性只在真的变了时才写，于是后端推送
+    触发的整体重绘不为同一份事实重写同一批属性。 */
+function renderDmArchiveSection(hasArchived) {
+  const group = $('#dmArchiveGroup');
+  if (group) group.hidden = !hasArchived;
+  const expanded = Boolean(state.dmArchiveExpanded);
+  const list = $('#dmArchiveList');
+  if (list) list.hidden = !expanded;
+  const toggle = $('#btnDmArchiveToggle');
+  if (toggle) {
+    const value = expanded ? 'true' : 'false';
+    if (toggle.getAttribute('aria-expanded') !== value) toggle.setAttribute('aria-expanded', value);
+  }
+}
+
 /** 两段私信各自沿用同一套就地更新契约（节点身份取自 `data-dm`）。
-    已归档段只在后端真的给出 `peer.deleted_at` 时出现——空段整块隐藏，不留一条空气分组。 */
+    已归档段只在后端真的给出 `peer.deleted_at` 时出现——空段整块隐藏，不留一条空气分组；
+    出现时仍默认折叠（`renderDmArchiveSection()` 裁决）。 */
 function renderDms() {
   const active = state.dms.filter((dm) => !dmIsArchived(dm));
   const archived = state.dms.filter(dmIsArchived);
   syncRailRows($('#dmList'), active, 'dm', dmRowNode, paintDmRow);
   syncRailRows($('#dmArchiveList'), archived, 'dm', dmRowNode, paintDmRow);
   $('#dmListEmpty').hidden = active.length > 0;
-  const group = $('#dmArchiveGroup');
-  if (group) group.hidden = archived.length === 0;
+  renderDmArchiveSection(archived.length > 0);
 }
 
 /** 新建一行本机 Agent：左栏每一行都是**打开 Agent 详情**的入口，与频道 / 私信两段同形
@@ -9480,6 +9503,15 @@ function bindEvents() {
   };
   $('#dmList').addEventListener('click', openDmRow);
   $('#dmArchiveList').addEventListener('click', openDmRow);
+  // 「已归档」标题只切换**呈现状态**：展开 / 收起都不重取 `GET /api/dms`、不碰已有行节点
+  // （同一 `data-dm` 行在两种状态之间始终是同一个节点）。
+  const toggleDmArchive = $('#btnDmArchiveToggle');
+  if (toggleDmArchive) {
+    toggleDmArchive.addEventListener('click', () => {
+      state.dmArchiveExpanded = !state.dmArchiveExpanded;
+      renderDmArchiveSection(state.dms.some(dmIsArchived));
+    });
+  }
   // 左栏 Agent 行：打开**整页详情**（主线视图 `state.mode === 'agent'`）。行是 `<button>`，
   // 因此键盘也走同一条路径。
   $('#memberList').addEventListener('click', (event) => {

@@ -126,10 +126,23 @@
       </div>
       <!-- 已归档私信：Agent 软删除后 DM target / 历史 / 未读都保留（判据只有后端的
            `peer.deleted_at`），人类面把它们单独成段且只读。没有已归档私信时整段由
-           `renderDms()` 裁决隐藏，因此这里不放空态节点。 -->
+           `renderDms()` 裁决隐藏，因此这里不放空态节点。
+           标题是可折叠控件：原生 `<button>`（键盘可达、焦点环走全局 `:focus-visible`），
+           **默认折叠**（`aria-expanded="false"` + 列表 `hidden`），展开态是会话内的呈现状态
+           （`state.dmArchiveExpanded`），不写任何浏览器存储。 -->
       <div class="group" id="dmArchiveGroup" data-od-id="dm-archive-section" hidden>
-        <div class="group-label" data-i18n="rail.groupArchivedDms">已归档</div>
-        <div id="dmArchiveList"></div>
+        <button
+          class="group-label is-toggle"
+          type="button"
+          id="btnDmArchiveToggle"
+          aria-expanded="false"
+          aria-controls="dmArchiveList"
+          data-od-id="btn-dm-archive-toggle"
+        >
+          <span data-i18n="rail.groupArchivedDms">已归档</span>
+          <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+        </button>
+        <div id="dmArchiveList" hidden></div>
       </div>
       <div class="group">
         <div class="group-label" data-i18n="rail.groupAgents">本机 Agent</div>
