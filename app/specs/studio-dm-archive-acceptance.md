@@ -17,7 +17,7 @@
 | 6 | 「私信」分组 `+`、`#dmOverlay`、`state.dmSelectedAgentId`、弹窗函数与专属词条全部删除 | `index.html` / `app.js` / `i18n.js` | 同上：`新建私信弹窗与分组 + 一起删掉…` 通过（两段文案都无 `dm.*` / `rail.newDmTitle`） |
 | 7 | Agent 详情头部有关闭控件旁的 `#btnAgentSendMessage`，文案来自 `agentDetail.sendMessage` | `#viewAgent > .agent-page-head` | `node --test app/tests/agent_detail_ui.test.cjs`：`详情头部有「发送消息」按钮…` 通过 |
 | 8 | 点击发出 `POST /api/dms`，body `{"agent_id": …}`；复用已有 DM 与新建（`created: true`）都进入该 DM、离开 `mode === 'agent'`、聚焦 composer、成功 toast 借用 `toast.dmOpened` / `toast.dmCreated` | `messageActiveAgent()` → `selectTarget()` | 同上：两条路径用例通过；`posts[0].body` deepEqual `{agent_id: "mem-1"}` |
-| 9 | 请求在途时按钮禁用、重复点击不发第二个请求 | `agentDmInFlight` + `syncAgentSendButton()` | 同上：`请求在途时「发送消息」禁用…` 通过 |
+| 9 | 请求在途时按钮禁用、重复点击不发第二个请求；离线时入口同样禁用 | `agentDmInFlight` + `syncAgentSendButton()` | 同上：`请求在途时「发送消息」禁用…`、`离线时「发送消息」禁用…` 通过 |
 | 10 | 归档 DM 的 composer 只读：`#composerInput.disabled`、附件 / @提及 / 作为任务发送 / 发送禁用、hint / desc / placeholder 用归档词条、`sendMessage()` 有显式闸门 | `activeArchivedDm()` + `syncComposerLock()` + `syncSendButton()` + `sendMessage()` | 同上：`已归档私信只读…` 通过（直接调 `sendMessage()` 也不产生请求） |
 | 11 | 切回普通频道 / 正常 DM 后控件与文案恢复 | 同一 `syncComposerLock()` 落点 | 同上：`切到普通频道或正常私信后，输入区控件与文案全部恢复` 通过 |
 | 12 | 新文案进两份词条；`index.html` 中文全部挂 `data-i18n`；无裸中文 | `i18n.js` / static guards | `node --test app/tests/i18n_ui.test.cjs`（83 项中的键集 / 裸中文用例）通过；`scripts/check.sh --studio` 全绿 |
@@ -44,19 +44,19 @@ scripts/red-evidence.sh 19d4524a898dba237d8cb63f2a628b639712e213 app/tests/agent
 scripts/check.sh --studio
 ```
 
-- pytest（Studio 窄档）：`20 passed in 2.57s`
+- pytest（Studio 窄档）：`20 passed in 2.16s`
 - `ruff check`：`All checks passed!`
 - `ruff format --check`：通过（未运行 `ruff format`，无整文件重排）
 - `mypy`（仓库根）：通过（无输出）
 - `pyright`：`0 errors, 0 warnings, 0 informations`
-- `node --test app/tests/*.test.cjs`：`tests 306 / pass 306 / fail 0`
+- `node --test app/tests/*.test.cjs`：`tests 307 / pass 307 / fail 0`
 - 收尾：`门禁全绿`
 
 ## node 用例读数（本票新增断言）
 
 ```sh
 node --test app/tests/rail_identity.test.cjs        # 14 条全绿（9 旧 + 5 新）
-node --test app/tests/agent_detail_ui.test.cjs      # 48 条全绿（42 旧 + 6 新）
+node --test app/tests/agent_detail_ui.test.cjs      # 49 条全绿（42 旧 + 7 新）
 ```
 
 新增用例全部走既有 `vm` + DOM 替身接缝，不测私有函数：断言只落在行节点身份 / `data-dm` 容器归属 / `.presence` 缺失 / 未读徽标文本 / `fetch` 调用与 body / `disabled` / `textContent` / `placeholder` / toast 文案。
@@ -81,6 +81,64 @@ node --test app/tests/agent_detail_ui.test.cjs      # 48 条全绿（42 旧 + 6 
 
 ## 两轴 code-review
 
-- **Standards 轴**：rail 两段共用 `syncRailRows`，未变行零写入；composer 可用性只有 `syncComposerLock()` 一个落点；弹窗专用函数 / 状态字段 / CSS 规则 / i18n 键删净；两份词条键集一致（`i18n_ui.test.cjs` 机械判据）；`app.js` / `app.css` 无裸中文。
-- **Spec 轴**：逐条对照本票 Change 1–5 与 Observable acceptance 1–6，全部落点存在；只删了本票点名的入口，未改后端契约与既有测试语义。
-- 结论：两轴通过；遗留说明见 PR 正文。
+两轴各跑一个只读 reviewer 子代理（Standards / Spec 分开，互不抵消）。
+
+### Standards 轴
+
+通过项：rail 两段共用 `syncRailRows`，未变行零写入；composer 可用性只有 `syncComposerLock()` 一个落点；弹窗专用函数 / 状态字段 / CSS 规则 / i18n 键删净；两份词条键集一致（`i18n_ui.test.cjs` 机械判据）；`app.js` / `app.css` 无裸中文；`CONTEXT.md` 词条紧邻「私信」且带 `_Avoid_`。
+
+| 发现 | 处置 |
+| --- | --- |
+| 新写入口漏了离线纪律（`syncAgentSendButton()` 只编码 in-flight） | 已修：`button.disabled = agentDmInFlight || !state.online`，并新增 `离线时「发送消息」禁用…` 用例 |
+| `rail.emptyDms` 仍说「新建私信后…」，与本票删除的入口矛盾（全部归档时正好显示在「已归档」段上方） | 已修：两份词条改为指向 Agent 详情的「发送消息」 |
+| `#dmList` / `#dmArchiveList` 的点击委派逐字重复 | 已修：抽成一个 `openDmRow`，两个容器共挂同一条行为 |
+| rail 用例文件头未登记 §6 覆盖面 | 已修：文件头补一段 §6 说明 |
+
+### Spec 轴
+
+通过项：Change 1–5 的落点齐全，无实质范围蔓延；`.icon-btn:disabled` / `.composer-input:disabled` / `#attachInput` 禁用是「disabled 真禁用」的必要支撑，不算蔓延；后端 `DM_SELECT_SQL` 已带 `peer_deleted_at`，本票无 API / schema 改动。
+
+| 发现 | 处置 |
+| --- | --- |
+| `messageActiveAgent()` 的 catch 只覆盖 POST；`selectTarget()` 吞掉进入失败后仍会弹成功 toast（两条矛盾 toast） | 已修：进入后 `if (!state.online) return;` 不再叠成功说法（`selectTarget` 自己的错误 toast 保留） |
+| `#btnSend` 的归档断言在空正文时天然为真（空转） | 已修：先填一段草稿再断言，删掉 `syncSendButton()` 的归档判据会红 |
+
+结论：两轴发现全部处置；无未决项。
+
+## PR 正文
+
+````markdown
+## Summary
+
+```diff
+ Studio rail
+ ├── 频道
+ ├── 私信              # 只放 peer.deleted_at 为空的 DM；行尾不再画状态点
++├── 已归档            # peer.deleted_at 非空；空则整段隐藏；只读
+ └── 本机 Agent
+
+ Agent 详情头部
+-  [关闭]
++  [发送消息] [关闭]   # POST /api/dms {agent_id}；复用或新建后进入 DM
+
+ 已删除：私信分组 `+`、#dmOverlay、dmSelectedAgentId、弹窗函数与 dm.* 词条
+```
+
+## Evidence
+
+- **Before:** `scripts/red-evidence.sh 19d4524 … rail_identity.test.cjs` → 基线 9 绿 / 新增 5 红（归档段不存在、DM 行仍有 `.presence`）；`… agent_detail_ui.test.cjs` → 基线 42 绿 / 新增 6 红（头部无发送按钮、点击不发 `POST /api/dms`、归档 composer 可输入）。基线 `app.js` md5 `d09a642f97f69b67fce011834e3e76b8`。
+  **After:** `node --test app/tests/*.test.cjs` → `tests 307 / pass 307`；`scripts/check.sh --studio` → pytest `20 passed`、ruff `All checks passed`、pyright `0 errors`、门禁全绿。
+- 真实浏览器（ego-browser，`--port 8799 --data-dir /tmp/alibot-dm-archive-smoke`）：新建 Agent → 详情「发送消息」→ 进入 `@冒烟助手`（composer 聚焦）；再点一次复用同一条 DM（`GET /api/dms` 仍 1 条）；删除 Agent 后刷新出现「已归档」段，输入框与四键禁用、历史消息仍在；切回频道全部恢复。截图 `/tmp/alibot-smoke-00.png` … `/tmp/alibot-smoke-06.png`。
+
+## Merge Danger
+
+**Door:** two-way
+
+纯前端呈现 + 入口迁移；没有数据 / 迁移 / 接口破坏，回滚即恢复旧的两步弹窗。
+
+**Blast Radius:** small
+
+- 左栏私信分段的判据只消费 `peer.deleted_at`；后端、`GET /api/dms` 载荷与 schema 未改。
+- DM 创建仍走既有幂等 `POST /api/dms`；旧弹窗删除后，唯一入口是 Agent 详情头部。
+- 归档私信的只读由 composer 锁 + `sendMessage()` 闸门共同保证。
+````

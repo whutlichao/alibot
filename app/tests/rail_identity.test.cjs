@@ -17,6 +17,10 @@
  *
  * 接缝沿用既有 `*.test.cjs` 那一套：`vm` 装载 `i18n.js` + `app.js`，`fetch` 注入替身，
  * DOM 用替身节点，不新开第二套前端框架。
+ *
+ * §6 覆盖面：私信按 `peer.deleted_at` 拆成「私信 / 已归档」两段（归档段空时整块隐藏）、
+ * 两段都沿用就地更新纪律、DM 行不画状态点、未读徽标保留、点归档行仍能读历史，
+ * 以及「新建私信」弹窗与分组 `+` 删除后的静态事实。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");

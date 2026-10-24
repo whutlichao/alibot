@@ -5098,10 +5098,11 @@ function leaveAgentView() {
 /** 「发送消息」请求是否在途：唯一呈现状态，只控制头部按钮的禁用（不写业务正本）。 */
 let agentDmInFlight = false;
 
-/** 头部「发送消息」的可用性（打开 / 关闭详情与请求开始 / 结束都走这一条）。 */
+/** 头部「发送消息」的可用性（打开 / 关闭详情、请求开始 / 结束、离线与重连都走这一条）。
+    离线纪律与页面其它写入口一致：不发得出去的写，就不摆一个能按的入口。 */
 function syncAgentSendButton() {
   const button = $('#btnAgentSendMessage');
-  if (button) button.disabled = agentDmInFlight;
+  if (button) button.disabled = agentDmInFlight || !state.online;
 }
 
 /** Agent 详情头部的「发送消息」：DM 创建能力的**唯一**人类入口（私信分组原来的 `+` 与弹窗已删除）。
@@ -5121,6 +5122,9 @@ async function messageActiveAgent() {
     // 并按新 target 重读消息 / 轮次结果 / 审批，最后落行与滚动。
     await selectTarget(payload.dm.id);
     $('#composerInput').focus();
+    // `selectTarget()` 自己吞掉**进入**时的读失败（toast + `state.online = false`）后正常返回：
+    // 那种情况已经有一条错误 toast，不再叠一条「已打开」的成功说法。
+    if (!state.online) return;
     toast(payload.created
       ? t('toast.dmCreated', { name: payload.dm.peer.display_name })
       : t('toast.dmOpened', { name: payload.dm.peer.display_name }));
@@ -9468,19 +9472,15 @@ function bindEvents() {
     // （桌面上这个动作是空转 —— 抽屉在那里根本不存在，`closeRail()` 是幂等的）。
     closeRail();
   });
-  $('#dmList').addEventListener('click', (event) => {
+  /** 两段私信共用同一条入口行为：行身份是 `data-dm`，归档只改变分段与可写性，不改变「点开读历史」。 */
+  const openDmRow = (event) => {
     const row = event.target.closest('[data-dm]');
     if (!row) return;
     selectTarget(row.dataset.dm);
     closeRail();
-  });
-  // 已归档私信仍可点开读历史（只读由 composer 的闸门承担，与 rail 的入口无关）。
-  $('#dmArchiveList').addEventListener('click', (event) => {
-    const row = event.target.closest('[data-dm]');
-    if (!row) return;
-    selectTarget(row.dataset.dm);
-    closeRail();
-  });
+  };
+  $('#dmList').addEventListener('click', openDmRow);
+  $('#dmArchiveList').addEventListener('click', openDmRow);
   // 左栏 Agent 行：打开**整页详情**（主线视图 `state.mode === 'agent'`）。行是 `<button>`，
   // 因此键盘也走同一条路径。
   $('#memberList').addEventListener('click', (event) => {

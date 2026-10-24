@@ -1949,6 +1949,8 @@ test("已归档私信只读：输入区与工具键禁用，hint / desc / placeh
   harness.api.state.activeChannelId = "dm-2";
   harness.api.state.messages = [];
   harness.api.setViewMode("channel");
+  // 先放一段草稿：否则 `#btnSend` 本来就会因为空正文禁用，归档闸门的断言会空转。
+  harness.elementFor("#composerInput").value = "还想说点什么";
   harness.api.render();
   await settle();
 
@@ -2032,4 +2034,19 @@ test("切到普通频道或正常私信后，输入区控件与文案全部恢�
     catalogText(harness, "zh-CN", "header.dmPlaceholder").replace("{name}", "小蓝"),
     "placeholder 恢复私信词条",
   );
+});
+
+test("离线时「发送消息」禁用；恢复在线后按同一判据重新可用", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  harness.api.state.online = false;
+  await harness.clickRow("mem-1");
+  await settle();
+  assert.equal(harness.api.state.mode, "agent", "仍可打开详情（读路径不受离线影响）");
+  assert.equal(harness.elementFor("#btnAgentSendMessage").disabled, true, "离线时写入口禁用");
+
+  harness.api.state.online = true;
+  harness.api.render();
+  await flush();
+  assert.equal(harness.elementFor("#btnAgentSendMessage").disabled, false, "恢复在线后同一判据放行");
 });
