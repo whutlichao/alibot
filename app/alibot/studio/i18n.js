@@ -440,9 +440,7 @@ const I18N_CATALOGS = {
        （用户 2026-10-24 裁定），它们可编辑的那一份长在「配置」区块里（词条见 `agent.*`）。
        原型的内存 / 延迟 / 工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，
        因此这里也没有它们的词条。 */
-    'agentDetail.tag': 'Agent',
     'agentDetail.sendMessage': '发送消息',
-    'agentDetail.closeAria': '关闭 Agent 详情',
     'agentDetail.openAria': '查看 {name} 的详情',
     'agentDetail.sectionFacts': '统计',
     'agentDetail.statChannels': '所属频道数',
@@ -1228,9 +1226,7 @@ const I18N_CATALOGS = {
        read-only block (decision 2026-10-24): their editable form lives in the configuration section
        (see the `agent.*` keys). Memory / latency / tool permissions / temperature / token usage /
        context usage have no data surface in this repo, so there are no strings for them here. */
-    'agentDetail.tag': 'Agent',
     'agentDetail.sendMessage': 'Send message',
-    'agentDetail.closeAria': 'Close agent details',
     'agentDetail.openAria': 'Open the details of {name}',
     'agentDetail.sectionFacts': 'Stats',
     'agentDetail.statChannels': 'Channel memberships',

@@ -13,7 +13,9 @@
  *    「放弃」丢弃草稿、字段回到后端读数；
  * 4. 后端整体拒绝时错误留在保存条里、输入不丢、保存条仍在；
  * 5. 暂停 / 恢复是 `enabled` 的**唯一**界面入口（只写草稿里的 `enabled`），联网档四档随 PATCH 提交；
- * 6. 关闭详情回到进入前的 `state.mode`，dock 按进入前的开合恢复；
+ * 6. 头部只剩名称与强调色的「发送消息」：没有 Agent 标签 / 状态行 / 关闭控件；离开详情走
+ *    仍在的真实出口（左栏频道 / 私信行、键盘 M / T），dock 的进入前开合只在删除成功的
+ *    `closeAgentDetail()` 路径恢复；
  * 7. 编辑配置弹窗（`#agentEditOverlay`）整个删掉：正本里没有节点，运行时不出现对它的 `$()`。
  * 8. 危险操作是页面最后一个区块：暂停 / 恢复搬进它、删除走**确认弹窗**（第一次点击不发请求），
  *    成功关闭详情并刷新列表、失败留在当前页且弹窗保持打开；离线时两个动作都禁用。
@@ -264,7 +266,6 @@ function createHarness(options) {
   // 替身节点的初始可见性从**同一个正本**读（`index.html` 里带 `hidden` 的元素），
   // 已知的几个控件按真实标签名建（`<button>` 的键盘可达性断言读得到）。
   const BUTTON_IDS = new Set([
-    "#btnAgentDetailClose",
     "#btnAgentSendMessage",
     "#adSave",
     "#adDiscard",
@@ -361,6 +362,7 @@ function createHarness(options) {
     toastWrap: elementFor("#toastWrap"),
     elementFor,
     memberList: elementFor("#memberList"),
+    channelList: elementFor("#channelList"),
     dock: elementFor("#dock"),
     dockAgent: elementFor("#dockAgent"),
     dockTask: elementFor("#dockTask"),
@@ -377,8 +379,6 @@ function createHarness(options) {
     deleteClose: elementFor("#agentDeleteClose"),
     deleteTitle: elementFor("#agentDeleteModalTitle"),
     reportName: elementFor("#adName"),
-    reportStatus: elementFor("#adStatusText"),
-    reportPresence: elementFor("#adPresence"),
     patches() {
       return calls.filter((call) => call.method === "PATCH");
     },
@@ -421,9 +421,16 @@ function createHarness(options) {
       await node.dispatchEvent({ type: "click" });
       await flush();
     },
-    /** 点详情页头部的关闭控件（真实用户出口）。 */
-    async closeDetail() {
-      await harness.elementFor("#btnAgentDetailClose").dispatchEvent({ type: "click" });
+    /** 键盘 M 离开详情（页签随频道头在详情视图隐藏，键盘 M / T 才是仍在的真实出口）。 */
+    async leaveViaMessagesKey() {
+      await document.dispatchEvent({ type: "keydown", key: "m" });
+      await flush();
+    },
+    /** 点左栏的频道行离开详情（另一个仍在的真实出口：`selectTarget()`）。 */
+    async leaveViaChannelRow() {
+      const row = byDataset(harness.channelList, "channel", "ch-1");
+      assert.ok(row, "左栏应当有频道行：ch-1");
+      await harness.channelList.dispatchEvent({ type: "click", target: row });
       await flush();
     },
     /** 点危险区「删除」：只打开确认弹窗，不发请求。 */
@@ -706,7 +713,7 @@ test("运行时不出现对已删编辑弹窗节点的 $() 调用", async () => 
   await harness.edit("display_name", "小明明");
   await harness.clickSaveBar(harness.saveButton);
   await harness.clickSaveBar(harness.discardButton);
-  await harness.closeDetail();
+  await harness.leaveViaMessagesKey();
 
   const offenders = harness.queries.filter((selector) => selector.indexOf("#agentEdit") === 0);
   assert.deepEqual(offenders, [], "已删节点的选择器不许再被查询（运行时报 null 就是回归）");
@@ -851,8 +858,14 @@ test("暂停 / 恢复是 enabled 的唯一界面入口：配置区没有「启�
   await harness.clickSaveBar(harness.saveButton);
 
   assert.equal(harness.patches()[0].body.enabled, false, "保存条才把 enabled 提交给后端");
-  assert.equal(harness.reportPresence.dataset.status, "offline");
-  assert.equal(harness.reportStatus.textContent, catalogText(harness, "zh-CN", "status.offline"));
+  // 详情头部不再有状态行（`#adPresence` / `#adStatusText` 已删除）：仍可观察的证据是危险区
+  // 按钮说法与本地镜像——保存后按钮仍显示「恢复」，镜像换成后端返回的暂停读数。
+  assert.equal(
+    byOdId(harness.agentBody, "agent-toggle-enabled").textContent,
+    catalogText(harness, "zh-CN", "agentDetail.resume"),
+    "保存后按钮仍显示「恢复」",
+  );
+  assert.equal(harness.api.state.agents[0].enabled, false, "本地镜像换成后端返回的暂停读数");
 });
 
 test("点「删除」只打开确认弹窗：零请求、文案带名称与不可撤销；取消 / Escape / 点遮罩都收起且零请求", async () => {
@@ -917,6 +930,9 @@ test("确认删除只发一次 DELETE：成功后弹窗收起、详情关闭、�
   harness.load([agentDetail()]);
   // 频道成员面板 / @ 补全读的是这份后端镜像；删除后它也必须立刻摘掉该成员。
   harness.api.state.channelMembers = { "ch-1": [owner, agentDetail()] };
+  // 进入详情前 dock 是开着的：删除成功走的是 `closeAgentDetail()`，它是唯一恢复开合的路径。
+  harness.api.toggleDock();
+  assert.equal(harness.dock.hidden, false, "前提：进入详情前 dock 开着");
   await harness.clickRow("mem-1");
 
   await harness.openDeleteModal();
@@ -928,6 +944,8 @@ test("确认删除只发一次 DELETE：成功后弹窗收起、详情关闭、�
   assert.equal(harness.deleteOverlay.hidden, true, "删除成功后弹窗收起");
   assert.equal(harness.api.state.activeAgentId, null, "删除成功后关闭详情");
   assert.equal(harness.viewAgent.hidden, true, "回到进入前的视图");
+  assert.equal(harness.dock.hidden, false, "删除成功后 `closeAgentDetail()` 恢复进入前的 dock 开合");
+  assert.equal(harness.dockAgent.hidden, false, "dock 恢复成频道成员形态");
   assert.equal(harness.api.state.agents.length, 0);
   assert.equal(harness.api.state.members.some((member) => member.id === "mem-1"), false,
     "本地成员镜像里移除该成员");
@@ -1504,9 +1522,9 @@ test("草稿脏时确认全局 MCP：只读小节照常刷新，人的输入不�
   assert.equal(harness.saveBar.hidden, false, "草稿仍脏，保存条还在");
 });
 
-/* ─── 5. 关闭 / 切换：恢复进入前的视图与 dock，草稿丢弃 ─────────────────── */
+/* ─── 5. 离开详情：仍在的真实出口，dock 不自动弹回，草稿丢弃 ─────────────── */
 
-test("关闭详情回到进入前的视图；dock 按进入前的开合恢复", async () => {
+test("键盘 M 离开详情：主线落到消息视图，dock 不随离开自动弹回", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   harness.api.state.mode = "board";
@@ -1517,30 +1535,33 @@ test("关闭详情回到进入前的视图；dock 按进入前的开合恢复", 
   await harness.clickRow("mem-1");
   assert.equal(harness.dock.hidden, true);
 
-  await harness.closeDetail();
+  await harness.leaveViaMessagesKey();
 
-  assert.equal(harness.api.state.mode, "board", "原来在看板就回看板，不一律跳回频道");
+  assert.equal(harness.api.state.mode, "channel", "键盘 M 落到消息视图");
   assert.equal(harness.viewAgent.hidden, true, "详情页让位");
-  assert.equal(harness.dock.hidden, false, "dock 恢复到进入前的开合");
-  assert.equal(harness.dockAgent.hidden, false, "dock 恢复成频道成员形态");
-  assert.equal(harness.api.state.activeAgentId, null);
+  // 头部没有关闭控件后，唯一恢复 dock 开合的是删除成功那条 `closeAgentDetail()`；
+  // 键盘 M / 左栏行走的是 `leaveAgentView()`，它不碰开合（否则离开详情会凭空顶出成员面板）。
+  assert.equal(harness.dock.hidden, true, "离开详情不恢复进入前的开合");
+  assert.equal(harness.api.state.activeAgentId, null, "详情已关闭");
 });
 
-test("从频道进入再关闭：频道头与输入框跟着回来", async () => {
-  const harness = withChannel();
+test("左栏频道行是另一个真实出口：频道头与输入框跟着回来", async () => {
+  const harness = withChannel({ fetch: (url) => detailFetchBase(url) });
   harness.load([agentDetail()]);
 
   await harness.clickRow("mem-1");
   assert.equal(harness.elementFor("#chanHead").hidden, true);
 
-  await harness.closeDetail();
+  await harness.leaveViaChannelRow();
+  await settle();
 
   assert.equal(harness.api.state.mode, "channel");
+  assert.equal(harness.api.state.activeAgentId, null, "详情已关闭");
   assert.equal(harness.elementFor("#chanHead").hidden, false, "回到频道，标题与页签恢复");
   assert.equal(harness.elementFor("#composer").hidden, false, "输入框恢复");
 });
 
-test("进入前 dock 是收起的：关闭详情后仍收起，不把成员面板顶出来", async () => {
+test("进入前 dock 是收起的：离开详情后仍收起，不把成员面板顶出来", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   harness.api.setDockMode("agent");
@@ -1548,13 +1569,13 @@ test("进入前 dock 是收起的：关闭详情后仍收起，不把成员面�
   assert.equal(harness.dock.hidden, true);
 
   await harness.clickRow("mem-1");
-  await harness.closeDetail();
+  await harness.leaveViaMessagesKey();
 
-  assert.equal(harness.dock.hidden, true, "没有「关闭后 dock 变成空白成员面板」的漂移");
+  assert.equal(harness.dock.hidden, true, "没有「离开详情后 dock 变成空白成员面板」的漂移");
   assert.equal(harness.api.state.mode, "channel");
 });
 
-test("无频道时关闭详情：dock 保持收起", async () => {
+test("无频道时用键盘 M 离开详情：dock 保持收起", async () => {
   const harness = createHarness();
   harness.load([agentDetail()]);
   harness.api.state.channels = [];
@@ -1564,7 +1585,7 @@ test("无频道时关闭详情：dock 保持收起", async () => {
   harness.api.setViewMode("channel");
 
   await harness.clickRow("mem-1");
-  await harness.closeDetail();
+  await harness.leaveViaMessagesKey();
 
   assert.equal(harness.dock.hidden, true, "没有可回退的频道 ⇒ 收起");
   assert.equal(harness.api.state.activeAgentId, null);
@@ -1615,8 +1636,6 @@ test("切看板同样离开整页详情", async () => {
 test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
   const harness = createHarness();
   const keys = [
-    "agentDetail.tag",
-    "agentDetail.closeAria",
     "agentDetail.openAria",
     "agentDetail.sectionFacts",
     "agentDetail.statChannels",
@@ -1731,6 +1750,9 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agent.enabledOnHint",
     "agent.enabledOff",
     "agent.enabledOffHint",
+    // 头部的小标签与关闭控件一起删除：两条词条也随节点消失，不留孤儿键。
+    "agentDetail.tag",
+    "agentDetail.closeAria",
   ]) {
     for (const locale of ["zh-CN", "en"]) {
       assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已删词条：" + key);
@@ -1738,20 +1760,19 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
   }
 });
 
-test("详情视图的关闭控件与保存条按钮都可键盘触达", async () => {
+test("详情头部的「发送消息」与保存条按钮都可键盘触达", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
   await harness.edit("display_name", "小明明");
 
-  for (const node of [harness.saveButton, harness.discardButton]) {
-    assert.equal(node.getAttribute("tabindex"), null, "保存条按钮不需要额外的 tabindex 才可 Tab 到");
+  for (const node of [harness.elementFor("#btnAgentSendMessage"), harness.saveButton, harness.discardButton]) {
+    assert.equal(node.getAttribute("tabindex"), null, "按钮不需要额外的 tabindex 才可 Tab 到");
     assert.equal(node.disabled, false);
   }
   // 三个控件在正本里都是 `<button>`（替身节点不解析静态 HTML，因此这一条读 `index.html`）。
   const html = readStudio("index.html");
-  assert.match(html, /<button[^>]*id="btnAgentDetailClose"[^>]*data-i18n-attr="aria-label:agentDetail\.closeAria"/,
-    "关闭控件是带 aria-label 的 button");
+  assert.match(html, /<button[^>]*id="btnAgentSendMessage"[^>]*>/);
   assert.match(html, /<button[^>]*id="adDiscard"[^>]*>/);
   assert.match(html, /<button[^>]*id="adSave"[^>]*>/);
 });
@@ -1824,23 +1845,45 @@ function detailFetchBase(url) {
   return { ok: true, status: 200, json: async () => ({}) };
 }
 
-test("详情头部有「发送消息」按钮：文案挂词条、落在关闭控件旁", () => {
+test("详情头部只剩强调色的「发送消息」：无 Agent 标签 / 状态行 / 关闭控件", async () => {
   const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
   const headStart = html.indexOf('class="agent-page-head"');
   const headEnd = html.indexOf('class="agent-page-scroll"');
   assert.ok(headStart >= 0 && headEnd > headStart, "index.html 里应有详情头部");
   const head = html.slice(headStart, headEnd);
   const send = /<button\b[^>]*id="btnAgentSendMessage"[^>]*>/.exec(head);
-  const close = /<button\b[^>]*id="btnAgentDetailClose"[^>]*>/.exec(head);
   assert.ok(send, "详情头部应有 #btnAgentSendMessage");
-  assert.ok(close, "详情头部仍有关闭控件");
-  assert.ok(head.indexOf(send[0]) < head.indexOf(close[0]), "发送消息在关闭控件之前（同一行右侧）");
+  assert.match(send[0], /btn-primary/, "按钮复用既有 .btn-primary（--accent / --on-accent），零新色值");
   assert.match(send[0], /data-i18n="agentDetail\.sendMessage"/, "文案挂词条，不写死");
+  const buttons = head.match(/<button\b/g) || [];
+  assert.equal(buttons.length, 1, "头部只剩「发送消息」这一个按钮");
+  for (const gone of [
+    "btnAgentDetailClose",
+    "agentDetail.closeAria",
+    "agentDetail.tag",
+    "agent-detail-tag",
+    "dock-tag",
+    "dock-role",
+    "adPresence",
+    "adStatusText",
+  ]) {
+    assert.equal(head.includes(gone), false, "详情头部不应再出现：" + gone);
+  }
 
   const harness = createHarness();
   for (const locale of ["zh-CN", "en"]) {
     assert.ok(catalogText(harness, locale, "agentDetail.sendMessage"), "两份词条都有发送消息：" + locale);
   }
+});
+
+test("打开详情后不再查询已删的状态行节点（app.js 与正本同步）", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  const stale = harness.queries.filter((selector) =>
+    selector === "#adPresence" || selector === "#adStatusText");
+  assert.deepEqual(stale, [], "renderAgentDetail() 不再写详情头部的状态点 / 状态文案");
 });
 
 test("点「发送消息」发出 POST /api/dms，复用已有私信并离开 Agent 详情", async () => {
