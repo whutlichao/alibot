@@ -151,3 +151,42 @@ Standards 轴与 Spec 轴各跑一个独立子代理（互不共享上下文）�
 | 孤儿词条（与 Standards 轴同一批） | 同 Standards 轴处置 |
 | ADR-0026 正文「人类面入口是 Agent 编辑弹窗的联网档」已随弹窗删除而过时 | **不改 ADR**：`docs/agents/review-rules.md` 判断规则 4「ADR 只做最小事实修正、决策内容不改」。决策（联网档是显式 opt-in、`null` = 清除覆盖）仍然成立，变的只是呈现位置；此处记事实修正：入口现为 Agent 详情页「配置」区块里的「联网」四档（`app/README.md` 已同步改口径） |
 | 未在真实浏览器跑 ≤900px | **已知限制**：移动端只在 CSS 与逻辑层核对（`.agent-page` 是 `.main` 的 flex 子项、`#dock` 在 agent 视图下 `hidden`，≤900px 的抽屉规则未改）。本票不新开浏览器测试框架 |
+
+---
+
+## 5. 后续修订（2026-10-24 用户反馈）
+
+本节记录**之后**的一轮用户反馈：用户在运行中的 `/studio/` 页面上逐条圈了 Agent 详情页，判据以那些原话为准，
+**取代**上文 Change 2 的六区块列表（`事实 / 当前状态 / 配置 / 运行时 / 全局 MCP / 系统提示`）。
+**以上各节的历史读数原样保留**——它们记录的是 2026-10-22 那一版交付时的真实结果，不是本文的现行规格。
+
+用户原话（六条）：
+
+1. 「事实」区第三行的「模型标识 deepseek:deepseek-flash」——删掉。
+2. 「当前状态」整个区块（标题 + 「当前状态：空闲」一行）——删掉。附带后果已由用户定夺：
+   该节里的「未启用原因」（`enabled_reason`）**一并删掉**，详情页不再显示它；成员名册里那处
+   `.dock-member-reason` 小字保持原样。
+3. 「配置」区块顶部的提示（「改动先留在草稿里；保存时整份字段一起提交……」）——删掉。
+4. 「运行时」整个区块（模型标识 / 提供商 / 是否远端 / 远端数据流告知）——删掉。
+5. 系统提示 textarea——放到顶部「事实」下面。
+6. 「事实」标题——改成「统计」。
+
+修订后的形态：**四处区块，顺序 统计 → 系统提示 → 配置 → 全局 MCP**。
+
+| 判据 | 落点 | 读数 |
+| --- | --- | --- |
+| 六 → 四处区块 | `app.js` `agentDetailNodes()` 返回 `[facts, prompt, config, globalMcp]` | 用例「所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / 全局 MCP」按 `#adBody` 子树顺序取 `data-od-id` 逐项相等 |
+| 统计区不再有模型标识 | `agentFactsSection()` 删掉 `agent-overview-model` 那个 `kvRow`（连同注释）；四个数字原样 | 用例：`byOdId('agent-overview-model') === null` 且统计区文本不含模型标识 |
+| 标题「事实」→「统计」 | `i18n.js` `agentDetail.sectionFacts` = `统计` / `Stats`（**key 名不变**） | 用例：区块标题文本 = 该词条在两份 catalog 里的取值 |
+| 「当前状态」区块删除 | 删 `agentStatusSection()` 与 `agent-detail-section-status` / `agent-detail-status-value` / `agent-detail-enabled-reason` | 用例：详情页不含「该 Agent 的模型配置已停用」；`grep` 三个标识 0 命中 |
+| 配置提示删除 | 删 `agentConfigSection()` 里的 `configNote` 一行 | 用例：标题下第一块不是 `.hint`，而是第一个字段；其余配置字段与暂停 / 恢复 / 远端告知一行未动 |
+| 「运行时」区块删除 | 删 `agentRuntimeSection()` 与只被它用的 `agentConsentLabel()` | `grep` `agent-detail-model` / `-provider` / `-remote` / `-consent` / `sectionRuntime` 0 命中 |
+| 系统提示上移 | `agentDetailNodes()` 里 `agentPromptSection(agent)` 排在 facts 之后、config 之前（区块本体不变） | 用例：`agent-detail-prompt`（textarea 上的标识）在 DOM 顺序上夹在 `agent-detail-section-facts` 与 `agent-detail-section-config` 之间 |
+| 孤儿词条同步删除 | 两份 catalog 删 `sectionStatus` / `kvStatus` / `kvReason` / `configNote` / `sectionRuntime` / `runtimeNote` / `kvModel` / `kvProvider` / `kvRemote` / `remoteYes` / `remoteNo` / `kvConsent` / `consentAck` / `consentPending` / `consentNotNeeded` / `emptyField` | 用例「本票新增 / 沿用的文案在两份词条里都取到值」断言这 16 个键在两份 catalog 里都是 `undefined` |
+| 行为一行不改 | 草稿 / 保存条 / 整份 PATCH / 远端告知确认 / 暂停恢复 / 全局 MCP 确认 | 既有用例（整份 payload、拒绝路径、放弃路径、provider 切换、全局 MCP 确认）全部原样通过 |
+| 后端零改动 | `app/alibot/*.py`、schema、迁移链、HTTP 契约 | `git diff 83805a1 --stat -- app/alibot '*.py'` 为空 |
+
+本节的**本轮**读数（`bash scripts/check.sh --studio` 284 tests / 284 pass / 0 fail、
+`node --test app/tests/agent_detail_ui.test.cjs` 31 / 31、红证据 31 tests / 26 pass / 5 fail、
+双轴评审结论）记在
+`app/specs/agent-detail-sections-trim-acceptance.md`——它是这一轮修订的验收正本。

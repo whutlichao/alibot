@@ -441,13 +441,15 @@ const I18N_CATALOGS = {
     /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：一页分区块 + 就地编辑 ──
        详情不再是 dock 的形态（用户 2026-10-22 裁定）：它占据整条右侧，dock 让位。
        所有区块在同一页纵向铺开，**没有页签**（`tabOverview` / `tabRuntime` / `tabsLabel`
-       随页签一起删除）。事实的每个数字都由**后端既有事实**推导（`stats`：`round_outcome`
-       聚合 + 任务行），运行时**只**放 `agent_config` 里真实存在的字段。原型的内存 / 延迟 /
-       工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，因此这里也没有它们的词条。 */
+       随页签一起删除）。统计的每个数字都由**后端既有事实**推导（`stats`：`round_outcome`
+       聚合 + 任务行）；模型标识 / 提供商 / 是否远端 / 远端数据流告知不再在详情页重复一份只读读数
+       （用户 2026-10-24 裁定），它们可编辑的那一份长在「配置」区块里（词条见 `agent.*`）。
+       原型的内存 / 延迟 / 工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，
+       因此这里也没有它们的词条。 */
     'agentDetail.tag': 'Agent',
     'agentDetail.closeAria': '关闭 Agent 详情',
     'agentDetail.openAria': '查看 {name} 的详情',
-    'agentDetail.sectionFacts': '事实',
+    'agentDetail.sectionFacts': '统计',
     'agentDetail.statChannels': '所属频道数',
     'agentDetail.statChannelsHint': '来源：它是成员的频道数（后端频道成员表）。',
     'agentDetail.statRounds': '参与轮次数',
@@ -458,26 +460,11 @@ const I18N_CATALOGS = {
     'agentDetail.statSuccessHint':
       '来源：回复的轮次数 ÷（回复 + 自判忽略 + 失败）的轮次数；没有样本时显示「—」。',
     'agentDetail.noSamples': '—',
-    'agentDetail.sectionStatus': '当前状态',
-    'agentDetail.kvStatus': '当前状态',
-    'agentDetail.kvReason': '未启用原因',
     'agentDetail.sectionConfig': '配置',
-    'agentDetail.configNote': '改动先留在草稿里；保存时整份字段一起提交，任一字段不合法时后端整体不写。',
     'agentDetail.pause': '暂停',
     'agentDetail.resume': '恢复',
     'agentDetail.pauseNote':
       '暂停只写配置：它仍会被唤醒并留下一条可读原因的失败轮次结果，只是不产出回复。',
-    'agentDetail.sectionRuntime': '运行时',
-    'agentDetail.runtimeNote': '只呈现配置里真实存在的字段。',
-    'agentDetail.kvModel': '模型标识',
-    'agentDetail.kvProvider': '提供商',
-    'agentDetail.kvRemote': '是否远端',
-    'agentDetail.remoteYes': '远端（数据会离开本机）',
-    'agentDetail.remoteNo': '本机（数据不出本机）',
-    'agentDetail.kvConsent': '远端数据流告知',
-    'agentDetail.consentAck': '已确认',
-    'agentDetail.consentPending': '未确认（启用前会先告知）',
-    'agentDetail.consentNotNeeded': '本机提供商：不需要确认',
     'agentDetail.kvPrompt': '系统提示',
     // 联网档（#202 / 2026-10-21 修订）：读数缺失（`null`）= 没有 Agent 级覆盖 = 跟随频道，
     // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在详情页里替人推断私聊的生效档。
@@ -495,7 +482,6 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': '已确认：{name}',
     'agentDetail.globalMcpRuntimeIdle': '尚无运行期读数',
     'agentDetail.globalMcpRuntimeConnected': '运行期已连接',
-    'agentDetail.emptyField': '（未填写）',
     'agentDetail.save': '保存',
     'agentDetail.discard': '放弃',
     'agentDetail.unsaved': '有未保存的改动',
@@ -1237,14 +1223,15 @@ const I18N_CATALOGS = {
        The detail is no longer a dock form (user decision 2026-10-22): it takes the whole right side
        and the dock steps aside. Every section sits on the same page in one column — **no tabs**
        (`tabOverview` / `tabRuntime` / `tabsLabel` were removed with the tabs). Every number is
-       derived from **backend facts** (`stats`: aggregates over `round_outcome` plus task rows);
-       the runtime section carries **only** fields that really exist in `agent_config`.
-       Memory / latency / tool permissions / temperature / token usage / context usage have no data
-       surface in this repo, so there are no strings for them here. */
+       derived from **backend facts** (`stats`: aggregates over `round_outcome` plus task rows).
+       The model id / provider / remote flag / remote data-flow notice are no longer repeated as a
+       read-only block (decision 2026-10-24): their editable form lives in the configuration section
+       (see the `agent.*` keys). Memory / latency / tool permissions / temperature / token usage /
+       context usage have no data surface in this repo, so there are no strings for them here. */
     'agentDetail.tag': 'Agent',
     'agentDetail.closeAria': 'Close agent details',
     'agentDetail.openAria': 'Open the details of {name}',
-    'agentDetail.sectionFacts': 'Facts',
+    'agentDetail.sectionFacts': 'Stats',
     'agentDetail.statChannels': 'Channel memberships',
     'agentDetail.statChannelsHint':
       'Source: how many channels it is a member of (the backend channel member list).',
@@ -1257,27 +1244,11 @@ const I18N_CATALOGS = {
     'agentDetail.statSuccessHint':
       'Source: replied rounds ÷ (replied + deliberately ignored + failed) rounds; shows “—” with no samples.',
     'agentDetail.noSamples': '—',
-    'agentDetail.sectionStatus': 'Current status',
-    'agentDetail.kvStatus': 'Current status',
-    'agentDetail.kvReason': 'Why it is disabled',
     'agentDetail.sectionConfig': 'Configuration',
-    'agentDetail.configNote':
-      'Edits stay in a draft; saving submits every field at once and the backend writes nothing if any field is invalid.',
     'agentDetail.pause': 'Pause',
     'agentDetail.resume': 'Resume',
     'agentDetail.pauseNote':
       'Pausing only writes configuration: it is still woken and still leaves a failed round outcome with a readable reason — it just produces no reply.',
-    'agentDetail.sectionRuntime': 'Runtime',
-    'agentDetail.runtimeNote': 'Only fields that really exist in the configuration are shown.',
-    'agentDetail.kvModel': 'Model id',
-    'agentDetail.kvProvider': 'Provider',
-    'agentDetail.kvRemote': 'Remote',
-    'agentDetail.remoteYes': 'Remote (data leaves this machine)',
-    'agentDetail.remoteNo': 'Local (data stays on this machine)',
-    'agentDetail.kvConsent': 'Remote data-flow notice',
-    'agentDetail.consentAck': 'Acknowledged',
-    'agentDetail.consentPending': 'Not acknowledged (you will be told before enabling)',
-    'agentDetail.consentNotNeeded': 'Local provider: no acknowledgement needed',
     'agentDetail.kvPrompt': 'System prompt',
     // Web access (#202 / 2026-10-21 revision): a missing value (`null`) means there is no
     // agent-level override, i.e. "follow channel" — a reading, not an empty field; an override
@@ -1298,7 +1269,6 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': 'Acknowledged: {name}',
     'agentDetail.globalMcpRuntimeIdle': 'No runtime reading yet',
     'agentDetail.globalMcpRuntimeConnected': 'Connected at runtime',
-    'agentDetail.emptyField': '(empty)',
     'agentDetail.save': 'Save',
     'agentDetail.discard': 'Discard',
     'agentDetail.unsaved': 'Unsaved changes',

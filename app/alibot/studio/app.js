@@ -4856,12 +4856,13 @@ function memberCard(member, agentsById, canJoin) {
 
    - **它是主线视图，不是 dock 的形态**（用户 2026-10-22 裁定）：`state.mode === 'agent'` 时
      `#viewAgent` 占据整条右侧，dock 让位；关闭时回到进入前的视图与 dock 开合。
-   - **所有区块在同一页纵向铺开**：事实 / 当前状态 / 配置 / 运行时 / 全局 MCP / 系统提示。
-     没有页签——`#adTabOverview` / `#adTabRuntime` 与 `setAgentDetailTab()` 随本票一起删除。
-   - **事实只呈现有真实来源的读数**：四个数字全部来自后端 `GET /api/agents/{id}` 的 `stats`
+   - **所有区块在同一页纵向铺开**：统计 / 系统提示 / 配置 / 全局 MCP。没有页签——
+     系统提示紧贴统计之下（用户 2026-10-24 裁定：它是这页上最常改的一格）。
+   - **统计只呈现有真实来源的读数**：四个数字全部来自后端 `GET /api/agents/{id}` 的 `stats`
      （`round_outcome` 聚合 + 任务行 + 频道成员表）。前端**不**自己算，也不为填满界面编数值。
-     运行时**只**呈现 `agent_config` 里真实存在的字段：原型的内存 / 延迟 / 工具权限 / 温度 /
-     Token 消耗 / 上下文占用在本仓没有数据面，因此这里既不渲染也不留占位。
+     模型标识 / 提供商 / 是否远端 / 远端数据流告知不再在详情页重复一份只读读数：模型标识与
+     提供商可编辑，它们长在「配置」区块里；原型的内存 / 延迟 / 工具权限 / 温度 / Token 消耗 /
+     上下文占用在本仓没有数据面，因此这里既不渲染也不留占位。
 
    编辑的形态：控件只写**草稿**（`state.agentEdit`，呈现状态），不直接发 PATCH；草稿与后端
    读数不一致时页面底部出现固定保存条。「保存」= 一次性提交整份字段（沿用既有语义：任一字段
@@ -5155,19 +5156,17 @@ function sectionTitle(key, odId) {
   return node;
 }
 
-/** 详情页的全部区块，按顺序纵向铺开（没有页签）。 */
+/** 详情页的全部区块，按顺序纵向铺开（没有页签）：统计 → 系统提示 → 配置 → 全局 MCP。 */
 function agentDetailNodes(agent) {
   return [
     agentFactsSection(agent),
-    agentStatusSection(agent),
-    agentConfigSection(agent),
-    agentRuntimeSection(agent),
-    globalMcpSection(),
     agentPromptSection(agent),
+    agentConfigSection(agent),
+    globalMcpSection(),
   ];
 }
 
-/** 事实：四个数字（同一个 `stats` 来源）+ 模型标识。 */
+/** 统计：四个数字（同一个 `stats` 来源）。 */
 function agentFactsSection(agent) {
   const stats = agent.stats || {};
   const facts = el('section', 'd-sec');
@@ -5189,25 +5188,7 @@ function agentFactsSection(agent) {
   grid.appendChild(statCell(t('agentDetail.statSuccess'), t('agentDetail.statSuccessHint'), rateText,
     'agent-stat-success-rate'));
   facts.appendChild(grid);
-  // 概览也呈现**模型标识**（规格 §2 面 4 与 D20 把它列进「概览呈现有真实来源的事实」；
-  // US17 同样点名它）。
-  facts.appendChild(kvRow(t('agentDetail.kvModel'), agent.model_id || t('dock.noModel'),
-    'agent-overview-model'));
   return facts;
-}
-
-/** 当前状态：状态点 + 未启用原因（都是后端事实）。 */
-function agentStatusSection(agent) {
-  const status = statusOf(agent);
-  const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentDetail.sectionStatus', 'agent-detail-section-status'));
-  section.appendChild(kvRow(t('agentDetail.kvStatus'), statusLabel(status),
-    'agent-detail-status-value'));
-  if (agent.enabled_reason) {
-    section.appendChild(kvRow(t('agentDetail.kvReason'), agent.enabled_reason,
-      'agent-detail-enabled-reason'));
-  }
-  return section;
 }
 
 /* ─── 配置区块：可编辑字段直接长在这里（全部写 `state.agentEdit.draft`） ──── */
@@ -5290,7 +5271,6 @@ function agentConfigSection(agent) {
   const draft = state.agentEdit.draft || agentDraftFrom(agent);
   const section = el('section', 'd-sec');
   section.appendChild(sectionTitle('agentDetail.sectionConfig', 'agent-detail-section-config'));
-  section.appendChild(el('div', 'hint', t('agentDetail.configNote')));
 
   section.appendChild(agentFieldRow('agent.nameLabel', agentInput('display_name', draft.display_name)));
   section.appendChild(agentFieldRow('agent.roleLabel', agentInput('role', draft.role)));
@@ -5453,23 +5433,6 @@ async function confirmAgentEditRemoteFlow() {
   await confirmRemoteFlow(draft.provider, agentNoticeNodes.confirm, () => renderAgentEditNotice(draft.provider));
 }
 
-/** 运行时：**只**有 `agent_config` 里真实存在的只读字段（外加可用性推导出的告知状态）。
-    可编辑的那几项已经长在「配置」区块里，这里不重复一份互相矛盾的读数。 */
-function agentRuntimeSection(agent) {
-  const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentDetail.sectionRuntime', 'agent-detail-section-runtime'));
-  section.appendChild(el('div', 'hint', t('agentDetail.runtimeNote')));
-  [
-    ['agentDetail.kvModel', agent.model_id || t('dock.noModel'), 'agent-detail-model'],
-    ['agentDetail.kvProvider', agent.provider ? providerLabel(agent.provider) : t('agentDetail.emptyField'),
-      'agent-detail-provider'],
-    ['agentDetail.kvRemote', agent.is_remote ? t('agentDetail.remoteYes') : t('agentDetail.remoteNo'),
-      'agent-detail-remote'],
-    ['agentDetail.kvConsent', agentConsentLabel(agent), 'agent-detail-consent'],
-  ].forEach(([key, value, odId]) => section.appendChild(kvRow(t(key), value, odId)));
-  return section;
-}
-
 /** 系统提示：可编辑的原文（不是被改写的一句话）。 */
 function agentPromptSection(agent) {
   const draft = state.agentEdit.draft || agentDraftFrom(agent);
@@ -5536,13 +5499,6 @@ function globalMcpRuntimeText(runtime) {
   if (!runtime) return t('agentDetail.globalMcpRuntimeIdle');
   if (runtime.connected) return t('agentDetail.globalMcpRuntimeConnected');
   return runtime.error || t('agentDetail.globalMcpRuntimeIdle');
-}
-
-/** 远端数据流告知的**状态**（不是文案本身）：本机 provider 不需要确认，远端 provider 看库里的记录。 */
-function agentConsentLabel(agent) {
-  if (!agent.provider) return t('agentDetail.emptyField');
-  if (!agent.is_remote) return t('agentDetail.consentNotNeeded');
-  return agent.remote_consent ? t('agentDetail.consentAck') : t('agentDetail.consentPending');
 }
 
 /** 一个概览数字：`title` 与 `aria-label` 都写明**来源**（数字本身不带来源就是不可核对的读数）。 */
