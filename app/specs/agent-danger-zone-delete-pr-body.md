@@ -52,6 +52,10 @@ DELETE /api/agents/{id}
   pyright 0 errors / node glob `292 pass / 0 fail`）；全量门禁由 CI 在最终 head 上复核。
 - **真机视口（ego-browser + 真实 Studio，1350 / 900 / 420）**：`scrollWidth == viewport`；危险区文本 /
   四个按钮越界 **0**、按钮两两相交 **0**，确认区在三档下都展开。
+- **CI（全量 `scripts/check.sh`）**：run
+  [#40060599716](https://github.com/whutlichao/alibot/actions/runs/40060599716) 在 head `7a1704e`
+  上 `success`（workflow `check` / job `check`）。本条 body 更新只改文档正本，最终 head 由同一个
+  workflow 复核。
 - **双轴 review**：Standards 2 hard → 2 修（CONTEXT 的 Channel Join `_Avoid_` 澄清、README 不再把删除
   挂到 ADR-0011）；Spec 2 missing / 1 scope / 1 wrong → 在途禁用用例 + 真机视口读数补齐、
   `taskMemberName` 增加「成员表未就绪」判据。follow-up 又对这三处修正做了**聚焦的双轴复核**：

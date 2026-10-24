@@ -331,7 +331,21 @@ hard：**无**。README 已同步两条行为（`review-rules` #6）；i18n 两�
 
 ### CI
 
-（CI 读数回填见下）
+全量门禁（`.github/workflows/check.yml`，跑的正是 `scripts/check.sh`）在**含本轮代码改动的 head**
+`7a1704e` 上通过：
+
+- run **40060599716** — https://github.com/whutlichao/alibot/actions/runs/40060599716
+  （workflow `check` / job `check`，conclusion `success`，head `7a1704e`）
+
+```sh
+gh run view 40060599716 --json conclusion,headSha,url
+# {"conclusion":"success","headSha":"7a1704ecaea1023ec074c4a69a8102cff9f56aaa",
+#  "url":"https://github.com/whutlichao/alibot/actions/runs/40060599716"}
+```
+
+本轮本票不跑本地全量 `scripts/check.sh`（上一轮已跑过；本轮只改表现层、用例与文案），最终 head 的
+全量门禁以 CI 为准。本条 CI 读数回填只改文档正本，不碰代码；该回填 commit 的 head 由同一个 workflow
+再次复核，结果见 PR #255 的 checks 页。
 
 ## PR
 
