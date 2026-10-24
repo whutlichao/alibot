@@ -1120,6 +1120,20 @@ class AgentScopeAgentSeam:
             return None
         return raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
 
+    def _runtime_environment_prompt(self, target_id: str, member: Mapping[str, Any]) -> str:
+        """该成员这一轮的系统提示里的「运行环境」段（#263）。
+
+        两处取值都来自本轮装配点，不从 prompt 或记忆卡片推断：
+        ``WorkspaceSettings``（工作区根 / 后端 / 权限档）与 ``agent_config.memory_mode``。
+        配置读不出来等价于**未配置工作区**——这一段宁可说「没有」，也不猜一个路径。
+        """
+        try:
+            settings = self._workspace_settings(target_id, str(member["id"]))
+        except Exception:  # 配置读不出来不拖垮一轮；段里明确写「未配置」
+            _log.debug("workspace settings lookup failed for runtime environment", exc_info=True)
+            settings = None
+        return _runtime_environment_section(settings, member.get("memory_mode"))
+
     def _web_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
         """联网工具的配置读数（#186）；没有装配钩子 / 读不出来时返回 ``None``。"""
         if self._web_of is None:
@@ -1369,6 +1383,7 @@ class AgentScopeAgentSeam:
             with_web=bool(web_tools) and supports_tool_calling(provider),
             global_base=global_base,
             project_supplement=project_supplement,
+            environment=self._runtime_environment_prompt(target_id, agent),
         ) + self._runtime_prompt(target_id, messages)
         task_actions: list[AgentTaskAction] = []
         # 这一轮模型是否**经结构化通道**声明了沉默（``declare_silence`` 工具被调用过）。
@@ -1749,6 +1764,7 @@ class AgentScopeAgentSeam:
                 leader=True,
                 global_base=global_base,
                 project_supplement=project_supplement,
+                environment=self._runtime_environment_prompt(target_id, agent),
             )
 
         task_actions: list[AgentTaskAction] = []
@@ -1956,6 +1972,7 @@ class AgentScopeAgentSeam:
                                     and supports_tool_calling(member_provider),
                                     global_base=member_global,
                                     project_supplement=member_project,
+                                    environment=self._runtime_environment_prompt(target_id, member),
                                 ),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
                                 # 配置了项目根时挂受限文件工具；非 read-only 的 Plan 轮次才有四工具。
@@ -2305,18 +2322,65 @@ def _web_prompt_note() -> str:
     )
 
 
+#: 运行环境段（#263）的固定标题：记忆卡片可能带着过时的事实，本段是这一轮唯一权威。
+_RUNTIME_ENVIRONMENT_TITLE = "本轮运行环境（以此为准；与记忆内容冲突时以本段为准）"
+
+#: 未配置工作区时的事实句。**不写路径**：没有项目根，模型能读的只有当前会话的卸载目录。
+_RUNTIME_ENVIRONMENT_NO_WORKSPACE = (
+    "工作区：未配置（没有项目根；不能读写项目文件，只有当前会话的卸载目录可读）"
+)
+
+#: 长期记忆的两档形态：ReMe 由系统自管，文件工具既看不见也写不了，模型不得猜它的路径。
+_RUNTIME_MEMORY_REME = (
+    "长期记忆：已开启（ReMe；系统自动记录和检索，不由文件工具读写；不要声称或猜测它的路径）"
+)
+_RUNTIME_MEMORY_OFF = "长期记忆：未开启"
+
+#: 段末固定一句：本段没给的东西，模型没有依据说它存在。
+_RUNTIME_ENVIRONMENT_NO_FABRICATION = "不要编造本段没有给出的路径。"
+
+
+def _runtime_environment_section(settings: Any | None, memory_mode: Any) -> str:
+    """本轮运行环境段（#263）：只写**这一轮装配出来的事实**，不推断、不列路径清单。
+
+    ``settings`` 是该成员这一轮的 ``WorkspaceSettings``（读不到传 ``None``）。有项目根时写
+    **模型可见**的根：local 是项目根绝对路径，docker 是容器内的 ``/workspace``——宿主路径
+    对容器里的模型没有意义，也不该被写进 prompt。记忆档只认 ``agent_config.memory_mode``：
+    ``reme`` = 已开启，其余 = 未开启。
+
+    本函数是纯的（无 IO、无全局状态）：取值由调用方从本轮装配点读好传进来。
+    """
+    from .workspace import DOCKER_WORKDIR
+
+    lines = [_RUNTIME_ENVIRONMENT_TITLE]
+    if settings is None or not str(settings.root or "").strip():
+        lines.append(_RUNTIME_ENVIRONMENT_NO_WORKSPACE)
+    else:
+        visible_root = DOCKER_WORKDIR if settings.is_docker else settings.root
+        lines.append(f"工作区（文件工具的根）：{visible_root}")
+        lines.append(f"后端：{settings.backend}")
+        lines.append(f"权限档：{settings.permission_mode}")
+    lines.append(_RUNTIME_MEMORY_REME if memory_mode == "reme" else _RUNTIME_MEMORY_OFF)
+    lines.append(_RUNTIME_ENVIRONMENT_NO_FABRICATION)
+    return "\n".join(lines)
+
+
 def _team_member_prompt(
     member: Mapping[str, Any],
     *,
     with_web: bool = False,
     global_base: str | None = None,
     project_supplement: str | None = None,
+    environment: str | None = None,
 ) -> str:
     """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。
 
     规则三段与单 Agent 路径同一顺序与同一标签（#230）：全局基座 → 配置 → 项目补充；
     其余身份句与 team 说明仍在配置段之后。身份句（ADR-0033）与单 Agent 路径同一来源、同一位置：
     配置段之后、``你的角色：`` 之前。
+
+    ``environment``（#263）是本轮运行环境段，位置固定在 ``你的角色：`` 之后、team 说明之前；
+    它只由调用方按该成员本轮的装配事实算好传入。
     """
     parts: list[str] = []
     if global_base:
@@ -2332,6 +2396,8 @@ def _team_member_prompt(
     role = str(member.get("role") or "").strip()
     if role:
         parts.append(f"你的角色：{role}")
+    if environment:
+        parts.append(environment)
     parts.append(
         "你是 team 模式频道里的成员。队长会把一项具体任务分派给你；你看不到频道上下文，"
         "任务描述就是全部输入。请直接完成并在正文里给出结果。"
@@ -2434,6 +2500,7 @@ def _system_prompt(
     with_web: bool = False,
     global_base: str | None = None,
     project_supplement: str | None = None,
+    environment: str | None = None,
 ) -> str:
     """把成员配置里的系统提示 + 本轮的回应 rubric + 任务上下文合成一次调用的 system prompt。
 
@@ -2469,6 +2536,9 @@ def _system_prompt(
     全局基座排在配置段之前，项目补充排在配置段之后（「只在 ``base`` 前后插入两段」）。两段都是
     原样拼接、不解析、不裁剪；``None`` 表示该段缺席（文件缺失 / 不可读 / 非 UTF-8 / 无项目根），
     此时不写标签。默认都 None，未接线时输出与 #230 之前逐字相同。
+
+    ``environment``（#263）是本轮运行环境段（工作区 / 后端 / 权限档 / 长期记忆形态），位置固定在
+    ``你的角色：`` 之后、回应 rubric 与队长说明之前；取值只来自本轮装配事实，由调用方算好传入。
     """
     base = str(agent.get("system_prompt") or "").strip()
     role = str(agent.get("role") or "").strip()
@@ -2484,6 +2554,10 @@ def _system_prompt(
         parts.append(identity)
     if role:
         parts.append(f"你的角色：{role}")
+    if environment:
+        # 运行环境（#263）：位置固定在角色之后、回应 rubric / 队长说明之前。它是**本轮**事实，
+        # 不是身份或纪律，因此不参与「规则三段 → 身份句 → 角色」那条既有顺序。
+        parts.append(environment)
     if leader:
         parts.append(
             "你是这个 team 频道的队长，不是成员：队长负责拆解任务、把具体工作分派给成员，"
