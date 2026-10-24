@@ -542,23 +542,44 @@ test("运行面板开着时打开详情：先收掉 run 面板（否则整体重
 
 /* ─── 2. 区块：一页铺开，没有页签 ───────────────────────────────────────── */
 
-test("所有区块在同一页纵向铺开：事实 / 状态 / 配置 / 运行时 / 全局 MCP / 系统提示", async () => {
+test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / 全局 MCP", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
 
   const ids = [
     "agent-detail-section-facts",
-    "agent-detail-section-status",
-    "agent-detail-section-config",
-    "agent-detail-section-runtime",
-    "agent-detail-section-global-mcp",
     "agent-detail-section-prompt",
+    "agent-detail-section-config",
+    "agent-detail-section-global-mcp",
   ];
   const order = descendants(harness.agentBody)
     .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
     .filter((id) => ids.indexOf(id) >= 0);
-  assert.deepEqual(order, ids, "六个区块按顺序同时出现在同一页里，不需要切换");
+  assert.deepEqual(order, ids, "四处区块按顺序同时出现在同一页里，不需要切换");
+
+  // 系统提示的**控件本身**就夹在统计与配置之间（不是「标题在中间、控件在别处」）。
+  const flat = descendants(harness.agentBody);
+  const at = (odId) => flat.indexOf(byOdId(harness.agentBody, odId));
+  assert.ok(
+    at("agent-detail-section-facts") < at("agent-detail-prompt")
+      && at("agent-detail-prompt") < at("agent-detail-section-config"),
+    "系统提示的文本框位于统计区之后、配置区之前",
+  );
+});
+
+test("配置区块不再有「改动先留在草稿里」那句提示", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  const config = byOdId(harness.agentBody, "agent-detail-section-config").parentNode;
+  assert.equal(config.children[0].getAttribute("data-od-id"), "agent-detail-section-config");
+  assert.equal(
+    config.children[1].classList.contains("hint"),
+    false,
+    "标题下的第一块不再是一句提示，而是第一个字段",
+  );
 });
 
 test("正本里不再有页签与编辑弹窗（index.html）", () => {
@@ -854,9 +875,9 @@ test("远端 provider 的数据流告知块搬进配置区块，切回本机 pro
     "本机 provider 不需要确认");
 });
 
-/* ─── 4. 只读区块：事实 / 状态 / 运行时 / 全局 MCP ──────────────────────── */
+/* ─── 4. 只读区块：统计 / 全局 MCP ─────────────────────────────────────── */
 
-test("事实区块的四个数字与后端读数一致，每个数字都写明来源", async () => {
+test("统计区块的四个数字与后端读数一致，每个数字都写明来源", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
@@ -865,9 +886,16 @@ test("事实区块的四个数字与后端读数一致，每个数字都写明�
   const hints = byClass(harness.agentBody, "stat").map((cell) => cell.title);
   hints.forEach((hint) => assert.ok(hint && hint.length > 0, "每个数字都要写明来源"));
   assert.equal(hints[0], catalogText(harness, "zh-CN", "agentDetail.statChannelsHint"));
-  // 模型标识也在「事实」里（规格 §2 面 4 / D20 点名它）。
-  assert.equal(kvKeys(harness.agentBody)[0], catalogText(harness, "zh-CN", "agentDetail.kvModel"));
-  assert.equal(kvValues(harness.agentBody)[0], "ollama:qwen2.5");
+  // 标题是「统计」（取词条值，不写死字面量）。
+  const title = byOdId(harness.agentBody, "agent-detail-section-facts");
+  assert.equal(title.textContent, catalogText(harness, "zh-CN", "agentDetail.sectionFacts"));
+  // 模型标识不再在统计区重复一份（可编辑的那一份在「配置」区块里）。
+  assert.equal(byOdId(harness.agentBody, "agent-overview-model"), null, "统计区里没有模型标识行");
+  assert.equal(
+    title.parentNode.textContent.includes("ollama:qwen2.5"),
+    false,
+    "统计区不重复呈现模型标识",
+  );
 });
 
 test("成功率没有样本时显示「—」，不编一个 0%", async () => {
@@ -888,27 +916,12 @@ test("成功率没有样本时显示「—」，不编一个 0%", async () => {
   await harness.clickRow("mem-1");
 
   assert.equal(statValues(harness.agentBody)[3], catalogText(harness, "zh-CN", "agentDetail.noSamples"));
-  assert.ok(kvValues(harness.agentBody).includes("该 Agent 的模型配置已停用"));
-});
-
-test("运行时区块只呈现只读字段：没有可编辑控件，也不出现原型的内存 / 延迟 / token", async () => {
-  const harness = withChannel();
-  harness.load([agentDetail()]);
-  await harness.clickRow("mem-1");
-
-  const title = byOdId(harness.agentBody, "agent-detail-section-runtime");
-  assert.ok(title, "运行时区块还在");
-  const section = title.parentNode;
-  const controls = descendants(section).filter(
-    (node) => ["input", "textarea", "select", "button"].indexOf(node.tagName) >= 0,
+  // 未启用原因随「当前状态」区块一起从详情页退出（成员名册里那处小字保持原样）。
+  assert.equal(
+    harness.agentBody.textContent.includes("该 Agent 的模型配置已停用"),
+    false,
+    "详情页不再显示未启用原因",
   );
-  assert.deepEqual(controls, [], "运行时是只读区块，不放任何可编辑控件");
-  // 只读事实来自后端读数：是否远端 + 远端数据流告知。
-  assert.ok(section.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.remoteNo")));
-  assert.ok(section.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.consentNotNeeded")));
-  for (const forbidden of ["温度", "内存", "延迟", "token", "Token", "工具权限", "运行时长"]) {
-    assert.equal(section.textContent.includes(forbidden), false, "运行时不得出现：" + forbidden);
-  }
 });
 
 test("系统提示是配置数据的原文，且就地可编辑", async () => {
@@ -1152,23 +1165,8 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agentDetail.statSuccess",
     "agentDetail.statSuccessHint",
     "agentDetail.noSamples",
-    "agentDetail.sectionStatus",
-    "agentDetail.kvStatus",
-    "agentDetail.kvReason",
     "agentDetail.sectionConfig",
-    "agentDetail.configNote",
-    "agentDetail.sectionRuntime",
-    "agentDetail.runtimeNote",
-    "agentDetail.kvModel",
-    "agentDetail.kvRemote",
-    "agentDetail.remoteYes",
-    "agentDetail.remoteNo",
-    "agentDetail.kvConsent",
-    "agentDetail.consentAck",
-    "agentDetail.consentPending",
-    "agentDetail.consentNotNeeded",
     "agentDetail.kvPrompt",
-    "agentDetail.emptyField",
     "agentDetail.pause",
     "agentDetail.resume",
     "agentDetail.pauseNote",
@@ -1237,6 +1235,29 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
   for (const key of ["agentDetail.tabsLabel", "agentDetail.tabOverview", "agentDetail.tabRuntime"]) {
     for (const locale of ["zh-CN", "en"]) {
       assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已删页签词条：" + key);
+    }
+  }
+  // 随「当前状态」「运行时」两区块、配置提示与统计区模型标识一起删掉的词条同此。
+  for (const key of [
+    "agentDetail.sectionStatus",
+    "agentDetail.kvStatus",
+    "agentDetail.kvReason",
+    "agentDetail.sectionRuntime",
+    "agentDetail.runtimeNote",
+    "agentDetail.configNote",
+    "agentDetail.kvModel",
+    "agentDetail.kvProvider",
+    "agentDetail.kvRemote",
+    "agentDetail.remoteYes",
+    "agentDetail.remoteNo",
+    "agentDetail.kvConsent",
+    "agentDetail.consentAck",
+    "agentDetail.consentPending",
+    "agentDetail.consentNotNeeded",
+    "agentDetail.emptyField",
+  ]) {
+    for (const locale of ["zh-CN", "en"]) {
+      assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已删词条：" + key);
     }
   }
 });
