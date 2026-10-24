@@ -4302,6 +4302,9 @@ function onStreamMessage(targetId, payload) {
 async function refreshDmList() {
   try {
     const payload = await api('/api/dms');
+    // 只认形状正确的读数：拿不到 `dms` 数组时保留旧镜像（与读失败同一条语义），
+    // 不让一次畸形应答把整份镜像换成 `undefined`。
+    if (!payload || !Array.isArray(payload.dms)) return;
     state.dms = payload.dms;
     renderDms();
   } catch {
@@ -5814,6 +5817,12 @@ async function deleteAgent(memberId) {
     });
     delete state.statuses[memberId];
     closeAgentDeleteModal();
+    // 私信是否归入「已归档」只由后端事实 `peer.deleted_at` 裁决（`dmIsArchived()`），而 DELETE
+    // 响应按既有纪律只带 `deleted` / `agents` / `members`——不含 dms。于是删除成功后重读一次
+    // 正本私信列表（`GET /api/dms`）再渲染：否则本地镜像里的 peer 仍没有 `deleted_at`，该行要等
+    // 整页重载才挪段（#265）。读失败时 `refreshDmList()` 保留旧镜像并照常返回，删除成功路径与
+    // toast 不会被打断（成功落位与 toast 最多晚一次 RTT）。
+    await refreshDmList();
     if (state.activeAgentId === memberId) closeAgentDetail();
     else {
       renderMembers();
