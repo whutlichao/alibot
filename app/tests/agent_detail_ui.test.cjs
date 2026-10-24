@@ -993,18 +993,8 @@ test("删除请求在途时按钮禁用：请求没回来之前不能重复提�
 });
 
 test("删除失败留在当前页、弹窗不收起、原因不静默吞掉", async () => {
-  const harness = withChannel({
-    fetch: async (url, init) => {
-      if (String(url) === "/api/agents/mem-1" && (init.method || "GET") === "DELETE") {
-        return {
-          ok: false,
-          status: 500,
-          json: async () => ({ error: { code: "internal", message: "删除时出错，未改动任何数据" } }),
-        };
-      }
-      return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
-    },
-  });
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const harness = withChannel({ fetch: dmArchiveFetch(owner, { failDelete: true }).fetch });
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
 
@@ -1021,6 +1011,137 @@ test("删除失败留在当前页、弹窗不收起、原因不静默吞掉", as
   assert.ok(
     harness.toastWrap.textContent.includes("删除时出错，未改动任何数据"),
     "失败原因按后端那一句显示出来",
+  );
+});
+
+/* ─── 删除成功后的私信归档（#265）：判据只有 `GET /api/dms` 的 `peer.deleted_at` ────── */
+
+/** 删除 Agent 的成功应答 + 私信正本：`GET /api/dms` 在 DELETE 之前返回未归档的 peer，
+    之后返回带 `deleted_at` 的同一行（后端软删除是唯一正本，前端不伪造这个字段）。 */
+function dmArchiveFetch(owner, options) {
+  const config = options || {};
+  const deletedAt = "2026-10-24T10:00:00.000Z";
+  const backend = { deleted: false };
+  const fetch = async (url, init) => {
+    const target = String(url);
+    if (target === "/api/agents/mem-1" && (init.method || "GET") === "DELETE") {
+      if (config.failDelete) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: "internal", message: "删除时出错，未改动任何数据" } }),
+        };
+      }
+      backend.deleted = true;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ deleted: "mem-1", agents: [], members: [owner] }),
+      };
+    }
+    if (target === "/api/dms") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          dms: [dmTarget("dm-1", "小明", backend.deleted ? deletedAt : null)],
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+  };
+  return { fetch, backend };
+}
+
+test("删除 Agent 成功后重读私信正本：该私信行立即移入「已归档」段，无需刷新页面", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const stub = dmArchiveFetch(owner);
+  const harness = withChannel({ fetch: stub.fetch });
+  harness.load([agentDetail()]);
+  // 删除前：后端私信列表里这条 peer 尚未软删除（`deleted_at: null`）——行住在「私信」段。
+  harness.api.state.dms = [dmTarget("dm-1", "小明")];
+  harness.api.render();
+
+  const dmList = harness.elementFor("#dmList");
+  const archiveList = harness.elementFor("#dmArchiveList");
+  const archiveGroup = harness.elementFor("#dmArchiveGroup");
+  const archiveToggle = harness.elementFor("#btnDmArchiveToggle");
+  assert.ok(byDataset(dmList, "dm", "dm-1"), "前提：删除前这条私信在「私信」段");
+  assert.equal(archiveGroup.hidden, true, "前提：没有已归档私信时整段隐藏");
+  assert.equal(archiveToggle.getAttribute("aria-expanded"), "false", "前提：归档段默认折叠");
+
+  await harness.clickRow("mem-1");
+  await harness.openDeleteModal();
+  await harness.confirmDelete();
+
+  assert.equal(stub.backend.deleted, true, "前提：DELETE 走了成功路径");
+  assert.equal(byDataset(dmList, "dm", "dm-1"), null, "「私信」段不再有该行（未刷新页面）");
+  assert.ok(byDataset(archiveList, "dm", "dm-1"), "「已归档」段有该行（未刷新页面）");
+  assert.equal(archiveGroup.hidden, false, "「已归档」段由隐藏变为可见");
+  // 折叠默认值本票不改：段可见、行已就位，但列表仍按既有语义收起。
+  assert.equal(archiveToggle.getAttribute("aria-expanded"), "false", "归档段仍默认折叠");
+  assert.equal(archiveList.hidden, true, "折叠时不展示归档行");
+  // 归档判据只能来自后端事实：这次重读是删除成功后唯一新增的请求。
+  assert.equal(harness.calls.filter((call) => call.url === "/api/dms").length, 1,
+    "删除成功后重读一次 /api/dms");
+});
+
+test("删除的正是当前私信时：删除成功后 composer 立即进入已归档只读态", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const stub = dmArchiveFetch(owner);
+  const harness = withChannel({ fetch: stub.fetch });
+  harness.load([agentDetail()]);
+  harness.api.state.dms = [dmTarget("dm-1", "小明")];
+  harness.api.state.activeChannelId = "dm-1";
+  harness.api.render();
+
+  // 前提：未归档私信是可写的（正常私信与频道同形）。
+  assert.equal(harness.elementFor("#composerInput").disabled, false, "前提：未归档私信可写");
+  assert.equal(harness.elementFor("#btnAttach").disabled, false, "前提：附件按钮可用");
+
+  await harness.clickRow("mem-1");
+  assert.equal(harness.api.state.mode, "agent", "前提：已在 Agent 详情视图");
+  await harness.openDeleteModal();
+  await harness.confirmDelete();
+
+  assert.equal(harness.api.state.mode, "channel", "删除成功后回到进入详情前的消息视图");
+  assert.equal(harness.elementFor("#composerInput").disabled, true, "正文禁用");
+  assert.equal(harness.elementFor("#btnAttach").disabled, true, "附件禁用");
+  assert.equal(harness.elementFor("#btnMention").disabled, true, "@提及禁用");
+  assert.equal(harness.elementFor("#btnAsTask").disabled, true, "作为任务发送禁用");
+  assert.equal(harness.elementFor("#attachInput").disabled, true, "文件选择器禁用");
+  assert.equal(
+    harness.elementFor("#composerHint").textContent,
+    catalogText(harness, "zh-CN", "composer.archivedHint"),
+    "hint 换成归档说明",
+  );
+});
+
+test("删除失败不重读私信列表：行留在原处，弹窗与错误文案保持现状", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const stub = dmArchiveFetch(owner, { failDelete: true });
+  const harness = withChannel({ fetch: stub.fetch });
+  harness.load([agentDetail()]);
+  harness.api.state.dms = [dmTarget("dm-1", "小明")];
+  harness.api.render();
+
+  const dmList = harness.elementFor("#dmList");
+  assert.ok(byDataset(dmList, "dm", "dm-1"), "前提：删除前这条私信在「私信」段");
+
+  await harness.clickRow("mem-1");
+  await harness.openDeleteModal();
+  await harness.confirmDelete();
+
+  assert.equal(harness.deletes().length, 1, "失败路径同样只发一次 DELETE");
+  assert.equal(harness.calls.filter((call) => call.url === "/api/dms").length, 0,
+    "删除失败不额外请求 GET /api/dms");
+  assert.ok(byDataset(dmList, "dm", "dm-1"), "私信行留在原处");
+  assert.equal(harness.elementFor("#dmArchiveGroup").hidden, true, "「已归档」段仍隐藏");
+  assert.equal(harness.deleteOverlay.hidden, false, "弹窗保持打开");
+  assert.equal(harness.api.state.activeAgentId, "mem-1", "详情仍开着");
+  assert.ok(
+    harness.toastWrap.textContent.includes("删除时出错，未改动任何数据"),
+    "错误文案不变（按后端那一句显示）",
   );
 });
 
