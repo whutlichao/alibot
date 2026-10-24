@@ -199,4 +199,6 @@ scripts/check.sh
 
 ## PR
 
-_PENDING_
+- 编号：**#255** — https://github.com/whutlichao/alibot/pull/255
+- body 正本：`app/specs/agent-danger-zone-delete-pr-body.md`（用 `gh pr create --body-file` 提交）
+- 状态：已推送、CI 待跑；**未合并**（合并由 coordinator 做）。
