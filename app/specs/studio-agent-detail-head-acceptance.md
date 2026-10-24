@@ -60,8 +60,8 @@ scripts/check.sh --studio
   的 PR #258 合入分支再跑；合并前同一条命令是 `308 / 308`，差值是 #258 新增的 2 条）
 - 收尾：`门禁全绿`
 
-`agent_detail_ui.test.cjs` 单文件：`tests 50 / pass 50 / fail 0`（旧 49 条 + 头部新事实拆分出的 2 条 −
-合并的 1 条，见下节说明）。
+`agent_detail_ui.test.cjs` 单文件：`tests 50 / pass 50 / fail 0`（基线 49 条；本票把头部用例拆成
+静态正本 + 运行期查询两条，净 +1；其余改写不增减用例数）。
 
 ## 测试改写说明（不许删用例变绿）
 
@@ -113,5 +113,15 @@ scripts/check.sh --studio
 
 ## PR 与 CI
 
-- PR：#258 之后的 `studio-agent-detail-head` 分支（PR 创建后回填号与 body 路径）
-- CI 读数：待 PR CI 完成后回填（本地已跑 `scripts/check.sh --studio`；CI 跑同一脚本的全量）
+- PR：[#259](https://github.com/whutlichao/alibot/pull/259)（base `main`，head `studio-agent-detail-head`）
+- PR body 正本：`app/specs/studio-agent-detail-head-pr-body.md`（`gh pr create --body-file` 用同一份）
+- CI 读数（PR #259，代码 commit `7be8f45` 的 `check` job，
+  [run 40080495131](https://github.com/whutlichao/alibot/actions/runs/40080495131)，`12m41s`）：
+  - pytest（全量）：`1182 passed, 2 skipped in 666.61s`
+  - `ruff check`：`All checks passed!`
+  - `ruff format --check`：通过
+  - `mypy`：`Success: no issues found in 124 source files`
+  - `pyright`：`0 errors, 0 warnings, 0 informations`
+  - `node --test app/tests/*.test.cjs`：`tests 310 / pass 310 / fail 0`
+  - 收尾：`门禁全绿`
+- 本读数回填本身是 docs-only commit（代码未变）；CI 仍会对该 commit 跑同一脚本。
