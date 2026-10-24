@@ -199,7 +199,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `20 → 21` | `auto claim defaults on` | `agent_config.auto_claim` 的 DDL 默认 `0 → 1`；按当前 `SCHEMA` **重建** `agent_config`（升级库的新插入也拿到 1），并把存量 `auto_claim = 0` 一次性回填为 `1`（只改这一列、不动 `updated_at`；报告真实改动行数，重放是空操作） |
 | `21 → 22` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
 | `22 → 23` | `agent runtime context and memory` | `round_outcome.finished_reason`（可空，旧行保持 NULL）；`agent_config.context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `memory_mode`（列默认 `40` / `0.7` / `30` / `'off'`；显式 NULL 跟随运行时默认） |
-| `23 → 24` | `long-term memory moves to ReMe` | 重建 `agent_config`：`memory_mode` 的 CHECK 改 `('off', 'reme')`，存量旧记忆档（`agentic`）在复制语句里**显式映射**为 `reme`；`off` 与 `NULL` 逐字保留（ADR-0034）。v25 起这一列由 `24 → 25` 删除，本步只剩链连续性（不再改写取值） |
+| `23 → 24` | `long-term memory to ReMe (superseded)` | 历史步骤（ADR-0034 的 ReMe 换档）。v25 起 `memory_mode` 由 `24 → 25` 删除，本版代码里这一步不重建、不改写取值，只保留链连续性；存量旧档 `agentic` 的语义随列删除一起退场 |
 | `24 → 25` | `long-term memory is always on` | 重建 `agent_config`：删掉 `memory_mode` 列（当前 DDL 已不声明它，逐列复制即删列）；存量 `off` / `NULL` 行因此变为「始终开启」（ADR-0035），其它列逐字保留 |
 
 - **只加不删（唯二例外：`20 → 21` 的一次性回填与 `24 → 25` 的删列）；除这两处外不回填业务数据**：

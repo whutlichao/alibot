@@ -396,7 +396,7 @@ def test_bad_global_entries_are_skipped_and_logged(
         database.close()
 
 
-def test_missing_global_layers_yield_zero_and_are_never_created(
+def test_missing_skill_layers_yield_zero_and_are_never_created(
     tmp_path: Path, stub_provider: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     database, agent, channel, project, global_root = _seed(tmp_path)

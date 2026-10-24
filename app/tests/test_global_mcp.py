@@ -612,7 +612,7 @@ def test_a_bad_global_entry_is_skipped_without_blocking_the_good_entry(
     assert "mcp__bad__echo" not in descriptions
 
 
-def test_a_round_does_not_create_the_global_layer_or_write_global_entries_to_the_database(
+def test_a_round_does_not_create_global_mcp_layers_or_write_global_entries_to_the_database(
     declarations: Any, stub_script: Path, stub_provider: str, tmp_path: Path
 ) -> None:
     database, channel_id, agent_id = declarations

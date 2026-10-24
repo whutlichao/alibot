@@ -5402,7 +5402,7 @@ function fillAgentProviderSelect(select, provider) {
   return select.value;
 }
 
-/** 配置区块：显示名 / 角色 / 模型 / 自动认领 / 长期记忆 / 上下文三项 / 联网档，
+/** 配置区块：显示名 / 角色 / 模型 / 自动认领 / 上下文三项 / 联网档，
     外加远端数据流告知块。「暂停 / 恢复」与删除已搬到页面最后一个区块（危险操作）；
     `enabled` 的**唯一**界面入口就是危险区那个按钮，配置区不再有「启用状态」档位。 */
 function agentConfigSection(agent) {
