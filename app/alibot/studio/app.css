@@ -470,7 +470,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   display: flex; align-items: center; gap: 7px; min-width: 0;
 }
 .agent-page-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-page-head .dock-role { display: flex; align-items: center; gap: var(--sp-3); }
 /* 正文：与消息流同一个阅读宽度（`--stream-max`），于是「整条右侧」不等于「一行拉满」。 */
 .agent-page-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9) var(--sp-10); }
 .agent-page-inner { max-width: var(--stream-max); margin: 0 auto; }

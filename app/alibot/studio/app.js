@@ -2042,7 +2042,8 @@ function setDockMode(mode, reveal) {
 /** 主线视图的唯一裁决点：消息流 / 看板 / 搜索 / **Agent 详情**四选一。
 
     Agent 详情是第四种主线视图（不是 dock 的形态）：它在时整条右侧归它，dock 隐藏；
-    离开它时按 `agentReturn` 恢复进入前的视图与 dock 开合（`leaveAgentView()`）。 */
+    离开它走左栏行或键盘 M / T（`leaveAgentView()`，不恢复 dock 开合）；只有删除成功那条
+    `closeAgentDetail()` 会按 `agentReturn` 恢复进入前的视图与 dock 开合。 */
 function setViewMode(mode) {
   state.mode = mode;
   syncChromeVisibility(mode);
@@ -4723,8 +4724,9 @@ function statusOf(agent) {
 
 /** 把四态写到一个状态点节点上（class / title / aria-label / dataset 一起），返回同一个节点。
 
-    它是状态点的**唯一**写法：静态列表（`presenceNode`）与详情页头部（会重建的 `#adPresence`）
-    共用它，于是「同一个事实在两处呈现」不会漂移成两套 class 与两套无障碍文案。 */
+    它是状态点的**唯一**写法：左栏频道的 presence 格、dock 成员卡与名册都走它，于是「同一个
+    事实在多处呈现」不会漂移成两套 class 与两套无障碍文案。Agent 详情头部不再呈现状态点
+    （用户 2026-10-24 反馈：详情头部只留名称与「发送消息」）。 */
 function applyPresence(node, status) {
   node.className = 'presence ' + status;
   node.dataset.status = status;
@@ -5227,14 +5229,11 @@ async function confirmGlobalMcpServer(name) {
 
 /** 详情页的**唯一**渲染落点（打开、状态流推送、配置保存后都走它）。
     草稿脏时**不重铺** `#adBody`：那会把正在输入的控件换成新节点（焦点与光标一起丢），
-    而人的输入比一次后台刷新更值得保留；标题 / 状态点 / 保存条仍照常刷新。 */
+    而人的输入比一次后台刷新更值得保留；标题与保存条仍照常刷新。 */
 function renderAgentDetail() {
   const agent = state.activeAgentId ? agentById(state.activeAgentId) : null;
   if (!agent) return;
   syncAgentEditDraft(agent);
-  const status = statusOf(agent);
-  applyPresence($('#adPresence'), status);
-  $('#adStatusText').textContent = statusLabel(status);
   $('#adName').textContent = agent.display_name;
   syncAgentSendButton();
   if (agentDraftDirty()) {
@@ -9520,8 +9519,6 @@ function bindEvents() {
     if (row) openAgentDetail(row.dataset.member);
   });
 
-  // Agent 详情是主线视图：关闭控件是它的唯一出口（正文里的动作在 `#adBody` 的委派里）。
-  $('#btnAgentDetailClose').addEventListener('click', closeAgentDetail);
   // 「发送消息」= DM 的创建 / 复用入口（分组 `+` 与弹窗删除后，这里是人能到达 DM 的入口）。
   $('#btnAgentSendMessage').addEventListener('click', messageActiveAgent);
 
