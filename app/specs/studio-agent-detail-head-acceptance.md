@@ -51,12 +51,13 @@ scripts/red-evidence.sh 2497bcc26a72580569c48856b5da6c13d54c0634 app/tests/agent
 scripts/check.sh --studio
 ```
 
-- pytest（Studio 窄档：审批 HTTP 契约 + 文档词表守卫 + 测试分层守卫）：`20 passed in 2.15s`
+- pytest（Studio 窄档：审批 HTTP 契约 + 文档词表守卫 + 测试分层守卫）：`20 passed in 2.10s`
 - `ruff check`：`All checks passed!`
 - `ruff format --check`：通过（未运行 `ruff format`，无整文件重排）
 - `mypy`（仓库根）：`Success: no issues found in 124 source files`
 - `pyright`：`0 errors, 0 warnings, 0 informations`
-- `node --test app/tests/*.test.cjs`：`tests 308 / pass 308 / fail 0`
+- `node --test app/tests/*.test.cjs`：`tests 310 / pass 310 / fail 0`（本票提交后把 `origin/main`
+  的 PR #258 合入分支再跑；合并前同一条命令是 `308 / 308`，差值是 #258 新增的 2 条）
 - 收尾：`门禁全绿`
 
 `agent_detail_ui.test.cjs` 单文件：`tests 50 / pass 50 / fail 0`（旧 49 条 + 头部新事实拆分出的 2 条 −
