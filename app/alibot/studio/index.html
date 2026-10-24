@@ -643,6 +643,30 @@
   </div>
 </div>
 
+<!-- ─── 删除 Agent 的确认弹窗 ───────────────────────────────────────────
+     骨架沿用既有 `.overlay` / `.modal`（与 `#taskOverlay` 同形，不新造一套样式）。
+     危险区「删除」只打开它（零请求）；「确认删除」才发 `DELETE /api/agents/{id}`，
+     「取消」/ 关闭图标 / 点遮罩 / Escape 都只收起弹窗。正文由 app.js 按
+     `agentDetail.deleteConfirm` 写入（带成员名称与不可逆后果），因此这里留空。 -->
+<div class="overlay" id="agentDeleteOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="agentDeleteModalTitle">
+    <div class="modal-head">
+      <div style="flex:1"><h2 id="agentDeleteModalTitle" data-i18n="agentDetail.deleteTitle">删除 Agent</h2></div>
+      <button class="icon-btn" type="button" id="agentDeleteClose" data-i18n-attr="aria-label:common.close" aria-label="关闭">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="danger-confirm-text" id="agentDeleteText" data-od-id="agent-delete-confirm"></p>
+    </div>
+    <div class="modal-foot">
+      <span class="sep"></span>
+      <button class="btn" type="button" id="agentDeleteCancel" data-i18n="agentDetail.deleteCancel" data-od-id="agent-delete-cancel">取消</button>
+      <button class="btn btn-danger" type="button" id="agentDeleteConfirm" data-i18n="agentDetail.deleteConfirmAction" data-od-id="agent-delete-confirm-action">确认删除</button>
+    </div>
+  </div>
+</div>
+
 <!-- ─── 成员名册：该频道成员的**只读**全名单（含 owner） ─────────────────────
      形态照原型 `alibot-app.html:1601-1629` 与切片 `screens/modals.html`（成员一节）：
      `.modal.wide` + 一行一个成员 + 右侧状态点，底部唯一动作是「关闭」。
