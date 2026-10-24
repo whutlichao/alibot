@@ -12,6 +12,9 @@
 
 基线：`ad5ddf9`（PR #255 合并后的 main head）。本票只动 Studio 表现层、一个 DOM 用例文件与文档。
 
+PR：[#256](https://github.com/whutlichao/alibot/pull/256)；正文源文件
+`app/specs/agent-delete-confirm-modal-pr-body.md`。
+
 ## 判据 → 落点
 
 | 判据 | 落点 |
