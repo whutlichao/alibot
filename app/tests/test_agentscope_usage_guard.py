@@ -63,9 +63,12 @@ def _pin(root: Path) -> tuple[str | None, list[str]]:
     problems: list[str] = []
     if len(deps) != 1:
         problems.append(f"app/pyproject.toml 里 agentscope 依赖应恰好一条，实际 {deps}")
-    pinned = [d for d in deps if re.fullmatch(r"agentscope==\d+\.\d+\.\d+", d)]
+    # extra 不放松 pin：`agentscope[memory-reme]==2.0.10` 仍是精确版本（ADR-0034 的 ReMe extra）。
+    pinned = [d for d in deps if re.fullmatch(r"agentscope(?:\[[A-Za-z0-9_,.-]+\])?==\d+\.\d+\.\d+", d)]
     if not pinned:
-        problems.append(f"agentscope 必须是精确 pin（如 agentscope==2.0.10），实际 {deps}")
+        problems.append(
+            f"agentscope 必须是精确 pin（如 agentscope==2.0.10 或 agentscope[extra]==2.0.10），实际 {deps}"
+        )
     if problems:
         return None, problems
     return pinned[0].split("==", 1)[1], problems
@@ -232,6 +235,16 @@ def test_guard_5_snapshot_is_intact() -> None:
     assert not problems, _format(
         "文档快照不完整", problems, "跑 scripts/sync-agentscope-docs.sh 重建", "§2.3"
     )
+
+
+def test_guard_1_accepts_an_exact_pin_with_an_extra(tmp_path: Path) -> None:
+    """extra 不放松版本约束：`agentscope[memory-reme]==2.0.10` 仍是精确 pin（ADR-0034）。"""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "pyproject.toml").write_text(
+        '[project]\nname="x"\nversion="0"\ndependencies=["agentscope[memory-reme]==2.0.10"]\n',
+        encoding="utf-8",
+    )
+    assert _pin(tmp_path) == ("2.0.10", [])
 
 
 def test_guard_1_fires_on_a_non_exact_pin(tmp_path: Path) -> None:

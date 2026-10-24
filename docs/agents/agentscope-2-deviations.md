@@ -162,16 +162,21 @@
 
 ---
 
-## D12 长期记忆只落成员记忆目录，不引入第二套消息正本
+## D12 长期记忆用 ReMe 工作区，不引入第二套消息正本
 
 - **偏离点**：审计矩阵第 44 行原把长期记忆判为「未采用」，理由是「会引入第二套事实源」。现采用
-  `AgenticMemoryMiddleware`（Markdown 文件），但作用域收窄到 `<root>/.alibot/memory/<member_id>/Memory/`：
-  只授予该目录写权限；DM 无 workspace 时只补 `Read/Write/Edit`，`Read` 另可读当前会话卸载目录，
-  不能读其他会话或项目文件。
-- **依据**：ADR-0030；`app/alibot/memory.py`；`app/alibot/runtime_files.py`。
-- **文档原话**：「运行中智能体自主创建各种 Markdown 格式的记忆文件，并通过一个固定的 `MEMORY.md`
-  文件维护所有记忆文件的索引」— `building-blocks/long-term-memory.md`。
-- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，且记忆默认关闭
-  （`memory_mode=off`），开启时也只写记忆目录、不碰项目根。既拿到跨会话召回，又不制造第二套对话事实。
-- **再评估条件**：当记忆需要跨成员共享、需要向量召回（RAG），或要默认开启时，再评估 ReMe/Mem0
-  与更强隔离；若框架把记忆迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。
+  `agentscope.middleware.ReMeMiddleware`（进程内 ReMe；`agentscope[memory-reme]` 的 floor 之外另 pin `reme-ai==0.4.1.10`，0.4.1.13 会启动失败）：
+  一个成员一个工作区 `<global_home>/agents/<member_id>/reme`（PER_AGENT，跨项目 / 跨会话召回），
+  `top_k=5`，BM25 关键词检索、**不启用 embedding**、不新增凭据面；provider 不能携带工具时用
+  `static_control`（不暴露 `memory_search`）。记忆**不经过文件工具**：删除 Markdown 写入白名单，
+  DM 只有卸载目录的只读 `Read`，Docker 成员家目录回到 `:ro`。
+- **依据**：ADR-0034（修订 ADR-0030 / ADR-0032 的记忆相关结论）；`app/alibot/memory.py`；
+  `app/alibot/agent_seam.py`（每轮装配、关闭在 model client 之前）；`app/alibot/runtime_files.py`。
+- **文档原话**：「AgentScope middleware that adds long-term memory backed by ReMe … ReMe is embedded
+  **in-process** (no separate service)」— 2.0.10 wheel 的 `ReMeMiddleware` docstring；能力页
+  `zh/versions/2.0.10/building-blocks/long-term-memory.md`。
+- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，记忆默认关闭
+  （`memory_mode=off`），开启时也只写成员工作区、不碰项目根。写回与检索由中间件负责，模型不再维护
+  索引文件；作用域从「项目 / 全局两处」收窄为「一个成员一个工作区」，因此没有项目过滤（跨项目召回）。
+- **再评估条件**：当记忆需要跨成员共享、需要向量召回（RAG），或要默认开启时，再评估 embedding 与
+  更强隔离；若框架把 ReMe 迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。

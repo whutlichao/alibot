@@ -13,7 +13,7 @@ def test_runtime_config_roundtrip_omission_and_explicit_null(client: TestClient)
         "context_window_messages": 60,
         "context_trigger_ratio": 0.6,
         "react_max_iters": 45,
-        "memory_mode": "agentic",
+        "memory_mode": "reme",
     }
     result = client.patch(url, json=values)
     assert result.status_code == 200, result.text
@@ -32,6 +32,8 @@ def test_runtime_config_roundtrip_omission_and_explicit_null(client: TestClient)
         {"context_trigger_ratio": 1},
         {"react_max_iters": -1},
         {"memory_mode": "mem0"},
+        # 旧档位名不再被接受（ADR-0034 / schema 24）。
+        {"memory_mode": "agentic"},
     ],
 )
 def test_invalid_runtime_config_does_not_save_other_fields(client: TestClient, invalid: dict) -> None:

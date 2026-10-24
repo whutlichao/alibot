@@ -109,7 +109,14 @@ AVATAR_SLOT_COUNT = 5
 # 号段说明：本票原先自行取的是 21，但 #195（自动认领默认开启）随 main 先落地了 21，按 ADR-0015
 # 「必须高于当前 main」的判据，本步顺延为 ``21 → 22``。
 # 23 = Agent 运行时：可空的轮次结束原因，以及上下文窗口、压缩阈值、迭代上限、长期记忆配置。
-SCHEMA_VERSION = 23
+# 24 = 长期记忆换到 ReMe（ADR-0034）：``agent_config.memory_mode`` 的取值集合把旧的
+# Markdown 记忆档换成 ``reme``，迁移把存量旧档位显式映射过去（映射与旧词只出现在迁移步骤里）。
+# SQLite 改列级 CHECK 只能重建表，``23 → 24`` 一步（`migrate._step_23_to_24`）。
+SCHEMA_VERSION = 24
+
+#: 长期记忆档位（ADR-0034）：装配层与 ``PATCH /api/agents/{id}`` 的校验共用这一份词表；
+#: 库级 CHECK 是它的持久化副本——改词表必须同时开一次 schema 迁移。
+MEMORY_MODES = ("off", "reme")
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -688,7 +695,9 @@ CREATE TABLE IF NOT EXISTS agent_config (
   context_window_messages INTEGER DEFAULT 40 CHECK (context_window_messages > 0),
   context_trigger_ratio REAL DEFAULT 0.7 CHECK (context_trigger_ratio > 0 AND context_trigger_ratio <= 0.9),
   react_max_iters INTEGER DEFAULT 30 CHECK (react_max_iters > 0),
-  memory_mode TEXT DEFAULT 'off' CHECK (memory_mode IN ('off', 'agentic')),
+  -- 长期记忆（ADR-0034）：``off`` = 关闭；``reme`` = 进程内 ReMe 工作区。旧的 Markdown
+  -- 记忆档由 ``23 → 24`` 迁移显式映射为 ``reme``，此后库级 CHECK 不再接受旧词。
+  memory_mode TEXT DEFAULT 'off' CHECK (memory_mode IN ('off', 'reme')),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -1735,7 +1744,7 @@ class Database:
             if value is _UNSET or value is None:
                 continue
             if key == "memory_mode":
-                valid = value in ("off", "agentic")
+                valid = value in MEMORY_MODES
             elif key == "context_trigger_ratio":
                 valid = isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 0.9
             else:

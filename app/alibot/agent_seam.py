@@ -779,15 +779,27 @@ class AgentScopeAgentSeam:
         options["state"] = store.load(options["state"].permission_context)
         return store
 
-    def _prepare_runtime_options(
+    async def _prepare_runtime_options(
         self,
         agent: dict[str, Any],
         target_id: str,
         context: Any,
         root: str | None,
         mount: Any,
+        *,
+        model: Any,
+        provider: str,
         global_home: str | None = None,
-    ) -> tuple[dict[str, Any], SessionState | None, list[Any]]:
+    ) -> tuple[dict[str, Any], SessionState | None, list[Any], Any]:
+        """一轮的运行参数、会话状态与**记忆装配**（ADR-0034）。
+
+        ``model`` / ``provider`` 是这一轮实际使用的模型与其 provider：ReMe 的 ``chat_model`` 固定
+        为本轮模型，``supports_tools`` 由 provider 的工具能力决定（不能携带工具时退化为
+        ``static_control``，``memory_search`` 不送出去）。
+
+        返回 ``(options, store, memory_tools, memory_assembly)``；``memory_assembly`` 由调用方在
+        轮次 finally 里 ``await close()``（必须先于 model client 的关闭）。
+        """
         from agentscope.state import AgentState
 
         from .permissions import WorkspacePathPermissionMiddleware
@@ -799,32 +811,34 @@ class AgentScopeAgentSeam:
         store = self._restore_state(options)
         middlewares: list[Any] = [WorkspacePathPermissionMiddleware(root)] if root else []
         tools: list[Any] = []
-        if agent.get("memory_mode") == "agentic" and isinstance(options.get("offloader"), SessionOffloader):
-            from .memory import assemble_memory
-
-            memory_middlewares, tools = assemble_memory(
-                root,
-                str(agent["id"]),
-                options["state"].permission_context,
-                mount=mount,
-                offloader=options["offloader"] if mount is None else None,
-                global_home=global_home,
-            )
-            middlewares.extend(memory_middlewares)
-        elif mount is None and isinstance(options.get("offloader"), SessionOffloader):
+        if mount is None and isinstance(options.get("offloader"), SessionOffloader):
+            # 没有 workspace 的轮次：卸载目录的只读 Read 与记忆开关**解耦**（关掉长期记忆也照样
+            # 读得到本轮卸载的上下文）。
             from agentscope.tool import LocalBackend, Read
 
             from .runtime_files import PartitionBackend, PartitionPermissionMiddleware
 
             offloader = options["offloader"]
-            backend = PartitionBackend(
-                LocalBackend(), offloader.directory, str(offloader.visible_directory), writable=False
+            backend = PartitionBackend(LocalBackend(), offloader.directory, str(offloader.visible_directory))
+            tools.append(Read(backend=backend))
+            middlewares.append(PartitionPermissionMiddleware(backend))
+        memory_assembly: Any = None
+        if agent.get("memory_mode") == "reme":
+            from .memory import assemble_memory
+
+            memory_assembly = await assemble_memory(
+                str(agent["id"]),
+                model=model,
+                provider=provider,
+                global_home=global_home,
+                supports_tools=supports_tool_calling(provider),
             )
-            tools = [Read(backend=backend)]
-            middlewares.append(PartitionPermissionMiddleware(backend, strict=True))
+            if memory_assembly is not None:
+                middlewares.append(memory_assembly.middleware)
+                tools.extend(memory_assembly.tools)
         if middlewares:
             options["middlewares"] = middlewares
-        return options, store, tools
+        return options, store, tools, memory_assembly
 
     def _runtime_options(self, agent: dict[str, Any], target_id: str) -> dict[str, Any]:
         """框架运行参数与会话状态落点（ADR-0032 §四）。
@@ -859,14 +873,8 @@ class AgentScopeAgentSeam:
         member_id: str,
         target_id: str,
         warnings: list[str],
-        *,
-        memory_enabled: bool = False,
     ) -> Any:
-        """装配一轮的工作区。
-
-        ``memory_enabled`` 决定全局家目录要不要作为**记忆写入白名单**同时挂给文件工具（ADR-0032 §五）：
-        未开启长期记忆时它不进入白名单，行为与 #235 之前逐字相同。
-        """
+        """装配一轮的工作区（文件工具唯一的根是频道项目根；记忆不经过文件工具）。"""
         from .workspace import DockerWorkspaceUnavailable, assemble_workspace, session_partition_id
 
         try:
@@ -875,7 +883,6 @@ class AgentScopeAgentSeam:
                 member_id=member_id,
                 session_id=session_partition_id(member_id, target_id),
                 locale=self._locale(),
-                global_home=self._global_home if memory_enabled else None,
             )
         except DockerWorkspaceUnavailable as error:
             warning = render("seam.workspace_degraded", self._locale(), error=error)
@@ -1394,6 +1401,7 @@ class AgentScopeAgentSeam:
             mcp_assembly: Any | None = None
             instance: Any = None
             state_store: SessionState | None = None
+            memory_assembly: Any = None
             control = RuntimeTurn(asyncio.get_running_loop(), asyncio.current_task())
             try:
                 from agentscope.event import (
@@ -1440,7 +1448,6 @@ class AgentScopeAgentSeam:
                         member_id,
                         target_id,
                         workspace_warnings,
-                        memory_enabled=agent.get("memory_mode") == "agentic",
                     )
                     # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
                     # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
@@ -1449,8 +1456,20 @@ class AgentScopeAgentSeam:
                             target_id, member_id, mount, session_id, assembly_notes
                         )
 
-                runtime_options, state_store, memory_tools = self._prepare_runtime_options(
-                    agent, target_id, context, str(root) if root else None, mount, self._global_home
+                (
+                    runtime_options,
+                    state_store,
+                    memory_tools,
+                    memory_assembly,
+                ) = await self._prepare_runtime_options(
+                    agent,
+                    target_id,
+                    context,
+                    str(root) if root else None,
+                    mount,
+                    model=model,
+                    provider=provider,
+                    global_home=self._global_home,
                 )
                 agent_options: dict[str, Any] = {
                     # 框架内部名用 D10 派生名：``display_name`` 可重复，且事件归属只认派生名。
@@ -1635,6 +1654,10 @@ class AgentScopeAgentSeam:
                 if mount is not None:
                     with suppress(Exception):
                         await release_workspace_mount(mount)
+                # ReMe 的嵌入应用要在模型客户端之前收掉：它持有后台索引循环与同一个模型。
+                if memory_assembly is not None:
+                    with suppress(Exception):
+                        await memory_assembly.close()
                 await _aclose_model_client(model)
 
         try:
@@ -1797,10 +1820,19 @@ class AgentScopeAgentSeam:
 
             prepared_options: dict[str, dict[str, Any]] = {}
             members_by_id = {str(member["id"]): member for member in [agent, *team.members]}
+            memory_assemblies: list[Any] = []
             # 每个成员这一轮的项目根（`_permission_for` 的读数）：项目补充规则要从它起算。
             member_project_roots: dict[str, str | None] = {}
 
-            async def _workspace_tools_for(member_id_value: str) -> list[Any] | None:
+            def _build_member_model(member_id_value: str, *, stream: bool) -> Any:
+                """本轮该成员的模型：在这里建一次，既交给 ReMe 的 ``chat_model``，也交给 Agent 本身。"""
+                member = members_by_id[member_id_value]
+                model_id = str(member.get("model_id") or "")
+                model = self._build_model(provider_of(model_id), model_name_of(model_id), stream=stream)
+                models.append(model)
+                return model
+
+            async def _workspace_tools_for(member_id_value: str, model: Any) -> list[Any] | None:
                 settings = self._workspace_settings(target_id, member_id_value)
                 mount = None
                 tools: list[Any] = []
@@ -1810,7 +1842,6 @@ class AgentScopeAgentSeam:
                         member_id_value,
                         target_id,
                         workspace_warnings,
-                        memory_enabled=members_by_id[member_id_value].get("memory_mode") == "agentic",
                     )
                 if mount is not None:
                     mounts.append(mount)
@@ -1828,12 +1859,21 @@ class AgentScopeAgentSeam:
                 if mount is not None and getattr(mount, "allow_local_shell", False) and mode != "read-only":
                     tools.append(local_shell_tool(mount.root))
                 member_project_roots[member_id_value] = root
-                options, store, memory_tools = self._prepare_runtime_options(
-                    members_by_id[member_id_value], target_id, context, root, mount, self._global_home
+                options, store, memory_tools, memory_assembly = await self._prepare_runtime_options(
+                    members_by_id[member_id_value],
+                    target_id,
+                    context,
+                    root,
+                    mount,
+                    model=model,
+                    provider=provider_of(str(members_by_id[member_id_value].get("model_id") or "")),
+                    global_home=self._global_home,
                 )
                 prepared_options[member_id_value] = options
                 if store is not None:
                     state_stores[member_id_value] = store
+                if memory_assembly is not None:
+                    memory_assemblies.append(memory_assembly)
                 tools.extend(memory_tools)
                 return tools or None
 
@@ -1847,14 +1887,10 @@ class AgentScopeAgentSeam:
                 member: dict[str, Any],
                 prompt: str,
                 *,
+                model: Any,
                 round_plan: PlanSession | None,
                 toolkit: Any = None,
-                stream: bool = False,
             ) -> Any:
-                member_provider = provider_of(str(member.get("model_id") or ""))
-                member_model = model_name_of(str(member.get("model_id") or ""))
-                model = self._build_model(member_provider, member_model, stream=stream)
-                models.append(model)
                 options: dict[str, Any] = {
                     "name": member_internal_name(str(member["id"])),
                     "system_prompt": "\n".join(
@@ -1873,13 +1909,14 @@ class AgentScopeAgentSeam:
                 leader_web_tools = self._web_tools(target_id, member_id)
                 # 队长与成员各自按**自己这一轮生效的权限档**决定 Plan 工具面（#205）。
                 leader_plan = _plan_for(member_id)
+                leader_model = _build_member_model(member_id, stream=emit is not None)
                 leader_toolkit = _round_toolkit(
                     provider,
                     task_context=task_context,
                     actor_id=member_id,
                     task_actions=task_actions,
                     silence_declarations=silence_declarations,
-                    workspace_tools=await _workspace_tools_for(member_id),
+                    workspace_tools=await _workspace_tools_for(member_id, leader_model),
                     web_tools=leader_web_tools,
                     skills=await _skills_for_member(member_id),
                     with_plan=leader_plan is not None,
@@ -1890,16 +1927,17 @@ class AgentScopeAgentSeam:
                 leader_agent = _build_agent(
                     agent,
                     _leader_prompt(leader_global, leader_project),
+                    model=leader_model,
                     round_plan=leader_plan,
                     toolkit=leader_toolkit,
-                    stream=emit is not None,
                 )
                 member_agents: list[tuple[dict[str, Any], Any]] = []
                 for member in team.members:
                     member_id_value = str(member["id"])
                     member_provider = provider_of(str(member.get("model_id") or ""))
                     member_plan = _plan_for(member_id_value)
-                    workspace_tools = await _workspace_tools_for(member_id_value)
+                    member_model = _build_member_model(member_id_value, stream=False)
+                    workspace_tools = await _workspace_tools_for(member_id_value, member_model)
                     member_skills = await _skills_for_member(member_id_value)
                     # 联网配置按**该成员自己**的 member id 读（Agent 级覆盖），不拿队长的。
                     member_web_tools = self._web_tools(target_id, member_id_value)
@@ -1921,6 +1959,7 @@ class AgentScopeAgentSeam:
                                 ),
                                 # 成员没有任务上下文（规格 §3.5）；队长负责把任务写清楚。
                                 # 配置了项目根时挂受限文件工具；非 read-only 的 Plan 轮次才有四工具。
+                                model=member_model,
                                 round_plan=member_plan,
                                 toolkit=(
                                     _round_toolkit(
@@ -2102,6 +2141,10 @@ class AgentScopeAgentSeam:
                 for mount in mounts:
                     with suppress(Exception):
                         await release_workspace_mount(mount)
+                # ReMe 的嵌入应用要在模型客户端之前收掉（它们共享同一个本轮模型）。
+                for memory in memory_assemblies:
+                    with suppress(Exception):
+                        await memory.close()
                 for model in models:
                     await _aclose_model_client(model)
 

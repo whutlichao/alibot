@@ -1,41 +1,34 @@
-"""AgenticMemory 的跨会话写回与召回；DM 只有记忆家目录的文件权限（ADR-0032）。
+"""长期记忆的 ReMe 装配：工作区、模型、模式、工具与收尾（ADR-0034）。
 
-无项目根的轮次（DM / 频道未配项目根）里，全局家目录 `~/.alibot/agents/<member_id>/` 是唯一
-记忆落点，`MEMORY.md` 直接放在这一层（扁平，没有 `memory/Memory/` 中间层）。会话状态落在
-`<数据目录>/sessions/<session_id>/`，不再写 `<数据目录>/.alibot/**`。
+接缝说明：这些用例**替换** ``alibot.memory.ReMeMiddleware`` 为记录构造参数的假中间件，因此
+断言的是「装配层交给框架什么」，而不是 ReMe 的内部行为；另有一条用例用**真实**
+``ReMeMiddleware`` 证明 ``reme-ai`` 可导入且工具名是 ``memory_search``。
+
+无项目根的轮次（DM / 频道未配项目根）里，文件工具只有当前会话的卸载目录（只读）；长期记忆
+不再经过文件工具，落点是宿主路径 ``<global_home>/agents/<member_id>/reme``。
 """
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from agentscope.agent import Agent
 from agentscope.message import Msg, TextBlock
-from agentscope.middleware import AgenticMemoryMiddleware
+from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatResponse
+from alibot import memory as memory_module
 from alibot.runtime import SessionOffloader
 
 from tests.test_approval_seam import _ScriptedModel, _StubModelSeam, _tool_call
 
 
 class MemoryModel(_ScriptedModel):
-    """记录每次模型输入；召回调用固定返回空选择。
-
-    ``generate_structured_output`` 被重写为**直接返回空选择**：记忆中间件的异步召回会对家目录里
-    的 ``<topic>.md`` / ``AGENTS.md`` 发起一次结构化选择调用，而脚本模型按顺序消费脚本，多一次
-    调用就会让「读 / 写记忆」的脚本错位。召回不是本文件的判据（落点与白名单才是）。
-    """
+    """记录每次模型输入；``client`` 可被替换成记录关闭时序的替身。"""
 
     def __init__(self, script: Any) -> None:
         super().__init__(script)
         self.inputs: list[str] = []
-
-    async def generate_structured_output(
-        self, messages: list[Any], structured_model: Any, **kwargs: Any
-    ) -> Any:
-        return SimpleNamespace(finished_reason="completed", usage=None, content={"selected_files": []})
 
     async def _call_api(
         self,
@@ -49,6 +42,59 @@ class MemoryModel(_ScriptedModel):
         return await super()._call_api(model_name, messages, tools=tools, tool_choice=tool_choice, **kwargs)
 
 
+#: 被替换前的真实类：假中间件用它的 ``list_tools()`` 返回**真实**的 ``memory_search``
+#: （只是从不调用它），因此 toolkit 里出现的确实是生产工具，而不是形状相似的替身。
+_REAL_REME = memory_module.ReMeMiddleware
+
+
+class _FakeReMeMiddleware(MiddlewareBase):
+    """记录构造参数、工具清单与 ``close`` 次数；``events`` 用来断言关闭时序。"""
+
+    instances: ClassVar[list["_FakeReMeMiddleware"]] = []
+    events: ClassVar[list[str]] = []
+
+    class Parameters:
+        def __init__(self, **values: Any) -> None:
+            self.chat_model = values.get("chat_model")
+            self.mode = values.get("mode")
+            self.top_k = values.get("top_k")
+
+    def __init__(self, *, workspace_dir: str, parameters: Any) -> None:
+        self.workspace_dir = workspace_dir
+        self.parameters = parameters
+        self.closed = 0
+        _FakeReMeMiddleware.instances.append(self)
+
+    async def list_tools(self) -> list[Any]:
+        if self.parameters.mode == "static_control":
+            return []
+        delegate = _REAL_REME(
+            workspace_dir=self.workspace_dir,
+            parameters=_REAL_REME.Parameters(mode=self.parameters.mode, top_k=self.parameters.top_k),
+        )
+        return await delegate.list_tools()
+
+    async def close(self) -> None:
+        self.closed += 1
+        _FakeReMeMiddleware.events.append("reme")
+
+
+class _ClosingClient:
+    """provider 客户端的关闭入口替身：只记录「模型客户端被关」。"""
+
+    async def close(self) -> None:
+        _FakeReMeMiddleware.events.append("model")
+
+
+@pytest.fixture(autouse=True)
+def fake_reme(monkeypatch: pytest.MonkeyPatch) -> type[_FakeReMeMiddleware]:
+    """每个用例都替换掉真实的 ReMe 构造入口（真实中间件只在专用用例里构造）。"""
+    _FakeReMeMiddleware.instances = []
+    _FakeReMeMiddleware.events = []
+    monkeypatch.setattr(memory_module, "ReMeMiddleware", _FakeReMeMiddleware)
+    return _FakeReMeMiddleware
+
+
 @pytest.fixture
 def global_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """临时 HOME + 临时全局根：测试绝不读写真实的 ``~/.alibot``。"""
@@ -59,61 +105,82 @@ def global_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _member_home(global_root: Path, member: str = "member") -> Path:
-    """全局成员家目录：``<全局根>/agents/<member_id>/``（扁平）。"""
     return global_root / "agents" / member
 
 
 def _dm_seam(model: Any, tmp_path: Path, global_root: Path) -> _StubModelSeam:
-    """DM 轮次：数据目录做 runtime_root，全局根是唯一记忆落点。"""
+    """DM 轮次：数据目录做 runtime_root，全局根是记忆工作区的宿主。"""
     return _StubModelSeam(model, runtime_root=tmp_path / "data", global_home=str(global_root))
 
 
-def test_agentic_memory_written_in_one_session_is_injected_in_another(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
-) -> None:
+def _capture_agents(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     original = Agent.__init__
 
-    def capture(self, *args: Any, **kwargs: Any) -> None:
+    def capture(self: Any, *args: Any, **kwargs: Any) -> None:
         options.append(kwargs)
         original(self, *args, **kwargs)
 
     monkeypatch.setattr(Agent, "__init__", capture)
-    memory = _member_home(global_root) / "MEMORY.md"
-    memory.parent.mkdir(parents=True)
-    memory.write_text("旧索引\n", encoding="utf-8")
-    model = MemoryModel(
-        [
-            _tool_call("read-index", "Read", {"file_path": str(memory)}),
-            _tool_call("save", "Write", {"file_path": str(memory), "content": "用户偏好：请用简体中文。"}),
-            [ChatResponse(content=[TextBlock(text="记住了")], is_last=True)],
-        ]
-    )
-    seam = _dm_seam(model, tmp_path, global_root)
-    agent = {"id": "member", "model_id": "openai:stub", "memory_mode": "agentic"}
-    inputs = [{"body": "记住我的偏好", "author": {"id": "owner"}}]
-    outcome = seam.run_round(agent, inputs, mentioned=False, target_id="first", direct_message=True)
-    assert outcome.status == "replied", outcome.reason
-    assert memory.read_text() == "用户偏好：请用简体中文。", model.inputs
-    assert any(isinstance(item, AgenticMemoryMiddleware) for item in options[0]["middlewares"])
-    directories = options[0]["state"].permission_context.working_directories
-    assert set(directories) == {str(memory.parent)}
-    outcome = seam.run_round(agent, inputs, mentioned=False, target_id="second", direct_message=True)
-    assert outcome.status == "replied", outcome.reason
-    assert "用户偏好：请用简体中文。" in model.inputs[-1]
+    return options
 
 
-def test_memory_off_creates_no_memory_directory_and_adds_no_middleware(
+def _toolkit_names(toolkit: Any) -> list[str]:
+    schemas = asyncio.run(toolkit.get_tool_schemas())
+    return [str(schema.get("function", {}).get("name")) for schema in schemas]
+
+
+def test_reme_round_assembles_the_member_workspace_with_this_round_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
 ) -> None:
-    middlewares: list[Any] = []
-    original = Agent.__init__
+    options = _capture_agents(monkeypatch)
+    model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
+    outcome = _dm_seam(model, tmp_path, global_root).run_round(
+        {"id": "member", "model_id": "openai:stub", "memory_mode": "reme"},
+        [{"body": "你好", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id="target",
+        direct_message=True,
+    )
 
-    def capture(self, *args: Any, **kwargs: Any) -> None:
-        middlewares.extend(kwargs.get("middlewares", []))
-        original(self, *args, **kwargs)
+    assert outcome.status == "replied", outcome.reason
+    assert len(_FakeReMeMiddleware.instances) == 1
+    middleware = _FakeReMeMiddleware.instances[0]
+    workspace = _member_home(global_root) / "reme"
+    assert Path(middleware.workspace_dir) == workspace
+    assert workspace.is_dir(), "reme 工作区必须真的建出来"
+    assert middleware.parameters.chat_model is model, "ReMe 的模型固定为本轮模型"
+    assert middleware.parameters.mode == "both", "provider 能携带工具时同时注入与暴露工具"
+    assert middleware.parameters.top_k == 5
+    assert any(item is middleware for item in options[0]["middlewares"])
+    assert "memory_search" in _toolkit_names(options[0]["toolkit"])
+    assert middleware.closed == 1, "轮次结束必须 close 一次"
 
-    monkeypatch.setattr(Agent, "__init__", capture)
+
+def test_a_provider_without_tool_calling_degrades_to_static_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
+) -> None:
+    options = _capture_agents(monkeypatch)
+    model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
+    outcome = _dm_seam(model, tmp_path, global_root).run_round(
+        {"id": "member", "model_id": "unknown-provider:stub", "memory_mode": "reme"},
+        [{"body": "你好", "author": {"id": "owner"}}],
+        mentioned=False,
+        target_id="target",
+        direct_message=True,
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    middleware = _FakeReMeMiddleware.instances[0]
+    assert middleware.parameters.mode == "static_control"
+    assert middleware.closed == 1
+    assert "memory_search" not in _toolkit_names(options[0]["toolkit"]), "不能携带工具时不暴露 memory_search"
+
+
+def test_memory_off_creates_no_workspace_and_installs_no_middleware(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
+) -> None:
+    options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
         {"id": "member", "model_id": "openai:stub", "memory_mode": "off"},
@@ -121,37 +188,34 @@ def test_memory_off_creates_no_memory_directory_and_adds_no_middleware(
         mentioned=False,
         target_id="target",
     )
+
     assert outcome.status == "replied", outcome.reason
-    # 数据目录侧：不再出现 ``.alibot`` 镜像层（ADR-0032 §四），连 ``sessions/`` 也只在有轮次时建。
+    assert _FakeReMeMiddleware.instances == []
+    assert not _member_home(global_root).exists(), "关闭长期记忆时不建任何目录"
     assert not (tmp_path / "data" / ".alibot").exists()
-    assert not _member_home(global_root).exists(), "关闭长期记忆时两处都不建目录"
-    assert not any(isinstance(item, AgenticMemoryMiddleware) for item in middlewares)
+    if "toolkit" in options[0]:
+        assert "memory_search" not in _toolkit_names(options[0]["toolkit"]), "关闭长期记忆时没有记忆工具"
 
 
-def test_dm_memory_tools_cannot_read_a_project_file(tmp_path: Path, global_root: Path) -> None:
-    secret = tmp_path / "project.txt"
-    secret.write_text("private-project-content")
-    model = MemoryModel(
-        [
-            _tool_call("read-project", "Read", {"file_path": str(secret)}),
-            [ChatResponse(content=[TextBlock(text="无法读取项目文件")], is_last=True)],
-        ]
-    )
+def test_the_round_closes_reme_before_the_model_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
+) -> None:
+    _capture_agents(monkeypatch)
+    model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
+    model.client = _ClosingClient()  # type: ignore[attr-defined]
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "agentic"},
-        [{"body": "试读项目文件", "author": {"id": "owner"}}],
+        {"id": "member", "model_id": "openai:stub", "memory_mode": "reme"},
+        [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
-        direct_message=True,
     )
+
     assert outcome.status == "replied", outcome.reason
-    assert "path escapes runtime directories" in model.inputs[-1]
-    assert "private-project-content" not in "\n".join(model.inputs)
+    assert _FakeReMeMiddleware.events == ["reme", "model"], "先收 ReMe，再关模型客户端"
 
 
-@pytest.mark.parametrize("memory_mode", ["off", "agentic"])
 def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
-    tmp_path: Path, global_root: Path, memory_mode: str
+    tmp_path: Path, global_root: Path
 ) -> None:
     """卸载文件可读、别的会话与项目文件不可读（落点在 ``<数据目录>/sessions/``）。"""
     data_root = tmp_path / "data"
@@ -179,7 +243,8 @@ def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
         ]
     )
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": memory_mode},
+        # 记忆关闭时卸载目录的只读 Read 照样在（两者解耦）。
+        {"id": "member", "model_id": "openai:stub", "memory_mode": "off"},
         [{"body": "请读取卸载文件", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -189,8 +254,6 @@ def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
     assert "older-context-content" in model.inputs[-1]
     assert "private-other-session" not in "\n".join(model.inputs)
     assert "private-project-content" not in "\n".join(model.inputs)
-    if memory_mode == "off":
-        assert not (data_root / ".alibot" / "memory").exists()
 
 
 def test_sessions_land_in_the_data_directory_without_an_extra_alibot_layer(
@@ -237,54 +300,18 @@ def test_project_round_sessions_land_under_the_project_alibot_partition(
     assert not (project / "sessions").exists(), "项目根下不出现裸 sessions/"
 
 
-def test_dm_round_does_not_inject_a_second_global_memory_segment(tmp_path: Path, global_root: Path) -> None:
-    """无项目根时全局 ``MEMORY.md`` 只经记忆中间件出现一次（ADR-0032 §三：同一文件不重复）。"""
-    memory = _member_home(global_root) / "MEMORY.md"
-    memory.parent.mkdir(parents=True)
-    memory.write_text("全局记忆：只用简体中文。", encoding="utf-8")
-    model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
-    outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "agentic"},
-        [{"body": "你好", "author": {"id": "owner"}}],
-        mentioned=False,
-        target_id="target",
+def test_real_reme_middleware_exposes_memory_search(tmp_path: Path) -> None:
+    """真实 ``reme-ai`` 可导入，且 ``list_tools()`` 给出 ``memory_search``（不启动应用）。"""
+    import reme
+    from agentscope.middleware import ReMeMiddleware
+
+    assert reme is not None
+    middleware = ReMeMiddleware(
+        workspace_dir=str(tmp_path / "reme"),
+        parameters=ReMeMiddleware.Parameters(mode="both", top_k=5),
     )
-
-    assert outcome.status == "replied", outcome.reason
-    system_prompt = model.inputs[-1]
-    assert system_prompt.count("全局记忆：只用简体中文。") == 1, "同一个文件不得在提示里出现两次"
-    assert "来源：" not in system_prompt, "无项目根时不该有第二段全局段落（那是宿主只读注入的标记）"
-
-
-def test_project_round_rejects_writing_the_project_rules_file(tmp_path: Path, global_root: Path) -> None:
-    """项目侧 ``AGENTS.md`` 与全局侧一样只读（ADR-0032 §三：规则文件只由人维护）。"""
-    from alibot.workspace import WorkspaceSettings
-
-    project = tmp_path / "project"
-    project.mkdir()
-    rules = project / ".alibot" / "agents" / "member" / "AGENTS.md"
-    rules.parent.mkdir(parents=True)
-    rules.write_text("项目补充规则\n", encoding="utf-8")
-    before = (rules.stat().st_mtime_ns, rules.read_bytes())
-    model = MemoryModel(
-        [
-            _tool_call("read-rules", "Read", {"file_path": str(rules)}),
-            _tool_call("write-rules", "Write", {"file_path": str(rules), "content": "篡改"}),
-            [ChatResponse(content=[TextBlock(text="拒绝")], is_last=True)],
-        ]
-    )
-    seam = _StubModelSeam(
-        model,
-        workspace_of=lambda *_: WorkspaceSettings(root=str(project), permission_mode="trusted-writes"),
-        global_home=str(global_root),
-    )
-    outcome = seam.run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "agentic"},
-        [{"body": "改规则", "author": {"id": "owner"}}],
-        mentioned=False,
-        target_id="channel",
-    )
-
-    assert outcome.status == "replied", outcome.reason
-    assert "path is read-only" in model.inputs[-1]
-    assert (rules.stat().st_mtime_ns, rules.read_bytes()) == before
+    try:
+        tools = asyncio.run(middleware.list_tools())
+        assert [tool.name for tool in tools] == ["memory_search"]
+    finally:
+        asyncio.run(middleware.close())

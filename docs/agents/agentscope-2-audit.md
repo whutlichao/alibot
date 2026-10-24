@@ -138,7 +138,7 @@
 
 | # | 能力点 | 文档页 | 当前落点 | 判定 | 证据 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 44 | RAG + 长期记忆 | rag.md、long-term-memory.md | `memory.py`（AgenticMemory 装配） | 刻意偏离 | `grep -n AgenticMemoryMiddleware app/alibot/memory.py`；`grep 'RAGMiddleware\|embedding'` 在 product 代码零命中 | RAG 未采用（检索走 SQLite）；长期记忆采用 `AgenticMemoryMiddleware`，作用域是成员记忆目录而非第二套消息正本（ADR-0030 / D12） |
+| 44 | RAG + 长期记忆 | rag.md、long-term-memory.md | `memory.py`（ReMe 装配）；`agent_seam.py` 两处 finally | 刻意偏离 | `cd app && ../.venv/bin/python -m pytest tests/test_runtime_memory.py -k real_reme` → `1 passed`（真实 `ReMeMiddleware.list_tools()` → `memory_search`）；`grep -n 'RAGMiddleware\|embedding_model' app/alibot` 零命中（docstring 里解释「不启用 embedding」的散文不算） | 长期记忆用 `ReMeMiddleware`（`both` / `static_control`，`top_k=5`，BM25 无 embedding），一个成员一个工作区（PER_AGENT，跨项目），每轮装配并在 model client 之前 `close()`（ADR-0034 / D12） |
 | 45 | 实时语音 / A2A / 终端 UI / Agent Service / deploy | realtime/overview.md、a2a.md、console.md、deploy/agent-service.md | 未采用 | 未采用 | import 面只有 16 个白名单模块（`test_agentscope_usage_guard.py` 守卫 2） | 产品形态是 Web 频道 + 进程内 Agent；没有终端/语音/跨进程 Agent 服务需求 |
 
 ## 待修去向

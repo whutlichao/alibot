@@ -1244,7 +1244,7 @@ test("联网档：从具体档位切回「跟随频道」提交显式 null（清
 
 test("长期记忆与上下文配置：读写草稿，清空数值提交显式 null", async () => {
   const configured = agentDetail({
-    memory_mode: "agentic",
+    memory_mode: "reme",
     context_window_messages: 60,
     context_trigger_ratio: 0.6,
     react_max_iters: 45,

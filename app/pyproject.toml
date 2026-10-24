@@ -10,7 +10,13 @@ dependencies = [
   # AgentScope：进程内驱动 Agent 的框架。**pin 到文档站点当前版本 2.0.10**
   # （2026-10-18 核对 docs.agentscope.io → /en/versions/2.0.10；PyPI 最新同为 2.0.10）。
   # 只用 2.x API（agentscope.agent.Agent / agentscope.model / agentscope.credential）。
-  "agentscope==2.0.10",
+  # extra 名是 `memory-reme`（2.0.10 的 wheel 元数据与 `pip install` 报错文本都写这个名字）。
+  # 该 extra 只声明 `reme-ai>=0.4.0.6`（floor，不固定补丁号），所以 ReMe 在这里**再显式 pin**
+  # 一次，让安装结果可复现（长期记忆，ADR-0034）。0.4.1.13 与 2.0.10 的最小 ReMe 配置不兼容
+  # （`dream_topics_step` 步骤未注册，嵌入应用 start() 直接抛 ValueError），故 pin 实测可用的
+  # 0.4.1.10；升级 reme-ai 必须按「升级 pin 单独开票」的纪律重跑真实冒烟。
+  "agentscope[memory-reme]==2.0.10",
+  "reme-ai==0.4.1.10",
   # Skill 的 ``SKILL.md`` front matter 解析（#152）：agentcope 也依赖它，这里显式声明，
   # 因为本仓直接 import 的依赖不应依赖别人的传递闭包。
   "python-frontmatter>=1.1",
