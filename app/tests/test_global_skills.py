@@ -104,6 +104,12 @@ def _global_root(tmp_path: Path) -> Path:
     return tmp_path / "home" / ".alibot"
 
 
+def _without_memory(entries: list[str], member_id: str) -> list[str]:
+    """去掉该成员的记忆工作区：它是轮次唯一允许写全局层的地方（ADR-0035）。"""
+    prefix = f"agents/{member_id}/reme"
+    return [entry for entry in entries if entry != prefix and not entry.startswith(f"{prefix}/")]
+
+
 def _write_global_skill(root: Path, name: str, description: str) -> Path:
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
@@ -401,12 +407,15 @@ def test_missing_global_layers_yield_zero_and_are_never_created(
             scope_id=agent["id"],
             prepared=_install_project_skill(tmp_path, project, agent["id"], "project-only", "项目技能"),
         )
-        # 全局根根本不存在：全局层零条、不报错、不创建目录，但每层留一条可读记录（D9）。
+        # 全局根根本不存在：全局技能零条、不报错、不创建技能目录，但每层留一条可读记录（D9）。
         assert not global_root.exists()
         with caplog.at_level(logging.INFO, logger="alibot.skills"):
             outcome = _round(_seam(database, global_root), database.get_agent(agent["id"]), channel["id"])
         assert outcome.status == "replied", outcome.reason
-        assert not global_root.exists()
+        # 唯一允许落地的全局写入是记忆工作区（ADR-0035）；技能两层仍不创建。
+        assert (global_root / "agents" / agent["id"] / "reme").is_dir()
+        assert not (global_root / "skills").exists()
+        assert not (global_root / "agents" / agent["id"] / "skills").exists()
         assert "项目技能" in _system_text(_PlainReplyHandler.request_bodies[0])
         logged = "\n".join(record.getMessage() for record in caplog.records)
         assert "global skill layer is absent" in logged
@@ -418,11 +427,11 @@ def test_missing_global_layers_yield_zero_and_are_never_created(
         assert layers[SKILL_LAYER_GLOBAL_MEMBER] == []
         assert [skill.name for skill in layers[SKILL_LAYER_GLOBAL_PUBLIC]] == ["public-only"]
 
-        # 运行一轮前后全局根目录清单不变。
+        # 运行一轮不新建 / 不删除技能层的任何条目（记忆工作区除外）。
         before = _tree(global_root)
         outcome = _round(_seam(database, global_root), database.get_agent(agent["id"]), channel["id"])
         assert outcome.status == "replied", outcome.reason
-        assert _tree(global_root) == before
+        assert _without_memory(_tree(global_root), agent["id"]) == _without_memory(before, agent["id"])
     finally:
         database.close()
 
@@ -449,7 +458,7 @@ def test_direct_message_without_project_root_assembles_no_skill(tmp_path: Path, 
         before = _tree(global_root)
         outcome = _round(_seam(database, global_root), database.get_agent(agent["id"]), agent["id"])
         assert outcome.status == "replied", outcome.reason
-        assert _tree(global_root) == before
+        assert _without_memory(_tree(global_root), agent["id"]) == _without_memory(before, agent["id"])
     finally:
         database.close()
 

@@ -15,5 +15,8 @@ __pycache__/
 # 本机数据目录候选（绝不入库）
 /.alibot-data/
 
+# ReMe 嵌入应用在进程 cwd 下写的运行日志（长期记忆始终开启后，真实 seam 的用例也会产出）
+/app/logs/
+
 # 工作区临时目录：agent 的自检脚本、截图与 Answer / PR body 草稿（绝不入库）
 /.scratch/

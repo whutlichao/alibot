@@ -812,8 +812,8 @@ class AgentScopeAgentSeam:
         middlewares: list[Any] = [WorkspacePathPermissionMiddleware(root)] if root else []
         tools: list[Any] = []
         if mount is None and isinstance(options.get("offloader"), SessionOffloader):
-            # 没有 workspace 的轮次：卸载目录的只读 Read 与记忆开关**解耦**（关掉长期记忆也照样
-            # 读得到本轮卸载的上下文）。
+            # 没有 workspace 的轮次：卸载目录的只读 Read 与长期记忆**解耦**（记忆由 ReMe 自管，
+            # 不经过文件工具，但本轮卸载的上下文照样读得到）。
             from agentscope.tool import LocalBackend, Read
 
             from .runtime_files import PartitionBackend, PartitionPermissionMiddleware
@@ -822,20 +822,20 @@ class AgentScopeAgentSeam:
             backend = PartitionBackend(LocalBackend(), offloader.directory, str(offloader.visible_directory))
             tools.append(Read(backend=backend))
             middlewares.append(PartitionPermissionMiddleware(backend))
-        memory_assembly: Any = None
-        if agent.get("memory_mode") == "reme":
-            from .memory import assemble_memory
+        # 长期记忆没有开关（ADR-0035）：走到装配点就装；``assemble_memory`` 自己在
+        # ``global_home`` 未接线时返回 ``None`` 并记一条可读日志。
+        from .memory import assemble_memory
 
-            memory_assembly = await assemble_memory(
-                str(agent["id"]),
-                model=model,
-                provider=provider,
-                global_home=global_home,
-                supports_tools=supports_tool_calling(provider),
-            )
-            if memory_assembly is not None:
-                middlewares.append(memory_assembly.middleware)
-                tools.extend(memory_assembly.tools)
+        memory_assembly: Any = await assemble_memory(
+            str(agent["id"]),
+            model=model,
+            provider=provider,
+            global_home=global_home,
+            supports_tools=supports_tool_calling(provider),
+        )
+        if memory_assembly is not None:
+            middlewares.append(memory_assembly.middleware)
+            tools.extend(memory_assembly.tools)
         if middlewares:
             options["middlewares"] = middlewares
         return options, store, tools, memory_assembly
@@ -1121,18 +1121,18 @@ class AgentScopeAgentSeam:
         return raw if isinstance(raw, WorkspaceSettings) else WorkspaceSettings.from_mapping(raw)
 
     def _runtime_environment_prompt(self, target_id: str, member: Mapping[str, Any]) -> str:
-        """该成员这一轮的系统提示里的「运行环境」段（#263）。
+        """该成员这一轮的系统提示里的「运行环境」段（#263 / #267）。
 
-        两处取值都来自本轮装配点，不从 prompt 或记忆卡片推断：
-        ``WorkspaceSettings``（工作区根 / 后端 / 权限档）与 ``agent_config.memory_mode``。
-        配置读不出来等价于**未配置工作区**——这一段宁可说「没有」，也不猜一个路径。
+        两处取值都来自本轮装配点，不从 prompt 或记忆卡片推断：``WorkspaceSettings``（工作区根 /
+        后端 / 权限档）与「长期记忆始终开启」（ADR-0035）。配置读不出来等价于**未配置工作区**——
+        这一段宁可说「没有」，也不猜一个路径。
         """
         try:
             settings = self._workspace_settings(target_id, str(member["id"]))
         except Exception:  # 配置读不出来不拖垮一轮；段里明确写「未配置」
             _log.debug("workspace settings lookup failed for runtime environment", exc_info=True)
             settings = None
-        return _runtime_environment_section(settings, member.get("memory_mode"))
+        return _runtime_environment_section(settings)
 
     def _web_settings(self, target_id: str, member_id: str) -> dict[str, Any] | None:
         """联网工具的配置读数（#186）；没有装配钩子 / 读不出来时返回 ``None``。"""
@@ -2330,23 +2330,22 @@ _RUNTIME_ENVIRONMENT_NO_WORKSPACE = (
     "工作区：未配置（没有项目根；不能读写项目文件，只有当前会话的卸载目录可读）"
 )
 
-#: 长期记忆的两档形态：ReMe 由系统自管，文件工具既看不见也写不了，模型不得猜它的路径。
+#: 长期记忆的唯一形态（ADR-0035）：ReMe 由系统自管，文件工具既看不见也写不了，模型不得猜它的路径。
 _RUNTIME_MEMORY_REME = (
     "长期记忆：已开启（ReMe；系统自动记录和检索，不由文件工具读写；不要声称或猜测它的路径）"
 )
-_RUNTIME_MEMORY_OFF = "长期记忆：未开启"
 
 #: 段末固定一句：本段没给的东西，模型没有依据说它存在。
 _RUNTIME_ENVIRONMENT_NO_FABRICATION = "不要编造本段没有给出的路径。"
 
 
-def _runtime_environment_section(settings: Any | None, memory_mode: Any) -> str:
-    """本轮运行环境段（#263）：只写**这一轮装配出来的事实**，不推断、不列路径清单。
+def _runtime_environment_section(settings: Any | None) -> str:
+    """本轮运行环境段（#263 / #267）：只写**这一轮装配出来的事实**，不推断、不列路径清单。
 
     ``settings`` 是该成员这一轮的 ``WorkspaceSettings``（读不到传 ``None``）。有项目根时写
     **模型可见**的根：local 是项目根绝对路径，docker 是容器内的 ``/workspace``——宿主路径
-    对容器里的模型没有意义，也不该被写进 prompt。记忆档只认 ``agent_config.memory_mode``：
-    ``reme`` = 已开启，其余 = 未开启。
+    对容器里的模型没有意义，也不该被写进 prompt。长期记忆没有开关（ADR-0035），因此这一段
+    固定写「已开启」；唯一会缺席的情形（全局层未接线）不在这段的可判定范围内。
 
     本函数是纯的（无 IO、无全局状态）：取值由调用方从本轮装配点读好传进来。
     """
@@ -2360,7 +2359,7 @@ def _runtime_environment_section(settings: Any | None, memory_mode: Any) -> str:
         lines.append(f"工作区（文件工具的根）：{visible_root}")
         lines.append(f"后端：{settings.backend}")
         lines.append(f"权限档：{settings.permission_mode}")
-    lines.append(_RUNTIME_MEMORY_REME if memory_mode == "reme" else _RUNTIME_MEMORY_OFF)
+    lines.append(_RUNTIME_MEMORY_REME)
     lines.append(_RUNTIME_ENVIRONMENT_NO_FABRICATION)
     return "\n".join(lines)
 

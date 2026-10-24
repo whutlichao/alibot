@@ -4980,7 +4980,6 @@ function agentDraftFrom(agent) {
     system_prompt: agent.system_prompt || '',
     enabled: agent.enabled !== false,
     auto_claim: agent.auto_claim === true,
-    memory_mode: agent.memory_mode === 'reme' ? 'reme' : 'off',
     context_window_messages:
       agent.context_window_messages == null ? '' : String(agent.context_window_messages),
     context_trigger_ratio:
@@ -5449,21 +5448,6 @@ function agentConfigSection(agent) {
   claimGroup.dataset.agentTier = 'auto_claim';
   section.appendChild(agentFieldRow('agent.autoClaimLabel', claimGroup, 'agent.autoClaimNote'));
 
-  const memory = el('input');
-  memory.type = 'checkbox';
-  memory.id = 'agentFieldMemory';
-  memory.dataset.agentField = 'memory_mode';
-  memory.checked = draft.memory_mode === 'reme';
-  memory.setAttribute('data-od-id', 'agent-field-memory_mode');
-  const memoryField = el('div', 'field');
-  const memoryLabel = el('label');
-  memoryLabel.setAttribute('for', 'agentFieldMemory');
-  memoryLabel.appendChild(memory);
-  memoryLabel.appendChild(document.createTextNode(' ' + t('agent.memoryLabel')));
-  memoryField.appendChild(memoryLabel);
-  memoryField.appendChild(el('div', 'hint', t('agent.memoryHint')));
-  section.appendChild(memoryField);
-
   section.appendChild(agentFieldRow(
     'agent.contextWindow',
     agentInput('context_window_messages', draft.context_window_messages,
@@ -5694,7 +5678,6 @@ async function submitAgentEdit() {
     system_prompt: String(draft.system_prompt || '').trim(),
     enabled: Boolean(draft.enabled),
     auto_claim: Boolean(draft.auto_claim),
-    memory_mode: draft.memory_mode === 'reme' ? 'reme' : 'off',
     context_window_messages: numberOrNull(draft.context_window_messages),
     context_trigger_ratio: numberOrNull(draft.context_trigger_ratio),
     react_max_iters: numberOrNull(draft.react_max_iters),

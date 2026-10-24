@@ -1012,33 +1012,38 @@ def _step_22_to_23(conn: sqlite3.Connection) -> int:
     return 0
 
 
-# ``23 → 24`` 的显式语义映射（ADR-0034 §五）：旧的 ``agentic`` 记忆档换成 ReMe 的工作区记忆。
-# 这不是回填，而是**同一个决策换了一种实现**——旧档的 Markdown 记忆不再被读写，档位语义保留为
-# 「这个成员有长期记忆」，因此存量行跟着走，不静默降级成 ``off``。
-MEMORY_MODE_MAPPING_SQL = "CASE WHEN memory_mode = 'agentic' THEN 'reme' ELSE memory_mode END"
-
-
+# ``23 → 24`` 的历史动作是「旧 ``agentic`` 记忆档换成 ReMe」，但 ``24 → 25`` 已把这一列整个删除
+# （ADR-0035）：对 v23 源库来说，该列的最终去向就是消失，映射不再有落点。保留本步只为链连续。
 def _step_23_to_24(conn: sqlite3.Connection) -> int:
-    """长期记忆换到 ReMe（ADR-0034）：重建 ``agent_config``，把 ``agentic`` 映射成 ``reme``。
+    """长期记忆换到 ReMe（ADR-0034）；v25 起该列由 ``24 → 25`` 删除，本步无事可做。
 
-    表级 CHECK 的取值白名单变了，SQLite 只能重建表（``14 → 15`` 同一条路径）。逐列复制时
-    ``memory_mode`` 走 :data:`MEMORY_MODE_MAPPING_SQL`：新 CHECK 只接受 ``off`` / ``reme``，
-    所以映射必须发生在**复制语句里**（先改旧表会被旧 CHECK 拒绝，先重建会被新 CHECK 拒绝）。
-
-    返回**实际被改写**的行数（重建前的 ``agentic`` 行数）；重放同一库时第二次是 0 行。
-    只改这一列，其它列 / 约束 / 触发器逐字保留（索引与触发器由执行器的对齐步骤补回）。
+    ``memory_mode`` 不再出现在当前 ``SCHEMA`` 里，因此这里既不重建表、也不做 ``agentic → reme``
+    映射（映射的目标列马上被删掉）。返回 0：本步不改变任何行，删列与其读数由
+    :func:`_step_24_to_25` 承担。``_create_missing_tables` 仍保留，保证缺表形态被建出。
     """
     _create_missing_tables(conn, ("agent_config",))
-    stored = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_config'"
-    ).fetchone()
-    if stored is not None and "'reme'" in _normalize_sql(_without_comments(str(stored[0]))):
+    return 0
+
+
+def _step_24_to_25(conn: sqlite3.Connection) -> int:
+    """长期记忆始终开启（ADR-0035）：重建 ``agent_config``，删掉 ``memory_mode`` 列。
+
+    当前 ``SCHEMA`` 的 ``agent_config`` DDL 已不再声明该列，因此 :func:`_rebuild_table` 的
+    「逐列复制」天然就是删列；其它列 / 行逐字保留。
+
+    返回值 = 重建前 ``memory_mode IS NULL OR memory_mode <> 'reme'`` 的行数：这些成员此前是
+    「关闭」，从 v25 起一律装配长期记忆。列已不存在（终态库重放）⇒ 0。
+    """
+    _create_missing_tables(conn, ("agent_config",))
+    if "memory_mode" not in _column_names(conn, "agent_config"):
         return 0
-    mapped = int(
-        conn.execute("SELECT COUNT(*) FROM agent_config WHERE memory_mode = 'agentic'").fetchone()[0]
+    disabled = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM agent_config WHERE memory_mode IS NULL OR memory_mode <> 'reme'"
+        ).fetchone()[0]
     )
-    _rebuild_table(conn, "agent_config", expressions={"memory_mode": MEMORY_MODE_MAPPING_SQL})
-    return mapped
+    _rebuild_table(conn, "agent_config")
+    return disabled
 
 
 STEPS: tuple[MigrationStep, ...] = (
@@ -1103,6 +1108,12 @@ STEPS: tuple[MigrationStep, ...] = (
     ),
     MigrationStep(22, 23, "agent runtime context/memory config + round finished_reason", _step_22_to_23),
     MigrationStep(23, 24, "long-term memory moves to ReMe (agentic -> reme)", _step_23_to_24),
+    MigrationStep(
+        24,
+        25,
+        "long-term memory is always on (drop agent_config.memory_mode)",
+        _step_24_to_25,
+    ),
 )
 
 

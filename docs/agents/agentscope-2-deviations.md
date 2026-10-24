@@ -175,8 +175,8 @@
 - **文档原话**：「AgentScope middleware that adds long-term memory backed by ReMe … ReMe is embedded
   **in-process** (no separate service)」— 2.0.10 wheel 的 `ReMeMiddleware` docstring；能力页
   `zh/versions/2.0.10/building-blocks/long-term-memory.md`。
-- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，记忆默认关闭
-  （`memory_mode=off`），开启时也只写成员工作区、不碰项目根。写回与检索由中间件负责，模型不再维护
+- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，记忆始终开启（ADR-0035），
+  但也只写成员工作区、不碰项目根。写回与检索由中间件负责，模型不再维护
   索引文件；作用域从「项目 / 全局两处」收窄为「一个成员一个工作区」，因此没有项目过滤（跨项目召回）。
-- **再评估条件**：当记忆需要跨成员共享、需要向量召回（RAG），或要默认开启时，再评估 embedding 与
-  更强隔离；若框架把 ReMe 迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。
+- **再评估条件**：默认开启已经落地（ADR-0035）；当记忆需要跨成员共享、需要向量召回（RAG）或更强
+  隔离时，再评估 embedding 与隔离策略；若框架把 ReMe 迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。

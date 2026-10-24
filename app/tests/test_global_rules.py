@@ -52,7 +52,6 @@ CONFIG_PROMPT = "配置段正文：你是严谨的工程师。"
 ENV_TITLE = "本轮运行环境（以此为准；与记忆内容冲突时以本段为准）"
 NO_WORKSPACE = "工作区：未配置（没有项目根；不能读写项目文件，只有当前会话的卸载目录可读）"
 REME_ON = "长期记忆：已开启（ReMe；系统自动记录和检索，不由文件工具读写；不要声称或猜测它的路径）"
-MEMORY_OFF = "长期记忆：未开启"
 NO_FABRICATION = "不要编造本段没有给出的路径。"
 
 
@@ -163,13 +162,25 @@ def _system_text(body: dict[str, Any]) -> str:
     )
 
 
+def _agent_prompt(bodies: list[dict[str, Any]]) -> str:
+    """成员面那次请求的 system 文本。
+
+    长期记忆始终开启（ADR-0035）后，ReMe 的抽取调用也会打同一个模型，它的 system 提示排在
+    成员面请求之后；因此这里按「含配置段」认成员面那一次，而不是取最后一次。
+    """
+    for body in reversed(bodies):
+        text = _system_text(body)
+        if CONFIG_PROMPT in text:
+            return text
+    raise AssertionError("轮次里没有找到成员面的 system 提示")
+
+
 def _seed(
     tmp_path: Path,
     *,
     workspace: bool = True,
     backend: str | None = None,
     permission_mode: str | None = None,
-    memory_mode: str = "off",
 ) -> tuple[Any, dict[str, Any], dict[str, Any], Path]:
     project = tmp_path / "project"
     project.mkdir()
@@ -177,8 +188,6 @@ def _seed(
     agent = database.create_agent(
         "小明", "工程师", "openai:stub-model", CONFIG_PROMPT, permission_mode=permission_mode
     )
-    if memory_mode != "off":
-        agent = database.update_agent(agent["id"], memory_mode=memory_mode)
     channel = database.create_channel("项目频道", member_ids=[agent["id"]])
     if workspace:
         database.update_channel_config(channel["id"], workspace_root=str(project), workspace_backend=backend)
@@ -832,7 +841,7 @@ def test_channel_and_direct_message_prompts_state_the_display_name(
             target_id=channel["id"],
         )
         assert outcome.status == "replied", outcome.reason
-        prompt = _system_text(_PlainReplyHandler.request_bodies[-1])
+        prompt = _agent_prompt(_PlainReplyHandler.request_bodies)
         assert _identity("小明") in prompt
         assert prompt.index(PROJECT_RULE) < prompt.index(_identity("小明")) < prompt.index("你的角色：工程师")
         assert "「m-" not in prompt, "D10 不变：框架内部名不进 prompt"
@@ -848,7 +857,7 @@ def test_channel_and_direct_message_prompts_state_the_display_name(
             direct_message=True,
         )
         assert outcome.status == "replied", outcome.reason
-        prompt = _system_text(_PlainReplyHandler.request_bodies[-1])
+        prompt = _agent_prompt(_PlainReplyHandler.request_bodies)
         assert _identity("小明") in prompt
         assert (
             prompt.index(CONFIG_PROMPT) < prompt.index(_identity("小明")) < prompt.index("你的角色：工程师")
@@ -869,7 +878,7 @@ def test_blank_display_name_leaves_the_identity_line_out(tmp_path: Path, stub_pr
         )
         outcome = seam.run_round(nameless, [_human()], mentioned=False, target_id=channel["id"])
         assert outcome.status == "replied", outcome.reason
-        prompt = _system_text(_PlainReplyHandler.request_bodies[-1])
+        prompt = _agent_prompt(_PlainReplyHandler.request_bodies)
         assert IDENTITY_PHRASE not in prompt
         assert "你的角色：工程师" in prompt, "身份句缺席不改写角色段"
 
@@ -912,13 +921,13 @@ def test_blank_display_name_leaves_the_identity_line_out(tmp_path: Path, stub_pr
 
 
 # ─── 5. #263 运行环境段：四条事实组合与位置 ─────────────────────────────────
-def test_unconfigured_workspace_and_reme_memory_are_stated_without_paths(tmp_path: Path) -> None:
-    """无工作区 + ``reme``：明写「未配置」与「已开启」，且不出现任何目录路径。
+def test_unconfigured_workspace_and_always_on_memory_are_stated_without_paths(tmp_path: Path) -> None:
+    """无工作区 + 长期记忆始终开启：明写「未配置」与「已开启」，且不出现任何目录路径。
 
     这条用例走生产的读路径（``workspace_of`` 已接线、频道 ``workspace_root`` 为 NULL），
     而不是「根本没有装配钩子」——线上两个频道正是前者。
     """
-    database, agent, channel, _project = _seed(tmp_path, workspace=False, memory_mode="reme")
+    database, agent, channel, _project = _seed(tmp_path, workspace=False)
     try:
         systems: list[str] = []
         seam = _PipelineSeam(
@@ -937,7 +946,6 @@ def test_unconfigured_workspace_and_reme_memory_are_stated_without_paths(tmp_pat
         assert prompt.count(ENV_TITLE) == 1
         assert NO_WORKSPACE in prompt
         assert REME_ON in prompt
-        assert MEMORY_OFF not in prompt
         assert NO_FABRICATION in prompt
         for path_like in ("alibot/data", "memory/", "~/.alibot", ".alibot/", "/sessions/"):
             assert path_like not in prompt, f"prompt 不该出现路径字样：{path_like}"
@@ -949,7 +957,7 @@ def test_unconfigured_workspace_and_reme_memory_are_stated_without_paths(tmp_pat
 
 
 def test_local_workspace_reports_root_backend_and_permission(tmp_path: Path) -> None:
-    """有工作区 local + ``off``：项目根、后端、权限档与记忆关闭都在，且段在角色之后。"""
+    """有工作区 local：项目根、后端、权限档与固定的「已开启」记忆都在，且段在角色之后。"""
     database, agent, channel, project = _seed(tmp_path, permission_mode="trusted-writes")
     try:
         systems: list[str] = []
@@ -969,8 +977,7 @@ def test_local_workspace_reports_root_backend_and_permission(tmp_path: Path) -> 
         assert f"工作区（文件工具的根）：{project}" in prompt
         assert "后端：local" in prompt
         assert "权限档：trusted-writes" in prompt
-        assert MEMORY_OFF in prompt
-        assert REME_ON not in prompt
+        assert REME_ON in prompt
         assert NO_FABRICATION in prompt
         assert prompt.index("你的角色：工程师") < prompt.index(ENV_TITLE) < prompt.index("回应纪律")
     finally:
@@ -1004,7 +1011,7 @@ def test_docker_workspace_reports_the_container_root_not_the_host_path(tmp_path:
 
 
 def test_team_leader_and_member_each_get_their_own_environment(tmp_path: Path) -> None:
-    """team：队长与成员各自拿到自己的记忆档与权限档，且段在各自的角色之后。"""
+    """team：队长与成员各自拿到自己的权限档，且长期记忆两处都固定「已开启」。"""
     project = tmp_path / "project"
     project.mkdir()
     database = open_database(tmp_path / "data")
@@ -1015,7 +1022,6 @@ def test_team_leader_and_member_each_get_their_own_environment(tmp_path: Path) -
         member = database.create_agent(
             "成员", "执行", "openai:stub-model", "成员配置段。", permission_mode="read-only"
         )
-        member = database.update_agent(member["id"], memory_mode="reme")
         channel = database.create_channel("团队频道", member_ids=[leader["id"], member["id"]])
         database.update_channel_config(channel["id"], workspace_root=str(project))
 
@@ -1056,8 +1062,7 @@ def test_team_leader_and_member_each_get_their_own_environment(tmp_path: Path) -
         assert leader_prompt.count(ENV_TITLE) == 1
         assert f"工作区（文件工具的根）：{project}" in leader_prompt
         assert "权限档：trusted-writes" in leader_prompt
-        assert MEMORY_OFF in leader_prompt
-        assert REME_ON not in leader_prompt
+        assert REME_ON in leader_prompt
         # 队长：角色 → 运行环境 → team 队长说明。
         assert (
             leader_prompt.index("你的角色：协调")
@@ -1070,7 +1075,6 @@ def test_team_leader_and_member_each_get_their_own_environment(tmp_path: Path) -
         assert f"工作区（文件工具的根）：{project}" in member_prompt
         assert "权限档：read-only" in member_prompt
         assert REME_ON in member_prompt
-        assert MEMORY_OFF not in member_prompt
         # 成员：角色 → 运行环境 → team 成员说明。
         assert (
             member_prompt.index("你的角色：执行")

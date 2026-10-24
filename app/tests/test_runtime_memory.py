@@ -136,7 +136,7 @@ def test_reme_round_assembles_the_member_workspace_with_this_round_model(
     options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "reme"},
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -163,7 +163,7 @@ def test_a_provider_without_tool_calling_degrades_to_static_control(
     options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "unknown-provider:stub", "memory_mode": "reme"},
+        {"id": "member", "model_id": "unknown-provider:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -177,24 +177,28 @@ def test_a_provider_without_tool_calling_degrades_to_static_control(
     assert "memory_search" not in _toolkit_names(options[0]["toolkit"]), "不能携带工具时不暴露 memory_search"
 
 
-def test_memory_off_creates_no_workspace_and_installs_no_middleware(
+def test_every_round_assembles_memory_without_any_config_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
 ) -> None:
+    """长期记忆没有开关（ADR-0035）：成员载荷里没有任何档位字段，照样装配 ReMe。"""
     options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "off"},
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
     )
 
     assert outcome.status == "replied", outcome.reason
-    assert _FakeReMeMiddleware.instances == []
-    assert not _member_home(global_root).exists(), "关闭长期记忆时不建任何目录"
-    assert not (tmp_path / "data" / ".alibot").exists()
-    if "toolkit" in options[0]:
-        assert "memory_search" not in _toolkit_names(options[0]["toolkit"]), "关闭长期记忆时没有记忆工具"
+    assert len(_FakeReMeMiddleware.instances) == 1
+    middleware = _FakeReMeMiddleware.instances[0]
+    workspace = _member_home(global_root) / "reme"
+    assert Path(middleware.workspace_dir) == workspace
+    assert workspace.is_dir(), "家目录与 reme/ 必须被建出"
+    assert any(item is middleware for item in options[0]["middlewares"])
+    assert "memory_search" in _toolkit_names(options[0]["toolkit"])
+    assert middleware.closed == 1
 
 
 def test_the_round_closes_reme_before_the_model_client(
@@ -204,7 +208,7 @@ def test_the_round_closes_reme_before_the_model_client(
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     model.client = _ClosingClient()  # type: ignore[attr-defined]
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "reme"},
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -243,8 +247,8 @@ def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
         ]
     )
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        # 记忆关闭时卸载目录的只读 Read 照样在（两者解耦）。
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "off"},
+        # 记忆由 ReMe 自管、不经过文件工具；卸载目录的只读 Read 照样在。
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "请读取卸载文件", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",

@@ -207,7 +207,6 @@ function agentDetail(overrides) {
       system_prompt: "你只回答一句话。",
       enabled: true,
       auto_claim: false,
-      memory_mode: "off",
       context_window_messages: null,
       context_trigger_ratio: null,
       react_max_iters: null,
@@ -761,7 +760,6 @@ test("就地编辑只写草稿：改一个字段后出现保存条，点保存�
     system_prompt: "你只回答一句话。",
     enabled: true,
     auto_claim: false,
-    memory_mode: "off",
     context_window_messages: null,
     context_trigger_ratio: null,
     react_max_iters: null,
@@ -1363,9 +1361,8 @@ test("联网档：从具体档位切回「跟随频道」提交显式 null（清
   assert.equal("web_access" in body && body.web_access, null, "跟随频道 = 提交显式 null");
 });
 
-test("长期记忆与上下文配置：读写草稿，清空数值提交显式 null", async () => {
+test("长期记忆没有开关：详情页无该控件，保存载荷不含 memory_mode", async () => {
   const configured = agentDetail({
-    memory_mode: "reme",
     context_window_messages: 60,
     context_trigger_ratio: 0.6,
     react_max_iters: 45,
@@ -1376,19 +1373,20 @@ test("长期记忆与上下文配置：读写草稿，清空数值提交显式 n
   harness.load([configured]);
   await harness.clickRow("mem-1");
 
-  assert.equal(agentField(harness.agentBody, "memory_mode").checked, true);
+  assert.equal(agentField(harness.agentBody, "memory_mode"), null, "长期记忆不再有开关控件");
+  assert.equal(byOdId(harness.agentBody, "agent-field-memory_mode"), null, "也没有对应的探针 id");
+  assert.equal(harness.agentBody.textContent.includes("长期记忆"), false, "详情页不再出现这个词条");
   assert.equal(agentField(harness.agentBody, "context_window_messages").value, "60");
   assert.equal(agentField(harness.agentBody, "context_trigger_ratio").value, "0.6");
   assert.equal(agentField(harness.agentBody, "react_max_iters").value, "45");
 
-  await harness.edit("memory_mode", false);
   await harness.edit("context_window_messages", "");
   await harness.edit("context_trigger_ratio", "");
   await harness.edit("react_max_iters", "");
   await harness.clickSaveBar(harness.saveButton);
 
   const payload = harness.patches()[0].body;
-  assert.equal(payload.memory_mode, "off");
+  assert.equal("memory_mode" in payload, false, "保存载荷不再带这一字段");
   assert.equal(payload.context_window_messages, null);
   assert.equal(payload.context_trigger_ratio, null);
   assert.equal(payload.react_max_iters, null);
@@ -1790,8 +1788,6 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agent.autoClaimOff",
     "agent.autoClaimOffHint",
     "agent.autoClaimNote",
-    "agent.memoryLabel",
-    "agent.memoryHint",
     "agent.contextWindow",
     "agent.contextTrigger",
     "agent.maxIters",

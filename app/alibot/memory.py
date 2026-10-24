@@ -12,6 +12,9 @@ BM25 关键词索引（本仓**不**注入 embedding，因此不新增任何凭�
 
 旧的 ``MEMORY.md`` / ``<topic>.md`` 不再是记忆落点：它们既不被注入、也不被写入，升级时
 原样留在磁盘上（不自动导入，见 ADR-0034 §五）。
+
+长期记忆**没有开关**（ADR-0035）：每一轮只经 :func:`assemble_memory` 装配，唯一会让它缺席的是
+全局层未接线（``global_home`` 为空）或工作区不可建。
 """
 
 from __future__ import annotations
@@ -24,11 +27,9 @@ from typing import Any, Literal
 
 from agentscope.middleware import ReMeMiddleware
 
-from .db import MEMORY_MODES
 from .workspace import WorkspaceConfigError, ensure_member_home, ensure_state_partition, safe_partition_id
 
 __all__ = [
-    "MEMORY_MODES",
     "MemoryAssembly",
     "assemble_memory",
     "memory_workspace_dir",
@@ -96,7 +97,7 @@ async def assemble_memory(
     global_home: str | Path | None,
     supports_tools: bool,
 ) -> MemoryAssembly | None:
-    """``memory_mode == "reme"`` 的轮次调用；未接线全局层时返回 ``None``。
+    """每轮的长期记忆装配（ADR-0035：没有开关）；未接线全局层时返回 ``None``。
 
     - ``global_home`` 为空（测试 / 未接线）⇒ 不装中间件、不建目录，只记一条可读日志；
     - ``supports_tools`` 为假（provider 不能携带工具）⇒ ``mode="static_control"``：
@@ -107,7 +108,7 @@ async def assemble_memory(
     """
     if not global_home:
         _log.info(
-            "long-term memory is off this round: no global home is wired (provider=%s, member=%s)",
+            "long-term memory is absent this round: no global home is wired (provider=%s, member=%s)",
             provider,
             member_id,
         )

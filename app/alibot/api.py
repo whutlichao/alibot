@@ -308,7 +308,6 @@ class AgentUpdate(BaseModel):
     context_window_messages: int | None = Field(default=None, strict=True, gt=0)
     context_trigger_ratio: float | None = Field(default=None, strict=True, gt=0, le=0.9)
     react_max_iters: int | None = Field(default=None, strict=True, gt=0)
-    memory_mode: str | None = None
 
     @field_validator(
         "display_name",
@@ -1637,7 +1636,7 @@ def create_app(
         可写 ``display_name`` / ``role`` / ``model_id`` / ``system_prompt`` / ``enabled`` /
         ``auto_claim`` / ``workspace_backend`` / ``permission_mode`` / ``allow_local_shell`` /
         ``docker_image`` / ``web_access`` / ``context_window_messages`` / ``context_trigger_ratio`` /
-        ``react_max_iters`` / ``memory_mode``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
+        ``react_max_iters``；任一字段不合法则**整体不写**（不得部分写入）。``model_id`` 沿用与创建同一套
         校验与**远端数据流告知**语义。**「暂停」就是这个端点上的 `enabled=false`**（ADR-0011：写
         `enabled = 0`，不改唤醒面）；**「自动认领任务」就是 `auto_claim`**（#65 / ADR-0010：编排在
         新建任务后读它，它不改唤醒面、不落消息、不消耗预算）。
@@ -1679,7 +1678,6 @@ def create_app(
             react_max_iters=payload.react_max_iters
             if "react_max_iters" in payload.model_fields_set
             else _UNSET,
-            memory_mode=payload.memory_mode if "memory_mode" in payload.model_fields_set else _UNSET,
         )
         return {"agent": agent, "agents": service.agents(), "members": database.list_members()}
 

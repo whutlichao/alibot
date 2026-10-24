@@ -31,8 +31,8 @@
 `docs/agentscope/**` 是原文快照，不归本仓管。
 
 **1.5 实验性与未采用模块。** `pipeline/team`、`sop` 已采用：按 2.0.10 文档照做并锁定当前行为
-（文档明写"实验阶段，接口可能调整"，升级必须重核对）。长期记忆已采用 **ReMe**（ADR-0034：仅
-`memory_mode=reme` 时装配 `agentscope.middleware.ReMeMiddleware`，默认 `off`；依赖
+（文档明写"实验阶段，接口可能调整"，升级必须重核对）。长期记忆已采用 **ReMe**（ADR-0034 / ADR-0035：
+每一轮都装配 `agentscope.middleware.ReMeMiddleware`，没有开关；依赖
 `agentscope[memory-reme]==2.0.10`（extra 只声明 `reme-ai>=0.4.0.6`，本仓另 pin `reme-ai==0.4.1.10`；
 0.4.1.13 与 2.0.10 的最小 ReMe 配置不兼容）；见 D12）。ReMe 的能力页是
 `docs.agentscope.io/zh/versions/2.0.10/building-blocks/long-term-memory.md`；中间件的构造参数以 wheel
