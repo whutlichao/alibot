@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
 
+from .agent_identity import identity_line
 from .i18n import SOURCE_LOCALE, Locale, render
 from .runtime import RuntimeTurn, SessionOffloader, SessionState, runtime_configs, runtime_prompt
 
@@ -2271,7 +2272,8 @@ def _team_member_prompt(
     """被队长分派的成员这一轮的 system prompt（没有频道 rubric，任务描述就是全部输入）。
 
     规则三段与单 Agent 路径同一顺序与同一标签（#230）：全局基座 → 配置 → 项目补充；
-    其余身份句与 team 说明仍在配置段之后。
+    其余身份句与 team 说明仍在配置段之后。身份句（ADR-0033）与单 Agent 路径同一来源、同一位置：
+    配置段之后、``你的角色：`` 之前。
     """
     parts: list[str] = []
     if global_base:
@@ -2281,6 +2283,9 @@ def _team_member_prompt(
         parts.append(base)
     if project_supplement:
         parts.append(f"{_PROJECT_RULE_LABEL}\n{project_supplement}")
+    identity = identity_line(member)
+    if identity:
+        parts.append(identity)
     role = str(member.get("role") or "").strip()
     if role:
         parts.append(f"你的角色：{role}")
@@ -2431,6 +2436,9 @@ def _system_prompt(
         parts.append(base)
     if project_supplement:
         parts.append(f"{_PROJECT_RULE_LABEL}\n{project_supplement}")
+    identity = identity_line(agent)
+    if identity:
+        parts.append(identity)
     if role:
         parts.append(f"你的角色：{role}")
     if leader:

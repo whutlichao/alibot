@@ -26,6 +26,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from .agent_identity import identity_line
 from .db import SOP_RUN_RETENTION, Database, DomainError
 from .events import EventBus, sop_event
 from .i18n import locale_of, render
@@ -46,11 +47,15 @@ def sop_agent_prompt(member: Mapping[str, Any], *, role: str) -> str:
     """SOP 参与者的 system prompt：成员配置 + 它在本次运行里的职责。
 
     步骤本身会在每次尝试里注入 subject / description 与上一次的拒绝原因；这里只交代身份。
+    身份句（ADR-0033）与另两处拼装点同一来源、同一位置：配置段之后、``你的角色：`` 之前。
     """
     parts: list[str] = []
     base = str(member.get("system_prompt") or "").strip()
     if base:
         parts.append(base)
+    identity = identity_line(member)
+    if identity:
+        parts.append(identity)
     member_role = str(member.get("role") or "").strip()
     if member_role:
         parts.append(f"你的角色：{member_role}")
