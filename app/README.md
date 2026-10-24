@@ -87,8 +87,8 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 启动时打印**实际数据目录**与来源（显式覆盖 / 新默认 / 旧位置兼容 / 新建）。新旧同时存在时确定地选
 新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
 `~/.alibot/skills/` 是人的维护面，应用不创建。`~/.alibot/agents/<member_id>/` 这一级由应用按需创建
-（长期记忆开启时，连同根下的 `MEMORY.md`），但**不**创建 `AGENTS.md`、不创建 `mcp.json`、不创建
-`~/.alibot/skills/`（ADR-0032 §三）。
+（长期记忆开启时，连同 `reme/` 工作区），但**不**创建 `AGENTS.md`、不创建 `mcp.json`、不创建
+`~/.alibot/skills/`（ADR-0034 §一）。
 旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
 本节的兼容读取只针对 `~/Alibot`。
 
@@ -103,8 +103,8 @@ cp -R ~/.alibot-backups/data-YYYY-MM-DD ~/.alibot/data
 # 若仍在使用旧位置做兼容读取，把上面的 ~/.alibot/data 换成 ~/Alibot。
 
 # 全局层：不在数据目录备份内，必须单独备份
-# agents/ 里既有人的维护面（AGENTS.md / mcp.json / skills/），也有应用写入的记忆
-# （MEMORY.md 与 <topic>.md，ADR-0032）——整目录复制即可覆盖两者。
+# agents/ 里既有人的维护面（AGENTS.md / mcp.json / skills/），也有应用写入的 ReMe 记忆工作区
+# （agents/<id>/reme/，ADR-0034）——整目录复制即可覆盖两者。
 cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
 cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
 # 恢复：反向复制回去
@@ -134,24 +134,23 @@ test -f ~/.alibot/data/schema-migrations.jsonl
 # 5) 指向新位置：不传 --data-dir 即自动使用新默认；旧 ~/Alibot 此后被忽略（不删除）
 ```
 
-### 记忆与规则落点搬迁（ADR-0032）
+### 规则与旧记忆落点的搬迁（ADR-0032 / ADR-0034）
 
-ADR-0032 起规则与记忆落点是**同构扁平的家目录**（见下面的「记忆落点」表）。应用**只读新路径**，
-旧路径一律不读取、不搬移、不删除——搬迁是人的显式动作，先备份再复制：
+ADR-0032 起规则文件的落点是**同构扁平的家目录**；ADR-0034 起长期记忆不再用 Markdown 文件，落点是
+每个成员自己的 ReMe 工作区 `~/.alibot/agents/<member_id>/reme/`。应用**只读新规则路径**，旧路径
+一律不读取、不搬移、不删除——搬迁是人的显式动作，先备份再复制：
 
 ```sh
 # 0) 停应用；先备份整个全局层（规则 / 技能 / 记忆都在这棵树里）
 mkdir -p ~/.alibot-backups
 cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
 
-# 1) 全局层：rules/AGENTS.md → AGENTS.md，memory/Memory/* → 根下
+# 1) 全局层规则：rules/AGENTS.md → AGENTS.md
 for home in ~/.alibot/agents/*/; do
   [ -d "$home/rules" ] && cp -n "$home/rules/AGENTS.md" "$home/AGENTS.md" 2>/dev/null
-  [ -d "$home/memory/Memory" ] && cp -n "$home/memory/Memory/"*.md "$home/" 2>/dev/null
 done
 
-# 2) 项目层：<ws>/.alibot/rules/<id>/AGENTS.md → <ws>/.alibot/agents/<id>/AGENTS.md
-#            <ws>/.alibot/memory/<id>/Memory/*.md → <ws>/.alibot/agents/<id>/
+# 2) 项目层规则：<ws>/.alibot/rules/<id>/AGENTS.md → <ws>/.alibot/agents/<id>/AGENTS.md
 for ws in /path/to/your/projects/*; do
   for old in "$ws"/.alibot/rules/*/; do
     [ -d "$old" ] || continue
@@ -159,29 +158,17 @@ for ws in /path/to/your/projects/*; do
     mkdir -p "$ws/.alibot/agents/$id"
     cp -n "$old/AGENTS.md" "$ws/.alibot/agents/$id/AGENTS.md" 2>/dev/null
   done
-  for old in "$ws"/.alibot/memory/*/Memory/; do
-    [ -d "$old" ] || continue
-    id=$(basename "$(dirname "$(dirname "$old")")")
-    mkdir -p "$ws/.alibot/agents/$id"
-    cp -n "$old"/*.md "$ws/.alibot/agents/$id/" 2>/dev/null
-  done
 done
 
-# 3) 数据目录侧的旧镜像层（无项目根轮次的旧落点）：
-#    ~/.alibot/data/.alibot/memory/<id>/Memory/*.md → ~/.alibot/agents/<id>/
-for old in ~/.alibot/data/.alibot/memory/*/Memory/; do
-  [ -d "$old" ] || continue
-  id=$(basename "$(dirname "$(dirname "$old")")")
-  mkdir -p ~/.alibot/agents/$id
-  cp -n "$old"/*.md ~/.alibot/agents/$id/ 2>/dev/null
-done
-
-# 4) 校验：新路径上有文件、旧路径原样还在（应用不再读它们，但搬迁前不删）
-ls ~/.alibot/agents/*/MEMORY.md ~/.alibot/agents/*/AGENTS.md 2>/dev/null
+# 3) 校验：规则文件在新路径上
+ls ~/.alibot/agents/*/AGENTS.md 2>/dev/null
 ```
 
-旧路径（`data/.alibot/memory/**`、`<ws>/.alibot/memory/**`、`<ws>/.alibot/rules/**`、
-`~/.alibot/agents/<id>/rules/**`、`.../memory/Memory/**`）在搬迁后可以自行清理——应用**不会**替你删。
+**旧的 Markdown 记忆不导入 ReMe**：`MEMORY.md`、`<topic>.md`（以及更早的
+`memory/<id>/Memory/*.md`）在升级后**原样留在磁盘上**，应用既不读也不删；ReMe 也不会把它们吃进
+工作区。要沿用旧内容，需要人工整理后重新交给 Agent（或让它在新会话里重新记住）。旧路径
+（`data/.alibot/memory/**`、`<ws>/.alibot/memory/**`、`<ws>/.alibot/rules/**`、
+`~/.alibot/agents/<id>/rules/**`、`.../memory/Memory/**`）可以自行清理——应用**不会**替你删。
 
 **旧 sessions 可直接弃用**：`~/.alibot/data/.alibot/sessions/**` 与
 `<ws>/.alibot/sessions/**` 里的旧 `state.json` 是**运行状态**，不是事实正本；消息正本在库里，
@@ -194,10 +181,13 @@ ls ~/.alibot/agents/*/MEMORY.md ~/.alibot/agents/*/AGENTS.md 2>/dev/null
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-### Schema 版本与迁移（15 → 23）
+### Schema 版本与迁移（15 → 24）
 
-本代码的 `SCHEMA_VERSION = 23`（`app/alibot/db.py`），依赖 pin `agentscope==2.0.10`。本轮把库形态从 15
-推进到 23，由**八个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+本代码的 `SCHEMA_VERSION = 24`（`app/alibot/db.py`），依赖 pin `agentscope[memory-reme]==2.0.10`
+（2.0.10 的 extra 名就是 `memory-reme`；该 extra 只声明 `reme-ai>=0.4.0.6`，因此 ReMe 另显式 pin
+`reme-ai==0.4.1.10`——0.4.1.13 与 2.0.10 的最小 ReMe 配置不兼容，嵌入应用启动即报
+`Unregistered backend 'dream_topics_step'`；升级 reme-ai 要单独开票并重跑真实冒烟）。本轮把库形态从 15
+推进到 24，由**九个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -209,6 +199,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `20 → 21` | `auto claim defaults on` | `agent_config.auto_claim` 的 DDL 默认 `0 → 1`；按当前 `SCHEMA` **重建** `agent_config`（升级库的新插入也拿到 1），并把存量 `auto_claim = 0` 一次性回填为 `1`（只改这一列、不动 `updated_at`；报告真实改动行数，重放是空操作） |
 | `21 → 22` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
 | `22 → 23` | `agent runtime context and memory` | `round_outcome.finished_reason`（可空，旧行保持 NULL）；`agent_config.context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `memory_mode`（列默认 `40` / `0.7` / `30` / `'off'`；显式 NULL 跟随运行时默认） |
+| `23 → 24` | `long-term memory moves to ReMe` | 重建 `agent_config`：`memory_mode` 的 CHECK 改 `('off', 'reme')`，存量旧记忆档（`agentic`）在复制语句里**显式映射**为 `reme`；`off` 与 `NULL` 逐字保留（ADR-0034） |
 
 - **只加不删；除 `20 → 21` 的显式回填外，不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——
   `mode='autonomous'`、`team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
@@ -217,7 +208,8 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
   见下面的**联网档**）；`18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）；
   `19 → 20` 的 `message.task_pointer` 停在 `NULL`（= 不是指针消息）；
   `21 → 22` 的两列 `web_access` 仍停在 `NULL`（同上，读路径回退默认档 `search`）；
-  `22 → 23` 的旧轮次结束原因保持 `NULL`，Agent 的四列配置取列默认值。
+  `22 → 23` 的旧轮次结束原因保持 `NULL`，Agent 的四列配置取列默认值；
+  `23 → 24` 只改 `memory_mode` 一个列的取值集合（旧记忆档 → `reme`），其它列逐字保留。
   `20 → 21` 是一次**显式的语义变更**：它把存量 `auto_claim = 0` 一次性置 1（ADR-0029），
   因此升级会覆盖此前显式关闭的存量行；它**不回溯任务**，频道里既有的未认领任务保持原状。
 - **迁移是显式动作**：`python -m alibot --migrate --data-dir <数据目录>`；`--dry-run` 在数据目录内的临时
@@ -258,7 +250,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `attachment` | id, 原文件名, 大小, MIME, **相对路径**, 创建时间, **可空的 message_id** | 附件的元数据；**字节在数据目录**、不进 SQLite。`message_id` 为空 = 未发送的草稿（读取面不暴露）。绑定一次即不可变，**没有**删除路径 |
 | `round_outcome` | member_id, target_id, base_seq, status, reason, finished_reason（旧行可空）, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `target_budget.used` |
 
-- **表清单与 `SCHEMA_VERSION = 23` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
+- **表清单与 `SCHEMA_VERSION = 24` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
   新增列/表的默认值必须与读路径解释一致——改一处就要同时改这张表。
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /
@@ -306,7 +298,7 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - **一轮至多一条频道消息**；落库路径只有一条。
 - 消费游标只在 `replied` / `ignored` / `silent` 推进；`failed` 不推进（下次唤醒会重新读到，但不是自动重放）。
 
-### Agent 运行时（schema 23 / ADR-0030）
+### Agent 运行时（schema 24 / ADR-0030 / ADR-0034）
 
 普通轮输入最近 40 条 target 消息（本人历史为 assistant），自动续跑使用完整历史；回应纪律、瞬态早退与 base_seq 仍只按新消息计算，历史不重新触发必答。上下文超过阈值时由 AgentScope 压缩；压缩消息与截断工具结果写入会话分区：有项目根时 `.alibot/sessions/<target--member>/offload/`，无项目根时 `<数据目录>/sessions/<target--member>/offload/`（ADR-0032 §四）。
 
@@ -315,14 +307,13 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - 每轮按 Asia/Shanghai 重新注入 ISO 时间、target 名称与上下文用量；AgentState 原子保存到上述 session 分区的 `state.json`，恢复摘要及运行状态、按消息窗口重建 context。损坏状态降级为空白并记录日志；权限始终用当前配置。
 - `finished_reason` 为 `completed | interrupted | exceed_max_iters | error`，与 status 独立。旧行保持 NULL；达到迭代上限的部分正文可保留，reason 明示结论可能不完整。
 - `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失；SSE 重连通过当前 `round.active` 快照恢复按钮。审批超时仍为 failed。
-- `memory_mode=agentic` 使用 AgenticMemoryMiddleware，落点是**同构扁平的家目录**（ADR-0032）：
-  有项目根时 workdir 是 `<workspace_root>/.alibot/agents/<member_id>/`，全局家目录
-  `~/.alibot/agents/<member_id>/` 作为**受白名单约束的额外可写目录**同时挂上，其 `MEMORY.md` 另以
-  带标签段落注入 system prompt；**无项目根**（DM / 频道未配项目根 / task 无频道根）时全局家目录是
-  唯一落点，`MEMORY.md` 与 `<topic>.md` 直接放在根下。家目录内应用**可写**的只有根下的 `MEMORY.md`
-  与 `<topic>.md`；`AGENTS.md`、`mcp.json`、`skills/` 与任意子目录一律只读（写请求返回可读拒绝）。
-  补 Read/Write/Edit 与该记忆目录的写权限，不创建工作区、不开放项目根；Read 另可读取当前会话的卸载
-  目录，记忆关闭时仅保留这个受限 Read。显式 deny/ask 规则仍生效；off / null 不挂中间件、不创建目录。
+- `memory_mode=reme` 使用 AgentScope 的 **ReMe** 中间件（ADR-0034）：工作区固定在
+  `~/.alibot/agents/<member_id>/reme/`，**一个成员一个**（PER_AGENT），跨 session / target / 项目
+  共享召回。每轮用**本轮模型**装配 `ReMeMiddleware`（`top_k=5`；provider 不能携带工具时退化为
+  `static_control`，`memory_search` 不送出去），轮次收尾自动写回、回复前按 BM25 关键词检索注入；
+  不启用 embedding，不新增凭据面。单 Agent 与 team 两处 finally 都在关闭 model client **之前**
+  `await close()`。记忆**不经过文件工具**：DM 只有当前会话卸载目录的只读 Read；无 workspace 的轮次
+  仍保留这个 Read（与记忆开关解耦）；`off` / `null` 不装中间件、不创建目录。
 - Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件写会话分区：有项目根时是主机 `.alibot/sessions/`（Docker 下显示为 `/workspace/.alibot/sessions/...`），无项目根时是 `<数据目录>/sessions/`（ADR-0032 §四）。
 
 ### 穿透（点名一个未加入该频道的 Agent）
@@ -482,10 +473,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 - **workspace_root 不在数据目录内**：它指向用户的**项目目录**，不进入整目录备份的复制。**备份数据目录
   ≠ 备份项目文件**——项目文件要用户自己备份（见上面的备份口径）。
 - **两个后端**：`local`（默认）或 `docker`（每 Agent/会话一个容器，`host_workdir=workspace_root`，
-  容器内固定根 `/workspace`；另把该成员的**全局家目录**以 `:rw`、**公共技能库**以 `:ro` 挂到
+  容器内固定根 `/workspace`；另把该成员的**全局家目录**与**公共技能库**都以 `:ro` 挂到
   `/alibot-home/agents/<member_id>` 与 `/alibot-home/skills`，数据目录不进容器，宿主目录缺失则
-  跳过该条挂载。成员家目录可写是为了记忆（ADR-0032 §五）；白名单是**应用面**的约束，容器内 Bash
-  本来就能写 `/workspace`，因此不是沙箱承诺）。无项目根的轮次不装配 Docker。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
+  跳过该条挂载。记忆由宿主进程内的 ReMe 写宿主路径，容器不需要写权限（ADR-0034 §四））。无项目根的轮次不装配 Docker。**本地 shell 默认关闭**（`allow_local_shell=0`）：本地 Bash 是主机进程、
   逐次审批、无沙箱；默认只开受限文件工具。Docker 里的 Bash 在容器内，不需要那条本地通道。
 - **Docker 不可用时是显式失败**：没有 daemon / 镜像起不来 ⇒ 该成员状态点 **`offline`**、
   `enabled_reason` 可读，**绝不静默回落本地 shell**；失败原因短 TTL 缓存（改配置会立即清掉重试），

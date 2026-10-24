@@ -12,7 +12,8 @@
 
 五条由 `app/tests/test_agentscope_usage_guard.py` 机械拦截，违反即红，没有"这次先这样"。
 
-**1.1 版本三处一致。** `app/pyproject.toml` 写 `agentscope==X.Y.Z`（精确 pin，不许 `>=`/`~=`），
+**1.1 版本三处一致。** `app/pyproject.toml` 写 `agentscope==X.Y.Z`（精确 pin，不许 `>=`/`~=`）；
+需要官方 extra 时写成 `agentscope[extra]==X.Y.Z`（extra 不放松版本约束；本仓用 `memory-reme`，见 §1.5），
 等于 `docs/agentscope/X.Y.Z/MANIFEST.json` 的 `version`，也等于本文件所有引用。升级是一张单独的票（§2.2）。
 
 **1.2 只用 2.x API。** 禁止 `ReActAgent`、`sys_prompt=`、`agentscope.agents.*`；禁止引用 `/latest/`、
@@ -30,9 +31,15 @@
 `docs/agentscope/**` 是原文快照，不归本仓管。
 
 **1.5 实验性与未采用模块。** `pipeline/team`、`sop` 已采用：按 2.0.10 文档照做并锁定当前行为
-（文档明写"实验阶段，接口可能调整"，升级必须重核对）。长期记忆已采用（ADR-0030：仅
-`memory_mode=agentic` 时装配 `AgenticMemoryMiddleware`，默认 `off`；见 D12）。未采用的 `realtime` /
-`a2a` / `console` / `rag` 不写、不引；要用先开票。
+（文档明写"实验阶段，接口可能调整"，升级必须重核对）。长期记忆已采用 **ReMe**（ADR-0034：仅
+`memory_mode=reme` 时装配 `agentscope.middleware.ReMeMiddleware`，默认 `off`；依赖
+`agentscope[memory-reme]==2.0.10`（extra 只声明 `reme-ai>=0.4.0.6`，本仓另 pin `reme-ai==0.4.1.10`；
+0.4.1.13 与 2.0.10 的最小 ReMe 配置不兼容）；见 D12）。ReMe 的能力页是
+`docs.agentscope.io/zh/versions/2.0.10/building-blocks/long-term-memory.md`；中间件的构造参数以 wheel
+实测为准（`ReMeMiddleware.Parameters(chat_model=…, mode=…, top_k=…)`，`await mw.list_tools()` 给出
+`memory_search`，`await mw.close()` 收尾）。未采用的 `realtime` / `a2a` / `console` / `rag` 不写、
+不引；要用先开票。本仓**不启用** ReMe 的 embedding（检索走 BM25），也不读 ReMe 的 `LLM_*` 环境变量
+（模型由本轮 `chat_model` 注入）。
 
 ## §2 版本与文档
 

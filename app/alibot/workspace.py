@@ -58,14 +58,8 @@ DOCKER_GLOBAL_HOME = "/alibot-home"
 #: 家目录里的规则文件名：全局基座 ``agents/<member_id>/AGENTS.md``；项目补充
 #: ``.alibot/agents/<member_id>/AGENTS.md``（ADR-0032：两层同构、扁平）。
 RULES_FILE = "AGENTS.md"
-#: 记忆索引文件名：家目录根下的 ``MEMORY.md``（应用可写，见 :func:`is_memory_file_path`）。
-MEMORY_FILE = "MEMORY.md"
+#: 家目录里的技能目录（成员私有技能；全局技能库在 ``<global_home>/skills``）。
 SKILLS_DIR = "skills"
-
-#: **会写盘的文件工具名**：只有它们受家目录白名单约束（``Read`` / ``Glob`` / ``Grep`` 只读，不查）。
-#: 白名单本身是 :func:`is_memory_file_path`——家目录根下的 ``MEMORY.md`` 与 ``<topic>.md``；
-#: ``AGENTS.md``、``mcp.json``、``skills/`` 与任意子目录一律只读（ADR-0032 §三）。
-MEMORY_WRITE_TOOLS = frozenset({"Write", "Edit"})
 
 #: Docker 工作区在容器内的固定根（AgentScope ``DockerWorkspace.workdir``）。
 DOCKER_WORKDIR = "/workspace"
@@ -206,19 +200,6 @@ def data_session_dir(data_root: str, session_id: str) -> str:
     return os.path.join(data_root, SESSIONS_DIR, safe_partition_id(session_id))
 
 
-def is_memory_file_path(relative: str) -> bool:
-    """相对家目录根的路径是否落在**写入白名单**内。
-
-    只允许根下的一级文件：``MEMORY.md`` 或 ``<topic>.md``；``AGENTS.md`` 即使同名后缀也只读，
-    ``mcp.json`` 与任意子目录（``skills/x.md``）同理。这是应用面的机械判据，不是沙箱承诺。
-    """
-    parts = [part for part in re.split(r"[\\/]", str(relative)) if part not in ("", ".")]
-    if len(parts) != 1:
-        return False
-    name = parts[0]
-    return name.endswith(".md") and name not in (RULES_FILE, ".md")
-
-
 def _within(real: str, root: str) -> bool:
     if real == root:
         return True
@@ -293,8 +274,8 @@ def docker_global_binds(
 ) -> tuple[tuple[str, str, str], ...]:
     """全局层的两条 bind 规格 ``(宿主源, 容器内目标, 模式)``，顺序固定。
 
-    - 成员家目录 ``<全局根>/agents/<member_id>`` → ``/alibot-home/agents/<member_id>``，**``rw``**
-      （ADR-0032 §五：记忆文件可写，白名单在应用面执行）；
+    - 成员家目录 ``<全局根>/agents/<member_id>`` → ``/alibot-home/agents/<member_id>``，**``ro``**
+      （ADR-0034 §四：记忆由宿主进程内的 ReMe 写，容器不需要写权限）；
     - 公共技能库 ``<全局根>/skills`` → ``/alibot-home/skills``，仍 **``ro``**。
 
     宿主目录**不存在就跳过**该条，且这里**只判断、不创建**（ADR-0031：全局层是人的维护面，
@@ -303,7 +284,7 @@ def docker_global_binds(
     """
     base = global_root if global_root is not None else global_home_root()
     candidates = (
-        (global_member_home(member_id, root=base), docker_global_member_home(member_id), "rw"),
+        (global_member_home(member_id, root=base), docker_global_member_home(member_id), "ro"),
         (os.path.join(base, SKILLS_DIR), docker_global_skills_home(), "ro"),
     )
     return tuple((host, target, mode) for host, target, mode in candidates if os.path.isdir(host))
@@ -312,9 +293,10 @@ def docker_global_binds(
 def ensure_member_home(global_root: str, member_id: str) -> str:
     """创建（必要时）成员家目录 ``<全局根>/agents/<member_id>`` 这一级。
 
-    ADR-0032 §三：应用**可以**建这一级（含 ``MEMORY.md``，由记忆中间件写入），但**不**创建
-    ``<全局根>/skills/``、不创建 ``AGENTS.md``、不创建 ``mcp.json``。根外 symlink 祖先直接拒绝
-    （``WorkspaceConfigError``），调用方按「该层缺席」降级。
+    长期记忆（ReMe）经 :func:`alibot.memory.memory_workspace_dir` 调用它建出这一级，再建
+    ``reme/`` 工作区；应用**不**创建 ``<全局根>/skills/``、不创建 ``AGENTS.md``、不创建
+    ``mcp.json``（ADR-0034 §一）。根外 symlink 祖先直接拒绝（``WorkspaceConfigError``），
+    调用方按「该层缺席」降级。
     """
     root = os.path.realpath(global_root)
     home = global_member_home(member_id, root=root)
@@ -418,34 +400,16 @@ def _reject_dotdot_segments(pattern: Any, root: str) -> None:
 class WorkspaceRootGuard(ToolMiddlewareBase):
     """调用前把路径锚到根并做 ``realpath`` 根检查；根外直接产出 ERROR chunk。
 
-    ``homes`` 是**显式白名单例外**（ADR-0032 §五）：家目录（项目层与全局层）的
-    ``(宿主路径, 模型可见路径)`` 对。它**不**把家目录变成工作根——相对路径仍从项目根起算，
-    只对**绝对路径**生效；写只对白名单内的文件（:func:`is_memory_file_path`）放行。
+    文件工具只有一个工作根：**频道项目根**。相对路径从它起算，绝对路径 ``realpath`` 后必须仍在
+    根内（ADR-0021 §一）。家目录不再是白名单例外（ADR-0034 §四：记忆不再由文件工具写入）。
     """
 
-    def __init__(self, root: str, *, homes: Sequence[tuple[str, str]] = ()) -> None:
+    def __init__(self, root: str) -> None:
         self.root = root
-        self.homes = tuple((os.path.realpath(host), visible) for host, visible in homes)
 
     def resolve(self, raw: Any) -> str:
         """把工具输入规范化为根内绝对路径；根外抛 :class:`WorkspaceRootViolation`。"""
         return resolve_in_root(raw, self.root)
-
-    def _match_home(self, raw: Any) -> tuple[str, str] | None:
-        """工具输入落在某个家目录内 ⇒ ``(模型可见的家目录, 相对路径)``；否则 ``None``。"""
-        if not self.homes or not isinstance(raw, str) or not os.path.isabs(raw):
-            return None
-        real = os.path.realpath(raw)
-        for host, visible in self.homes:
-            if not _within(real, host):
-                continue
-            relative = os.path.relpath(real, host)
-            return visible, ("" if relative == "." else relative)
-        return None
-
-    def _rewrite_home(self, visible: str, relative: str) -> str:
-        """把家目录内的相对路径还原成模型可见的绝对路径。"""
-        return visible if not relative else os.path.join(visible, relative)
 
     async def on_tool_call(
         self,
@@ -466,24 +430,7 @@ class WorkspaceRootGuard(ToolMiddlewareBase):
                 yield chunk
             return
 
-        name = str(getattr(tool, "name", ""))
         raw = input_kwargs.get(key)
-        matched = self._match_home(raw)
-        if matched is not None:
-            visible, relative = matched
-            if name in MEMORY_WRITE_TOOLS and not is_memory_file_path(relative):
-                yield ToolChunk(
-                    content=[TextBlock(text=f"Error: path is read-only: {raw!r}")],
-                    state=ToolResultState.ERROR,
-                    is_last=True,
-                )
-                return
-            rewritten = dict(input_kwargs)
-            rewritten[key] = self._rewrite_home(visible, relative)
-            async for chunk in next_handler(**rewritten):
-                yield chunk
-            return
-
         try:
             real = self.resolve(raw)
             if tool.name == "Glob":
@@ -590,15 +537,10 @@ class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
         self._backend = DockerBackend(self._container, DOCKER_WORKDIR)
 
 
-def _guarded_tools(
-    workspace: WorkspaceBase,
-    root: str,
-    *,
-    homes: Sequence[tuple[str, str]] = (),
-) -> list[Any]:
+def _guarded_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
     """五个文件工具各挂根检查；**刻意不调用** ``workspace.list_tools()``，因为后者无条件含 Bash。"""
     backend = workspace.get_backend()
-    guard = WorkspaceRootGuard(root, homes=homes)
+    guard = WorkspaceRootGuard(root)
     middlewares: list[ToolMiddlewareBase] = [guard]
     return [
         Edit(backend=backend, middlewares=middlewares),
@@ -663,30 +605,16 @@ def ensure_state_partition(root: str, path: str) -> None:
         raise WorkspaceConfigError(f"workspace state partition escapes root: {path!r}")
 
 
-def _memory_homes(member_id: str, *, global_home: str | None, docker: bool) -> tuple[tuple[str, str], ...]:
-    """记忆家目录的 ``(宿主路径, 模型可见路径)`` 白名单（ADR-0032 §五）。
-
-    只在**长期记忆开启**时由装配点传入 ``global_home``：未开启时两处都不挂，因此全局家目录
-    不进入文件工具的白名单（不建目录、不放开写入）。Docker 下全局家目录的可见路径是容器内
-    挂载点 ``/alibot-home/agents/<member_id>``。
-    """
-    if not global_home:
-        return ()
-    host = global_member_home(member_id, root=global_home)
-    return ((host, docker_global_member_home(member_id) if docker else host),)
-
-
 async def assemble_local_workspace(
     settings: WorkspaceSettings,
     *,
     member_id: str,
     session_id: str,
-    global_home: str | None = None,
 ) -> LocalWorkspaceMount:
     """按频道项目根装配一轮可用的 LocalWorkspace（文件工具受限、默认无 Bash）。
 
-    ``global_home`` 只在长期记忆开启时给出（生产 = ``workspace.global_home_root()``）：它让文件
-    工具能读写全局家目录根下的记忆文件，**不**把家目录变成工作根。项目层家目录总是加入。
+    项目层家目录（``.alibot/agents/<member_id>/``）只是规则文件的宿主，不进入文件工具白名单：
+    文件工具唯一的根是频道项目根（ADR-0021 §一 / ADR-0034 §四）。
     """
     root = validate_workspace_root(settings.root)
     member = safe_partition_id(member_id)
@@ -695,8 +623,6 @@ async def assemble_local_workspace(
     session_dir = project_session_dir(root, session)
     ensure_state_partition(root, agent_dir)
     ensure_state_partition(root, session_dir)
-    homes = ((agent_dir, agent_dir), *_memory_homes(member, global_home=global_home, docker=False))
-
     workspace = ProjectLocalWorkspace(workdir=root)
     await workspace.initialize()
 
@@ -706,7 +632,7 @@ async def assemble_local_workspace(
         member_id=member,
         session_id=session,
         workspace=workspace,
-        tools=_guarded_tools(workspace, root, homes=homes),
+        tools=_guarded_tools(workspace, root),
         agent_dir=agent_dir,
         session_dir=session_dir,
     )
@@ -744,7 +670,7 @@ def docker_container_config(
     容器配置」这条判据**不需要 daemon** 就能断言。
 
     ``global_binds`` 每项是 ``(宿主源, 容器内目标, 模式)``，按给定顺序追加在 ``/workspace:rw`` 之后；
-    模式由调用方给出（ADR-0032 §五：成员家目录 ``rw``、公共技能库 ``ro``），
+    模式由调用方给出（ADR-0034 §四：``docker_global_binds`` 现在两条都给 ``ro``），
     调用方（:func:`docker_global_binds`）已剔除不存在的宿主目录。
     """
     config: dict[str, Any] = {
@@ -825,43 +751,21 @@ def resolve_in_container_root(raw: Any, root: str) -> str:
 class ContainerRootGuard(WorkspaceRootGuard):
     """Docker 文件工具的根检查：容器路径先映射到 host_workdir 再 ``realpath``。
 
-    ``homes`` 是 ``(宿主家目录, 容器内家目录)``：全局家目录挂在 ``/alibot-home/agents/<id>``，
-    它**不是**文件工具的根，只作为记忆写入的显式白名单例外（ADR-0032 §五）。
+    容器内只有 ``/workspace`` 一个文件工具根；``/alibot-home`` 是只读挂载，不进入工具面。
     """
 
-    def __init__(self, root: str, *, homes: Sequence[tuple[str, str]] = ()) -> None:
-        super().__init__(DOCKER_WORKDIR, homes=homes)
+    def __init__(self, root: str) -> None:
+        super().__init__(DOCKER_WORKDIR)
         self.host_root = root
 
     def resolve(self, raw: Any) -> str:
         return resolve_in_container_root(raw, self.host_root)
 
-    def _match_home(self, raw: Any) -> tuple[str, str] | None:
-        if not self.homes or not isinstance(raw, str) or not raw.startswith("/"):
-            return None
-        for host, visible in self.homes:
-            if raw != visible and not raw.startswith(visible + "/"):
-                continue
-            relative = raw[len(visible) :].lstrip("/")
-            host_candidate = os.path.join(host, relative) if relative else host
-            if not _within(os.path.realpath(host_candidate), host):
-                return None
-            return visible, relative
-        return None
 
-    def _rewrite_home(self, visible: str, relative: str) -> str:
-        return visible if not relative else posixpath.join(visible, relative)
-
-
-def _docker_tools(
-    workspace: WorkspaceBase,
-    root: str,
-    *,
-    homes: Sequence[tuple[str, str]] = (),
-) -> list[Any]:
+def _docker_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
     """容器内六个工具：Bash 默认开放（ADR-0021 §二），五个文件工具仍做 ``/workspace`` 根检查。"""
     backend = workspace.get_backend()
-    guard = ContainerRootGuard(root, homes=homes)
+    guard = ContainerRootGuard(root)
     middlewares: list[ToolMiddlewareBase] = [guard]
     return [
         Bash(backend=backend),
@@ -917,8 +821,6 @@ class _DockerEntry:
     image: str | None = None
     egress: bool = False
     global_binds: tuple[tuple[str, str, str], ...] = ()
-    #: 全局根（只在长期记忆开启时非空）：文件工具的记忆白名单从它算出。
-    global_home: str | None = None
 
 
 _pool: dict[tuple[str, str], _DockerEntry] = {}
@@ -1053,14 +955,13 @@ async def _rebind_entry(entry: _DockerEntry) -> bool:
 
 def _new_mount(entry: _DockerEntry, *, reused: bool) -> DockerWorkspaceMount:
     agent_dir, session_dir = _ensure_layout(entry.root, entry.member_id, entry.session_id)
-    homes = _memory_homes(entry.member_id, global_home=entry.global_home, docker=True)
     return DockerWorkspaceMount(
         settings=entry.settings,
         root=entry.root,
         member_id=entry.member_id,
         session_id=entry.session_id,
         workspace=entry.workspace,
-        tools=_docker_tools(entry.workspace, entry.root, homes=homes),
+        tools=_docker_tools(entry.workspace, entry.root),
         agent_dir=agent_dir,
         session_dir=session_dir,
         workspace_id=entry.workspace_id,
@@ -1076,12 +977,11 @@ async def assemble_docker_workspace(
     member_id: str,
     session_id: str,
     locale: Locale = SOURCE_LOCALE,
-    global_home: str | None = None,
 ) -> DockerWorkspaceMount:
     """按 Agent/会话装配 DockerWorkspace（稳定 id、挂载频道根、env 白名单、失败即离线）。
 
-    ``global_home`` 只在长期记忆开启时给出：它同时决定容器里的记忆白名单（``/alibot-home/agents/<id>``
-    对文件工具可见，ADR-0032 §五）与池复用判定（开 / 关记忆是两个不同的容器装配）。
+    全局层的两条 bind（成员家目录 / 公共技能库）都由 :func:`docker_global_binds` 按**宿主目录
+    是否存在**算出，两者都是 ``ro``：记忆由进程内的 ReMe 写宿主路径，不经过容器（ADR-0034 §四）。
     """
     if not settings.is_docker:
         raise ValueError(f"not a docker workspace: {settings.backend!r}")
@@ -1092,11 +992,6 @@ async def assemble_docker_workspace(
     key = (member, session)
     workspace_id = docker_workspace_id(member, session)
     container_name = f"as_ws_{workspace_id}"
-    # 长期记忆开启时先建成员家目录这一级（ADR-0032 §三允许，且**不**建 skills/ 与 mcp.json）：
-    # bind 规格按「宿主目录是否存在」计算，晚建就会让**第一轮**看不到全局家目录。
-    if global_home is not None:
-        with suppress(WorkspaceConfigError, OSError):
-            ensure_member_home(global_home, member)
     # 全局层 bind 规格（宿主目录缺失则少一条）；在池复用判定与 initialize() 之前算好。
     global_binds = docker_global_binds(member)
 
@@ -1130,10 +1025,6 @@ async def assemble_docker_workspace(
     if pooled is not None:
         if await _rebind_entry(pooled):
             with _pool_lock:
-                # 记忆开关是**每轮**入参（`memory_mode` 可随时改）：池里的容器可以复用，但
-                # 文件工具的记忆白名单必须按本轮取值重算，否则 off→agentic 挂不上、
-                # agentic→off 又仍然放行（ADR-0032 §三「未开启两处都不挂」）。
-                pooled.global_home = global_home
                 pooled.active += 1
                 pooled.last_used = time.monotonic()
             clear_docker_failure(member)
@@ -1203,7 +1094,6 @@ async def assemble_docker_workspace(
         image=image,
         egress=settings.docker_egress,
         global_binds=global_binds,
-        global_home=global_home,
     )
     with _pool_lock:
         _pool[key] = entry
@@ -1381,7 +1271,6 @@ async def assemble_workspace(
     member_id: str,
     session_id: str,
     locale: Locale = SOURCE_LOCALE,
-    global_home: str | None = None,
 ) -> Any:
     """按后端分派装配；**不静默回落**（local 与 docker 各自失败即失败）。"""
     if settings.is_docker:
@@ -1390,11 +1279,9 @@ async def assemble_workspace(
             member_id=member_id,
             session_id=session_id,
             locale=locale,
-            global_home=global_home,
         )
     return await assemble_local_workspace(
         settings,
         member_id=member_id,
         session_id=session_id,
-        global_home=global_home,
     )

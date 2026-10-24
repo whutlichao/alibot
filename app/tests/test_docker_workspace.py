@@ -179,12 +179,12 @@ def test_docker_mounts_the_channel_root_and_tools_work_inside_the_container(
     _run(scenario())
 
 
-# ─── 1b. 全局层挂载（#235 / ADR-0032）：成员家目录 rw、公共技能库 ro，数据目录不可见 ─
+# ─── 1b. 全局层挂载（#235 / ADR-0031 / ADR-0034）：成员家目录与公共技能库都 ro，数据目录不可见 ─
 @requires_docker
-def test_docker_mounts_the_member_home_read_write_and_the_skill_library_read_only(
+def test_docker_mounts_the_member_home_and_the_skill_library_read_only(
     docker_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """成员家目录可写（记忆白名单在应用面）、公共技能库只读；``data/`` 不可见。"""
+    """成员家目录只读（记忆由宿主进程内的 ReMe 写）、公共技能库只读；``data/`` 不可见。"""
     home = docker_root.parent / "home"
     monkeypatch.setenv("HOME", str(home))
     member = _unique("mem")
@@ -221,13 +221,12 @@ def test_docker_mounts_the_member_home_read_write_and_the_skill_library_read_onl
             assert chunk.state is not ToolResultState.ERROR, _text(chunk)
             assert "公共技能" in _text(chunk)
 
-            # ADR-0032 §五：成员家目录从 ``:ro`` 改为 ``:rw``——容器内 Bash 可写（白名单是应用面的
-            # 约束，不是沙箱承诺）。记忆文件真的落到宿主侧同一个目录。
+            # ADR-0034 §四：成员家目录仍 ``:ro``——记忆由宿主侧进程内的 ReMe 写入，容器不需要写权限。
             chunk = await _latest_chunk(
                 bash, command=f"printf 'written' > {target}/topic.md 2>&1 || echo write-denied"
             )
-            assert "write-denied" not in _text(chunk), "成员家目录必须是可写挂载"
-            assert (member_home / "topic.md").read_text(encoding="utf-8") == "written"
+            assert "write-denied" in _text(chunk), "成员家目录必须是只读挂载"
+            assert not (member_home / "topic.md").exists()
             # 公共技能库仍只读。
             chunk = await _latest_chunk(
                 bash,
@@ -241,16 +240,16 @@ def test_docker_mounts_the_member_home_read_write_and_the_skill_library_read_onl
             )
             assert "absent" in _text(chunk), "数据目录不得进容器"
 
-            # 文件工具根仍只认 /workspace：未开长期记忆时全局家目录不在记忆白名单里。
+            # 文件工具根仍只认 /workspace：``/alibot-home`` 不是文件工具的输入面。
             chunk = await _latest_chunk(_tool(mount, "Read"), file_path=f"{target}/AGENTS.md")
             assert chunk.state is ToolResultState.ERROR, "/alibot-home 不是文件工具的合法输入"
         finally:
             await release_workspace_mount(mount)
 
     _run(scenario())
-    # 容器写进来的 ``topic.md`` 是我们自己在容器内造的；除它之外全局根不该多出条目。
+    # 只读挂载下容器什么都没写进来：全局根的新增条目只有测试自己建的 ``skills/`` 与 ``data/``。
     after = {path.name for path in Path(global_home_root()).iterdir()}
-    assert after - set(before) == {"skills"} or after - set(before) <= {"skills", "data"}
+    assert after - set(before) <= {"skills", "data"}
 
 
 # ─── 2. 隔离：容器外路径不可见、/tmp 与 /root 私有；文件工具仍锚在 /workspace ──

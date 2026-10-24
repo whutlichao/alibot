@@ -113,7 +113,7 @@ def test_container_config_defaults_to_no_network_and_keeps_the_bind_mount(tmp_pa
     )
 
     assert config["HostConfig"]["NetworkMode"] == "none"
-    # ADR-0032 §五：成员家目录 ``:rw``（记忆可写、白名单在应用面），公共技能库仍 ``:ro``。
+    # 模式是入参原样透传（本仓 ``docker_global_binds`` 现在两条都给 ``ro``，见 ADR-0034）。
     assert config["HostConfig"]["Binds"] == [
         f"{tmp_path}:/workspace:rw",
         f"{member_home}:/alibot-home/agents/mem-235:rw",
@@ -353,7 +353,7 @@ async def _explode_local(*args: Any, **kwargs: Any) -> Any:
     raise AssertionError("Docker 后端失败时不允许回落到本地工作区")
 
 
-# ─── 6. 全局层挂载（#235 / ADR-0032）：成员家目录 :rw、公共技能库 :ro ───────
+# ─── 6. 全局层挂载（#235 / ADR-0034）：成员家目录与公共技能库都 :ro ───────
 def _home_with_global_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """把 HOME 指向临时目录，返回 ``<HOME>/.alibot``（全局层根）。测试不碰真实 ``~/.alibot``。"""
     home = tmp_path / "home"
@@ -361,10 +361,10 @@ def _home_with_global_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     return Path(global_home_root())
 
 
-def test_global_binds_are_member_home_read_write_then_public_skills_read_only(
+def test_global_binds_are_member_home_then_public_skills_both_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """两个子路径互不冲突、顺序固定；成员家目录 ``rw``（ADR-0032 §五），技能库仍 ``ro``。"""
+    """两个子路径互不冲突、顺序固定；成员家目录与技能库都 ``ro``（ADR-0034 §四）。"""
     global_root = _home_with_global_layer(tmp_path, monkeypatch)
     member_home = global_root / "agents" / "mem-235"
     skills_home = global_root / "skills"
@@ -374,7 +374,7 @@ def test_global_binds_are_member_home_read_write_then_public_skills_read_only(
     binds = docker_global_binds("mem-235")
 
     assert binds == (
-        (str(member_home), "/alibot-home/agents/mem-235", "rw"),
+        (str(member_home), "/alibot-home/agents/mem-235", "ro"),
         (str(skills_home), "/alibot-home/skills", "ro"),
     )
     config = docker_container_config(
@@ -387,7 +387,7 @@ def test_global_binds_are_member_home_read_write_then_public_skills_read_only(
     )
     assert config["HostConfig"]["Binds"] == [
         f"{tmp_path}:/workspace:rw",
-        f"{member_home}:/alibot-home/agents/mem-235:rw",
+        f"{member_home}:/alibot-home/agents/mem-235:ro",
         f"{skills_home}:/alibot-home/skills:ro",
     ]
 
@@ -402,13 +402,13 @@ def test_missing_global_directories_are_skipped_and_never_created(
 
     member_home = global_root / "agents" / "mem-235"
     member_home.mkdir(parents=True)
-    assert docker_global_binds("mem-235") == ((str(member_home), "/alibot-home/agents/mem-235", "rw"),)
+    assert docker_global_binds("mem-235") == ((str(member_home), "/alibot-home/agents/mem-235", "ro"),)
     assert not (global_root / "skills").exists(), "缺失的公共技能库不得被顺手创建"
 
     skills_home = global_root / "skills"
     skills_home.mkdir()
     assert docker_global_binds("mem-235") == (
-        (str(member_home), "/alibot-home/agents/mem-235", "rw"),
+        (str(member_home), "/alibot-home/agents/mem-235", "ro"),
         (str(skills_home), "/alibot-home/skills", "ro"),
     )
 
@@ -438,7 +438,7 @@ def test_the_data_directory_never_enters_the_container_and_the_global_root_is_no
     )
     rendered = config["HostConfig"]["Binds"]
     assert rendered[0].endswith(":/workspace:rw"), "项目根仍排第一且可写"
-    assert rendered[1].endswith(":/alibot-home/agents/mem-235:rw"), "成员家目录可写（记忆白名单在应用面）"
+    assert rendered[1].endswith(":/alibot-home/agents/mem-235:ro"), "成员家目录只读（记忆由宿主 ReMe 写）"
     assert rendered[2].endswith(":/alibot-home/skills:ro"), "公共技能库仍只读"
     assert not any("/data" in bind for bind in rendered)
 

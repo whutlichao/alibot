@@ -49,7 +49,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -116,7 +116,7 @@ ADD_COLUMN_SQL = 'ALTER TABLE "{table}" ADD COLUMN {definition}'
 DROP_TRIGGER_SQL = 'DROP TRIGGER IF EXISTS "{name}"'
 DROP_TABLE_SQL = 'DROP TABLE "{table}"'
 RENAME_TABLE_SQL = 'ALTER TABLE "{source}" RENAME TO "{target}"'
-COPY_TABLE_SQL = 'INSERT INTO "{target}" ({columns}) SELECT {columns} FROM "{source}"'
+COPY_TABLE_SQL = 'INSERT INTO "{target}" ({target_columns}) SELECT {select_columns} FROM "{source}"'
 
 # ``12 → 13`` 的存量改写：只动「只有钟点」的行——已经是「日期 + 钟点」的行由 ``GLOB`` 的模式排除
 # 在第一项上（新形状的前四个字符是数字 + ``-``，不会是两位钟点 + ``:``），于是**幂等**不动它们。
@@ -423,8 +423,16 @@ def _add_missing_columns(conn: sqlite3.Connection, table: str) -> None:
             conn.execute(ADD_COLUMN_SQL.format(table=table, definition=definition))
 
 
-def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
+def _rebuild_table(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    expressions: Mapping[str, str] | None = None,
+) -> None:
     """把一张既有表**重建**成当前 ``SCHEMA`` 的 DDL 形态并保真复制既有行。
+
+    ``expressions`` 给**逐列的取值改写**（列名 → SQL 表达式）：新表的 CHECK 不接受旧取值时，
+    用它把旧值显式映射成新语义（``23 → 24`` 的 ``agentic → reme``）。不传就是逐列原样复制。
 
     重建存在的唯一理由：SQLite 没有 ``ALTER TABLE ADD CONSTRAINT``，而 ``message`` /
     ``round_outcome`` 这类表在 v3 就已存在、外键引用只能靠重建补上（规格 D6 的 ``3 → 4``「加
@@ -441,7 +449,11 @@ def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
     conn.execute("PRAGMA defer_foreign_keys = ON")
     temporary = f"{REBUILD_TABLE_PREFIX}{table}"
     columns = [name for name, _ in CURRENT_SCHEMA_SHAPE.columns[table] if name in _column_names(conn, table)]
-    quoted = ", ".join(f'"{name}"' for name in columns)
+    target_columns = ", ".join(f'"{name}"' for name in columns)
+    select_columns = ", ".join(
+        f'{expressions[name]} AS "{name}"' if expressions and name in expressions else f'"{name}"'
+        for name in columns
+    )
     definition = CURRENT_SCHEMA_SHAPE.table_sql[table]
     # sqlite_master 存的建表语句可能带、也可能不带 ``IF NOT EXISTS``（SQLite 会把它规范化掉），
     # 因此替换表名时两态都要认。
@@ -452,7 +464,14 @@ def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
         count=1,
     )
     conn.execute(renamed)
-    conn.execute(COPY_TABLE_SQL.format(target=temporary, columns=quoted, source=table))
+    conn.execute(
+        COPY_TABLE_SQL.format(
+            target=temporary,
+            target_columns=target_columns,
+            select_columns=select_columns,
+            source=table,
+        )
+    )
     conn.execute(DROP_TABLE_SQL.format(table=table))
     conn.execute(RENAME_TABLE_SQL.format(source=temporary, target=table))
 
@@ -993,6 +1012,35 @@ def _step_22_to_23(conn: sqlite3.Connection) -> int:
     return 0
 
 
+# ``23 → 24`` 的显式语义映射（ADR-0034 §五）：旧的 ``agentic`` 记忆档换成 ReMe 的工作区记忆。
+# 这不是回填，而是**同一个决策换了一种实现**——旧档的 Markdown 记忆不再被读写，档位语义保留为
+# 「这个成员有长期记忆」，因此存量行跟着走，不静默降级成 ``off``。
+MEMORY_MODE_MAPPING_SQL = "CASE WHEN memory_mode = 'agentic' THEN 'reme' ELSE memory_mode END"
+
+
+def _step_23_to_24(conn: sqlite3.Connection) -> int:
+    """长期记忆换到 ReMe（ADR-0034）：重建 ``agent_config``，把 ``agentic`` 映射成 ``reme``。
+
+    表级 CHECK 的取值白名单变了，SQLite 只能重建表（``14 → 15`` 同一条路径）。逐列复制时
+    ``memory_mode`` 走 :data:`MEMORY_MODE_MAPPING_SQL`：新 CHECK 只接受 ``off`` / ``reme``，
+    所以映射必须发生在**复制语句里**（先改旧表会被旧 CHECK 拒绝，先重建会被新 CHECK 拒绝）。
+
+    返回**实际被改写**的行数（重建前的 ``agentic`` 行数）；重放同一库时第二次是 0 行。
+    只改这一列，其它列 / 约束 / 触发器逐字保留（索引与触发器由执行器的对齐步骤补回）。
+    """
+    _create_missing_tables(conn, ("agent_config",))
+    stored = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_config'"
+    ).fetchone()
+    if stored is not None and "'reme'" in _normalize_sql(_without_comments(str(stored[0]))):
+        return 0
+    mapped = int(
+        conn.execute("SELECT COUNT(*) FROM agent_config WHERE memory_mode = 'agentic'").fetchone()[0]
+    )
+    _rebuild_table(conn, "agent_config", expressions={"memory_mode": MEMORY_MODE_MAPPING_SQL})
+    return mapped
+
+
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(3, 4, "channel 型作用域数据搬迁（影子行 / 成员 / 已读 / 预算）", _step_3_to_4),
     MigrationStep(4, 5, "任务表与任务线程（task + message.task_ref + 触发器）", _step_4_to_5),
@@ -1054,6 +1102,7 @@ STEPS: tuple[MigrationStep, ...] = (
         _step_21_to_22,
     ),
     MigrationStep(22, 23, "agent runtime context/memory config + round finished_reason", _step_22_to_23),
+    MigrationStep(23, 24, "long-term memory moves to ReMe (agentic -> reme)", _step_23_to_24),
 )
 
 
