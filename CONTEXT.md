@@ -24,6 +24,8 @@ _Avoid_: 用户、账号（本仓没有登录与账号）；session（那是临�
 **本轮扩展（ADR-0031 / ADR-0032）**：它另有一个**Agent 家目录** `~/.alibot/agents/<member_id>/`，直接承载
 `AGENTS.md`（规则基座）、`MEMORY.md`（全局记忆索引）、`<topic>.md`、`skills/` 与 `mcp.json`。家目录
 **不是文件工具的工作路径**——文件工具仍只从频道项目根起算；它只作为**记忆写入的显式白名单例外**被挂上。
+**本轮扩展（ADR-0033）**：它的**显示名**每轮以一句**身份句**进入 system prompt（由代码从
+`member.display_name` 派生，与 `你的角色：` 并列、在它之前）；框架内部名仍是 `m-<member_id>`，不进 prompt。
 _Avoid_: 机器人、bot
 
 **Agent 配置 (agent_config)**:

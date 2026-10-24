@@ -22,7 +22,7 @@ from typing import Any, cast
 from agentscope.event import RequireUserConfirmEvent, UserConfirmResultEvent
 from agentscope.message import Msg, TextBlock, ToolCallBlock
 from agentscope.types import ReplyFinishedReason
-from alibot.sop import SOP_RUN_RETENTION
+from alibot.sop import SOP_RUN_RETENTION, sop_agent_prompt
 from fastapi.testclient import TestClient
 
 from tests.conftest import build_app, create_agent, create_channel
@@ -201,6 +201,31 @@ def _two_agents(client: TestClient) -> tuple[dict[str, Any], dict[str, Any], dic
 
 
 # ─── 判据 1：owner 创建/启动；两步流程 + 拒绝一次后重试 + max_attempts ────────
+
+
+def test_sop_participant_prompt_states_the_display_name() -> None:
+    """SOP 路径（ADR-0033）：身份句与另两处同一来源，位置在配置段之后、``你的角色：`` 之前。"""
+    identity = "你在工作台里的名字是「小苏」。成员与人类都用这个名字称呼你。"
+    member = {
+        "id": "mem_sop",
+        "display_name": "小苏",
+        "role": "执行",
+        "system_prompt": "SOP 配置段。",
+    }
+    for role in ("executor", "verifier"):
+        prompt = sop_agent_prompt(member, role=role)
+        assert identity in prompt
+        assert prompt.index("SOP 配置段。") < prompt.index(identity) < prompt.index("你的角色：执行"), role
+
+
+def test_sop_participant_prompt_omits_the_identity_line_when_the_display_name_is_blank() -> None:
+    """空 / 全空白显示名 = 该段缺席：不写空标题、不写占位，职责句与角色段照旧。"""
+    for blank in ("", "   "):
+        member = {"id": "mem_sop", "display_name": blank, "role": "执行", "system_prompt": ""}
+        prompt = sop_agent_prompt(member, role="executor")
+        assert "你在工作台里的名字是" not in prompt
+        assert "你的角色：执行" in prompt
+        assert "你是一次 SOP 运行的 executor" in prompt
 
 
 def test_owner_runs_two_step_sop_verifier_retries_then_completes(data_dir) -> None:

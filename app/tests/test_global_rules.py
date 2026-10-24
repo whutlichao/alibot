@@ -25,6 +25,7 @@ import pytest
 from agentscope.formatter import OpenAIChatFormatter
 from agentscope.message import TextBlock, ToolCallBlock, ToolResultState, UserMsg
 from agentscope.model import ChatModelBase, ChatResponse
+from alibot.agent_identity import identity_line
 from alibot.agent_seam import AgentScopeAgentSeam
 from alibot.db import open_database
 from alibot.team import TeamRoundContext, member_internal_name
@@ -364,6 +365,21 @@ def test_team_leader_and_member_each_get_the_three_rule_segments(tmp_path: Path)
             < member_prompt.index("成员项目补充。")
         )
         assert "你是 team 模式频道里的成员" in member_prompt
+        # 身份句（ADR-0033）：队长与成员都从同一个来源取，位置在配置 / 项目补充之后、角色段之前。
+        leader_identity = "你在工作台里的名字是「队长」。成员与人类都用这个名字称呼你。"
+        assert leader_identity in leader_prompt
+        assert (
+            leader_prompt.index(PROJECT_RULE)
+            < leader_prompt.index(leader_identity)
+            < leader_prompt.index("你的角色：协调")
+        )
+        member_identity = "你在工作台里的名字是「成员」。成员与人类都用这个名字称呼你。"
+        assert member_identity in member_prompt
+        assert (
+            member_prompt.index("成员项目补充。")
+            < member_prompt.index(member_identity)
+            < member_prompt.index("你的角色：执行")
+        )
     finally:
         database.close()
 
@@ -740,3 +756,128 @@ def test_the_two_rule_segments_are_read_from_flat_home_paths(tmp_path: Path) -> 
     # 只有旧路径、没有扁平路径 ⇒ 该段缺席（不回落旧路径）。
     assert read_global_rules(str(global_root), "mem_legacy") is None
     assert read_project_rules(str(project), "mem_legacy") is None
+
+
+# ─── 13. 身份句（ADR-0033）：显示名每轮进 prompt，位置在配置段之后、角色段之前 ────
+IDENTITY_PHRASE = "你在工作台里的名字是"
+
+
+def _identity(name: str) -> str:
+    return f"你在工作台里的名字是「{name}」。成员与人类都用这个名字称呼你。"
+
+
+def test_identity_line_is_the_single_source_and_skips_blank_display_names() -> None:
+    """一句身份说明；空 / 全空白显示名返回 None（该段缺席，不写空标题、不写占位）。"""
+    assert identity_line({"display_name": "小明"}) == _identity("小明")
+    assert identity_line({"display_name": "  小明  "}) == _identity("小明"), "两端空白不进句子"
+    for blank in ({"display_name": ""}, {"display_name": "  \n "}, {"display_name": None}, {}):
+        assert identity_line(blank) is None, blank
+
+
+def test_the_identity_sentence_has_a_single_source() -> None:
+    """三处拼装点同一来源：这句措辞只在 ``agent_identity.py``，别处只调用函数（ADR-0033）。"""
+    alibot_dir = Path(__file__).resolve().parents[1] / "alibot"
+    hits = sorted(
+        path.name for path in alibot_dir.glob("*.py") if IDENTITY_PHRASE in path.read_text(encoding="utf-8")
+    )
+    assert hits == ["agent_identity.py"], f"身份句被复制到了别处：{hits}"
+
+
+def test_channel_and_direct_message_prompts_state_the_display_name(
+    tmp_path: Path, stub_provider: str
+) -> None:
+    """单 Agent 两条路径（频道 / DM）：身份句在配置段之后、``你的角色：`` 之前，且不改写角色段。"""
+    database, agent, channel, project = _seed(tmp_path)
+    try:
+        _write_global_rule(_global_root(tmp_path), agent["id"], GLOBAL_RULE)
+        _write_project_rule(project, agent["id"], PROJECT_RULE)
+        seam = AgentScopeAgentSeam(
+            timeout_seconds=10.0,
+            workspace_of=database.workspace_settings_for_target,
+            global_home=str(_global_root(tmp_path)),
+        )
+
+        outcome = seam.run_round(
+            database.get_agent(agent["id"]),
+            [_human()],
+            mentioned=False,
+            target_id=channel["id"],
+        )
+        assert outcome.status == "replied", outcome.reason
+        prompt = _system_text(_PlainReplyHandler.request_bodies[-1])
+        assert _identity("小明") in prompt
+        assert prompt.index(PROJECT_RULE) < prompt.index(_identity("小明")) < prompt.index("你的角色：工程师")
+        assert "「m-" not in prompt, "D10 不变：框架内部名不进 prompt"
+
+        # 私聊：没有项目补充段，身份句仍在配置段之后、角色段之前。
+        _PlainReplyHandler.request_bodies.clear()
+        dm, _created = database.create_dm(agent["id"])
+        outcome = seam.run_round(
+            database.get_agent(agent["id"]),
+            [_human("你好")],
+            mentioned=False,
+            target_id=dm["id"],
+            direct_message=True,
+        )
+        assert outcome.status == "replied", outcome.reason
+        prompt = _system_text(_PlainReplyHandler.request_bodies[-1])
+        assert _identity("小明") in prompt
+        assert (
+            prompt.index(CONFIG_PROMPT) < prompt.index(_identity("小明")) < prompt.index("你的角色：工程师")
+        )
+    finally:
+        database.close()
+
+
+def test_blank_display_name_leaves_the_identity_line_out(tmp_path: Path, stub_provider: str) -> None:
+    """空 / 全空白显示名：单 Agent 与 team 成员两条路径都不出现身份句，角色段照旧。"""
+    database, agent, channel, _project = _seed(tmp_path)
+    try:
+        nameless = {**database.get_agent(agent["id"]), "display_name": "   "}
+        seam = AgentScopeAgentSeam(
+            timeout_seconds=10.0,
+            workspace_of=database.workspace_settings_for_target,
+            global_home=str(_global_root(tmp_path)),
+        )
+        outcome = seam.run_round(nameless, [_human()], mentioned=False, target_id=channel["id"])
+        assert outcome.status == "replied", outcome.reason
+        prompt = _system_text(_PlainReplyHandler.request_bodies[-1])
+        assert IDENTITY_PHRASE not in prompt
+        assert "你的角色：工程师" in prompt, "身份句缺席不改写角色段"
+
+        # team 成员：队长与成员是**两个**成员（内部名必须唯一），成员那一行的显示名换成空白。
+        leader = database.create_agent("队长", "协调", "openai:stub-model", "队长配置段。")
+        team_channel = database.create_channel("空白名频道", member_ids=[leader["id"], agent["id"]])
+        member_systems: list[str] = []
+        _PlainReplyHandler.request_bodies.clear()
+        team_seam = _PipelineSeam(
+            [
+                _RecordingModel([_team_assign(agent["id"], "写结论"), _text("队长最终答复")], []),
+                _RecordingModel([_text("成员结论")], member_systems),
+            ],
+            workspace_of=database.workspace_settings_for_target,
+            global_home=str(_global_root(tmp_path)),
+        )
+        team_run = database.create_team_run(
+            target_id=team_channel["id"], leader_member_id=leader["id"], base_seq=1
+        )
+        context = TeamRoundContext(
+            target_id=team_channel["id"],
+            leader_id=leader["id"],
+            members=(nameless,),
+            team_run_id=team_run["id"],
+            budget=database,
+        )
+        outcome = team_seam.run_round_stream(
+            database.get_agent(leader["id"]),
+            [_human("开工")],
+            mentioned=False,
+            target_id=team_channel["id"],
+            team=context,
+        )
+        assert outcome.status == "replied", outcome.reason
+        assert member_systems, "成员没有被 TeamAssign 驱动"
+        assert IDENTITY_PHRASE not in member_systems[0]
+        assert "你的角色：工程师" in member_systems[0]
+    finally:
+        database.close()
