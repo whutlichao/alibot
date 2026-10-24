@@ -3,7 +3,7 @@
 - 状态：Done（门禁通过；**单向门**，保留 PR 由人类合并）
 - Issue：https://github.com/whutlichao/alibot/issues/267
 - 分支：`issue-267-impl`（base `main` = `2c73f52`）
-- PR：（提交后回填）
+- PR：https://github.com/whutlichao/alibot/pull/268
 - 面：`app/alibot/{db,migrate,memory,service,api,agent_seam}.py`、`app/alibot/studio/{app,i18n}.js`、
   `app/tests/**`、`app/README.md`、`CONTEXT.md`、`docs/adr/0035-long-term-memory-is-always-on.md`、
   `docs/agents/agentscope-2*.md`（两处事实修正）
