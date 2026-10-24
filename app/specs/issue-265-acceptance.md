@@ -84,6 +84,10 @@ scripts/check.sh --studio
 # 门禁全绿
 ```
 
+合并 `origin/main`（`5a95507`，含 #263）后复跑 `scripts/check.sh --studio`：同样全绿，
+读数仅 `ruff format --check` 变成 `327 files already formatted`（多出 main 的
+`app/specs/issue-263-acceptance.md`），其余逐项不变。
+
 本票不跑全量 pytest（`--studio` 已覆盖适用门禁；CI 跑全量）。
 
 ## 决策
