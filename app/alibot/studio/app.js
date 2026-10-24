@@ -1259,9 +1259,10 @@ function visibleBoardTasks() {
 function taskMemberName(memberId) {
   const member = state.members.find((item) => item.id === memberId);
   if (member) return member.display_name;
-  // 删除不给任务改历史：指派者可能已不在成员表里。**成员表已就绪**才把「查不到」解释成
-  // 「已删除」；工作台快照还没到时用中性的「成员」，不把仍然存在的人误标成已删除。
-  return state.ready ? t('task.deletedAssignee') : t('toast.memberFallback');
+  // 删除不给任务改历史：指派者可能已不在成员表里。判据是 `workspaceLoaded`——工作台（含成员表）
+  // **成功**载入过一轮（见 `loadWorkspace`）才把「查不到」解释成「已删除」；还没成功载入时用中性的
+  // 「成员」，不把仍然存在的人误标成已删除。**不能**用 `state.ready`：它在失败分支也会置 true。
+  return workspaceLoaded ? t('task.deletedAssignee') : t('toast.memberFallback');
 }
 
 /** 任务在成员表里的下标（决定 `--av-*` 色位；与消息流同一个头像色位规则）。 */
@@ -5285,8 +5286,9 @@ function fillAgentProviderSelect(select, provider) {
   return select.value;
 }
 
-/** 配置区块：显示名 / 角色 / 模型 / 启用状态 / 自动认领 / 长期记忆 / 上下文三项 / 联网档，
-    外加远端数据流告知块。「暂停 / 恢复」与删除已搬到页面最后一个区块（危险操作）。 */
+/** 配置区块：显示名 / 角色 / 模型 / 自动认领 / 长期记忆 / 上下文三项 / 联网档，
+    外加远端数据流告知块。「暂停 / 恢复」与删除已搬到页面最后一个区块（危险操作）；
+    `enabled` 的**唯一**界面入口就是危险区那个按钮，配置区不再有「启用状态」档位。 */
 function agentConfigSection(agent) {
   const draft = state.agentEdit.draft || agentDraftFrom(agent);
   const section = el('section', 'd-sec');
@@ -5317,19 +5319,6 @@ function agentConfigSection(agent) {
   modelHint.appendChild(document.createTextNode(t('agent.modelHintSuffix')));
   modelField.appendChild(modelHint);
   section.appendChild(modelField);
-
-  // 「启用状态」与危险区的「暂停 / 恢复」同源：两者改的都是草稿里的 `enabled`，以最后一次改动为准。
-  const enabledGroup = agentTierGroup(
-    'agent-config-enabled',
-    'tierValue',
-    [
-      ['on', 'agent.enabledOn', 'agent.enabledOnHint'],
-      ['off', 'agent.enabledOff', 'agent.enabledOffHint'],
-    ],
-    draft.enabled ? 'on' : 'off',
-  );
-  enabledGroup.dataset.agentTier = 'enabled';
-  section.appendChild(agentFieldRow('agent.enabledLabel', enabledGroup));
 
   const claimGroup = agentTierGroup(
     'agent-config-auto-claim',
@@ -5667,9 +5656,10 @@ function paintAgentDraftControls() {
   const body = $('#adBody');
   const draft = state.agentEdit.draft;
   if (!body || !draft) return;
+  // 档位组的取值字段与组名同名（点击时也是 `setAgentDraft(group.dataset.agentTier, …)`）：
+  // 两边共用同一份知识，这里不再按字段名写第二套判断。
   Array.prototype.forEach.call(body.querySelectorAll('[data-agent-tier]'), (group) => {
-    const on = group.dataset.agentTier === 'enabled' ? draft.enabled : draft.auto_claim;
-    paintCardGroup(group, 'data-tier-value', on ? 'on' : 'off');
+    paintCardGroup(group, 'data-tier-value', draft[group.dataset.agentTier] ? 'on' : 'off');
   });
   Array.prototype.forEach.call(body.querySelectorAll('[data-agent-access-group]'), (group) => {
     paintCardGroup(group, 'data-agent-access', draft.web_access);
@@ -9394,7 +9384,7 @@ function bindEvents() {
   $('#adBody').addEventListener('click', (event) => {
     const toggle = event.target.closest('[data-agent-toggle]');
     if (toggle) {
-      // 「暂停 / 恢复」与「启用状态」同源：两者改的都是草稿里的 `enabled`。
+      // 「暂停 / 恢复」是草稿里 `enabled` 的**唯一**界面入口：点它只改草稿，保存条提交。
       const draft = state.agentEdit.draft;
       if (draft) setAgentDraft('enabled', !draft.enabled);
       paintAgentDraftControls();

@@ -414,11 +414,6 @@ const I18N_CATALOGS = {
     'agent.create': '创建 Agent',
     'agent.providerLocalHint': '本机模型：不离开本机，不需要数据流确认。',
     'agent.providerRemoteHint': '远端模型：启用前需要先确认数据会离开本机（见下方告知）。',
-    'agent.enabledLabel': '启用状态',
-    'agent.enabledOn': '启用',
-    'agent.enabledOnHint': '正常参与频道与任务',
-    'agent.enabledOff': '停用',
-    'agent.enabledOffHint': '不产出回复',
     'agent.autoClaimLabel': '自动认领任务',
     'agent.autoClaimOn': '开启',
     'agent.autoClaimOnHint': '新建任务后由编排接手',
@@ -488,10 +483,10 @@ const I18N_CATALOGS = {
     // 删除的确认文案带 Agent 名称与「不可撤销」——人在第二次点击前就能读到代价。
     'agentDetail.sectionDanger': '危险操作',
     'agentDetail.dangerHint':
-      '危险：暂停只停止产出回复（它仍会被唤醒并留下一条可读原因的失败轮次结果）；删除会把这个 Agent 移出全部频道并从工作台隐藏，历史消息与任务仍保留。以下动作请确认后再执行。',
+      '危险：暂停只停止产出回复（它仍会被唤醒并留下一条可读原因的失败轮次结果）；删除会把这个 Agent 从 Agent 列表与全部频道中移除，私信、历史消息与任务保留。以下动作请确认后再执行。',
     'agentDetail.delete': '删除',
     'agentDetail.deleteConfirm':
-      '确认删除「{name}」？它会立即移出全部频道并关闭详情；历史消息与任务保留，但这个 Agent 无法恢复，操作不可撤销。',
+      '确认删除「{name}」？它会立即从 Agent 列表与全部频道中移除并关闭详情；私信、历史消息与任务保留，但这个 Agent 无法恢复，操作不可撤销。',
     'agentDetail.deleteConfirmAction': '确认删除',
     'agentDetail.deleteCancel': '取消',
     'agentDetail.save': '保存',
@@ -1207,11 +1202,6 @@ const I18N_CATALOGS = {
     'agent.providerLocalHint': 'Local model: it never leaves this machine and needs no data-flow consent.',
     'agent.providerRemoteHint':
       'Remote model: enabling it first requires confirming that data leaves this machine (see the notice below).',
-    'agent.enabledLabel': 'Enabled',
-    'agent.enabledOn': 'Enabled',
-    'agent.enabledOnHint': 'Takes part in channels and tasks',
-    'agent.enabledOff': 'Disabled',
-    'agent.enabledOffHint': 'Produces no replies',
     'agent.autoClaimLabel': 'Auto-claim tasks',
     'agent.autoClaimOn': 'On',
     'agent.autoClaimOnHint': 'The orchestrator takes new tasks',
@@ -1291,10 +1281,10 @@ const I18N_CATALOGS = {
     // "cannot be undone", so the cost is readable before the second click.
     'agentDetail.sectionDanger': 'Danger zone',
     'agentDetail.dangerHint':
-      'Danger: pausing only stops replies (the agent is still woken and leaves a failed round outcome with a readable reason); deleting removes this agent from every channel and hides it from the workspace, while message and task history is kept. Confirm before taking either action.',
+      'Danger: pausing only stops replies (the agent is still woken and leaves a failed round outcome with a readable reason); deleting removes this agent from the agent list and every channel, while DMs, message history and tasks are kept. Confirm before taking either action.',
     'agentDetail.delete': 'Delete',
     'agentDetail.deleteConfirm':
-      'Delete “{name}”? It will be removed from every channel immediately and this detail view will close. Message and task history is kept, but the agent cannot be restored — this cannot be undone.',
+      'Delete “{name}”? It will be removed from the agent list and every channel immediately and this detail view will close. DMs, message history and tasks are kept, but the agent cannot be restored — this cannot be undone.',
     'agentDetail.deleteConfirmAction': 'Delete permanently',
     'agentDetail.deleteCancel': 'Cancel',
     'agentDetail.save': 'Save',

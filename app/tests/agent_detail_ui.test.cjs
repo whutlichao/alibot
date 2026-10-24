@@ -12,7 +12,7 @@
  * 3. 就地编辑只写草稿：改一个字段 ⇒ 底部保存条出现；「保存」一次性提交**全部**可写字段；
  *    「放弃」丢弃草稿、字段回到后端读数；
  * 4. 后端整体拒绝时错误留在保存条里、输入不丢、保存条仍在；
- * 5. 暂停 / 恢复与启用状态同源（都写草稿里的 `enabled`），联网档四档随 PATCH 提交；
+ * 5. 暂停 / 恢复是 `enabled` 的**唯一**界面入口（只写草稿里的 `enabled`），联网档四档随 PATCH 提交；
  * 6. 关闭详情回到进入前的 `state.mode`，dock 按进入前的开合恢复；
  * 7. 编辑配置弹窗（`#agentEditOverlay`）整个删掉：正本里没有节点，运行时不出现对它的 `$()`。
  * 8. 危险操作是页面最后一个区块：暂停 / 恢复搬进它、删除走两步确认（第一次不发请求），
@@ -316,7 +316,8 @@ function createHarness(options) {
       startup,
       "\nglobalThis.__agentDetailTest = { state, bindEvents, render, renderMembers, renderDock,"
         + " openAgentDetail, closeAgentDetail, closeTaskDock, toggleDock, setDockMode, setViewMode,"
-        + " showMessagesView, showTaskBoard, renderAgentDetail, t };\n",
+        // `loadWorkspace` 是真实载入路径：两态用例靠它（与产品自己的重连）驱动，不 poke 模块内标志。
+        + " showMessagesView, showTaskBoard, renderAgentDetail, loadWorkspace, t };\n",
     ),
     context,
     { filename: appPath },
@@ -731,7 +732,7 @@ test("后端整体拒绝时错误留在保存条里、输入不丢、保存条�
   assert.equal(harness.reportName.textContent, "小明", "界面不声称一个没落库的取值");
 });
 
-test("暂停 / 恢复与启用状态同源：按钮只改草稿，保存时提交 enabled", async () => {
+test("暂停 / 恢复是 enabled 的唯一界面入口：配置区没有「启用状态」档位，按钮只改草稿", async () => {
   const paused = agentDetail({ enabled: false, status: "offline", enabled_reason: "该 Agent 的模型配置已停用" });
   const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
   const harness = withChannel({
@@ -749,6 +750,13 @@ test("暂停 / 恢复与启用状态同源：按钮只改草稿，保存时提�
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
 
+  // 配置区不再有「启用状态」档位（用户 2026-10-24 定夺）：`enabled` 的界面入口只剩危险区按钮。
+  const config = sectionOf(harness.agentBody, "agent-detail-section-config");
+  assert.equal(byOdId(config, "agent-config-enabled"), null, "配置区不再渲染启用状态档位组");
+  assert.equal(byDataset(config, "agentTier", "enabled"), null, "配置区没有 enabled 的档位组");
+  const configLabels = byClass(config, "field").map((field) => field.children[0].textContent);
+  assert.equal(configLabels.includes("启用状态"), false, "配置区不再有「启用状态」字段行");
+
   const toggle = byOdId(harness.agentBody, "agent-toggle-enabled");
   assert.ok(toggle, "危险区要有暂停 / 恢复按钮");
   assert.ok(
@@ -759,16 +767,14 @@ test("暂停 / 恢复与启用状态同源：按钮只改草稿，保存时提�
 
   await harness.clickInBody(toggle);
 
-  assert.equal(harness.patches().length, 0, "按钮也只写草稿（与启用状态字段同源）");
-  assert.equal(harness.saveBar.hidden, false);
-  const group = byOdId(harness.agentBody, "agent-config-enabled");
-  assert.equal(byDataset(group, "tierValue", "off").classList.contains("is-on"), true);
+  assert.equal(harness.patches().length, 0, "按钮只写草稿，不直接发 PATCH");
+  assert.equal(harness.saveBar.hidden, false, "点按钮产生未保存改动 ⇒ 保存条出现");
   assert.equal(byOdId(harness.agentBody, "agent-toggle-enabled").textContent,
     catalogText(harness, "zh-CN", "agentDetail.resume"), "按钮说法跟着草稿走");
 
   await harness.clickSaveBar(harness.saveButton);
 
-  assert.deepEqual(harness.patches()[0].body.enabled, false);
+  assert.equal(harness.patches()[0].body.enabled, false, "保存条才把 enabled 提交给后端");
   assert.equal(harness.reportPresence.dataset.status, "offline");
   assert.equal(harness.reportStatus.textContent, catalogText(harness, "zh-CN", "status.offline"));
 });
@@ -935,8 +941,50 @@ test("危险区文案有英文取值：切到 English 后同样可见", async ()
   }
 });
 
-test("任务指派者已不在成员表里：显示「已删除的成员」，不把裸 id 给用户", async () => {
+test("危险说明与确认文案说「移出列表与全部频道」，不再声称「从工作台隐藏」", async () => {
   const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  // 只读危险说明那一个节点：区块 textContent 里还含着（隐藏的）确认区，混在一起会让断言失真。
+  // 每次重查（切语言后整页重绘，节点会换）。
+  const hintText = () => byClass(sectionOf(harness.agentBody, "agent-detail-section-danger"),
+    "danger-hint")[0].textContent;
+
+  // 源语言：危险说明与确认文案都要点明删掉的是「列表 + 全部频道」，保留私信 / 历史 / 任务。
+  const zhHint = hintText();
+  for (const phrase of ["Agent 列表", "全部频道", "私信", "历史消息", "任务保留"]) {
+    assert.ok(zhHint.includes(phrase), "危险说明要写明：" + phrase);
+  }
+  assert.equal(zhHint.includes("从工作台隐藏"), false, "不再声称删除会「从工作台隐藏」");
+
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete"));
+  const zhConfirm = byOdId(harness.agentBody, "agent-delete-confirm").textContent;
+  for (const phrase of ["Agent 列表", "全部频道", "私信", "历史消息"]) {
+    assert.ok(zhConfirm.includes(phrase), "确认文案要写明：" + phrase);
+  }
+  assert.equal(zhConfirm.includes("从工作台隐藏"), false, "确认文案同样不声称「从工作台隐藏」");
+
+  // 第二语言同一口径（DM target 与私信历史保留是本票既有语义，文案不得与实现冲突）。
+  harness.i18n.setLocale("en");
+  try {
+    harness.api.renderAgentDetail();
+    await harness.clickInBody(byOdId(harness.agentBody, "agent-delete"));
+    const enHint = hintText();
+    const enConfirm = byOdId(harness.agentBody, "agent-delete-confirm").textContent;
+    for (const phrase of ["agent list", "every channel", "DMs", "message history"]) {
+      assert.ok(enHint.includes(phrase), "English danger hint must say: " + phrase);
+      assert.ok(enConfirm.includes(phrase), "English confirmation must say: " + phrase);
+    }
+    assert.equal((enHint + enConfirm).includes("hides it from the workspace"), false,
+      "English copy must not claim the agent is hidden from the workspace");
+  } finally {
+    harness.i18n.setLocale("zh-CN");
+  }
+});
+
+test("任务指派者已不在成员表里：成员表成功载入过才说「已删除」", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
   const gone = "mem_gone_0a1b";
   const task = {
     id: "task_1",
@@ -948,27 +996,73 @@ test("任务指派者已不在成员表里：显示「已删除的成员」，�
     pending_approval_count: 0,
     allowed_transitions: ["in_progress"],
   };
-  harness.api.state.members = [{ id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 }];
+  let workspaceAttempts = 0;
+  const harness = withChannel({
+    fetch: async (url) => {
+      if (String(url) === "/api/workspace") {
+        workspaceAttempts += 1;
+        // 首载失败（与真实断线同一形状：`state.ready` 也会置 true）；重连那一次成功。
+        if (workspaceAttempts === 1) {
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({ error: { code: "unavailable", message: "工作台快照暂时读不到" } }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            member: owner,
+            members: [owner],
+            channels: [],
+            dms: [],
+            agents: [],
+            model_providers: ["ollama"],
+            local_providers: ["ollama"],
+            remote_consents: [],
+          }),
+        };
+      }
+      if (String(url).endsWith("/messages")) {
+        return { ok: true, status: 200, json: async () => ({ messages: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+
+  // 阶段一：首载失败。失败分支会置 `state.ready = true`（所以它不能当「成员表已就绪」的判据），
+  // 但 `workspaceLoaded` 只在整轮读数都落地后才置位 —— 断言只看外部可观察行为。
+  await harness.api.loadWorkspace({ silent: true });
+  assert.equal(harness.api.state.online, false, "首载失败的旁证：工作台被标成离线");
+
+  harness.api.state.members = [owner];
   harness.api.state.agents = [];
   harness.api.state.boardTasks = [task];
   harness.api.state.tasks = [task];
   harness.api.render();
 
-  const board = harness.elementFor("#taskColumns");
-  assert.ok(
-    board.textContent.includes(catalogText(harness, "zh-CN", "task.deletedAssignee")),
-    "回退文案可读",
-  );
-  assert.equal(board.textContent.includes(gone), false, "裸成员 id 不外露");
-
-  // 工作台快照还没就绪时不能把「查不到」说成「已删除」：用中性的「成员」占位。
-  harness.api.state.ready = false;
-  harness.api.render();
   const loading = harness.elementFor("#taskColumns");
   assert.ok(loading.textContent.includes(catalogText(harness, "zh-CN", "toast.memberFallback")),
-    "成员表未就绪时用中性回退");
+    "未成功载入时用中性「成员」占位");
   assert.equal(loading.textContent.includes(catalogText(harness, "zh-CN", "task.deletedAssignee")), false,
-    "未就绪时不误报「已删除」");
+    "未成功载入时不误报「已删除」");
+  assert.equal(loading.textContent.includes(gone), false, "裸成员 id 不外露");
+
+  // 阶段二：重连成功（走产品自己的重连路径）⇒「查不到」才解释成「已删除」。
+  for (let tick = 0; tick < 20 && !harness.api.state.online; tick += 1) await flush();
+  assert.ok(workspaceAttempts >= 2, "确实经历了一次失败的首载与一次成功的重连");
+  assert.equal(harness.api.state.online, true, "重连后工作台恢复在线");
+
+  harness.api.state.members = [owner];
+  harness.api.state.boardTasks = [task];
+  harness.api.state.tasks = [task];
+  harness.api.render();
+
+  const board = harness.elementFor("#taskColumns");
+  assert.ok(board.textContent.includes(catalogText(harness, "zh-CN", "task.deletedAssignee")),
+    "已成功载入且成员查不到 ⇒ 「已删除的成员」");
+  assert.equal(board.textContent.includes(gone), false, "裸成员 id 不外露");
 });
 
 test("联网档四档：未配置时选中「跟随频道」，点具体档位后保存提交该档", async () => {
@@ -1408,11 +1502,6 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agent.modelHintSuffix",
     "agent.promptLabel",
     "agent.promptPlaceholder",
-    "agent.enabledLabel",
-    "agent.enabledOn",
-    "agent.enabledOnHint",
-    "agent.enabledOff",
-    "agent.enabledOffHint",
     "agent.autoClaimLabel",
     "agent.autoClaimOn",
     "agent.autoClaimOnHint",
@@ -1491,6 +1580,12 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agentDetail.consentPending",
     "agentDetail.consentNotNeeded",
     "agentDetail.emptyField",
+    // 「启用状态」档位随配置区的删除而失去全部消费点：两份词条一并移除，不留孤儿键。
+    "agent.enabledLabel",
+    "agent.enabledOn",
+    "agent.enabledOnHint",
+    "agent.enabledOff",
+    "agent.enabledOffHint",
   ]) {
     for (const locale of ["zh-CN", "en"]) {
       assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已删词条：" + key);
@@ -1531,12 +1626,15 @@ test("配置区块的标签真的指向控件：单控件 label[for]、档位组
     assert.ok(label, field + " 的控件缺少指向它的 label[for]");
   }
   // 档位组没有「一个」可聚焦控件，用 aria-labelledby 指向同一份标签。
-  const groups = ["enabled", "auto_claim"].map((tier) =>
+  // 配置区只剩「自动认领」一组档位（`enabled` 的入口是危险区那颗按钮，不再是档位组）。
+  const groups = ["auto_claim"].map((tier) =>
     byDataset(harness.agentBody, "agentTier", tier));
   for (const group of groups) {
     assert.ok(group, "档位组缺失");
     assert.ok(group.getAttribute("aria-labelledby"), "档位组要有 aria-labelledby");
   }
+  assert.equal(byDataset(harness.agentBody, "agentTier", "enabled"), null,
+    "启用状态档位组已从配置区删除");
   // 系统提示是 textarea，用 aria-label 承担字段名（它不是 `.field` 里的单控件行）。
   assert.ok(agentField(harness.agentBody, "system_prompt").getAttribute("aria-label"),
     "系统提示要有 aria-label");
