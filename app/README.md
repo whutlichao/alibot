@@ -86,8 +86,8 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 
 启动时打印**实际数据目录**与来源（显式覆盖 / 新默认 / 旧位置兼容 / 新建）。新旧同时存在时确定地选
 新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
-`~/.alibot/skills/` 是人的维护面，应用不创建。`~/.alibot/agents/<member_id>/` 这一级由应用按需创建
-（长期记忆开启时，连同 `reme/` 工作区），但**不**创建 `AGENTS.md`、不创建 `mcp.json`、不创建
+`~/.alibot/skills/` 是人的维护面，应用不创建。`~/.alibot/agents/<member_id>/` 这一级在**创建 Agent 时**
+建出（连同 `reme/` 工作区；ADR-0035），但**不**创建 `AGENTS.md`、不创建 `mcp.json`、不创建
 `~/.alibot/skills/`（ADR-0034 §一）。
 旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
 本节的兼容读取只针对 `~/Alibot`。
@@ -181,13 +181,13 @@ ls ~/.alibot/agents/*/AGENTS.md 2>/dev/null
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-### Schema 版本与迁移（15 → 24）
+### Schema 版本与迁移（15 → 25）
 
-本代码的 `SCHEMA_VERSION = 24`（`app/alibot/db.py`），依赖 pin `agentscope[memory-reme]==2.0.10`
+本代码的 `SCHEMA_VERSION = 25`（`app/alibot/db.py`），依赖 pin `agentscope[memory-reme]==2.0.10`
 （2.0.10 的 extra 名就是 `memory-reme`；该 extra 只声明 `reme-ai>=0.4.0.6`，因此 ReMe 另显式 pin
 `reme-ai==0.4.1.10`——0.4.1.13 与 2.0.10 的最小 ReMe 配置不兼容，嵌入应用启动即报
 `Unregistered backend 'dream_topics_step'`；升级 reme-ai 要单独开票并重跑真实冒烟）。本轮把库形态从 15
-推进到 24，由**九个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+推进到 25，由**十个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -199,19 +199,22 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `20 → 21` | `auto claim defaults on` | `agent_config.auto_claim` 的 DDL 默认 `0 → 1`；按当前 `SCHEMA` **重建** `agent_config`（升级库的新插入也拿到 1），并把存量 `auto_claim = 0` 一次性回填为 `1`（只改这一列、不动 `updated_at`；报告真实改动行数，重放是空操作） |
 | `21 → 22` | `web provider credentials + explicit off level` | `web_provider_credential`（provider 主键、`api_key` 明文、`is_default`、时间戳；部分唯一索引保证至多一个默认）；重建 `channel` / `agent_config` 的 `web_access` 列级 CHECK，纳入 `'off'`（既有行逐字保留） |
 | `22 → 23` | `agent runtime context and memory` | `round_outcome.finished_reason`（可空，旧行保持 NULL）；`agent_config.context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `memory_mode`（列默认 `40` / `0.7` / `30` / `'off'`；显式 NULL 跟随运行时默认） |
-| `23 → 24` | `long-term memory moves to ReMe` | 重建 `agent_config`：`memory_mode` 的 CHECK 改 `('off', 'reme')`，存量旧记忆档（`agentic`）在复制语句里**显式映射**为 `reme`；`off` 与 `NULL` 逐字保留（ADR-0034） |
+| `23 → 24` | `long-term memory to ReMe (superseded)` | 历史步骤（ADR-0034 的 ReMe 换档）。v25 起 `memory_mode` 由 `24 → 25` 删除，本版代码里这一步不重建、不改写取值，只保留链连续性；存量旧档 `agentic` 的语义随列删除一起退场 |
+| `24 → 25` | `long-term memory is always on` | 重建 `agent_config`：删掉 `memory_mode` 列（当前 DDL 已不声明它，逐列复制即删列）；存量 `off` / `NULL` 行因此变为「始终开启」（ADR-0035），其它列逐字保留 |
 
-- **只加不删；除 `20 → 21` 的显式回填外，不回填业务数据**：新列可空或带列默认值，旧行按默认值解释——
+- **只加不删（唯二例外：`20 → 21` 的一次性回填与 `24 → 25` 的删列）；除这两处外不回填业务数据**：
+  新列可空或带列默认值，旧行按默认值解释——
   `mode='autonomous'`、`team_leader_member_id=NULL`、`workspace_root=NULL`、`workspace_backend='local'`、
-  `permission_mode='ask-writes'`；`agent_config` 的四个新列是 `NULL` / `NULL` / `0` / `NULL`；
+  `permission_mode='ask-writes'`；`agent_config` 的运行时配置列取列默认值（`40` / `0.7` / `30`）；
   `17 → 18` 的两列 `web_access` 也一律停在 `NULL`（= 未配置 / 跟随频道，读路径回退默认档 `search`，
   见下面的**联网档**）；`18 → 19` 的 `docker_egress` 停在列默认 `0`（= 容器默认无网，见下面的**容器出网**）；
   `19 → 20` 的 `message.task_pointer` 停在 `NULL`（= 不是指针消息）；
   `21 → 22` 的两列 `web_access` 仍停在 `NULL`（同上，读路径回退默认档 `search`）；
-  `22 → 23` 的旧轮次结束原因保持 `NULL`，Agent 的四列配置取列默认值；
-  `23 → 24` 只改 `memory_mode` 一个列的取值集合（旧记忆档 → `reme`），其它列逐字保留。
+  `22 → 23` 的旧轮次结束原因保持 `NULL`。
   `20 → 21` 是一次**显式的语义变更**：它把存量 `auto_claim = 0` 一次性置 1（ADR-0029），
   因此升级会覆盖此前显式关闭的存量行；它**不回溯任务**，频道里既有的未认领任务保持原状。
+  `24 → 25` 是**唯一删列的一步**（ADR-0035）：`agent_config.memory_mode` 整列消失，存量 `off` /
+  `NULL` 行因此变成「长期记忆始终开启」——这是决策本身的语义，不是业务数据回填。
 - **迁移是显式动作**：`python -m alibot --migrate --data-dir <数据目录>`；`--dry-run` 在数据目录内的临时
   副本上预演完整链，**原库 sha256 前后一致**，不建备份、不写台账、不留副本。迁移前自动把整个数据目录
   复制成同级 `<数据目录>-backup-15-to-22-<UTC 时间戳>`；**备份失败就不迁移**。
@@ -226,7 +229,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `member` | id, kind(`owner`/`agent`), 显示名, 头像色位 | 身份正本；空库只有一条 `owner` 行 |
-| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省开启，仅在自主频道生效）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置）, **联网档**（`web_access`，可空 = 跟随频道）, **上下文窗口 / 压缩阈值 / 迭代上限 / 长期记忆档** | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021 |
+| `agent_config` | member_id, 角色, 模型标识, 系统提示, 启用开关, **自动认领开关**（`auto_claim`，缺省开启，仅在自主频道生效）, **workspace 后端 / 权限档**（可空 = 跟随频道）, **本地 shell 开关**（`allow_local_shell`，缺省关闭）, **Docker 镜像**（可空 = 内置）, **联网档**（`web_access`，可空 = 跟随频道）, **上下文窗口 / 压缩阈值 / 迭代上限** | 模型与系统提示是**配置数据**，换模型不改代码；`auto_claim` 决定编排要不要替它在新建任务后认领；workspace 配置见 ADR-0021。长期记忆没有配置列（始终开启，ADR-0035） |
 | `target` | id, kind(`channel`/`dm`/`task`), dm_peer_member_id, created_at | 一切消息面的**唯一作用域键**（ADR-0004）：消息、已读位置、回应预算、轮次结果都挂 `target_id`。channel 型是**影子行**（id 与 `channel.id` 同值、只承载 `kind`） |
 | `target_member` | target_id, member_id | **成员关系**的正本（三种 kind 共用一张表）：唤醒面与未读口径的共同来源；频道成员就是它在 channel 型上的读法 |
 | `target_read` | member_id, target_id, last_read_seq | 已读位置（未读的正本）。owner 的行是未读徽标基准，agent 的行是它自己的消费游标 |
@@ -250,7 +253,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `attachment` | id, 原文件名, 大小, MIME, **相对路径**, 创建时间, **可空的 message_id** | 附件的元数据；**字节在数据目录**、不进 SQLite。`message_id` 为空 = 未发送的草稿（读取面不暴露）。绑定一次即不可变，**没有**删除路径 |
 | `round_outcome` | member_id, target_id, base_seq, status, reason, finished_reason（旧行可空）, 起止时间, 是否消耗预算, 是否被合并 | 轮次结果，**append-only**。`consumed_budget` 是**行级**标记（这一轮由一次已计一次的跳送来），**不可按行求和**——跳数正本是 `target_budget.used` |
 
-- **表清单与 `SCHEMA_VERSION = 24` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
+- **表清单与 `SCHEMA_VERSION = 25` 的 `SCHEMA` 一一对应**（`schema_meta` 只存版本读数，不是业务表）；
   新增列/表的默认值必须与读路径解释一致——改一处就要同时改这张表。
 - **append-only 是硬约束**：库级触发器拒绝 `message` 与 `round_outcome` 的任何 `UPDATE` / `DELETE`；
   `attachment` 同样没有删除路径（它的 `UPDATE` 只允许**唯一一次**绑定）。HTTP 面也没有编辑 /
@@ -298,24 +301,25 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
 - **一轮至多一条频道消息**；落库路径只有一条。
 - 消费游标只在 `replied` / `ignored` / `silent` 推进；`failed` 不推进（下次唤醒会重新读到，但不是自动重放）。
 
-### Agent 运行时（schema 24 / ADR-0030 / ADR-0034）
+### Agent 运行时（schema 25 / ADR-0030 / ADR-0034 / ADR-0035）
 
 普通轮输入最近 40 条 target 消息（本人历史为 assistant），自动续跑使用完整历史；回应纪律、瞬态早退与 base_seq 仍只按新消息计算，历史不重新触发必答。上下文超过阈值时由 AgentScope 压缩；压缩消息与截断工具结果写入会话分区：有项目根时 `.alibot/sessions/<target--member>/offload/`，无项目根时 `<数据目录>/sessions/<target--member>/offload/`（ADR-0032 §四）。
 
 - `ALIBOT_CONTEXT_WINDOW_MESSAGES=40`、`ALIBOT_CONTEXT_TRIGGER_RATIO=0.7`、`ALIBOT_CONTEXT_RESERVE_RATIO=0.2`、`ALIBOT_CONTEXT_TOOL_RESULT_LIMIT=4000`、`ALIBOT_CONTEXT_MAX_IMAGE_NUM=5`、`ALIBOT_REACT_MAX_ITERS=30`、`ALIBOT_MODEL_MAX_RETRIES=2`。
-- Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 详情页的「配置」区块可设置上下文条数、阈值、迭代上限及长期记忆开关。
+- Agent 的显式数值配置优先；PATCH 显式 null 清除覆盖，省略保持原值。新建 Agent 的数值配置为空，跟随环境与默认；迁移存量行按 schema 默认解释。Studio 详情页的「配置」区块可设置上下文条数、阈值与迭代上限；长期记忆没有开关。
 - 每轮按 Asia/Shanghai 重新注入 ISO 时间、target 名称与上下文用量；AgentState 原子保存到上述 session 分区的 `state.json`，恢复摘要及运行状态、按消息窗口重建 context。损坏状态降级为空白并记录日志；权限始终用当前配置。
 - `finished_reason` 为 `completed | interrupted | exceed_max_iters | error`，与 status 独立。旧行保持 NULL；达到迭代上限的部分正文可保留，reason 明示结论可能不完整。
 - `POST /api/targets/{target_id}/rounds/{reply_id}/interrupt` 仅中断当前匹配轮，成功 200，已结束 / 已请求 / target 不匹配 409。运行中取消任务、审批挂起时回送 UserInterruptEvent；中断不落回复消息，只落轮次结果，发出不带游标的 `round.interrupted`，Studio 停止按钮随后消失；SSE 重连通过当前 `round.active` 快照恢复按钮。审批超时仍为 failed。
-- `memory_mode=reme` 使用 AgentScope 的 **ReMe** 中间件（ADR-0034）：工作区固定在
-  `~/.alibot/agents/<member_id>/reme/`，**一个成员一个**（PER_AGENT），跨 session / target / 项目
-  共享召回。每轮用**本轮模型**装配 `ReMeMiddleware`（`top_k=5`；provider 不能携带工具时退化为
-  `static_control`，`memory_search` 不送出去），轮次收尾自动写回、回复前按 BM25 关键词检索注入；
+- **长期记忆始终开启**（ADR-0035：没有开关），使用 AgentScope 的 **ReMe** 中间件（ADR-0034）：
+  工作区固定在 `~/.alibot/agents/<member_id>/reme/`，**一个成员一个**（PER_AGENT），跨 session /
+  target / 项目共享召回。每轮用**本轮模型**装配 `ReMeMiddleware`（`top_k=5`；provider 不能携带工具时
+  退化为 `static_control`，`memory_search` 不送出去），轮次收尾自动写回、回复前按 BM25 关键词检索注入；
   不启用 embedding，不新增凭据面。写回后索引由后台循环**最终一致**：刚写入或刚启动时立即检索可能
   为空，下一轮回复的召回已可用——不要据此判记忆失效。单 Agent 与 team 两处 finally 都在关闭 model
-  client **之前** `await close()`。记忆**不经过文件工具**：DM 只有当前会话卸载目录的只读 Read；无 workspace 的轮次
-  仍保留这个 Read（与记忆开关解耦）；`off` / `null` 不装中间件、不创建目录。
-- 单 Agent、队长与 team 成员三条装配路径的 system prompt 都注入一段「本轮运行环境」（工作区根 / 后端 / 权限档 / 长期记忆形态），取值只来自本轮装配事实：没有项目根就明写「未配置」，记忆卡片与本段冲突时以本段为准，并要求模型不得编造本段未给出的路径（#263）。SOP 参与者不挂工具、不装配记忆，因此没有这一段。
+  client **之前** `await close()`。全局层未接线时这一轮不装中间件、不建目录（`assemble_memory` 返回
+  `None` 并记日志）。记忆**不经过文件工具**：DM 只有当前会话卸载目录的只读 Read；无 workspace 的轮次
+  仍保留这个 Read（两者解耦）。
+- 单 Agent、队长与 team 成员三条装配路径的 system prompt 都注入一段「本轮运行环境」（工作区根 / 后端 / 权限档 / 长期记忆固定「已开启」），取值只来自本轮装配事实：没有项目根就明写「未配置」，记忆卡片与本段冲突时以本段为准，并要求模型不得编造本段未给出的路径（#263 / #267）。SOP 参与者不挂工具、不装配记忆，因此没有这一段。
 - Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件写会话分区：有项目根时是主机 `.alibot/sessions/`（Docker 下显示为 `/workspace/.alibot/sessions/...`），无项目根时是 `<数据目录>/sessions/`（ADR-0032 §四）。
 
 ### 穿透（点名一个未加入该频道的 Agent）

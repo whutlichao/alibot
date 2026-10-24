@@ -9,6 +9,11 @@
 """
 
 import asyncio
+import gc
+import threading
+import time
+import warnings
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -63,7 +68,12 @@ class _FakeReMeMiddleware(MiddlewareBase):
         self.workspace_dir = workspace_dir
         self.parameters = parameters
         self.closed = 0
+        self.started = 0
         _FakeReMeMiddleware.instances.append(self)
+
+    async def _ensure_started(self) -> None:
+        """装配层在返回前确定性启动一次（``assemble_memory._start_middleware``）。"""
+        self.started += 1
 
     async def list_tools(self) -> list[Any]:
         if self.parameters.mode == "static_control":
@@ -136,7 +146,7 @@ def test_reme_round_assembles_the_member_workspace_with_this_round_model(
     options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "reme"},
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -154,6 +164,7 @@ def test_reme_round_assembles_the_member_workspace_with_this_round_model(
     assert middleware.parameters.top_k == 5
     assert any(item is middleware for item in options[0]["middlewares"])
     assert "memory_search" in _toolkit_names(options[0]["toolkit"])
+    assert middleware.started == 1, "装配完成时嵌入应用已经确定性启动"
     assert middleware.closed == 1, "轮次结束必须 close 一次"
 
 
@@ -163,7 +174,7 @@ def test_a_provider_without_tool_calling_degrades_to_static_control(
     options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "unknown-provider:stub", "memory_mode": "reme"},
+        {"id": "member", "model_id": "unknown-provider:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -177,24 +188,29 @@ def test_a_provider_without_tool_calling_degrades_to_static_control(
     assert "memory_search" not in _toolkit_names(options[0]["toolkit"]), "不能携带工具时不暴露 memory_search"
 
 
-def test_memory_off_creates_no_workspace_and_installs_no_middleware(
+def test_every_round_assembles_memory_without_any_config_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
 ) -> None:
+    """长期记忆没有开关（ADR-0035）：成员载荷里没有任何档位字段，照样装配 ReMe。"""
     options = _capture_agents(monkeypatch)
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "off"},
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
     )
 
     assert outcome.status == "replied", outcome.reason
-    assert _FakeReMeMiddleware.instances == []
-    assert not _member_home(global_root).exists(), "关闭长期记忆时不建任何目录"
-    assert not (tmp_path / "data" / ".alibot").exists()
-    if "toolkit" in options[0]:
-        assert "memory_search" not in _toolkit_names(options[0]["toolkit"]), "关闭长期记忆时没有记忆工具"
+    assert len(_FakeReMeMiddleware.instances) == 1
+    middleware = _FakeReMeMiddleware.instances[0]
+    workspace = _member_home(global_root) / "reme"
+    assert Path(middleware.workspace_dir) == workspace
+    assert workspace.is_dir(), "家目录与 reme/ 必须被建出"
+    assert any(item is middleware for item in options[0]["middlewares"])
+    assert "memory_search" in _toolkit_names(options[0]["toolkit"])
+    assert middleware.started == 1, "装配完成时嵌入应用已经确定性启动"
+    assert middleware.closed == 1
 
 
 def test_the_round_closes_reme_before_the_model_client(
@@ -204,7 +220,7 @@ def test_the_round_closes_reme_before_the_model_client(
     model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
     model.client = _ClosingClient()  # type: ignore[attr-defined]
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "reme"},
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "你好", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -243,8 +259,8 @@ def test_dm_can_read_its_offloaded_context_without_reading_other_partitions(
         ]
     )
     outcome = _dm_seam(model, tmp_path, global_root).run_round(
-        # 记忆关闭时卸载目录的只读 Read 照样在（两者解耦）。
-        {"id": "member", "model_id": "openai:stub", "memory_mode": "off"},
+        # 记忆由 ReMe 自管、不经过文件工具；卸载目录的只读 Read 照样在。
+        {"id": "member", "model_id": "openai:stub"},
         [{"body": "请读取卸载文件", "author": {"id": "owner"}}],
         mentioned=False,
         target_id="target",
@@ -315,3 +331,65 @@ def test_real_reme_middleware_exposes_memory_search(tmp_path: Path) -> None:
         assert [tool.name for tool in tools] == ["memory_search"]
     finally:
         asyncio.run(middleware.close())
+
+
+def test_a_cancelled_assembly_does_not_leak_the_tokenizer_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_root: Path
+) -> None:
+    """启动不能落在可取消的后台检索里：被取消的开启窗口会丢 stopwords 句柄（#267 CI 红）。
+
+    ``agentscope`` 2.0.10 的 ``ReMeMiddleware`` 把启动懒放在第一个 job 里。模式非
+    ``agent_control`` 时，本轮检索是**可被取消的后台 task**（``on_reply`` 的 ``finally`` 会
+    cancel + await）；取消若落在上游 ``aiofiles`` 的 ``AiofilesContextManager.__aenter__``
+    里，``_open`` 已经在线程池打开的文件就没人关，句柄只能等 GC——``filterwarnings=error``
+    下它就是 ``PytestUnraisableExceptionWarning``（远端 CI 的 13 条失败即此）。
+
+    装配完成时启动必须已经确定性地结束：这里把「开启窗口」放慢并计时，装配返回后再取消一条
+    检索，断言窗口根本没被这条可取消的任务碰到，且 GC 不报未关闭的 stopwords。
+    """
+    import aiofiles.threadpool
+
+    monkeypatch.setattr(memory_module, "ReMeMiddleware", _REAL_REME)
+    entered_open = threading.Event()
+    threadpool_module = aiofiles.threadpool
+    real_sync_open: Any = vars(threadpool_module)["sync_open"]
+
+    def slow_sync_open(*args: Any, **kwargs: Any) -> Any:
+        entered_open.set()
+        time.sleep(0.3)
+        return real_sync_open(*args, **kwargs)
+
+    monkeypatch.setattr(threadpool_module, "sync_open", slow_sync_open)
+    model = MemoryModel([[ChatResponse(content=[TextBlock(text="收到")], is_last=True)]])
+
+    async def scenario() -> None:
+        assembly = await memory_module.assemble_memory(
+            "member",
+            model=model,
+            provider="openai",
+            global_home=global_root,
+            supports_tools=True,
+        )
+        assert assembly is not None
+        entered_open.clear()
+        task = asyncio.create_task(assembly.middleware._run_job("search", query="你好"))
+        started_in_task = await asyncio.to_thread(entered_open.wait, 1.0)
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        await assembly.close()
+        del assembly, task
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for _ in range(3):
+                gc.collect()
+                await asyncio.sleep(0)
+        leaked = [
+            str(item.message)
+            for item in caught
+            if issubclass(item.category, ResourceWarning) and "stopwords" in str(item.message)
+        ]
+        assert leaked == [], f"ReMe tokenizer 的 stopwords 句柄泄漏：{leaked}"
+        assert not started_in_task, "ReMe 的启动不能发生在可取消的后台检索里"
+
+    asyncio.run(scenario())

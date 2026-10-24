@@ -21,6 +21,8 @@ def test_home_is_isolated_to_the_pytest_temporary_root(tmp_path_factory: pytest.
 
     assert base in home.parents or home == base, f"HOME 没有被指向 pytest 临时根：{home}"
     assert base in Path(global_home_root()).resolve().parents, "默认全局根必须落在临时 HOME 下"
-    assert not (Path(global_home_root()) / "agents").exists(), "测试不得创建真实全局层目录树"
+    # 长期记忆始终开启（ADR-0035）后，真实 seam 的用例会建出临时全局层里的家目录与 reme/；
+    # 这里只要求它**仍然落在** pytest 临时根下（上面两条已钉住），绝不写开发者真实 HOME。
+    assert Path(global_home_root()).resolve().is_relative_to(base)
     if os.environ.get("USERPROFILE"):
         assert Path(os.environ["USERPROFILE"]).resolve() == home

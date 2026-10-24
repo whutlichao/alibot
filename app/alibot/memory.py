@@ -12,23 +12,26 @@ BM25 关键词索引（本仓**不**注入 embedding，因此不新增任何凭�
 
 旧的 ``MEMORY.md`` / ``<topic>.md`` 不再是记忆落点：它们既不被注入、也不被写入，升级时
 原样留在磁盘上（不自动导入，见 ADR-0034 §五）。
+
+长期记忆**没有开关**（ADR-0035）：每一轮只经 :func:`assemble_memory` 装配，唯一会让它缺席的是
+全局层未接线（``global_home`` 为空）或工作区不可建。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from agentscope.middleware import ReMeMiddleware
 
-from .db import MEMORY_MODES
 from .workspace import WorkspaceConfigError, ensure_member_home, ensure_state_partition, safe_partition_id
 
 __all__ = [
-    "MEMORY_MODES",
     "MemoryAssembly",
     "assemble_memory",
     "memory_workspace_dir",
@@ -82,10 +85,37 @@ class MemoryAssembly:
 
     async def close(self) -> None:
         """关闭嵌入式 ReMe 应用；失败只记一条可读日志。"""
-        try:
-            await self.middleware.close()
-        except Exception as error:  # 收尾失败不能改写本轮结论
-            _log.warning("ReMe memory teardown failed: %s", error)
+        await _close_middleware(self.middleware)
+
+
+async def _close_middleware(middleware: Any) -> None:
+    """关闭中间件持有的 ReMe 应用；失败只记一条可读日志。"""
+    try:
+        await middleware.close()
+    except Exception as error:  # 收尾失败不能改写本轮结论
+        _log.warning("ReMe memory teardown failed: %s", error)
+
+
+async def _start_middleware(middleware: Any) -> None:
+    """在**本轮主流程**里把 ReMe 应用确定性启动一次，取消也要先让启动跑完。
+
+    ``ReMeMiddleware._ensure_started()`` 是 pinned 2.0.10 的私有成员（偏离账本 D13）：上游把
+    启动懒放在第一个 job 里，而本轮的检索是**可被取消的后台 task**（``on_reply`` 的 ``finally``
+    会 cancel + await）。取消若落在上游 ``aiofiles`` 的 ``AiofilesContextManager.__aenter__``
+    里，``_open`` 已经在线程池打开的文件就没人关——GC 时报 ``ResourceWarning``，在
+    ``filterwarnings = ["error"]`` 的测试里就是 ``PytestUnraisableExceptionWarning``。
+
+    因此启动放在这里（装配阶段、主任务里）并包一层 ``shield``：取消照旧传出去，但启动本身
+    先跑完，随后由调用方 :func:`_close_middleware` 收口，谁都不会在半开的应用上退出。
+    """
+    task = asyncio.create_task(middleware._ensure_started())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # 取消已投递：把启动跑完（不把取消送进 ReMe/aiofiles 的开启窗口），再交给调用方收口。
+        with suppress(BaseException):
+            await task
+        raise
 
 
 async def assemble_memory(
@@ -96,18 +126,22 @@ async def assemble_memory(
     global_home: str | Path | None,
     supports_tools: bool,
 ) -> MemoryAssembly | None:
-    """``memory_mode == "reme"`` 的轮次调用；未接线全局层时返回 ``None``。
+    """每轮的长期记忆装配（ADR-0035：没有开关）；未接线全局层时返回 ``None``。
 
     - ``global_home`` 为空（测试 / 未接线）⇒ 不装中间件、不建目录，只记一条可读日志；
     - ``supports_tools`` 为假（provider 不能携带工具）⇒ ``mode="static_control"``：
       检索结果在回复前注入，``memory_search`` 不送出去；
-    - 工作区不可建（根外 symlink 祖先 / 无权限）⇒ 这一轮记忆缺席，返回 ``None``。
+    - 工作区不可建（根外 symlink 祖先 / 无权限）⇒ 这一轮记忆缺席，返回 ``None``；
+    - 嵌入应用启动失败 ⇒ 同样缺席并记一条可读日志（不改变轮次结论）。
+
+    返回前应用**已经启动**（:func:`_start_middleware`）：启动不能留给可取消的后台检索任务，
+    否则取消会丢上游 tokenizer 的 stopwords 句柄。
 
     ``model`` 是**本轮**模型：ReMe 的抽取与检索固定用它（``chat_model``），不随 Agent 变化。
     """
     if not global_home:
         _log.info(
-            "long-term memory is off this round: no global home is wired (provider=%s, member=%s)",
+            "long-term memory is absent this round: no global home is wired (provider=%s, member=%s)",
             provider,
             member_id,
         )
@@ -126,5 +160,15 @@ async def assemble_memory(
             top_k=REME_TOP_K,
         ),
     )
+    try:
+        await _start_middleware(middleware)
+    except asyncio.CancelledError:
+        # 半开的装配没有交给调用方，必须在这里收口（启动可能已经建出线程池与后台循环）。
+        await _close_middleware(middleware)
+        raise
+    except Exception as error:  # 启动失败 = 这一轮记忆缺席，不改变轮次结论
+        await _close_middleware(middleware)
+        _log.warning("ReMe memory did not start; memory is absent this round: %s", error)
+        return None
     tools = list(await middleware.list_tools())
     return MemoryAssembly(middleware=middleware, tools=tools, workspace_dir=workspace, mode=mode)

@@ -106,6 +106,12 @@ def _global_root(tmp_path: Path) -> Path:
     return tmp_path / "home" / ".alibot"
 
 
+def _without_memory(entries: list[str], member_id: str) -> list[str]:
+    """去掉该成员的记忆工作区：它是轮次唯一允许写全局层的地方（ADR-0035）。"""
+    prefix = f"agents/{member_id}/reme"
+    return [entry for entry in entries if entry != prefix and not entry.startswith(f"{prefix}/")]
+
+
 def _write_global_mcp(tmp_path: Path, member_id: str, servers: Any, *, raw: str | None = None) -> Path:
     path = _global_root(tmp_path) / "agents" / member_id / "mcp.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -606,7 +612,7 @@ def test_a_bad_global_entry_is_skipped_without_blocking_the_good_entry(
     assert "mcp__bad__echo" not in descriptions
 
 
-def test_a_round_does_not_create_the_global_layer_or_write_global_entries_to_the_database(
+def test_a_round_does_not_create_global_mcp_layers_or_write_global_entries_to_the_database(
     declarations: Any, stub_script: Path, stub_provider: str, tmp_path: Path
 ) -> None:
     database, channel_id, agent_id = declarations
@@ -625,7 +631,8 @@ def test_a_round_does_not_create_the_global_layer_or_write_global_entries_to_the
 
     assert outcome.status == "replied", outcome.reason
     after = sorted(str(path.relative_to(global_root)) for path in global_root.rglob("*"))
-    assert after == before
+    # 唯一允许的写入是这一轮的记忆工作区（ADR-0035）；MCP 声明仍只读、不新建任何层。
+    assert _without_memory(after, agent_id) == _without_memory(before, agent_id)
     # 全局声明是纯文件：不进 ``mcp_server`` 表，也没有任何库行带 env 值。
     assert database.list_mcp_servers(scope_kind="agent", scope_id=agent_id) == []
     assert database.list_mcp_servers(scope_kind="channel", scope_id=channel_id) == []

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -40,6 +41,7 @@ from .db import (
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mcp import load_global_mcp_declarations, runtime_status
+from .memory import memory_workspace_dir
 from .mentions import parse_mentions
 from .team import TEAM_SCOPE
 from .web import (
@@ -49,7 +51,9 @@ from .web import (
     describe_search_provider,
     web_env,
 )
-from .workspace import clear_docker_failure, global_home_root
+from .workspace import WorkspaceConfigError, clear_docker_failure, global_home_root
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .orchestration import WakeOrchestrator
@@ -646,6 +650,12 @@ class WorkspaceService:
             allow_local_shell=allow_local_shell,
             docker_image=docker_image,
         )
+        # 新建成员立刻有家目录与 ReMe 工作区（ADR-0035）：成员行已落库，家目录不是对话的前提，
+        # 因此建目录失败只留一条可读告警——不回滚、不让创建失败。
+        try:
+            memory_workspace_dir(self._global_home(), agent["id"])
+        except (WorkspaceConfigError, OSError) as error:
+            _log.warning("Agent home is unavailable for %s (the member row is kept): %s", agent["id"], error)
         return self._agent_view(agent, self._db.agent_stats(agent["id"]).get(agent["id"]))
 
     def update_agent(
@@ -666,7 +676,6 @@ class WorkspaceService:
         context_window_messages: Any = _UNSET,
         context_trigger_ratio: Any = _UNSET,
         react_max_iters: Any = _UNSET,
-        memory_mode: Any = _UNSET,
     ) -> dict[str, Any]:
         """写 Agent 配置（人类面动作，ADR-0011）：**配置变更不是对话动作**。
 
@@ -717,7 +726,6 @@ class WorkspaceService:
             context_window_messages=context_window_messages,
             context_trigger_ratio=context_trigger_ratio,
             react_max_iters=react_max_iters,
-            memory_mode=memory_mode,
         )
         if any(
             value is not None

@@ -175,8 +175,32 @@
 - **文档原话**：「AgentScope middleware that adds long-term memory backed by ReMe … ReMe is embedded
   **in-process** (no separate service)」— 2.0.10 wheel 的 `ReMeMiddleware` docstring；能力页
   `zh/versions/2.0.10/building-blocks/long-term-memory.md`。
-- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，记忆默认关闭
-  （`memory_mode=off`），开启时也只写成员工作区、不碰项目根。写回与检索由中间件负责，模型不再维护
+- **理由**：记忆是模型的长期偏好与经验，不是消息正本；消息仍在 SQLite，记忆始终开启（ADR-0035），
+  但也只写成员工作区、不碰项目根。写回与检索由中间件负责，模型不再维护
   索引文件；作用域从「项目 / 全局两处」收窄为「一个成员一个工作区」，因此没有项目过滤（跨项目召回）。
-- **再评估条件**：当记忆需要跨成员共享、需要向量召回（RAG），或要默认开启时，再评估 embedding 与
-  更强隔离；若框架把 ReMe 迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。
+- **再评估条件**：默认开启已经落地（ADR-0035）；当记忆需要跨成员共享、需要向量召回（RAG）或更强
+  隔离时，再评估 embedding 与隔离策略；若框架把 ReMe 迁出 `middleware` 顶层模块，按 §1.3 开票调整白名单。
+
+---
+
+## D13 装配阶段确定性启动 ReMe，调用私有 `_ensure_started()`
+
+- **偏离点**：`alibot.memory.assemble_memory` 在返回前调用
+  `ReMeMiddleware._ensure_started()`（pinned 2.0.10 的私有成员），并包一层
+  `asyncio.shield`；取消时先让启动跑完，再由装配层 `close()` 收口。上游的设计是「第一个 job
+  懒启动」，本仓改成「装配即启动」。
+- **依据**：`app/alibot/memory.py`（`_start_middleware` / `assemble_memory`）；
+  `app/tests/test_runtime_memory.py::test_a_cancelled_assembly_does_not_leak_the_tokenizer_file`；
+  issue #267 的远端 CI 红（`PytestUnraisableExceptionWarning`：`reme/components/tokenizer/stopwords`
+  未关闭句柄）；§1.2 只禁 1.x，私有成员属于「文档没写，按 §2.3 wheel 实测」的处置。
+- **文档原话**：「ReMeMiddleware … The app is built lazily and started once (idempotent guards),
+  since middleware has no framework-managed lifecycle.」— 2.0.10 wheel 的
+  `_middleware.py::__init__` docstring；`close()` 只在 `self._started` 为真时关应用。
+- **理由**：本轮检索是**可被取消的后台 task**（`on_reply` 的 `finally` 会 cancel + await）。
+  取消若落在上游 `aiofiles` 的 `AiofilesContextManager.__aenter__` 里，`_open` 已在线程池
+  打开的文件没人关；`filterwarnings = ["error"]` 下会在后续任意测试里炸成
+  `PytestUnraisableExceptionWarning`（远端 CI 13 failed）。把启动挪到装配阶段（主任务）并
+  shield，取消窗口里不再有「打开中的句柄」；启动失败则降级为「这一轮没有记忆」并记日志。
+- **再评估条件**：当 `ReMeMiddleware` 公开启动生命周期（构造参数 / 公开 `start()` /
+  `async with`）**或**升级到 2.0.11+ 时 `_ensure_started` 改名/变签名（升级票必须重核对本行）；
+  上游修好「取消时关闭已打开句柄」后，可回退到懒启动并删掉 `shield` 包装。
