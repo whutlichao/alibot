@@ -19,8 +19,9 @@
  * DOM 用替身节点，不新开第二套前端框架。
  *
  * §6 覆盖面：私信按 `peer.deleted_at` 拆成「私信 / 已归档」两段（归档段空时整块隐藏）、
- * 两段都沿用就地更新纪律、DM 行不画状态点、未读徽标保留、点归档行仍能读历史，
- * 以及「新建私信」弹窗与分组 `+` 删除后的静态事实。
+ * 「已归档」标题是原生按钮且**默认折叠**（`aria-expanded` / `aria-controls` / 列表 `hidden`）、
+ * 点标题展开与收起都不拆行节点也不重取列表、两段都沿用就地更新纪律、DM 行不画状态点、
+ * 未读徽标保留、展开后点归档行仍能读历史，以及「新建私信」弹窗与分组 `+` 删除后的静态事实。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -441,6 +442,7 @@ function createHarness(options) {
     dmList: elementFor("#dmList"),
     archiveList: elementFor("#dmArchiveList"),
     archiveGroup: elementFor("#dmArchiveGroup"),
+    archiveToggle: elementFor("#btnDmArchiveToggle"),
     memberList: elementFor("#memberList"),
     /** 冲刷所有挂起的定时器（`scheduleRead` 的标读回写），连同它派生的 `await` 链。 */
     async flushTimers() {
@@ -815,6 +817,11 @@ test("已删除 peer 的私信进「已归档」段，正常私信只在「私�
   );
   assert.equal(harness.archiveGroup.hidden, false, "有已归档私信时整段可见");
   assert.equal(harness.elementFor("#dmListEmpty").hidden, true, "「私信」段非空时空态收起");
+  // 「已归档」默认折叠：整段出现，但列表不可见、标题按钮报未展开。行仍在容器里
+  // （折叠只调 `hidden`，不清空行——展开 / 收起之间不丢节点、不丢未读）。
+  assert.equal(harness.archiveList.hidden, true, "有已归档私信时列表默认折叠");
+  assert.equal(harness.archiveToggle.getAttribute("aria-expanded"), "false", "默认折叠：按钮报未展开");
+  // `aria-controls` 是静态契约（不变量，JS 不重写），由下面「静态正本」的用例压在标记上。
 
   const normalRow = harness.dmList.children[0];
   const archivedRow = harness.archiveList.children[0];
@@ -822,6 +829,50 @@ test("已删除 peer 的私信进「已归档」段，正常私信只在「私�
   assert.equal(presenceOf(archivedRow), null, "已归档私信行同样不画状态点");
   assert.equal(badgeOf(normalRow).textContent, "2", "正常私信的未读徽标保留");
   assert.equal(badgeOf(archivedRow).textContent, "3", "已归档私信的未读徽标也保留");
+});
+
+test("点「已归档」标题展开、再点收起：行节点身份不变，且全程不重取列表", async () => {
+  const harness = createHarness();
+  harness.api.state.dms = [dm("dm-2", "小蓝", 1, "2026-05-01T00:00:00Z")];
+  harness.api.render();
+  await settle();
+
+  const row = harness.archiveList.children[0];
+  assert.ok(row, "已归档段里有一行");
+  assert.equal(harness.archiveList.hidden, true, "默认折叠：列表不可见");
+  assert.equal(row.parentNode, harness.archiveList, "折叠时行仍在列表容器里（不是清空）");
+  resetMutations();
+  const callsBefore = harness.calls.length;
+
+  await harness.archiveToggle.dispatchEvent({ type: "click" });
+  await settle();
+  assert.equal(harness.archiveList.hidden, false, "点标题后列表可见");
+  assert.equal(harness.archiveToggle.getAttribute("aria-expanded"), "true", "展开后按钮报已展开");
+  assert.equal(harness.archiveList.children[0], row, "展开不重建行节点");
+  assert.equal(row.parentNode, harness.archiveList, "行仍在同一容器里");
+
+  // 会话内的展开是**呈现状态**：后端推送触发的整体重绘仍然保持展开，节点也不换。
+  harness.api.render();
+  await settle();
+  assert.equal(harness.archiveList.hidden, false, "整体重绘后仍是展开态");
+  assert.equal(harness.archiveList.children[0], row, "整体重绘不拆行节点");
+
+  await harness.archiveToggle.dispatchEvent({ type: "click" });
+  await settle();
+  assert.equal(harness.archiveList.hidden, true, "再点一次回到折叠");
+  assert.equal(harness.archiveToggle.getAttribute("aria-expanded"), "false", "收起后按钮报未展开");
+  assert.equal(harness.archiveList.children[0], row, "收起同样不拆行节点");
+  assert.deepEqual(
+    harness.calls.slice(callsBefore),
+    [],
+    "展开 / 收起只改呈现状态，不发任何请求（含 `GET /api/dms`）："
+      + JSON.stringify(harness.calls.slice(callsBefore)),
+  );
+  assert.deepEqual(
+    harness.mutations(harness.archiveList).filter((entry) => entry.op === "append" || entry.op === "remove"),
+    [],
+    "展开 / 收起之间没有任何行被摘下或重新挂上",
+  );
 });
 
 test("没有已归档私信时整段隐藏；全部归档时「私信」段显示空态", async () => {
@@ -835,6 +886,8 @@ test("没有已归档私信时整段隐藏；全部归档时「私信」段显�
   harness.api.render();
   await settle();
   assert.equal(harness.archiveGroup.hidden, false, "有已归档私信时整段出现");
+  assert.equal(harness.archiveList.hidden, true, "组出现时列表仍默认折叠（不自动展开）");
+  assert.equal(harness.archiveToggle.getAttribute("aria-expanded"), "false", "默认折叠：按钮报未展开");
   assert.equal(harness.dmList.children.length, 0, "正常段里不放已归档行");
   assert.equal(harness.elementFor("#dmListEmpty").hidden, false, "「私信」段空态出现");
 });
@@ -877,6 +930,11 @@ test("点「已归档」里的行仍能打开该私信读历史", async () => {
   harness.api.render();
   await settle();
 
+  // 默认折叠：真实路径上归档行不可见，先点标题展开再点行。
+  await harness.archiveToggle.dispatchEvent({ type: "click" });
+  await settle();
+  assert.equal(harness.archiveList.hidden, false, "展开后归档行可见可点");
+
   const row = harness.archiveList.children[0];
   assert.ok(row, "已归档段里有一行");
   await harness.archiveList.dispatchEvent({ type: "click", target: row });
@@ -884,6 +942,31 @@ test("点「已归档」里的行仍能打开该私信读历史", async () => {
 
   assert.equal(harness.api.state.activeChannelId, "dm-2", "当前 target 是这条已归档私信");
   assert.equal(harness.api.state.mode, "channel", "仍停在消息视图（只读历史）");
+  assert.equal(harness.elementFor("#composerInput").disabled, true, "归档私信的 composer 仍只读");
+});
+
+test("「已归档」标题的静态正本：原生 button + aria 状态 + 词条绑定 + chevron", () => {
+  const html = fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8");
+  const toggle = /<button[^>]*id="btnDmArchiveToggle"[^>]*>/.exec(html);
+  assert.ok(toggle, '分组标题是 <button id="btnDmArchiveToggle">，不是 div 冒充按钮');
+  assert.match(toggle[0], /\stype="button"/, "显式 type，不在任何表单语境下变成提交键");
+  assert.match(toggle[0], /\saria-expanded="false"/, "静态初始态就是折叠");
+  assert.match(toggle[0], /\saria-controls="dmArchiveList"/, "按钮声明它控制哪一份列表");
+  assert.match(toggle[0], /\sclass="group-label[^"]*"/, "沿用分组标题的视觉语汇");
+  assert.match(html, /<span[^>]*data-i18n="rail.groupArchivedDms"[^>]*>/, "可见文案挂词条键");
+  assert.match(html, /<svg[^>]*class="group-chevron"[^>]*>/, "标题右侧有 chevron");
+  assert.equal(
+    html.includes('<div class="group-label" data-i18n="rail.groupArchivedDms">'),
+    false,
+    "旧的不可点 div 标题已删除",
+  );
+
+  const css = fs.readFileSync(path.join(STUDIO_DIR, "app.css"), "utf8");
+  assert.match(
+    css,
+    /\.group-label\[aria-expanded="true"\]\s+\.group-chevron\s*\{[^}]*rotate\(90deg\)/,
+    "展开时 chevron 转向下（折叠向右、展开向下）",
+  );
 });
 
 test("新建私信弹窗与分组 `+` 一起删掉：正本与两份词条都不留死键", () => {
