@@ -1,7 +1,8 @@
 # #263 每轮 system prompt 注入运行环境段 验收
 
-- 状态：In progress（待全量门禁收口）
+- 状态：Done（待 coordinator 执行 G-merge）
 - Issue：https://github.com/whutlichao/alibot/issues/263
+- PR：https://github.com/whutlichao/alibot/pull/264
 - 基线：`2a359ca`（`Merge pull request #262 from whutlichao/issue-261-impl`）
 - 分支：`issue-263-impl`
 - 面：`app/alibot/agent_seam.py`、`app/tests/test_global_rules.py`、`app/README.md`
@@ -43,7 +44,39 @@ FAILED ... test_team_leader_and_member_each_get_their_own_environment
 
 ## 门禁读数
 
-（全量门禁跑完后回填）
+```text
+scripts/check.sh（代码 head 46770d7，工作区干净；其后仅 docs-only 提交，按 implementation.md 不重跑）
+== pytest（全量）
+1167 passed, 11 skipped in 663.74s (0:11:03)      # app/tests 下 93 个 test_*.py
+== ruff check / ruff format --check / mypy / pyright
+All checks passed!；326 files already formatted；mypy 124 source files no issues；pyright 0 errors, 0 warnings
+== node --test app/tests/*.test.cjs
+tests 316 / pass 316 / fail 0
+门禁全绿（退出 0）
+```
+
+## 真实轮次 prompt 捕获（验收-3）
+
+临时脚本（`/tmp/capture-263.py`，不入库）用真实 `AgentScopeAgentSeam` 跑一轮：频道 `workspace_root`
+为 NULL、`memory_mode=reme`、`workspace_of=database.workspace_settings_for_target`（生产读路径）。
+命令：`PYTHONPATH=app ./.venv/bin/python /tmp/capture-263.py`。
+
+```text
+STATUS: replied
+ENV_SECTION:
+本轮运行环境（以此为准；与记忆内容冲突时以本段为准）
+工作区：未配置（没有项目根；不能读写项目文件，只有当前会话的卸载目录可读）
+长期记忆：已开启（ReMe；系统自动记录和检索，不由文件工具读写；不要声称或猜测它的路径）
+不要编造本段没有给出的路径。
+
+HAS_UNCONFIGURED: True
+HAS_REME_ON: True
+PATH_LIKE_HITS: []
+ROLE_BEFORE_ENV: True
+ENV_BEFORE_RUBRIC: True
+```
+
+`PATH_LIKE_HITS: []` 覆盖 `alibot/data`、`memory/`、`~/.alibot`、`.alibot/`、`/sessions/` 五个字样。
 
 ## 双轴 code-review
 
@@ -69,4 +102,7 @@ FAILED ... test_team_leader_and_member_each_get_their_own_environment
 
 ## Answer
 
-（收口时回填）
+- **做了什么**：`agent_seam.py` 新增纯函数 `_runtime_environment_section`（固定标题 / 工作区 / 后端 / 权限档 / 记忆两档 / 段末禁令）与取值方法 `_runtime_environment_prompt`；接入 `_system_prompt`（单 Agent + 队长）与 `_team_member_prompt`（team 成员），位置固定在 `你的角色：…` 之后、rubric / team 说明之前；SOP 不动。README「Agent 运行时」补三条路径的行为说明。
+- **覆盖**：`tests/test_global_rules.py` 新增 4 条（无工作区 + `reme`、local + `off`、docker、team 双身份各自事实），断言模型真实收到的 system prompt；既有 23 条顺序断言不破。红证据在隔离基线 `2a359ca` 上 4 failed；最终全量 `scripts/check.sh` 绿（1167 passed / 11 skipped；node 316 / 0 fail）。
+- **review 结果**：F1（重复测试装置）与 F3（README 过宽）、S1（未走生产 NULL 读路径）已修；F2/S2（docker 降级时配置事实与「工具停用」告警并存）按票面「事实源 = WorkspaceSettings」保留并记录取舍，未引入第三种状态。
+- **遗留**：无功能遗留。合并时注意这是双向门，由 coordinator 执行；PR #264 的 head 与本分支最终提交一致。
