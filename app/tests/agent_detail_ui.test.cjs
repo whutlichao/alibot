@@ -7,7 +7,7 @@
  * 断言只落在**外部可观察行为**上：
  * 1. 打开详情：主线切到 `agent` 视图（`state.mode === 'agent'`），`#dock` 让位（`hidden`），
  *    详情页容器可见——左栏 Agent 行 / 成员面板名字 / 失败块的「看成员状态」三个入口同一条路径；
- * 2. 所有区块（事实 / 状态 / 配置 / 运行时 / 全局 MCP / 系统提示）在同一页纵向铺开，
+ * 2. 四处区块（统计 / 系统提示 / 配置 / 全局 MCP）在同一页纵向铺开，系统提示紧贴统计之下，
  *    页签节点（`#adTabOverview` / `#adTabRuntime` / `data-adtab`）在正本里不存在；
  * 3. 就地编辑只写草稿：改一个字段 ⇒ 底部保存条出现；「保存」一次性提交**全部**可写字段；
  *    「放弃」丢弃草稿、字段回到后端读数；
@@ -441,15 +441,6 @@ function byClass(root, name) {
 /** 概览四个数字（`.stat` 的 `n` 是第一个子节点）。 */
 function statValues(root) {
   return byClass(root, "stat").map((cell) => cell.children[0].textContent);
-}
-
-/** 「键 / 值」行的两半。 */
-function kvKeys(root) {
-  return byClass(root, "kv").map((row) => row.children[0].textContent);
-}
-
-function kvValues(root) {
-  return byClass(root, "kv").map((row) => row.children[1].textContent);
 }
 
 function descendants(node) {
