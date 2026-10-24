@@ -498,13 +498,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .danger-actions .btn { flex: 1 1 140px; min-width: 0; }
 .btn-danger { border-color: var(--error); color: var(--error); }
 .btn-danger:hover { background: var(--error-soft); border-color: var(--error); }
-.danger-confirm {
-  margin-top: var(--sp-4); padding: var(--sp-4) var(--sp-5);
-  border: 1px solid var(--error); border-radius: var(--r-md); background: var(--error-soft);
-}
+/* 删除确认弹窗的正文（复用既有 `.overlay` / `.modal`）：只有文字本身的语义色，
+   盒子由弹窗骨架提供，不给它再做一层边框或底色。 */
 .danger-confirm-text {
   font-size: var(--fs-sm); color: var(--error); line-height: var(--lh-snug);
-  margin-bottom: var(--sp-4); overflow-wrap: anywhere;
+  overflow-wrap: anywhere;
 }
 /* 成员面板里**打开详情**的那个控件：它是名字本身（卡片里已有「加入」按钮，不能嵌套按钮）。 */
 .dock-member-name {

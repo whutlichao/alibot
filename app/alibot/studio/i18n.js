@@ -460,16 +460,13 @@ const I18N_CATALOGS = {
     'agentDetail.sectionConfig': '配置',
     'agentDetail.pause': '暂停',
     'agentDetail.resume': '恢复',
-    'agentDetail.pauseNote':
-      '暂停只写配置：它仍会被唤醒并留下一条可读原因的失败轮次结果，只是不产出回复。',
     'agentDetail.kvPrompt': '系统提示',
     // 联网档（#202 / 2026-10-21 修订）：读数缺失（`null`）= 没有 Agent 级覆盖 = 跟随频道，
     // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在详情页里替人推断私聊的生效档。
     // 全局 MCP（#236 / ADR-0031 D8）：成员家目录 mcp.json 是**只读素材层**。这里只展示真实条目
     // 与运行期读数，只对远端未确认条目给一个确认动作；不渲染编辑 / 启停 / 删除，也不写回文件。
     'agentDetail.globalMcpTitle': '全局 MCP（只读）',
-    'agentDetail.globalMcpNote': '来自该成员家目录的 mcp.json；这里只读取，不编辑、不启停、不删除。',
-    'agentDetail.globalMcpEmpty': '全局 mcp.json 里没有声明。',
+    'agentDetail.globalMcpEmpty': '“全局mcp.json”里没有声明MCP服务',
     'agentDetail.globalMcpRemote': '远端（数据会离开本机）',
     'agentDetail.globalMcpLocal': '本机',
     'agentDetail.globalMcpConsented': '已确认',
@@ -479,12 +476,13 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': '已确认：{name}',
     'agentDetail.globalMcpRuntimeIdle': '尚无运行期读数',
     'agentDetail.globalMcpRuntimeConnected': '运行期已连接',
-    // 危险操作（本票）：暂停 / 删除搬进页面最后一个区块。说明必须点明两者的后果，
-    // 删除的确认文案带 Agent 名称与「不可撤销」——人在第二次点击前就能读到代价。
+    // 危险操作（本票）：暂停 / 删除搬进页面最后一个区块。说明必须点明两者的后果；
+    // 删除走**确认弹窗**，标题 + 确认文案带 Agent 名称与「不可撤销」，人在点确认前就能读到代价。
     'agentDetail.sectionDanger': '危险操作',
     'agentDetail.dangerHint':
       '危险：暂停只停止产出回复（它仍会被唤醒并留下一条可读原因的失败轮次结果）；删除会把这个 Agent 从 Agent 列表与全部频道中移除，私信、历史消息与任务保留。以下动作请确认后再执行。',
     'agentDetail.delete': '删除',
+    'agentDetail.deleteTitle': '删除 Agent',
     'agentDetail.deleteConfirm':
       '确认删除「{name}」？它会立即从 Agent 列表与全部频道中移除并关闭详情；私信、历史消息与任务保留，但这个 Agent 无法恢复，操作不可撤销。',
     'agentDetail.deleteConfirmAction': '确认删除',
@@ -1254,8 +1252,6 @@ const I18N_CATALOGS = {
     'agentDetail.sectionConfig': 'Configuration',
     'agentDetail.pause': 'Pause',
     'agentDetail.resume': 'Resume',
-    'agentDetail.pauseNote':
-      'Pausing only writes configuration: it is still woken and still leaves a failed round outcome with a readable reason — it just produces no reply.',
     'agentDetail.kvPrompt': 'System prompt',
     // Web access (#202 / 2026-10-21 revision): a missing value (`null`) means there is no
     // agent-level override, i.e. "follow channel" — a reading, not an empty field; an override
@@ -1264,9 +1260,7 @@ const I18N_CATALOGS = {
     // Only real entries and runtime readings are shown; only an unacknowledged remote entry gets
     // an acknowledge action. No edit / enable / delete, and nothing is written back to the file.
     'agentDetail.globalMcpTitle': 'Global MCP (read-only)',
-    'agentDetail.globalMcpNote':
-      "From this member's global mcp.json; read-only here — no edit, enable/disable, or delete.",
-    'agentDetail.globalMcpEmpty': 'No declarations in the global mcp.json.',
+    'agentDetail.globalMcpEmpty': 'No MCP servers are declared in the global mcp.json.',
     'agentDetail.globalMcpRemote': 'Remote (data leaves this machine)',
     'agentDetail.globalMcpLocal': 'Local',
     'agentDetail.globalMcpConsented': 'Acknowledged',
@@ -1277,12 +1271,13 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpRuntimeIdle': 'No runtime reading yet',
     'agentDetail.globalMcpRuntimeConnected': 'Connected at runtime',
     // Danger zone (this ticket): pause / delete moved to the last section of the page. The note
-    // spells out both consequences; the delete confirmation carries the agent name and
-    // "cannot be undone", so the cost is readable before the second click.
+    // spells out both consequences; delete goes through a confirmation modal whose title and body
+    // carry the agent name and "cannot be undone", so the cost is readable before the click.
     'agentDetail.sectionDanger': 'Danger zone',
     'agentDetail.dangerHint':
       'Danger: pausing only stops replies (the agent is still woken and leaves a failed round outcome with a readable reason); deleting removes this agent from the agent list and every channel, while DMs, message history and tasks are kept. Confirm before taking either action.',
     'agentDetail.delete': 'Delete',
+    'agentDetail.deleteTitle': 'Delete agent',
     'agentDetail.deleteConfirm':
       'Delete “{name}”? It will be removed from the agent list and every channel immediately and this detail view will close. DMs, message history and tasks are kept, but the agent cannot be restored — this cannot be undone.',
     'agentDetail.deleteConfirmAction': 'Delete permanently',

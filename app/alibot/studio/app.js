@@ -186,7 +186,7 @@ const state = {
   // `draft` 是还没提交的字段值，`error` 是后端拒绝时那句原文。与后端读数不一致时
   // 页面底部出现保存条；关闭详情 / 切换成员 / 切换主线视图时整体作废（不弹二次确认）。
   agentEdit: emptyAgentEditDraft(),
-  // 危险操作（本票）：删除是**两步确认**——`memberId` + `confirming` 决定确认区展不展开，
+  // 危险操作（本票）：删除走**确认弹窗**——`memberId` 是弹窗里等着被删的那个成员，
   // `busy` 在请求进行中禁用按钮。它是呈现状态，不是业务正本（正本在后端软删除）。
   agentDelete: emptyAgentDeleteState(),
   // Agent 详情里的**全局 MCP 只读小节**（#236）：列表是 `GET
@@ -4882,13 +4882,36 @@ function emptyAgentEditDraft() {
   return { memberId: null, draft: null, base: null, error: '' };
 }
 
-/** 危险区的呈现状态：谁展开着确认区、请求是否在飞。关闭 / 切换成员时整体作废。 */
+/** 危险区的呈现状态：弹窗为谁打开着、请求是否在飞。关闭 / 切换成员时整体作废。 */
 function emptyAgentDeleteState() {
-  return { memberId: '', confirming: false, busy: false };
+  return { memberId: '', busy: false };
 }
 
-function resetAgentDeleteState() {
+/** 收起删除确认弹窗并作废它的呈现状态（零请求）。打开详情 / 关闭详情 / 删除成功
+    以及用户自己的出口（取消 / 关闭图标 / 点遮罩 / Escape）都走这一条。 */
+function closeAgentDeleteModal() {
   state.agentDelete = emptyAgentDeleteState();
+  const overlay = $('#agentDeleteOverlay');
+  if (overlay) overlay.hidden = true;
+  const text = $('#agentDeleteText');
+  if (text) text.textContent = '';
+  paintAgentDeleteControls();
+}
+
+/** 打开删除确认弹窗（危险区「删除」的唯一动作）：只铺文案与按钮状态，不发请求。
+    文案仍是既有的 `agentDetail.deleteConfirm`（带成员名称与不可逆后果）；焦点落在
+    「取消」上，回车不会误触删除。 */
+function openAgentDeleteModal() {
+  const memberId = state.activeAgentId;
+  const agent = memberId ? agentById(memberId) : null;
+  if (!agent || !state.online) return;
+  state.agentDelete = { memberId, busy: false };
+  const text = $('#agentDeleteText');
+  if (text) text.textContent = t('agentDetail.deleteConfirm', { name: agent.display_name });
+  paintAgentDeleteControls();
+  $('#agentDeleteOverlay').hidden = false;
+  const cancel = $('#agentDeleteCancel');
+  if (cancel) cancel.focus();
 }
 
 /** 把后端读数铺成一份草稿：`draft` 是控件里的值，`base` 是它派生自的那份读数。
@@ -5020,7 +5043,7 @@ async function openAgentDetail(memberId) {
   // 换人时草稿整体作废（与「关闭即放弃」同一条），全局 MCP 条目是**这个成员**的文件，一并清空。
   state.activeAgentId = memberId;
   state.agentEdit = emptyAgentEditDraft();
-  resetAgentDeleteState();
+  closeAgentDeleteModal();
   state.globalMcpServers = [];
   state.globalMcpError = '';
   setViewMode('agent');
@@ -5036,7 +5059,7 @@ function closeAgentDetail() {
   const back = state.agentReturn || { mode: 'channel', dockOpen: false };
   state.activeAgentId = null;
   resetAgentEditDraft();
-  resetAgentDeleteState();
+  closeAgentDeleteModal();
   clearAgentDetail();
   state.mode = back.mode && back.mode !== 'agent' ? back.mode : 'channel';
   setViewMode(state.mode);
@@ -5056,7 +5079,7 @@ function leaveAgentView() {
   if (!state.activeAgentId) return;
   state.activeAgentId = null;
   resetAgentEditDraft();
-  resetAgentDeleteState();
+  closeAgentDeleteModal();
   clearAgentDetail();
   renderRailRows();
 }
@@ -5146,6 +5169,7 @@ function renderAgentDetail() {
     replaceChildren($('#adBody'), agentDetailNodes(agent));
   }
   paintAgentDangerControls();
+  paintAgentDeleteControls();
   renderAgentSaveBar();
 }
 
@@ -5389,15 +5413,12 @@ function agentConfigSection(agent) {
 /** 危险操作（页面最后一个区块）：暂停 / 恢复与删除。
 
     - 暂停 / 恢复仍只写草稿里的 `enabled`（语义不变；`paintAgentDraftControls()` 就地更新说法）；
-    - 删除是**两步确认**：第一次点击只展开确认区（不发请求），第二次「确认删除」才发 `DELETE`；
-      「取消」收起确认区。确认文案带成员名称与不可逆后果；
+    - 删除**只打开确认弹窗**（零请求）；弹窗里的「确认删除」才发 `DELETE`（见 `openAgentDeleteModal()`）；
     - `state.online === false` 时暂停与删除都禁用；请求进行中禁用按钮。
 */
 function agentDangerSection(agent) {
   const draft = state.agentEdit.draft || agentDraftFrom(agent);
-  const pending = state.agentDelete.memberId === agent.id;
-  const confirming = pending && state.agentDelete.confirming;
-  const busy = pending && state.agentDelete.busy;
+  const busy = state.agentDelete.memberId === agent.id && state.agentDelete.busy;
   const section = el('section', 'd-sec danger-zone');
   section.appendChild(sectionTitle('agentDetail.sectionDanger', 'agent-detail-section-danger'));
   section.appendChild(el('div', 'danger-hint', t('agentDetail.dangerHint')));
@@ -5417,31 +5438,6 @@ function agentDangerSection(agent) {
   remove.disabled = !state.online || busy;
   actions.appendChild(remove);
   section.appendChild(actions);
-
-  // 暂停的**已知代价**写在界面上（不是只写在 ADR 里）：人点之前就该知道它会留下一条失败轮次结果。
-  section.appendChild(el('div', 'hint', t('agentDetail.pauseNote')));
-
-  const confirm = el('div', 'danger-confirm');
-  confirm.dataset.agentDeleteConfirm = '';
-  confirm.setAttribute('data-od-id', 'agent-delete-confirm');
-  confirm.hidden = !confirming;
-  confirm.appendChild(el('div', 'danger-confirm-text',
-    t('agentDetail.deleteConfirm', { name: agent.display_name })));
-  const confirmActions = el('div', 'agent-actions danger-actions');
-  const confirmButton = el('button', 'btn btn-sm btn-danger', t('agentDetail.deleteConfirmAction'));
-  confirmButton.type = 'button';
-  confirmButton.dataset.agentDeleteConfirmAction = agent.id;
-  confirmButton.setAttribute('data-od-id', 'agent-delete-confirm-action');
-  confirmButton.disabled = busy || !state.online;
-  confirmActions.appendChild(confirmButton);
-  const cancelButton = el('button', 'btn btn-sm', t('agentDetail.deleteCancel'));
-  cancelButton.type = 'button';
-  cancelButton.dataset.agentDeleteCancel = '';
-  cancelButton.setAttribute('data-od-id', 'agent-delete-cancel');
-  cancelButton.disabled = busy;
-  confirmActions.appendChild(cancelButton);
-  confirm.appendChild(confirmActions);
-  section.appendChild(confirm);
   return section;
 }
 
@@ -5512,7 +5508,6 @@ function agentPromptSection(agent) {
 function globalMcpSection() {
   const section = el('section', 'd-sec');
   section.appendChild(sectionTitle('agentDetail.globalMcpTitle', 'agent-detail-section-global-mcp'));
-  section.appendChild(el('div', 'hint', t('agentDetail.globalMcpNote')));
   if (state.globalMcpError) {
     section.appendChild(el('div', 'hint', state.globalMcpError));
   } else if (!state.globalMcpServers.length) {
@@ -5671,40 +5666,48 @@ function paintAgentDraftControls() {
 /** 危险区控件的可用性：离线或请求进行中时禁用，不重建节点。
 
     它单独成一处，是因为草稿脏时 `renderAgentDetail()` 不重铺整页——离线 / 请求状态仍要
-    落到已经存在的按钮上（暂停、删除、确认、取消）。 */
+    落到已经存在的按钮上（暂停、删除）。删除弹窗里的三个控件由 `paintAgentDeleteControls()`
+    负责（它们在 `#adBody` 之外）。 */
 function paintAgentDangerControls() {
   const body = $('#adBody');
   if (!body || typeof body.querySelectorAll !== 'function') return;
   const pending = state.agentDelete.memberId === state.activeAgentId;
   const busy = pending && state.agentDelete.busy;
-  const selectors = [
-    '[data-agent-toggle]',
-    '[data-agent-delete]',
-    '[data-agent-delete-confirm-action]',
-    '[data-agent-delete-cancel]',
-  ];
-  selectors.forEach((selector) => {
+  ['[data-agent-toggle]', '[data-agent-delete]'].forEach((selector) => {
     Array.prototype.forEach.call(body.querySelectorAll(selector), (node) => {
-      // 「取消」只受请求进行中影响：离线下仍应能把确认区收起来。
-      node.disabled = selector === '[data-agent-delete-cancel]'
-        ? busy
-        : busy || !state.online;
+      node.disabled = busy || !state.online;
     });
   });
 }
 
-/** 删除一个 Agent（第二段确认之后才调用）：后端软删除是唯一正本。
+/** 删除确认弹窗控件的可用性：确认受「请求中 / 离线」约束；取消与关闭只受「请求中」约束
+    （离线下仍要能把弹窗收起来）。弹窗节点住在 `index.html`，不随 `#adBody` 重铺。 */
+function paintAgentDeleteControls() {
+  const busy = state.agentDelete.busy;
+  const controls = [
+    ['#agentDeleteConfirm', busy || !state.online],
+    ['#agentDeleteCancel', busy],
+    ['#agentDeleteClose', busy],
+  ];
+  controls.forEach(([selector, disabled]) => {
+    const node = $(selector);
+    if (node) node.disabled = Boolean(disabled);
+  });
+}
+
+/** 删除一个 Agent（弹窗里点了「确认删除」之后才调用）：后端软删除是唯一正本。
 
     成功后用响应里的最新 `agents` / `members` 覆盖本地镜像（并再过滤一次，保证移除），
-    关闭详情、刷新左栏 / 成员面板，最后给一条 toast。失败留在当前页、本地镜像不变，
-    错误原因按后端那一句显示——不静默吞掉。 */
+    收起弹窗、关闭详情、刷新左栏 / 成员面板，最后给一条 toast。失败时弹窗保持打开、
+    按钮恢复可用，错误原因按后端那一句显示——不静默吞掉。 */
 async function deleteAgent(memberId) {
   if (!state.online || !memberId) return;
   if (state.agentDelete.busy) return;
   const agent = agentById(memberId);
   const name = (agent && agent.display_name) || t('toast.memberFallback');
-  state.agentDelete = { memberId, confirming: true, busy: true };
+  state.agentDelete = { memberId, busy: true };
   paintAgentDangerControls();
+  paintAgentDeleteControls();
   try {
     const payload = await api('/api/agents/' + encodeURIComponent(memberId), { method: 'DELETE' });
     if (payload && Array.isArray(payload.agents)) state.agents = payload.agents;
@@ -5720,7 +5723,7 @@ async function deleteAgent(memberId) {
       }
     });
     delete state.statuses[memberId];
-    resetAgentDeleteState();
+    closeAgentDeleteModal();
     if (state.activeAgentId === memberId) closeAgentDetail();
     else {
       renderMembers();
@@ -5729,9 +5732,10 @@ async function deleteAgent(memberId) {
     }
     toast(t('toast.agentDeleted', { name }));
   } catch (err) {
-    // 留在当前页：确认区保持展开，按钮恢复可用，原因照后端给的那一句显示。
-    state.agentDelete = { memberId, confirming: true, busy: false };
+    // 留在当前页：弹窗保持打开、按钮恢复可用，原因照后端给的那一句显示。
+    state.agentDelete = { memberId, busy: false };
     paintAgentDangerControls();
+    paintAgentDeleteControls();
     toast(t('toast.agentDeleteFailed', { reason: err.message }), 'err');
   }
 }
@@ -9351,6 +9355,22 @@ function bindEvents() {
     if (event.target.id === 'agentOverlay') closeAgentModal();
   });
 
+  // 删除确认弹窗：只有「确认删除」发请求；取消 / 关闭图标 / 点遮罩 / Escape 只收起弹窗。
+  // 请求在途时这三个出口都不动作（按钮同时被禁用），于是「失败时弹窗保持打开」不会被误关掉。
+  const closeAgentDelete = () => {
+    if (state.agentDelete.busy) return;
+    closeAgentDeleteModal();
+  };
+  $('#agentDeleteConfirm').addEventListener('click', () => {
+    if (!state.agentDelete.memberId) return;
+    deleteAgent(state.agentDelete.memberId);
+  });
+  $('#agentDeleteCancel').addEventListener('click', closeAgentDelete);
+  $('#agentDeleteClose').addEventListener('click', closeAgentDelete);
+  $('#agentDeleteOverlay').addEventListener('click', (event) => {
+    if (event.target.id === 'agentDeleteOverlay') closeAgentDelete();
+  });
+
   // ── Agent 详情（主线视图 `state.mode === 'agent'`）：就地编辑 + 底部保存条 ──
   // 可编辑字段由 `renderAgentDetail()` 每次重建，因此这里用**委派**而不是逐个绑事件。
   $('#adSave').addEventListener('click', submitAgentEdit);
@@ -9392,28 +9412,9 @@ function bindEvents() {
     }
     const remove = event.target.closest('[data-agent-delete]');
     if (remove) {
-      // 第一次点击**只**展开确认区：不发出任何请求。
+      // 第一次点击**只**打开确认弹窗：不发出任何请求，确认动作在弹窗里。
       if (!state.online || state.agentDelete.busy) return;
-      state.agentDelete = {
-        memberId: remove.dataset.agentDelete,
-        confirming: true,
-        busy: false,
-      };
-      const body = $('#adBody');
-      const confirm = body && body.querySelector('[data-agent-delete-confirm]');
-      if (confirm) confirm.hidden = false;
-      return;
-    }
-    if (event.target.closest('[data-agent-delete-confirm-action]')) {
-      // 第二次点击（确认）才发 DELETE。
-      deleteAgent(state.agentDelete.memberId || state.activeAgentId);
-      return;
-    }
-    if (event.target.closest('[data-agent-delete-cancel]')) {
-      resetAgentDeleteState();
-      const body = $('#adBody');
-      const confirm = body && body.querySelector('[data-agent-delete-confirm]');
-      if (confirm) confirm.hidden = true;
+      openAgentDeleteModal();
       return;
     }
     const tier = event.target.closest('[data-tier-value]');
@@ -9761,6 +9762,12 @@ function bindEvents() {
     if (event.key === 'Escape') {
       if (!$('#cmdOverlay').hidden) {
         closeCmd();
+        return;
+      }
+      // 删除确认弹窗是最上面的一层：请求在途时不收（与禁用按钮同一条判据）。
+      if (!$('#agentDeleteOverlay').hidden) {
+        if (state.agentDelete.busy) return;
+        closeAgentDeleteModal();
         return;
       }
       if (!$('#settingsOverlay').hidden) closeSettingsModal();

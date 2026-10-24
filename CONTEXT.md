@@ -13,7 +13,7 @@
 写 `member.deleted_at`，行保留以承载不可变消息的作者渲染，同时删掉它在 `target_member` 的全部行
 （移出全部频道与任务线程）。DM target、消息、任务历史、`agent_config` 与 `round_outcome` 一律保留
 （不级联删除，也不重写 `task.assignee_member_id`）；人类面入口是 Agent 详情页「危险操作」区块的
-删除（两步确认）。读取侧按既有 `deleted_at` 过滤：删除后不再出现在 Agent 列表 / 频道成员 /
+删除（确认弹窗）。读取侧按既有 `deleted_at` 过滤：删除后不再出现在 Agent 列表 / 频道成员 /
 提及候选 / 状态点 / 搜索命中面，历史消息的作者仍按行渲染。消息 append-only 的既有决策不变。
 _Avoid_: 用户、账号（本仓没有登录与账号）；session（那是临时运行状态，不是身份）
 
