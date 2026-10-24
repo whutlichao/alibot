@@ -235,6 +235,25 @@ Success: no issues found in 125 source files
 ℹ tests 319 / pass 319 / fail 0
 ```
 
+### 绿读数（远端，修复提交）
+
+```text
+run:   https://github.com/whutlichao/alibot/actions/runs/40115017995
+head:  3bb12af8b6c38d331c35eb25ab2bd7b40b72d0d6
+结果:  check pass，15m1s，1183 passed / 2 skipped
+
+1183 passed, 2 skipped in 799.04s (0:13:19)
+All checks passed! / 329 files already formatted
+Success: no issues found in 125 source files
+0 errors, 0 warnings, 0 informations
+ℹ tests 319 / pass 319 / fail 0
+门禁全绿
+```
+
+（本地 1174 passed / 11 skipped，CI 1183 passed / 2 skipped：两边 skip 集合不同、执行总数同为 1185。）
+本小节记录的是**修复提交**的绿读数；其后只有一个 docs-only 提交改本文件，PR 最新 head 用同一
+`scripts/check.sh` 复跑，读数见 `gh pr checks 268`。
+
 `Closes #267` 与 Door=**单向门**不变；本 follow-up **不合并**。
 
 ## 双轴 review（Standards + Spec）
