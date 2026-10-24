@@ -102,10 +102,11 @@ def test_agent_config_is_not_a_code_constant(launched: dict) -> None:
 
 
 def test_agent_is_not_an_http_caller(client: TestClient) -> None:
-    """HTTP 面属于人类面：没有「以某成员名义调用」的路径，也没有删 Agent / 整体替换的端点。
+    """HTTP 面属于人类面：没有「以某成员名义调用」的路径，也没有整体替换的端点。
 
-    「编辑配置」是 #64 新增的人类面写路径（`PATCH /api/agents/{id}`，ADR-0011）：它是人改配置的
-    入口，**不是** Agent 自己的调用路径——请求里仍然没有任何「我以某成员身份」的自述。
+    「编辑配置」是 #64 新增的人类面写路径（`PATCH /api/agents/{id}`，ADR-0011），删除是同一面的
+    `DELETE /api/agents/{id}`（本票）：它们都是人改身份 / 配置的入口，**不是** Agent 自己的调用
+    路径——请求里仍然没有任何「我以某成员身份」的自述。
     """
     agent = create_agent(client).json()["agent"]
     channel = channel_with_agent(client, agent["id"])
@@ -113,7 +114,10 @@ def test_agent_is_not_an_http_caller(client: TestClient) -> None:
     # Agent 没有凭证可拿，也没有任何端点接受「我以某成员身份」这种自述。
     assert client.post("/api/agents", json={"name": "伪造", "model_id": LOCAL_MODEL_ID}).status_code == 201
     assert client.put(f"/api/agents/{agent['id']}", json={"model_id": REMOTE_MODEL_ID}).status_code == 404
-    assert client.delete(f"/api/agents/{agent['id']}").status_code == 404
+    # 删除是显式的人类面动作：删掉另一个成员，本次用例要用的 agent 仍然可编辑。
+    victim = create_agent(client, name="待删除").json()["agent"]
+    assert client.delete(f"/api/agents/{victim['id']}").status_code == 200
+    assert client.get(f"/api/agents/{victim['id']}").status_code == 404
     # 人类面能改配置，但改配置**不是发言**：这条路径不落消息、也不接受任何成员自述。
     assert client.patch(f"/api/agents/{agent['id']}", json={"role": "改角色"}).status_code == 200
     assert {item["id"]: item for item in agents(client)}[agent["id"]]["role"] == "改角色"

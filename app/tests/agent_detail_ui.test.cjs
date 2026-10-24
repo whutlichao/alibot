@@ -15,6 +15,8 @@
  * 5. 暂停 / 恢复与启用状态同源（都写草稿里的 `enabled`），联网档四档随 PATCH 提交；
  * 6. 关闭详情回到进入前的 `state.mode`，dock 按进入前的开合恢复；
  * 7. 编辑配置弹窗（`#agentEditOverlay`）整个删掉：正本里没有节点，运行时不出现对它的 `$()`。
+ * 8. 危险操作是页面最后一个区块：暂停 / 恢复搬进它、删除走两步确认（第一次不发请求），
+ *    成功关闭详情并刷新列表、失败留在当前页；离线时两个动作都禁用。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -341,6 +343,8 @@ function createHarness(options) {
     calls,
     queries,
     catalogs: context.AlibotI18n.catalogs,
+    i18n: context.AlibotI18n,
+    toastWrap: elementFor("#toastWrap"),
     elementFor,
     memberList: elementFor("#memberList"),
     dock: elementFor("#dock"),
@@ -357,6 +361,9 @@ function createHarness(options) {
     reportPresence: elementFor("#adPresence"),
     patches() {
       return calls.filter((call) => call.method === "PATCH");
+    },
+    deletes() {
+      return calls.filter((call) => call.method === "DELETE");
     },
     /** 把一批 Agent 装进工作台镜像（左栏与详情都从它取数）。 */
     load(agents) {
@@ -418,6 +425,12 @@ function byOdId(root, odId) {
     const value = node.getAttribute ? node.getAttribute("data-od-id") : null;
     return value === odId;
   }) || null;
+}
+
+/** 详情页里某个 `data-od-id` 标题所属的区块（标题是区块的第一个子节点）。 */
+function sectionOf(root, odId) {
+  const title = byOdId(root, odId);
+  return title && title.parentNode ? title.parentNode : null;
 }
 
 /** 详情页里某个可编辑字段的控件（`data-agent-field` 的取值与 PATCH 字段同名）。 */
@@ -533,7 +546,7 @@ test("运行面板开着时打开详情：先收掉 run 面板（否则整体重
 
 /* ─── 2. 区块：一页铺开，没有页签 ───────────────────────────────────────── */
 
-test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / 全局 MCP", async () => {
+test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / 全局 MCP / 危险操作", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
@@ -543,11 +556,17 @@ test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / �
     "agent-detail-section-prompt",
     "agent-detail-section-config",
     "agent-detail-section-global-mcp",
+    "agent-detail-section-danger",
   ];
   const order = descendants(harness.agentBody)
     .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
     .filter((id) => ids.indexOf(id) >= 0);
-  assert.deepEqual(order, ids, "四处区块按顺序同时出现在同一页里，不需要切换");
+  assert.deepEqual(order, ids, "五处区块按顺序同时出现在同一页里，不需要切换");
+  assert.equal(
+    harness.agentBody.children[harness.agentBody.children.length - 1].children[0].getAttribute("data-od-id"),
+    "agent-detail-section-danger",
+    "危险操作是页面最后一个区块（在全局 MCP 之后）",
+  );
 
   // 系统提示的**控件本身**就夹在统计与配置之间（不是「标题在中间、控件在别处」）。
   const flat = descendants(harness.agentBody);
@@ -557,6 +576,21 @@ test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / �
       && at("agent-detail-prompt") < at("agent-detail-section-config"),
     "系统提示的文本框位于统计区之后、配置区之前",
   );
+
+  // 危险区的三段内容：标题（危险语义）+ 危险说明 + 暂停 / 恢复与删除两个动作。
+  const danger = sectionOf(harness.agentBody, "agent-detail-section-danger");
+  assert.equal(byOdId(danger, "agent-detail-section-danger").textContent,
+    catalogText(harness, "zh-CN", "agentDetail.sectionDanger"));
+  assert.match(danger.textContent, /危险/, "危险说明本身要出现「危险」语义");
+  assert.ok(byDataset(danger, "agentToggle", "mem-1"), "暂停 / 恢复按钮在危险区里");
+  assert.ok(byDataset(danger, "agentDelete", "mem-1"), "删除按钮在危险区里");
+  assert.ok(danger.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.pauseNote")),
+    "暂停的已知代价说明留在危险区里");
+
+  // 配置区块不再渲染暂停 / 恢复按钮与那句代价说明。
+  const config = sectionOf(harness.agentBody, "agent-detail-section-config");
+  assert.equal(byDataset(config, "agentToggle", "mem-1"), null, "配置区块里不再有暂停 / 恢复按钮");
+  assert.equal(config.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.pauseNote")), false);
 });
 
 test("配置区块不再有「改动先留在草稿里」那句提示", async () => {
@@ -716,7 +750,11 @@ test("暂停 / 恢复与启用状态同源：按钮只改草稿，保存时提�
   await harness.clickRow("mem-1");
 
   const toggle = byOdId(harness.agentBody, "agent-toggle-enabled");
-  assert.ok(toggle, "配置区块要有暂停 / 恢复按钮");
+  assert.ok(toggle, "危险区要有暂停 / 恢复按钮");
+  assert.ok(
+    sectionOf(harness.agentBody, "agent-detail-section-danger").contains(toggle),
+    "暂停 / 恢复按钮长在危险区里（配置区块不再渲染它）",
+  );
   assert.equal(toggle.textContent, catalogText(harness, "zh-CN", "agentDetail.pause"));
 
   await harness.clickInBody(toggle);
@@ -733,6 +771,204 @@ test("暂停 / 恢复与启用状态同源：按钮只改草稿，保存时提�
   assert.deepEqual(harness.patches()[0].body.enabled, false);
   assert.equal(harness.reportPresence.dataset.status, "offline");
   assert.equal(harness.reportStatus.textContent, catalogText(harness, "zh-CN", "status.offline"));
+});
+
+test("删除是两步：第一次点删除只展开确认区，不发请求；取消后确认区收起且仍无请求", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  const deleteButton = byOdId(harness.agentBody, "agent-delete");
+  assert.ok(deleteButton, "危险区要有删除按钮");
+  assert.equal(deleteButton.disabled, false);
+
+  await harness.clickInBody(deleteButton);
+
+  assert.equal(harness.deletes().length, 0, "第一次点击**不**发 DELETE");
+  const confirm = byOdId(harness.agentBody, "agent-delete-confirm");
+  assert.ok(confirm, "第一次点击后出现确认区");
+  assert.equal(confirm.hidden, false, "确认区展开");
+  assert.ok(confirm.textContent.includes("小明"), "确认文案带 Agent 名称");
+  assert.match(confirm.textContent, /不可撤销/, "确认文案点明不可逆后果");
+  assert.ok(byOdId(harness.agentBody, "agent-delete-confirm-action"), "确认区有「确认删除」");
+  assert.ok(byOdId(harness.agentBody, "agent-delete-cancel"), "确认区有「取消」");
+  assert.equal(harness.api.state.activeAgentId, "mem-1", "展开确认区不关闭详情");
+
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete-cancel"));
+
+  assert.equal(harness.deletes().length, 0, "取消也不发 DELETE");
+  assert.equal(confirm.hidden, true, "取消后确认区收起");
+  assert.equal(harness.api.state.activeAgentId, "mem-1", "取消后详情仍在");
+});
+
+test("确认删除只发一次 DELETE：成功后详情关闭、列表刷新、toast 可读", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  const harness = withChannel({
+    fetch: async (url, init) => {
+      if (String(url) === "/api/agents/mem-1" && (init.method || "GET") === "DELETE") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ deleted: "mem-1", agents: [], members: [owner] }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+    },
+  });
+  harness.load([agentDetail()]);
+  // 频道成员面板 / @ 补全读的是这份后端镜像；删除后它也必须立刻摘掉该成员。
+  harness.api.state.channelMembers = { "ch-1": [owner, agentDetail()] };
+  await harness.clickRow("mem-1");
+
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete"));
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete-confirm-action"));
+
+  const deletes = harness.deletes();
+  assert.equal(deletes.length, 1, "第二次确认只发一次请求");
+  assert.equal(deletes[0].url, "/api/agents/mem-1");
+  assert.equal(harness.api.state.activeAgentId, null, "删除成功后关闭详情");
+  assert.equal(harness.viewAgent.hidden, true, "回到进入前的视图");
+  assert.equal(harness.api.state.agents.length, 0);
+  assert.equal(harness.api.state.members.some((member) => member.id === "mem-1"), false,
+    "本地成员镜像里移除该成员");
+  assert.equal(harness.memberList.textContent.includes("小明"), false, "左栏刷新后不再有它");
+  assert.equal(harness.elementFor("#dockMembers").textContent.includes("小明"), false,
+    "成员面板（频道成员缓存）同步刷新");
+  const expectedToast = catalogText(harness, "zh-CN", "toast.agentDeleted").replace("{name}", "小明");
+  assert.ok(harness.toastWrap.textContent.includes(expectedToast), "删除成功后给出可读 toast");
+});
+
+test("删除请求在途时按钮禁用：请求没回来之前不能重复提交", async () => {
+  const owner = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const harness = withChannel({
+    fetch: async (url, init) => {
+      if (String(url) === "/api/agents/mem-1" && (init.method || "GET") === "DELETE") {
+        await gate;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ deleted: "mem-1", agents: [], members: [owner] }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete"));
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete-confirm-action"));
+
+  assert.equal(harness.deletes().length, 1);
+  assert.equal(byOdId(harness.agentBody, "agent-delete").disabled, true, "请求中删除按钮禁用");
+  assert.equal(byOdId(harness.agentBody, "agent-delete-confirm-action").disabled, true,
+    "请求中确认按钮禁用");
+  assert.equal(harness.api.state.activeAgentId, "mem-1", "请求没回来之前详情仍在");
+
+  release();
+  for (let tick = 0; tick < 4; tick += 1) await flush();
+  assert.equal(harness.api.state.activeAgentId, null, "请求返回后按成功路径关闭详情");
+});
+
+test("删除失败留在当前页、本地镜像不变，错误原因不静默吞掉", async () => {
+  const harness = withChannel({
+    fetch: async (url, init) => {
+      if (String(url) === "/api/agents/mem-1" && (init.method || "GET") === "DELETE") {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: "internal", message: "删除时出错，未改动任何数据" } }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete"));
+  await harness.clickInBody(byOdId(harness.agentBody, "agent-delete-confirm-action"));
+
+  assert.equal(harness.deletes().length, 1);
+  assert.equal(harness.api.state.activeAgentId, "mem-1", "失败不关闭详情");
+  assert.equal(harness.api.state.agents.some((agent) => agent.id === "mem-1"), true,
+    "失败不改本地成员镜像");
+  assert.ok(
+    harness.toastWrap.textContent.includes("删除时出错，未改动任何数据"),
+    "失败原因按后端那一句显示出来",
+  );
+});
+
+test("离线时暂停与删除都禁用", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  harness.api.state.online = false;
+  harness.api.renderAgentDetail();
+
+  const toggle = byOdId(harness.agentBody, "agent-toggle-enabled");
+  const deleteButton = byOdId(harness.agentBody, "agent-delete");
+  assert.ok(toggle, "离线时暂停按钮仍在（只是不可用）");
+  assert.ok(deleteButton, "离线时删除按钮仍在（只是不可用）");
+  assert.equal(toggle.disabled, true, "离线时暂停禁用");
+  assert.equal(deleteButton.disabled, true, "离线时删除禁用");
+});
+
+test("危险区文案有英文取值：切到 English 后同样可见", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  harness.i18n.setLocale("en");
+  try {
+    harness.api.renderAgentDetail();
+    const danger = sectionOf(harness.agentBody, "agent-detail-section-danger");
+    assert.equal(byOdId(danger, "agent-detail-section-danger").textContent,
+      catalogText(harness, "en", "agentDetail.sectionDanger"));
+    assert.ok(danger.textContent.includes(catalogText(harness, "en", "agentDetail.dangerHint")));
+    assert.equal(byOdId(danger, "agent-delete").textContent,
+      catalogText(harness, "en", "agentDetail.delete"));
+  } finally {
+    harness.i18n.setLocale("zh-CN");
+  }
+});
+
+test("任务指派者已不在成员表里：显示「已删除的成员」，不把裸 id 给用户", async () => {
+  const harness = withChannel();
+  const gone = "mem_gone_0a1b";
+  const task = {
+    id: "task_1",
+    title: "遗留任务",
+    status: "todo",
+    channel_name: "设计",
+    assignee_member_id: gone,
+    unread_count: 0,
+    pending_approval_count: 0,
+    allowed_transitions: ["in_progress"],
+  };
+  harness.api.state.members = [{ id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 }];
+  harness.api.state.agents = [];
+  harness.api.state.boardTasks = [task];
+  harness.api.state.tasks = [task];
+  harness.api.render();
+
+  const board = harness.elementFor("#taskColumns");
+  assert.ok(
+    board.textContent.includes(catalogText(harness, "zh-CN", "task.deletedAssignee")),
+    "回退文案可读",
+  );
+  assert.equal(board.textContent.includes(gone), false, "裸成员 id 不外露");
+
+  // 工作台快照还没就绪时不能把「查不到」说成「已删除」：用中性的「成员」占位。
+  harness.api.state.ready = false;
+  harness.api.render();
+  const loading = harness.elementFor("#taskColumns");
+  assert.ok(loading.textContent.includes(catalogText(harness, "zh-CN", "toast.memberFallback")),
+    "成员表未就绪时用中性回退");
+  assert.equal(loading.textContent.includes(catalogText(harness, "zh-CN", "task.deletedAssignee")), false,
+    "未就绪时不误报「已删除」");
 });
 
 test("联网档四档：未配置时选中「跟随频道」，点具体档位后保存提交该档", async () => {
@@ -1213,8 +1449,17 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agentDetail.globalMcpConfirmed",
     "agentDetail.globalMcpRuntimeIdle",
     "agentDetail.globalMcpRuntimeConnected",
+    "agentDetail.sectionDanger",
+    "agentDetail.dangerHint",
+    "agentDetail.delete",
+    "agentDetail.deleteConfirm",
+    "agentDetail.deleteConfirmAction",
+    "agentDetail.deleteCancel",
     "toast.agentUpdated",
     "toast.agentDetailFailed",
+    "toast.agentDeleted",
+    "toast.agentDeleteFailed",
+    "task.deletedAssignee",
   ];
   for (const key of keys) {
     for (const locale of ["zh-CN", "en"]) {

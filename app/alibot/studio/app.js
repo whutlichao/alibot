@@ -186,6 +186,9 @@ const state = {
   // `draft` 是还没提交的字段值，`error` 是后端拒绝时那句原文。与后端读数不一致时
   // 页面底部出现保存条；关闭详情 / 切换成员 / 切换主线视图时整体作废（不弹二次确认）。
   agentEdit: emptyAgentEditDraft(),
+  // 危险操作（本票）：删除是**两步确认**——`memberId` + `confirming` 决定确认区展不展开，
+  // `busy` 在请求进行中禁用按钮。它是呈现状态，不是业务正本（正本在后端软删除）。
+  agentDelete: emptyAgentDeleteState(),
   // Agent 详情里的**全局 MCP 只读小节**（#236）：列表是 `GET
   // /api/agents/{id}/global-mcp-servers` 的镜像；`error` 只用于把读取失败讲人话。
   // 它不是业务正本（真值在成员家目录的 mcp.json + 确认行），切换成员时整体作废。
@@ -1255,7 +1258,10 @@ function visibleBoardTasks() {
 
 function taskMemberName(memberId) {
   const member = state.members.find((item) => item.id === memberId);
-  return member ? member.display_name : memberId;
+  if (member) return member.display_name;
+  // 删除不给任务改历史：指派者可能已不在成员表里。**成员表已就绪**才把「查不到」解释成
+  // 「已删除」；工作台快照还没到时用中性的「成员」，不把仍然存在的人误标成已删除。
+  return state.ready ? t('task.deletedAssignee') : t('toast.memberFallback');
 }
 
 /** 任务在成员表里的下标（决定 `--av-*` 色位；与消息流同一个头像色位规则）。 */
@@ -4875,6 +4881,15 @@ function emptyAgentEditDraft() {
   return { memberId: null, draft: null, base: null, error: '' };
 }
 
+/** 危险区的呈现状态：谁展开着确认区、请求是否在飞。关闭 / 切换成员时整体作废。 */
+function emptyAgentDeleteState() {
+  return { memberId: '', confirming: false, busy: false };
+}
+
+function resetAgentDeleteState() {
+  state.agentDelete = emptyAgentDeleteState();
+}
+
 /** 把后端读数铺成一份草稿：`draft` 是控件里的值，`base` 是它派生自的那份读数。
     「有没有未保存的改动」= `draft` 与 `base` 不一致，因此后端读数刷新不会把人的输入冲掉。 */
 function agentDraftFrom(agent) {
@@ -5004,6 +5019,7 @@ async function openAgentDetail(memberId) {
   // 换人时草稿整体作废（与「关闭即放弃」同一条），全局 MCP 条目是**这个成员**的文件，一并清空。
   state.activeAgentId = memberId;
   state.agentEdit = emptyAgentEditDraft();
+  resetAgentDeleteState();
   state.globalMcpServers = [];
   state.globalMcpError = '';
   setViewMode('agent');
@@ -5019,6 +5035,7 @@ function closeAgentDetail() {
   const back = state.agentReturn || { mode: 'channel', dockOpen: false };
   state.activeAgentId = null;
   resetAgentEditDraft();
+  resetAgentDeleteState();
   clearAgentDetail();
   state.mode = back.mode && back.mode !== 'agent' ? back.mode : 'channel';
   setViewMode(state.mode);
@@ -5038,6 +5055,7 @@ function leaveAgentView() {
   if (!state.activeAgentId) return;
   state.activeAgentId = null;
   resetAgentEditDraft();
+  resetAgentDeleteState();
   clearAgentDetail();
   renderRailRows();
 }
@@ -5126,6 +5144,7 @@ function renderAgentDetail() {
   } else {
     replaceChildren($('#adBody'), agentDetailNodes(agent));
   }
+  paintAgentDangerControls();
   renderAgentSaveBar();
 }
 
@@ -5156,13 +5175,14 @@ function sectionTitle(key, odId) {
   return node;
 }
 
-/** 详情页的全部区块，按顺序纵向铺开（没有页签）：统计 → 系统提示 → 配置 → 全局 MCP。 */
+/** 详情页的全部区块，按顺序纵向铺开（没有页签）：统计 → 系统提示 → 配置 → 全局 MCP → 危险操作。 */
 function agentDetailNodes(agent) {
   return [
     agentFactsSection(agent),
     agentPromptSection(agent),
     agentConfigSection(agent),
     globalMcpSection(),
+    agentDangerSection(agent),
   ];
 }
 
@@ -5266,7 +5286,7 @@ function fillAgentProviderSelect(select, provider) {
 }
 
 /** 配置区块：显示名 / 角色 / 模型 / 启用状态 / 自动认领 / 长期记忆 / 上下文三项 / 联网档，
-    外加远端数据流告知块与「暂停 / 恢复」按钮。 */
+    外加远端数据流告知块。「暂停 / 恢复」与删除已搬到页面最后一个区块（危险操作）。 */
 function agentConfigSection(agent) {
   const draft = state.agentEdit.draft || agentDraftFrom(agent);
   const section = el('section', 'd-sec');
@@ -5298,7 +5318,7 @@ function agentConfigSection(agent) {
   modelField.appendChild(modelHint);
   section.appendChild(modelField);
 
-  // 「启用状态」与「暂停 / 恢复」同源：两者改的都是草稿里的 `enabled`，以最后一次改动为准。
+  // 「启用状态」与危险区的「暂停 / 恢复」同源：两者改的都是草稿里的 `enabled`，以最后一次改动为准。
   const enabledGroup = agentTierGroup(
     'agent-config-enabled',
     'tierValue',
@@ -5310,16 +5330,6 @@ function agentConfigSection(agent) {
   );
   enabledGroup.dataset.agentTier = 'enabled';
   section.appendChild(agentFieldRow('agent.enabledLabel', enabledGroup));
-  const actions = el('div', 'agent-actions');
-  const toggle = el('button', 'btn btn-sm', t(draft.enabled ? 'agentDetail.pause' : 'agentDetail.resume'));
-  toggle.type = 'button';
-  toggle.dataset.agentToggle = agent.id;
-  toggle.setAttribute('data-od-id', 'agent-toggle-enabled');
-  toggle.disabled = !state.online;
-  actions.appendChild(toggle);
-  section.appendChild(actions);
-  // 暂停的**已知代价**写在界面上（不是只写在 ADR 里）：人点之前就该知道它会留下一条失败轮次结果。
-  section.appendChild(el('div', 'hint', t('agentDetail.pauseNote')));
 
   const claimGroup = agentTierGroup(
     'agent-config-auto-claim',
@@ -5384,6 +5394,65 @@ function agentConfigSection(agent) {
   // 远端数据流告知块：判定与文案只有一份实现（`renderRemoteNoticeBlock()`）。节点在 `#adBody`
   // 里，因此这里登记直接引用，切 provider 时就地重绘，不按 id 去文档顶层查。
   section.appendChild(agentRemoteNoticeNode(draft.provider));
+  return section;
+}
+
+/** 危险操作（页面最后一个区块）：暂停 / 恢复与删除。
+
+    - 暂停 / 恢复仍只写草稿里的 `enabled`（语义不变；`paintAgentDraftControls()` 就地更新说法）；
+    - 删除是**两步确认**：第一次点击只展开确认区（不发请求），第二次「确认删除」才发 `DELETE`；
+      「取消」收起确认区。确认文案带成员名称与不可逆后果；
+    - `state.online === false` 时暂停与删除都禁用；请求进行中禁用按钮。
+*/
+function agentDangerSection(agent) {
+  const draft = state.agentEdit.draft || agentDraftFrom(agent);
+  const pending = state.agentDelete.memberId === agent.id;
+  const confirming = pending && state.agentDelete.confirming;
+  const busy = pending && state.agentDelete.busy;
+  const section = el('section', 'd-sec danger-zone');
+  section.appendChild(sectionTitle('agentDetail.sectionDanger', 'agent-detail-section-danger'));
+  section.appendChild(el('div', 'danger-hint', t('agentDetail.dangerHint')));
+
+  const actions = el('div', 'agent-actions danger-actions');
+  const toggle = el('button', 'btn btn-sm', t(draft.enabled ? 'agentDetail.pause' : 'agentDetail.resume'));
+  toggle.type = 'button';
+  toggle.dataset.agentToggle = agent.id;
+  toggle.setAttribute('data-od-id', 'agent-toggle-enabled');
+  toggle.disabled = !state.online || busy;
+  actions.appendChild(toggle);
+
+  const remove = el('button', 'btn btn-sm btn-danger', t('agentDetail.delete'));
+  remove.type = 'button';
+  remove.dataset.agentDelete = agent.id;
+  remove.setAttribute('data-od-id', 'agent-delete');
+  remove.disabled = !state.online || busy;
+  actions.appendChild(remove);
+  section.appendChild(actions);
+
+  // 暂停的**已知代价**写在界面上（不是只写在 ADR 里）：人点之前就该知道它会留下一条失败轮次结果。
+  section.appendChild(el('div', 'hint', t('agentDetail.pauseNote')));
+
+  const confirm = el('div', 'danger-confirm');
+  confirm.dataset.agentDeleteConfirm = '';
+  confirm.setAttribute('data-od-id', 'agent-delete-confirm');
+  confirm.hidden = !confirming;
+  confirm.appendChild(el('div', 'danger-confirm-text',
+    t('agentDetail.deleteConfirm', { name: agent.display_name })));
+  const confirmActions = el('div', 'agent-actions danger-actions');
+  const confirmButton = el('button', 'btn btn-sm btn-danger', t('agentDetail.deleteConfirmAction'));
+  confirmButton.type = 'button';
+  confirmButton.dataset.agentDeleteConfirmAction = agent.id;
+  confirmButton.setAttribute('data-od-id', 'agent-delete-confirm-action');
+  confirmButton.disabled = busy || !state.online;
+  confirmActions.appendChild(confirmButton);
+  const cancelButton = el('button', 'btn btn-sm', t('agentDetail.deleteCancel'));
+  cancelButton.type = 'button';
+  cancelButton.dataset.agentDeleteCancel = '';
+  cancelButton.setAttribute('data-od-id', 'agent-delete-cancel');
+  cancelButton.disabled = busy;
+  confirmActions.appendChild(cancelButton);
+  confirm.appendChild(confirmActions);
+  section.appendChild(confirm);
   return section;
 }
 
@@ -5607,6 +5676,74 @@ function paintAgentDraftControls() {
   });
   const toggle = body.querySelector('[data-agent-toggle]');
   if (toggle) toggle.textContent = t(draft.enabled ? 'agentDetail.pause' : 'agentDetail.resume');
+}
+
+/** 危险区控件的可用性：离线或请求进行中时禁用，不重建节点。
+
+    它单独成一处，是因为草稿脏时 `renderAgentDetail()` 不重铺整页——离线 / 请求状态仍要
+    落到已经存在的按钮上（暂停、删除、确认、取消）。 */
+function paintAgentDangerControls() {
+  const body = $('#adBody');
+  if (!body || typeof body.querySelectorAll !== 'function') return;
+  const pending = state.agentDelete.memberId === state.activeAgentId;
+  const busy = pending && state.agentDelete.busy;
+  const selectors = [
+    '[data-agent-toggle]',
+    '[data-agent-delete]',
+    '[data-agent-delete-confirm-action]',
+    '[data-agent-delete-cancel]',
+  ];
+  selectors.forEach((selector) => {
+    Array.prototype.forEach.call(body.querySelectorAll(selector), (node) => {
+      // 「取消」只受请求进行中影响：离线下仍应能把确认区收起来。
+      node.disabled = selector === '[data-agent-delete-cancel]'
+        ? busy
+        : busy || !state.online;
+    });
+  });
+}
+
+/** 删除一个 Agent（第二段确认之后才调用）：后端软删除是唯一正本。
+
+    成功后用响应里的最新 `agents` / `members` 覆盖本地镜像（并再过滤一次，保证移除），
+    关闭详情、刷新左栏 / 成员面板，最后给一条 toast。失败留在当前页、本地镜像不变，
+    错误原因按后端那一句显示——不静默吞掉。 */
+async function deleteAgent(memberId) {
+  if (!state.online || !memberId) return;
+  if (state.agentDelete.busy) return;
+  const agent = agentById(memberId);
+  const name = (agent && agent.display_name) || t('toast.memberFallback');
+  state.agentDelete = { memberId, confirming: true, busy: true };
+  paintAgentDangerControls();
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId), { method: 'DELETE' });
+    if (payload && Array.isArray(payload.agents)) state.agents = payload.agents;
+    if (payload && Array.isArray(payload.members)) state.members = payload.members;
+    state.agents = state.agents.filter((item) => item.id !== memberId);
+    state.members = state.members.filter((item) => item.id !== memberId);
+    // 频道成员缓存也是后端读数的镜像（后端已把它移出全部 target_member）：一并摘掉，
+    // 否则成员面板 / @ 补全 / 名册会在下一次重读之前继续显示一个已删除的成员。
+    Object.keys(state.channelMembers || {}).forEach((channelId) => {
+      const members = state.channelMembers[channelId];
+      if (Array.isArray(members)) {
+        state.channelMembers[channelId] = members.filter((item) => item.id !== memberId);
+      }
+    });
+    delete state.statuses[memberId];
+    resetAgentDeleteState();
+    if (state.activeAgentId === memberId) closeAgentDetail();
+    else {
+      renderMembers();
+      renderDock();
+      render();
+    }
+    toast(t('toast.agentDeleted', { name }));
+  } catch (err) {
+    // 留在当前页：确认区保持展开，按钮恢复可用，原因照后端给的那一句显示。
+    state.agentDelete = { memberId, confirming: true, busy: false };
+    paintAgentDangerControls();
+    toast(t('toast.agentDeleteFailed', { reason: err.message }), 'err');
+  }
 }
 
 /* ─── 成员名册（频道成员的**只读**全名单） ────────────────────────────────
@@ -9261,6 +9398,32 @@ function bindEvents() {
       const draft = state.agentEdit.draft;
       if (draft) setAgentDraft('enabled', !draft.enabled);
       paintAgentDraftControls();
+      return;
+    }
+    const remove = event.target.closest('[data-agent-delete]');
+    if (remove) {
+      // 第一次点击**只**展开确认区：不发出任何请求。
+      if (!state.online || state.agentDelete.busy) return;
+      state.agentDelete = {
+        memberId: remove.dataset.agentDelete,
+        confirming: true,
+        busy: false,
+      };
+      const body = $('#adBody');
+      const confirm = body && body.querySelector('[data-agent-delete-confirm]');
+      if (confirm) confirm.hidden = false;
+      return;
+    }
+    if (event.target.closest('[data-agent-delete-confirm-action]')) {
+      // 第二次点击（确认）才发 DELETE。
+      deleteAgent(state.agentDelete.memberId || state.activeAgentId);
+      return;
+    }
+    if (event.target.closest('[data-agent-delete-cancel]')) {
+      resetAgentDeleteState();
+      const body = $('#adBody');
+      const confirm = body && body.querySelector('[data-agent-delete-confirm]');
+      if (confirm) confirm.hidden = true;
       return;
     }
     const tier = event.target.closest('[data-tier-value]');

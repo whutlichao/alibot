@@ -485,6 +485,27 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .stat .l { font-size: var(--fs-caption); color: var(--muted); margin-top: var(--sp-2); }
 .agent-actions { display: flex; gap: var(--sp-4); }
 .agent-actions .btn { flex: 1; }
+/* 危险操作（详情页最后一个区块）：只消费 --error / --warn 族与既有控件族（.btn / .d-sec / .hint），
+   不新造色位。按钮可收缩 + 换行，说明文字 `overflow-wrap`，于是 1350px 与窄视口下都不溢出、
+   不互相遮挡。 */
+.danger-zone { border-top: 1px solid var(--border); padding-top: var(--sp-5); }
+.danger-zone .d-sec-title { color: var(--error); }
+.danger-hint {
+  font-size: var(--fs-sm); color: var(--warn-deep); line-height: var(--lh-snug);
+  margin-bottom: var(--sp-4); overflow-wrap: anywhere;
+}
+.danger-actions { flex-wrap: wrap; }
+.danger-actions .btn { flex: 1 1 140px; min-width: 0; }
+.btn-danger { border-color: var(--error); color: var(--error); }
+.btn-danger:hover { background: var(--error-soft); border-color: var(--error); }
+.danger-confirm {
+  margin-top: var(--sp-4); padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--error); border-radius: var(--r-md); background: var(--error-soft);
+}
+.danger-confirm-text {
+  font-size: var(--fs-sm); color: var(--error); line-height: var(--lh-snug);
+  margin-bottom: var(--sp-4); overflow-wrap: anywhere;
+}
 /* 成员面板里**打开详情**的那个控件：它是名字本身（卡片里已有「加入」按钮，不能嵌套按钮）。 */
 .dock-member-name {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

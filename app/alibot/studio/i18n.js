@@ -247,6 +247,8 @@ const I18N_CATALOGS = {
     'task.repliesEmpty': '还没有讨论，来写第一条回复',
     'task.historyEmpty': '暂无变更记录',
     'task.unassigned': '未认领',
+    // 删除后的任务历史仍指向原成员 id；成员表里已没有它时显示这句可读回退（不露裸 id）。
+    'task.deletedAssignee': '已删除的成员',
     'task.unassignedPill': '未认领 · 点击指派',
     'task.reassignHint': '· 改派',
     'task.assignUnavailable': '暂时读不到该频道的成员表：指派候选不可用。',
@@ -482,6 +484,16 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': '已确认：{name}',
     'agentDetail.globalMcpRuntimeIdle': '尚无运行期读数',
     'agentDetail.globalMcpRuntimeConnected': '运行期已连接',
+    // 危险操作（本票）：暂停 / 删除搬进页面最后一个区块。说明必须点明两者的后果，
+    // 删除的确认文案带 Agent 名称与「不可撤销」——人在第二次点击前就能读到代价。
+    'agentDetail.sectionDanger': '危险操作',
+    'agentDetail.dangerHint':
+      '危险：暂停只停止产出回复（它仍会被唤醒并留下一条可读原因的失败轮次结果）；删除会把这个 Agent 移出全部频道并从工作台隐藏，历史消息与任务仍保留。以下动作请确认后再执行。',
+    'agentDetail.delete': '删除',
+    'agentDetail.deleteConfirm':
+      '确认删除「{name}」？它会立即移出全部频道并关闭详情；历史消息与任务保留，但这个 Agent 无法恢复，操作不可撤销。',
+    'agentDetail.deleteConfirmAction': '确认删除',
+    'agentDetail.deleteCancel': '取消',
     'agentDetail.save': '保存',
     'agentDetail.discard': '放弃',
     'agentDetail.unsaved': '有未保存的改动',
@@ -786,6 +798,8 @@ const I18N_CATALOGS = {
     'toast.remoteAck': '已记录数据流告知确认：{provider}。',
     'toast.remoteAckFailed': '确认失败：{reason}',
     'toast.agentUpdated': '已保存 {name} 的配置。',
+    'toast.agentDeleted': '已删除 Agent「{name}」。',
+    'toast.agentDeleteFailed': '删除 Agent 失败：{reason}',
     'toast.agentDetailFailed': '读取 Agent 详情失败：{reason}',
     'toast.globalMcpConsentFailed': '确认全局 MCP 条目失败：{reason}',
   },
@@ -1015,6 +1029,9 @@ const I18N_CATALOGS = {
     'task.repliesEmpty': 'No discussion yet — write the first reply',
     'task.historyEmpty': 'No change history yet',
     'task.unassigned': 'Unclaimed',
+    // Task history still points at the original member id after a delete; when the member table
+    // no longer has it, show this readable fallback instead of the raw id.
+    'task.deletedAssignee': 'Deleted member',
     'task.unassignedPill': 'Unclaimed · click to assign',
     'task.reassignHint': '· reassign',
     'task.assignUnavailable': 'The channel member list is not readable right now: no assignee candidates.',
@@ -1269,6 +1286,17 @@ const I18N_CATALOGS = {
     'agentDetail.globalMcpConfirmed': 'Acknowledged: {name}',
     'agentDetail.globalMcpRuntimeIdle': 'No runtime reading yet',
     'agentDetail.globalMcpRuntimeConnected': 'Connected at runtime',
+    // Danger zone (this ticket): pause / delete moved to the last section of the page. The note
+    // spells out both consequences; the delete confirmation carries the agent name and
+    // "cannot be undone", so the cost is readable before the second click.
+    'agentDetail.sectionDanger': 'Danger zone',
+    'agentDetail.dangerHint':
+      'Danger: pausing only stops replies (the agent is still woken and leaves a failed round outcome with a readable reason); deleting removes this agent from every channel and hides it from the workspace, while message and task history is kept. Confirm before taking either action.',
+    'agentDetail.delete': 'Delete',
+    'agentDetail.deleteConfirm':
+      'Delete “{name}”? It will be removed from every channel immediately and this detail view will close. Message and task history is kept, but the agent cannot be restored — this cannot be undone.',
+    'agentDetail.deleteConfirmAction': 'Delete permanently',
+    'agentDetail.deleteCancel': 'Cancel',
     'agentDetail.save': 'Save',
     'agentDetail.discard': 'Discard',
     'agentDetail.unsaved': 'Unsaved changes',
@@ -1598,6 +1626,8 @@ const I18N_CATALOGS = {
     'toast.remoteAck': 'Recorded the data-flow acknowledgement for {provider}.',
     'toast.remoteAckFailed': 'Acknowledgement failed: {reason}',
     'toast.agentUpdated': 'Saved the configuration of {name}.',
+    'toast.agentDeleted': 'Deleted the agent “{name}”.',
+    'toast.agentDeleteFailed': 'Could not delete the agent: {reason}',
     'toast.agentDetailFailed': 'Could not read the agent details: {reason}',
     'toast.globalMcpConsentFailed': 'Could not acknowledge the global MCP entry: {reason}',
   },

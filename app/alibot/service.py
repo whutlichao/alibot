@@ -726,6 +726,16 @@ class WorkspaceService:
             clear_docker_failure(member_id)
         return self.agent(member_id)
 
+    def delete_agent(self, member_id: str) -> str:
+        """完整软删除一个 Agent（人类面动作），返回被删掉的成员 id。
+
+        落点只有两处：``member.deleted_at`` 与 ``target_member`` 里它的行（移出全部频道 / 任务线程）。
+        消息、任务、DM target、``agent_config`` 与 ``round_outcome`` 一律保留——历史不是删除的代价。
+        与配置变更同一条纪律：**不落消息、不唤醒、不消耗预算、不开世代**。
+        不存在的 id / owner / 已删除的成员 ⇒ 可读 404（见 ``Database.delete_agent``）。
+        """
+        return self._db.delete_agent(str(member_id).strip())
+
     @staticmethod
     def _agent_stats_view(stats: dict[str, Any] | None) -> dict[str, Any]:
         """把 ``Database.agent_stats`` 的行级事实整理成概览页的读数（缺样本时成功率为 ``None``）。"""

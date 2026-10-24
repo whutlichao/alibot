@@ -59,7 +59,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.budget_limit_invalid": "回应预算上界只接受固定档位：{tiers}，未保存任何改动",
         "error.channel_members_append_only": "频道成员只能加入、不能移出：人类面不存在该端点",
         "error.messages_immutable": "消息不可编辑、不可删除：人类面不存在该端点",
-        "error.agent_delete_unsupported": "Agent 不可删除：人类面不存在该端点",
+        "error.agent_replace_unsupported": "Agent 只能部分更新：人类面不提供整体替换（PUT）",
         "error.request_body_invalid": "请求体校验未通过",
         "error.field.body_invalid": "请求体不合法：{location}（{kind}）",
         "error.tier_value_null": "档位取值不能为 null（要保留原值请省略该字段）",
@@ -467,8 +467,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.messages_immutable": (
             "Messages cannot be edited or deleted: the human surface has no such endpoint"
         ),
-        "error.agent_delete_unsupported": (
-            "An Agent cannot be deleted: the human surface has no such endpoint"
+        "error.agent_replace_unsupported": (
+            "Agents support partial updates only: whole-object replacement (PUT) is not available"
         ),
         "error.request_body_invalid": "Request body failed validation",
         "error.field.body_invalid": "The request body is not valid: {location} ({kind})",

@@ -2,7 +2,8 @@
 
 只经 HTTP 面取证：逐字段读回、非法输入的**整体拒绝**（无部分写入）、「暂停」= 写 `enabled = 0`
 及其可读原因、改到远端 provider 沿用**既有远端数据流告知**语义、以及**配置变更不是发言**
-（消息 / 轮次结果 / 预算三处读数前后逐字不变）。概览页的四个数字也在这里按**既有事实**
+（消息 / 轮次结果 / 预算三处读数前后逐字不变）。删除面（本票）同样只经 HTTP 取证：完整软删除、
+移出频道、历史读数不变、二次删除 404。概览页的四个数字也在这里按**既有事实**
 （`round_outcome` 聚合 + 任务行 + 频道成员表）对照断言——测试不连数据库、不读表结构。
 """
 
@@ -386,9 +387,81 @@ def test_patch_of_a_missing_member_is_a_readable_404(client: TestClient) -> None
     assert response.json()["error"]["message"]
 
 
-def test_there_is_still_no_delete_or_replace_route(client: TestClient) -> None:
-    agent = create_agent(client).json()["agent"]
+def test_delete_soft_deletes_the_agent_and_keeps_history(launched: dict) -> None:
+    """``DELETE /api/agents/{id}`` 是完整软删除：行保留、移出全部频道、历史读数逐字不变。
 
-    assert client.delete(f"/api/agents/{agent['id']}").status_code == 404
+    删除动作本身**不是发言**：消息 / 轮次结果 / 预算三处读数前后用同一份快照对照；
+    删除后 ``GET`` 与第二次 ``DELETE`` 都是可读 404（不把删除做成静默幂等）。
+    """
+    client: TestClient = launched["client"]
+    agent = create_agent(client).json()["agent"]
+    channel = channel_with_agent(client, agent["id"])
+    send(client, channel["id"], f"@{agent['display_name']} 先说一句")
+    launched["scheduler"].drain()
+    # 任务历史也不该被删除改写：先指派一张任务，再证明删除后指派与线程逐字不变。
+    task = client.post(f"/api/channels/{channel['id']}/tasks", json={"title": "删除前的任务"}).json()["task"]
+    assert (
+        client.patch(f"/api/tasks/{task['id']}/assignee", json={"member_id": agent["id"]}).status_code == 200
+    )
+    launched["scheduler"].drain()
+    task_messages_before = client.get(f"/api/tasks/{task['id']}/messages").json()["messages"]
+
+    def snapshot() -> tuple[list, list, dict]:
+        listed = messages(client, channel["id"])
+        records = outcomes(client, channel["id"])
+        return (
+            [(item["seq"], item["kind"], item["body"], item["task_ref"]) for item in listed],
+            [(record["id"], record["status"], record["reason"], record["base_seq"]) for record in records],
+            budget(client, channel["id"]),
+        )
+
+    before = snapshot()
+    assert before[0] and before[1]  # 先造出真实活动，再证明删除不改变它
+
+    response = client.delete(f"/api/agents/{agent['id']}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] == agent["id"]
+    assert agent["id"] not in {item["id"] for item in body["agents"]}
+    assert agent["id"] not in {member["id"] for member in body["members"]}
+    assert agent["id"] not in {item["id"] for item in agents(client)}
+
+    # 删除后它是「已不存在」：单读与二次删除都给可读 404（与未知 id 同形）。
+    missing = client.get(f"/api/agents/{agent['id']}")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "not_found"
+    again = client.delete(f"/api/agents/{agent['id']}")
+    assert again.status_code == 404
+    assert again.json()["error"]["code"] == "not_found"
+
+    # 频道成员表不再含它；状态点读面也不再出现（读取侧按既有的 deleted_at 过滤）。
+    channel_members = client.get(f"/api/channels/{channel['id']}/members").json()["members"]
+    assert agent["id"] not in {member["id"] for member in channel_members}
+    statuses = client.get("/api/member-statuses").json()["statuses"]
+    assert agent["id"] not in statuses
+
+    # 删除前后的消息 / 轮次结果 / 预算读数逐字不变：历史不是删除的代价。
+    assert snapshot() == before
+    # 任务不因删除被改写：指派者字段与任务线程原样保留（搜索 / 历史仍能按行解释它们）。
+    kept = client.get(f"/api/tasks/{task['id']}").json()["task"]
+    assert kept["assignee_member_id"] == agent["id"]
+    assert client.get(f"/api/tasks/{task['id']}/messages").json()["messages"] == task_messages_before
+
+
+def test_delete_rejects_owner_and_unknown_ids_and_put_stays_unsupported(client: TestClient) -> None:
+    owner = client.delete("/api/agents/owner")
+    assert owner.status_code == 404
+    assert owner.json()["error"]["code"] == "not_found"
+
+    unknown = client.delete("/api/agents/mem_missing")
+    assert unknown.status_code == 404
+    assert unknown.json()["error"]["code"] == "not_found"
+
+    agent = create_agent(client).json()["agent"]
+    # 本票只新增删除；``PUT``（整体替换）仍不开放，且不影响既有 PATCH / 暂停语义。
     assert client.put(f"/api/agents/{agent['id']}", json={"role": "整体替换"}).status_code == 404
-    assert detail(client, agent["id"])["role"] == agent["role"]
+    assert patch_agent(client, agent["id"], role="仍可编辑", enabled=False).status_code == 200
+    current = detail(client, agent["id"])
+    assert current["role"] == "仍可编辑"
+    assert current["enabled"] is False
