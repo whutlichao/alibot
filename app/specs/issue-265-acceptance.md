@@ -21,7 +21,7 @@ Issue [#265](https://github.com/whutlichao/alibot/issues/265)：在 Agent 详情
 | 「已归档」段仍默认折叠（`aria-expanded="false"`） | 未改 `state.dmArchiveExpanded`，`renderDmArchiveSection()` 原样 |
 | 当前 target 正是这条私信时，删除成功后 composer 立即只读：正文 / 附件 / @提及 / 作为任务发送禁用，hint = `composer.archivedHint` | 既有 `closeAgentDetail()` → `render()` → `renderHeader()` → `syncComposerLock(isArchivedDm)` / `syncMentionHint()` |
 | 删除失败路径不额外请求 `GET /api/dms`，行留原处，弹窗与错误文案不变 | `refreshDmList()` 只在 try 的成功分支里调用 |
-| `refreshDmList()` 读失败保留旧镜像，不阻塞删除成功与 toast | 既有 catch 语义不变；新增形状校验：非数组 `dms` 不覆写镜像 |
+| `refreshDmList()` 读失败保留旧镜像，不阻塞删除成功与 toast（落位与 toast 最多晚一次 RTT） | 既有 catch 语义不变；新增形状校验：非数组 `dms` 不覆写镜像 |
 | 既有「确认删除只发一次 DELETE」仍成立 | 用例断言不变；成功路径唯一新增请求是 `GET /api/dms` |
 | 不改 `dmIsArchived()` 判据、不改归档段展开态存储 | diff 未触碰 |
 
