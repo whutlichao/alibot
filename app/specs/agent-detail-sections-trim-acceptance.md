@@ -165,10 +165,10 @@ pi-lens 会对 `app/alibot/studio/i18n.js` 的 `applyStaticI18n()`（HEAD `:1653
 | --- | --- |
 | 分支 | `agent-detail-sections-trim` |
 | 本票 base | `83805a1` |
-| 提交 | 见 `git log 83805a1..HEAD --oneline`（实现一个提交 + 本文件） |
-| PR | 见 PR 链接（本节在该提交之后回填） |
-| PR body | 见该 PR 描述（`--body-file` 用的临时文件路径：`/tmp/agent-detail-sections-trim-pr-body.md`；票面 Ownership 限定改动文件，因此**不**把 body 副本放进仓库，与 `app/specs/*-pr-body.md` 的既有先例不同，理由记在这里） |
-| diff 规模 | `git diff 83805a1 --stat`：6 个文件，约 140 行增 / 150 行删（与本票范围相称，无整文件重排） |
+| 提交 | `ab3cbdd`（实现 + 测试 + README + 旧验收文档追加）与 `7759aee`（本文件 + 双轴评审收口），下一条提交回填 PR 号 |
+| PR | [#254](https://github.com/whutlichao/alibot/pull/254)（head `agent-detail-sections-trim` → base `main`） |
+| PR body | 该 PR 描述；`--body-file` 用的临时文件：`/tmp/agent-detail-sections-trim-pr-body.md`（票面 Ownership 限定改动文件，因此**不**把 body 副本放进仓库，与 `app/specs/*-pr-body.md` 的既有先例不同，理由记在这里） |
+| diff 规模 | `git diff 83805a1 --stat`：7 个文件、322 增 / 163 删（其中本验收文档 179 行）；产品代码 `app.js` 净减 37 行、`i18n.js` 净减 33 行，无整文件重排 |
 | 改动文件 | `app/alibot/studio/{app.js,i18n.js,index.html(仅 5 行注释)}`、`app/tests/agent_detail_ui.test.cjs`、`app/README.md`、`app/specs/agent-detail-fullpage-acceptance.md`、本文件 |
 
 **遗留 / 已知限制**
