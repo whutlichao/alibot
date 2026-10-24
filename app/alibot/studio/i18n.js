@@ -44,7 +44,6 @@ const I18N_CATALOGS = {
     /* ─── 左栏 ─────────────────────────────────────────────────────── */
     'rail.nav': '工作区导航',
     'rail.newChannel': '新建频道',
-    'rail.newDmTitle': '新建私信',
     'rail.searchTitle': '搜索工作台',
     /* 搜索入口按钮上的提示语（原型 `:522` 的「搜索消息、任务…」，末尾的省略号是文案的一部分） */
     'rail.searchPlaceholder': '搜索消息、任务…',
@@ -52,9 +51,10 @@ const I18N_CATALOGS = {
     'rail.newAgentTitle': '新建 Agent',
     'rail.groupChannels': '频道',
     'rail.groupDms': '私信',
+    'rail.groupArchivedDms': '已归档',
     'rail.groupAgents': '本机 Agent',
     'rail.emptyChannels': '还没有频道。新建一个频道就能开始记录。',
-    'rail.emptyDms': '还没有私信。新建私信后会在这里显示。',
+    'rail.emptyDms': '还没有私信。在 Agent 详情里点「发送消息」后会在这里显示。',
     'rail.emptyAgents': '还没有 Agent。',
     'settings.open': '设置',
     'rail.reminders': '提醒',
@@ -183,6 +183,8 @@ const I18N_CATALOGS = {
     'empty.noMessageBody': '这里的消息不可编辑、不可删除，是永久记录。',
     'header.dmDesc': '与 {name} 的两方私信',
     'header.dmPlaceholder': '发消息给 @{name} —— 可手动 @ 送达其他 Agent',
+    'header.dmArchivedDesc': '该 Agent 已删除，这段私信保留为只读归档。',
+    'header.dmArchivedPlaceholder': '该 Agent 已删除，这段私信只读归档',
     'header.channelPlaceholder': '发消息到 #{name} —— 输入 @ 提及 Agent',
     'typing.working': '{name} 正在回复…',
     'typing.nameSeparator': '、',
@@ -205,6 +207,7 @@ const I18N_CATALOGS = {
     'composer.attaching': '正在上传 {count} 个附件…',
     'composer.asTaskAction': '作为任务发送',
     'composer.hint': 'Enter 发送 · Shift+Enter 换行',
+    'composer.archivedHint': '已归档 · 只读，不能发送消息',
     'composer.send': '发送',
     'composer.note':
       '消息不可编辑、不可删除，是永久记录 · 本机单用户，后端只监听 loopback · 启用远端模型前会先告知出境数据面',
@@ -386,12 +389,6 @@ const I18N_CATALOGS = {
       '勾选的 Agent 会成为该频道的显式成员。还没有可勾选的对象时，用左上角「Agent」按钮创建一个。',
     'channel.create': '创建频道',
     'channel.pickEmpty': '还没有可勾选的 Agent：用左上角「Agent」按钮创建一个，回到这里勾选即可加入频道。',
-    'dm.modalTitle': '新建私信',
-    'dm.modalSub': '选择一个 Agent；每个 Agent 只有一条私信，重复创建会复用。',
-    'dm.peerLabel': '私信对象',
-    'dm.hint': '私信始终只有 owner 与所选 Agent；不能加入或离开。',
-    'dm.create': '创建私信',
-    'dm.noAgents': '还没有 Agent：先用左上角「Agent」按钮创建一个。',
     'agent.modalTitle': '新建 Agent',
     'agent.modalSub': '模型与系统提示保存为配置数据；换模型不需要改协作域代码。',
     'agent.nameLabel': '名称',
@@ -444,6 +441,7 @@ const I18N_CATALOGS = {
        原型的内存 / 延迟 / 工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，
        因此这里也没有它们的词条。 */
     'agentDetail.tag': 'Agent',
+    'agentDetail.sendMessage': '发送消息',
     'agentDetail.closeAria': '关闭 Agent 详情',
     'agentDetail.openAria': '查看 {name} 的详情',
     'agentDetail.sectionFacts': '统计',
@@ -786,6 +784,7 @@ const I18N_CATALOGS = {
     'toast.channelCreated': '已创建频道 #{name}，可以直接发送第一条消息。',
     'toast.dmCreated': '已创建与 {name} 的私信。',
     'toast.dmOpened': '已打开与 {name} 的现有私信。',
+    'toast.dmOpenFailed': '打开私信失败：{reason}',
     'toast.agentCreated':
       '已创建 Agent {name}，在右侧「频道成员」面板的「未加入」一段点「加入」即可让它进入当前频道。',
     'toast.remoteAck': '已记录数据流告知确认：{provider}。',
@@ -810,16 +809,16 @@ const I18N_CATALOGS = {
     /* ─── Left rail ────────────────────────────────────────────────── */
     'rail.nav': 'Workspace navigation',
     'rail.newChannel': 'New channel',
-    'rail.newDmTitle': 'New direct message',
     'rail.searchTitle': 'Search the workspace',
     'rail.searchPlaceholder': 'Search messages, tasks…',
     'rail.newAgent': 'New agent',
     'rail.newAgentTitle': 'New agent',
     'rail.groupChannels': 'Channels',
     'rail.groupDms': 'Direct messages',
+    'rail.groupArchivedDms': 'Archived',
     'rail.groupAgents': 'Local agents',
     'rail.emptyChannels': 'No channels yet. Create one to start recording.',
-    'rail.emptyDms': 'No direct messages yet. New ones show up here.',
+    'rail.emptyDms': 'No direct messages yet. Press “Send message” on an agent detail page to start one.',
     'rail.emptyAgents': 'No agents yet.',
     'settings.open': 'Settings',
     'rail.reminders': 'Reminders',
@@ -957,6 +956,8 @@ const I18N_CATALOGS = {
       'Messages here cannot be edited or deleted — they are permanent records.',
     'header.dmDesc': 'Two-way direct message with {name}',
     'header.dmPlaceholder': 'Message @{name} — you can still @ someone to reach them',
+    'header.dmArchivedDesc': 'This agent was deleted; this direct message is kept as a read-only archive.',
+    'header.dmArchivedPlaceholder': 'This agent was deleted; this direct message is archive-only',
     'header.channelPlaceholder': 'Message #{name} — type @ to mention an agent',
     'typing.working': '{name} is replying…',
     'typing.nameSeparator': ', ',
@@ -979,6 +980,7 @@ const I18N_CATALOGS = {
     'composer.attaching': 'Uploading {count} attachment(s)…',
     'composer.asTaskAction': 'Send as task',
     'composer.hint': 'Enter to send · Shift+Enter for a new line',
+    'composer.archivedHint': 'Archived · read-only, sending is disabled',
     'composer.send': 'Send',
     'composer.note':
       'Messages cannot be edited or deleted — permanent records · single user on this machine, the backend only listens on loopback · remote models are announced before they are enabled',
@@ -1168,13 +1170,6 @@ const I18N_CATALOGS = {
     'channel.create': 'Create channel',
     'channel.pickEmpty':
       'No agents to pick yet: create one with the “Agent” button at the top left, then tick it here to add it to the channel.',
-    'dm.modalTitle': 'New direct message',
-    'dm.modalSub':
-      'Pick one agent; each agent has a single direct message and creating it again reuses it.',
-    'dm.peerLabel': 'Direct message peer',
-    'dm.hint': 'A direct message always holds only the owner and the chosen agent; nobody can join or leave.',
-    'dm.create': 'Create direct message',
-    'dm.noAgents': 'No agents yet: create one with the “Agent” button at the top left.',
     'agent.modalTitle': 'New agent',
     'agent.modalSub':
       'The model and system prompt are stored as configuration data; changing the model needs no code change.',
@@ -1234,6 +1229,7 @@ const I18N_CATALOGS = {
        (see the `agent.*` keys). Memory / latency / tool permissions / temperature / token usage /
        context usage have no data surface in this repo, so there are no strings for them here. */
     'agentDetail.tag': 'Agent',
+    'agentDetail.sendMessage': 'Send message',
     'agentDetail.closeAria': 'Close agent details',
     'agentDetail.openAria': 'Open the details of {name}',
     'agentDetail.sectionFacts': 'Stats',
@@ -1606,6 +1602,7 @@ const I18N_CATALOGS = {
     'toast.channelCreated': 'Created channel #{name}; you can send the first message right away.',
     'toast.dmCreated': 'Created a direct message with {name}.',
     'toast.dmOpened': 'Opened the existing direct message with {name}.',
+    'toast.dmOpenFailed': 'Could not open the direct message: {reason}',
     'toast.agentCreated':
       'Created agent {name}; press “Join” in the “Not in this channel” group of the “Channel members” panel to add it here.',
     'toast.remoteAck': 'Recorded the data-flow acknowledgement for {provider}.',

@@ -179,6 +179,11 @@ function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+/** 让挂起的 `await` 链跑完（进入 target 的读路径是「一拍串一拍」）。 */
+async function settle() {
+  for (let index = 0; index < 10; index += 1) await flush();
+}
+
 /** `index.html` 里带 `hidden` 的元素：替身节点的初始可见性从**同一个正本**读，不另手抄一份。 */
 const HIDDEN_IN_HTML = new Set(
   (fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8").match(/<[a-zA-Z][^>]*>/g) || [])
@@ -260,6 +265,7 @@ function createHarness(options) {
   // 已知的几个控件按真实标签名建（`<button>` 的键盘可达性断言读得到）。
   const BUTTON_IDS = new Set([
     "#btnAgentDetailClose",
+    "#btnAgentSendMessage",
     "#adSave",
     "#adDiscard",
     "#btnDockToggle",
@@ -324,7 +330,7 @@ function createHarness(options) {
       "\nglobalThis.__agentDetailTest = { state, bindEvents, render, renderMembers, renderDock,"
         + " openAgentDetail, closeAgentDetail, closeTaskDock, toggleDock, setDockMode, setViewMode,"
         // `loadWorkspace` 是真实载入路径：两态用例靠它（与产品自己的重连）驱动，不 poke 模块内标志。
-        + " showMessagesView, showTaskBoard, renderAgentDetail, loadWorkspace, t };\n",
+        + " showMessagesView, showTaskBoard, renderAgentDetail, loadWorkspace, sendMessage, t };\n",
     ),
     context,
     { filename: appPath },
@@ -499,6 +505,18 @@ function catalogText(harness, locale, key) {
 
 function readStudio(file) {
   return fs.readFileSync(path.join(STUDIO_DIR, file), "utf8");
+}
+
+/** 把 toast 的正文在挂进 `#toastWrap` 的那一刻记下来：替身把 `setTimeout` 折成立即执行，
+    淡出定时器会在同一条断言路上把节点摘掉，因此不能事后读容器。 */
+function recordToasts(harness) {
+  const seen = [];
+  const append = harness.toastWrap.appendChild.bind(harness.toastWrap);
+  harness.toastWrap.appendChild = (node) => {
+    seen.push(node.textContent);
+    return append(node);
+  };
+  return seen;
 }
 
 /** 一个把工作台摆成「有频道、当前在频道视图」的 harness。 */
@@ -1765,4 +1783,270 @@ test("配置区块的标签真的指向控件：单控件 label[for]、档位组
   // 系统提示是 textarea，用 aria-label 承担字段名（它不是 `.field` 里的单控件行）。
   assert.ok(agentField(harness.agentBody, "system_prompt").getAttribute("aria-label"),
     "系统提示要有 aria-label");
+});
+
+/* ─── 「发送消息」：DM 创建能力的唯一人类入口（分组 `+` 与弹窗已删除）──────── */
+
+/** 一条私信 target（`state.dms` 的项；`deleted_at` 非空 = 已归档）。 */
+function dmTarget(id, name, deletedAt) {
+  return {
+    id,
+    kind: "dm",
+    peer: { id: "mem-1", display_name: name, avatar_slot: 1, deleted_at: deletedAt || null },
+    last_seq: 0,
+    last_read_seq: 0,
+    unread_count: 0,
+  };
+}
+
+/** 详情页 / 工作台其余读路径的默认应答（只看这一张票需要的端点）。 */
+function detailFetchBase(url) {
+  const target = String(url);
+  if (target.endsWith("/global-mcp-servers")) {
+    return { ok: true, status: 200, json: async () => ({ global_mcp_servers: [] }) };
+  }
+  if (target.startsWith("/api/agents/")) {
+    return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+  }
+  if (target === "/api/agents") {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        agents: [agentDetail()],
+        members: [{ id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 }],
+      }),
+    };
+  }
+  if (target.endsWith("/messages")) {
+    return { ok: true, status: 200, json: async () => ({ messages: [] }) };
+  }
+  return { ok: true, status: 200, json: async () => ({}) };
+}
+
+test("详情头部有「发送消息」按钮：文案挂词条、落在关闭控件旁", () => {
+  const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
+  const headStart = html.indexOf('class="agent-page-head"');
+  const headEnd = html.indexOf('class="agent-page-scroll"');
+  assert.ok(headStart >= 0 && headEnd > headStart, "index.html 里应有详情头部");
+  const head = html.slice(headStart, headEnd);
+  const send = /<button\b[^>]*id="btnAgentSendMessage"[^>]*>/.exec(head);
+  const close = /<button\b[^>]*id="btnAgentDetailClose"[^>]*>/.exec(head);
+  assert.ok(send, "详情头部应有 #btnAgentSendMessage");
+  assert.ok(close, "详情头部仍有关闭控件");
+  assert.ok(head.indexOf(send[0]) < head.indexOf(close[0]), "发送消息在关闭控件之前（同一行右侧）");
+  assert.match(send[0], /data-i18n="agentDetail\.sendMessage"/, "文案挂词条，不写死");
+
+  const harness = createHarness();
+  for (const locale of ["zh-CN", "en"]) {
+    assert.ok(catalogText(harness, locale, "agentDetail.sendMessage"), "两份词条都有发送消息：" + locale);
+  }
+});
+
+test("点「发送消息」发出 POST /api/dms，复用已有私信并离开 Agent 详情", async () => {
+  const dm = dmTarget("dm-1", "小明");
+  const harness = withChannel({
+    fetch: (url, init) => {
+      const request = init || {};
+      if (String(url) === "/api/dms" && (request.method || "GET") === "POST") {
+        return { ok: true, status: 200, json: async () => ({ dm, created: false }) };
+      }
+      return detailFetchBase(url);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+  assert.equal(harness.api.state.mode, "agent", "起始在 Agent 详情");
+  const toasts = recordToasts(harness);
+
+  await harness.elementFor("#btnAgentSendMessage").dispatchEvent({ type: "click" });
+  await settle();
+
+  const posts = harness.calls.filter((call) => call.url === "/api/dms" && call.method === "POST");
+  assert.equal(posts.length, 1, "点一次只发一次创建 / 复用请求");
+  assert.deepEqual(posts[0].body, { agent_id: "mem-1" }, "body 只带当前详情成员的 id");
+  assert.equal(harness.api.state.activeChannelId, "dm-1", "进入了这条私信");
+  assert.equal(harness.api.state.mode, "channel", "离开 Agent 详情，回到消息视图");
+  assert.equal(harness.api.state.activeAgentId, null, "详情已关闭");
+  assert.equal(harness.viewAgent.hidden, true, "详情视图让位");
+  assert.equal(harness.elementFor("#composer").hidden, false, "composer 可见");
+  assert.equal(harness.elementFor("#composerInput").focused, true, "输入框拿到焦点");
+  const expected = catalogText(harness, "zh-CN", "toast.dmOpened").replace("{name}", "小明");
+  assert.ok(toasts.some((text) => text.includes(expected)), "成功 toast 用「已打开」词条");
+});
+
+test("新建路径（created: true）同样进入该私信，toast 用「已创建」词条", async () => {
+  const dm = dmTarget("dm-7", "小明");
+  const harness = withChannel({
+    fetch: (url, init) => {
+      const request = init || {};
+      if (String(url) === "/api/dms" && (request.method || "GET") === "POST") {
+        return { ok: true, status: 200, json: async () => ({ dm, created: true }) };
+      }
+      return detailFetchBase(url);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+  const toasts = recordToasts(harness);
+
+  await harness.elementFor("#btnAgentSendMessage").dispatchEvent({ type: "click" });
+  await settle();
+
+  assert.equal(harness.api.state.activeChannelId, "dm-7", "新建后进入这条私信");
+  assert.equal(harness.api.state.mode, "channel", "两条路径都落到消息视图");
+  const expected = catalogText(harness, "zh-CN", "toast.dmCreated").replace("{name}", "小明");
+  assert.ok(toasts.some((text) => text.includes(expected)), "成功 toast 用「已创建」词条");
+});
+
+test("请求在途时「发送消息」禁用：不能重复提交", async () => {
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const dm = dmTarget("dm-1", "小明");
+  const harness = withChannel({
+    fetch: async (url, init) => {
+      const request = init || {};
+      if (String(url) === "/api/dms" && (request.method || "GET") === "POST") {
+        await gate;
+        return { ok: true, status: 200, json: async () => ({ dm, created: false }) };
+      }
+      return detailFetchBase(url);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const click = harness.elementFor("#btnAgentSendMessage").dispatchEvent({ type: "click" });
+  await flush();
+  assert.equal(harness.elementFor("#btnAgentSendMessage").disabled, true, "请求没回来之前禁用");
+  // 在途期间再点一次：闸门在 `messageActiveAgent()` 里，第二个请求不该发出去。
+  await harness.elementFor("#btnAgentSendMessage").dispatchEvent({ type: "click" });
+  assert.equal(
+    harness.calls.filter((call) => call.url === "/api/dms" && call.method === "POST").length,
+    1,
+    "在途期间重复点击不发第二个请求",
+  );
+
+  release();
+  await click;
+  await settle();
+  assert.equal(harness.elementFor("#btnAgentSendMessage").disabled, false, "请求结束后恢复可用");
+  assert.equal(
+    harness.calls.filter((call) => call.url === "/api/dms" && call.method === "POST").length,
+    1,
+    "整条路径只发一次请求",
+  );
+});
+
+/* ─── 已归档私信只读：composer 可见但不可用 ─────────────────────────────── */
+
+test("已归档私信只读：输入区与工具键禁用，hint / desc / placeholder 说明归档", async () => {
+  const harness = withChannel();
+  harness.api.state.dms = [dmTarget("dm-2", "小蓝", "2026-05-01T00:00:00Z")];
+  harness.api.state.activeChannelId = "dm-2";
+  harness.api.state.messages = [];
+  harness.api.setViewMode("channel");
+  // 先放一段草稿：否则 `#btnSend` 本来就会因为空正文禁用，归档闸门的断言会空转。
+  harness.elementFor("#composerInput").value = "还想说点什么";
+  harness.api.render();
+  await settle();
+
+  const input = harness.elementFor("#composerInput");
+  assert.equal(input.disabled, true, "#composerInput 真正 disabled");
+  ["#btnAttach", "#btnMention", "#btnAsTask", "#btnSend"].forEach((selector) => {
+    assert.equal(harness.elementFor(selector).disabled, true, selector + " 在归档私信里禁用");
+  });
+  assert.equal(
+    harness.elementFor("#composerHint").textContent,
+    catalogText(harness, "zh-CN", "composer.archivedHint"),
+    "composer hint 说明只读归档",
+  );
+  assert.equal(
+    harness.elementFor("#chanDesc").textContent,
+    catalogText(harness, "zh-CN", "header.dmArchivedDesc"),
+    "频道头 desc 说明该 Agent 已删除、这段私信只读",
+  );
+  assert.equal(
+    input.placeholder,
+    catalogText(harness, "zh-CN", "header.dmArchivedPlaceholder"),
+    "输入框 placeholder 同样说明归档",
+  );
+
+  // Enter 走的 `sendMessage()` 也有一道显式闸门：绕过禁用态直接调用也发不出去。
+  input.value = "还想说点什么";
+  const before = harness.calls.length;
+  harness.api.sendMessage();
+  await settle();
+  assert.equal(harness.calls.length, before, "归档私信上不产生任何发送请求");
+  assert.equal(input.value, "还想说点什么", "正文留在输入框里（没有假装发出去）");
+});
+
+test("切到普通频道或正常私信后，输入区控件与文案全部恢复", async () => {
+  const harness = withChannel();
+  harness.api.state.dms = [dmTarget("dm-2", "小蓝", "2026-05-01T00:00:00Z")];
+  harness.api.state.activeChannelId = "dm-2";
+  harness.api.state.messages = [];
+  harness.api.setViewMode("channel");
+  harness.api.render();
+  await settle();
+  assert.equal(harness.elementFor("#composerInput").disabled, true, "起始是归档只读");
+
+  // 切回普通频道。
+  harness.api.state.channels = [channel("ch-1", "设计")];
+  harness.api.state.activeChannelId = "ch-1";
+  harness.api.setViewMode("channel");
+  harness.elementFor("#composerInput").value = "正常消息";
+  harness.api.render();
+  await settle();
+  ["#composerInput", "#btnAttach", "#btnMention", "#btnAsTask", "#btnSend"].forEach((selector) => {
+    assert.equal(harness.elementFor(selector).disabled, false, selector + " 在普通频道恢复可用");
+  });
+  assert.equal(
+    harness.elementFor("#composerHint").textContent,
+    catalogText(harness, "zh-CN", "composer.hint"),
+    "hint 恢复普通词条",
+  );
+  assert.equal(
+    harness.elementFor("#composerInput").placeholder,
+    catalogText(harness, "zh-CN", "header.channelPlaceholder").replace("{name}", "设计"),
+    "placeholder 恢复频道词条",
+  );
+
+  // 切到未删除 Agent 的正常私信。
+  harness.api.state.dms = [dmTarget("dm-3", "小蓝")];
+  harness.api.state.activeChannelId = "dm-3";
+  harness.api.setViewMode("channel");
+  harness.api.render();
+  await settle();
+  ["#composerInput", "#btnAttach", "#btnMention", "#btnAsTask", "#btnSend"].forEach((selector) => {
+    assert.equal(harness.elementFor(selector).disabled, false, selector + " 在正常私信恢复可用");
+  });
+  assert.equal(
+    harness.elementFor("#composerHint").textContent,
+    catalogText(harness, "zh-CN", "composer.hint"),
+    "正常私信的 hint 不是归档文案",
+  );
+  assert.equal(
+    harness.elementFor("#composerInput").placeholder,
+    catalogText(harness, "zh-CN", "header.dmPlaceholder").replace("{name}", "小蓝"),
+    "placeholder 恢复私信词条",
+  );
+});
+
+test("离线时「发送消息」禁用；恢复在线后按同一判据重新可用", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  harness.api.state.online = false;
+  await harness.clickRow("mem-1");
+  await settle();
+  assert.equal(harness.api.state.mode, "agent", "仍可打开详情（读路径不受离线影响）");
+  assert.equal(harness.elementFor("#btnAgentSendMessage").disabled, true, "离线时写入口禁用");
+
+  harness.api.state.online = true;
+  harness.api.render();
+  await flush();
+  assert.equal(harness.elementFor("#btnAgentSendMessage").disabled, false, "恢复在线后同一判据放行");
 });

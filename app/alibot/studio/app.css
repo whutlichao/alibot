@@ -73,6 +73,9 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   position: relative;
 }
 .icon-btn:hover { background: var(--surface); border-color: var(--border); color: var(--fg); }
+/* 已归档私信的工具键是真禁用：不给 hover 的高亮，免得看起来还能按。 */
+.icon-btn:disabled { opacity: .45; cursor: not-allowed; }
+.icon-btn:disabled:hover { background: transparent; border-color: transparent; color: var(--muted); }
 /* 提醒指示点：照原型 `alibot-app.html:101` 的形态（--error 底 + --panel 描边，右上角 6px 圆点）。
    圆点的**存在性**是后端事实（有提醒才出现），由 app.js 设 `hidden`，CSS 只管长相；
    `[hidden]` 那条全局规则负责让它消失。 */
@@ -90,11 +93,8 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   font-size: var(--fs-mono-micro); letter-spacing: var(--ls-wider); text-transform: uppercase;
   color: var(--faint); font-weight: var(--fw-semi);
 }
-/* 分组标题右侧的 `+`（原型 `:544` 的 `.group-label` 内 button）：新建私信入口与它同形。
-   尺寸 18×18 是原型 `:544` 的分组 `+` 尺寸，**低于**设计系统 `--tap-min: 44px`；本轮照原型
-   不放大（用户 D4 只修四处入口、不做逐项复核；代答登记：这是原型尺寸，不是新造的退化）。 */
-.group-label button { color: var(--faint); display: grid; place-items: center; width: var(--sp-8); height: var(--sp-8); border-radius: 4px; }
-.group-label button:hover { color: var(--fg); background: var(--surface); }
+/* 分组标题右侧的 `+` 已随「新建私信」弹窗一起删除（DM 入口改到 Agent 详情的「发送消息」），
+   因此这里不再有 `.group-label button` 的形状。 */
 .rail-empty { padding: var(--sp-3) var(--sp-5); font-size: var(--fs-sm); color: var(--faint); line-height: var(--lh-snug); }
 
 .nav-row {
@@ -353,6 +353,8 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   font-size: var(--fs-body); line-height: var(--lh-body); outline: none; max-height: 160px;
 }
 .composer-input::placeholder { color: var(--faint); }
+/* 已归档私信：输入框仍占位（历史可读），但明确不可写。 */
+.composer-input:disabled { color: var(--muted); cursor: not-allowed; }
 .composer-bar { display: flex; align-items: center; gap: var(--sp-2); padding: 5px 6px 6px var(--sp-4); }
 .composer-bar .sep { flex: 1; }
 .composer-hint { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); margin-right: var(--sp-4); }
@@ -930,8 +932,8 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .card.has-menu { position: relative; }
 .card.has-menu .card-title { padding-right: 22px; }
 /* 卡片右上角的「流转」图标按钮：热区取 `--control-h` = 32px（#191 交互规格的「≥ 32px 等效」，
-   沿用既有控件尺寸 token）。它**低于**设计系统 `--tap-min: 44px`——与 `.group-label button`
-   的同一条登记：这是本票判据的下限、不是新造的退化；触屏的主要入口是菜单项（44px）。
+   沿用既有控件尺寸 token）。它**低于**设计系统 `--tap-min: 44px`——这是本票判据的下限、
+   不是新造的退化；触屏的主要入口是菜单项（44px）。
    离线时禁用（不发得出去的写就不摆按钮）。 */
 .card-menu-btn {
   position: absolute; top: 3px; right: 3px; display: inline-flex; align-items: center; justify-content: center;

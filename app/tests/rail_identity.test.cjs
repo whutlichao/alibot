@@ -17,6 +17,10 @@
  *
  * 接缝沿用既有 `*.test.cjs` 那一套：`vm` 装载 `i18n.js` + `app.js`，`fetch` 注入替身，
  * DOM 用替身节点，不新开第二套前端框架。
+ *
+ * §6 覆盖面：私信按 `peer.deleted_at` 拆成「私信 / 已归档」两段（归档段空时整块隐藏）、
+ * 两段都沿用就地更新纪律、DM 行不画状态点、未读徽标保留、点归档行仍能读历史，
+ * 以及「新建私信」弹窗与分组 `+` 删除后的静态事实。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -271,12 +275,18 @@ function channel(id, name, unread) {
   return { id, name, last_seq: 0, last_read_seq: 0, unread_count: unread || 0 };
 }
 
-/** 一个私信 target（`state.dms` 的项；`kind: 'dm'` 是它与频道的唯一区别）。 */
-function dm(id, name, unread) {
+/** 一个私信 target（`state.dms` 的项；`kind: 'dm'` 是它与频道的唯一区别）。
+    `deletedAt` 非空 = agent 软删除后保留的**已归档**私信（判据就是后端的 `peer.deleted_at`）。 */
+function dm(id, name, unread, deletedAt) {
   return {
     id,
     kind: "dm",
-    peer: { id: "mem-2", display_name: name, avatar_slot: 2 },
+    peer: {
+      id: "mem-2",
+      display_name: name,
+      avatar_slot: 2,
+      deleted_at: deletedAt || null,
+    },
     last_seq: 0,
     last_read_seq: 0,
     unread_count: unread || 0,
@@ -404,7 +414,7 @@ function createHarness(options) {
       startup,
       "\nglobalThis.__railIdentityTest = { state, bindEvents, render, renderChannels, renderDms,"
         + " renderMembers, openAgentDetail, closeAgentDetail, onStreamMessage, onStreamStatus,"
-        + " onStreamTyping, setLocale, t };\n",
+        + " onStreamTyping, setLocale, selectTarget, t };\n",
     ),
     context,
     { filename: appPath },
@@ -429,6 +439,8 @@ function createHarness(options) {
     snapshot,
     channelList: elementFor("#channelList"),
     dmList: elementFor("#dmList"),
+    archiveList: elementFor("#dmArchiveList"),
+    archiveGroup: elementFor("#dmArchiveGroup"),
     memberList: elementFor("#memberList"),
     /** 冲刷所有挂起的定时器（`scheduleRead` 的标读回写），连同它派生的 `await` 链。 */
     async flushTimers() {
@@ -778,4 +790,113 @@ test("空态显隐：没有 Agent 时空态出现，有 Agent 时收起来", asy
   await settle();
   assert.equal(empty.hidden, false, "没有 Agent 时空态出现");
   assert.equal(harness.memberList.children.length, 0, "名单是空的");
+});
+
+/* ─── 6. 已归档私信：单独成段、就地更新不变、入口仍能读历史 ─────────────── */
+
+test("已删除 peer 的私信进「已归档」段，正常私信只在「私信」段；DM 行不再画状态点", async () => {
+  const harness = createHarness();
+  harness.api.state.dms = [
+    dm("dm-1", "小明", 2),
+    dm("dm-2", "小蓝", 3, "2026-05-01T00:00:00Z"),
+  ];
+  harness.api.render();
+  await settle();
+
+  assert.deepEqual(
+    harness.dmList.children.map((row) => row.dataset.dm),
+    ["dm-1"],
+    "「私信」段只放未删除 Agent 的私信",
+  );
+  assert.deepEqual(
+    harness.archiveList.children.map((row) => row.dataset.dm),
+    ["dm-2"],
+    "「已归档」段放 peer.deleted_at 非空的私信",
+  );
+  assert.equal(harness.archiveGroup.hidden, false, "有已归档私信时整段可见");
+  assert.equal(harness.elementFor("#dmListEmpty").hidden, true, "「私信」段非空时空态收起");
+
+  const normalRow = harness.dmList.children[0];
+  const archivedRow = harness.archiveList.children[0];
+  assert.equal(presenceOf(normalRow), null, "正常私信行不再画在线状态点");
+  assert.equal(presenceOf(archivedRow), null, "已归档私信行同样不画状态点");
+  assert.equal(badgeOf(normalRow).textContent, "2", "正常私信的未读徽标保留");
+  assert.equal(badgeOf(archivedRow).textContent, "3", "已归档私信的未读徽标也保留");
+});
+
+test("没有已归档私信时整段隐藏；全部归档时「私信」段显示空态", async () => {
+  const harness = createHarness();
+  harness.api.render();
+  await settle();
+  assert.equal(harness.archiveGroup.hidden, true, "没有已归档私信时整段隐藏");
+  assert.equal(harness.archiveList.children.length, 0);
+
+  harness.api.state.dms = [dm("dm-2", "小蓝", 0, "2026-05-01T00:00:00Z")];
+  harness.api.render();
+  await settle();
+  assert.equal(harness.archiveGroup.hidden, false, "有已归档私信时整段出现");
+  assert.equal(harness.dmList.children.length, 0, "正常段里不放已归档行");
+  assert.equal(harness.elementFor("#dmListEmpty").hidden, false, "「私信」段空态出现");
+});
+
+test("已归档段沿用就地更新：同一后端 id 在两次 render 之间是同一行节点", async () => {
+  const harness = createHarness();
+  harness.api.state.dms = [dm("dm-2", "小蓝", 1, "2026-05-01T00:00:00Z")];
+  harness.api.render();
+  await settle();
+
+  const row = harness.archiveList.children[0];
+  assert.ok(row, "已归档段里有一行");
+  resetMutations();
+  harness.api.render();
+  await settle();
+
+  assert.equal(harness.archiveList.children[0], row, "同一 id 不拆节点重建");
+  assert.deepEqual(
+    harness.mutations(harness.archiveList),
+    [],
+    "事实没变时整段零写入，实际：\n" + describe(harness.mutations(harness.archiveList)),
+  );
+});
+
+test("点「已归档」里的行仍能打开该私信读历史", async () => {
+  const archived = dm("dm-2", "小蓝", 0, "2026-05-01T00:00:00Z");
+  const harness = createHarness({
+    fetch: (url) => {
+      const target = String(url);
+      if (target === "/api/dms") {
+        return { ok: true, status: 200, json: async () => ({ dms: harness.api.state.dms }) };
+      }
+      if (target.endsWith("/messages")) {
+        return { ok: true, status: 200, json: async () => ({ messages: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  });
+  harness.api.state.dms = [archived];
+  harness.api.render();
+  await settle();
+
+  const row = harness.archiveList.children[0];
+  assert.ok(row, "已归档段里有一行");
+  await harness.archiveList.dispatchEvent({ type: "click", target: row });
+  await settle();
+
+  assert.equal(harness.api.state.activeChannelId, "dm-2", "当前 target 是这条已归档私信");
+  assert.equal(harness.api.state.mode, "channel", "仍停在消息视图（只读历史）");
+});
+
+test("新建私信弹窗与分组 `+` 一起删掉：正本与两份词条都不留死键", () => {
+  const html = fs.readFileSync(path.join(STUDIO_DIR, "index.html"), "utf8");
+  assert.equal(html.includes('id="dmOverlay"'), false, "新建私信弹窗整块删除");
+  assert.equal(html.includes('id="btnNewDm"'), false, "私信分组标题右侧的 `+` 删除");
+
+  const harness = createHarness();
+  for (const locale of ["zh-CN", "en"]) {
+    const dead = Object.keys(harness.catalogs[locale])
+      .filter((key) => key.startsWith("dm.") || key === "rail.newDmTitle");
+    assert.deepEqual(dead, [], locale + " 里不该再有弹窗专用键");
+    assert.ok(harness.catalogs[locale]["rail.groupArchivedDms"], "两份词条都有归档段标题：" + locale);
+    assert.ok(harness.catalogs[locale]["agentDetail.sendMessage"], "两份词条都有发送消息：" + locale);
+  }
 });

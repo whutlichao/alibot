@@ -277,7 +277,6 @@ const state = {
   providers: [],
   localProviders: [],
   consents: [],
-  dmSelectedAgentId: null,
   dataFaces: [],
   activeChannelId: null,
   messages: [],
@@ -361,6 +360,13 @@ function activeChannel() {
 
 function activeTarget() {
   return activeChannel() || state.dms.find((dm) => dm.id === state.activeChannelId) || null;
+}
+
+/** 当前 target 是否为已归档私信：peer 被软删除后 DM target 与历史消息都保留，人类面只读。
+    判据只有后端事实 `peer.deleted_at`（与 rail 的「已归档」段同一个谓词 `dmIsArchived`）。 */
+function activeArchivedDm() {
+  const target = activeTarget();
+  return Boolean(target && target.kind === 'dm' && dmIsArchived(target));
 }
 
 function setActiveChannelId(channelId) {
@@ -4001,6 +4007,8 @@ function sendMessage() {
   const body = input.value.trim();
   const target = activeTarget();
   if (!body || !target) return;
+  // 已归档私信只读：输入框与发送键都已经禁用，这里仍是 Enter / 程序化调用的**唯一**闸门。
+  if (activeArchivedDm()) return;
   if (!state.online) {
     toast(t('toast.sendBlockedOffline'), 'err');
     return;
@@ -4598,8 +4606,14 @@ function renderChannels() {
   $('#channelListEmpty').hidden = state.channels.length > 0;
 }
 
-/** 新建一行私信：结构与改前一致（头像 / 名字 / 状态点）。 */
-function dmRowNode(dm, status) {
+/** 私信行是否属于「已归档」段：判据只有后端事实 `peer.deleted_at`——Agent 软删除后 DM target、
+    历史消息与未读都保留，人类面把它们单独成段并只读呈现。这不是新的 target kind。 */
+function dmIsArchived(dm) {
+  return Boolean(dm && dm.peer && dm.peer.deleted_at);
+}
+
+/** 新建一行私信：结构与改前一致（头像 / 名字），**不再有状态点**——私信行不是在线指示器。 */
+function dmRowNode(dm) {
   const peer = dm.peer;
   const row = el('button', 'nav-row');
   row.type = 'button';
@@ -4607,31 +4621,28 @@ function dmRowNode(dm, status) {
   row.setAttribute('data-od-id', 'dm-' + dm.id);
   row.appendChild(avatarNode(peer.display_name, peer.avatar_slot, 'sm'));
   row.appendChild(el('span', 'grow', peer.display_name));
-  row.appendChild(presenceNode(status));
   return row;
 }
 
-/** 就地改写一行私信：当前行、头像与名字、状态点、未读徽标。 */
-function paintDmRow(row, dm, status) {
+/** 就地改写一行私信：当前行、头像与名字、未读徽标。 */
+function paintDmRow(row, dm) {
   const peer = dm.peer;
   syncActiveRow(row, targetRowIsCurrent(dm.id));
   syncAvatarCell(row, peer.display_name, peer.avatar_slot, 'sm');
   setRailCellText(row, 'grow', peer.display_name);
-  syncPresenceCell(row, status);
   syncUnreadBadge(row, dm.unread_count, 'unread-' + dm.id);
 }
 
+/** 两段私信各自沿用同一套就地更新契约（节点身份取自 `data-dm`）。
+    已归档段只在后端真的给出 `peer.deleted_at` 时出现——空段整块隐藏，不留一条空气分组。 */
 function renderDms() {
-  const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
-  const statusOfPeer = (dm) => statusOf(agentsById.get(dm.peer.id));
-  syncRailRows(
-    $('#dmList'),
-    state.dms,
-    'dm',
-    (dm) => dmRowNode(dm, statusOfPeer(dm)),
-    (row, dm) => paintDmRow(row, dm, statusOfPeer(dm)),
-  );
-  $('#dmListEmpty').hidden = state.dms.length > 0;
+  const active = state.dms.filter((dm) => !dmIsArchived(dm));
+  const archived = state.dms.filter(dmIsArchived);
+  syncRailRows($('#dmList'), active, 'dm', dmRowNode, paintDmRow);
+  syncRailRows($('#dmArchiveList'), archived, 'dm', dmRowNode, paintDmRow);
+  $('#dmListEmpty').hidden = active.length > 0;
+  const group = $('#dmArchiveGroup');
+  if (group) group.hidden = archived.length === 0;
 }
 
 /** 新建一行本机 Agent：左栏每一行都是**打开 Agent 详情**的入口，与频道 / 私信两段同形
@@ -5084,6 +5095,47 @@ function leaveAgentView() {
   renderRailRows();
 }
 
+/** 「发送消息」请求是否在途：唯一呈现状态，只控制头部按钮的禁用（不写业务正本）。 */
+let agentDmInFlight = false;
+
+/** 头部「发送消息」的可用性（打开 / 关闭详情、请求开始 / 结束、离线与重连都走这一条）。
+    离线纪律与页面其它写入口一致：不发得出去的写，就不摆一个能按的入口。 */
+function syncAgentSendButton() {
+  const button = $('#btnAgentSendMessage');
+  if (button) button.disabled = agentDmInFlight || !state.online;
+}
+
+/** Agent 详情头部的「发送消息」：DM 创建能力的**唯一**人类入口（私信分组原来的 `+` 与弹窗已删除）。
+
+    选中一个成员就同时表达了「和谁私信」，因此这里直接走幂等的 `POST /api/dms`：
+    已有 DM 复用、没有则新建（后端以 `created` 区分）。两条路径落到同一条「离开详情 →
+    进入该 DM → 聚焦 composer」；失败用词条 toast 说明，不静默。 */
+async function messageActiveAgent() {
+  const memberId = state.activeAgentId;
+  if (!memberId || agentDmInFlight) return;
+  agentDmInFlight = true;
+  syncAgentSendButton();
+  try {
+    const payload = await api('/api/dms', { method: 'POST', body: { agent_id: memberId } });
+    replaceDm(payload.dm);
+    // `selectTarget` 是进入一个 target 的既有唯一路径：它自己会离开 Agent 详情、切回消息视图，
+    // 并按新 target 重读消息 / 轮次结果 / 审批，最后落行与滚动。
+    await selectTarget(payload.dm.id);
+    $('#composerInput').focus();
+    // `selectTarget()` 自己吞掉**进入**时的读失败（toast + `state.online = false`）后正常返回：
+    // 那种情况已经有一条错误 toast，不再叠一条「已打开」的成功说法。
+    if (!state.online) return;
+    toast(payload.created
+      ? t('toast.dmCreated', { name: payload.dm.peer.display_name })
+      : t('toast.dmOpened', { name: payload.dm.peer.display_name }));
+  } catch (err) {
+    toast(t('toast.dmOpenFailed', { reason: err.message }), 'err');
+  } finally {
+    agentDmInFlight = false;
+    syncAgentSendButton();
+  }
+}
+
 /** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。 */
 function clearAgentDetail() {
   replaceChildren($('#adBody'), []);
@@ -5161,6 +5213,7 @@ function renderAgentDetail() {
   applyPresence($('#adPresence'), status);
   $('#adStatusText').textContent = statusLabel(status);
   $('#adName').textContent = agent.display_name;
+  syncAgentSendButton();
   if (agentDraftDirty()) {
     // 草稿脏时不重铺整页，但**只读**的那几块仍要跟着后端读数走：全局 MCP 的确认动作
     // 正是「点完要立刻变成已确认」，而它不经过草稿。这里只换那一节，输入控件原样留着。
@@ -7635,9 +7688,11 @@ function renderHeader() {
   syncChromeVisibility(state.mode);
   if (!hasTarget) {
     closeMentionPicker();
+    syncComposerLock(false);
     return;
   }
   const isDm = target.kind === 'dm';
+  const isArchivedDm = isDm && dmIsArchived(target);
   const name = isDm ? target.peer.display_name : target.name;
   // 名册是**频道**成员的只读全名单（`CONTEXT.md` **成员名册**）：DM 下没有这条面，
   // 入口随之隐藏——不留一个按下去什么都不发生的按钮。
@@ -7658,10 +7713,16 @@ function renderHeader() {
   renderChannelModePill();
   // desc 保持现状的写法：原型那句「懒创建会话」与 `CONTEXT.md` **私信**词条的
   // `_Avoid_`（明确否定「懒创建」）冲突，是原型的过时文案，不照抄。
-  $('#chanDesc').textContent = isDm ? t('header.dmDesc', { name }) : target.description || '';
-  $('#composerInput').placeholder = isDm
-    ? t('header.dmPlaceholder', { name })
-    : t('header.channelPlaceholder', { name });
+  // 已归档私信（peer 软删除）不留可写错觉：desc 与 placeholder 都说明「只读归档」。
+  $('#chanDesc').textContent = isArchivedDm
+    ? t('header.dmArchivedDesc')
+    : isDm ? t('header.dmDesc', { name }) : target.description || '';
+  $('#composerInput').placeholder = isArchivedDm
+    ? t('header.dmArchivedPlaceholder')
+    : isDm
+      ? t('header.dmPlaceholder', { name })
+      : t('header.channelPlaceholder', { name });
+  syncComposerLock(isArchivedDm);
 }
 
 /** 移动端顶部栏的标题（≤900px）：**当前 target 名**，形态跟频道头一致 ——
@@ -8206,8 +8267,25 @@ function syncSendButton() {
     !state.online ||
     !activeTarget() ||
     state.mode !== 'channel' ||
+    activeArchivedDm() ||
     // 上传还没落地时不能发：那会把还没拿到标识的文件丢在这条消息之外。
     attachingCount > 0;
+}
+
+/** composer 的只读锁（已归档私信）：正文、附件、@提及、作为任务发送一起禁用；
+    hint 由 `syncMentionHint()` 统一裁决（归档时它优先于 @ 补全的提示）。
+
+    这是输入区可用性的**唯一**落点：打开 target（`renderHeader()`）时按当前 target 判一次，
+    切回普通频道 / 正常私信时同一行代码把全部控件恢复，不各写一份。 */
+function syncComposerLock(archived) {
+  const locked = archived === undefined ? activeArchivedDm() : Boolean(archived);
+  const input = $('#composerInput');
+  if (input) input.disabled = locked;
+  ['#btnAttach', '#btnMention', '#btnAsTask', '#attachInput'].forEach((selector) => {
+    const node = $(selector);
+    if (node) node.disabled = locked;
+  });
+  syncMentionHint();
 }
 
 /** 清空主 composer 的输入区：正文、自适应高度、发送键、候选清单一起收。
@@ -8551,6 +8629,11 @@ function revealJoinedMember(memberId) {
 function syncMentionHint() {
   const hint = $('#composerHint');
   if (!hint) return;
+  // 归档私信优先：输入区不可用，此时提示 @ 选择器怎么操作是错的。
+  if (activeArchivedDm()) {
+    hint.textContent = t('composer.archivedHint');
+    return;
+  }
   if (!mentionPicker.open) {
     hint.textContent = t('composer.hint');
   } else if (mentionPicker.items.length) {
@@ -8729,67 +8812,8 @@ function closeChannelModal() {
 }
 
 /* ─── 新建私信 ──────────────────────────────────────────────────────── */
-function openDmModal() {
-  state.dmSelectedAgentId = null;
-  $('#dmFormError').hidden = true;
-  $('#dmCreateSubmit').disabled = true;
-  renderDmAgentPicker();
-  $('#dmOverlay').hidden = false;
-}
-
-function closeDmModal() {
-  $('#dmOverlay').hidden = true;
-}
-
-function renderDmAgentPicker() {
-  const agents = state.members.filter((member) => member.kind === 'agent');
-  const picker = $('#dmAgentPicker');
-  if (!agents.length) {
-    const empty = el('div', 'member-pick-empty', t('dm.noAgents'));
-    empty.setAttribute('data-od-id', 'dm-agent-picker-empty');
-    replaceChildren(picker, [empty]);
-    return;
-  }
-  const options = agents.map((member) => {
-    const selected = member.id === state.dmSelectedAgentId;
-    const option = el('button', 'member-opt' + (selected ? ' is-on' : ''));
-    option.type = 'button';
-    option.dataset.dmAgent = member.id;
-    option.setAttribute('aria-pressed', selected ? 'true' : 'false');
-    option.appendChild(avatarNode(member.display_name, member.avatar_slot, 'sm'));
-    option.appendChild(document.createTextNode(member.display_name));
-    return option;
-  });
-  replaceChildren(picker, options);
-}
-
-async function submitDm() {
-  if (!state.dmSelectedAgentId) return;
-  const submit = $('#dmCreateSubmit');
-  submit.disabled = true;
-  $('#dmFormError').hidden = true;
-  try {
-    const payload = await api('/api/dms', {
-      method: 'POST',
-      body: { agent_id: state.dmSelectedAgentId },
-    });
-    replaceDm(payload.dm);
-    setActiveChannelId(payload.dm.id);
-    closeDmModal();
-    await loadWorkspace({ silent: true, keepActive: true });
-    scrollToBottom();
-    $('#composerInput').focus();
-    toast(payload.created
-      ? t('toast.dmCreated', { name: payload.dm.peer.display_name })
-      : t('toast.dmOpened', { name: payload.dm.peer.display_name }));
-  } catch (err) {
-    const box = $('#dmFormError');
-    box.textContent = err.message;
-    box.hidden = false;
-  } finally {
-    submit.disabled = !state.dmSelectedAgentId;
-  }
-}
+/* DM 创建能力仍在，入口是 Agent 详情头部的「发送消息」（`messageActiveAgent()`）：
+   选中一个成员就同时表达了「和谁私信」，不再需要一个先选目标、再点创建的两步弹窗。 */
 
 function renderMemberPicker() {
   const agents = state.members.filter((member) => member.kind === 'agent');
@@ -9319,21 +9343,6 @@ function bindEvents() {
     });
   });
   $('#btnNewChannel').addEventListener('click', openChannelModal);
-  // 新建私信入口在「私信」分组标题的 `+` 上（#103 起从 rail-actions 挪来），点击行为不变。
-  $('#btnNewDm').addEventListener('click', openDmModal);
-  $('#dmCancel').addEventListener('click', closeDmModal);
-  $('#dmModalClose').addEventListener('click', closeDmModal);
-  $('#dmCreateSubmit').addEventListener('click', submitDm);
-  $('#dmOverlay').addEventListener('click', (event) => {
-    if (event.target.id === 'dmOverlay') closeDmModal();
-  });
-  $('#dmAgentPicker').addEventListener('click', (event) => {
-    const option = event.target.closest('[data-dm-agent]');
-    if (!option) return;
-    state.dmSelectedAgentId = option.dataset.dmAgent;
-    renderDmAgentPicker();
-    $('#dmCreateSubmit').disabled = !state.dmSelectedAgentId;
-  });
   $('#btnNewAgent').addEventListener('click', openAgentModal);
   $('#agentCancel').addEventListener('click', closeAgentModal);
   $('#agentModalClose').addEventListener('click', closeAgentModal);
@@ -9463,12 +9472,15 @@ function bindEvents() {
     // （桌面上这个动作是空转 —— 抽屉在那里根本不存在，`closeRail()` 是幂等的）。
     closeRail();
   });
-  $('#dmList').addEventListener('click', (event) => {
+  /** 两段私信共用同一条入口行为：行身份是 `data-dm`，归档只改变分段与可写性，不改变「点开读历史」。 */
+  const openDmRow = (event) => {
     const row = event.target.closest('[data-dm]');
     if (!row) return;
     selectTarget(row.dataset.dm);
     closeRail();
-  });
+  };
+  $('#dmList').addEventListener('click', openDmRow);
+  $('#dmArchiveList').addEventListener('click', openDmRow);
   // 左栏 Agent 行：打开**整页详情**（主线视图 `state.mode === 'agent'`）。行是 `<button>`，
   // 因此键盘也走同一条路径。
   $('#memberList').addEventListener('click', (event) => {
@@ -9478,6 +9490,8 @@ function bindEvents() {
 
   // Agent 详情是主线视图：关闭控件是它的唯一出口（正文里的动作在 `#adBody` 的委派里）。
   $('#btnAgentDetailClose').addEventListener('click', closeAgentDetail);
+  // 「发送消息」= DM 的创建 / 复用入口（分组 `+` 与弹窗删除后，这里是人能到达 DM 的入口）。
+  $('#btnAgentSendMessage').addEventListener('click', messageActiveAgent);
 
   // 页签：两个页签在同一内容区切换（任务的唯一入口）。
   // 任务页签带 `fromChannelTab`：进入看板时默认筛到**当前频道**（左栏/全工作区视角仍看全部）。
@@ -9775,7 +9789,6 @@ function bindEvents() {
       if (!$('#rosterOverlay').hidden) closeRosterModal();
       if (!$('#budgetOverlay').hidden) closeBudgetModal();
       if (!$('#channelOverlay').hidden) closeChannelModal();
-      if (!$('#dmOverlay').hidden) closeDmModal();
       if (!$('#agentOverlay').hidden) closeAgentModal();
       if (!$('#taskOverlay').hidden) closeTaskModal();
       // 移动端壳的左抽屉盖在内容上，因此 ESC 先收它（它比搜索视图更靠前），收到就到此为止。
