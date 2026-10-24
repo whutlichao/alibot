@@ -311,8 +311,9 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
   `~/.alibot/agents/<member_id>/reme/`，**一个成员一个**（PER_AGENT），跨 session / target / 项目
   共享召回。每轮用**本轮模型**装配 `ReMeMiddleware`（`top_k=5`；provider 不能携带工具时退化为
   `static_control`，`memory_search` 不送出去），轮次收尾自动写回、回复前按 BM25 关键词检索注入；
-  不启用 embedding，不新增凭据面。单 Agent 与 team 两处 finally 都在关闭 model client **之前**
-  `await close()`。记忆**不经过文件工具**：DM 只有当前会话卸载目录的只读 Read；无 workspace 的轮次
+  不启用 embedding，不新增凭据面。写回后索引由后台循环**最终一致**：刚写入或刚启动时立即检索可能
+  为空，下一轮回复的召回已可用——不要据此判记忆失效。单 Agent 与 team 两处 finally 都在关闭 model
+  client **之前** `await close()`。记忆**不经过文件工具**：DM 只有当前会话卸载目录的只读 Read；无 workspace 的轮次
   仍保留这个 Read（与记忆开关解耦）；`off` / `null` 不装中间件、不创建目录。
 - Docker 不可用时运行时停用工作区工具并给出可读降级，继续对话；不回落为本地项目工具。卸载文件写会话分区：有项目根时是主机 `.alibot/sessions/`（Docker 下显示为 `/workspace/.alibot/sessions/...`），无项目根时是 `<数据目录>/sessions/`（ADR-0032 §四）。
 
