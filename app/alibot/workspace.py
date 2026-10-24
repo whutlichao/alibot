@@ -55,11 +55,17 @@ GLOBAL_HOME_DIRNAME = ".alibot"
 #: bind 落地由后续票负责；它**不是**文件工具的根。
 DOCKER_GLOBAL_HOME = "/alibot-home"
 
-#: 规则落点：全局基座 ``agents/<member_id>/rules/AGENTS.md``；项目补充
-#: ``.alibot/rules/<member_id>/AGENTS.md``。
-RULES_DIR = "rules"
+#: 家目录里的规则文件名：全局基座 ``agents/<member_id>/AGENTS.md``；项目补充
+#: ``.alibot/agents/<member_id>/AGENTS.md``（ADR-0032：两层同构、扁平）。
 RULES_FILE = "AGENTS.md"
+#: 记忆索引文件名：家目录根下的 ``MEMORY.md``（应用可写，见 :func:`is_memory_file_path`）。
+MEMORY_FILE = "MEMORY.md"
 SKILLS_DIR = "skills"
+
+#: **会写盘的文件工具名**：只有它们受家目录白名单约束（``Read`` / ``Glob`` / ``Grep`` 只读，不查）。
+#: 白名单本身是 :func:`is_memory_file_path`——家目录根下的 ``MEMORY.md`` 与 ``<topic>.md``；
+#: ``AGENTS.md``、``mcp.json``、``skills/`` 与任意子目录一律只读（ADR-0032 §三）。
+MEMORY_WRITE_TOOLS = frozenset({"Write", "Edit"})
 
 #: Docker 工作区在容器内的固定根（AgentScope ``DockerWorkspace.workdir``）。
 DOCKER_WORKDIR = "/workspace"
@@ -186,8 +192,31 @@ def safe_partition_id(value: str) -> str:
 
 
 def session_partition_id(member_id: str, target_id: str) -> str:
-    """``.alibot/sessions/<session_id>`` 的 session id（每成员每 target 一个稳定分区）。"""
+    """会话状态的 session id（每成员每 target 一个稳定分区）。"""
     return safe_partition_id(f"{target_id}--{member_id}")
+
+
+def project_session_dir(project_root: str, session_id: str) -> str:
+    """有项目根的轮次：``<项目根>/.alibot/sessions/<session_id>``（ADR-0032 §四）。"""
+    return os.path.join(project_root, ALIBOT_DIR, SESSIONS_DIR, safe_partition_id(session_id))
+
+
+def data_session_dir(data_root: str, session_id: str) -> str:
+    """无项目根的轮次：``<数据目录>/sessions/<session_id>``（不再套一层 ``.alibot``）。"""
+    return os.path.join(data_root, SESSIONS_DIR, safe_partition_id(session_id))
+
+
+def is_memory_file_path(relative: str) -> bool:
+    """相对家目录根的路径是否落在**写入白名单**内。
+
+    只允许根下的一级文件：``MEMORY.md`` 或 ``<topic>.md``；``AGENTS.md`` 即使同名后缀也只读，
+    ``mcp.json`` 与任意子目录（``skills/x.md``）同理。这是应用面的机械判据，不是沙箱承诺。
+    """
+    parts = [part for part in re.split(r"[\\/]", str(relative)) if part not in ("", ".")]
+    if len(parts) != 1:
+        return False
+    name = parts[0]
+    return name.endswith(".md") and name not in (RULES_FILE, ".md")
 
 
 def _within(real: str, root: str) -> bool:
@@ -259,11 +288,14 @@ def docker_global_skills_home() -> str:
     return posixpath.join(DOCKER_GLOBAL_HOME, SKILLS_DIR)
 
 
-def docker_global_binds(member_id: str, *, global_root: str | None = None) -> tuple[tuple[str, str], ...]:
-    """全局层的两条只读 bind 规格 ``(宿主源, 容器内目标)``，顺序固定。
+def docker_global_binds(
+    member_id: str, *, global_root: str | None = None
+) -> tuple[tuple[str, str, str], ...]:
+    """全局层的两条 bind 规格 ``(宿主源, 容器内目标, 模式)``，顺序固定。
 
-    - 成员家目录 ``<全局根>/agents/<member_id>`` → ``/alibot-home/agents/<member_id>``；
-    - 公共技能库 ``<全局根>/skills`` → ``/alibot-home/skills``。
+    - 成员家目录 ``<全局根>/agents/<member_id>`` → ``/alibot-home/agents/<member_id>``，**``rw``**
+      （ADR-0032 §五：记忆文件可写，白名单在应用面执行）；
+    - 公共技能库 ``<全局根>/skills`` → ``/alibot-home/skills``，仍 **``ro``**。
 
     宿主目录**不存在就跳过**该条，且这里**只判断、不创建**（ADR-0031：全局层是人的维护面，
     不能依赖 Docker daemon 对不存在的 bind 源自动建目录）。数据目录（``<全局根>/data``）与
@@ -271,10 +303,23 @@ def docker_global_binds(member_id: str, *, global_root: str | None = None) -> tu
     """
     base = global_root if global_root is not None else global_home_root()
     candidates = (
-        (global_member_home(member_id, root=base), docker_global_member_home(member_id)),
-        (os.path.join(base, SKILLS_DIR), docker_global_skills_home()),
+        (global_member_home(member_id, root=base), docker_global_member_home(member_id), "rw"),
+        (os.path.join(base, SKILLS_DIR), docker_global_skills_home(), "ro"),
     )
-    return tuple((host, target) for host, target in candidates if os.path.isdir(host))
+    return tuple((host, target, mode) for host, target, mode in candidates if os.path.isdir(host))
+
+
+def ensure_member_home(global_root: str, member_id: str) -> str:
+    """创建（必要时）成员家目录 ``<全局根>/agents/<member_id>`` 这一级。
+
+    ADR-0032 §三：应用**可以**建这一级（含 ``MEMORY.md``，由记忆中间件写入），但**不**创建
+    ``<全局根>/skills/``、不创建 ``AGENTS.md``、不创建 ``mcp.json``。根外 symlink 祖先直接拒绝
+    （``WorkspaceConfigError``），调用方按「该层缺席」降级。
+    """
+    root = os.path.realpath(global_root)
+    home = global_member_home(member_id, root=root)
+    ensure_state_partition(root, home)
+    return home
 
 
 def _resolve_read_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
@@ -343,21 +388,21 @@ def _read_layer_text(root: str | None, parts: tuple[str, ...], *, layer: str) ->
 
 
 def read_global_rules(global_root: str, member_id: str) -> str | None:
-    """读取全局基座 ``agents/<member_id>/rules/AGENTS.md``；缺席时返回 ``None``。"""
+    """读取全局基座 ``agents/<member_id>/AGENTS.md``；缺席时返回 ``None``。"""
     return _read_layer_text(
         global_root,
-        (AGENTS_DIR, safe_partition_id(member_id), RULES_DIR, RULES_FILE),
+        (AGENTS_DIR, safe_partition_id(member_id), RULES_FILE),
         layer="global layer",
     )
 
 
 def read_project_rules(project_root: str | None, member_id: str) -> str | None:
-    """读取项目补充 ``.alibot/rules/<member_id>/AGENTS.md``；无项目根时直接缺席。"""
+    """读取项目补充 ``.alibot/agents/<member_id>/AGENTS.md``；无项目根时直接缺席。"""
     if project_root is None:
         return None
     return _read_layer_text(
         project_root,
-        (ALIBOT_DIR, RULES_DIR, safe_partition_id(member_id), RULES_FILE),
+        (ALIBOT_DIR, AGENTS_DIR, safe_partition_id(member_id), RULES_FILE),
         layer="project layer",
     )
 
@@ -371,29 +416,76 @@ def _reject_dotdot_segments(pattern: Any, root: str) -> None:
 
 
 class WorkspaceRootGuard(ToolMiddlewareBase):
-    """调用前把路径锚到根并做 ``realpath`` 根检查；根外直接产出 ERROR chunk。"""
+    """调用前把路径锚到根并做 ``realpath`` 根检查；根外直接产出 ERROR chunk。
 
-    def __init__(self, root: str) -> None:
+    ``homes`` 是**显式白名单例外**（ADR-0032 §五）：家目录（项目层与全局层）的
+    ``(宿主路径, 模型可见路径)`` 对。它**不**把家目录变成工作根——相对路径仍从项目根起算，
+    只对**绝对路径**生效；写只对白名单内的文件（:func:`is_memory_file_path`）放行。
+    """
+
+    def __init__(self, root: str, *, homes: Sequence[tuple[str, str]] = ()) -> None:
         self.root = root
+        self.homes = tuple((os.path.realpath(host), visible) for host, visible in homes)
 
     def resolve(self, raw: Any) -> str:
         """把工具输入规范化为根内绝对路径；根外抛 :class:`WorkspaceRootViolation`。"""
         return resolve_in_root(raw, self.root)
 
-    async def on_tool_call(  # type: ignore[override]  # 框架基类把它标成协程，实际按异步生成器消费
+    def _match_home(self, raw: Any) -> tuple[str, str] | None:
+        """工具输入落在某个家目录内 ⇒ ``(模型可见的家目录, 相对路径)``；否则 ``None``。"""
+        if not self.homes or not isinstance(raw, str) or not os.path.isabs(raw):
+            return None
+        real = os.path.realpath(raw)
+        for host, visible in self.homes:
+            if not _within(real, host):
+                continue
+            relative = os.path.relpath(real, host)
+            return visible, ("" if relative == "." else relative)
+        return None
+
+    def _rewrite_home(self, visible: str, relative: str) -> str:
+        """把家目录内的相对路径还原成模型可见的绝对路径。"""
+        return visible if not relative else os.path.join(visible, relative)
+
+    async def on_tool_call(
         self,
         tool: Any,
         input_kwargs: dict[str, Any],
         next_handler: Callable[..., AsyncGenerator[ToolChunk, None]],
-    ) -> AsyncGenerator[ToolChunk, None]:
+    ) -> Any:
+        """框架把基类标成协程、实际按异步生成器消费。
+
+        返回类型写 ``Any``（与 ``PartitionPermissionMiddleware.on_check_permission`` 同一约定）：
+        ``AsyncGenerator`` 会与上游声明的 ``Coroutine`` 冲突而需要 ``# type: ignore[override]``，
+        那是一条**看起来像**未使用、实则必需的 ignore（pi-lens 自带的 mypy 看不到 agentscope 时会
+        把它误报成 unused）。``Any`` 对两种形状都兼容，行为零变化。
+        """
         key = PATH_ARGUMENTS.get(str(getattr(tool, "name", "")))
         if key is None:  # 不在文件工具清单里：不改变行为（本模块也不挂 Bash）
             async for chunk in next_handler(**input_kwargs):
                 yield chunk
             return
 
+        name = str(getattr(tool, "name", ""))
+        raw = input_kwargs.get(key)
+        matched = self._match_home(raw)
+        if matched is not None:
+            visible, relative = matched
+            if name in MEMORY_WRITE_TOOLS and not is_memory_file_path(relative):
+                yield ToolChunk(
+                    content=[TextBlock(text=f"Error: path is read-only: {raw!r}")],
+                    state=ToolResultState.ERROR,
+                    is_last=True,
+                )
+                return
+            rewritten = dict(input_kwargs)
+            rewritten[key] = self._rewrite_home(visible, relative)
+            async for chunk in next_handler(**rewritten):
+                yield chunk
+            return
+
         try:
-            real = self.resolve(input_kwargs.get(key))
+            real = self.resolve(raw)
             if tool.name == "Glob":
                 _reject_dotdot_segments(input_kwargs.get("pattern"), self.root)
         except WorkspaceRootViolation as error:
@@ -467,9 +559,9 @@ class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
     #: 频道级的容器出网开关；缺省 ``False``，于是「忘记赋值」也不会放开出网。
     docker_egress: bool = False
 
-    #: 全局层只读 bind 规格 ``(宿主源, 容器内目标)``；由装配点在 ``initialize()`` 之前赋值，
+    #: 全局层 bind 规格 ``(宿主源, 容器内目标, 模式)``；由装配点在 ``initialize()`` 之前赋值，
     #: 缺省空元组 = 没有全局层（不创建目录、不挂载）。
-    global_binds: tuple[tuple[str, str], ...] = ()
+    global_binds: tuple[tuple[str, str, str], ...] = ()
 
     async def _create_and_start_container(self) -> None:
         """覆写上游创建路径，把 ``HostConfig.NetworkMode`` 写进容器配置（#187）。
@@ -498,10 +590,15 @@ class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
         self._backend = DockerBackend(self._container, DOCKER_WORKDIR)
 
 
-def _guarded_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
+def _guarded_tools(
+    workspace: WorkspaceBase,
+    root: str,
+    *,
+    homes: Sequence[tuple[str, str]] = (),
+) -> list[Any]:
     """五个文件工具各挂根检查；**刻意不调用** ``workspace.list_tools()``，因为后者无条件含 Bash。"""
     backend = workspace.get_backend()
-    guard = WorkspaceRootGuard(root)
+    guard = WorkspaceRootGuard(root, homes=homes)
     middlewares: list[ToolMiddlewareBase] = [guard]
     return [
         Edit(backend=backend, middlewares=middlewares),
@@ -546,16 +643,37 @@ def local_shell_tool(root: str) -> Any:
 
 
 def ensure_state_partition(root: str, path: str) -> None:
-    """创建 ``.alibot`` 分区，并在**创建前**拒绝根外 symlink 祖先（不产生根外状态写入）。"""
+    """创建 ``.alibot`` 分区，并在**创建前**拒绝根外 symlink 祖先（不产生根外状态写入）。
+
+    创建失败（父路径是普通文件、无写权限、磁盘满等）一律转成可读的
+    :class:`WorkspaceConfigError`：调用方（工作区装配、会话状态、记忆家目录）都按「该分区不可用」
+    统一处理，不把底层 ``OSError`` 直接泄给模型或用户。
+    """
     current = root
     relative = os.path.relpath(path, root)
     for part in relative.split(os.sep):
         current = os.path.join(current, part)
         if os.path.lexists(current) and not _within(os.path.realpath(current), root):
             raise WorkspaceConfigError(f"workspace state partition escapes root: {current!r}")
-    os.makedirs(path, exist_ok=True)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as error:
+        raise WorkspaceConfigError(f"workspace state partition is unusable: {path!r} ({error})") from error
     if not _within(os.path.realpath(path), root):
         raise WorkspaceConfigError(f"workspace state partition escapes root: {path!r}")
+
+
+def _memory_homes(member_id: str, *, global_home: str | None, docker: bool) -> tuple[tuple[str, str], ...]:
+    """记忆家目录的 ``(宿主路径, 模型可见路径)`` 白名单（ADR-0032 §五）。
+
+    只在**长期记忆开启**时由装配点传入 ``global_home``：未开启时两处都不挂，因此全局家目录
+    不进入文件工具的白名单（不建目录、不放开写入）。Docker 下全局家目录的可见路径是容器内
+    挂载点 ``/alibot-home/agents/<member_id>``。
+    """
+    if not global_home:
+        return ()
+    host = global_member_home(member_id, root=global_home)
+    return ((host, docker_global_member_home(member_id) if docker else host),)
 
 
 async def assemble_local_workspace(
@@ -563,15 +681,21 @@ async def assemble_local_workspace(
     *,
     member_id: str,
     session_id: str,
+    global_home: str | None = None,
 ) -> LocalWorkspaceMount:
-    """按频道项目根装配一轮可用的 LocalWorkspace（文件工具受限、默认无 Bash）。"""
+    """按频道项目根装配一轮可用的 LocalWorkspace（文件工具受限、默认无 Bash）。
+
+    ``global_home`` 只在长期记忆开启时给出（生产 = ``workspace.global_home_root()``）：它让文件
+    工具能读写全局家目录根下的记忆文件，**不**把家目录变成工作根。项目层家目录总是加入。
+    """
     root = validate_workspace_root(settings.root)
     member = safe_partition_id(member_id)
     session = safe_partition_id(session_id)
     agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
-    session_dir = os.path.join(root, ALIBOT_DIR, SESSIONS_DIR, session)
+    session_dir = project_session_dir(root, session)
     ensure_state_partition(root, agent_dir)
     ensure_state_partition(root, session_dir)
+    homes = ((agent_dir, agent_dir), *_memory_homes(member, global_home=global_home, docker=False))
 
     workspace = ProjectLocalWorkspace(workdir=root)
     await workspace.initialize()
@@ -582,7 +706,7 @@ async def assemble_local_workspace(
         member_id=member,
         session_id=session,
         workspace=workspace,
-        tools=_guarded_tools(workspace, root),
+        tools=_guarded_tools(workspace, root, homes=homes),
         agent_dir=agent_dir,
         session_dir=session_dir,
     )
@@ -609,18 +733,19 @@ def docker_container_config(
     env: Mapping[str, str] | None,
     host_workdir: str | None,
     network_mode: str,
-    global_binds: Sequence[tuple[str, str]] = (),
+    global_binds: Sequence[tuple[str, str, str]] = (),
 ) -> dict[str, Any]:
-    """容器配置 dict（含 ``HostConfig``）：上游 2.0.10 的构造 + 网络策略 + 全局层只读挂载。
+    """容器配置 dict（含 ``HostConfig``）：上游 2.0.10 的构造 + 网络策略 + 全局层挂载。
 
     逐字对齐 ``DockerWorkspace._create_and_start_container`` 的 config（镜像 / ``sleep infinity`` /
     working dir / label / env / bind mount），唯一多出来的是 ``HostConfig["NetworkMode"]`` 与
-    ``global_binds`` 追加的只读条目——上游**没有任何**网络或额外 bind 的参数位
+    ``global_binds`` 追加的条目——上游**没有任何**网络或额外 bind 的参数位
     （``create_or_replace(config=…)`` 也不接收）。抽成纯函数是为了让「网络模式与 bind mount 都写进了
     容器配置」这条判据**不需要 daemon** 就能断言。
 
-    ``global_binds`` 每项是 ``(宿主源, 容器内目标)``，按给定顺序追加在 ``/workspace:rw`` 之后，
-    统一带 ``:ro``；调用方（:func:`docker_global_binds`）已剔除不存在的宿主目录。
+    ``global_binds`` 每项是 ``(宿主源, 容器内目标, 模式)``，按给定顺序追加在 ``/workspace:rw`` 之后；
+    模式由调用方给出（ADR-0032 §五：成员家目录 ``rw``、公共技能库 ``ro``），
+    调用方（:func:`docker_global_binds`）已剔除不存在的宿主目录。
     """
     config: dict[str, Any] = {
         "Image": image_tag,
@@ -638,8 +763,8 @@ def docker_container_config(
     binds: list[str] = []
     if host_workdir is not None:
         binds.append(f"{os.path.abspath(host_workdir)}:{DOCKER_WORKDIR}:rw")
-    for host_source, container_target in global_binds:
-        binds.append(f"{os.path.abspath(host_source)}:{container_target}:ro")
+    for host_source, container_target, mode in global_binds:
+        binds.append(f"{os.path.abspath(host_source)}:{container_target}:{mode}")
     if binds:
         host_config["Binds"] = binds
     config["HostConfig"] = host_config
@@ -698,20 +823,45 @@ def resolve_in_container_root(raw: Any, root: str) -> str:
 
 
 class ContainerRootGuard(WorkspaceRootGuard):
-    """Docker 文件工具的根检查：容器路径先映射到 host_workdir 再 ``realpath``。"""
+    """Docker 文件工具的根检查：容器路径先映射到 host_workdir 再 ``realpath``。
 
-    def __init__(self, root: str) -> None:
-        super().__init__(DOCKER_WORKDIR)
+    ``homes`` 是 ``(宿主家目录, 容器内家目录)``：全局家目录挂在 ``/alibot-home/agents/<id>``，
+    它**不是**文件工具的根，只作为记忆写入的显式白名单例外（ADR-0032 §五）。
+    """
+
+    def __init__(self, root: str, *, homes: Sequence[tuple[str, str]] = ()) -> None:
+        super().__init__(DOCKER_WORKDIR, homes=homes)
         self.host_root = root
 
     def resolve(self, raw: Any) -> str:
         return resolve_in_container_root(raw, self.host_root)
 
+    def _match_home(self, raw: Any) -> tuple[str, str] | None:
+        if not self.homes or not isinstance(raw, str) or not raw.startswith("/"):
+            return None
+        for host, visible in self.homes:
+            if raw != visible and not raw.startswith(visible + "/"):
+                continue
+            relative = raw[len(visible) :].lstrip("/")
+            host_candidate = os.path.join(host, relative) if relative else host
+            if not _within(os.path.realpath(host_candidate), host):
+                return None
+            return visible, relative
+        return None
 
-def _docker_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
+    def _rewrite_home(self, visible: str, relative: str) -> str:
+        return visible if not relative else posixpath.join(visible, relative)
+
+
+def _docker_tools(
+    workspace: WorkspaceBase,
+    root: str,
+    *,
+    homes: Sequence[tuple[str, str]] = (),
+) -> list[Any]:
     """容器内六个工具：Bash 默认开放（ADR-0021 §二），五个文件工具仍做 ``/workspace`` 根检查。"""
     backend = workspace.get_backend()
-    guard = ContainerRootGuard(root)
+    guard = ContainerRootGuard(root, homes=homes)
     middlewares: list[ToolMiddlewareBase] = [guard]
     return [
         Bash(backend=backend),
@@ -766,7 +916,9 @@ class _DockerEntry:
     active: int = 0
     image: str | None = None
     egress: bool = False
-    global_binds: tuple[tuple[str, str], ...] = ()
+    global_binds: tuple[tuple[str, str, str], ...] = ()
+    #: 全局根（只在长期记忆开启时非空）：文件工具的记忆白名单从它算出。
+    global_home: str | None = None
 
 
 _pool: dict[tuple[str, str], _DockerEntry] = {}
@@ -863,9 +1015,8 @@ def _docker_reason(error: BaseException, locale: Locale, *, timeout: float, imag
 
 def _ensure_layout(root: str, member_id: str, session_id: str) -> tuple[str, str]:
     member = safe_partition_id(member_id)
-    session = safe_partition_id(session_id)
     agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
-    session_dir = os.path.join(root, ALIBOT_DIR, SESSIONS_DIR, session)
+    session_dir = project_session_dir(root, session_id)
     ensure_state_partition(root, agent_dir)
     ensure_state_partition(root, session_dir)
     return agent_dir, session_dir
@@ -902,13 +1053,14 @@ async def _rebind_entry(entry: _DockerEntry) -> bool:
 
 def _new_mount(entry: _DockerEntry, *, reused: bool) -> DockerWorkspaceMount:
     agent_dir, session_dir = _ensure_layout(entry.root, entry.member_id, entry.session_id)
+    homes = _memory_homes(entry.member_id, global_home=entry.global_home, docker=True)
     return DockerWorkspaceMount(
         settings=entry.settings,
         root=entry.root,
         member_id=entry.member_id,
         session_id=entry.session_id,
         workspace=entry.workspace,
-        tools=_docker_tools(entry.workspace, entry.root),
+        tools=_docker_tools(entry.workspace, entry.root, homes=homes),
         agent_dir=agent_dir,
         session_dir=session_dir,
         workspace_id=entry.workspace_id,
@@ -924,8 +1076,13 @@ async def assemble_docker_workspace(
     member_id: str,
     session_id: str,
     locale: Locale = SOURCE_LOCALE,
+    global_home: str | None = None,
 ) -> DockerWorkspaceMount:
-    """按 Agent/会话装配 DockerWorkspace（稳定 id、挂载频道根、env 白名单、失败即离线）。"""
+    """按 Agent/会话装配 DockerWorkspace（稳定 id、挂载频道根、env 白名单、失败即离线）。
+
+    ``global_home`` 只在长期记忆开启时给出：它同时决定容器里的记忆白名单（``/alibot-home/agents/<id>``
+    对文件工具可见，ADR-0032 §五）与池复用判定（开 / 关记忆是两个不同的容器装配）。
+    """
     if not settings.is_docker:
         raise ValueError(f"not a docker workspace: {settings.backend!r}")
 
@@ -935,7 +1092,12 @@ async def assemble_docker_workspace(
     key = (member, session)
     workspace_id = docker_workspace_id(member, session)
     container_name = f"as_ws_{workspace_id}"
-    # 全局层只读 bind 规格（宿主目录缺失则少一条）；在池复用判定与 initialize() 之前算好。
+    # 长期记忆开启时先建成员家目录这一级（ADR-0032 §三允许，且**不**建 skills/ 与 mcp.json）：
+    # bind 规格按「宿主目录是否存在」计算，晚建就会让**第一轮**看不到全局家目录。
+    if global_home is not None:
+        with suppress(WorkspaceConfigError, OSError):
+            ensure_member_home(global_home, member)
+    # 全局层 bind 规格（宿主目录缺失则少一条）；在池复用判定与 initialize() 之前算好。
     global_binds = docker_global_binds(member)
 
     # CI（Linux runner）回归：容器以 root 创建 `/workspace/.alibot/...`，bind mount 上这些
@@ -968,6 +1130,10 @@ async def assemble_docker_workspace(
     if pooled is not None:
         if await _rebind_entry(pooled):
             with _pool_lock:
+                # 记忆开关是**每轮**入参（`memory_mode` 可随时改）：池里的容器可以复用，但
+                # 文件工具的记忆白名单必须按本轮取值重算，否则 off→agentic 挂不上、
+                # agentic→off 又仍然放行（ADR-0032 §三「未开启两处都不挂」）。
+                pooled.global_home = global_home
                 pooled.active += 1
                 pooled.last_used = time.monotonic()
             clear_docker_failure(member)
@@ -1037,6 +1203,7 @@ async def assemble_docker_workspace(
         image=image,
         egress=settings.docker_egress,
         global_binds=global_binds,
+        global_home=global_home,
     )
     with _pool_lock:
         _pool[key] = entry
@@ -1214,6 +1381,7 @@ async def assemble_workspace(
     member_id: str,
     session_id: str,
     locale: Locale = SOURCE_LOCALE,
+    global_home: str | None = None,
 ) -> Any:
     """按后端分派装配；**不静默回落**（local 与 docker 各自失败即失败）。"""
     if settings.is_docker:
@@ -1222,9 +1390,11 @@ async def assemble_workspace(
             member_id=member_id,
             session_id=session_id,
             locale=locale,
+            global_home=global_home,
         )
     return await assemble_local_workspace(
         settings,
         member_id=member_id,
         session_id=session_id,
+        global_home=global_home,
     )

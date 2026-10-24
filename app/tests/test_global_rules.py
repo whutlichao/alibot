@@ -118,14 +118,16 @@ def _global_root(tmp_path: Path) -> Path:
 
 
 def _write_global_rule(global_root: Path, member_id: str, text: str) -> Path:
-    path = global_root / "agents" / member_id / "rules" / "AGENTS.md"
+    """ADR-0032：全局基座直接是 ``agents/<member_id>/AGENTS.md``（扁平，没有 ``rules/`` 中间层）。"""
+    path = global_root / "agents" / member_id / "AGENTS.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
 
 
 def _write_project_rule(project_root: Path, member_id: str, text: str) -> Path:
-    path = project_root / ".alibot" / "rules" / member_id / "AGENTS.md"
+    """ADR-0032：项目补充直接是 ``.alibot/agents/<member_id>/AGENTS.md``（两层同构）。"""
+    path = project_root / ".alibot" / "agents" / member_id / "AGENTS.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
@@ -413,7 +415,7 @@ def test_broken_rule_files_are_absent_with_a_readable_log(
         pytest.skip("root 无视文件权限位；『不可读』只有非 root 才可构造")
     database, agent, channel, project = _seed(tmp_path)
     try:
-        global_path = _global_root(tmp_path) / "agents" / agent["id"] / "rules" / "AGENTS.md"
+        global_path = _global_root(tmp_path) / "agents" / agent["id"] / "AGENTS.md"
         global_path.parent.mkdir(parents=True, exist_ok=True)
         project_path = _write_project_rule(project, agent["id"], PROJECT_RULE)
         if shape == "non-utf8":
@@ -467,8 +469,8 @@ def test_symlink_outside_the_global_root_is_rejected(
     database, agent, channel, project = _seed(tmp_path)
     try:
         outside = tmp_path / "outside"
-        (outside / "rules").mkdir(parents=True)
-        (outside / "rules" / "AGENTS.md").write_text("根外秘密。\n", encoding="utf-8")
+        outside.mkdir(parents=True)
+        (outside / "AGENTS.md").write_text("根外秘密。\n", encoding="utf-8")
         member_dir = _global_root(tmp_path) / "agents" / agent["id"]
         _write_project_rule(project, agent["id"], PROJECT_RULE)
         if escape == "ancestor":
@@ -476,9 +478,8 @@ def test_symlink_outside_the_global_root_is_rejected(
             member_dir.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(outside, member_dir)
         else:
-            rules_dir = member_dir / "rules"
-            rules_dir.mkdir(parents=True, exist_ok=True)
-            os.symlink(outside / "rules" / "AGENTS.md", rules_dir / "AGENTS.md")
+            member_dir.mkdir(parents=True, exist_ok=True)
+            os.symlink(outside / "AGENTS.md", member_dir / "AGENTS.md")
 
         seam = AgentScopeAgentSeam(
             timeout_seconds=10.0,
@@ -519,7 +520,7 @@ def test_a_round_neither_creates_nor_changes_the_global_or_project_rule_dirs(
         (global_root / "skills" / "shared").mkdir(parents=True)
         (global_root / "skills" / "shared" / "SKILL.md").write_text("公共技能\n", encoding="utf-8")
         before_global = _listing(global_root)
-        assert not (project / ".alibot" / "rules").exists()
+        assert not (project / ".alibot" / "agents" / agent["id"]).exists()
 
         seam = AgentScopeAgentSeam(
             timeout_seconds=10.0,
@@ -534,8 +535,13 @@ def test_a_round_neither_creates_nor_changes_the_global_or_project_rule_dirs(
         )
         assert outcome.status == "replied", outcome.reason
 
-        assert _listing(global_root) == before_global, "全局层是人的维护面：应用不得创建或写入"
-        assert not (project / ".alibot" / "rules").exists(), "项目补充目录也不得被自动创建"
+        # ADR-0032：应用可以建 ``agents/<member_id>/`` 这一级（记忆落点），但**不**建
+        # ``AGENTS.md`` / ``mcp.json`` / ``skills/``——规则文件仍只由人维护。
+        created = sorted(set(_listing(global_root)) - set(before_global))
+        assert not (project / ".alibot" / "agents" / agent["id"] / "AGENTS.md").exists(), (
+            "项目补充规则文件不得被自动创建"
+        )
+        assert not any(path.endswith("mcp.json") for path in created), created
     finally:
         database.close()
 
@@ -684,26 +690,53 @@ def test_resolve_global_read_path_guards_and_returns_only_existing_paths(tmp_pat
     global_root = _global_root(tmp_path)
     legal = _write_global_rule(global_root, "mem_reader", GLOBAL_RULE)
     outside = tmp_path / "outside"
-    (outside / "rules").mkdir(parents=True)
-    (outside / "rules" / "AGENTS.md").write_text("根外秘密。\n", encoding="utf-8")
+    outside.mkdir(parents=True)
+    (outside / "AGENTS.md").write_text("根外秘密。\n", encoding="utf-8")
     # 根外 symlink 祖先。
     os.symlink(outside, global_root / "agents" / "mem_ancestor")
     # 根外目标 symlink。
-    target_rules = global_root / "agents" / "mem_target" / "rules"
-    target_rules.mkdir(parents=True)
-    os.symlink(outside / "rules" / "AGENTS.md", target_rules / "AGENTS.md")
+    target_dir = global_root / "agents" / "mem_target"
+    target_dir.mkdir(parents=True)
+    os.symlink(outside / "AGENTS.md", target_dir / "AGENTS.md")
 
     before = _listing(global_root)
     # 成员家目录内的合法路径：返回 realpath（只读，不创建任何东西）。
-    assert resolve_global_read_path(str(global_root), "agents", "mem_reader", "rules", "AGENTS.md") == str(
+    assert resolve_global_read_path(str(global_root), "agents", "mem_reader", "AGENTS.md") == str(
         legal.resolve()
     )
     # 路径不存在（含父目录缺失）⇒ None，由调用方按「该层缺席」处理。
-    assert resolve_global_read_path(str(global_root), "agents", "mem_reader", "rules", "missing.md") is None
-    assert resolve_global_read_path(str(global_root), "agents", "nobody", "rules", "AGENTS.md") is None
+    assert resolve_global_read_path(str(global_root), "agents", "mem_reader", "missing.md") is None
+    assert resolve_global_read_path(str(global_root), "agents", "nobody", "AGENTS.md") is None
     # 根外 symlink 祖先 / 根外目标一律拒绝。
-    assert resolve_global_read_path(str(global_root), "agents", "mem_ancestor", "rules", "AGENTS.md") is None
-    assert resolve_global_read_path(str(global_root), "agents", "mem_target", "rules", "AGENTS.md") is None
+    assert resolve_global_read_path(str(global_root), "agents", "mem_ancestor", "AGENTS.md") is None
+    assert resolve_global_read_path(str(global_root), "agents", "mem_target", "AGENTS.md") is None
 
     # 守卫只读：调用前后全局根的目录清单不变。
     assert _listing(global_root) == before
+
+
+# ─── 12. 扁平路径（ADR-0032）：两段文件规则从家目录根读出，中间层不存在 ─────
+def test_the_two_rule_segments_are_read_from_flat_home_paths(tmp_path: Path) -> None:
+    """``agents/<id>/AGENTS.md`` 与 ``.alibot/agents/<id>/AGENTS.md``；``rules/`` 中间层不再读取。"""
+    from alibot.workspace import read_global_rules, read_project_rules
+
+    global_root = _global_root(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    flat_global = _write_global_rule(global_root, "mem_flat", GLOBAL_RULE)
+    flat_project = _write_project_rule(project, "mem_flat", PROJECT_RULE)
+    # 旧路径上的同名文件：扁平路径生效后它**不该**被读到（迁移是人的显式动作）。
+    legacy_global = global_root / "agents" / "mem_flat" / "rules" / "AGENTS.md"
+    legacy_global.parent.mkdir(parents=True)
+    legacy_global.write_text("旧全局基座，不应被读取。\n", encoding="utf-8")
+    legacy_project = project / ".alibot" / "rules" / "mem_flat" / "AGENTS.md"
+    legacy_project.parent.mkdir(parents=True)
+    legacy_project.write_text("旧项目补充，不应被读取。\n", encoding="utf-8")
+
+    assert flat_global == global_root / "agents" / "mem_flat" / "AGENTS.md"
+    assert flat_project == project / ".alibot" / "agents" / "mem_flat" / "AGENTS.md"
+    assert read_global_rules(str(global_root), "mem_flat") == GLOBAL_RULE
+    assert read_project_rules(str(project), "mem_flat") == PROJECT_RULE
+    # 只有旧路径、没有扁平路径 ⇒ 该段缺席（不回落旧路径）。
+    assert read_global_rules(str(global_root), "mem_legacy") is None
+    assert read_project_rules(str(project), "mem_legacy") is None

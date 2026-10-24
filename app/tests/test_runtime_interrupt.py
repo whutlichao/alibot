@@ -144,7 +144,7 @@ def test_interrupt_endpoint_only_stops_the_current_target_and_emits_an_sse_event
                     interrupted = events.get(timeout=3)
                 assert "event: round.interrupted" in sse_frame(interrupted)
                 assert "id:" not in sse_frame(interrupted)
-                state = tmp_path / f".alibot/sessions/{channel['id']}--{agent['id']}/state.json"
+                state = tmp_path / f"sessions/{channel['id']}--{agent['id']}/state.json"
                 assert state.is_file()
             finally:
                 model.release.set()
@@ -167,7 +167,7 @@ def test_state_is_saved_atomically_and_loaded_next_round_with_current_permission
     agent = {"id": "member", "model_id": "openai:stub"}
     inputs = [{"seq": 1, "body": "你好", "author": {"id": "owner"}}]
     assert seam.run_round(agent, inputs, mentioned=False, target_id="target").status == "replied"
-    path = tmp_path / ".alibot/sessions/target--member/state.json"
+    path = tmp_path / "sessions" / "target--member" / "state.json"
     assert path.is_file()
     data = json.loads(path.read_text())
     data["middle_context"]["persisted"] = "上一轮的运行状态"

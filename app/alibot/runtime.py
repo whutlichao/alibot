@@ -20,6 +20,19 @@ CONTEXT_WINDOW_MESSAGES = 40
 _log = logging.getLogger(__name__)
 
 
+def session_relative_dir(session_id: str, *, in_project: bool) -> Path:
+    """会话分区相对某个根的路径（ADR-0032 §四的**唯一**公式）。
+
+    有项目根 ``.alibot/sessions/<session_id>``；无项目根 ``sessions/<session_id>``（不再套
+    ``.alibot``）。:class:`SessionOffloader` 与 :class:`SessionState` 都从这里派生，
+    避免两处各写一遍同一路径。
+    """
+    from .workspace import safe_partition_id
+
+    base = Path(".alibot/sessions") if in_project else Path("sessions")
+    return base / safe_partition_id(session_id)
+
+
 @dataclass(eq=False)
 class RuntimeTurn:
     """只在一轮的 loop 存活；HTTP 线程通过 call_soon_threadsafe 请求取消。"""
@@ -77,14 +90,25 @@ def runtime_prompt(target_name: str, message_count: int) -> str:
 
 
 class SessionOffloader:
-    """框架 Offloader 协议；Docker bind mount 与主机使用同一个 .alibot 分区。"""
+    """框架 Offloader 协议；会话状态落在**显式**的会话目录（ADR-0032 §四）。
 
-    def __init__(self, root: str | Path, session_id: str, *, docker: bool = False) -> None:
-        from .workspace import safe_partition_id
+    有项目根：``<项目根>/.alibot/sessions/<session_id>/offload/``；无项目根（DM / 未配项目根的
+    频道）：``<数据目录>/sessions/<session_id>/offload/``。Docker 后端的容器内路径由
+    ``visible_directory`` 映射（``/workspace/.alibot/sessions/...``），宿主同一分区。
+    """
 
+    def __init__(
+        self,
+        root: str | Path,
+        session_id: str,
+        *,
+        docker: bool = False,
+        in_project: bool = True,
+    ) -> None:
         self.root = Path(root).resolve()
-        self.session_id = safe_partition_id(session_id)
-        self.relative = Path(".alibot/sessions") / self.session_id / "offload"
+        self.session_id = session_relative_dir(session_id, in_project=in_project).name
+        self.in_project = in_project
+        self.relative = session_relative_dir(self.session_id, in_project=in_project) / "offload"
         self.docker = docker
 
     @property
@@ -128,13 +152,17 @@ class SessionOffloader:
 
 
 class SessionState:
-    """可恢复的框架运行状态；消息窗口始终从协作域正本重建。"""
+    """可恢复的框架运行状态；消息窗口始终从协作域正本重建。
 
-    def __init__(self, root: Path, session_id: str) -> None:
-        from .workspace import safe_partition_id
+    落点与 :class:`SessionOffloader` 同源（ADR-0032 §四）：有项目根
+    ``<项目根>/.alibot/sessions/<session_id>/state.json``，无项目根
+    ``<数据目录>/sessions/<session_id>/state.json``。
+    """
 
+    def __init__(self, root: Path, session_id: str, *, in_project: bool = True) -> None:
         self.root = root
-        self.directory = root / ".alibot/sessions" / safe_partition_id(session_id)
+        self.in_project = in_project
+        self.directory = root / session_relative_dir(session_id, in_project=in_project)
 
     def load(self, permission_context: Any) -> Any:
         from agentscope.state import AgentState, ReplyContext

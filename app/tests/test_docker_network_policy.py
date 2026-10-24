@@ -95,7 +95,7 @@ def _text(chunk: Any) -> str:
 
 # ─── 1. 容器配置：默认无网，显式允许才接网络 ─────────────────────────────────
 def test_container_config_defaults_to_no_network_and_keeps_the_bind_mount(tmp_path: Path) -> None:
-    """出网开关关闭（缺省）⇒ ``NetworkMode = none``；``/workspace`` 仍第一，后接两条只读全局 bind。"""
+    """出网开关关闭（缺省）⇒ ``NetworkMode = none``；``/workspace`` 仍第一，后接两条全局 bind。"""
     member_home = tmp_path / "global" / "agents" / "mem-235"
     skills_home = tmp_path / "global" / "skills"
     member_home.mkdir(parents=True)
@@ -107,15 +107,16 @@ def test_container_config_defaults_to_no_network_and_keeps_the_bind_mount(tmp_pa
         host_workdir=str(tmp_path),
         network_mode=docker_network_mode(False),
         global_binds=(
-            (str(member_home), docker_global_member_home("mem-235")),
-            (str(skills_home), docker_global_skills_home()),
+            (str(member_home), docker_global_member_home("mem-235"), "rw"),
+            (str(skills_home), docker_global_skills_home(), "ro"),
         ),
     )
 
     assert config["HostConfig"]["NetworkMode"] == "none"
+    # ADR-0032 §五：成员家目录 ``:rw``（记忆可写、白名单在应用面），公共技能库仍 ``:ro``。
     assert config["HostConfig"]["Binds"] == [
         f"{tmp_path}:/workspace:rw",
-        f"{member_home}:/alibot-home/agents/mem-235:ro",
+        f"{member_home}:/alibot-home/agents/mem-235:rw",
         f"{skills_home}:/alibot-home/skills:ro",
     ]
     assert config["WorkingDir"] == "/workspace"
@@ -139,8 +140,8 @@ def test_the_creation_path_passes_the_network_mode_to_the_container(tmp_path: Pa
     workspace = ProjectDockerWorkspace(workspace_id="alibot-mem--sess", host_workdir=str(tmp_path))
     workspace._image_tag = "alibot-test:1"
     workspace.global_binds = (
-        (str(member_home), docker_global_member_home("mem-235")),
-        (str(skills_home), docker_global_skills_home()),
+        (str(member_home), docker_global_member_home("mem-235"), "rw"),
+        (str(skills_home), docker_global_skills_home(), "ro"),
     )
     client = _StubClient()
     workspace._client = client
@@ -149,7 +150,7 @@ def test_the_creation_path_passes_the_network_mode_to_the_container(tmp_path: Pa
     assert client.containers.calls[-1]["config"]["HostConfig"]["NetworkMode"] == "none"
     assert client.containers.calls[-1]["config"]["HostConfig"]["Binds"] == [
         f"{tmp_path}:/workspace:rw",
-        f"{member_home}:/alibot-home/agents/mem-235:ro",
+        f"{member_home}:/alibot-home/agents/mem-235:rw",
         f"{skills_home}:/alibot-home/skills:ro",
     ]
     assert client.containers.container.started is True
@@ -352,7 +353,7 @@ async def _explode_local(*args: Any, **kwargs: Any) -> Any:
     raise AssertionError("Docker 后端失败时不允许回落到本地工作区")
 
 
-# ─── 6. 全局层只读挂载（#235）：成员家目录 + 公共技能库，固定顺序 ───────────
+# ─── 6. 全局层挂载（#235 / ADR-0032）：成员家目录 :rw、公共技能库 :ro ───────
 def _home_with_global_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """把 HOME 指向临时目录，返回 ``<HOME>/.alibot``（全局层根）。测试不碰真实 ``~/.alibot``。"""
     home = tmp_path / "home"
@@ -360,10 +361,10 @@ def _home_with_global_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     return Path(global_home_root())
 
 
-def test_global_binds_are_member_home_then_public_skills_read_only(
+def test_global_binds_are_member_home_read_write_then_public_skills_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """两个子路径互不冲突、都带 ``:ro``，顺序固定在 ``/workspace:rw`` 之后。"""
+    """两个子路径互不冲突、顺序固定；成员家目录 ``rw``（ADR-0032 §五），技能库仍 ``ro``。"""
     global_root = _home_with_global_layer(tmp_path, monkeypatch)
     member_home = global_root / "agents" / "mem-235"
     skills_home = global_root / "skills"
@@ -373,8 +374,8 @@ def test_global_binds_are_member_home_then_public_skills_read_only(
     binds = docker_global_binds("mem-235")
 
     assert binds == (
-        (str(member_home), "/alibot-home/agents/mem-235"),
-        (str(skills_home), "/alibot-home/skills"),
+        (str(member_home), "/alibot-home/agents/mem-235", "rw"),
+        (str(skills_home), "/alibot-home/skills", "ro"),
     )
     config = docker_container_config(
         image_tag="alibot-test:1",
@@ -386,7 +387,7 @@ def test_global_binds_are_member_home_then_public_skills_read_only(
     )
     assert config["HostConfig"]["Binds"] == [
         f"{tmp_path}:/workspace:rw",
-        f"{member_home}:/alibot-home/agents/mem-235:ro",
+        f"{member_home}:/alibot-home/agents/mem-235:rw",
         f"{skills_home}:/alibot-home/skills:ro",
     ]
 
@@ -401,14 +402,14 @@ def test_missing_global_directories_are_skipped_and_never_created(
 
     member_home = global_root / "agents" / "mem-235"
     member_home.mkdir(parents=True)
-    assert docker_global_binds("mem-235") == ((str(member_home), "/alibot-home/agents/mem-235"),)
+    assert docker_global_binds("mem-235") == ((str(member_home), "/alibot-home/agents/mem-235", "rw"),)
     assert not (global_root / "skills").exists(), "缺失的公共技能库不得被顺手创建"
 
     skills_home = global_root / "skills"
     skills_home.mkdir()
     assert docker_global_binds("mem-235") == (
-        (str(member_home), "/alibot-home/agents/mem-235"),
-        (str(skills_home), "/alibot-home/skills"),
+        (str(member_home), "/alibot-home/agents/mem-235", "rw"),
+        (str(skills_home), "/alibot-home/skills", "ro"),
     )
 
 
@@ -423,7 +424,7 @@ def test_the_data_directory_never_enters_the_container_and_the_global_root_is_no
     (global_root / "skills").mkdir()
 
     binds = docker_global_binds("mem-235")
-    host_sources = {host for host, _target in binds}
+    host_sources = {host for host, _target, _mode in binds}
     assert str(global_root) not in host_sources, "不得挂 ~/.alibot 整根"
     assert str(global_root / "data") not in host_sources
 
@@ -437,7 +438,8 @@ def test_the_data_directory_never_enters_the_container_and_the_global_root_is_no
     )
     rendered = config["HostConfig"]["Binds"]
     assert rendered[0].endswith(":/workspace:rw"), "项目根仍排第一且可写"
-    assert all(bind.endswith(":ro") for bind in rendered[1:])
+    assert rendered[1].endswith(":/alibot-home/agents/mem-235:rw"), "成员家目录可写（记忆白名单在应用面）"
+    assert rendered[2].endswith(":/alibot-home/skills:ro"), "公共技能库仍只读"
     assert not any("/data" in bind for bind in rendered)
 
 
@@ -459,8 +461,8 @@ def test_global_binds_only_append_to_an_unchanged_container_shape(tmp_path: Path
         host_workdir=str(project),
         network_mode="none",
         global_binds=(
-            ("/host/agents/mem-235", "/alibot-home/agents/mem-235"),
-            ("/host/skills", "/alibot-home/skills"),
+            ("/host/agents/mem-235", "/alibot-home/agents/mem-235", "rw"),
+            ("/host/skills", "/alibot-home/skills", "ro"),
         ),
     )
 
@@ -469,7 +471,7 @@ def test_global_binds_only_append_to_an_unchanged_container_shape(tmp_path: Path
     assert with_binds["HostConfig"]["NetworkMode"] == without["HostConfig"]["NetworkMode"] == "none"
     assert with_binds["HostConfig"]["Binds"][0] == without["HostConfig"]["Binds"][0]
     assert with_binds["HostConfig"]["Binds"][1:] == [
-        "/host/agents/mem-235:/alibot-home/agents/mem-235:ro",
+        "/host/agents/mem-235:/alibot-home/agents/mem-235:rw",
         "/host/skills:/alibot-home/skills:ro",
     ]
 

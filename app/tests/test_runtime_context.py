@@ -55,7 +55,8 @@ def test_env_threshold_triggers_real_compression_and_offloads_history(tmp_path: 
     )
     assert outcome.status == "replied", outcome.reason
     assert model.summaries == 1
-    files = list((tmp_path / ".alibot/sessions/target--member/offload").glob("*.json"))
+    # ADR-0032 §四：无项目根的轮次落在 ``<数据目录>/sessions/``（不再套一层 ``.alibot``）。
+    files = list((tmp_path / "sessions" / "target--member" / "offload").glob("*.json"))
     assert files
     assert "archive 1" in files[0].read_text()
 
@@ -114,6 +115,7 @@ def test_truncated_tool_output_is_kept_in_the_session_partition(tmp_path: Path) 
         target_id="target",
     )
     assert outcome.status == "replied", outcome.reason
-    files = list((tmp_path / ".alibot/sessions/target--member/offload").glob("tool-*.json"))
+    # 这条用例有项目根（``workspace_of``）：卸载文件落在项目分区 ``.alibot/sessions/``。
+    files = list((tmp_path / ".alibot" / "sessions" / "target--member" / "offload").glob("tool-*.json"))
     assert files
     assert "content " * 100 in files[0].read_text()
