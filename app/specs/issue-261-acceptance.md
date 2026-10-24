@@ -1,6 +1,7 @@
 # #261 长期记忆换到 ReMe 验收
 
 - 状态：Done（待 coordinator 执行 G-merge）
+- PR：https://github.com/whutlichao/alibot/pull/262
 - 基线：`b73d0a1`（`Merge pull request #260 from whutlichao/studio-dm-dock-toggle`）
 - 分支：`issue-261-impl`
 - 面：`app/alibot/{memory,agent_seam,workspace,runtime_files,db,migrate}.py`、
@@ -106,3 +107,17 @@ ROUND2_REPLY: 你住在杭州；喜欢简洁的中文回答。   # 新 session�
 - **依赖口径与派发说明不一致**：派发写「extra 带入 `reme-ai==0.4.1.13`」，实测 extra 只有 floor
   `>=0.4.0.6`，且 0.4.1.13 与 `agentscope==2.0.10` 的嵌入式最小配置不兼容（见复核 Spec #1）。本票
   改为显式 pin `reme-ai==0.4.1.10`（真实冒烟通过）；升级 ReMe 是一张单独的票。
+
+## Answer
+
+长期记忆已从 AgenticMemory 换成进程内的 ReMe：`memory_mode=reme` 时按**本轮模型**装配
+`ReMeMiddleware`，一个成员一个工作区 `<global_home>/agents/<member_id>/reme`（跨 session / target /
+项目召回），`top_k=5`、BM25、无 embedding；关闭记忆不建目录、不装中间件；轮次 finally 在关闭 model
+client 之前 `close()`。文件工具回到「只有项目根一个根」，记忆白名单 / DM 的 Write·Edit / Docker `rw`
+全部删除（成员家目录改 `ro`）。schema `23 → 24` 把存量 `agentic` 映射为 `reme`；Studio 三处判定与
+中英文 hint 同步。门禁全绿（pytest 1163 passed / 11 skipped，Node 316 / 0 fail），真实 ReMe 冒烟
+（DeepSeek）完成了「写入 → 卡片 → 新 session 召回」，Studio 浏览器验收刷新后仍为 `reme`。
+
+已知边界：旧 Markdown 记忆不自动导入；ReMe 的 `reme-ai` 在 2.0.10 的 extra 里只有 floor，本票显式
+pin 实测可用的 `0.4.1.10`（`0.4.1.13` 的 dream 步骤与 2.0.10 的最小配置不兼容，启动即抛
+`Unregistered backend 'dream_topics_step'`）。
