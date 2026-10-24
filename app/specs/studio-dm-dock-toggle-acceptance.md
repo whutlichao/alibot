@@ -129,5 +129,5 @@ cd app && env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY \
 - 改动：`dockAvailable()` 判据 + 频道头开关 / `toggleDock()` / 命令面板私信下关闭；`render()` 单点收起无形态的 dock；`closeAgentDetail()` 不再越权恢复；`renderDock()` 删 DM 死分支；两份词表删 `dock.dmNoJoin`；`CONTEXT.md` 同步。
 - 证据：红 `tests 6 / pass 1 / fail 5`（证据目录 `alibot-red.rirIxg`，基线 md5 `72689b66…` / 工作区 md5 `ad5677c9…`）；绿 `6/6`、受影响 6 文件 `117/117`；`scripts/check.sh --studio` 全绿（node `316/316`）；真实浏览器读数如上。
 - review：Standards 硬项 1 已补验收文档，判断题 2–4 保留并给理由，判断题 5 已改；Spec P2 已修并加回归用例。
-- PR：待创建（本文件随 PR 更新回填 PR 号与 body 路径）。
+- PR：[#260](https://github.com/whutlichao/alibot/pull/260)；body 正本 `app/specs/studio-dm-dock-toggle-pr-body.md`。
 - 遗留：无功能遗留；共享 DOM harness 抽取、`render()` 形态推导收口是范围外的后续改进。
