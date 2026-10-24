@@ -119,15 +119,14 @@ scripts/check.sh --studio
 
 - PR：[#259](https://github.com/whutlichao/alibot/pull/259)（base `main`，head `studio-agent-detail-head`）
 - PR body 正本：`app/specs/studio-agent-detail-head-pr-body.md`（`gh pr create --body-file` 用同一份）
-- CI 读数（PR #259，代码 commit `7be8f45` 的 `check` job，
-  [run 40080495131](https://github.com/whutlichao/alibot/actions/runs/40080495131)，`12m41s`）：
-  - pytest（全量）：`1182 passed, 2 skipped in 666.61s`
+- CI 读数（PR #259，代码 commit `a150bad8fac5d4e852ded2a20803d30f76a10062`——含死 CSS 清理，
+  [run 40082405019](https://github.com/whutlichao/alibot/actions/runs/40082405019)，`9m59s`，`success`）：
+  - pytest（全量）：`1182 passed, 2 skipped in 579.12s`
   - `ruff check`：`All checks passed!`
   - `ruff format --check`：通过
   - `mypy`：`Success: no issues found in 124 source files`
   - `pyright`：`0 errors, 0 warnings, 0 informations`
   - `node --test app/tests/*.test.cjs`：`tests 310 / pass 310 / fail 0`
   - 收尾：`门禁全绿`
-- 本读数回填本身是 docs-only commit（代码未变）；CI 仍会对该 commit 跑同一脚本。
-- 死 CSS 清理 commit（`app.css` 一行）由同一个 `check` job 复核；本地已重跑 `scripts/check.sh --studio`
-  全绿（`310/310`），新 run 的读数回填在下一个 docs-only commit。
+- 同一 PR 的前两次 `check`（commit `7be8f45` / `be76299`）同样 `success`；本读数回填是 docs-only
+  commit（代码未变），CI 仍对该 commit 跑同一脚本。
