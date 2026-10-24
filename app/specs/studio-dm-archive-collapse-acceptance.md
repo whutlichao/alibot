@@ -96,4 +96,5 @@ node --test app/tests/rail_identity.test.cjs   # 16 条全绿（14 旧 + 2 新�
   一个切换控件，不改数据 / API / 共享接口，可观察契约由 node 用例（默认折叠、切换、节点身份、
   无 `/api/dms`、只读进入、静态正本）+ 真实浏览器冒烟（含键盘）完整覆盖；无跨模块设计取舍可供两轴
   评审，因此不另开 reviewer 子代理。
-- 无遗留项；PR 见下。
+- 无遗留项；PR：[#258](https://github.com/whutlichao/alibot/pull/258)（OPEN，head =
+  `studio-dm-archive-collapse` 最终提交），正文 `app/specs/studio-dm-archive-collapse-pr-body.md`。
