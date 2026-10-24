@@ -2,7 +2,7 @@
 
 - 基线：`2497bcc26a72580569c48856b5da6c13d54c0634`（PR #257 合并点，本票 base）
 - 分支：`studio-agent-detail-head`
-- 面：`app/alibot/studio/**`（零构建前端）+ `app/tests/agent_detail_ui.test.cjs` + `app/README.md`
+- 面：`app/alibot/studio/**`（零构建前端，含头部死 CSS 的一行清理）+ `app/tests/agent_detail_ui.test.cjs` + `app/README.md`
 - 无后端 / API / schema / 迁移 / 构建配置改动；本票只删呈现节点与词条，不发新请求。
 
 用户 2026-10-24 对 `/studio/` 的四条反馈：发送消息按钮要强调色、去掉「Agent」小标签、去掉
@@ -24,6 +24,7 @@
 | 9 | 文案切换不破：zh-CN / en 头部都只有名称 + 发送消息，无裸中文 | `i18n.js` 的 `agentDetail.sendMessage` | 浏览器冒烟（下节）：zh `冒烟助手 发送消息`、en `冒烟助手 Send message`；`headHasChineseCopy === false` |
 | 10 | 文档与实现同步：README 的详情段落按现状改写 | `app/README.md` | 人工核对：离开详情 = 左栏行 / 键盘 `M` / `T`；页签随频道头让位；dock 开合只在删除成功恢复 |
 | 11 | 门禁全绿 | 见下节 | `scripts/check.sh --studio`：`门禁全绿` |
+| 12 | 头部状态下线后不留死 CSS：只删 `.agent-page-head .dock-role` 这一条复合选择器；`.dock-role` / `.dock-tag` 的其它落点与规则保留 | `app.css` | `grep -n "agent-page-head" app/alibot/studio/app.css`：只剩 `.agent-page-head {`；`node --test app/tests/*.test.cjs` 与静态守卫随门禁重跑全绿 |
 
 ## 红证据（隔离基线）
 
@@ -51,7 +52,7 @@ scripts/red-evidence.sh 2497bcc26a72580569c48856b5da6c13d54c0634 app/tests/agent
 scripts/check.sh --studio
 ```
 
-- pytest（Studio 窄档：审批 HTTP 契约 + 文档词表守卫 + 测试分层守卫）：`20 passed in 2.10s`
+- pytest（Studio 窄档：审批 HTTP 契约 + 文档词表守卫 + 测试分层守卫）：`20 passed in 2.30s`
 - `ruff check`：`All checks passed!`
 - `ruff format --check`：通过（未运行 `ruff format`，无整文件重排）
 - `mypy`（仓库根）：`Success: no issues found in 124 source files`
@@ -87,10 +88,13 @@ scripts/check.sh --studio
 其它：两轴均未发现 scope creep；`closeAgentDetail()`、`applyPresence` / `presenceNode` /
 `statusLabel` 的其它调用点、dock 其它形态、发送消息语义均未改。
 
-### 已知遗留（本票不处理）
+### 死 CSS 清理（已删除）
 
-- `app.css:463` 的 `.agent-page-head .dock-role` 选择器随状态行删除后不再命中任何节点；票面
-  约束「不动 `app.css` 的既有类」，故保留。`.dock-role` 本身仍被 `#dockRole` / 任务线程 / 运行面板使用。
+- `app.css` 的 `.agent-page-head .dock-role` 复合选择器随状态行删除后不再命中任何节点，已删除
+  （coordinator follow-up 授权，仅这一条；`.dock-role` 本身仍被 `#dockRole` / 任务线程 / 运行面板使用，
+  `.dock-tag` 仍被任务线程 / 运行面板使用，均保留）。
+- 清理后重跑 `scripts/check.sh --studio`：pytest `20 passed`、ruff / format / mypy / pyright 通过、
+  `node --test app/tests/*.test.cjs` `310/310`、`门禁全绿`。
 
 ## 真实浏览器冒烟（隔离端口 + 隔离数据目录）
 
@@ -125,3 +129,5 @@ scripts/check.sh --studio
   - `node --test app/tests/*.test.cjs`：`tests 310 / pass 310 / fail 0`
   - 收尾：`门禁全绿`
 - 本读数回填本身是 docs-only commit（代码未变）；CI 仍会对该 commit 跑同一脚本。
+- 死 CSS 清理 commit（`app.css` 一行）由同一个 `check` job 复核；本地已重跑 `scripts/check.sh --studio`
+  全绿（`310/310`），新 run 的读数回填在下一个 docs-only commit。

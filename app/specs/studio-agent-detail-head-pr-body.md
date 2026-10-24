@@ -51,9 +51,9 @@ Agent 详情头部按用户 2026-10-24 反馈精简为**名称 + 强调色「发
 
 **Blast Radius:** small
 
-- 只碰 `app/alibot/studio/{index.html,app.js,i18n.js}`、`app/tests/agent_detail_ui.test.cjs`、`app/README.md`。
+- 只碰 `app/alibot/studio/{index.html,app.js,i18n.js,app.css}`、`app/tests/agent_detail_ui.test.cjs`、`app/README.md`。
 - `#viewAgent` 的其它区块、保存条、危险区、删除确认弹窗、全局 MCP、`dock` 其它形态一律未改。
-- 已知遗留：`app.css:463` 的 `.agent-page-head .dock-role` 已不再命中节点；票面约束不动 `app.css`，
-  验收文档已登记。
+- 死 CSS 已清理：`.agent-page-head .dock-role`（状态行删除后不再命中任何节点）随本票删除；
+  `.dock-role` / `.dock-tag` 的其它落点保留。清理后 `scripts/check.sh --studio` 重跑全绿（node `310/310`）。
 
 Closes: 无（用户 2026-10-24 对 `/studio/` 的反馈，无对应 issue）
