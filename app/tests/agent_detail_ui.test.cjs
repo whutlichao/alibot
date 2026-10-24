@@ -625,8 +625,6 @@ test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / �
   );
   assert.equal(descendants(danger).some((node) => node.classList.contains("danger-confirm")), false,
     "危险区不再有 .danger-confirm 盒子");
-  assert.equal(danger.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.pauseNote")),
-    false, "暂停代价那句提示已删除");
   assert.equal(danger.textContent.includes("暂停只写配置"), false, "界面不再重复这句提示");
 
   // 配置区块不再渲染暂停 / 恢复按钮与那句代价说明。
