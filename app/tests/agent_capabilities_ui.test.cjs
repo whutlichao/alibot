@@ -1,5 +1,5 @@
 /**
- * Studio 的**能力配置**（#273）：Agent 详情里的 MCP / 技能两段 + 复制到其他成员 + 名册摘要，
+ * Studio 的**能力配置**（#273）：Agent 详情里的 MCP / 技能两段 + 名册摘要，
  * 以及「频道配置里不再有这两段」。
  *
  * 接缝沿用既有那一套（`vm` + `fetch` 替身 + DOM 替身；与 `agent_detail_ui.test.cjs` /
@@ -8,11 +8,11 @@
  * 断言只落在**外部可观察行为**上：
  * 1. 打开 Agent 详情：能力段按 `scope_kind=agent&scope_id=<member>` 读两条清单，MCP 行与技能行
  *    同屏；每行都带编辑 / 安装 / 启停 / 删除入口，没有 scope 选择器；
- * 2. 复制到其他成员：每行一个入口，弹多选（排除当前成员）；目标已存在同名时逐条给出「已跳过」
- *    且不覆盖（没有 PATCH、没有第二个写入体）；
+ * 2. 复制到其他成员这条通道整个撤除（#281 / D6）：两 kind 的入口、弹层、呈现状态与函数都不在
+ *    正本里（`data-copy-*` 零命中），`POST /api/skills/{id}/copy` 端点仍由 pytest 契约守着；
  * 3. 频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读这两条清单（Workspace 段仍在）；
  * 4. 名册的 Agent 行显示 `MCP n / 技能 n`；单成员读取失败只让那一个摘要显示占位，名册照常列出；
- * 5. 新增文案在两份词条表里都取到值。
+ * 5. 新增文案在两份词条表里都取到值，撤除的那些键必须在两份表里都消失。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -412,14 +412,8 @@ function createHarness(options) {
       }
     }
     if (url === "/api/mcp-servers" && method === "POST") {
-      if (config.copyConflict) return errorResponse(409, "同名 MCP 声明已存在");
       const created = mcpPayload(Object.assign({ id: "mcp_new" }, request.body || {}));
       return jsonResponse({ mcp_server: created }, 201);
-    }
-    if (/^\/api\/skills\/[^/]+\/copy$/.test(url) && method === "POST") {
-      if (config.copyConflict) return errorResponse(409, "同名技能已存在");
-      const skill = skillPayload({ id: "sk_new" });
-      return jsonResponse({ skill }, 201);
     }
     if (url === "/api/skills" && method === "POST") {
       const body =
@@ -633,6 +627,15 @@ function byClass(root, name) {
   return descendants(root).filter((node) => node.classList && node.classList.contains(name));
 }
 
+function readStudio(file) {
+  return fs.readFileSync(path.join(STUDIO_DIR, file), "utf8");
+}
+
+/** 注释不算代码：扫「某符号是否还在」以前先剥两种注释（与 `i18n_ui.test.cjs` 同款）。 */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
 function catalogText(harness, locale, key, params) {
   const value = harness.catalogs[locale][key];
   assert.equal(typeof value, "string", `${locale} 缺少词条：${key}`);
@@ -667,10 +670,11 @@ test("skills 页签：左栏技能列表与技能行入口，请求固定带 age
   assert.match(skillRow.textContent, /review/);
   assert.match(skillRow.textContent, /在提交前做一次结构化自审/);
   assert.match(skillRow.textContent, /0123456789ab/, "hash 前缀仍可见");
+  // 技能行的入口：启停 + 删除 + 安装（技能段）。复制入口已随弹层撤除（#281 / D6），
+  // 反向断言在下面的「复制入口与弹层撤除」用例里。
   assert.ok(byDataset(panel, "skillToggle", "sk_1"), "技能行要有启停入口");
   assert.ok(byDataset(panel, "skillDelete", "sk_1"), "技能行要有删除入口");
   assert.ok(byOdId(panel, "skill-install"), "技能段要有安装入口");
-  assert.ok(byDataset(panel, "copySkill", "sk_1"), "技能行要有复制入口");
 
   // 影响范围一句话：只属于本 Agent，字节在家目录。
   const note = byOdId(panel, "agent-capabilities-scope");
@@ -695,7 +699,6 @@ test("mcp 页签：库行列表、表单与行入口，请求固定带 agent sco
   assert.ok(byDataset(panel, "mcpEdit", "mcp_1"), "MCP 行要有编辑入口");
   assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "MCP 行要有启停入口");
   assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "MCP 行要有删除入口");
-  assert.ok(byDataset(panel, "copyMcp", "mcp_1"), "MCP 行要有复制入口");
 });
 
 test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能读数只在 skills 页签", async () => {
@@ -933,66 +936,6 @@ test("候选来源缺席 / 扫描失败：只落在导入区块自己的行，�
   assert.ok(byOdId(broken.agentBody, "skill-install"), "技能段其余部分照常");
 });
 
-/* ─── 3. 复制到其他成员 ─────────────────────────────────────────────────── */
-
-test("复制入口列出其他成员（排除当前成员），选目标后逐条提交", async () => {
-  const harness = createHarness();
-  await harness.openAgent("mem-1");
-
-  await harness.clickInBody(byDataset(harness.agentBody, "copyMcp", "mcp_1"));
-  const dialog = byOdId(harness.agentBody, "capability-copy-dialog");
-  assert.ok(dialog, "按下复制后出现多选弹层");
-  assert.ok(byDataset(harness.agentBody, "copyTarget", "mem-2"), "其他成员可选");
-  assert.ok(byDataset(harness.agentBody, "copyTarget", "mem-3"), "其他成员可选");
-  assert.equal(byDataset(harness.agentBody, "copyTarget", "mem-1"), null, "当前成员不在目标清单里");
-
-  // 没选目标就确认：不发请求，给可读提示。
-  await harness.clickInBody(byOdId(harness.agentBody, "capability-copy-confirm"));
-  assert.equal(harness.posts().length, 0, "没选目标不发请求");
-  assert.ok(byOdId(harness.agentBody, "capability-copy-error"), "要提示先选目标");
-
-  const target = byDataset(harness.agentBody, "copyTarget", "mem-2");
-  await harness.changeInBody(target, true);
-  await harness.clickInBody(byOdId(harness.agentBody, "capability-copy-confirm"));
-
-  const copy = harness.posts().find((call) => call.url === "/api/mcp-servers");
-  assert.ok(copy, "MCP 复制用既有 POST /api/mcp-servers");
-  assert.equal(copy.body.scope_kind, "agent");
-  assert.equal(copy.body.scope_id, "mem-2", "复制目标就是选中的成员");
-  assert.equal(copy.body.name, "filesystem");
-  assert.deepEqual(copy.body.env_names, ["GITHUB_TOKEN"], "只复制变量名");
-  const results = byOdId(harness.agentBody, "capability-copy-results");
-  assert.ok(results, "结果逐条回显");
-  assert.match(results.textContent, /小红/);
-  assert.match(results.textContent, /已复制/);
-});
-
-test("目标已存在同名时逐条提示已跳过，且不覆盖（没有 PATCH、没有改名写入）", async () => {
-  const harness = createHarness({ copyConflict: true });
-  await harness.openAgent("mem-1");
-
-  await harness.clickInBody(byDataset(harness.agentBody, "copySkill", "sk_1"));
-  await harness.changeInBody(byDataset(harness.agentBody, "copyTarget", "mem-2"), true);
-  await harness.changeInBody(byDataset(harness.agentBody, "copyTarget", "mem-3"), true);
-  await harness.clickInBody(byOdId(harness.agentBody, "capability-copy-confirm"));
-
-  const copies = harness.posts().filter((call) => call.url === "/api/skills/sk_1/copy");
-  assert.deepEqual(copies.map((call) => call.body.scope_id), ["mem-2", "mem-3"], "逐目标复制");
-  const results = byOdId(harness.agentBody, "capability-copy-results");
-  const lines = byClass(results, "copy-result").map((node) => node.textContent);
-  assert.equal(lines.length, 2, "两个目标各一条结果");
-  assert.match(lines[0], /小红/);
-  assert.match(lines[0], /已跳过/);
-  assert.match(lines[1], /小刚/);
-  assert.match(lines[1], /已跳过/);
-  assert.equal(
-    harness.patches().filter((call) => call.url.startsWith("/api/skills/")).length,
-    0,
-    "冲突时不许改用 PATCH 覆盖",
-  );
-  assert.equal(harness.posts().filter((call) => call.url === "/api/skills").length, 0, "冲突时不再装上第二份");
-});
-
 /* ─── 3. 频道配置：两段已删 ─────────────────────────────────────────────── */
 
 test("频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读两份清单", async () => {
@@ -1042,23 +985,12 @@ test("名册的 Agent 行显示 MCP n / 技能 n，读不到时只让那一行�
 
 /* ─── 5. 词条 ───────────────────────────────────────────────────────────── */
 
-test("新增文案在两份词条里同键同参数位", () => {
+test("新增文案在两份词条里同键同参数位，撤除的复制键必须消失", () => {
   const harness = createHarness();
   const keys = [
     "agentCapabilities.scopeNote",
     "agentCapabilities.mcpTitle",
     "agentCapabilities.skillTitle",
-    "agentCapabilities.copyTo",
-    "agentCapabilities.copyTitle",
-    "agentCapabilities.copyHint",
-    "agentCapabilities.copyConfirm",
-    "agentCapabilities.copyCancel",
-    "agentCapabilities.copyNoTargets",
-    "agentCapabilities.copyPickRequired",
-    "agentCapabilities.copyBusy",
-    "agentCapabilities.copyResultCopied",
-    "agentCapabilities.copyResultSkipped",
-    "agentCapabilities.copyResultFailed",
     "roster.capabilities",
     "roster.capabilitiesLoading",
     "roster.capabilitiesUnavailable",
@@ -1093,8 +1025,28 @@ test("新增文案在两份词条里同键同参数位", () => {
   );
   // 能力不再「两 kind 同屏」而是各在自己的页签里，因此那个跨两 kind 的总标题
   // `agentCapabilities.title` 失去全部消费点：两份词条一并移除，不留孤儿键。
-  for (const locale of ["zh-CN", "en"]) {
-    assert.equal(harness.catalogs[locale]["agentCapabilities.title"], undefined,
-      locale + " 仍有已删词条：agentCapabilities.title");
+  // D6 / D9 第 14 条同理：复制入口撤除后那些键也没有消费点（与 `agent.contextWindow` 那四项同一规则）。
+  for (const key of [
+    "agentCapabilities.title",
+    "agentCapabilities.copyTo",
+    "agentCapabilities.copyTitle",
+    "agentCapabilities.copyHint",
+    "agentCapabilities.copyConfirm",
+    "agentCapabilities.copyCancel",
+    "agentCapabilities.copyNoTargets",
+    "agentCapabilities.copyPickRequired",
+    "agentCapabilities.copyBusy",
+    "agentCapabilities.copyResultCopied",
+    "agentCapabilities.copyResultSkipped",
+    "agentCapabilities.copyResultFailed",
+    "agentCapabilities.copySummary",
+  ]) {
+    for (const locale of ["zh-CN", "en"]) {
+      assert.equal(
+        harness.catalogs[locale][key],
+        undefined,
+        locale + " 仍有已删词条：" + key,
+      );
+    }
   }
 });

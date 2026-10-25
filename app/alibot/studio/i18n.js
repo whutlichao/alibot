@@ -495,24 +495,12 @@ const I18N_CATALOGS = {
     /* ─── 能力配置（#273 / ADR-0031 §二 #270 修订） ────────────────────────
        归口只有这一处：Agent 详情里的 MCP 声明与技能。作用域恒为该成员
        （`scope_kind=agent&scope_id=<member>`），没有 scope 选择器；频道级旧行保留在库里但
-       不展示、不装配。复制是「行复制 / 字节复制」，目标已存在同名时**跳过并逐条说明**。 */
+       不展示、不装配。控件只作用于当前成员（#281 撤掉了「复制到其他成员」这条跨成员通道）；
+       #280 把这两块拆进 skills / mcp 两个页签，跨两 kind 的总标题因此没有消费点、已随票删除。 */
     'agentCapabilities.scopeNote':
       '这些能力只属于这个 Agent；技能字节在 ~/.alibot/agents/{member}/skills/（公共库 ~/.alibot/skills/ 只读）。',
     'agentCapabilities.mcpTitle': 'MCP 声明',
     'agentCapabilities.skillTitle': '技能',
-    'agentCapabilities.copyTo': '复制到…',
-    'agentCapabilities.copyTitle': '复制到其他成员',
-    'agentCapabilities.copyHint':
-      '只复制到选中的成员；目标已有同名项时跳过并逐条说明，不覆盖目标。',
-    'agentCapabilities.copyConfirm': '开始复制',
-    'agentCapabilities.copyCancel': '取消',
-    'agentCapabilities.copyNoTargets': '没有其他成员可复制。',
-    'agentCapabilities.copyPickRequired': '请至少选择一个目标成员。',
-    'agentCapabilities.copyBusy': '正在复制…',
-    'agentCapabilities.copyResultCopied': '{name}：已复制',
-    'agentCapabilities.copyResultSkipped': '{name}：已存在同名，已跳过',
-    'agentCapabilities.copyResultFailed': '{name}：失败：{reason}',
-    'agentCapabilities.copySummary': '复制完成：{copied} 个已复制，{skipped} 个已跳过，{failed} 个失败。',
 
     /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
        两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
@@ -1338,26 +1326,13 @@ const I18N_CATALOGS = {
     /* ─── Capabilities (#273 / ADR-0031 §2 as revised by #270) ───
        One place only: the MCP declarations and skills inside the agent detail page. The scope is
        always this member (`scope_kind=agent&scope_id=<member>`) with no scope picker; legacy
-       channel-level rows stay in the database but are neither shown nor assembled. Copying means
-       row copy / byte copy and skips (with a per-target line) when the target already has the name. */
+       channel-level rows stay in the database but are neither shown nor assembled. Every control
+       acts on this member only (#281 removed the cross-member "copy to other members" path); #280
+       split these two blocks into the skills / mcp tabs, so the shared title has no consumer. */
     'agentCapabilities.scopeNote':
       'These capabilities belong to this agent only; skill bytes live in ~/.alibot/agents/{member}/skills/ (the shared library ~/.alibot/skills/ is read-only).',
     'agentCapabilities.mcpTitle': 'MCP declarations',
     'agentCapabilities.skillTitle': 'Skills',
-    'agentCapabilities.copyTo': 'Copy to…',
-    'agentCapabilities.copyTitle': 'Copy to other members',
-    'agentCapabilities.copyHint':
-      'Copies only to the selected members; when a target already has the same name the line is skipped with a reason and the target is never overwritten.',
-    'agentCapabilities.copyConfirm': 'Start copying',
-    'agentCapabilities.copyCancel': 'Cancel',
-    'agentCapabilities.copyNoTargets': 'There are no other members to copy to.',
-    'agentCapabilities.copyPickRequired': 'Select at least one target member.',
-    'agentCapabilities.copyBusy': 'Copying…',
-    'agentCapabilities.copyResultCopied': '{name}: copied',
-    'agentCapabilities.copyResultSkipped': '{name}: already exists, skipped',
-    'agentCapabilities.copyResultFailed': '{name}: failed: {reason}',
-    'agentCapabilities.copySummary':
-      'Copy finished: {copied} copied, {skipped} skipped, {failed} failed.',
 
     /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
        Both values state existence and persistence only: reminders live in the backend and
