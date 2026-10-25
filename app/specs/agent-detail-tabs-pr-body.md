@@ -1,0 +1,180 @@
+## Summary
+
+设计票的三段交付面（设计笔记 → 规格 → 票图）一次落地，**零源码改动**：diff 只落在 5 个文档路径 + GitHub Issues
+（`CONTEXT.md` / ADR-0031 / 设计笔记 / 规格 / 本 PR 正文）。
+
+```text
+app/specs/
+├── agent-detail-tabs-design-notes.md   # 新增：D1–D11 决策账、seam 选址、断言改写清单、Out of Scope、Answer
+└── agent-detail-tabs-spec.md           # 新增：行为契约（2 条 seam / 76 条 user stories / 14 条 Out of Scope）
+docs/adr/
+└── 0031-...-global-layer-beside-the-project-boundary.md
+                                        # 修订 7 处：mcp.json 从「只读、无导出写路径」改成「Studio 写面 + 库行仍为正本」
+CONTEXT.md                              # 新增「Agent 详情页签」词条；更新「MCP 声明」词条
+```
+
+页签结构（D1）：
+
+```diff
+ Agent 详情（主线视图 state.mode === 'agent'）
+-├── 统计 → 系统提示 → 配置（含 MCP 表单 + 技能列表）→ 全局 MCP 只读 → 危险操作   (一页纵向铺开)
++├── 页签「基础信息和配置」  统计 → 系统提示 → 配置 → 危险操作
++│     上下文条数 / 压缩阈值 / 迭代上限 三格界面入口撤掉（库内值与 PATCH 字段面不动）
++├── 页签「skills」         「从本机导入」下拉框（一次一个） + 双栏：左栏列表 / 右栏详情(元数据 + SKILL.md 正文)
++│     手填绝对路径安装 与 上传 zip 安装 两条入口撤掉（后端两条分支保留）
++└── 页签「mcp」            上块：库行 mcp_server（装配正本） · 下块：直接编辑家目录 mcp.json（同名时库行胜出）
+```
+
+两条新读写面都落在**既有资源族**里（seam 数不增，零新增服务模块）：
+
+```text
+GET  /api/skills/{id}/markdown                ← 落在 /api/skills/{id} 同族；复用既有 404 文案 + 作用域校验 + 全局只读守卫
+GET  /api/agents/{id}/global-mcp-file         ← 落在 /api/agents/{id}/global-mcp-servers 同族
+PUT  /api/agents/{id}/global-mcp-file         ← 三道校验（JSON → 顶层形状 → 每条声明形状）全过才写盘；原文写盘不重排
+```
+
+ADR 处置：**判为修订而非新决策**，因此不新建 ADR-0037——「没有上下文会困惑」这条不成立（新口径与既有「库行是正本、
+同名库行胜出」一致，只把「本轮不提供导出写路径」改成「写面由 Studio 提供」，而 #275 当年就是这条的收尾票）。
+
+ticket map（原生 sub-issue + 原生 `blocked_by`，图无环，frontier = #280 / #281）：
+
+```text
+#279 规格票（父）
+├── #280 页签骨架 + 内容归位 + 上下文三项撤除      blocked_by 0   ─┬─> #282 导入下拉框（一次一个）
+├── #281 撤「复制到其他成员」弹层（/copy 端点保留）  blocked_by 0   ├─> #283 技能右栏详情 + 正文只读端点
+│                                                                └─> #284 mcp 两块面 + mcp.json 读写端点
+```
+
+## Evidence
+
+**advisory 之外的机械守卫全部无需跑**：本票不碰 `app/alibot/studio/**`、`app/README.md`、`app/tests/**`，
+因此 `test_docs_vocabulary_guard.py`（只读 README 与两个词表常量）与 `i18n_ui.test.cjs`（只扫 Studio 三件套）
+都不被触发；也没有任何守卫读 `CONTEXT.md` 或 `docs/adr/**` 的正文（实测 `grep -rln "CONTEXT.md" app/tests/`
+命中的三个文件只在注释里引用词条名，不读文件）。
+
+改动面（唯一允许的五个文档路径，`scripts/**` / `.github/**` / schema / 迁移链零触碰）：
+
+```text
+$ git diff adc079b..HEAD --name-only
+CONTEXT.md
+app/specs/agent-detail-tabs-design-notes.md
+app/specs/agent-detail-tabs-pr-body.md
+app/specs/agent-detail-tabs-spec.md
+docs/adr/0031-agent-home-is-a-global-layer-beside-the-project-boundary.md
+
+$ git diff adc079b..HEAD --name-only | grep -E '^(app/alibot/|app/tests/|scripts/|\.github/)'
+(无输出 = 源码 / 测试 / 脚本 / CI 零改动)
+```
+
+行数随本 PR 的后续修正提交增长，因此**不在这里写死**；以 `git diff adc079b..HEAD --shortstat` 或
+PR 页面的读数为准。
+
+ADR-0031 的七处修订逐条可指（`旧 → 新` 对照写在设计笔记 D8 的表里）：文件头修订标注、§一 表格 `mcp.json` 单元格、
+§二「技能与 MCP」段、§三「独立守卫」bullet、§三「Docker 后端」bullet、§四 表格 `§三` 行、§四 表格 `§六` 行。
+§六「被否方案与代价」原样（它没有断言「只读」）。
+
+占位扫描：`grep -nE "待定|TBD|TODO"` 对设计笔记 / 规格 / ADR-0031 / `CONTEXT.md` —— **正文 0 命中**（唯一命中是
+记录这条扫描命令本身的那一行）。
+
+**Before → After（tracker）**
+
+- Before：`gh issue list --state open` = 5 张（#275 / #269 / #131 / #72 / #1）；#275 正文写「导出：应用能生成与导入
+  格式一致的 `mcp.json`」。
+- After：新增 #279（规格父票）+ #280–#284（5 张实施子票）；#275 有一条方向调整评论
+  （[#issuecomment-6398704279](https://github.com/whutlichao/alibot/issues/275#issuecomment-6398704279)），
+  说明导出这一项不再单独立项、剩余范围收窄为「导入命令仍作迁移工具」+「移除装配层」。
+
+```text
+$ gh api repos/whutlichao/alibot/issues/<n> --jq '.issue_dependencies_summary'
+#280 blocked_by=0 blocking=3
+#281 blocked_by=0 blocking=0
+#282 blocked_by=1 blocking=0
+#283 blocked_by=1 blocking=0
+#284 blocked_by=1 blocking=0
+```
+
+子票正文按票面要求**不含手写依赖行**（blocking 只由原生边承载）；#280 / #281 保留模板里的
+「None (can start immediately)」。
+
+设计树 frontier 为空：D1–D9 全部人定；两处 seam 由 Q1 定（双 A）；`/copy` 端点由 Q2 定（保留，只撤前端）；
+拆票粒度由 coordinator 授权自选（选 5 票，理由记在设计笔记 D11 与 Answer A2 第 3 行）。
+
+## Merge Danger
+
+**Door:** two-way
+
+docs-only + tracker-only：`CONTEXT.md` / ADR-0031 / 两个新增 specs 文件 + GitHub Issues。回退 = `git revert`
+这一条提交并把 #279–#284 关掉；没有任何代码、schema、迁移或数据面被改动，也没有不可逆的跟踪器操作
+（#275 只加了评论，未关闭、未改标签与正文）。
+
+**Blast Radius:** docs-only（下游影响是有界的意图改变，不是运行时改变）
+
+三点需要 coordinator 知道的下游后果：
+
+1. **ADR-0031 是决策正本**：这次修订把 `mcp.json` 从「只读、本轮不提供导出写路径」改成「Studio 写面 + 库行仍是
+   装配正本」。实施 #284 之前，仓库里会存在一段「ADR 允许写、代码还没有写面」的窗口——这是设计票的正常形态，
+   但若 #284 长期不落地，ADR 会读起来超前于代码。
+2. **#275 的范围被收窄**：它的正文仍写「导出：应用能生成与导入格式一致的 `mcp.json`」，评论已说明这一项不再单独
+   立项。它的正文与标签按票面要求**未改**，读 #275 的人需要看那条评论才知道范围变了。
+3. **#280 是 #282/#283/#284 的唯一阻塞**：三张内容票都往同一段渲染函数里加内容，串行落地意味着 #280 之后
+   frontier 一次放出三张，但它们的 diff 会在同一批文件上相邻（`app.js` / `agent_capabilities_ui.test.cjs`）。
+   并行开工时容易冲突，实施编排适合按 #282 → #283 → #284 排队。
+
+## 修正提交：自报读数与实测不符（G-docs 打回项）
+
+首轮验收在 A3 自查表抓到一处自报读数与实测不符（写 71 条 user stories / 12 条 Out of Scope，实测 76 / 14）。
+A3 是本票的验收证据本身，一处凭空数字会让整张表失去证据效力，因此修正方式不是把两个数字改对了事，而是让
+读数**可复核**：
+
+| 项 | 修法 |
+| --- | --- |
+| A3 的两个数 | 改成 2 条 seam / 76 条 user stories / 14 条 Out of Scope，并**指到 A5 拿命令与读数**（不在 A3 二次自报） |
+| A5 | 从「自报读数表」改成「命令 + 读数表」：每行给可实跑的命令（user stories / Out of Scope / seam / D9 断言清单 / 占位扫描 / 改动面白名单），本次逐条实跑并与声明核对 |
+| A6 的改动规模 | 改成**不随提交漂移**的口径：给 `6219931` 与 `ce701ed` 两个历史锚点的 shortstat 实测，现值不写死，指到 `git diff adc079b..HEAD --shortstat` 与 PR 读数 |
+
+同一错误模式又抓出三处，一并修掉：
+
+1. pr-body 的「diff 只落在 **4 个**文档路径」实为 **5 个**（漏了 pr-body 自身）；
+2. pr-body 里一段**提交前**抓的 `git diff --stat` 快照（29 增 15 删）早已过期，换成 `--name-only` 清单 +
+   「源码 / 测试 / 脚本 / CI 零改动」的白名单判定，行数不写死；
+3. A5 占位扫描「唯一命中是记录命令本身的那一行」实为 **3 行**自指句，改成给「原始 3 行 → 排掉自指行后 0 行」的两步读数。
+
+另外把 Problem Statement 的两处数量口径与实测对齐：新建面「6→9」对齐为实测的 **4→7** 个键；配置区 **9** 个
+可编辑控件 → 保存载荷 **10** 个键的因果句改成**算得平**的三步分解（`provider`+`model` 合并成 `model_id` **−1**、
+`system_prompt` 来自另一区块 `agentPromptSection()` **+1**、`enabled` 只由危险区写草稿 **+1** ⇒ 9 − 1 + 1 + 1 = 10），
+原句「多出来的那个是危险区的 `enabled`」漏掉了另外两笔。这一笔的实测依据（控件清单与载荷清单各自从 `studio/app.js`
+的哪个函数读）已补进 A5。
+
+修正提交只动 `app/specs/agent-detail-tabs-{design-notes,pr-body}.md`；零源码改动，**未开新 PR**（推在同一个 #285）。
+读数以 `git diff adc079b..HEAD --shortstat` 为准，不在正文里写死。
+
+## 修正提交（第 2 次打回）：Problem Statement 的 9 → 10 因果句算术不自洽
+
+第 2 次验收确认读数本身已对（user stories 76 / Out of Scope 14 / seam 2 / D9 清单 14 四条独立复跑全中），
+但抓到一处**算术不自洽**：Problem Statement 原文写「9 个可编辑控件（保存时整份提交 10 个键，**多出来的那个**
+是危险区的 `enabled`）」。
+
+9 → 10 的差值是 **+1**，但那个 +1 是**三笔相抵**的结果，单一一笔解释不了它：
+
+| 步 | 差 | 实测落点 |
+| --- | --- | --- |
+| 起点：配置区可编辑控件 | **9** | `agentConfigSection()`：`display_name` / `role` / `provider` / `model` / `auto_claim` 档位组 / `context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `web_access` 档位组 |
+| `provider` + `model` 两个控件合并成 `model_id` | **−1** | 载荷里只有 `model_id`；草稿里拆成两个控件 |
+| `system_prompt` 来自另一个区块 | **+1** | 它在 `agentPromptSection()` 的 textarea；`agentConfigSection()` 里 `grep system_prompt` 命中 **0** 次 |
+| `enabled` 只由危险区写草稿 | **+1** | `agentDangerSection()` 的暂停 / 恢复按钮（`dataset.agentToggle`）写 `draft.enabled` |
+| 终点：保存载荷键 | **10** | `submitAgentEdit()` 的 `payload` 字面量 |
+
+9 − 1 + 1 + 1 = **10**。原句漏掉了「合并掉的 `model_id`」与「被吞掉的 `system_prompt`」两笔。
+
+这一句不是措辞问题：它是 Problem Statement 里**唯一的算术论证**，也是「配置区的字段构成」这一事实的来源；
+实施票 #280 的验收项「保存载荷降到 7 个字段」正是从它推出来的。论证算不平，下游票的判据就缺一个可信前提。
+
+修法：
+
+1. **第 29 行改写成算得平的表述**，逐步给出三笔差额与各自的函数落点（不采用「只把 9 改成 8」这类糊法——
+   9 个控件是实测真的，错的是因果解释）；
+2. **A5 补一行**：控件清单与载荷清单各自从 `studio/app.js` 的哪个函数读（含两边可直接实跑的 `awk` 命令），
+   让下一位读者能自己复算；
+3. **扫过全部「N 个 X → M 个 Y」因果换算句**（命令 `grep -noE '[0-9]+ ?个[^，。；（]*'` 对三个文件）：
+   带因果解释的共 4 处，修正后 4/4 都能用实测拆开算平——`10 → 7`（D2 / D9 表 / 规格 D2 三处同一笔，10 − 3 = 7）
+   与 `4 → 7`（D2「不做什么」，4 + 3 = 7，4 = `submitAgent()` 当前载荷）；纯计数句按票面要求不动，由 A5 的命令项兼管。
