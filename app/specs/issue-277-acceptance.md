@@ -131,8 +131,20 @@ node --test app/tests/*.test.cjs
 
 ### 5.2 全量 `scripts/check.sh`
 
+两次全量，都是清理后的树（同一个工作区、同一个 `.venv`、同一台机器）：
+
 ```text
+# 树 1000632（chore：移除 app/logs + .gitignore 两条规则）
 == pytest（全量）        1210 passed, 11 skipped in 695.02s
+== ruff check            All checks passed!
+== ruff format --check   340 files already formatted
+== mypy（仓库根）        Success: no issues found in 128 source files
+== pyright               0 errors, 0 warnings, 0 informations
+ℹ tests 322 / ℹ pass 322 / ℹ fail 0
+门禁全绿
+
+# 树 d2eec4f（docs：本文件 §5.2 / §5.3 / §9 与 PR 正文正本）
+== pytest（全量）        1210 passed, 11 skipped in 692.52s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
 == mypy（仓库根）        Success: no issues found in 128 source files
@@ -141,11 +153,13 @@ node --test app/tests/*.test.cjs
 门禁全绿
 ```
 
-**读数对应的 commit：`1000632`**（`chore(#277): 移除误提交的运行期日志，并堵住产生源`）——即
+**代码树 = `1000632`**（`chore(#277): 移除误提交的运行期日志，并堵住产生源`）——即
 `git rm -r --cached app/logs`（37 个文件）与 `.gitignore` 新增 `/logs/`、`/app/logs/` 之后的树。
-本文件在该树之后追加，属纯文档改动，不再改变任何门禁判据。
+`d2eec4f` 起的所有后续提交只动 `app/specs/**`（本文件与 PR 正文正本），
+`git diff --stat 1000632..HEAD` 只列这两份文档，不改任何门禁判据；因此上表两段读数都适用于最终 head。
+（第二段本来就是在 `d2eec4f` 上跑的，用来证明这一点不是推断。）
 
-与上一轮（`70fcb6d` 里那两行）的关系：**数字完全相同**（1210 passed / 11 skipped / 340 / 128 / 322），
+与上一轮（`70fcb6d` 里那两行）的关系：**计数完全相同**（1210 passed / 11 skipped / 340 / 128 / 322），
 这不是「凑出来的同值」，而是必然——清掉的是 37 个**未被任何代码/测试引用**的运行期日志文件，删它们
 不改变用例集合、源文件数或格式化面。真正不自洽的是上一轮：那个 commit 声称只回填两行数字，实际却把
 37 个 `app/logs/2026-10-25_15-*.log` 一并带进了提交树（`main` 上该目录与 `.log` 文件数都是 0）。
@@ -164,7 +178,8 @@ git status --porcelain --ignored | grep '^!!' | grep logs   # !! app/logs/
 
 `tests/test_runtime_memory.py` 是复现产生源最短的一条路径（ReMe 的 `application.py` 一被构造就
 `log_dir="logs"` 落盘）；`tests/test_skill_import.py` 走不到那条路径，跑它不会生成日志。全量门禁跑完
-后盘上有 75 个 `.log`，`git status --porcelain` 仍然只有本文件的改动——这就是「堵住产生源」的读数。
+后盘上有 75 个 `.log`（此后每再跑一次 pytest 就继续累加，本轮收尾时为 112 个——这个数只随跑测试的
+次数增长，与 git 无关），而 `git status --porcelain` 全程只有本文件的改动。这就是「堵住产生源」的读数。
 
 `.gitignore` 的两条规则都是**锚定根**写法（`/logs/` 与 `/app/logs/`），已用 `git check-ignore -v`
 反向核对：只遮蔽这两个目录，`app/specs/`、`docs/`、`app/alibot/` 都不受影响。
