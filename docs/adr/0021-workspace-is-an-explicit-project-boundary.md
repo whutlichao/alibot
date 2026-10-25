@@ -40,9 +40,9 @@ AgentScope 的 `LocalBackend` 用主机进程执行 Bash；`cwd=workdir` **不�
 
 **修订（#270，2026-10-25）**：本节原有的项目根 Skill 字节路径与频道级 MCP / Skill 装配口径已修订。以下为现行决策：
 
-- `mcp_server` 是 MCP 声明的数据库正本，现行声明使用 `scope_kind='agent'`；`scope_kind='channel'` 的旧行保留但弃用，装配忽略、不回填。Agent 家目录 `mcp.json` 是只读导入源与导出结果，仅由应用写入导出内容，不是与库行并列的正本。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）；没有 workspace 时不装配 MCP。
+- `mcp_server` 是 MCP 声明的数据库正本，现行声明使用 `scope_kind='agent'`；`scope_kind='channel'` 的旧行保留但弃用，装配忽略、不回填。Agent 家目录 `mcp.json` 是只读导入源，过渡期仍作为**只读装配层**参与运行时（同名时低于成员库行，落选条目进 `RoundOutcome.reason` 的 `layer=global` 提示），不是与库行并列的正本；**本轮不提供导出写路径**，MCP 单正本由 follow-up #275（`migrate-mcp` 导入命令并移除装配层）收尾。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）；没有 workspace 时不装配 MCP。
 - `skill` 仍存元数据与 hash；字节由宿主应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`，不再依赖 workspace。安装只接受本机目录或上传 zip，校验 `SKILL.md` front matter 与 hash；不做远程市场、自动下载或自动更新。
-- `scope_kind='channel'` 的旧 Skill 行与项目层字节 `<workspace_root>/.alibot/skills/<member_id>/` 保留但弃用、装配忽略；不回填、不自动删除。迁移由独立 `migrate-skills` 命令显式执行（T5），本轮不执行。
+- `scope_kind='channel'` 的旧 Skill 行与项目层字节 `<workspace_root>/.alibot/skills/<member_id>/` 保留但弃用、装配忽略；不回填、不自动删除。迁移由独立 `migrate-skills` 命令显式执行（#274；默认 dry-run，`--apply --yes` 才动手，退出码 6 = 拒绝/中途失败），启动时绝不自动迁移。
 - MCP / Skill 的增删是**配置动作**：不落消息、不唤醒、不消耗预算、不开世代（与 ADR-0011 同族）。
 
 ## 四、权限与 HITL
@@ -72,7 +72,7 @@ HITL（D19 已裁定）：`RequireUserConfirmEvent` → `approval_request`（pen
 
 | 既有边界 | 处置 |
 | --- | --- |
-| **数据目录可整体备份** | 数据目录仍只含 `alibot.db` + `attachments/` + 迁移台账。`workspace_root` 是用户项目目录，**不**进数据目录；README 必须写“备份数据目录 ≠ 备份项目文件”。 |
+| **数据目录可整体备份** | 数据目录仍只含 `alibot.db` + `attachments/` + 迁移台账。修订（#274）：技能迁移会在数据目录写 `skill-migration-<UTC>.json` 清单，并使用同一整目录备份机制（备份名 `<数据目录>-backup-skills-<UTC 时间戳>`）；数据目录仍是业务正本 + 备份单位。`workspace_root` 是用户项目目录，**不**进数据目录；README 必须写“备份数据目录 ≠ 备份项目文件”。 |
 | **库里不存密钥** | `mcp_server.env_names` 只存变量名；Docker env 与 MCP 值只从进程环境读；`agent_config` 仍只有 model_id。审批记录只存工具调用与决策，不存凭证。 |
 | **Agent 不经 HTTP**（ADR-0003） | 文件工具、MCP、Skill、审批回传都在进程内/容器内执行；Agent 没有 HTTP 令牌，也没有“以某成员名义调 HTTP”的路径。人类审批走 HTTP，但那是人类面。 |
 
@@ -81,8 +81,9 @@ HITL（D19 已裁定）：`RequireUserConfirmEvent` → `approval_request`（pen
 `CONTEXT.md` 的**Agent** 词条原写“它不做文件与 shell 操作（首版没有家目录、项目目录与沙箱）”。本 ADR
 **扩展**首版口径；#270 再补充成员技能的只读第二根，明确区分项目根与技能读取：
 
-- **保留**：没有配置 workspace 时不挂项目根文件工具与 shell；本地 Read / Glob / Grep 可读取成员技能目录
-  这一只读第二根，Write / Edit 仍只限项目根（没有项目根时不可写）。
+- **保留**：没有配置 workspace 时不挂项目根文件工具与 shell。只有**装配了项目根的 local 轮次**才把成员
+  `skills/` 作为只读第二根（Read / Glob / Grep 可读，Write / Edit 仍只限项目根）；DM / 无项目根轮次没有
+  这套文件工具，只有卸载目录的只读 `Read`。
 - **扩展**：频道显式设置 `workspace_root` 后，成员获得以项目根为可写根的受限文件工具；技能装配与是否配置
   workspace 无关。Docker 后端或显式本地开关才获得 shell。
 - **收窄**：本地 Bash 默认关闭；`trusted-writes` 仍只限项目工作根内；`BYPASS` 不暴露。

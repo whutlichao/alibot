@@ -43,7 +43,8 @@
 **技能字节迁移（#274）**：``migrate-skills`` 的扫描 / 计划 / 执行也住在本模块
 （:func:`plan_skill_migration` / :func:`apply_skill_migration`）。它不推进 schema 版本，只把旧项目层
 ``<workspace_root>/.alibot/skills/<partition>/<name>/`` 的字节复制到成员家目录并重算 hash；
-备份沿用 :func:`_backup_data_dir`，清单落数据目录内的 ``skill-migration-<UTC>.json``。
+备份沿用 :func:`_backup_data_dir`（带 ``label="skills"``，与 schema 迁移的 ``<from>-to-<to>`` 命名区分），
+清单落数据目录内的 ``skill-migration-<UTC>.json``。库行的 ``source_path`` 记录**来源**（旧项目层路径）。
 频道级分区只进报告、不复制；源字节不删除。
 """
 
@@ -1231,16 +1232,24 @@ def run_chain(conn: sqlite3.Connection, from_version: int, to_version: int = SCH
 
 
 # ─── 备份与审计 ──────────────────────────────────────────────────────────────
-def backup_directory_name(data_dir: Path | str, from_version: int, to_version: int) -> str:
-    """``<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>``（规格 D8 / S6）。"""
+def backup_directory_name(
+    data_dir: Path | str, from_version: int, to_version: int, label: str | None = None
+) -> str:
+    """``<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>``（规格 D8 / S6）。
+
+    ``label`` 非空时改用 ``<数据目录>-backup-<label>-<UTC 时间戳>``：技能迁移不推进 schema
+    版本，把备份与 schema 迁移区分开（#274）。
+    """
     data_dir = Path(data_dir)
     stamp = datetime.now(UTC).strftime(BACKUP_TIMESTAMP_FORMAT)
+    if label:
+        return f"{data_dir.name}{BACKUP_INFIX}{label}-{stamp}"
     return f"{data_dir.name}{BACKUP_INFIX}{from_version}-to-{to_version}-{stamp}"
 
 
-def _backup_data_dir(data_dir: Path, from_version: int, to_version: int) -> Path:
+def _backup_data_dir(data_dir: Path, from_version: int, to_version: int, label: str | None = None) -> Path:
     """把**整个数据目录**（含 ``attachments/`` 字节）复制到同级；失败即拒绝迁移。"""
-    destination = data_dir.parent / backup_directory_name(data_dir, from_version, to_version)
+    destination = data_dir.parent / backup_directory_name(data_dir, from_version, to_version, label)
     try:
         shutil.copytree(data_dir, destination)
     except (OSError, shutil.Error) as exc:
@@ -1770,12 +1779,16 @@ def _existing_skill_tree(
         return "conflict", root, None
 
 
-def _skill_row_changes(row: sqlite3.Row | None, target: Path, content_hash: str) -> tuple[str, ...]:
-    """这条源在 ``skill`` 行上要改哪些列（空 = 已对齐，重复 apply 不再写）。"""
+def _skill_row_changes(row: sqlite3.Row | None, source: Path, content_hash: str) -> tuple[str, ...]:
+    """这条源在 ``skill`` 行上要改哪些列（空 = 已对齐，重复 apply 不再写）。
+
+    ``source_path`` 记的是**来源**（旧项目层路径），不是目标家目录路径，所以重复 apply
+    比较的也是来源。
+    """
     if row is None:
         return ("insert",)
     changes: list[str] = []
-    if str(row["source_path"]) != str(target):
+    if str(row["source_path"]) != str(source):
         changes.append("source_path")
     if str(row["content_hash"]) != content_hash:
         changes.append("content_hash")
@@ -1810,7 +1823,7 @@ def _plan_entry(
     else:
         action = SKILL_ACTION_REFUSE
         reason = "目标路径不可读或越出全局根，需人工裁定"
-    changes = () if action == SKILL_ACTION_REFUSE else _skill_row_changes(row, resolved, content_hash)
+    changes = () if action == SKILL_ACTION_REFUSE else _skill_row_changes(row, source, content_hash)
     if changes == ("insert",):
         reason = f"{reason}；库行不存在，将按成员作用域新建"
     elif changes:
@@ -2055,13 +2068,17 @@ def _write_skill_manifest(plan: SkillMigrationPlan) -> Path:
 
 
 def _upsert_skill_row(conn: sqlite3.Connection, entry: SkillMigrationEntry, content_hash: str) -> str:
-    """按成员作用域更新 / 新建 ``skill`` 行；返回值是 ``created`` / ``updated`` / ``unchanged``。"""
+    """按成员作用域更新 / 新建 ``skill`` 行；返回值是 ``created`` / ``updated`` / ``unchanged``。
+
+    ``source_path`` 写**来源**（旧项目层源路径），不写目标家目录路径——票面要求新建行也标注
+    来源；目标落点由字节位置自证，重复 apply 靠来源 + hash 判定幂等。
+    """
     now = utc_now()
     row = conn.execute(
         "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? AND name = ?",
         (entry.member_id, entry.name),
     ).fetchone()
-    target = str(entry.target)
+    source = str(entry.source)
     if row is None:
         conn.execute(
             "INSERT INTO skill(id, name, description, source_path, content_hash, enabled, "
@@ -2071,7 +2088,7 @@ def _upsert_skill_row(conn: sqlite3.Connection, entry: SkillMigrationEntry, cont
                 new_id("sk"),
                 entry.name,
                 entry.description,
-                target,
+                source,
                 content_hash,
                 entry.member_id,
                 now,
@@ -2079,12 +2096,12 @@ def _upsert_skill_row(conn: sqlite3.Connection, entry: SkillMigrationEntry, cont
             ),
         )
         return "created"
-    changes = _skill_row_changes(row, entry.target, content_hash)
+    changes = _skill_row_changes(row, entry.source, content_hash)
     if not changes:
         return "unchanged"
     conn.execute(
         "UPDATE skill SET source_path = ?, content_hash = ?, updated_at = ? WHERE id = ?",
-        (target, content_hash, now, row["id"]),
+        (source, content_hash, now, row["id"]),
     )
     return "updated"
 
@@ -2138,7 +2155,7 @@ def apply_skill_migration(plan: SkillMigrationPlan) -> SkillApplyResult:
         return SkillApplyResult(backup_path=None, manifest_path=None, completed=())
 
     try:
-        backup_path = _backup_data_dir(plan.data_dir, SCHEMA_VERSION, SCHEMA_VERSION)
+        backup_path = _backup_data_dir(plan.data_dir, SCHEMA_VERSION, SCHEMA_VERSION, label="skills")
     except BackupError as error:
         raise SkillMigrationError(f"技能迁移前的整目录备份失败，已停止（未写入任何文件）：{error}") from error
     try:

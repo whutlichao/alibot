@@ -88,14 +88,17 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
 全局公共库 `~/.alibot/skills/` 仍由人维护，应用不创建。创建 Agent 时应用建出 `agents/<member_id>/`
 与 `reme/` 工作区；不在启动时创建 `AGENTS.md`、成员 `skills/` 或 `mcp.json`。应用安装技能时写成员
-`skills/`，导出 MCP 时才写 `mcp.json`；导入该文件时只读，MCP 正本仍是库行（ADR-0031 / #270）。
+`skills/`；成员家目录 `mcp.json` 是**只读导入源**，过渡期仍作为**只读装配层**参与运行时（同名时低于
+成员库行，落选条目进 `RoundOutcome.reason` 的 `layer=global` 提示），它不是与库行并列的正本。
+**本轮不提供导出写路径**：MCP 单正本由 follow-up #275（`migrate-mcp` 导入命令并移除装配层）收尾
+（ADR-0031 / #270）。
 旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
 本节的兼容读取只针对 `~/Alibot`。
 
 备份 / 恢复（显式路径，可直接执行）：
 
 ```sh
-# 数据目录（库 + 附件 + 迁移台账，整目录 = 备份单位）
+# 数据目录（库 + 附件 + 迁移台账 + 技能迁移清单，整目录 = 备份单位）
 mkdir -p ~/.alibot-backups
 cp -R ~/.alibot/data ~/.alibot-backups/data-$(date +%F)
 # 恢复：反向复制回去（先停应用）
@@ -103,7 +106,7 @@ cp -R ~/.alibot-backups/data-YYYY-MM-DD ~/.alibot/data
 # 若仍在使用旧位置做兼容读取，把上面的 ~/.alibot/data 换成 ~/Alibot。
 
 # 全局层：不在数据目录备份内，必须单独备份
-# agents/ 里有人工维护的 AGENTS.md、应用写入的 skills/ 与 ReMe 工作区；mcp.json 只保存应用导出的文件。
+# agents/ 里有人工维护的 AGENTS.md、应用写入的 skills/ 与 ReMe 工作区；mcp.json 是人工维护的只读导入源（应用不写）。
 # 整目录复制可覆盖这些素材；公共技能库 ~/.alibot/skills/ 另行备份。
 cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
 cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
@@ -115,6 +118,9 @@ cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
 它会是「有元数据、没字节」的半份——备份单位是**整个数据目录**。
 **迁移前会自动备份**：`--migrate` 在动手之前把整个数据目录复制成同级的
 `<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>`；**备份失败就不迁移**（不会退化成"放行 + 一句警告"）。
+`python -m alibot migrate-skills` 使用**同一整目录备份机制**，但备份名带 `skills` 标签
+（`<数据目录>-backup-skills-<UTC 时间戳>`）以与 schema 迁移区分，并在数据目录内落
+`skill-migration-<UTC>.json` 清单（逐条来源 / 目标 / 动作，审计正本）。
 
 从旧默认位置搬到新默认位置是**显式动作**（启动绝不自动搬移）：
 **停应用 → 整目录复制 → 校验 → 指向新位置**，复制前先做整目录备份。
@@ -236,7 +242,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `task` | id, target_id, channel_id, 标题, 状态, **`assignee_member_id`**(可空), **`claimed_at`** | 任务当前态在行上；`assignee_member_id` = 受派者；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点）。读路径载荷另派发 **`allowed_transitions`**（当前态的合法迁移目标，顺序固定五态、终态 `[]`；由迁移表派生，呈现面只读它，#191） |
 | `permission_rule` | id, scope_kind(`channel`/`agent`), scope_id, tool_name, pattern, behavior(`allow`/`deny`/`ask`), created_at | 权限规则是**配置**：三档行为，不暴露 BYPASS / DONT_ASK（ADR-0021 §四） |
 | `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四）。主键 `reply_id` 是**回复级**标识（#215）：一条回复里的第 N 次 ASK 复用同一行，`tool_calls` / `decisions` 只追加；重开时 `state` 回 `pending`、`resolved_at` 置 NULL、`requested_at` 刷新到这一批的起点、旧 `decisions` 保留 |
-| `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明正本；现行声明使用 `scope_kind='agent'`；旧 `channel` 行保留、弃用且装配忽略；`mcp.json` 只读导入、应用导出（ADR-0021 §三修订 / ADR-0031 §二） |
+| `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明正本；现行声明使用 `scope_kind='agent'`；旧 `channel` 行保留、弃用且装配忽略；成员家目录 `mcp.json` 是只读导入源，过渡期仍作为只读装配层参与运行时（同名低于库行），本轮无导出写路径，#275 收尾（ADR-0021 §三修订 / ADR-0031 §二） |
 | `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；Agent 级字节由应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`，不依赖 workspace；技能只按成员家目录 > 全局公共库装配。旧 `channel` 行与项目层字节保留、装配忽略（ADR-0021 §三修订 / ADR-0031 §二） |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证**（兼容面，迁移后读路径优先读 `remote_consent_scope`） |
 | `remote_consent_scope` | scope_kind(`model`/`mcp`/`docker`/`web`), scope_id, acknowledged_at | 远端数据面的统一一次性确认；旧 `remote_consent` 行复制成 `('model', provider, …)`。**不存凭据** |
@@ -470,18 +476,20 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 ## Workspace / 权限 / 审批 / MCP / Skill（ADR-0021）
 
 `workspace` 是**显式配置的项目边界**：频道配项目根（`workspace_root`），Agent 配后端与权限档。没有
-显式配置根时不挂项目根工具与 shell；本地 Read / Glob / Grep 仍可读取成员技能目录这一只读第二根。
+显式配置根时不挂项目根文件工具与 shell；**只有装配了项目根的 local 轮次**才把成员 `skills/` 作为
+只读第二根，DM / 无项目根轮次没有这套文件工具（只有卸载目录的只读 `Read`）。
 
 - **项目根是频道级**：所有成员共享同一个 `workspace_root`；文件工具对项目文件的相对路径从这里起算。根检查在
   **装配层**：Read / Write / Edit / Glob / Grep 每个项目路径先锚到根、再 `realpath`，`..`、根外绝对路径、
-  指向根外的 symlink 一律返回 `ToolResultState.ERROR`。本地 Read / Glob / Grep 另可只读访问成员技能目录；
+  指向根外的 symlink 一律返回 `ToolResultState.ERROR`。有项目根的 local 轮次里，本地 Read / Glob / Grep
+  另可只读访问成员技能目录（DM / 无项目根轮次没有这套文件工具）；
   Write / Edit 仍只写项目根。AgentScope 自己的 `data/` / `skills/` / `sessions/` / `.mcp` 收进 `<root>/.alibot`。
 - **workspace_root 不在数据目录内**：它指向用户的**项目目录**，不进入整目录备份的复制。**备份数据目录
   ≠ 备份项目文件**——项目文件要用户自己备份（见上面的备份口径）。
 - **两个后端**：`local`（默认）或 `docker`（每 Agent/会话一个容器，`host_workdir=workspace_root`，
   容器内固定根 `/workspace`；另把该成员的**全局家目录**与**公共技能库**都以 `:ro` 挂到
   `/alibot-home/agents/<member_id>` 与 `/alibot-home/skills`，数据目录不进容器）。Docker 挂载保持只读：
-  技能写入与 `mcp.json` 导出都发生在宿主进程；Skill.markdown 已由宿主预读，容器只需读取 `references/`，
+  技能写入发生在宿主进程；成员家目录 `mcp.json` 是只读导入源，宿主进程不写它。Skill.markdown 已由宿主预读，容器只需读取 `references/`，
   ReMe 也由宿主进程写入。无项目根的轮次不装配 Docker。**本地 shell 默认关闭**（`allow_local_shell=0`）：
   本地 Bash 是主机进程、逐次审批、无沙箱；Docker 里的 Bash 在容器内，不需要那条本地通道。
 - **Docker 不可用时是显式失败**：没有 daemon / 镜像起不来 ⇒ 该成员状态点 **`offline`**、
@@ -509,7 +517,9 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   不再可读**（为了让倒计时与新一批同口径）；收口判据是**全部历史决策** ⇒ 第一批被拒绝时，第二批即使
   全批准，记录仍是 `denied`。
 - **MCP 声明**：`mcp_server` 是数据库正本，现行声明使用 `scope_kind='agent'`；`scope_kind='channel'` 的旧行
-  保留但弃用、装配忽略且不回填。`mcp.json` 只作只读导入源与应用导出结果，不与库行并列成为正本。MCP 仍
+  保留但弃用、装配忽略且不回填。`mcp.json` 只作只读导入源；过渡期它仍是**只读装配层**（同名时低于
+  成员库行，落选条目进 `RoundOutcome.reason` 的 `layer=global` 提示），不与库行并列成为正本，本轮
+  **不提供导出写路径**（#275 收尾）。MCP 仍
   以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）；没有 workspace 时不装配 MCP。
   远端 MCP（`http` / `sse`）未做数据面确认时不连接；stdio 不需要确认。
 - **Skill**：`skill` 表存 Agent 级技能元数据与内容 hash；字节由宿主应用写入
@@ -649,7 +659,7 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）；`web_access: null` 是**清除 Agent 级覆盖**（回到跟随频道，写库 `NULL`；缺省该字段 = 保持原值，其它字段的显式 `null` 仍 400）。响应同形 `agent` + `agents` + `members` |
 | `DELETE /api/agents/{id}` | **软删除**一个 Agent：写 `member.deleted_at` 并删掉它在 `target_member` 的全部行（移出全部频道与任务线程）。消息 / 任务 / DM target / `agent_config` / `round_outcome` 保留，不重写任务指派；不落消息、不唤醒、不消耗预算。只接受未删除的 `kind='agent'`；owner、未知 id、二次删除一律可读 404 `not_found`。响应 `{deleted, agents, members}` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
-| `GET /api/agents/{id}/global-mcp-servers` | 该成员家目录 `mcp.json` 的只读导入源视图；应用仅通过导出写该文件。运行时正本为 `mcp_server` Agent 级库行，文件本身不是装配来源 |
+| `GET /api/agents/{id}/global-mcp-servers` | 该成员家目录 `mcp.json` 的只读导入源视图；过渡期该文件仍是只读装配层（同名低于 Agent 级库行）。运行时正本为 `mcp_server` Agent 级库行；本轮不提供导出写该文件的路径（#275） |
 | `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 远端 MCP 数据面确认；只对已导入的 Agent 级 `mcp_server` 声明生效。MCP 仍需 workspace 才装配 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
@@ -671,7 +681,7 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `GET /api/web-providers/{provider}/credential` | 一家的掩码凭据读数（未配置时 `configured=false`） |
 | `PUT /api/web-providers/{provider}/credential` | 保存 / 换 key `{api_key, is_default?}`（非空、长度上限；保存同时写确认行），或不带 key 只切默认 `{is_default: true}`；响应只回掩码 |
 | `DELETE /api/web-providers/{provider}/credential` | 清空凭据与默认标记（确认行保留）；响应只回掩码 |
-| `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节）。旧 channel 行仍按其 scope 保留 |
+| `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节）。旧 channel 行仍在库中保留（迁移前不删），但 `GET` 带 `scope_kind=channel` 返回空列表（弃用，不提供读取面）；不带过滤的旧行不在本 PR 删除 |
 | `POST /api/skills` | 安装：Agent 级 JSON 正文 `{scope_kind, scope_id, source_path}`（`scope_kind='agent'`，`scope_id=<member_id>`）从**本机目录**；或 zip 原始字节 + query `scope_kind/scope_id/filename`。历史 `channel_id?` 参数与 `scope_kind='channel'` 已弃用，不构成装配来源；旧 channel 行保留并忽略。校验 `SKILL.md`、路径与 hash，非法整体拒绝；同名同 scope 409；不做远程市场/下载 |
 | `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |
 | `POST /api/skills/{id}/copy` | 把该技能**字节**复制到另一个成员：正文 `{scope_id: <target_member>}`；源字节固定取自源成员家目录 `~/.alibot/agents/<source>/skills/<name>/`（前端不传路径），复制走既有安装器重校验并建目标行；目标已有同名行或同名目录 409、**不覆盖**；源行与源字节只读不改；`scope_kind='channel'` 的旧行 400 |
