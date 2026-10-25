@@ -544,7 +544,7 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 | --- | --- |
 | 占位扫描（`待定\|TBD\|TODO`） | 本文件、规格、ADR-0031、`CONTEXT.md` 正文 **0 命中** |
 | 机械守卫 | 未触发：本票不碰 `app/alibot/studio/**`、`app/README.md`、`app/tests/**`；`test_docs_vocabulary_guard.py` 只读 `README` 与两个词表常量，`i18n_ui.test.cjs` 只扫 Studio 三件套 |
-| `git status` | 只有本文档 / 规格 / `CONTEXT.md` / ADR-0031 四处（+ PR body 若入库） |
+| `git status` | 只有本文档 / 规格 / PR 正文 / `CONTEXT.md` / ADR-0031 五处 |
 | 源码 / 测试 / schema | **零改动**；`SCHEMA_VERSION` 未 bump |
 
 ### A6 · PR 与收尾
@@ -553,4 +553,6 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 | --- | --- |
 | 分支 | `agent-detail-tabs-design` |
 | 本票 base | `adc079b`（= `origin/main`） |
-| PR | 见本文件所在 PR（body 由 `pr` skill 体例撰写，`--body-file` 提交） |
+| PR | [#285](https://github.com/whutlichao/alibot/pull/285)（base `main`，head `agent-detail-tabs-design`），改动 5 个文件 / 1146 增 15 删 |
+| PR 正文 | `app/specs/agent-detail-tabs-pr-body.md`（`--body-file` 直接取仓库内路径，随本票一起被跟踪） |
+| 提交 | `6219931`（docs(specs): Agent 详情三分页签设计） |
