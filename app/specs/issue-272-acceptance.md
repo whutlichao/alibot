@@ -12,7 +12,7 @@
 | 1 | `WorkspaceRootGuard` 接受一到多个只读根，默认空；解析顺序：项目根（读写）→ 只读根（只读） | `WorkspaceRootGuard.__init__(root, read_only_roots=())`、`resolve` / `resolve_read` | 见判据 2–6 |
 | 2 | `Read` 能读 `<家目录>/agents/<member>/skills/<name>/references/x.md`；`Glob` / `Grep` 同样可读 | `WorkspaceRootGuard.resolve_read` + `_match_read_only_root` | `tests/test_local_workspace.py::test_read_glob_and_grep_reach_the_member_skills_read_only_root`（红→绿见下） |
 | 3 | 同一路径 `Write` / `Edit` 被拒，ERROR 形状与既有「根外」逐字一致，不落盘 | `on_tool_call` 的 `write` 分支仍走 `resolve`（只认项目根） | `tests/...::test_write_and_edit_in_the_member_skills_root_are_rejected_like_an_escape` |
-| 4 | 既非项目根也非只读根的读仍被拒；全局层兄弟路径（`agents/<member>/AGENTS.md`、`mcp.json`）**不**放开 | `read_only_roots` 只有技能目录一个 | `tests/...::test_paths_outside_both_roots_are_still_rejected` |
+| 4 | 既非项目根也非只读根的读仍被拒；全局层兄弟路径（`agents/<member>/AGENTS.md`、`agents/<member>/memory/`、`mcp.json`）**不**放开 | `read_only_roots` 只有技能目录一个 | `tests/...::test_paths_outside_both_roots_are_still_rejected` |
 | 5 | 只读根内 symlink 不能逃逸（`realpath` 后仍须在该根内） | `_match_read_only_root` 先 `realpath` 再 `_within` | `tests/...::test_symlinks_inside_the_skills_root_cannot_escape_it` |
 | 6 | `assemble_local_workspace` 传 `~/.alibot/agents/<member_id>/skills`；目录不存在按空根处理、不创建 | `assemble_local_workspace` 的 `member_skills` + `_guarded_tools(..., (member_skills,))` | `tests/...::test_absent_member_skills_dir_is_neither_created_nor_readable` |
 | 7 | 项目根仍是唯一可写根；Bash 未放开；Docker 后端一行未改 | `_guarded_tools` 的工具清单不变；`ContainerRootGuard` / `_docker_tools` 无 diff | 既有 `tests/test_local_workspace.py` 全绿（含 `test_default_tool_set_has_no_bash…`）、`tests/test_docker_workspace.py` 22 passed / 8 skipped |
@@ -54,7 +54,7 @@ E       assert <ToolResultState.ERROR: 'error'> is not <ToolResultState.ERROR: '
 $ scripts/check.sh --fast tests/test_local_workspace.py \
     tests/test_workspace_permission_schema.py tests/test_test_layering_guard.py
 == pytest（指定文件）: ...
-38 passed in 9.20s
+38 passed in 10.08s
 == ruff check
 All checks passed!
 == ruff format --check（只检查）

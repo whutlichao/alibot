@@ -565,9 +565,12 @@ def test_paths_outside_both_roots_are_still_rejected(
     rules.write_text("# rules\n", encoding="utf-8")
     mcp = global_root / "mcp.json"
     mcp.write_text("{}", encoding="utf-8")
+    memory = global_root / "agents" / _MEMBER / "memory" / "note.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text("memory-marker\n", encoding="utf-8")
     mount = _mount(layout["root"])
 
-    for path in (layout["outside"] / "secret.txt", rules, mcp):
+    for path in (layout["outside"] / "secret.txt", rules, mcp, memory):
         result = _run(_latest_chunk(_tool(mount, "Read"), file_path=str(path)))
         assert result.state is ToolResultState.ERROR, f"{path} 必须仍在根外"
         assert result.content[0].text == f"Error: path escapes workspace root: {str(path)!r}"
