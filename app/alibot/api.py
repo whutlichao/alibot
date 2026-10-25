@@ -50,6 +50,7 @@
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）；
                                              zip 上传当前 Studio 无入口，保留为脚本 / API 用法（#282）
 - ``GET  /api/skills/candidates``              ``~/.agents/skills`` 的只读候选扫描（外部 CLI 的落点，应用不执行 npx）
+- ``GET  /api/skills/{id}/markdown``          一个技能 ``SKILL.md`` 的正文（只读；front matter 之后的字节）
 - ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）；
                                              当前 Studio 无入口，保留为脚本 / API 用法（#281 撤掉界面入口，端点不变）
 
@@ -119,6 +120,7 @@ from .skills import (
     SkillValidationError,
     install_directory,
     install_zip,
+    read_skill_markdown,
     resolve_install_root,
     scan_import_candidates,
     uninstall,
@@ -1339,6 +1341,36 @@ def create_app(
                 uninstall(global_root, member_id=target_member, name=prepared["name"])
             raise
         return {"skill": skill}
+
+    @app.get("/api/skills/{skill_id}/markdown")
+    def get_skill_markdown(skill_id: str) -> dict[str, Any]:
+        """一个技能 ``SKILL.md`` 的**正文**（只读子资源；不落消息、不唤醒、不消耗预算）。
+
+        正文是 **front matter 之后**的那段字节，与技能装配读进 ``Skill.markdown`` 的同一份（前端
+        把 Agent 真正拿到的指令原样给人看，不用去翻家目录）。字节读取经全局只读守卫，参数与技能
+        装配同族——``(全局根, AGENTS_DIR, safe_partition_id(scope_id), SKILLS_DIR, name, SKILL.md)``。
+
+        响应恒带既有的技能元数据载荷（``skill``）+ ``markdown`` + ``state``：
+
+        - ``ok``：读到了正文；
+        - ``missing``：行在、字节不在（成员家目录 / 技能目录 / ``SKILL.md``）；
+        - ``invalid``：路径越出全局根（根外 symlink 祖先或根外目标）——**不**回任何根外内容；
+        - ``unreadable``：读不出来（权限 / 非 UTF-8 / front matter 解析不出正文边界）。
+
+        后三种都是 ``200``：行在、字节有状况是真实状态，不是请求错误（空态文案由前端按 ``state``
+        分别说）。``skill_id`` 不存在 ⇒ 404；弃用的频道级旧行 ⇒ 400（它们没有家目录字节，也没有
+        「当前成员的技能详情」这一语义）。
+        """
+        current = database.get_skill(skill_id)
+        if current is None:
+            raise NotFound(_render_copy("error.skill_not_found", skill_id=skill_id))
+        if current["scope_kind"] != "agent":
+            message = _render_copy("error.skill_scope_agent_only")
+            raise DomainError("validation_failed", message, fields={"scope_kind": message})
+        markdown, state = read_skill_markdown(
+            global_home_root(), member_id=current["scope_id"], name=current["name"]
+        )
+        return {"skill": current, "markdown": markdown, "state": state}
 
     @app.patch("/api/skills/{skill_id}")
     def update_skill(skill_id: str, payload: SkillUpdate) -> dict[str, Any]:

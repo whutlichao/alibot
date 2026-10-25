@@ -96,6 +96,16 @@ MAX_SKILL_FILES = 512
 #: front matter 的 description 长度上限（会被写进系统提示）。
 MAX_SKILL_DESCRIPTION_LENGTH = 1000
 
+# ─── 技能正文的只读面（#283 / D5）──────────────────────────────────────────
+#: 读到了正文（front matter 之后的那段字节）。
+SKILL_BODY_OK = "ok"
+#: 库行在、字节不在（成员家目录 / 技能目录 / ``SKILL.md`` 任一层缺失或断链）。
+SKILL_BODY_MISSING = "missing"
+#: 路径越出全局根（根外 symlink 祖先或根外目标）：守卫拒绝，不退回直读。
+SKILL_BODY_INVALID = "invalid"
+#: 读不出来（权限 / 非 UTF-8 / front matter 解析不出正文边界）。
+SKILL_BODY_UNREADABLE = "unreadable"
+
 
 class SkillValidationError(Exception):
     """安装 / 删除输入不合法；``key`` 是 i18n 词条，由 HTTP 层渲染成可读正文。"""
@@ -589,6 +599,42 @@ def _load_manifest_markdown(skill_root: Path) -> tuple[str, str, str, float] | N
     if not isinstance(name, str) or not isinstance(description, str):
         return None
     return name.strip(), description.strip(), parsed.content, manifest.stat().st_mtime
+
+
+def read_skill_markdown(global_root: str, *, member_id: str, name: str) -> tuple[str | None, str]:
+    """读一个技能家目录里 ``SKILL.md`` 的**正文**：``(markdown, state)``。
+
+    正文是 **front matter 之后**的那段字节（规格 US22「front matter 之后的指令块仍然可读」），
+    与装配层读进 :class:`agentscope.skill.Skill` 的 ``markdown`` 同一份——因此前端看到的正文
+    与 Agent 真正拿到的指令不会两说。返回的 ``state`` 是 ``SKILL_BODY_*`` 四个常量之一。
+
+    读取经 :func:`workspace.resolve_global_read_path`（与技能装配同一道守卫、同一份字节）：
+    根外 symlink 祖先与根外目标一律按 :data:`SKILL_BODY_INVALID` 拒绝，**不**退化成直读路径——
+    这条端点不是读任意文件的通道。守卫只回 ``None``（分不清「越界」与「缺席」），因此这里对
+    **同一份词法路径**用 ``os.path.lexists`` 再判一次（与 ``api.copy_skill()`` 同一写法）。
+
+    它**只读**：不创建目录、不写占位文件，也不改动任何一类「库行」状态。
+    """
+    parts = (AGENTS_DIR, safe_partition_id(member_id), SKILLS_DIR, name, SKILL_MANIFEST)
+    resolved = resolve_global_read_path(global_root, *parts)
+    if resolved is None:
+        lexical = os.path.join(os.path.realpath(global_root), *parts)
+        if not os.path.lexists(lexical):
+            _log.info("skill %r has no SKILL.md in the member home: %s", name, lexical)
+            return None, SKILL_BODY_MISSING
+        _log.warning("skill %r SKILL.md escapes the global root: %s", name, lexical)
+        return None, SKILL_BODY_INVALID
+    try:
+        text = Path(resolved).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as error:
+        _log.warning("skill %r SKILL.md is not readable: %s", name, error)
+        return None, SKILL_BODY_UNREADABLE
+    try:
+        parsed = frontmatter.loads(text)
+    except Exception as error:  # 解析不出 front matter 边界：正文无从确定，按「读不出来」处理
+        _log.warning("skill %r SKILL.md front matter is not parseable: %s", name, error)
+        return None, SKILL_BODY_UNREADABLE
+    return parsed.content, SKILL_BODY_OK
 
 
 def load_skills(

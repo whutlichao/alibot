@@ -748,11 +748,22 @@ function capabilitiesFetch(config) {
     if (method === "GET" && String(url) === "/api/mcp-servers?scope_kind=agent&scope_id=mem-1") {
       return { ok: true, status: 200, json: async () => ({ mcp_servers: options.mcp || [] }) };
     }
+    // 技能正文（#283 / D5）：右栏选中时按需读，形状与后端一致。
+    if (method === "GET" && /^\/api\/skills\/[^/]+\/markdown$/.test(String(url))) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ state: "ok", markdown: options.markdown === undefined ? SKILL_BODY : options.markdown }),
+      };
+    }
     return detailFetchBase(url);
   };
 }
 
-test("skills 页签：左栏技能列表 + 右栏占位，启停 / 删除动作跟着列表走", async () => {
+/** 右栏正文的替身（磁盘上 `SKILL.md` 里 front matter 之后的那段字节）。 */
+const SKILL_BODY = "# Review\n\n按步骤评审：\n\n    先读改动，再读测试\n\n- 一\n- 二";
+
+test("skills 页签：左栏技能列表 + 右栏选中技能详情，启停 / 删除跟着列表走", async () => {
   const harness = withChannel({ fetch: capabilitiesFetch({ skills: [skillDetail()] }) });
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
@@ -773,10 +784,12 @@ test("skills 页签：左栏技能列表 + 右栏占位，启停 / 删除动作�
 
   const detail = byOdId(panel, "agent-skill-detail");
   assert.ok(detail, "右栏是选中技能的详情位置");
+  // 右栏不再是占位：它是**选中技能**的详情（五格元数据 + SKILL.md 正文）。
   assert.ok(
-    detail.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.skillsDetailPlaceholder")),
-    "右栏先给占位说明（正文与导入下拉框由后续票补）",
+    detail.textContent.includes(catalogText(harness, "zh-CN", "skill.detailName")),
+    "右栏给选中技能的元数据",
   );
+  assert.ok(byOdId(panel, "skill-detail-markdown"), "右栏给 SKILL.md 正文");
   // 影响范围一句话仍写明技能字节落在这个成员的家目录里。
   const note = byOdId(panel, "agent-capabilities-scope");
   assert.ok(note && /\.alibot\/agents\/mem-1\/skills\//.test(note.textContent),
@@ -2085,7 +2098,6 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agentDetail.tabBase",
     "agentDetail.tabSkills",
     "agentDetail.tabMcp",
-    "agentDetail.skillsDetailPlaceholder",
     "agentDetail.mcpFilePlaceholder",
     "agent.webAccessLabel",
     "agent.webAccessFollow",

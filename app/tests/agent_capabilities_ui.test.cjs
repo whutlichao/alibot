@@ -13,6 +13,9 @@
  * 3. skills 页签的安装面只剩**一个**「从本机导入」下拉框（#282 / D3 / D4）：候选按 可选 / 已安装 /
  *    不可导入 三组呈现、默认不预选、选中一项发**一次** POST /api/skills；手填路径与上传 zip 两条
  *    入口连同只服务它们的呈现状态一并撤除（`skill-source` / `skill-install-dir` / `skill-zip` 零命中）；
+ * 3b. skills 页签的右栏是**选中技能**的详情（#283 / D5）：五格元数据 + 启停 / 删除（作用于当前选中项）
+ *    + SKILL.md 正文（`GET /api/skills/{id}/markdown`，按需读、纯文本呈现、四态各有说法）；默认选中
+ *    左栏第一行，删除后回落第一行，左栏为空给空态；
  * 4. 频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读这两条清单（Workspace 段仍在）；
  * 5. 名册的 Agent 行显示 `MCP n / 技能 n`；单成员读取失败只让那一个摘要显示占位，名册照常列出；
  * 6. 新增文案在两份词条表里都取到值，撤除的那些键必须在两份表里都消失。
@@ -264,6 +267,20 @@ function skillPayload(overrides) {
   );
 }
 
+/** 技能正文的替身（形状与 `GET /api/skills/{id}/markdown` 一致）。
+
+    `SKILL_BODY` 是「磁盘上 `SKILL.md` 里 front matter 之后的那段字节」的替身：保留空行与缩进、
+    含 `#` / `*` / `|` 这些 Markdown 记号——右栏必须把它当**纯文本**原样呈现。 */
+const SKILL_BODY =
+  "# 提交前自审\n\n按步骤来：\n\n    先读改动，再读测试\n\n- 一\n- 二\n\n**重点**：边界条件。";
+
+function markdownPayload(overrides) {
+  return Object.assign(
+    { state: "ok", markdown: SKILL_BODY },
+    overrides || {},
+  );
+}
+
 /** `GET /api/skills/candidates` 的一条候选（形状与后端一致）；`path` 默认跟随 `name`。 */
 function candidatePayload(overrides) {
   const base = { name: "review" };
@@ -323,6 +340,8 @@ function createHarness(options) {
       : config.candidates.map((entry) => Object.assign({}, entry));
   const candidateSource = config.candidateSource || "/Users/me/.agents/skills";
   const candidatesAvailable = config.candidatesAvailable !== false;
+  // 正文端点逐 id 的替身：没登记的技能按「字节缺失」回（与后端 `state="missing"` 同形）。
+  const skillMarkdown = config.skillMarkdown || { sk_1: markdownPayload() };
 
   class FakeEventSource {
     constructor() {
@@ -389,6 +408,26 @@ function createHarness(options) {
     }
     if (url === skillScope("mem-1") && method === "GET") {
       return jsonResponse({ skills });
+    }
+    const markdownRead = /^\/api\/skills\/([^/]+)\/markdown$/.exec(url);
+    if (markdownRead && method === "GET") {
+      const id = markdownRead[1];
+      const spec = skillMarkdown[id] || markdownPayload({ state: "missing", markdown: null });
+      const row = skills.find((item) => item.id === id) || skillPayload({ id });
+      return jsonResponse({ skill: Object.assign({}, row), markdown: spec.markdown, state: spec.state });
+    }
+    const skillWrite = /^\/api\/skills\/([^/]+)$/.exec(url);
+    if (skillWrite && method === "PATCH") {
+      const body =
+        typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body || {};
+      const row = skills.find((item) => item.id === skillWrite[1]);
+      if (row && "enabled" in body) row.enabled = Boolean(body.enabled);
+      return jsonResponse({ skill: Object.assign({}, row || skillPayload({ id: skillWrite[1] })) });
+    }
+    if (skillWrite && method === "DELETE") {
+      const index = skills.findIndex((item) => item.id === skillWrite[1]);
+      const removed = index >= 0 ? skills.splice(index, 1)[0] : skillPayload({ id: skillWrite[1] });
+      return jsonResponse({ skill: Object.assign({}, removed) });
     }
     if (url === candidateScope("mem-1") && method === "GET") {
       return jsonResponse({
@@ -592,6 +631,11 @@ function createHarness(options) {
       await harness.agentBody.dispatchEvent({ type, target: node });
       await settle();
     },
+    /** 切到 skills 页签（点真实页签按钮：监听挂在 `#adTabs` 上）。 */
+    async openSkillsTab() {
+      await elementFor("#adTabs").dispatchEvent({ type: "click", target: elementFor("#adTabSkills") });
+      await settle();
+    },
     async openChannelConfig() {
       await harness.api.openChannelConfigModal();
       await settle();
@@ -675,8 +719,10 @@ test("skills 页签：左栏技能列表与技能行入口，请求固定带 age
   assert.match(skillRow.textContent, /0123456789ab/, "hash 前缀仍可见");
   // 技能行的入口：启停 + 删除 + 安装（技能段）。复制入口已随弹层撤除（#281 / D6），
   // 反向断言在下面的「复制入口与弹层撤除」用例里。
-  assert.ok(byDataset(panel, "skillToggle", "sk_1"), "技能行要有启停入口");
-  assert.ok(byDataset(panel, "skillDelete", "sk_1"), "技能行要有删除入口");
+  // 动作入口在**右栏**，作用于当前选中项（#283 / D5）；左栏行只负责选人（复制入口已随弹层
+  // 撤除，反向断言在下面的「复制入口与弹层撤除」用例里）。
+  assert.ok(byDataset(panel, "skillToggle", "sk_1"), "右栏的启停入口指向当前选中项");
+  assert.ok(byDataset(panel, "skillDelete", "sk_1"), "右栏的删除入口指向当前选中项");
   // 安装入口只有一个：从本机导入的下拉框（#282 / D3）。
   assert.ok(byOdId(panel, "skill-import-picker"), "skills 页签的安装入口是「从本机导入」下拉框");
 
@@ -1035,7 +1081,260 @@ test("候选来源缺席 / 扫描失败：只落在导入区块自己的行，�
   assert.ok(byOdId(broken.panel("skills"), "skill-list"), "技能段其余部分照常");
 });
 
+/* ─── 2b. skills 右栏：选中技能的详情与 SKILL.md 正文（#283 / D5） ─────────
+
+  观察面：`data-od-id="agent-skill-detail"` 子树的五格元数据、两个动作入口、正文节点
+  （`skill-detail-markdown`）的 `textContent`，以及点左栏一行时发出的正文读取。 */
+
+/** 右栏的一格元数据（`data-od-id="skill-detail-<key>"`）。 */
+function detailCell(panel, key) {
+  return byOdId(panel, "skill-detail-" + key);
+}
+
+/** 某一行的选中态读法：`is-active` 与 `aria-current` 是同一条事实的两处呈现。 */
+function rowIsCurrent(panel, id) {
+  const row = byDataset(panel, "skill", id);
+  return Boolean(row) && row.getAttribute("aria-current") === "true";
+}
+
+test("skills 右栏：默认选中第一行，五项元数据 + 正文与磁盘 SKILL.md 逐字相等", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: {
+      sk_1: markdownPayload(),
+      sk_2: markdownPayload({ markdown: "# Triage\n\n先分级。" }),
+    },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const panel = harness.panel("skills");
+  const detail = byOdId(panel, "agent-skill-detail");
+  assert.ok(detail, "右栏是选中技能的详情");
+
+  // 进入页签默认选中左栏第一行（不需要先点一下）。
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_1", "默认选中左栏第一行");
+  assert.equal(rowIsCurrent(panel, "sk_1"), true, "第一行有可读的选中态");
+  assert.equal(rowIsCurrent(panel, "sk_2"), false);
+
+  // 五项元数据：名称 / 描述 / 来源路径 / 内容 hash / 启停态。
+  assert.equal(detailCell(panel, "name").textContent, "review");
+  assert.equal(detailCell(panel, "description").textContent, "在提交前做一次结构化自审");
+  assert.equal(detailCell(panel, "source").textContent, "/Users/me/skills/review");
+  assert.equal(
+    detailCell(panel, "hash").textContent,
+    "0123456789abcdef".repeat(4),
+    "内容 hash 是完整值（不是列表里那个 12 位前缀）",
+  );
+  assert.equal(
+    detailCell(panel, "state").textContent,
+    catalogText(harness, "zh-CN", "skill.enabled"),
+  );
+
+  // 正文按需读：选中时调新端点，而不是塞进列表响应。
+  assert.ok(
+    harness.calls.some((call) => call.url === "/api/skills/sk_1/markdown"),
+    "正文走 GET /api/skills/{id}/markdown",
+  );
+  assert.equal(
+    descendants(panel).filter((node) => node.tagName === "pre").length,
+    1,
+    "正文节点是一个 <pre>（保留换行与缩进）",
+  );
+  const body = byOdId(panel, "skill-detail-markdown");
+  assert.ok(body, "右栏要有正文节点");
+  assert.equal(body.textContent, SKILL_BODY, "正文与磁盘上的 SKILL.md 正文逐字相等");
+});
+
+test("skills 右栏：点左栏另一行切换选中项，正文按需重读", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: {
+      sk_1: markdownPayload(),
+      sk_2: markdownPayload({ markdown: "# Triage\n\n先分级。" }),
+    },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+  const panel = harness.panel("skills");
+
+  await harness.clickInBody(byDataset(panel, "skill", "sk_2"));
+
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "选中态跟着点中那一行");
+  assert.equal(rowIsCurrent(harness.panel("skills"), "sk_2"), true);
+  const reads = harness.calls.filter((call) => /\/markdown$/.test(call.url)).map((call) => call.url);
+  assert.deepEqual(
+    reads,
+    ["/api/skills/sk_1/markdown", "/api/skills/sk_2/markdown"],
+    "每选中一行读一次正文（不预读整列）",
+  );
+  assert.equal(
+    byOdId(harness.panel("skills"), "skill-detail-markdown").textContent,
+    "# Triage\n\n先分级。",
+  );
+  assert.equal(detailCell(harness.panel("skills"), "name").textContent, "triage");
+});
+
+test("skills 右栏：启停与删除作用于当前选中项，启停成功后右栏启停态立刻跟着变", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  // 选中第二行，然后按**右栏**的启停入口。
+  await harness.clickInBody(byDataset(harness.panel("skills"), "skill", "sk_2"));
+  const toggle = byDataset(harness.panel("skills"), "skillToggle", "sk_2");
+  assert.ok(toggle, "右栏的启停入口指向当前选中项");
+  assert.equal(toggle.textContent, catalogText(harness, "zh-CN", "skill.disable"));
+
+  await harness.clickInBody(toggle);
+  const patched = harness.patches().filter((call) => call.url.startsWith("/api/skills/"));
+  assert.deepEqual(patched.map((call) => call.url), ["/api/skills/sk_2"], "只改当前选中项");
+  assert.deepEqual(patched[0].body, { enabled: false });
+  // 启停成功后右栏的启停态立刻跟着变（不用重开页签）。
+  assert.equal(
+    detailCell(harness.panel("skills"), "state").textContent,
+    catalogText(harness, "zh-CN", "skill.disabled"),
+  );
+  assert.equal(
+    byDataset(harness.panel("skills"), "skillToggle", "sk_2").textContent,
+    catalogText(harness, "zh-CN", "skill.enable"),
+  );
+  // 未选中那一行不动。
+  assert.match(byDataset(harness.panel("skills"), "skill", "sk_1").textContent, /已启用/);
+
+  // 删除同样只作用于当前选中项。
+  await harness.clickInBody(byDataset(harness.panel("skills"), "skillDelete", "sk_2"));
+  assert.deepEqual(
+    harness.calls.filter((call) => call.method === "DELETE").map((call) => call.url),
+    ["/api/skills/sk_2"],
+    "删除只发当前选中项",
+  );
+  // 删掉当前选中项 ⇒ 右栏回落到第一行，不停在一个已删的技能上。
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_1", "选中项回落第一行");
+  assert.equal(detailCell(harness.panel("skills"), "name").textContent, "review");
+});
+
+test("skills 右栏：左栏行可键盘选中（Enter / Space），选中态带 aria-current", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const row = byDataset(harness.panel("skills"), "skill", "sk_2");
+  assert.ok(row, "技能行要在左栏");
+  assert.equal(row.getAttribute("tabindex"), "0", "行可被 Tab 抵达");
+  await harness.agentBody.dispatchEvent({ type: "keydown", target: row, key: "Enter" });
+  await settle();
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "Enter 选中该行");
+  assert.ok(
+    descendants(harness.panel("skills")).some((node) => node.getAttribute("aria-current") === "true"),
+    "选中态有一条 aria 事实",
+  );
+  // 焦点停在动作按钮上时 Enter 不该顺带换选中项（否则键盘用户按启停会磒到别的技能）。
+  const toggle = byDataset(harness.panel("skills"), "skillToggle", "sk_2");
+  await harness.agentBody.dispatchEvent({ type: "keydown", target: toggle, key: "Enter" });
+  await settle();
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "动作按钮上的 Enter 不换选中项");
+});
+
+test("skills 右栏：左栏为空时给空态指引，不读正文", async () => {
+  const harness = createHarness({ skills: [] });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const panel = harness.panel("skills");
+  const detail = byOdId(panel, "agent-skill-detail");
+  assert.ok(detail, "左栏为空时右栏仍有落点");
+  assert.equal(
+    detail.textContent,
+    catalogText(harness, "zh-CN", "skill.detailEmpty"),
+    "空列表给空态指引",
+  );
+  assert.equal(
+    harness.calls.filter((call) => /\/markdown$/.test(call.url)).length,
+    0,
+    "没有选中项就不读正文",
+  );
+});
+
+test("skills 右栏：正文按纯文本呈现，不把 Markdown 解析成 HTML", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const panel = harness.panel("skills");
+  const body = byOdId(panel, "skill-detail-markdown");
+  assert.ok(body, "正文节点在右栏");
+  assert.equal(body.tagName, "pre", "正文是一个 <pre>（纯文本容器）");
+  // 正文里的 Markdown 记号原样呈现：`#` 与 `**` 不被消费成标签。
+  assert.equal(body.textContent, SKILL_BODY);
+  assert.match(body.textContent, /^# 提交前自审/);
+  assert.match(body.textContent, /\*\*重点\*\*/);
+  assert.match(body.textContent, /\n {4}先读改动，再读测试/, "缩进保留");
+  for (const tag of ["h1", "h2", "strong", "em", "ul", "li", "code", "p"]) {
+    assert.equal(
+      descendants(body).filter((node) => node.tagName === tag).length,
+      0,
+      `正文里不该有 <${tag}>：Markdown 不被解析`,
+    );
+  }
+  // 正文只经 textContent 写：正本里没有 innerHTML。
+  assert.equal(stripComments(readStudio("app.js")).includes("innerHTML"), false, "不引入 HTML 注入面");
+});
+
+test("skills 右栏：ok / missing / invalid / unreadable 各有自己的说明文案", async () => {
+  const harness = createHarness({
+    skills: [
+      skillPayload(),
+      skillPayload({ id: "sk_2", name: "missing-one" }),
+      skillPayload({ id: "sk_3", name: "invalid-one" }),
+      skillPayload({ id: "sk_4", name: "unreadable-one" }),
+    ],
+    skillMarkdown: {
+      sk_1: markdownPayload(),
+      sk_2: markdownPayload({ state: "missing", markdown: null }),
+      sk_3: markdownPayload({ state: "invalid", markdown: null }),
+      sk_4: markdownPayload({ state: "unreadable", markdown: null }),
+    },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const readings = {};
+  for (const id of ["sk_1", "sk_2", "sk_3", "sk_4"]) {
+    await harness.clickInBody(byDataset(harness.panel("skills"), "skill", id));
+    const panel = harness.panel("skills");
+    const stateNode = byOdId(panel, "skill-detail-body-state");
+    readings[id] = {
+      bodyState: stateNode ? stateNode.getAttribute("data-detail-state") : null,
+      text: stateNode ? stateNode.textContent : byOdId(panel, "skill-detail-markdown").textContent,
+    };
+  }
+
+  assert.equal(readings.sk_1.bodyState, null, "ok 没有空态行，正文就在那里");
+  assert.equal(readings.sk_2.bodyState, "missing");
+  assert.equal(readings.sk_3.bodyState, "invalid");
+  assert.equal(readings.sk_4.bodyState, "unreadable");
+
+  // 四种状态的说明文案各不相同（「读不到」不会被读成「这个技能是空的」）。
+  for (const [id, expected] of [
+    ["sk_2", "skill.detailMissing"],
+    ["sk_3", "skill.detailInvalid"],
+    ["sk_4", "skill.detailUnreadable"],
+  ]) {
+    assert.equal(readings[id].text, catalogText(harness, "zh-CN", expected), `${id} 的说明文案`);
+  }
+  const texts = [readings.sk_1.text, readings.sk_2.text, readings.sk_3.text, readings.sk_4.text];
+  assert.equal(new Set(texts).size, 4, "四种状态的说明互不相同");
+});
+
 /* ─── 3. 频道配置：两段已删 ─────────────────────────────────────────────── */
+
 
 test("频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读两份清单", async () => {
   const harness = createHarness();
@@ -1112,6 +1411,20 @@ test("新增文案在两份词条里同键同参数位，随入口撤除的键�
     "skill.importResultDone",
     "skill.importResultSkipped",
     "skill.importResultFailed",
+    // #283 的右栏详情（D5）：五格元数据的标签、两个动作入口、正文标题与四态空态文案。
+    "skill.detailTitle",
+    "skill.detailName",
+    "skill.detailDescription",
+    "skill.detailSource",
+    "skill.detailHash",
+    "skill.detailState",
+    "skill.detailEmpty",
+    "skill.detailBodyTitle",
+    "skill.detailBodyLoading",
+    "skill.detailBodyFailed",
+    "skill.detailMissing",
+    "skill.detailInvalid",
+    "skill.detailUnreadable",
   ];
   for (const key of keys) {
     for (const locale of ["zh-CN", "en"]) {

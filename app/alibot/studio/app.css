@@ -496,6 +496,31 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 @media (max-width: 900px) {
   .agent-skill-columns { grid-template-columns: minmax(0, 1fr); }
 }
+/* skills 右栏的详情（#283 / D5）：元数据 → 动作 → 正文。左栏当前行的选中态与左栏导航行同一
+   档位语义（`--selected` 族）：竖条 = graphic 档、字色 = deep 档，零新增色位。 */
+.skill-row { cursor: pointer; padding-left: var(--sp-3); border-left: 2px solid transparent; }
+.skill-row.is-active { border-left-color: var(--selected-graphic); background: var(--selected-soft); }
+.skill-row.is-active b { color: var(--selected-deep); }
+.skill-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.skill-detail-actions { margin: var(--sp-4) 0 var(--sp-5); }
+.kv .v.is-mono { font-family: var(--mono); font-size: var(--fs-mono-xs); overflow-wrap: anywhere; }
+/* SKILL.md 正文：**纯文本**（`white-space: pre-wrap` 保留换行与缩进）+ 等宽族。
+   不解析 Markdown，因此这里不给它任何标题 / 列表的字形——`#` 与 `**` 原样可见。 */
+.skill-detail-markdown {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow-y: auto;
+}
 /* 底部保存条：页面级固定条（不随 `#adBody` 的整块重铺消失，因此错误原文与焦点不会被换掉）。 */
 .agent-save-bar {
   display: flex; align-items: center; gap: var(--sp-4);

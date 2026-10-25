@@ -193,6 +193,12 @@ const state = {
   // 详情页当前页签（呈现状态，不是业务正本）：`'base' | 'skills' | 'mcp'`，顺序固定。
   // 不落库、不写 URL、不记忆上次值：打开详情与切换成员都回到 `'base'`（D1）。
   agentDetailTab: AGENT_DETAIL_DEFAULT_TAB,
+  // skills 页签右栏的**选中项**（呈现状态）：技能 id，或 `null`（左栏为空）。
+  // 打开详情 / 切换成员时清空，由 `syncAgentDetailSkill()` 按列表默认选中第一行或回落第一行（D5）。
+  agentDetailSkillId: null,
+  // skills 页签右栏的正文镜像：`{ skillId, loading, error, state, markdown }`。
+  // 它不是业务正本：真值在家目录的 `SKILL.md`；`skillId` 记住读的是哪一条，选中项变了才重读。
+  agentSkillDetail: { skillId: null, loading: false, error: '', state: '', markdown: null },
   // 详情「配置」区块的**草稿**（呈现状态，不是业务正本）：`memberId` 是它属于谁，
   // `draft` 是还没提交的字段值，`error` 是后端拒绝时那句原文。与后端读数不一致时
   // 页面底部出现保存条；关闭详情 / 切换成员 / 切换主线视图时整体作废（不弹二次确认）。
@@ -5116,6 +5122,9 @@ async function openAgentDetail(memberId) {
   resetAgentCapabilities(memberId);
   // 页签回到默认那一页：新成员不继承上一个成员的页签位置（D1）。
   state.agentDetailTab = AGENT_DETAIL_DEFAULT_TAB;
+  // 右栏的选中项与正文也跟着换人：新成员不继承上一个成员选中的技能（D5）。
+  state.agentDetailSkillId = null;
+  state.agentSkillDetail = { skillId: null, loading: false, error: '', state: '', markdown: null };
   setViewMode('agent');
   // 详情一打开，频道 / 私信行就得让位：这条路径不经过整体 `render()`，只重绘 Agent 段
   // 会把频道行留在「当前行」上（两行同时高亮）。
@@ -5368,13 +5377,18 @@ function agentBaseTabNodes(agent) {
   ];
 }
 
-/** **skills** 页签：顶部一个「从本机导入」下拉框（#282 / D3 / D4），往下是双栏：左栏技能列表
-    （含启停 / 删除）、右栏选中技能的详情。
+/** **skills** 页签：顶部一个「从本机导入」下拉框（#282 / D3 / D4），往下是双栏：左栏技能列表、
+    右栏**选中技能**的详情（#283 / D5）。
 
-    安装面只剩这一条入口：手填绝对路径与上传 zip 两条本票撤除（文本框、文件框与只服务它们的
-    呈现状态一并删）。右栏本轮只给占位说明：选中态、元数据与 SKILL.md 正文由后续票补（D5）。 */
+    安装面只剩这一条入口：手填绝对路径与上传 zip 两条由 #282 撤除（文本框、文件框与只服务它们的
+    呈现状态一并删）。右栏自上而下：元数据（名称 / 描述 / 来源路径 / 内容 hash / 启停态）→
+    动作（启用 / 停用、删除，作用于**当前选中**项）→ SKILL.md 正文（纯文本）。
+
+    选中态是 `state.agentDetailSkillId`：进入页签默认选中左栏第一行，列表重读后选中项不存在就
+    回落第一行，左栏为空时右栏给空态（`skill.detailEmpty`）。 */
 function agentSkillsTabNodes(agent) {
   const view = capabilitiesView((agent && agent.id) || state.activeAgentId || '');
+  syncAgentDetailSkill(view);
   const section = el('section', 'd-sec');
   section.appendChild(sectionTitle('agentCapabilities.skillTitle', 'agent-capabilities-skill'));
   section.appendChild(
@@ -5400,18 +5414,133 @@ function agentSkillsTabNodes(agent) {
   } else {
     const list = el('div');
     list.setAttribute('data-od-id', 'skill-list');
-    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
+    view.skills.forEach((skill) =>
+      list.appendChild(skillRow(skill, skill.id === state.agentDetailSkillId)),
+    );
     left.appendChild(list);
   }
   columns.appendChild(left);
 
   const right = el('div', 'agent-skill-right');
-  const detail = el('div', 'resource-empty', t('agentDetail.skillsDetailPlaceholder'));
-  detail.setAttribute('data-od-id', 'agent-skill-detail');
-  right.appendChild(detail);
+  right.appendChild(skillDetailNode(view));
   columns.appendChild(right);
   section.appendChild(columns);
   return [section];
+}
+
+/** 当前选中的技能（选中 id 不在列表里时回落第一行）。 */
+function selectedSkill(view) {
+  if (!view || !view.skills.length) return null;
+  return view.skills.find((skill) => skill.id === state.agentDetailSkillId) || view.skills[0];
+}
+
+/** 把选中态落成一条事实：`state.agentDetailSkillId` 与列表里的「当前行」同一处对齐。
+
+    列表重读会换掉整段节点，因此选中项的校正（默认第一行 / 回落第一行 / 清空）也在这里做，
+    调用方不必各自记得。 */
+function syncAgentDetailSkill(view) {
+  const fallback = view && view.skills.length ? view.skills[0].id : null;
+  const keep = view && view.skills.some((skill) => skill.id === state.agentDetailSkillId);
+  state.agentDetailSkillId = keep ? state.agentDetailSkillId : fallback;
+  return state.agentDetailSkillId;
+}
+
+/** 右栏：选中技能的详情（元数据 → 动作 → SKILL.md 正文），左栏为空时给空态。 */
+function skillDetailNode(view) {
+  const node = el('div', 'skill-detail');
+  node.setAttribute('data-od-id', 'agent-skill-detail');
+  const skill = selectedSkill(view);
+  if (!skill) {
+    node.appendChild(el('div', 'resource-empty', t('skill.detailEmpty')));
+    return node;
+  }
+
+  node.appendChild(el('div', 'd-sec-title', t('skill.detailTitle')));
+  // 能力段原有的五格读数：名称 / 描述 / 来源路径 / 内容 hash（**完整**值）/ 启停态。
+  node.appendChild(skillDetailRow('name', t('skill.detailName'), skill.name, 'skill-detail-name'));
+  node.appendChild(
+    skillDetailRow('description', t('skill.detailDescription'), skill.description, 'skill-detail-description'),
+  );
+  node.appendChild(
+    skillDetailRow('source', t('skill.detailSource'), skill.source_path, 'skill-detail-source', true),
+  );
+  node.appendChild(
+    skillDetailRow('hash', t('skill.detailHash'), skill.content_hash, 'skill-detail-hash', true),
+  );
+  node.appendChild(
+    skillDetailRow(
+      'state',
+      t('skill.detailState'),
+      t(skill.enabled ? 'skill.enabled' : 'skill.disabled'),
+      'skill-detail-state',
+    ),
+  );
+
+  // 动作作用于**当前选中**项：启停成功后按后端重读，右栏的启停态跟着变（同一次重铺）。
+  const actions = el('div', 'agent-actions skill-detail-actions');
+  actions.appendChild(
+    resourceButton(
+      skill.enabled ? 'skill.disable' : 'skill.enable',
+      'skillToggle',
+      skill.id,
+      'skill-toggle',
+    ),
+  );
+  actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
+  node.appendChild(actions);
+
+  node.appendChild(skillDetailBody(skill));
+  return node;
+}
+
+/** 右栏的一格读数（键 mono 小字 + 值）。`mono` 的值用等宽族（路径与 hash）。 */
+function skillDetailRow(key, label, value, odId, mono) {
+  const row = el('div', 'kv');
+  row.setAttribute('data-od-id', 'skill-detail-row-' + key);
+  row.appendChild(el('span', 'k', label));
+  const cell = el('span', mono ? 'v is-mono' : 'v', value);
+  cell.setAttribute('data-od-id', odId);
+  row.appendChild(cell);
+  return row;
+}
+
+/** 右栏的 SKILL.md 正文块（纯文本）。
+
+    正文来自 `GET /api/skills/{id}/markdown`（选中时按需读，不塞进列表响应）。它按**纯文本**
+    呈现：节点是 `<pre>`、内容只经 `textContent` 写，因此 Markdown 的 `#` / `**` 原样可见、
+    也不会引入任何转义 / XSS 面（D5：首版不解析 Markdown）。
+
+    四种状态各有各的说法：`markdown` 是正文（`ok`）；`missing` / `invalid` / `unreadable` 各给
+    一句不同的原因——「读不到」不会被读成「这个技能是空的」。 */
+function skillDetailBody(skill) {
+  const box = el('div', 'skill-detail-body');
+  box.setAttribute('data-od-id', 'skill-detail-body');
+  box.appendChild(el('div', 'd-sec-title', t('skill.detailBodyTitle')));
+  const read = state.agentSkillDetail;
+  if (!read || read.skillId !== skill.id || read.loading) {
+    box.appendChild(el('div', 'resource-empty', t('skill.detailBodyLoading')));
+    return box;
+  }
+  if (read.error) {
+    box.appendChild(resourceErrorNode(t('skill.detailBodyFailed', { reason: read.error }), 'skill-detail-body-error'));
+    return box;
+  }
+  if (read.state !== 'ok' || typeof read.markdown !== 'string') {
+    const key = read.state === 'invalid'
+      ? 'skill.detailInvalid'
+      : read.state === 'unreadable'
+        ? 'skill.detailUnreadable'
+        : 'skill.detailMissing';
+    const empty = el('div', 'resource-empty', t(key));
+    empty.setAttribute('data-od-id', 'skill-detail-body-state');
+    empty.setAttribute('data-detail-state', read.state);
+    box.appendChild(empty);
+    return box;
+  }
+  const body = el('pre', 'skill-detail-markdown', read.markdown);
+  body.setAttribute('data-od-id', 'skill-detail-markdown');
+  box.appendChild(body);
+  return box;
 }
 
 /** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 的位置。
@@ -7310,7 +7439,10 @@ async function loadAgentMcpServers(memberId) {
   paintAgentCapabilities();
 }
 
-/** 读技能列表（agent scope；只含元数据与 hash，不含字节）。 */
+/** 读技能列表（agent scope；只含元数据与 hash，不含字节）。
+
+    列表重读后选中项要重新对齐（默认第一行 / 已删则回落第一行），因此这里调 `paint` 前先
+    校正选中态；正文始终跟着当前选中项读（`loadSkillMarkdown()`），不塞进列表响应。 */
 async function loadAgentSkills(memberId) {
   const view = capabilitiesView(memberId);
   view.skillLoading = true;
@@ -7328,7 +7460,62 @@ async function loadAgentSkills(memberId) {
   }
   if (state.activeAgentId !== memberId) return;
   view.skillLoading = false;
+  syncAgentDetailSkill(view);
   paintAgentCapabilities();
+  await loadSkillMarkdown(memberId);
+}
+
+/** 读右栏的 SKILL.md 正文（**按需**：选中项变了才读）。
+
+    正文不塞进列表响应（列表仍然轻）。响应恒带 `state`：`ok` 是正文，其余三种是三种空态，
+    前端的呈现按 `state` 分开说（「读不到」不会被读成「这个技能是空的」）。 */
+async function loadSkillMarkdown(memberId) {
+  const view = capabilitiesView(memberId);
+  const skill = selectedSkill(view);
+  if (!skill) {
+    state.agentSkillDetail = { skillId: null, loading: false, error: '', state: '', markdown: null };
+    paintAgentCapabilities();
+    return;
+  }
+  if (state.agentSkillDetail.skillId === skill.id && !state.agentSkillDetail.error) return;
+  state.agentSkillDetail = { skillId: skill.id, loading: true, error: '', state: '', markdown: null };
+  paintAgentCapabilities();
+  try {
+    const payload = await api('/api/skills/' + encodeURIComponent(skill.id) + '/markdown');
+    if (state.activeAgentId !== memberId || state.agentDetailSkillId !== skill.id) return;
+    state.agentSkillDetail = {
+      skillId: skill.id,
+      loading: false,
+      error: '',
+      state: String(payload.state || ''),
+      markdown: typeof payload.markdown === 'string' ? payload.markdown : null,
+    };
+  } catch (err) {
+    if (state.activeAgentId !== memberId || state.agentDetailSkillId !== skill.id) return;
+    state.agentSkillDetail = {
+      skillId: skill.id,
+      loading: false,
+      error: err.message,
+      state: '',
+      markdown: null,
+    };
+  }
+  if (state.activeAgentId !== memberId) return;
+  paintAgentCapabilities();
+}
+
+/** 点左栏一行：换选中项并读它的正文（选中即读，一次一条）。
+
+    换选中项本身是**呈现**动作，离线也照样生效（读不到正文时右栏给「读取失败」那一行）；
+    只有读正文需要在线。 */
+async function selectAgentSkill(skillId) {
+  const view = activeCapabilitiesView();
+  if (!view || !view.memberId) return;
+  if (!view.skills.some((skill) => skill.id === skillId)) return;
+  if (state.agentDetailSkillId === skillId) return;
+  state.agentDetailSkillId = skillId;
+  paintAgentCapabilities();
+  await loadSkillMarkdown(view.memberId);
 }
 
 /** 读外部 CLI 落点 ``~/.agents/skills`` 的候选（只读端点；失败只落在导入区块自己的错误行）。
@@ -7750,10 +7937,14 @@ function refreshAgentCapabilitiesPanels() {
 
 /* ── ③ 技能（列表 / 从本机导入 / 启停 / 删除） ───────────────────────── */
 
-function skillRow(skill) {
-  const row = el('div', 'resource-row');
+function skillRow(skill, current) {
+  const row = el('div', 'resource-row skill-row' + (current ? ' is-active' : ''));
   row.dataset.skill = skill.id;
   row.setAttribute('data-od-id', 'capability-skill-row');
+  row.setAttribute('role', 'button');
+  row.setAttribute('tabindex', '0');
+  // 选中态是**一条事实的两处呈现**：`is-active` 给视觉、`aria-current` 给读屏（与左栏导航行同一口径）。
+  if (current) row.setAttribute('aria-current', 'true');
   const main = el('div', 'resource-main');
   const title = el('div', 'resource-title');
   title.appendChild(el('b', null, skill.name));
@@ -7766,19 +7957,7 @@ function skillRow(skill) {
   short.setAttribute('title', t('skill.hashTitle', { hash: skill.content_hash || '' }));
   hash.appendChild(short);
   main.appendChild(hash);
-
-  const actions = el('div', 'resource-actions');
-  actions.appendChild(
-    resourceButton(
-      skill.enabled ? 'skill.disable' : 'skill.enable',
-      'skillToggle',
-      skill.id,
-      'skill-toggle',
-    ),
-  );
-  actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
   row.appendChild(main);
-  row.appendChild(actions);
   return row;
 }
 
@@ -9810,6 +9989,14 @@ function bindEvents() {
       if (view && !view.skillImportLoading) loadSkillImportCandidates(view.memberId);
       return;
     }
+    // 左栏一行：选中它（右栏跟着换人并读它的正文）。行上有 `data-skill` 但没有动作时就是选行。
+    const skillPick = event.target.closest('[data-skill]');
+    if (skillPick) {
+      if (!event.target.closest('[data-skill-toggle]') && !event.target.closest('[data-skill-delete]')) {
+        selectAgentSkill(skillPick.dataset.skill);
+        return;
+      }
+    }
     const skillToggle = event.target.closest('[data-skill-toggle]');
     if (skillToggle) {
       toggleSkill(skillToggle.dataset.skillToggle);
@@ -9823,6 +10010,16 @@ function bindEvents() {
     if (event.target.closest('[data-agent-remote-confirm]')) {
       confirmAgentEditRemoteFlow();
     }
+  });
+  // 左栏技能行是 div（不是原生 button）：Enter / Space 选中它的键盘语义显式补上（与看板卡片
+  // 的 `#taskColumns` keydown 委派同一口径）。
+  $('#adBody').addEventListener('keydown', (event) => {
+    if (!isActivationKey(event)) return;
+    const row = event.target.closest('[data-skill]');
+    if (!row) return;
+    if (event.target.closest('[data-skill-toggle]') || event.target.closest('[data-skill-delete]')) return;
+    if (event.preventDefault) event.preventDefault();
+    selectAgentSkill(row.dataset.skill);
   });
   $('#channelCancel').addEventListener('click', closeChannelModal);
   $('#channelModalClose').addEventListener('click', closeChannelModal);

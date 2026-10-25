@@ -441,8 +441,6 @@ const I18N_CATALOGS = {
     'agentDetail.tabBase': '基础信息和配置',
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
-    'agentDetail.skillsDetailPlaceholder':
-      '右栏将显示这个技能的元数据与 SKILL.md 正文。',
     'agentDetail.mcpFileTitle': '家目录 mcp.json',
     'agentDetail.mcpFilePlaceholder':
       '这里将直接编辑这个 Agent 家目录里的 mcp.json 原文；同名时库行胜出（上块是装配正本）。',
@@ -767,6 +765,23 @@ const I18N_CATALOGS = {
     'skill.importResultDone': '{name}：已导入',
     'skill.importResultSkipped': '{name}：已安装，已跳过',
     'skill.importResultFailed': '{name}：导入失败：{reason}',
+    /* ── skills 页签的右栏详情（#283 / D5）──
+       五项元数据 + 两个动作 + SKILL.md 正文（纯文本）。正文的四种状态各有一句话：
+       `missing`（字节缺席）/ `invalid`（路径越界）/ `unreadable`（读不出来）互不相同，
+       因为用户要靠这句话知道自己该去修什么。 */
+    'skill.detailTitle': '技能详情',
+    'skill.detailName': '名称',
+    'skill.detailDescription': '描述',
+    'skill.detailSource': '来源路径',
+    'skill.detailHash': '内容 hash',
+    'skill.detailState': '启停态',
+    'skill.detailEmpty': '这个 Agent 还没有技能：先从上面的「从本机导入」装一个，再回来看它的详情。',
+    'skill.detailBodyTitle': 'SKILL.md 正文',
+    'skill.detailBodyLoading': '正在读取 SKILL.md…',
+    'skill.detailBodyFailed': 'SKILL.md 读取失败：{reason}',
+    'skill.detailMissing': '这个技能的字节不在家目录（技能目录或 SKILL.md 缺失）：元数据还在，正文读不到。',
+    'skill.detailInvalid': 'SKILL.md 的路径越出全局根（根外 symlink）：为安全起见不显示正文。',
+    'skill.detailUnreadable': 'SKILL.md 读不出来（权限或非 UTF-8）：元数据还在，正文读不到。',
 
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
@@ -1259,8 +1274,6 @@ const I18N_CATALOGS = {
     'agentDetail.tabBase': 'Basics and configuration',
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
-    'agentDetail.skillsDetailPlaceholder':
-      'This pane will show the selected skill’s metadata and its SKILL.md body.',
     'agentDetail.mcpFileTitle': 'Home-directory mcp.json',
     'agentDetail.mcpFilePlaceholder':
       'This pane will edit the mcp.json in this agent’s home directory directly; on a name clash the database row wins (the block above is the assembly authority).',
@@ -1610,6 +1623,25 @@ const I18N_CATALOGS = {
     'skill.importResultDone': '{name}: imported',
     'skill.importResultSkipped': '{name}: already installed, skipped',
     'skill.importResultFailed': '{name}: import failed: {reason}',
+    /* ── Skills tab, right pane (#283 / D5) ──
+       Five metadata cells + two actions + the SKILL.md body as plain text. Each of the three
+       unreadable states gets its own sentence: the user needs to know what to go and fix. */
+    'skill.detailTitle': 'Skill detail',
+    'skill.detailName': 'Name',
+    'skill.detailDescription': 'Description',
+    'skill.detailSource': 'Source path',
+    'skill.detailHash': 'Content hash',
+    'skill.detailState': 'Enablement',
+    'skill.detailEmpty': 'This agent has no skills yet: import one above, then come back to read its details.',
+    'skill.detailBodyTitle': 'SKILL.md body',
+    'skill.detailBodyLoading': 'Reading SKILL.md…',
+    'skill.detailBodyFailed': 'Could not read SKILL.md: {reason}',
+    'skill.detailMissing':
+      'This skill’s bytes are gone from the member home (skill directory or SKILL.md missing): the metadata is still here, the body is not.',
+    'skill.detailInvalid':
+      'The SKILL.md path escapes the global root (symlink pointing outside): the body is withheld for safety.',
+    'skill.detailUnreadable':
+      'SKILL.md cannot be read (permissions or non-UTF-8): the metadata is still here, the body is not.',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',
