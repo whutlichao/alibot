@@ -131,8 +131,8 @@ node --test app/tests/*.test.cjs
 
 ### 5.2 全量 `scripts/check.sh`
 
-清理后的树上跑了六次全量（同一工作区、同一 `.venv`、同一台机器）：五次全绿、一次红（§5.3 的既有偶发，
-已用重跑与独立复现定性）。计数完全一致，只有 pytest 耗时随机器负载波动：
+清理后的树上反复跑全量（代码树不变，只叠文档提交）：**除 §5.3 那一次既有偶发外全绿**，每次计数完全
+一致，只有 pytest 耗时随机器负载波动。下面是逐次的实测样本：
 
 ```text
 # 树 1000632（chore：移除 app/logs + .gitignore 两条规则）——代码树
@@ -161,8 +161,17 @@ node --test app/tests/*.test.cjs
 ℹ tests 322 / ℹ pass 322 / ℹ fail 0
 门禁全绿
 
-# 树 261148a（docs：收口读数口径）—— 第 5 次跑红了一次，见 §5.3；紧接的重跑即下面这段
+# 树 261148a（docs：收口读数口径）—— 这一次红了一次，见 §5.3；紧接的重跑即下面这段
 == pytest（全量）        1210 passed, 11 skipped in 693.00s
+== ruff check            All checks passed!
+== ruff format --check   340 files already formatted
+== mypy（仓库根）        Success: no issues found in 128 source files
+== pyright               0 errors, 0 warnings, 0 informations
+ℹ tests 322 / ℹ pass 322 / ℹ fail 0
+门禁全绿
+
+# 树 47a9348（docs：登记那次偶发与根因）
+== pytest（全量）        1210 passed, 11 skipped in 707.89s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
 == mypy（仓库根）        Success: no issues found in 128 source files
@@ -174,8 +183,7 @@ node --test app/tests/*.test.cjs
 **读数对应的 commit：`1000632`** —— `chore(#277): 移除误提交的运行期日志，并堵住产生源`，即
 `git rm -r --cached app/logs`（37 个文件）与 `.gitignore` 新增 `/logs/`、`/app/logs/` 之后的树。
 `1000632` 之后的提交只动 `app/specs/**`（本文件与 PR 正文正本），`git diff --stat 1000632..HEAD` 可核，
-不改变用例集合、源文件数或格式化面——上表在 `d2eec4f` / `bedd553` / `7f82383` / `261148a` 上各复跑过全量，
-绿的那些计数同值。
+不改变用例集合、源文件数或格式化面——所以上面各段读数都适用于最终 head。
 
 **为什么不把「最终 head 的 SHA」写进本文：** 写它本身就是一次提交，写完 head 立刻变了，这个数字会
 自指失效。所以这里钉**代码树** `1000632`，并把之后每次全量的实测计数并列出来——读者要核的是「这批代码
