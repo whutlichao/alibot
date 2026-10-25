@@ -19,8 +19,8 @@ Bash 默认仅在 Docker 开放；MCP/Skill 只接受本机来源；权限只暴
 `agent_config.permission_mode` / `agent_config.allow_local_shell` / `agent_config.docker_image` 是每个 Agent
 的覆盖。Agent 不能把根改到频道根之外；local 后端的每个文件工具路径都要 `realpath` 后落在根内。
 
-`.alibot/agents/<member_id>/` 与 `.alibot/sessions/<session_id>/` 放技能分区、MCP 声明与会话状态，
-与用户的业务文件分开。这样“同一个项目根”与“每个 Agent 的技能/MCP 状态隔离”同时成立。
+修订（#270）：项目侧 `.alibot/agents/<member_id>/` 与 `.alibot/sessions/<session_id>/` 仍用于运行状态与
+stdio MCP cwd；技能字节不再放在项目根，而落入 Agent 家目录，且不依赖 workspace（见 §三）。
 
 ## 二、本地 shell 的边界必须写成“默认没有”
 
@@ -38,12 +38,12 @@ AgentScope 的 `LocalBackend` 用主机进程执行 Bash；`cwd=workdir` **不�
 
 ## 三、MCP / Skill 是配置，不是消息或任务
 
-- `mcp_server` 只存声明（transport、command/args、url、`env_names`），**不存 env 值**；值只从进程环境读。
-  LocalWorkspace 装配时物化为 `MCPClient`；Docker 走工作区 MCP 网关。远端 MCP（HTTP/SSE）首次使用前按
-  server 记一次 `remote_consent_scope(scope_kind='mcp')`，未确认不连接。
-- `skill` 只存元数据与 hash，字节在 `workspace_root/.alibot/skills/<member_id>/`；安装只接受本机目录或上传 zip，
-  校验 `SKILL.md` front matter 与 hash；不做远程市场、自动下载或自动更新。
-- MCP/Skill 的增删是**配置动作**：不落消息、不唤醒、不消耗预算、不开世代（与 ADR-0011 同族）。
+**修订（#270，2026-10-25）**：本节原有的项目根 Skill 字节路径与频道级 MCP / Skill 装配口径已修订。以下为现行决策：
+
+- `mcp_server` 是 MCP 声明的数据库正本，现行声明使用 `scope_kind='agent'`；`scope_kind='channel'` 的旧行保留但弃用，装配忽略、不回填。Agent 家目录 `mcp.json` 是只读导入源与导出结果，仅由应用写入导出内容，不是与库行并列的正本。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）；没有 workspace 时不装配 MCP。
+- `skill` 仍存元数据与 hash；字节由宿主应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`，不再依赖 workspace。安装只接受本机目录或上传 zip，校验 `SKILL.md` front matter 与 hash；不做远程市场、自动下载或自动更新。
+- `scope_kind='channel'` 的旧 Skill 行与项目层字节 `<workspace_root>/.alibot/skills/<member_id>/` 保留但弃用、装配忽略；不回填、不自动删除。迁移由独立 `migrate-skills` 命令显式执行（T5），本轮不执行。
+- MCP / Skill 的增删是**配置动作**：不落消息、不唤醒、不消耗预算、不开世代（与 ADR-0011 同族）。
 
 ## 四、权限与 HITL
 
@@ -78,15 +78,16 @@ HITL（D19 已裁定）：`RequireUserConfirmEvent` → `approval_request`（pen
 
 ## 六、与 CONTEXT.md “Agent 不做文件与 shell”的关系
 
-`CONTEXT.md` 的**Agent** 词条写“它不做文件与 shell 操作（首版没有家目录、项目目录与沙箱）”。本 ADR **扩展**
-这条口径，而不是静默改写：
+`CONTEXT.md` 的**Agent** 词条原写“它不做文件与 shell 操作（首版没有家目录、项目目录与沙箱）”。本 ADR
+**扩展**首版口径；#270 再补充成员技能的只读第二根，明确区分项目根与技能读取：
 
-- **保留**：没有配置 workspace 的频道/Agent 仍然没有文件与 shell 工具；默认行为与首版一致。
-- **扩展**：频道显式设置 `workspace_root` 后，成员获得受限文件工具；Docker 后端或显式本地开关才获得 shell。
-- **收窄**：本地 Bash 默认关闭；`trusted-writes` 仍只限工作目录内；`BYPASS` 不暴露。
-- **词条处置**：`CONTEXT.md` **Agent** 词条需要补一句“配置 workspace 后按 ADR-0021 获得受限文件/执行能力”，
-  原句“首版没有家目录、项目目录与沙箱”保留为历史/默认形态说明，不删除。新增 **Workspace（项目根）**、
-  **权限档位**、**审批** 等词条。
+- **保留**：没有配置 workspace 时不挂项目根文件工具与 shell；本地 Read / Glob / Grep 可读取成员技能目录
+  这一只读第二根，Write / Edit 仍只限项目根（没有项目根时不可写）。
+- **扩展**：频道显式设置 `workspace_root` 后，成员获得以项目根为可写根的受限文件工具；技能装配与是否配置
+  workspace 无关。Docker 后端或显式本地开关才获得 shell。
+- **收窄**：本地 Bash 默认关闭；`trusted-writes` 仍只限项目工作根内；`BYPASS` 不暴露。
+- **词条处置**：`CONTEXT.md` 保留“首版没有家目录、项目目录与沙箱”作为历史 / 默认形态说明；新增
+  **Workspace（项目根）**、**权限档位**、**审批**与 Skill 只读根语义。
 
 ## 七、被否方案与代价
 
