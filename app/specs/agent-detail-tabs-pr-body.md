@@ -139,8 +139,42 @@ A3 是本票的验收证据本身，一处凭空数字会让整张表失去证�
    「源码 / 测试 / 脚本 / CI 零改动」的白名单判定，行数不写死；
 3. A5 占位扫描「唯一命中是记录命令本身的那一行」实为 **3 行**自指句，改成给「原始 3 行 → 排掉自指行后 0 行」的两步读数。
 
-另外把 Problem Statement 的两处数量口径与实测对齐（配置区 **9** 个可编辑控件 / 整份提交 **10** 个键；
-「新建面 6→9」对齐为实测的 **4→7** 个键）。
+另外把 Problem Statement 的两处数量口径与实测对齐：新建面「6→9」对齐为实测的 **4→7** 个键；配置区 **9** 个
+可编辑控件 → 保存载荷 **10** 个键的因果句改成**算得平**的三步分解（`provider`+`model` 合并成 `model_id` **−1**、
+`system_prompt` 来自另一区块 `agentPromptSection()` **+1**、`enabled` 只由危险区写草稿 **+1** ⇒ 9 − 1 + 1 + 1 = 10），
+原句「多出来的那个是危险区的 `enabled`」漏掉了另外两笔。这一笔的实测依据（控件清单与载荷清单各自从 `studio/app.js`
+的哪个函数读）已补进 A5。
 
 修正提交只动 `app/specs/agent-detail-tabs-{design-notes,pr-body}.md`；零源码改动，**未开新 PR**（推在同一个 #285）。
 读数以 `git diff adc079b..HEAD --shortstat` 为准，不在正文里写死。
+
+## 修正提交（第 2 次打回）：Problem Statement 的 9 → 10 因果句算术不自洽
+
+第 2 次验收确认读数本身已对（user stories 76 / Out of Scope 14 / seam 2 / D9 清单 14 四条独立复跑全中），
+但抓到一处**算术不自洽**：Problem Statement 原文写「9 个可编辑控件（保存时整份提交 10 个键，**多出来的那个**
+是危险区的 `enabled`）」。
+
+9 → 10 的差值是 **+1**，但那个 +1 是**三笔相抵**的结果，单一一笔解释不了它：
+
+| 步 | 差 | 实测落点 |
+| --- | --- | --- |
+| 起点：配置区可编辑控件 | **9** | `agentConfigSection()`：`display_name` / `role` / `provider` / `model` / `auto_claim` 档位组 / `context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `web_access` 档位组 |
+| `provider` + `model` 两个控件合并成 `model_id` | **−1** | 载荷里只有 `model_id`；草稿里拆成两个控件 |
+| `system_prompt` 来自另一个区块 | **+1** | 它在 `agentPromptSection()` 的 textarea；`agentConfigSection()` 里 `grep system_prompt` 命中 **0** 次 |
+| `enabled` 只由危险区写草稿 | **+1** | `agentDangerSection()` 的暂停 / 恢复按钮（`dataset.agentToggle`）写 `draft.enabled` |
+| 终点：保存载荷键 | **10** | `submitAgentEdit()` 的 `payload` 字面量 |
+
+9 − 1 + 1 + 1 = **10**。原句漏掉了「合并掉的 `model_id`」与「被吞掉的 `system_prompt`」两笔。
+
+这一句不是措辞问题：它是 Problem Statement 里**唯一的算术论证**，也是「配置区的字段构成」这一事实的来源；
+实施票 #280 的验收项「保存载荷降到 7 个字段」正是从它推出来的。论证算不平，下游票的判据就缺一个可信前提。
+
+修法：
+
+1. **第 29 行改写成算得平的表述**，逐步给出三笔差额与各自的函数落点（不采用「只把 9 改成 8」这类糊法——
+   9 个控件是实测真的，错的是因果解释）；
+2. **A5 补一行**：控件清单与载荷清单各自从 `studio/app.js` 的哪个函数读（含两边可直接实跑的 `awk` 命令），
+   让下一位读者能自己复算；
+3. **扫过全部「N 个 X → M 个 Y」因果换算句**（命令 `grep -noE '[0-9]+ ?个[^，。；（]*'` 对三个文件）：
+   带因果解释的共 4 处，修正后 4/4 都能用实测拆开算平——`10 → 7`（D2 / D9 表 / 规格 D2 三处同一笔，10 − 3 = 7）
+   与 `4 → 7`（D2「不做什么」，4 + 3 = 7，4 = `submitAgent()` 当前载荷）；纯计数句按票面要求不动，由 A5 的命令项兼管。

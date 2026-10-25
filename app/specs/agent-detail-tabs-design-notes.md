@@ -26,7 +26,10 @@
 （`agentDetailNodes()`，`studio/app.js:5317`）：**统计 → 系统提示 → 配置（含 MCP 表单与技能列表）→
 全局 MCP 只读小节 → 危险操作**。具体到用户的五个痛点：
 
-1. **改一个字段要滚过一整页。** 配置区有 9 个可编辑控件（保存时整份提交 10 个键，多出来的那个是危险区的 `enabled`），其中三项（上下文条数 / 压缩阈值 / 迭代上限）
+1. **改一个字段要滚过一整页。** 配置区（`agentConfigSection()`）有 **9 个可编辑控件**，而保存时整份提交 **10 个键**
+   （`submitAgentEdit()`）；两个数对不上是三步换算的结果——`provider` + `model` 两个控件**合并**成 `model_id` 一个键（**−1**），
+   `system_prompt` 是另一个区块的 textarea（`agentPromptSection()`，不在配置区）（**+1**），`enabled` 只由危险区的
+   暂停 / 恢复按钮写草稿（**+1**）：9 − 1 + 1 + 1 = **10**。其中三项（上下文条数 / 压缩阈值 / 迭代上限）
    用户从未因为「想调这个数字」而打开这一页；它们把真正常改的字段挤到需要滚动才能看到。
 2. **技能区与 MCP 区各自挤成一团。** 技能段今天同时挂着：列表 + 手填绝对路径安装 + 上传 zip 安装 +
    勾选式导入 + 每行「复制到其他成员」弹层。用户要「看这个技能到底是什么」时，页面上**没有正文入口**——
@@ -548,6 +551,7 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 | Out of Scope 条数 | `awk '/^## Out of Scope/,/^## Further Notes/' app/specs/agent-detail-tabs-spec.md \| grep -cE '^[0-9]+\. '` | **14** |
 | seam 条数 | `awk '/^### D10 · Seam 选址/,/^### D11/' app/specs/agent-detail-tabs-spec.md \| grep -cE '^\| `(mcp\.json\|SKILL\.md)`'` | **2**（都是既有缝，零新增服务模块） |
 | D9 断言改写清单条数 | `awk '/### D9 · 既有测试与文档断言的改写清单/,/^\*\*`app\/tests\/test_skill_copy.py`/' app/specs/agent-detail-tabs-design-notes.md \| grep -cE '^\| [0-9]+ \|'` | **14**（7 条 `agent_detail_ui` + 7 条 `agent_capabilities_ui`） |
+| 配置区控件数 vs 保存载荷键数（**9 → 10** 的换算依据） | 控件侧：`awk '/^function agentConfigSection/,/^}$/' app/alibot/studio/app.js \| grep -oE "agentInput\('[a-z_]+'\|dataset.agentTier = '[a-z_]+'\|dataset.agentAccessGroup\|const provider = el\('select'\|const model = agentInput\('model'"`；载荷侧：`awk '/^async function submitAgentEdit/,/^  };/' app/alibot/studio/app.js \| awk '/const payload = \{/,/^  \};/' \| grep -oE "^\s+[a-z_]+:"` | 控件 **9**：`display_name` / `role` / `provider` / `model` / `auto_claim`（档位组）/ `context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `web_access`（档位组）；载荷 **10**：`display_name` / `role` / `model_id` / `system_prompt` / `enabled` / `auto_claim` / `context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `web_access`。三步差额：`provider`+`model` 合并成 `model_id` **−1**、`system_prompt` 来自另一区块 `agentPromptSection()`（在配置区里 grep `system_prompt` 命中 **0** 次）**+1**、`enabled` 只由危险区按钮写草稿（`agentDangerSection()` 的 `dataset.agentToggle`）**+1** ⇒ 9 − 1 + 1 + 1 = **10** |
 | ADR-0031 被改的句子 | `git diff adc079b -- docs/adr/0031-agent-home-is-a-global-layer-beside-the-project-boundary.md`，逐块读 `-` / `+` 配对 | 七处对句（文件头标注 + §一 表格 + §二段 + §三 两处 bullet + §四 两行） |
 | 占位扫描（`待定\|TBD\|TODO`） | `grep -rnE '待定\|TBD\|TODO'` 对本文件 / 规格 / ADR-0031 / `CONTEXT.md`，再 `grep -vE '占位\|grep -rnE\|grep -nE\|0 命中'` 排掉自指行 | 原始 **3 行**（全是描述这条扫描本身的句子），排掉自指行后 **0 行**——即正文没有真实占位 |
 | 机械守卫 | — | 未触发：本票不碰 `app/alibot/studio/**`、`app/README.md`、`app/tests/**`；`test_docs_vocabulary_guard.py` 只读 `README` 与两个词表常量，`i18n_ui.test.cjs` 只扫 Studio 三件套 |
@@ -560,6 +564,33 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 修正后凡是引用这三个数的地方（本文件 A3 / A5、pr-body Summary）都指到本表的命令与读数。**同一个错误模式**
 在本票修正时又抓出三处（pr-body 的「4 个文档路径」实为 5 个；pr-body 里一段提交前的过期 `git diff --stat` 快照；
 A5 占位扫描的「唯一一行」实为 3 行），均已改掉或改成不随提交漂移的口径。存量错误一律换成**可复核命令 + 当时读数**。
+
+**第三次打回项：Problem Statement 的 9 → 10 因果句算术不自洽（本票修正的第二处）**。原句写「9 个可编辑控件
+（保存时整份提交 10 个键，多出来的那个是危险区的 `enabled`）」——9 到 10 的差值是 **+1**，但那个 +1 是**三笔**
+相抵的结果，单一一笔「危险区的 `enabled`」解释不了它：
+
+| 步 | 差 | 实测落点 |
+| --- | --- | --- |
+| 起点：配置区可编辑控件 | **9** | `agentConfigSection()`：`display_name` / `role` / `provider` / `model` / `auto_claim` 档位组 / `context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `web_access` 档位组 |
+| `provider` + `model` 两个控件合并成 `model_id` 一个键 | **−1** | 载荷里只有 `model_id`；草稿里拆成 `provider` / `model` 两个控件 |
+| `system_prompt` 来自另一个区块 | **+1** | 它在 `agentPromptSection()` 的 textarea；在 `agentConfigSection()` 里 `grep system_prompt` 命中 **0** 次 |
+| `enabled` 只由危险区写草稿 | **+1** | `agentDangerSection()` 的暂停 / 恢复按钮（`dataset.agentToggle`）写 `draft.enabled`，配置区无此控件 |
+| 终点：保存载荷键 | **10** | `submitAgentEdit()` 的 `payload` 字面量 |
+
+9 − 1 + 1 + 1 = **10**（算得平）。零条、两份清单与两处归属都已收进 A5 的那一行（含两边各自的 `awk` 命令），
+下一位读者可自己复算。
+
+**其它「N 个 X → M 个 Y」因果换算句的扫描结论**（命令：`grep -noE '[0-9]+ ?个[^，。；（]*'` 对三个文件）：
+
+| 处 | 句子 | 判定 |
+| --- | --- | --- |
+| 本文件 D2 | 载荷从 **10 个字段降到 7 个** | **算得平**：10 − 3 = 7，减的正是点名的三项（`context_window_messages` / `context_trigger_ratio` / `react_max_iters`） |
+| 本文件 D9 表第 6 行 | 载荷断言从 **10 字段降到 7 字段** | **算得平**（同上；这是断言侧的同一笔改动） |
+| 规格 D2 | 保存载荷从 **10 个字段降到 7 个** | **算得平**（同上） |
+| 本文件 D2「不做什么」 | 新建面从 **4 个键膨胀到 7 个** | **算得平**：4 + 3 = 7；4 = `submitAgent()` 当前载荷（`name` / `role` / `model_id` / `system_prompt`），加的就是那三项 |
+| 本文件 / 规格 / pr-body 的 76 / 14 / 2 / 14 / 5 / 7 | 纯计数句 | **不需要换算**（已由 A5 的命令项逐条回测） |
+
+结论：带因果解释的换算句共 4 处，修正后 **4/4 都能用实测拆开算平**；纯计数句按票面要求不动（它们由 A5 的命令项兼管）。
 
 ### A6 · PR 与收尾
 
