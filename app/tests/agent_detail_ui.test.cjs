@@ -612,13 +612,15 @@ test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / �
     "agent-detail-section-facts",
     "agent-detail-section-prompt",
     "agent-detail-section-config",
+    // #273：能力（MCP / 技能）归口在这里，排在配置之后、只读的全局 MCP 之前。
+    "agent-capabilities-section",
     "agent-detail-section-global-mcp",
     "agent-detail-section-danger",
   ];
   const order = descendants(harness.agentBody)
     .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
     .filter((id) => ids.indexOf(id) >= 0);
-  assert.deepEqual(order, ids, "五处区块按顺序同时出现在同一页里，不需要切换");
+  assert.deepEqual(order, ids, "六处区块按顺序同时出现在同一页里，不需要切换");
   assert.equal(
     harness.agentBody.children[harness.agentBody.children.length - 1].children[0].getAttribute("data-od-id"),
     "agent-detail-section-danger",

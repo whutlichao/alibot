@@ -674,6 +674,7 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节）。旧 channel 行仍按其 scope 保留 |
 | `POST /api/skills` | 安装：Agent 级 JSON 正文 `{scope_kind, scope_id, source_path}`（`scope_kind='agent'`，`scope_id=<member_id>`）从**本机目录**；或 zip 原始字节 + query `scope_kind/scope_id/filename`。历史 `channel_id?` 参数与 `scope_kind='channel'` 已弃用，不构成装配来源；旧 channel 行保留并忽略。校验 `SKILL.md`、路径与 hash，非法整体拒绝；同名同 scope 409；不做远程市场/下载 |
 | `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |
+| `POST /api/skills/{id}/copy` | 把该技能**字节**复制到另一个成员：正文 `{scope_id: <target_member>}`；源字节固定取自源成员家目录 `~/.alibot/agents/<source>/skills/<name>/`（前端不传路径），复制走既有安装器重校验并建目标行；目标已有同名行或同名目录 409、**不覆盖**；源行与源字节只读不改；`scope_kind='channel'` 的旧行 400 |
 | `DELETE /api/skills/{id}` | 显式删除该 Skill 配置与其成员家目录副本（不删用户源目录；不自动清理历史 channel 行或项目层旧字节） |
 | `GET /api/health` | 存活与数据目录 |
 
