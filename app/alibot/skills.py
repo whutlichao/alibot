@@ -9,14 +9,14 @@
 接受频道作用域（HTTP 层返回明确 400）。项目层 ``<workspace_root>/.alibot/skills/`` 的旧字节同样
 保留、不搬运、不进入装配——搬迁是 T5 的显式动作。
 
-安装只接受**本机目录**或**上传 zip**（D21）：不访问远端市场、不自动下载、不自动更新。安装前
-校验 ``SKILL.md`` 的 YAML front matter（``name`` / ``description``）、路径安全与内容 hash；任何
-一项不合法都**整体拒绝**——不落库、不留半棵树。
+安装接受**本机目录**、**上传 zip**，或从 ``~/.agents/skills/`` **导入**（D21 / ADR-0036）：不访问
+远端市场、不自动下载、不自动更新。安装前校验 ``SKILL.md`` 的 YAML front matter（``name`` /
+``description``）、路径安全与内容 hash；任何一项不合法都**整体拒绝**——不落库、不留半棵树。
 
-第三个来源是**导入**（ADR-0036，用户 2026-10-25 人定）：第三方 CLI（``npx skills add … -g -a codex``）
-把技能装进 ``~/.agents/skills/<name>/``，本应用**只读**那个落点（:func:`scan_import_candidates`），
-再由人选中、经既有的 ``POST /api/skills`` 复制进成员家目录。应用**不执行** npx、不起 subprocess、
-不下载第三方包；来源根缺失是正常状态（不创建、不报错）。
+导入（ADR-0036，用户 2026-10-25 人定）：第三方 CLI（``npx skills add … -g -a codex``）把技能装进
+``~/.agents/skills/<name>/``，本应用**只读**那个落点（:func:`scan_import_candidates`），再由人选中、
+经既有的 ``POST /api/skills`` 复制进成员家目录。应用**不执行** npx、不起 subprocess、不下载第三方包；
+来源根缺失是正常状态（不创建、不报错）。
 
 配置动作（安装 / 启停 / 删除）不落消息、不唤醒、不消耗预算（ADR-0011 同族；与 ADR-0021 §三
 “MCP / Skill 是配置，不是消息或任务”一致）。删除只删配置行与成员家目录副本，**绝不删除用户
@@ -265,11 +265,6 @@ def import_source_root() -> str:
     return os.path.join(os.path.expanduser("~"), IMPORT_SOURCE_DIRNAME, IMPORT_SOURCE_SKILLS_DIR)
 
 
-def _import_reason(error: SkillValidationError, locale: Locale) -> str:
-    """把校验内核的异常渲染成一句可读原因（与 HTTP 错误面同一份词条）。"""
-    return render(error.key, locale, **error.params)
-
-
 def scan_import_candidates(
     database: Any,
     *,
@@ -289,6 +284,8 @@ def scan_import_candidates(
     - 路径经 :func:`workspace.resolve_global_read_path` 以**来源根自己的 realpath** 为根解析：
       根外 symlink 祖先与根外目标一律拒绝（``error.skill_path_invalid``）。
     - ``installed`` 只看该成员库里有没有同名行（不做字节比对：改名 / 改内容的重装由写路径裁决）。
+      名字取 **front matter 的 `name`**（安装器落库用的就是它），不是目录名——两者不同时按目录名
+      判会得到「装好之后仍显示可导入」。
 
     它不复制、不创建、不改任何字节；``description`` 取 front matter 的值，取不到时为空串。
     """
@@ -309,6 +306,8 @@ def scan_import_candidates(
     for entry in entries:
         if not entry.is_dir():
             continue
+        # `name` 是**目录名**（票面口径）；`installed` 按**将要安装的那个名字**判定（front matter 的
+        # `name`，安装器落库用的就是它），否则「装好之后仍显示可导入」。读不到清单时它保持目录名的判定。
         name = entry.name
         resolved = resolve_global_read_path(root, name)
         candidate: dict[str, Any] = {
@@ -319,30 +318,27 @@ def scan_import_candidates(
             "reason": None,
             "installed": name in installed,
         }
-        description = ""
         try:
             if resolved is None:
                 raise SkillValidationError("error.skill_path_invalid", field="source", locale=None)
-            # description 先按**尽力而为**读一次：不可导入的条目也能显示它的自述（坏 front matter
-            # 自然读不到，那就保持空串）。真正的判据仍是下面的 `_front_matter` / `_skill_files`。
-            loaded = _load_manifest_markdown(Path(resolved))
-            if loaded is not None:
-                description = loaded[1]
             if not SKILL_NAME_PATTERN.fullmatch(name):
                 raise SkillValidationError("error.skill_import_name_invalid", field="name", locale=None)
+            # 与安装器同口径：`_manifest_root` 接受「清单在根」或「包了一层单目录」两种形态，
+            # description 从**清单根**读（坏 front matter 自然读不到，就保持空串）。
             skill_root = _manifest_root(Path(resolved))
-            _front_matter(skill_root, locale)
+            loaded = _load_manifest_markdown(skill_root)
+            if loaded is not None:
+                candidate["description"] = loaded[1]
+            manifest_name, _description = _front_matter(skill_root, locale)
             _skill_files(skill_root)
         except SkillValidationError as error:
-            candidate["description"] = description
-            candidate["reason"] = _import_reason(error, locale)
+            candidate["reason"] = render(error.key, locale, **error.params)
         except OSError as error:
             _log.warning("cannot inspect the skill import candidate %s: %s", resolved, error)
-            candidate["description"] = description
             candidate["reason"] = render("error.skill_path_invalid", locale)
         else:
-            candidate["description"] = description
             candidate["importable"] = True
+            candidate["installed"] = manifest_name in installed
         candidates.append(candidate)
 
     return {"source": root, "available": True, "candidates": candidates}

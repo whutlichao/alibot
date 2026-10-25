@@ -31,7 +31,7 @@
 | 视图状态沿用 `capabilitiesView` + `emptyCapabilitiesView`；成员切换按 `resetAgentCapabilities` 丢弃 | `emptyCapabilitiesView()` 新增 `skillImportLoading` / `skillImportError` / `skillImportSource` / `skillImportAvailable` / `skillImportCandidates` / `skillImportPicks` / `skillImportResults` / `skillImportBusy` |
 | 安装中 `is-faint` 忙碌提示；按钮沿用 `resourceButton`，`state.online` 为假时禁用 | `skill.importBusy` 的 `is-faint` 行；两个按钮都来自 `resourceButton`（它已按 `state.online` 设 `disabled`） |
 | 事件委派加在既有 `document` 委派链（与 `data-skill-install-dir` 同段），不新开监听器 | `#adBody` 的 click 链（scan / run）与 change 链（pick），无新增 `addEventListener` |
-| 前端两份词条同键集；`app.js` / `app.css` / `index.html` 无裸中文 | `studio/i18n.js` 新增 `skill.import*` 21 条（zh-CN / en）；`i18n_ui.test.cjs` 全绿 |
+| 前端两份词条同键集；`app.js` / `app.css` / `index.html` 无裸中文 | `studio/i18n.js` 新增 `skill.import*` 17 条（zh-CN / en 各一份，共 34 行）；`i18n_ui.test.cjs` 全绿 |
 | 后端词条只在需要新原因时新增，两份语言同键集 | `alibot/i18n.py` 只加 `error.skill_import_name_invalid`（目录名不能当技能名）；其余复用 `error.skill_*` |
 | 新 ADR 0036（Context / Decision / Consequences + 与 0026 / 0031 的逐条关系） | `docs/adr/0036-skill-install-has-two-sources.md` |
 | `CONTEXT.md` 的 **Skill** 词条 | 安装来源改为「本机目录、上传 zip，或从 `~/.agents/skills` 导入」；`_Avoid_` 补「`npx skills` 是外部 CLI，本应用只读它的落点，不代为执行」；历史段未动 |
@@ -117,30 +117,78 @@ node --test app/tests/*.test.cjs
 
 ## 5. 门禁读数
 
-```sh
-scripts/check.sh --fast tests/test_skill_import.py
-# pytest: 7 passed
-# == ruff check            All checks passed!
-# == ruff format --check   通过（只检查，不跑 ruff format）
-# == mypy（仓库根）        通过
-# == pyright               通过
-# ℹ tests 322 / ℹ pass 322 / ℹ fail 0（node glob）
-# 门禁全绿
+### 5.1 `scripts/check.sh --fast tests/test_skill_import.py`
 
-scripts/check.sh
-# （全量读数见 §5.1）
+```text
+9 passed in 0.50s
+== ruff check            All checks passed!
+== ruff format --check   340 files already formatted（只检查，不跑 ruff format）
+== mypy（仓库根）        Success: no issues found in 128 source files
+== pyright               0 errors, 0 warnings, 0 informations
+ℹ tests 322 / ℹ pass 322 / ℹ fail 0（node glob）
+门禁全绿
 ```
 
-### 5.1 全量
+### 5.2 全量 `scripts/check.sh`
 
-```sh
-scripts/check.sh
-# （读数回填见下）
+```text
+== pytest（全量）        1208 passed, 11 skipped in 700.37s
+== ruff check            All checks passed!
+== ruff format --check   340 files already formatted
+== mypy（仓库根）        Success: no issues found in 128 source files
+== pyright               0 errors, 0 warnings, 0 informations
+ℹ tests 322 / ℹ pass 322 / ℹ fail 0
+门禁全绿
 ```
 
-## 6. 双轴 code-review（固定点 `5f7dd9c`）
+定稿前那一次全量（review 修正前的代码）与这一次都绿；上表是 review 修正后的最终读数。
 
-两轴并行子代理，结论与 findings 处置见下。
+## 6. 双轴 code-review（固定点 `5f7dd9c`，两个并行子代理）
+
+### 6.1 Standards 轴
+
+**结论：** 3 条 hard + 3 条判断题，全部处置。轴内最严重：`skills.py` 的模块文档串仍写「只接受本机目录
+或上传 zip」，与同一文件新增的三来源段落自相矛盾。
+
+| # | Finding | 严重度 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `skills.py:12` 文档串自相矛盾（旧句「只接受本机目录或上传 zip」+ 新段「第三个来源」） | hard | **修**：合并成一句「安装接受本机目录、上传 zip，或从 `~/.agents/skills/` 导入」，导入段保留为独立说明 |
+| 2 | ADR 0036 标题 / 正文说「两个来源」，§一 的表却列三行，`CONTEXT.md` 与 README 又写「三个来源」 | hard | **修**：标题与首段改为「两个**取字节的路**（人自己准备 / 外部 CLI 装完再导入）」，正文显式写明「按字节来源数是三个，按写路径只有一条」，§一 标题改「三个字节来源共用一条写路径」 |
+| 3 | `installed` 用**目录名**判定，而安装器落库用的是 front matter 的 `name`：目录名 ≠ 清单名时，装好后候选仍显示可导入，再导入必然 409 | P2 | **修**：`installed` 改按 `_front_matter` 返回的 `manifest_name` 判定（读不到清单时保持目录名判定）；新增用例 `test_installed_follows_the_manifest_name_not_the_directory_name` |
+| 4 | `skillImportResults` 存**渲染好的文案**（`text: t(...)`），兄弟实现 `copy.results` 存数据、渲染时取词条；切语言后旧行不换说法（Divergent Change） | 判断 | **修**：结果行改存 `{name, status, reason}`，新增 `skillImportResultText()` 在渲染时取词条（与 `copyResultText()` 同口径） |
+| 5 | `_import_reason()` 是 `render(...)` 的单调用包装（Middle Man） | 判断 | **修**：删掉，两处直接 `render(error.key, locale, **error.params)` |
+| 6 | 验收文档写「`skill.import*` 21 条」，实际每份语言 17 条 | 判断 | **修**：改成 17 条（两份语言共 34 行） |
+
+**核过且干净：** 候选扫描确实复用 `SKILL_NAME_PATTERN` / `_manifest_root` / `_front_matter` /
+`_skill_files`（没有第二套内核）且严格只读；只用 `expanduser("~")`，无硬编码主目录、无
+`global_home_root`；新增代码无中文字面量；API 复用 `resolve_install_root` + `validate_skill_scope`，
+路由顺序无冲突、无写入；`i18n.py` 新键两份语言同键集且参数位一致；无新增 `addEventListener`，状态都在
+`capabilitiesView` / `emptyCapabilitiesView`；409 → skipped 的三元与 `submitCapabilityCopy()` 属可接受的
+并行形状（不是重复实现）；两个测试文件都沿用既有接缝。
+
+### 6.2 Spec 轴
+
+**结论：** 3 条 missing/partial（其中 2 条是交付流程未完成）+ 3 条 scope + 2 条 wrong，逐条处置。
+
+| # | Finding | 类别 | 处置 |
+| --- | --- | --- | --- |
+| 1 | 验收文档 §5.1 / §6 只有占位（「读数回填见下」） | missing | **修**：本文件 §5 与本节即回填内容 |
+| 2 | 未推送、未建 PR、issue #277 无 Answer 评论、`git status` 不干净（含 `app/logs/`） | missing | **修**：清掉 `app/logs/`（ReMe 运行时日志，不在 .gitignore 里，属测试运行副产物）、提交、推送、建 PR、发 Answer；读数见 PR 正文与 §8 |
+| 3 | 票面写 `data-skill-import-status`，代码只给 `data-od-id="skill-import-status"` | missing | **修**：结果容器补 `data-skill-import-status="1"`（保留 `data-od-id` 供视觉断言），UI 用例改为按 `skillImportStatus` dataset 定位 |
+| 4 | `installed` 按目录名判定（同 Standards #3） | wrong | **修**：见 Standards #3 |
+| 5 | 包了一层单目录的候选 description 丢失：`_load_manifest_markdown(Path(resolved))` 只看候选根，而 `_manifest_root` 接受 wrapper 形态 | wrong | **修**：先 `_manifest_root()` 拿到清单根，再从**清单根**读 description；新增用例 `test_wrapper_directory_candidate_keeps_its_description` |
+| 6 | `skill.importPickRequired` 守卫 | scope creep | **保留**：票面要求「候选为空 / 读失败只落在本区块」，但一个都未勾选时按钮本就该禁用——这条守卫兜住「视图状态被外部改成空勾选」的边界；已写成 UI 用例（按钮 `disabled` + 不发请求），不是新语义 |
+| 7 | `skill.importSummary` toast | scope creep | **保留**：逐条结果已在 `data-skill-import-status` 里，toast 只是一句汇总（与 `agentCapabilities.copySummary` 同款）；不改变任何写路径 |
+| 8 | `data-skill-import-candidate` 行 dataset | scope creep | **保留**：测试与取证都靠它定位「哪一行是哪条候选」；与既有 `data-skill` / `data-mcp-server` 行标记同款 |
+
+**核过且符合票面：** 六个候选字段与默认值（`reason:null` / `description:""`）；`{source, available,
+candidates}` 形状；channel → 400 经 `resolve_install_root`；`POST /api/skills` 未改（api.py 该段 27 行
+插入、0 删除）；导入区块在 `skillInstallForm` **之后**；命令走 `<code>` 且两份词条表都不含它；默认勾选
+= `importable && !installed`；已安装 / 不可导入禁用；409 → 跳过、其余 → 原因；结束后 `loadAgentSkills()`；
+8 个状态字段都在 `emptyCapabilitiesView`；忙碌提示 `is-faint`；按钮来自 `resourceButton`；委派在既有
+`#adBody` 链；7 条 pytest 判据全覆盖且只读 `HOME`；ADR 0036 有 Context/Decision/Consequences 与
+0026/0031 的逐条关系；CONTEXT `_Avoid_` 保留、历史段未动；README 三处齐；无 schema / 迁移 / subprocess /
+第二套校验器。
 
 ## 7. 约束自检
 
@@ -150,3 +198,9 @@ scripts/check.sh
 - `POST` / `PATCH` / `DELETE /api/skills` 与 `copy` 端点语义未改；装配两层顺序未改
 - `migrate-skills` 与 `~/.alibot/skills` 公共库写入路径未动
 - 未跑 `ruff format`；未新增前端测试框架；未 import 私有名做行为断言
+
+## 8. 交付
+
+- 分支：`issue-277-skill-import`；PR 见 GitHub issue #277 的 Answer 评论
+- 验收文档：本文件（`app/specs/issue-277-acceptance.md`）
+- PR 正文正本：`app/specs/issue-277-pr-body.md`

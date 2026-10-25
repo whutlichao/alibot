@@ -186,6 +186,43 @@ def test_a_second_import_is_409_and_leaves_the_installed_bytes_untouched(
     assert len(_skills(client, member["id"])) == 1
 
 
+def test_installed_follows_the_manifest_name_not_the_directory_name(client: TestClient) -> None:
+    """目录名与 front matter 的 `name` 不同时：安装器落库的是 front matter 的名字，
+    因此 `installed` 必须按那个名字判——否则装好之后候选仍显示「可导入」，再导入必然 409。"""
+    member = create_agent(client).json()["agent"]
+    root = _import_root()
+    source = _write_skill(root / "dir-label", name="review", description="代码评审清单")
+
+    first = _by_name(_candidates(client, scope_id=member["id"]).json())["dir-label"]
+    assert first["importable"] is True
+    assert first["installed"] is False
+
+    installed = client.post(
+        "/api/skills",
+        json={"scope_kind": "agent", "scope_id": member["id"], "source_path": str(source)},
+    )
+    assert installed.status_code == 201, installed.text
+    assert installed.json()["skill"]["name"] == "review", "落库的名字来自 front matter"
+
+    after = _by_name(_candidates(client, scope_id=member["id"]).json())["dir-label"]
+    assert after["installed"] is True, "候选要跟着 front matter 的名字认出「已安装」"
+
+
+def test_wrapper_directory_candidate_keeps_its_description(client: TestClient) -> None:
+    """安装器接受「包了一层单目录」的上传形态（`_manifest_root`）；候选扫描必须同口径，
+    否则这种候选会以 `importable=true` + 空描述出现（票面要求 description 来自 front matter）。"""
+    member = create_agent(client).json()["agent"]
+    root = _import_root()
+    wrapped = root / "wrapped"
+    _write_skill(wrapped / "inner", name="wrapped", description="包了一层目录的技能")
+
+    payload = _by_name(_candidates(client, scope_id=member["id"]).json())
+
+    assert payload["wrapped"]["importable"] is True
+    assert payload["wrapped"]["description"] == "包了一层目录的技能"
+    assert payload["wrapped"]["path"] == str(root / "wrapped")
+
+
 def test_scanning_and_importing_have_no_message_round_or_budget_side_effects(
     client: TestClient,
 ) -> None:

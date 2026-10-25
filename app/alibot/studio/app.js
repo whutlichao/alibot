@@ -7326,8 +7326,9 @@ function skillImportForm(view) {
   if (view.skillImportResults.length) {
     const results = el('div');
     results.setAttribute('data-od-id', 'skill-import-status');
+    results.dataset.skillImportStatus = '1';
     view.skillImportResults.forEach((result) => {
-      const line = el('div', 'resource-meta import-result', result.text);
+      const line = el('div', 'resource-meta import-result', skillImportResultText(result));
       line.dataset.importStatus = result.status;
       results.appendChild(line);
     });
@@ -7337,6 +7338,14 @@ function skillImportForm(view) {
     box.appendChild(el('div', 'resource-meta is-faint', t('skill.importBusy')));
   }
   return box;
+}
+
+/** 导入结果的一行：`imported` / `skipped`（409 同名已存在）/ `failed`（其余可读原因）。
+    文案在**渲染时**取词条（与 `copyResultText` 同一口径）：切语言后已导入的行跟着换说法。 */
+function skillImportResultText(result) {
+  if (result.status === 'imported') return t('skill.importResultDone', { name: result.name });
+  if (result.status === 'skipped') return t('skill.importResultSkipped', { name: result.name });
+  return t('skill.importResultFailed', { name: result.name, reason: result.reason || '' });
 }
 
 /** 一个候选：复选框 + 名字 + 描述 + 状态后缀（已安装 / 不可导入的项禁用）。 */
@@ -8003,19 +8012,12 @@ async function submitSkillImport() {
         method: 'POST',
         body: { scope_kind: 'agent', scope_id: memberId, source_path: candidate.path },
       });
-      view.skillImportResults.push({
-        name: candidate.name,
-        status: 'imported',
-        text: t('skill.importResultDone', { name: candidate.name }),
-      });
+      view.skillImportResults.push({ name: candidate.name, status: 'imported', reason: '' });
     } catch (err) {
-      const skipped = err.status === 409;
       view.skillImportResults.push({
         name: candidate.name,
-        status: skipped ? 'skipped' : 'failed',
-        text: skipped
-          ? t('skill.importResultSkipped', { name: candidate.name })
-          : t('skill.importResultFailed', { name: candidate.name, reason: err.message }),
+        status: err.status === 409 ? 'skipped' : 'failed',
+        reason: err.message,
       });
     }
   }

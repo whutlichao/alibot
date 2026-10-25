@@ -800,8 +800,8 @@ test("导入选中：逐条 POST /api/skills（source_path = 候选 path），40
     source_path: "/Users/me/.agents/skills/review",
   });
 
-  const status = byOdId(harness.agentBody, "skill-import-status");
-  assert.ok(status, "逐条结果要渲染");
+  const status = byDataset(harness.agentBody, "skillImportStatus", "1");
+  assert.ok(status, "逐条结果要渲染（票面的 data-skill-import-status）");
   assert.match(status.textContent, /review/);
   assert.match(status.textContent, /已导入/);
 
@@ -840,9 +840,10 @@ test("导入结果：409 记「已存在，已跳过」且不覆盖，其他失�
     ["/Users/me/.agents/skills/review", "/Users/me/.agents/skills/other"],
     "逐条提交，顺序照候选表",
   );
-  const lines = byClass(byOdId(harness.agentBody, "skill-import-status"), "import-result").map(
-    (node) => node.textContent,
-  );
+  const lines = byClass(
+    byDataset(harness.agentBody, "skillImportStatus", "1"),
+    "import-result",
+  ).map((node) => node.textContent);
   assert.equal(lines.length, 2, "两项各一条结果");
   assert.match(lines[0], /review：已存在，已跳过/);
   assert.match(lines[1], /other：导入失败/);
