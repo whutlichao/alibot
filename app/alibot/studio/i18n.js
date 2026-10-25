@@ -759,6 +759,27 @@ const I18N_CATALOGS = {
     'skill.toggleFailed': '启停失败：{reason}',
     'skill.deleted': '技能已删除。',
     'skill.deleteFailed': '删除失败：{reason}',
+    /* ─── 从 ~/.agents/skills 导入（#277 / ADR-0036） ────────────────────
+       命令本身是 ASCII 常量（`app.js` 的 `SKILL_INSTALL_COMMAND`），不进词条值；
+       这里只说它做什么。 */
+    'skill.importTitle': '从 ~/.agents/skills 导入',
+    'skill.importCommandHint':
+      '先在本机终端运行上面的命令：-g 装到全局，-a codex 指向 ~/.agents/skills（codex / cline / pi 共用的全局技能目录）。应用只读这个目录，不代为执行。',
+    'skill.importScanButton': '刷新候选',
+    'skill.importRunButton': '导入选中',
+    'skill.importLoading': '正在扫描 ~/.agents/skills…',
+    'skill.importScanFailed': '候选扫描失败：{reason}',
+    'skill.importUnavailable': '没有找到 {source}：先运行上面的命令装一个技能，再回来刷新候选。',
+    'skill.importEmpty': '这个目录里还没有技能：先运行上面的命令，再回来刷新候选。',
+    'skill.importStatusReady': '可导入',
+    'skill.importStatusInstalled': '已安装',
+    'skill.importStatusBlocked': '不可导入：{reason}',
+    'skill.importBusy': '正在导入…',
+    'skill.importResultDone': '{name}：已导入',
+    'skill.importResultSkipped': '{name}：已存在，已跳过',
+    'skill.importResultFailed': '{name}：导入失败：{reason}',
+    'skill.importPickRequired': '先勾选要导入的技能。',
+    'skill.importSummary': '导入完成：成功 {imported}，跳过 {skipped}，失败 {failed}',
 
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
@@ -1597,6 +1618,25 @@ const I18N_CATALOGS = {
     'skill.toggleFailed': 'Could not toggle the skill: {reason}',
     'skill.deleted': 'Skill deleted.',
     'skill.deleteFailed': 'Not deleted: {reason}',
+    'skill.importTitle': 'Import from ~/.agents/skills',
+    'skill.importCommandHint':
+      'Run the command above in a local terminal first: -g installs globally, -a codex targets ~/.agents/skills (the global skill directory shared by codex / cline / pi). The app only reads that directory and never runs it for you.',
+    'skill.importScanButton': 'Refresh candidates',
+    'skill.importRunButton': 'Import selected',
+    'skill.importLoading': 'Scanning ~/.agents/skills…',
+    'skill.importScanFailed': 'Could not scan the candidates: {reason}',
+    'skill.importUnavailable':
+      'No {source} found: run the command above to install a skill, then refresh the candidates.',
+    'skill.importEmpty': 'That directory holds no skills yet: run the command above, then refresh the candidates.',
+    'skill.importStatusReady': 'Ready to import',
+    'skill.importStatusInstalled': 'Already installed',
+    'skill.importStatusBlocked': 'Cannot import: {reason}',
+    'skill.importBusy': 'Importing…',
+    'skill.importResultDone': '{name}: imported',
+    'skill.importResultSkipped': '{name}: already exists, skipped',
+    'skill.importResultFailed': '{name}: import failed: {reason}',
+    'skill.importPickRequired': 'Select the skills to import first.',
+    'skill.importSummary': 'Import finished: {imported} imported, {skipped} skipped, {failed} failed',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',

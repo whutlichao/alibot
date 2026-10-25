@@ -605,13 +605,16 @@ _Avoid_: 工具服务器（泛称）；密钥表（没有任何值落库）；�
 
 **Skill**:
 `skill` 表存 Agent 级技能元数据与**内容 hash**；字节由宿主应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`，
-不依赖 workspace。只接受**本机目录或上传 zip**（校验 `SKILL.md`、路径与 hash），**不做远程市场/自动下载**。
+不依赖 workspace。安装接受三个来源：**本机目录**、**上传 zip**，以及从 `~/.agents/skills/`
+**导入**（ADR-0036；那是 codex / cline / pi 等工具共用的全局技能目录，也是外部 CLI `npx skills` 的落点，
+本应用**只读**它并复制进成员家目录——导入复用同一条安装器）。三种来源都校验 `SKILL.md`、路径与 hash，
+**不做远程市场/自动下载**。
 技能只按「成员家目录 > 全局公共库」装配，DM / 未配置项目根的频道同样生效。`scope_kind='channel'` 的旧 Skill
 行与项目层字节 `<workspace_root>/.alibot/skills/<member_id>/` 保留但弃用、装配忽略；不回填、不自动删除。
 迁移由独立 `migrate-skills` 命令显式执行（#274；默认 dry-run，`--apply --yes` 才动手），启动时绝不自动迁移。
 历史（#270 前）：技能按「项目 Agent 级 > 项目频道级 > 全局成员家目录 > 全局公共库」四层装配，项目层字节落
 `<workspace_root>/.alibot/skills/<scope_id>/`；现行只有「成员家目录 > 全局公共库」两层，旧字节与旧行保留但不进装配。
-_Avoid_: 插件（会读成可执行扩展）；市场/商店（本仓没有远程来源）；把项目层旧技能字节或频道级 Skill 行读成现行装配来源
+_Avoid_: 插件（会读成可执行扩展）；市场/商店（本仓没有远程来源）；`npx skills` 是外部 CLI，本应用只读它的落点、不代为执行；把项目层旧技能字节或频道级 Skill 行读成现行装配来源
 
 ### 搜索
 

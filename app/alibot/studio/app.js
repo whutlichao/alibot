@@ -74,6 +74,10 @@
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 
+/** 第三方 CLI 的安装命令（ADR-0036）：**ASCII 常量**，不进词条表——它是要被原样复制到终端
+    的命令，不是界面文案。`-g` 装到全局、`-a codex` 指向 `~/.agents/skills`（本应用只读那里）。 */
+const SKILL_INSTALL_COMMAND = 'npx skills add <owner/repo> -g -a codex -y';
+
 /* ─── 界面文案一律按**词条**取值（`i18n.js` 的 `t(key, params)`） ────────────
    本文件里不再有裸中文文案：结构化状态词（四态状态点 / 任务状态 / 轮次结果状态）后端只给**词**，
    这里只把词翻译成界面说法；措辞全部住在词条表的两份取值里。
@@ -7032,6 +7036,17 @@ function emptyCapabilitiesView(memberId) {
     skillInstalling: false,
     skills: [],
     skillSourcePath: '',
+    // 「从 ~/.agents/skills 导入」区块（#277 / ADR-0036）：候选是后端只读读数，
+    // `skillImportPicks` 只是**未提交**的勾选（默认 = 可导入且未安装），`skillImportResults`
+    // 是逐条导入结果（留到下一次扫描）。
+    skillImportLoading: false,
+    skillImportError: '',
+    skillImportSource: '',
+    skillImportAvailable: false,
+    skillImportCandidates: [],
+    skillImportPicks: [],
+    skillImportResults: [],
+    skillImportBusy: false,
     // 复制弹层：`null` = 没开；`kind` / `id` 指向发起复制的那一行。
     copy: null,
   };
@@ -7149,10 +7164,14 @@ function dockerStatusOf(agents, backend) {
   return { state: 'unused', text: t('workspaceMgmt.dockerUnused') };
 }
 
-/** 一个成员的两条能力清单（并行读；各段自己的错误行，一段读不到不牵连另一段）。 */
+/** 一个成员的两条能力清单 + 导入候选（并行读；各段自己的错误行，一段读不到不牵连另一段）。 */
 async function loadAgentCapabilities(memberId) {
   if (!memberId) return;
-  await Promise.all([loadAgentMcpServers(memberId), loadAgentSkills(memberId)]);
+  await Promise.all([
+    loadAgentMcpServers(memberId),
+    loadAgentSkills(memberId),
+    loadSkillImportCandidates(memberId),
+  ]);
 }
 
 /** 读 MCP 声明（agent scope）；失败只落在 MCP 段自己的错误行。 */
@@ -7195,6 +7214,162 @@ async function loadAgentSkills(memberId) {
   if (state.activeAgentId !== memberId) return;
   view.skillLoading = false;
   paintAgentCapabilities();
+}
+
+/** 读外部 CLI 落点 ``~/.agents/skills`` 的候选（只读端点；失败只落在导入区块自己的错误行）。
+    默认勾选「可导入且未安装」的项：那是这个动作的常见意图，已安装 / 不可导入的项不预选。 */
+async function loadSkillImportCandidates(memberId) {
+  const view = capabilitiesView(memberId);
+  view.skillImportLoading = true;
+  view.skillImportError = '';
+  paintAgentCapabilities();
+  try {
+    const payload = await api(
+      '/api/skills/candidates?scope_kind=agent&scope_id=' + encodeURIComponent(memberId),
+    );
+    if (state.activeAgentId !== memberId) return;
+    view.skillImportSource = payload.source || '';
+    view.skillImportAvailable = Boolean(payload.available);
+    view.skillImportCandidates = payload.candidates || [];
+    view.skillImportPicks = view.skillImportCandidates
+      .filter((candidate) => candidate.importable && !candidate.installed)
+      .map((candidate) => candidate.name);
+    view.skillImportResults = [];
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    view.skillImportError = t('skill.importScanFailed', { reason: err.message });
+  }
+  if (state.activeAgentId !== memberId) return;
+  view.skillImportLoading = false;
+  paintAgentCapabilities();
+}
+
+/** 候选行的状态后缀：可导入 / 已安装 / 不可导入：<reason>（三种互斥，按优先级取一个）。 */
+function skillImportStatusKey(candidate) {
+  if (candidate.installed) return 'skill.importStatusInstalled';
+  if (candidate.importable) return 'skill.importStatusReady';
+  return 'skill.importStatusBlocked';
+}
+
+/** 一条候选是否可勾选：不可导入与已安装都渲染成禁用复选框（不许提交一个必然失败的导入）。 */
+function skillImportSelectable(candidate) {
+  return Boolean(candidate.importable) && !candidate.installed;
+}
+
+function toggleSkillImportPick(input) {
+  const view = activeCapabilitiesView();
+  if (!view) return;
+  const name = input.dataset.skillImportPick;
+  if (!name) return;
+  const selected = Boolean(input.checked);
+  const index = view.skillImportPicks.indexOf(name);
+  if (selected && index < 0) view.skillImportPicks.push(name);
+  if (!selected && index >= 0) view.skillImportPicks.splice(index, 1);
+  view.skillImportError = '';
+  // 「导入选中」的可用性跟着勾选走（一个都没勾就该禁用），因此这里重铺这一段。
+  paintAgentCapabilities();
+}
+
+/** 「从 ~/.agents/skills 导入」区块：命令提示 + 刷新 + 多选 + 逐条结果。
+    命令是 ASCII 常量（不放进词条值）；说明文字走词条表。 */
+function skillImportForm(view) {
+  const box = el('div', 'resource-add');
+  box.setAttribute('data-od-id', 'skill-import');
+
+  box.appendChild(el('div', 'd-sec-title', t('skill.importTitle')));
+  const command = el('div', 'resource-command');
+  const code = el('code', null, SKILL_INSTALL_COMMAND);
+  code.setAttribute('data-od-id', 'skill-import-command');
+  command.appendChild(code);
+  box.appendChild(command);
+  box.appendChild(
+    resourceNote('skill.importCommandHint', 'skill-import-command-hint', 'is-faint'),
+  );
+
+  const actions = el('div', 'agent-actions resource-import-actions');
+  const scan = resourceButton('skill.importScanButton', 'skillImportScan', '1', 'skill-import-scan');
+  scan.disabled = scan.disabled || view.skillImportLoading || view.skillImportBusy;
+  actions.appendChild(scan);
+  const run = resourceButton('skill.importRunButton', 'skillImportRun', '1', 'skill-import-run');
+  run.disabled = run.disabled || view.skillImportBusy || !view.skillImportPicks.length;
+  actions.appendChild(run);
+  box.appendChild(actions);
+
+  if (view.skillImportLoading) {
+    box.appendChild(el('div', 'resource-empty', t('skill.importLoading')));
+  }
+  if (view.skillImportError) {
+    box.appendChild(resourceErrorNode(view.skillImportError, 'skill-import-error'));
+  }
+  if (!view.skillImportLoading) {
+    if (view.skillImportCandidates.length) {
+      const list = el('div');
+      list.setAttribute('data-od-id', 'skill-import-candidates');
+      view.skillImportCandidates.forEach((candidate) => {
+        list.appendChild(skillImportRow(candidate, view));
+      });
+      box.appendChild(list);
+    } else if (!view.skillImportError) {
+      // 没有候选、也没有读失败：来源缺席与「来源在但还没装技能」是两种不同的空态。
+      box.appendChild(
+        el(
+          'div',
+          'resource-empty',
+          view.skillImportAvailable
+            ? t('skill.importEmpty')
+            : t('skill.importUnavailable', { source: view.skillImportSource || '~/.agents/skills' }),
+        ),
+      );
+    }
+  }
+
+  if (view.skillImportResults.length) {
+    const results = el('div');
+    results.setAttribute('data-od-id', 'skill-import-status');
+    view.skillImportResults.forEach((result) => {
+      const line = el('div', 'resource-meta import-result', result.text);
+      line.dataset.importStatus = result.status;
+      results.appendChild(line);
+    });
+    box.appendChild(results);
+  }
+  if (view.skillImportBusy) {
+    box.appendChild(el('div', 'resource-meta is-faint', t('skill.importBusy')));
+  }
+  return box;
+}
+
+/** 一个候选：复选框 + 名字 + 描述 + 状态后缀（已安装 / 不可导入的项禁用）。 */
+function skillImportRow(candidate, view) {
+  const row = el('div', 'resource-row');
+  row.setAttribute('data-od-id', 'skill-import-row');
+  row.dataset.skillImportCandidate = candidate.name;
+  const main = el('div', 'resource-main');
+  const title = el('div', 'resource-title');
+  const label = el('label');
+  const checkbox = el('input');
+  checkbox.type = 'checkbox';
+  checkbox.dataset.skillImportPick = candidate.name;
+  checkbox.setAttribute('data-od-id', 'skill-import-pick-' + candidate.name);
+  checkbox.checked = view.skillImportPicks.indexOf(candidate.name) >= 0;
+  checkbox.disabled = !skillImportSelectable(candidate);
+  label.appendChild(checkbox);
+  label.appendChild(document.createTextNode(' ' + candidate.name));
+  title.appendChild(label);
+  main.appendChild(title);
+  if (candidate.description) main.appendChild(el('div', 'resource-meta', candidate.description));
+  const statusKey = skillImportStatusKey(candidate);
+  main.appendChild(
+    el(
+      'div',
+      'resource-meta is-faint',
+      candidate.importable || candidate.installed
+        ? t(statusKey)
+        : t(statusKey, { reason: candidate.reason || '' }),
+    ),
+  );
+  row.appendChild(main);
+  return row;
 }
 
 function resourceNote(key, odId, className, params) {
@@ -7479,6 +7654,7 @@ function agentCapabilitiesSection(agent) {
   }
   if (view.copy && view.copy.kind === 'skill') section.appendChild(capabilityCopyNode(view));
   section.appendChild(skillInstallForm(view));
+  section.appendChild(skillImportForm(view));
   return section;
 }
 
@@ -7799,6 +7975,67 @@ async function uploadSkillZip(files) {
   }
   if (state.activeAgentId !== memberId) return;
   view.skillInstalling = false;
+  paintAgentCapabilities();
+}
+
+/** 逐条导入选中项：写路径**复用** `POST /api/skills`（`source_path` = 候选 path）。
+    `409` 记「已存在，已跳过」（不覆盖）；其他失败记可读原因；全部结束后重读技能列表。 */
+async function submitSkillImport() {
+  const view = capabilityTarget();
+  if (!view || view.skillImportBusy) return;
+  const memberId = view.memberId;
+  const picked = view.skillImportCandidates.filter(
+    (candidate) =>
+      view.skillImportPicks.indexOf(candidate.name) >= 0 && skillImportSelectable(candidate),
+  );
+  if (!picked.length) {
+    view.skillImportError = t('skill.importPickRequired');
+    paintAgentCapabilities();
+    return;
+  }
+  view.skillImportError = '';
+  view.skillImportBusy = true;
+  view.skillImportResults = [];
+  paintAgentCapabilities();
+  for (const candidate of picked) {
+    try {
+      await api('/api/skills', {
+        method: 'POST',
+        body: { scope_kind: 'agent', scope_id: memberId, source_path: candidate.path },
+      });
+      view.skillImportResults.push({
+        name: candidate.name,
+        status: 'imported',
+        text: t('skill.importResultDone', { name: candidate.name }),
+      });
+    } catch (err) {
+      const skipped = err.status === 409;
+      view.skillImportResults.push({
+        name: candidate.name,
+        status: skipped ? 'skipped' : 'failed',
+        text: skipped
+          ? t('skill.importResultSkipped', { name: candidate.name })
+          : t('skill.importResultFailed', { name: candidate.name, reason: err.message }),
+      });
+    }
+  }
+  if (state.activeAgentId !== memberId) return;
+  view.skillImportBusy = false;
+  // 导入成功的名字从此「已安装」：清掉勾选，下一次扫描会把它们渲染成禁用的「已安装」。
+  const imported = new Set(
+    view.skillImportResults.filter((result) => result.status !== 'failed').map((result) => result.name),
+  );
+  view.skillImportPicks = view.skillImportPicks.filter((name) => !imported.has(name));
+  const count = (status) => view.skillImportResults.filter((item) => item.status === status).length;
+  toast(
+    t('skill.importSummary', {
+      imported: count('imported'),
+      skipped: count('skipped'),
+      failed: count('failed'),
+    }),
+  );
+  await loadAgentSkills(memberId);
+  if (state.activeAgentId !== memberId) return;
   paintAgentCapabilities();
 }
 
@@ -9707,6 +9944,11 @@ function bindEvents() {
       uploadSkillZip(zip.files);
       return;
     }
+    const pick = event.target.closest('[data-skill-import-pick]');
+    if (pick) {
+      toggleSkillImportPick(pick);
+      return;
+    }
     const field = event.target.closest('[data-mcp-field]');
     if (field) {
       updateMcpDraftField(field);
@@ -9802,6 +10044,15 @@ function bindEvents() {
     }
     if (event.target.closest('[data-skill-install-dir]')) {
       submitSkillDirectory();
+      return;
+    }
+    if (event.target.closest('[data-skill-import-scan]')) {
+      const view = activeCapabilitiesView();
+      if (view && !view.skillImportLoading) loadSkillImportCandidates(view.memberId);
+      return;
+    }
+    if (event.target.closest('[data-skill-import-run]')) {
+      submitSkillImport();
       return;
     }
     const skillToggle = event.target.closest('[data-skill-toggle]');

@@ -180,9 +180,10 @@ function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-/** 让挂起的 `await` 链跑完（打开详情是「读配置 → 铺页 → 读两条清单」数拍）。 */
+/** 让挂起的 `await` 链跑完（打开详情是「读配置 → 铺页 → 读两条清单」数拍；逐条导入是
+    每个候选一次 POST + 一次重读，因此这里留够拍数）。 */
 async function settle() {
-  for (let index = 0; index < 12; index += 1) await flush();
+  for (let index = 0; index < 40; index += 1) await flush();
 }
 
 /** `index.html` 里带 `hidden` 的元素：替身节点的初始可见性从**同一个正本**读。 */
@@ -260,6 +261,23 @@ function skillPayload(overrides) {
   );
 }
 
+/** `GET /api/skills/candidates` 的一条候选（形状与后端一致）；`path` 默认跟随 `name`。 */
+function candidatePayload(overrides) {
+  const base = { name: "review" };
+  const name = (overrides && overrides.name) || base.name;
+  return Object.assign(
+    {
+      name,
+      description: "在提交前做一次结构化自审",
+      path: "/Users/me/.agents/skills/" + name,
+      importable: true,
+      reason: null,
+      installed: false,
+    },
+    overrides || {},
+  );
+}
+
 function jsonResponse(payload, status) {
   return {
     ok: (status || 200) < 400,
@@ -286,6 +304,22 @@ function createHarness(options) {
   const rosterFail = new Set(config.rosterFail || []);
   const mcpServers = (config.mcp || [mcpPayload()]).map((server) => Object.assign({}, server));
   const skills = (config.skills || [skillPayload()]).map((skill) => Object.assign({}, skill));
+  const candidates =
+    config.candidates === undefined
+      ? [
+          candidatePayload({ name: "review" }),
+          candidatePayload({
+            name: "t18-escape",
+            description: "",
+            path: "/Users/me/.agents/skills/t18-escape",
+            importable: false,
+            reason: "技能根目录缺少 SKILL.md",
+          }),
+          candidatePayload({ name: "installed-one", installed: true }),
+        ]
+      : config.candidates.map((entry) => Object.assign({}, entry));
+  const candidateSource = config.candidateSource || "/Users/me/.agents/skills";
+  const candidatesAvailable = config.candidatesAvailable !== false;
 
   class FakeEventSource {
     constructor() {
@@ -305,6 +339,10 @@ function createHarness(options) {
 
   function skillScope(id) {
     return "/api/skills?scope_kind=agent&scope_id=" + id;
+  }
+
+  function candidateScope(id) {
+    return "/api/skills/candidates?scope_kind=agent&scope_id=" + id;
   }
 
   function defaultFetch(url, request) {
@@ -349,6 +387,13 @@ function createHarness(options) {
     if (url === skillScope("mem-1") && method === "GET") {
       return jsonResponse({ skills });
     }
+    if (url === candidateScope("mem-1") && method === "GET") {
+      return jsonResponse({
+        source: candidateSource,
+        available: candidatesAvailable,
+        candidates,
+      });
+    }
     // 名册摘要：按成员各回一份计数；被标记失败的成员回 500（只影响它那一行的摘要）。
     for (const id of Object.keys(roster)) {
       if (url === agentScope(id) && method === "GET") {
@@ -375,6 +420,18 @@ function createHarness(options) {
       if (config.copyConflict) return errorResponse(409, "同名技能已存在");
       const skill = skillPayload({ id: "sk_new" });
       return jsonResponse({ skill }, 201);
+    }
+    if (url === "/api/skills" && method === "POST") {
+      const body =
+        typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body || {};
+      const name = String(body.source_path || "").split("/").pop();
+      if ((config.importConflict || []).includes(name)) {
+        return errorResponse(409, "同一作用域内已存在同名 Skill：" + name);
+      }
+      if ((config.importFail || []).includes(name)) {
+        return errorResponse(400, "技能根目录缺少 SKILL.md");
+      }
+      return jsonResponse({ skill: skillPayload({ id: "sk_import_" + name, name }) }, 201);
     }
     return jsonResponse({});
   }
@@ -658,7 +715,166 @@ test("技能本机目录安装在 agent scope 下提交，成功按后端重读"
   assert.ok(after > before, "成功后按后端重读清单");
 });
 
-/* ─── 2. 复制到其他成员 ─────────────────────────────────────────────────── */
+/* ─── 2. 从 ~/.agents/skills 导入（#277 / ADR-0036） ─────────────────────── */
+
+test("导入区块：读候选、默认勾选「可导入且未安装」、已安装与不可导入项禁用", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const block = byOdId(harness.agentBody, "skill-import");
+  assert.ok(block, "技能段要有「从 ~/.agents/skills 导入」区块");
+  assert.ok(byOdId(harness.agentBody, "skill-install"), "既有安装表单仍在（区块追加在它之后）");
+
+  // 命令提示是 ASCII 常量，原样可复制。
+  const command = byOdId(harness.agentBody, "skill-import-command");
+  assert.ok(command, "要有可复制的命令提示");
+  assert.equal(command.textContent, "npx skills add <owner/repo> -g -a codex -y");
+
+  // 候选按 agent scope 读（与技能列表同一作用域）。
+  assert.ok(
+    harness.calls.some(
+      (call) => call.url === "/api/skills/candidates?scope_kind=agent&scope_id=mem-1",
+    ),
+    "候选读数按成员读",
+  );
+
+  const ready = byDataset(harness.agentBody, "skillImportPick", "review");
+  const blocked = byDataset(harness.agentBody, "skillImportPick", "t18-escape");
+  const installed = byDataset(harness.agentBody, "skillImportPick", "installed-one");
+  assert.ok(ready && blocked && installed, "三条候选各有一行");
+  assert.equal(ready.checked, true, "可导入且未安装的项默认勾选");
+  assert.equal(ready.disabled, false, "可导入的项可勾选");
+  assert.equal(blocked.checked, false, "不可导入的项不预选");
+  assert.equal(blocked.disabled, true, "不可导入的项禁用");
+  assert.equal(installed.disabled, true, "已安装的项禁用");
+
+  const row = byDataset(harness.agentBody, "skillImportCandidate", "t18-escape");
+  assert.match(row.textContent, /不可导入/);
+  assert.match(row.textContent, /缺少 SKILL\.md/, "不可导入的原因要渲染出来");
+  assert.match(
+    byDataset(harness.agentBody, "skillImportCandidate", "installed-one").textContent,
+    /已安装/,
+  );
+});
+
+test("导入选中：逐条 POST /api/skills（source_path = 候选 path），409 记已跳过，失败记原因", async () => {
+  const harness = createHarness({ importConflict: ["installed-one"], importFail: ["t18-escape"] });
+  await harness.openAgent("mem-1");
+
+  // 全部取消勾选后「导入选中」应当是禁用的（真人也点不动），不发任何请求。
+  await harness.changeInBody(byDataset(harness.agentBody, "skillImportPick", "review"), false);
+  const postsBefore = harness.posts().length;
+  assert.equal(
+    byOdId(harness.agentBody, "skill-import-run").disabled,
+    true,
+    "一个都没勾时「导入选中」禁用",
+  );
+  await harness.clickInBody(byOdId(harness.agentBody, "skill-import-run"));
+  assert.equal(
+    harness.posts().slice(postsBefore).filter((call) => call.url === "/api/skills").length,
+    0,
+    "没勾选就不发请求",
+  );
+
+  // 重新勾上：按钮恢复可用，导入照常提交。
+  await harness.changeInBody(byDataset(harness.agentBody, "skillImportPick", "review"), true);
+  assert.equal(
+    byOdId(harness.agentBody, "skill-import-run").disabled,
+    false,
+    "勾上之后「导入选中」可用",
+  );
+  await harness.clickInBody(byOdId(harness.agentBody, "skill-import-run"));
+
+  const imports = harness
+    .posts()
+    .slice(postsBefore)
+    .filter((call) => call.url === "/api/skills");
+  assert.deepEqual(
+    imports.map((call) => call.body.source_path),
+    ["/Users/me/.agents/skills/review"],
+    "只提交勾选的那一项",
+  );
+  assert.deepEqual(imports[0].body, {
+    scope_kind: "agent",
+    scope_id: "mem-1",
+    source_path: "/Users/me/.agents/skills/review",
+  });
+
+  const status = byOdId(harness.agentBody, "skill-import-status");
+  assert.ok(status, "逐条结果要渲染");
+  assert.match(status.textContent, /review/);
+  assert.match(status.textContent, /已导入/);
+
+  // 导入结束后重读技能列表。
+  const reads = harness.calls.filter(
+    (call) => call.url === "/api/skills?scope_kind=agent&scope_id=mem-1",
+  );
+  assert.ok(reads.length >= 2, "导入结束后重读技能列表");
+});
+
+test("候选为空（来源在但没有技能）给空态指引，不渲染空列表", async () => {
+  const harness = createHarness({ candidates: [] });
+  await harness.openAgent("mem-1");
+
+  const block = byOdId(harness.agentBody, "skill-import");
+  assert.ok(block, "区块照常渲染");
+  assert.equal(byOdId(harness.agentBody, "skill-import-candidates"), null, "空候选不渲染列表");
+  assert.match(block.textContent, /先运行上面的命令/, "空态要给「先跑命令」的指引");
+  assert.equal(byOdId(harness.agentBody, "skill-import-error"), null, "空态不是错误");
+});
+
+test("导入结果：409 记「已存在，已跳过」且不覆盖，其他失败记可读原因", async () => {
+  const harness = createHarness({
+    candidates: [candidatePayload({ name: "review" }), candidatePayload({ name: "other" })],
+    importConflict: ["review"],
+    importFail: ["other"],
+  });
+  await harness.openAgent("mem-1");
+
+  // 两条都默认勾选（可导入且未安装）：服务端分别回 409 与 400。
+  await harness.clickInBody(byOdId(harness.agentBody, "skill-import-run"));
+
+  const posts = harness.posts().filter((call) => call.url === "/api/skills");
+  assert.deepEqual(
+    posts.map((call) => call.body.source_path),
+    ["/Users/me/.agents/skills/review", "/Users/me/.agents/skills/other"],
+    "逐条提交，顺序照候选表",
+  );
+  const lines = byClass(byOdId(harness.agentBody, "skill-import-status"), "import-result").map(
+    (node) => node.textContent,
+  );
+  assert.equal(lines.length, 2, "两项各一条结果");
+  assert.match(lines[0], /review：已存在，已跳过/);
+  assert.match(lines[1], /other：导入失败/);
+  assert.match(lines[1], /缺少 SKILL\.md/, "失败原因来自后端可读正文");
+  assert.equal(
+    harness.patches().filter((call) => call.url.startsWith("/api/skills/")).length,
+    0,
+    "冲突时不许改用 PATCH 覆盖",
+  );
+});
+
+test("候选来源缺席 / 扫描失败：只落在导入区块自己的行，不拖垮技能段", async () => {
+  const missing = createHarness({ candidates: [], candidatesAvailable: false });
+  await missing.openAgent("mem-1");
+  const block = byOdId(missing.agentBody, "skill-import");
+  assert.match(block.textContent, /先运行上面的命令/, "来源缺席时给「先跑命令」的指引");
+  assert.ok(byOdId(missing.agentBody, "skill-install"), "既有安装表单照常渲染");
+  assert.equal(byOdId(missing.agentBody, "skill-error"), null, "缺席不是错误");
+
+  const broken = createHarness({
+    fetch: (url) =>
+      url.startsWith("/api/skills/candidates")
+        ? errorResponse(500, "后端读取失败")
+        : null,
+  });
+  await broken.openAgent("mem-1");
+  assert.ok(byOdId(broken.agentBody, "skill-import-error"), "扫描失败落在导入区块自己的错误行");
+  assert.equal(byOdId(broken.agentBody, "skill-error"), null, "不牵连技能列表的错误行");
+  assert.ok(byOdId(broken.agentBody, "skill-install"), "技能段其余部分照常");
+});
+
+/* ─── 3. 复制到其他成员 ─────────────────────────────────────────────────── */
 
 test("复制入口列出其他成员（排除当前成员），选目标后逐条提交", async () => {
   const harness = createHarness();
@@ -788,6 +1004,23 @@ test("新增文案在两份词条里同键同参数位", () => {
     "roster.capabilities",
     "roster.capabilitiesLoading",
     "roster.capabilitiesUnavailable",
+    "skill.importTitle",
+    "skill.importCommandHint",
+    "skill.importScanButton",
+    "skill.importRunButton",
+    "skill.importLoading",
+    "skill.importScanFailed",
+    "skill.importUnavailable",
+    "skill.importEmpty",
+    "skill.importStatusReady",
+    "skill.importStatusInstalled",
+    "skill.importStatusBlocked",
+    "skill.importBusy",
+    "skill.importResultDone",
+    "skill.importResultSkipped",
+    "skill.importResultFailed",
+    "skill.importPickRequired",
+    "skill.importSummary",
   ];
   for (const key of keys) {
     for (const locale of ["zh-CN", "en"]) {

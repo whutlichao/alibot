@@ -1210,6 +1210,22 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .resource-form-row .agent-actions { flex: 0 0 auto; }
 .resource-form-row .agent-actions .btn { flex: 0 0 auto; }
 .resource-empty { padding: var(--sp-3) 0; font-size: var(--fs-sm); color: var(--faint); }
+/* 可复制的命令提示（#277 / ADR-0036）：等宽、可换行、不新造色位（底与边框都用既有 token）。 */
+.resource-command {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+/* 导入区块的动作组：两个按钮**不铺满**整行（`.agent-actions .btn` 默认 `flex: 1`，那会把
+   「刷新候选 / 导入选中」拉成两条与命令提示等宽的巨条）。 */
+.resource-import-actions .btn { flex: 0 0 auto; }
 
 /* ─── 联网 provider 凭据（#199）：一行 = 名称 + 掩码状态 + password 输入 + 动作组 ───
    行形态沿用资源管理那一族（列表 + hairline）；焦点环来自全局 `:focus-visible`，

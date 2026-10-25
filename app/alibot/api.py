@@ -48,6 +48,7 @@
 - ``GET  /api/web-providers``                 五家 provider 的掩码状态 + 当前生效 provider 与来源
 - ``GET/PUT/DELETE /api/web-providers/{provider}/credential`` 掩码读写：保存 key / 设为默认 / 清空
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
+- ``GET  /api/skills/candidates``              ``~/.agents/skills`` 的只读候选扫描（外部 CLI 的落点，应用不执行 npx）
 - ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
@@ -117,6 +118,7 @@ from .skills import (
     install_directory,
     install_zip,
     resolve_install_root,
+    scan_import_candidates,
     uninstall,
 )
 from .sop import SOPRunner
@@ -1141,6 +1143,31 @@ def create_app(
         if scope_kind == "channel":
             return {"skills": []}
         return {"skills": database.list_skills(scope_kind=scope_kind, scope_id=scope_id)}
+
+    @app.get("/api/skills/candidates")
+    def list_skill_candidates(
+        scope_kind: str = "",
+        scope_id: str = "",
+    ) -> dict[str, Any]:
+        """外部 CLI 落点 ``~/.agents/skills`` 的**只读**候选扫描（ADR-0036）。
+
+        ``scope_kind`` 只接受 ``agent``（与安装器同一口径：``error.skill_scope_agent_only``），
+        ``scope_id`` 走既有的成员校验。响应形状固定：
+
+        ``{"source": <来源根绝对路径>, "available": <bool>, "candidates": [<条目>]}``。
+
+        只读端点：不落消息、不产生轮次、不改预算、不写文件；来源根缺失时 ``available=false``
+        且空列表（那是第三方 CLI 的目录，应用不创建它）。导入写路径仍是 ``POST /api/skills``：
+        ``source_path`` 指向候选的 ``path``。
+        """
+        locale = locale_of(database)
+        try:
+            # 与安装器同一口径：非 agent 作用域 400（`error.skill_scope_agent_only`），
+            # `scope_id` 走 `database.validate_skill_scope`。候选扫描不需要它返回的落点根。
+            resolve_install_root(database, scope_kind=scope_kind, scope_id=scope_id, locale=locale)
+        except SkillValidationError as error:
+            raise _skill_error(error) from None
+        return scan_import_candidates(database, member_id=scope_id, locale=locale)
 
     @app.post("/api/skills", status_code=201)
     async def install_skill(
