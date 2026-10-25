@@ -131,10 +131,11 @@ node --test app/tests/*.test.cjs
 
 ### 5.2 全量 `scripts/check.sh`
 
-两次全量，都是清理后的树（同一个工作区、同一个 `.venv`、同一台机器）：
+清理后的树上跑了三次全量（同一工作区、同一 `.venv`、同一台机器）；计数三次完全一致，只有 pytest 耗时
+随机器负载波动：
 
 ```text
-# 树 1000632（chore：移除 app/logs + .gitignore 两条规则）
+# 树 1000632（chore：移除 app/logs + .gitignore 两条规则）——代码树
 == pytest（全量）        1210 passed, 11 skipped in 695.02s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
@@ -143,8 +144,12 @@ node --test app/tests/*.test.cjs
 ℹ tests 322 / ℹ pass 322 / ℹ fail 0
 门禁全绿
 
-# 树 d2eec4f（docs：本文件 §5.2 / §5.3 / §9 与 PR 正文正本）
+# 树 d2eec4f（docs：§5.2 / §5.3 / §9 与 PR 正文正本）
 == pytest（全量）        1210 passed, 11 skipped in 692.52s
+（其余门禁同第一段，全绿）
+
+# 树 bedd553（docs：§5.2 的读数边界与 §5.3 的计数说明）
+== pytest（全量）        1210 passed, 11 skipped in 689.73s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
 == mypy（仓库根）        Success: no issues found in 128 source files
@@ -153,11 +158,14 @@ node --test app/tests/*.test.cjs
 门禁全绿
 ```
 
-**代码树 = `1000632`**（`chore(#277): 移除误提交的运行期日志，并堵住产生源`）——即
+**读数对应的 commit：`1000632`** —— `chore(#277): 移除误提交的运行期日志，并堵住产生源`，即
 `git rm -r --cached app/logs`（37 个文件）与 `.gitignore` 新增 `/logs/`、`/app/logs/` 之后的树。
-`d2eec4f` 起的所有后续提交只动 `app/specs/**`（本文件与 PR 正文正本），
-`git diff --stat 1000632..HEAD` 只列这两份文档，不改任何门禁判据；因此上表两段读数都适用于最终 head。
-（第二段本来就是在 `d2eec4f` 上跑的，用来证明这一点不是推断。）
+`1000632` 之后的提交只动 `app/specs/**`（本文件与 PR 正文正本），`git diff --stat 1000632..HEAD` 可核，
+不改变用例集合、源文件数或格式化面——上表在 `d2eec4f` 与 `bedd553` 上各复跑一次全量，计数同值。
+
+**为什么不把「最终 head 的 SHA」写进本文：** 写它本身就是一次提交，写完 head 立刻变了，这个数字会
+自指失效。所以这里钉**代码树** `1000632`，并把之后每次全量的实测计数并列出来——读者要核的是「这批代码
+的门禁读数」，不是某次文档提交的哈希。
 
 与上一轮（`70fcb6d` 里那两行）的关系：**计数完全相同**（1210 passed / 11 skipped / 340 / 128 / 322），
 这不是「凑出来的同值」，而是必然——清掉的是 37 个**未被任何代码/测试引用**的运行期日志文件，删它们
