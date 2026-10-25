@@ -17,3 +17,8 @@ __pycache__/
 
 # 工作区临时目录：agent 的自检脚本、截图与 Answer / PR body 草稿（绝不入库）
 /.scratch/
+
+# 运行期日志目录（绝不入库）：ReMe / AgentScope 的 logger 默认 log_dir="logs"，
+# 按**进程 cwd** 落盘，于是在 app/ 下跑 pytest 就写进 app/logs/；根目录同理。
+/logs/
+/app/logs/

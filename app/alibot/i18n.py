@@ -301,6 +301,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.skill_too_large": "技能解包后超过 {limit} 字节",
         "error.skill_too_many_files": "技能文件数超过 {limit}",
         "error.skill_path_invalid": "技能路径不安全（绝对路径、..、symlink 或特殊文件）",
+        "error.skill_import_name_invalid": "目录名不能作为技能名（只能由字母、数字、下划线、点或连字符组成，最长 64）",
         "error.skill_archive_invalid": "上传的 zip 无法读取：{reason}",
         "error.skill_hash_invalid": "Skill 的内容 hash 形态不合法",
         "error.skill_not_found": "Skill 不存在：{skill_id}",
@@ -778,6 +779,10 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.skill_too_large": "The expanded skill exceeds {limit} bytes",
         "error.skill_too_many_files": "The skill holds more than {limit} files",
         "error.skill_path_invalid": ("Unsafe skill path (absolute path, .., symlink or a special file)"),
+        "error.skill_import_name_invalid": (
+            "The directory name cannot serve as a skill name"
+            " (letters, digits, underscore, dot or hyphen only, 64 characters max)"
+        ),
         "error.skill_archive_invalid": "The uploaded zip cannot be read: {reason}",
         "error.skill_hash_invalid": "The skill content hash is malformed",
         "error.skill_not_found": "No such skill: {skill_id}",

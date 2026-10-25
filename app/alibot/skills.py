@@ -9,9 +9,14 @@
 接受频道作用域（HTTP 层返回明确 400）。项目层 ``<workspace_root>/.alibot/skills/`` 的旧字节同样
 保留、不搬运、不进入装配——搬迁是 T5 的显式动作。
 
-安装只接受**本机目录**或**上传 zip**（D21）：不访问远端市场、不自动下载、不自动更新。安装前
-校验 ``SKILL.md`` 的 YAML front matter（``name`` / ``description``）、路径安全与内容 hash；任何
-一项不合法都**整体拒绝**——不落库、不留半棵树。
+安装接受**本机目录**、**上传 zip**，或从 ``~/.agents/skills/`` **导入**（D21 / ADR-0036）：不访问
+远端市场、不自动下载、不自动更新。安装前校验 ``SKILL.md`` 的 YAML front matter（``name`` /
+``description``）、路径安全与内容 hash；任何一项不合法都**整体拒绝**——不落库、不留半棵树。
+
+导入（ADR-0036，用户 2026-10-25 人定）：第三方 CLI（``npx skills add … -g -a codex``）把技能装进
+``~/.agents/skills/<name>/``，本应用**只读**那个落点（:func:`scan_import_candidates`），再由人选中、
+经既有的 ``POST /api/skills`` 复制进成员家目录。应用**不执行** npx、不起 subprocess、不下载第三方包；
+来源根缺失是正常状态（不创建、不报错）。
 
 配置动作（安装 / 启停 / 删除）不落消息、不唤醒、不消耗预算（ADR-0011 同族；与 ADR-0021 §三
 “MCP / Skill 是配置，不是消息或任务”一致）。删除只删配置行与成员家目录副本，**绝不删除用户
@@ -58,6 +63,13 @@ _log = logging.getLogger(__name__)
 
 #: 成员家目录下的技能分区名（与 AgentScope 自己的 ``skills/`` 分区分开命名）。
 SKILLS_DIR = "skills"
+
+# ─── 外部 CLI 的落点（ADR-0036）─────────────────────────────────────────────
+#: 第三方 CLI（``npx skills add … -g -a codex``）的全局根：``~/.agents``。它是 **codex / cline /
+#: pi 等工具共用的目录**，不是本应用的全局层（那是 ``~/.alibot``，见 :func:`workspace.global_home_root`）。
+IMPORT_SOURCE_DIRNAME = ".agents"
+#: 该全局根下的技能目录名。
+IMPORT_SOURCE_SKILLS_DIR = "skills"
 
 # ─── 两层归属（ADR-0031 §二 #270 修订）─────────────────────────────────────
 #: 优先级从高到低；合并时先出现者胜出。两层都是**成员家目录 / 全局公共库**。
@@ -242,6 +254,94 @@ def read_skill_tree(directory: str | os.PathLike[str]) -> dict[str, Any]:
         "file_count": len(files),
         "bytes": sum(item.size for item in files),
     }
+
+
+def import_source_root() -> str:
+    """外部 CLI 的落点根 ``~/.agents/skills``（ADR-0036）；**只读**，不创建。
+
+    只经 ``os.path.expanduser("~")`` 解析：测试靠隔离 ``HOME`` 把它指到临时目录，因此这里既
+    不能硬编码开发者主目录，也不能复用 :func:`workspace.global_home_root`（那是 ``~/.alibot``）。
+    """
+    return os.path.join(os.path.expanduser("~"), IMPORT_SOURCE_DIRNAME, IMPORT_SOURCE_SKILLS_DIR)
+
+
+def scan_import_candidates(
+    database: Any,
+    *,
+    member_id: str,
+    locale: Locale,
+) -> dict[str, Any]:
+    """扫描外部 CLI 的落点 ``~/.agents/skills``，给出每个条目**能否导入**（只读，ADR-0036）。
+
+    返回 ``{"source": <来源根绝对路径>, "available": <bool>, "candidates": [...]}``；每个条目是
+    ``name`` / ``description`` / ``path`` / ``importable`` / ``reason`` / ``installed``：
+
+    - 来源根缺失 ⇒ ``available=false`` 且空列表：**不创建目录、不报错**（它是别人的落点）。
+    - 只遍历**直接子目录**；非目录条目（例如 ``.skill-lock.json``）跳过。
+    - 校验与安装**共用同一个内核**（:data:`SKILL_NAME_PATTERN` / :func:`_manifest_root` /
+      :func:`_front_matter` / :func:`_skill_files`），任一项不成立只把**这一条**降级成
+      ``importable=false`` + 渲染好的 ``reason``，其余条目照常列出。
+    - 路径经 :func:`workspace.resolve_global_read_path` 以**来源根自己的 realpath** 为根解析：
+      根外 symlink 祖先与根外目标一律拒绝（``error.skill_path_invalid``）。
+    - ``installed`` 只看该成员库里有没有同名行（不做字节比对：改名 / 改内容的重装由写路径裁决）。
+      名字取 **front matter 的 `name`**（安装器落库用的就是它），不是目录名——两者不同时按目录名
+      判会得到「装好之后仍显示可导入」。
+
+    它不复制、不创建、不改任何字节；``description`` 取 front matter 的值，取不到时为空串。
+    """
+    root = os.path.realpath(import_source_root())
+    installed = {
+        _variant(row.get("name")) for row in database.list_skills(scope_kind="agent", scope_id=member_id)
+    }
+    if not os.path.isdir(root):
+        return {"source": root, "available": False, "candidates": []}
+
+    try:
+        entries = sorted(Path(root).iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        _log.warning("cannot list the skill import source %s: %s", root, error)
+        return {"source": root, "available": True, "candidates": []}
+
+    candidates: list[dict[str, Any]] = []
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        # `name` 是**目录名**（票面口径）；`installed` 按**将要安装的那个名字**判定（front matter 的
+        # `name`，安装器落库用的就是它），否则「装好之后仍显示可导入」。读不到清单时它保持目录名的判定。
+        name = entry.name
+        resolved = resolve_global_read_path(root, name)
+        candidate: dict[str, Any] = {
+            "name": name,
+            "description": "",
+            "path": resolved or os.path.join(root, name),
+            "importable": False,
+            "reason": None,
+            "installed": name in installed,
+        }
+        try:
+            if resolved is None:
+                raise SkillValidationError("error.skill_path_invalid", field="source", locale=None)
+            if not SKILL_NAME_PATTERN.fullmatch(name):
+                raise SkillValidationError("error.skill_import_name_invalid", field="name", locale=None)
+            # 与安装器同口径：`_manifest_root` 接受「清单在根」或「包了一层单目录」两种形态，
+            # description 从**清单根**读（坏 front matter 自然读不到，就保持空串）。
+            skill_root = _manifest_root(Path(resolved))
+            loaded = _load_manifest_markdown(skill_root)
+            if loaded is not None:
+                candidate["description"] = loaded[1]
+            manifest_name, _description = _front_matter(skill_root, locale)
+            _skill_files(skill_root)
+        except SkillValidationError as error:
+            candidate["reason"] = render(error.key, locale, **error.params)
+        except OSError as error:
+            _log.warning("cannot inspect the skill import candidate %s: %s", resolved, error)
+            candidate["reason"] = render("error.skill_path_invalid", locale)
+        else:
+            candidate["importable"] = True
+            candidate["installed"] = manifest_name in installed
+        candidates.append(candidate)
+
+    return {"source": root, "available": True, "candidates": candidates}
 
 
 def _front_matter(skill_root: Path, locale: Locale) -> tuple[str, str]:

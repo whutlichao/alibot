@@ -526,8 +526,11 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   `~/.alibot/agents/<member_id>/skills/<name>/`，不再依赖 workspace。技能装配只按「成员家目录 > 全局公共库」，
   DM 与未配置项目根的频道同样生效；不再有项目 Agent 级或项目频道级技能层。
   `scope_kind='channel'` 的旧行与项目层字节 `<workspace_root>/.alibot/skills/<member_id>/` 保留、装配忽略，
-  不回填、不自动删除。安装只接受**本机目录或上传 zip**（校验 `SKILL.md` front matter、路径与 hash），
-  **不做远程市场/下载**。
+  不回填、不自动删除。安装接受三个来源：**本机目录**、**上传 zip**，以及从 `~/.agents/skills/` **导入**
+  （ADR-0036：那是 codex / cline / pi 等工具共用的全局技能目录，也是外部 CLI 的落点；只读扫描出候选，
+  选中后仍走同一条安装器复制进成员家目录）。三种来源都校验 `SKILL.md` front matter、路径与 hash，
+  **不做远程市场/下载**。应用**不执行 `npx`**、不起 subprocess、不下载第三方包：`npx skills add <owner/repo>
+  -g -a codex -y` 由人在终端运行，Studio 只展示这条可复制的命令。
 - **联网档（#184 / #199 / #202 / #242 / ADR-0026 §二修订 / §十四 / §十五 / 2026-10-22 修订节）**：`channel.web_access` 是频道默认值、
   `agent_config.web_access` 是 Agent 级覆盖（`NULL` = 跟随频道），取值 `NULL` / `'off'` / `'search'` /
   `'search+fetch'`。读路径三态合并 `agent_config.web_access or channel.web_access or 'search'`：
@@ -682,7 +685,8 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `PUT /api/web-providers/{provider}/credential` | 保存 / 换 key `{api_key, is_default?}`（非空、长度上限；保存同时写确认行），或不带 key 只切默认 `{is_default: true}`；响应只回掩码 |
 | `DELETE /api/web-providers/{provider}/credential` | 清空凭据与默认标记（确认行保留）；响应只回掩码 |
 | `GET /api/skills?scope_kind=&scope_id=` | Skill 列表（`name` / `description` / `content_hash` / `enabled` / scope；不含字节）。旧 channel 行仍在库中保留（迁移前不删），但 `GET` 带 `scope_kind=channel` 返回空列表（弃用，不提供读取面）；不带过滤的旧行不在本 PR 删除 |
-| `POST /api/skills` | 安装：Agent 级 JSON 正文 `{scope_kind, scope_id, source_path}`（`scope_kind='agent'`，`scope_id=<member_id>`）从**本机目录**；或 zip 原始字节 + query `scope_kind/scope_id/filename`。历史 `channel_id?` 参数与 `scope_kind='channel'` 已弃用，不构成装配来源；旧 channel 行保留并忽略。校验 `SKILL.md`、路径与 hash，非法整体拒绝；同名同 scope 409；不做远程市场/下载 |
+| `GET /api/skills/candidates?scope_kind=agent&scope_id=` | **只读**候选扫描：外部 CLI 的落点 `~/.agents/skills/` 下每个直接子目录一条 `{name, description, path, importable, reason, installed}`，响应 `{source, available, candidates}`。来源根缺失 ⇒ `available=false` 且空列表（**不创建目录、不报错**）；坏条目逐条降级（`importable=false` + 可读原因），不整体失败；`installed` = 该成员库里已有同名行。`scope_kind` 只接受 `agent`（否则 400），不落消息、不产生轮次、不改预算、不写文件（ADR-0036） |
+| `POST /api/skills` | 安装：Agent 级 JSON 正文 `{scope_kind, scope_id, source_path}`（`scope_kind='agent'`，`scope_id=<member_id>`）从**本机目录**（`source_path` 也可指向 `~/.agents/skills/<name>`，即从外部 CLI 的落点导入）；或 zip 原始字节 + query `scope_kind/scope_id/filename`。历史 `channel_id?` 参数与 `scope_kind='channel'` 已弃用，不构成装配来源；旧 channel 行保留并忽略。校验 `SKILL.md`、路径与 hash，非法整体拒绝；同名同 scope 409；不做远程市场/下载 |
 | `PATCH /api/skills/{id}` | 启停 `{enabled}`；scope 与 hash 是身份，不可改 |
 | `POST /api/skills/{id}/copy` | 把该技能**字节**复制到另一个成员：正文 `{scope_id: <target_member>}`；源字节固定取自源成员家目录 `~/.alibot/agents/<source>/skills/<name>/`（前端不传路径），复制走既有安装器重校验并建目标行；目标已有同名行或同名目录 409、**不覆盖**；源行与源字节只读不改；`scope_kind='channel'` 的旧行 400 |
 | `DELETE /api/skills/{id}` | 显式删除该 Skill 配置与其成员家目录副本（不删用户源目录；不自动清理历史 channel 行或项目层旧字节） |
