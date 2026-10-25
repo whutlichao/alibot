@@ -64,6 +64,13 @@ scripts/check.sh --studio
 # 门禁全绿
 ```
 
+同一轮的 pytest 读数（`--fast` 里补跑的那两个文件，`app/` 下执行）：
+
+```sh
+.venv/bin/python -m pytest tests/test_skills.py tests/test_skill_assembly.py
+# 13 passed in 4.72s   （test_skills 9 + test_skill_assembly 4）
+```
+
 `app/alibot/api.py` 的独立复核：
 
 ```sh
