@@ -131,7 +131,7 @@ node --test app/tests/*.test.cjs
 
 ### 5.2 全量 `scripts/check.sh`
 
-清理后的树上跑了三次全量（同一工作区、同一 `.venv`、同一台机器）；计数三次完全一致，只有 pytest 耗时
+清理后的树上跑了四次全量（同一工作区、同一 `.venv`、同一台机器）；计数四次完全一致，只有 pytest 耗时
 随机器负载波动：
 
 ```text
@@ -150,6 +150,10 @@ node --test app/tests/*.test.cjs
 
 # 树 bedd553（docs：§5.2 的读数边界与 §5.3 的计数说明）
 == pytest（全量）        1210 passed, 11 skipped in 689.73s
+（其余门禁同第一段，全绿）
+
+# 树 7f82383（docs：把读数钉在代码树上）
+== pytest（全量）        1210 passed, 11 skipped in 689.09s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
 == mypy（仓库根）        Success: no issues found in 128 source files
@@ -161,11 +165,12 @@ node --test app/tests/*.test.cjs
 **读数对应的 commit：`1000632`** —— `chore(#277): 移除误提交的运行期日志，并堵住产生源`，即
 `git rm -r --cached app/logs`（37 个文件）与 `.gitignore` 新增 `/logs/`、`/app/logs/` 之后的树。
 `1000632` 之后的提交只动 `app/specs/**`（本文件与 PR 正文正本），`git diff --stat 1000632..HEAD` 可核，
-不改变用例集合、源文件数或格式化面——上表在 `d2eec4f` 与 `bedd553` 上各复跑一次全量，计数同值。
+不改变用例集合、源文件数或格式化面——上表在 `d2eec4f` / `bedd553` / `7f82383` 上各复跑一次全量，计数同值。
 
 **为什么不把「最终 head 的 SHA」写进本文：** 写它本身就是一次提交，写完 head 立刻变了，这个数字会
 自指失效。所以这里钉**代码树** `1000632`，并把之后每次全量的实测计数并列出来——读者要核的是「这批代码
-的门禁读数」，不是某次文档提交的哈希。
+的门禁读数」，不是某次文档提交的哈希。**此后若再追加纯文档提交，按同一口径复跑即可，本文不再逐次加行**
+（否则每写一行就多一次提交，永远追不上自己）。
 
 与上一轮（`70fcb6d` 里那两行）的关系：**计数完全相同**（1210 passed / 11 skipped / 340 / 128 / 322），
 这不是「凑出来的同值」，而是必然——清掉的是 37 个**未被任何代码/测试引用**的运行期日志文件，删它们
@@ -264,7 +269,7 @@ candidates}` 形状；channel → 400 经 `resolve_install_root`；`POST /api/sk
 | --- | --- | --- |
 | 1 | `git rm -r --cached app/logs` + 删盘，追加 commit `1000632`（不 rebase / 不 amend / 不 force-push） | `git ls-tree -r --name-only HEAD -- app/logs \| wc -l` → `0` |
 | 2 | `.gitignore` 补 `/logs/` 与 `/app/logs/`（锚定根，紧挨「本机数据目录候选 / 工作区临时目录」两条，附成因注释） | `git check-ignore -v` 只命中这两个目录；`app/specs/`、`docs/`、`app/alibot/` 不命中 |
-| 3 | 清理后的树（`1000632`）上重跑全量 `scripts/check.sh`，把真实读数回填 §5.2 并写明 commit SHA | `1210 passed, 11 skipped in 695.02s`；`门禁全绿` |
+| 3 | 清理后的树（`1000632`）上重跑全量 `scripts/check.sh`，把真实读数回填 §5.2 并写明代码树 SHA | `1210 passed, 11 skipped in 695.02s`；`门禁全绿` |
 
 产生源的验证见 §5.3：全量门禁跑完后盘上有 75 个 `.log`，`git status --porcelain` 不含 `app/logs/`。
 
