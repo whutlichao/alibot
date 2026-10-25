@@ -41,7 +41,7 @@ from typing import Any, BinaryIO
 
 import frontmatter
 
-from .i18n import Locale, render
+from .i18n import SOURCE_LOCALE, Locale, render
 from .workspace import (
     AGENTS_DIR,
     WorkspaceConfigError,
@@ -219,6 +219,29 @@ def _content_hash(files: Sequence[_TreeFile]) -> str:
         digest.update(item.path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def read_skill_tree(directory: str | os.PathLike[str]) -> dict[str, Any]:
+    """校验并读取**一棵技能树**：清单元数据 + 内容 hash + 规模读数。
+
+    与安装路径共用同一个校验内核（:func:`_skill_files` / :func:`_content_hash` /
+    :func:`_front_matter`），因此「迁移时算出的 hash」与「装配时核对的 hash」是同一个算法：
+    普通文件、无 symlink、路径与大小上界、``SKILL.md`` front matter 齐全，任一不成立都抛
+    :class:`SkillValidationError`。它**只读**，不复制、不创建任何文件。
+
+    ``directory`` 必须是技能根（``SKILL.md`` 在根上）；不会像安装器那样探测「包了一层单目录」的
+    上传形态——迁移面对的是已安装的字节。
+    """
+    root = Path(directory)
+    files = _skill_files(root)
+    name, description = _front_matter(root, SOURCE_LOCALE)
+    return {
+        "name": name,
+        "description": description,
+        "content_hash": _content_hash(files),
+        "file_count": len(files),
+        "bytes": sum(item.size for item in files),
+    }
 
 
 def _front_matter(skill_root: Path, locale: Locale) -> tuple[str, str]:
