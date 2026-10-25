@@ -47,7 +47,8 @@
 - ``POST /api/web-providers/{provider}/consent`` 联网 provider 的数据面确认（幂等；未确认不装配带凭据工具）
 - ``GET  /api/web-providers``                 五家 provider 的掩码状态 + 当前生效 provider 与来源
 - ``GET/PUT/DELETE /api/web-providers/{provider}/credential`` 掩码读写：保存 key / 设为默认 / 清空
-- ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
+- ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）；
+                                             zip 上传当前 Studio 无入口，保留为脚本 / API 用法（#282）
 - ``GET  /api/skills/candidates``              ``~/.agents/skills`` 的只读候选扫描（外部 CLI 的落点，应用不执行 npx）
 - ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）；
                                              当前 Studio 无入口，保留为脚本 / API 用法（#281 撤掉界面入口，端点不变）
@@ -1183,6 +1184,10 @@ def create_app(
         front matter、路径与内容 hash，任何一项不合法都**整体拒绝**：不落库、不留半棵树。
         不是 multipart——与附件上传一致，原始字节走正文，元数据走 query，因此后端不需要
         multipart 解析依赖。
+
+        zip 与 directory 两条分支保留不动（既有契约用例守着）：其中 zip 上传这条界面入口当前
+        Studio 无入口，保留为脚本 / API 用法（#282 把 skills 页签的安装面收成一个「从本机导入」
+        下拉框，导入走的正是这里的 directory 分支）。
         """
         content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
         locale = locale_of(database)
