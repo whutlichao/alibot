@@ -7,8 +7,11 @@
  * 断言只落在**外部可观察行为**上：
  * 1. 打开详情：主线切到 `agent` 视图（`state.mode === 'agent'`），`#dock` 让位（`hidden`），
  *    详情页容器可见——左栏 Agent 行 / 成员面板名字 / 失败块的「看成员状态」三个入口同一条路径；
- * 2. 四处区块（统计 / 系统提示 / 配置 / 全局 MCP）在同一页纵向铺开，系统提示紧贴统计之下，
- *    页签节点（`#adTabOverview` / `#adTabRuntime` / `data-adtab`）在正本里不存在；
+ * 2. 详情页是**三个页签**（`data-adtab="base|skills|mcp"` + `#adTabBase` / `#adTabSkills` /
+ *    `#adTabMcp`，容器 `.ad-tabs`）：区块各归其位——基础信息和配置页签内是统计 / 系统提示 /
+ *    配置 / 危险操作，skills 页签内是技能列表与右栏占位，mcp 页签内是库行块与下块占位；
+ *    旧页签名（`#adTabOverview` / `#adTabRuntime`）与 dock 的 `.dock-tabs` **仍不存在**
+ *    （它们说的是「不复用旧名」「详情不是 dock 形态」）；
  * 3. 就地编辑只写草稿：改一个字段 ⇒ 底部保存条出现；「保存」一次性提交**全部**可写字段；
  *    「放弃」丢弃草稿、字段回到后端读数；
  * 4. 后端整体拒绝时错误留在保存条里、输入不丢、保存条仍在；
@@ -307,6 +310,27 @@ function createHarness(options) {
     },
   };
 
+  // 页签与面板在 `index.html` 里是静态骨架：按钮在 `#adTabs` 里、面板在 `#adBody` 里。
+  // 替身按同一份结构把它们的 `id` 接上（“找得到”与“点得到”都靠这层父子关系）。
+  const adTabs = elementFor("#adTabs");
+  for (const name of ["base", "skills", "mcp"]) {
+    const suffix = name.charAt(0).toUpperCase() + name.slice(1);
+    const tab = elementFor("#adTab" + suffix);
+    tab.tagName = "button";
+    tab.dataset.adtab = name;
+    tab.id = "adTab" + suffix;
+    adTabs.appendChild(tab);
+    const panel = elementFor("#adPanel" + suffix);
+    panel.dataset.adpanel = name;
+    panel.id = "adPanel" + suffix;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", "adTab" + suffix);
+    tab.setAttribute("aria-controls", "adPanel" + suffix);
+    elementFor("#adBody").appendChild(panel);
+  }
+  adTabs.setAttribute("role", "tablist");
+  adTabs.className = "ad-tabs";
+
   // `setTimeout` 用立即执行的替身：toast 的淡出与重连都是「延后一拍」，测试要的是确定性。
   const context = vm.createContext({
     document,
@@ -367,6 +391,7 @@ function createHarness(options) {
     dockTask: elementFor("#dockTask"),
     viewAgent: elementFor("#viewAgent"),
     agentBody: elementFor("#adBody"),
+    adTabs: elementFor("#adTabs"),
     saveBar: elementFor("#adSaveBar"),
     saveButton: elementFor("#adSave"),
     discardButton: elementFor("#adDiscard"),
@@ -378,6 +403,22 @@ function createHarness(options) {
     deleteClose: elementFor("#agentDeleteClose"),
     deleteTitle: elementFor("#agentDeleteModalTitle"),
     reportName: elementFor("#adName"),
+    /** 某个页签的面板节点（`#adPanelBase` / `#adPanelSkills` / `#adPanelMcp`）：它是 `index.html`
+        的静态骨架，因此与 `#adBody` 一样按选择器取替身节点。 */
+    panel(name) {
+      return elementFor("#adPanel" + name.charAt(0).toUpperCase() + name.slice(1));
+    },
+    /** 某个页签的按钮（`#adTabBase` 等，`data-adtab` 的取值同名）。 */
+    tab(name) {
+      return elementFor("#adTab" + name.charAt(0).toUpperCase() + name.slice(1));
+    },
+    /** 点一个页签（监听挂在 `#adTabs` 上，因此带真实 target 派发）。 */
+    async clickTab(name) {
+      const tab = byDataset(harness.adTabs, "adtab", name);
+      assert.ok(tab, "要点的页签不存在：" + name);
+      await harness.adTabs.dispatchEvent({ type: "click", target: tab });
+      await flush();
+    },
     patches() {
       return calls.filter((call) => call.method === "PATCH");
     },
@@ -601,35 +642,34 @@ test("运行面板开着时打开详情：先收掉 run 面板（否则整体重
   assert.equal(harness.viewAgent.hidden, false);
 });
 
-/* ─── 2. 区块：一页铺开，没有页签 ───────────────────────────────────────── */
+/* ─── 2. 三个页签：区块各归其位 ────────────────────────────────────────── */
 
-test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / 全局 MCP / 危险操作", async () => {
+test("基础信息和配置页签：统计 → 系统提示 → 配置 → 危险操作，危险操作是最后一块", async () => {
   const harness = withChannel();
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
 
+  const base = harness.panel("base");
+  assert.ok(base, "详情页要有「基础信息和配置」页签面板");
   const ids = [
     "agent-detail-section-facts",
     "agent-detail-section-prompt",
     "agent-detail-section-config",
-    // #273：能力（MCP / 技能）归口在这里，排在配置之后、只读的全局 MCP 之前。
-    "agent-capabilities-section",
-    "agent-detail-section-global-mcp",
     "agent-detail-section-danger",
   ];
-  const order = descendants(harness.agentBody)
+  const order = descendants(base)
     .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
     .filter((id) => ids.indexOf(id) >= 0);
-  assert.deepEqual(order, ids, "六处区块按顺序同时出现在同一页里，不需要切换");
+  assert.deepEqual(order, ids, "四块按顺序出现在这一个页签里");
   assert.equal(
-    harness.agentBody.children[harness.agentBody.children.length - 1].children[0].getAttribute("data-od-id"),
+    base.children[base.children.length - 1].children[0].getAttribute("data-od-id"),
     "agent-detail-section-danger",
-    "危险操作是页面最后一个区块（在全局 MCP 之后）",
+    "危险操作是这一页签的最后一块",
   );
 
   // 系统提示的**控件本身**就夹在统计与配置之间（不是「标题在中间、控件在别处」）。
-  const flat = descendants(harness.agentBody);
-  const at = (odId) => flat.indexOf(byOdId(harness.agentBody, odId));
+  const flat = descendants(base);
+  const at = (odId) => flat.indexOf(byOdId(base, odId));
   assert.ok(
     at("agent-detail-section-facts") < at("agent-detail-prompt")
       && at("agent-detail-prompt") < at("agent-detail-section-config"),
@@ -657,6 +697,242 @@ test("所有区块在同一页纵向铺开：统计 / 系统提示 / 配置 / �
   const config = sectionOf(harness.agentBody, "agent-detail-section-config");
   assert.equal(byDataset(config, "agentToggle", "mem-1"), null, "配置区块里不再有暂停 / 恢复按钮");
   assert.equal(config.textContent.includes("暂停只写配置"), false);
+});
+
+/** 一份技能读数（形状与 `GET /api/skills` 的项一致）。 */
+function skillDetail(overrides) {
+  return Object.assign(
+    {
+      id: "sk_1",
+      scope_kind: "agent",
+      scope_id: "mem-1",
+      name: "review",
+      description: "在提交前做一次结构化自审",
+      enabled: true,
+      content_hash: "0123456789abcdef",
+    },
+    overrides || {},
+  );
+}
+
+/** 一份 MCP 声明读数（形状与 `GET /api/mcp-servers` 的项一致）。 */
+function mcpDeclaration(overrides) {
+  return Object.assign(
+    {
+      id: "mcp_1",
+      name: "filesystem",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem"],
+      url: "",
+      env_names: ["GITHUB_TOKEN"],
+      enabled: true,
+      is_remote: false,
+      consented: false,
+      consent_required: false,
+      runtime: null,
+    },
+    overrides || {},
+  );
+}
+
+/** 详情页两条能力清单与全局 MCP 的读数替身（其余端点照默认应答）。 */
+function capabilitiesFetch(config) {
+  const options = config || {};
+  return (url, init) => {
+    const request = init || {};
+    const method = request.method || "GET";
+    if (method === "GET" && String(url) === "/api/skills?scope_kind=agent&scope_id=mem-1") {
+      return { ok: true, status: 200, json: async () => ({ skills: options.skills || [] }) };
+    }
+    if (method === "GET" && String(url) === "/api/mcp-servers?scope_kind=agent&scope_id=mem-1") {
+      return { ok: true, status: 200, json: async () => ({ mcp_servers: options.mcp || [] }) };
+    }
+    return detailFetchBase(url);
+  };
+}
+
+test("skills 页签：左栏技能列表 + 右栏占位，启停 / 删除动作跟着列表走", async () => {
+  const harness = withChannel({ fetch: capabilitiesFetch({ skills: [skillDetail()] }) });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const panel = harness.panel("skills");
+  assert.ok(panel, "详情页要有 skills 页签面板");
+  const list = byOdId(panel, "skill-list");
+  assert.ok(list, "左栏是技能列表");
+  const row = byDataset(panel, "skill", "sk_1");
+  assert.ok(row, "技能行在 skills 页签里");
+  assert.equal(row.getAttribute("data-od-id"), "capability-skill-row");
+  assert.ok(byDataset(panel, "skillToggle", "sk_1"), "启停动作搬进 skills 页签");
+  assert.ok(byDataset(panel, "skillDelete", "sk_1"), "删除动作搬进 skills 页签");
+  // 技能行不再长在「基础信息和配置」页签里（两页签各管自己那一份）。
+  assert.equal(byDataset(harness.panel("base"), "skill", "sk_1"), null,
+    "基础信息和配置页签里不再有技能行");
+
+  const detail = byOdId(panel, "agent-skill-detail");
+  assert.ok(detail, "右栏是选中技能的详情位置");
+  assert.ok(
+    detail.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.skillsDetailPlaceholder")),
+    "右栏先给占位说明（正文与导入下拉框由后续票补）",
+  );
+  // 影响范围一句话仍写明技能字节落在这个成员的家目录里。
+  const note = byOdId(panel, "agent-capabilities-scope");
+  assert.ok(note && /\.alibot\/agents\/mem-1\/skills\//.test(note.textContent),
+    "skills 页签要有影响范围一句话");
+});
+
+test("mcp 页签：库行块在上、家目录 mcp.json 块在下，两块各归其位", async () => {
+  const servers = [
+    { name: "notes", transport: "stdio", is_remote: false, consented: false, runtime: null },
+  ];
+  const harness = withChannel({
+    fetch: (url, init) => {
+      const method = (init && init.method) || "GET";
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers" && method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ global_mcp_servers: servers }) };
+      }
+      return capabilitiesFetch({ mcp: [mcpDeclaration()] })(url, init);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const panel = harness.panel("mcp");
+  assert.ok(panel, "详情页要有 mcp 页签面板");
+  const ids = [
+    "agent-capabilities-mcp",
+    "agent-detail-section-global-mcp",
+    "agent-detail-section-mcp-file",
+  ];
+  const order = descendants(panel)
+    .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
+    .filter((id) => ids.indexOf(id) >= 0);
+  assert.deepEqual(order, ids, "上块（库行）→ 只读 mcp.json 条目 → 文件块占位");
+
+  assert.ok(byDataset(panel, "mcpServer", "mcp_1"), "库行列表在 mcp 页签里");
+  assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "库行启停在 mcp 页签里");
+  assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "库行删除在 mcp 页签里");
+  assert.ok(byOdId(panel, "mcp-form"), "库行表单在 mcp 页签里");
+  assert.ok(byDataset(panel, "globalMcpServer", "notes"), "原「全局 MCP」小节并入 mcp 页签");
+  const fileBlock = byOdId(panel, "agent-detail-section-mcp-file");
+  assert.ok(fileBlock && fileBlock.parentNode, "下块是 mcp.json 文件块");
+  assert.ok(
+    fileBlock.parentNode.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.mcpFilePlaceholder")),
+    "文件块先给占位说明（文本域由后续票补）",
+  );
+  // 库行不再长在「基础信息和配置」页签里。
+  assert.equal(byDataset(harness.panel("base"), "mcpServer", "mcp_1"), null,
+    "基础信息和配置页签里不再有 MCP 行");
+});
+
+test("三个页签按固定顺序出现，打开详情默认停在基础信息和配置", async () => {
+  const harness = withChannel();
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+
+  const tabs = descendants(harness.adTabs)
+    .filter((node) => node.dataset && node.dataset.adtab)
+    .map((node) => node.dataset.adtab);
+  assert.deepEqual(tabs, ["base", "skills", "mcp"], "顺序固定：基础信息和配置 → skills → mcp");
+
+  const list = descendants(harness.adTabs)
+    .find((node) => node.getAttribute("role") === "tablist");
+  assert.ok(list, "页签容器是 role=\"tablist\"");
+  assert.equal(list.classList.contains("ad-tabs"), true, "容器类名是 .ad-tabs（不复用 .dock-tabs）");
+  // 可读名走词条：静态绑定在 index.html（`applyStaticI18n` 铺），键值在两份 catalog 里。
+  const html = readStudio("index.html");
+  assert.match(html, /class="ad-tabs"[^>]*data-i18n-attr="aria-label:agentDetail\.tabsLabel"/,
+    "tablist 的 aria-label 挂词条，不写死");
+  assert.ok(catalogText(harness, "zh-CN", "agentDetail.tabsLabel").length > 0);
+
+  // 默认停在第一页：面板可见性由 `hidden` 表达，与 `aria-selected` 同源。
+  assert.equal(harness.api.state.agentDetailTab, "base");
+  assert.equal(harness.tab("base").getAttribute("aria-selected"), "true");
+  assert.equal(harness.panel("base").hidden, false, "默认页签的面板可见");
+  for (const name of ["skills", "mcp"]) {
+    assert.equal(harness.tab(name).getAttribute("aria-selected"), "false");
+    assert.equal(harness.panel(name).hidden, true, name + " 页签的面板默认收起");
+  }
+
+  // 每个页签：正本里是原生 <button role="tab">（键盘靠浏览器的 Tab / Enter，不自造方向键漫游），
+  // 运行时 `aria-controls` 指向自己的面板、面板是 `role="tabpanel"`。
+  for (const name of ["base", "skills", "mcp"]) {
+    const suffix = name.charAt(0).toUpperCase() + name.slice(1);
+    assert.match(
+      html,
+      new RegExp('<button[^>]*id="adTab' + suffix + '"[^>]*>'),
+      name + " 页签在正本里是 <button>（原生键盘可达）",
+    );
+    assert.match(html, new RegExp('<button[^>]*role="tab"[^>]*id="adTab' + suffix + '"'));
+    assert.equal(
+      new RegExp('id="adTab' + suffix + '"[^>]*tabindex=').test(html),
+      false,
+      "按钮不需要额外的 tabindex 才可 Tab 到",
+    );
+    const tab = harness.tab(name);
+    assert.equal(tab.getAttribute("aria-selected") !== null, true, "运行时铺 aria-selected");
+    assert.equal(tab.getAttribute("aria-controls"), "adPanel" + suffix, "aria-controls 指向自己的面板");
+    assert.equal(harness.panel(name).getAttribute("role"), "tabpanel");
+    assert.equal(harness.panel(name).getAttribute("aria-labelledby"), "adTab" + suffix);
+  }
+  // 三处页签文本都走词条（`data-i18n` 的键在两份 catalog 里都有值，上一段已验）。
+  for (const key of ["agentDetail.tabBase", "agentDetail.tabSkills", "agentDetail.tabMcp"]) {
+    for (const locale of ["zh-CN", "en"]) {
+      assert.ok(catalogText(harness, locale, key).length > 0, locale + " 缺页签词条：" + key);
+    }
+  }
+});
+
+test("切换页签：选中态跟着走，切到 skills / mcp 再切回不丢草稿与保存条", async () => {
+  const harness = withChannel({ fetch: capabilitiesFetch({ skills: [skillDetail()] }) });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  await harness.edit("display_name", "打到一半");
+  assert.equal(harness.saveBar.hidden, false);
+
+  await harness.clickTab("skills");
+  assert.equal(harness.api.state.agentDetailTab, "skills");
+  assert.equal(harness.tab("skills").getAttribute("aria-selected"), "true");
+  assert.equal(harness.tab("base").getAttribute("aria-selected"), "false");
+  assert.equal(harness.panel("skills").hidden, false);
+  assert.equal(harness.panel("base").hidden, true, "非当前页签的面板收起");
+  assert.equal(harness.saveBar.hidden, false, "保存条是全页级：在 skills 页签里也可见");
+
+  await harness.clickTab("mcp");
+  assert.equal(harness.api.state.agentDetailTab, "mcp");
+  assert.equal(harness.panel("mcp").hidden, false);
+
+  await harness.clickTab("base");
+  assert.equal(harness.api.state.agentDetailTab, "base");
+  assert.equal(agentField(harness.agentBody, "display_name").value, "打到一半", "草稿不因切页签而丢");
+  assert.equal(harness.saveBar.hidden, false, "切回后保存条仍在");
+  assert.equal(harness.patches().length, 0, "切页签不发任何请求");
+});
+
+test("打开详情与切换成员都回到默认页签", async () => {
+  const other = agentDetail({ id: "mem-2", display_name: "小红", role: "测试" });
+  const harness = withChannel();
+  harness.load([agentDetail(), other]);
+  await harness.clickRow("mem-1");
+
+  await harness.clickTab("mcp");
+  assert.equal(harness.api.state.agentDetailTab, "mcp");
+
+  await harness.clickRow("mem-2");
+  assert.equal(harness.api.state.activeAgentId, "mem-2");
+  assert.equal(harness.api.state.agentDetailTab, "base", "切到另一个成员 ⇒ 回到默认页签");
+  assert.equal(harness.tab("base").getAttribute("aria-selected"), "true");
+
+  // 关闭后再打开也回到默认页签（不留上次的页签位置）。
+  await harness.clickTab("skills");
+  await harness.leaveViaMessagesKey();
+  await harness.clickRow("mem-2");
+  assert.equal(harness.api.state.agentDetailTab, "base");
 });
 
 test("配置区块不再有「改动先留在草稿里」那句提示", async () => {
@@ -692,12 +968,20 @@ test("危险区不再消费 .danger-confirm 盒子样式，确认文案样式仍
   assert.match(css, /^\.danger-confirm-text\s*\{/m, "确认文案样式保留给弹窗正文");
 });
 
-test("正本里不再有页签与编辑弹窗（index.html）", () => {
+test("正本里三个页签节点存在，旧页签名与 dock 页签容器仍不存在（index.html）", () => {
   const html = readStudio("index.html");
-  assert.equal(/data-adtab=/.test(html), false, "页签数据属性已删除");
-  assert.equal(/id="adTabOverview"/.test(html), false);
-  assert.equal(/id="adTabRuntime"/.test(html), false);
-  assert.equal(/class="dock-tabs"/.test(html), false, "页签容器已删除");
+  // D9 #3（反转）：页签回来了，但用的是**新**标识——三个 `data-adtab` 值与三个新节点。
+  assert.match(html, /data-adtab="base"/, "「基础信息和配置」页签的数据属性在正本里");
+  assert.match(html, /data-adtab="skills"/, "skills 页签的数据属性在正本里");
+  assert.match(html, /data-adtab="mcp"/, "mcp 页签的数据属性在正本里");
+  assert.match(html, /id="adTabBase"/);
+  assert.match(html, /id="adTabSkills"/);
+  assert.match(html, /id="adTabMcp"/);
+  assert.match(html, /class="ad-tabs"/, "页签容器用自己的类名");
+  // 以下四条说的是「不复用旧名」与「详情不是 dock 形态、编辑弹窗已删」，与本能力无关，保留。
+  assert.equal(/id="adTabOverview"/.test(html), false, "旧页签名不复用");
+  assert.equal(/id="adTabRuntime"/.test(html), false, "旧页签名不复用");
+  assert.equal(/class="dock-tabs"/.test(html), false, "dock 的页签容器类名不复用");
   assert.equal(/id="dockDetail"/.test(html), false, "详情不再是 dock 的形态");
   assert.equal(/id="agentEditOverlay"/.test(html), false, "编辑配置弹窗已删除");
   // 新形态的正本：整页视图 + 底部保存条。
@@ -755,6 +1039,7 @@ test("就地编辑只写草稿：改一个字段后出现保存条，点保存�
   const patch = harness.patches();
   assert.equal(patch.length, 1);
   assert.equal(patch[0].url, "/api/agents/mem-1");
+  // D2：界面撤掉上下文三项 ⇒ 保存载荷从 10 个字段降到 **7 个**（那三个键不出现）。
   assert.deepEqual(patch[0].body, {
     display_name: "小明明",
     role: "后端工程师",
@@ -762,11 +1047,13 @@ test("就地编辑只写草稿：改一个字段后出现保存条，点保存�
     system_prompt: "你只回答一句话。",
     enabled: true,
     auto_claim: false,
-    context_window_messages: null,
-    context_trigger_ratio: null,
-    react_max_iters: null,
     web_access: null,
   });
+  // 这是本票最容易做错的一格：`PATCH` 是部分更新，提交 `null` 会一次清空库里那三列。
+  for (const key of ["context_window_messages", "context_trigger_ratio", "react_max_iters"]) {
+    assert.equal(key in patch[0].body, false, "保存载荷里不存在 " + key);
+    assert.equal(key in harness.api.state.agentEdit.draft, false, "草稿里也不产出 " + key);
+  }
   assert.equal(harness.saveBar.hidden, true, "保存成功后保存条消失");
   assert.equal(harness.reportName.textContent, "小明明");
   assert.equal(harness.memberList.textContent.includes("小明明"), true, "左栏名字跟着后端读数走");
@@ -1378,20 +1665,23 @@ test("长期记忆没有开关：详情页无该控件，保存载荷不含 memo
   assert.equal(agentField(harness.agentBody, "memory_mode"), null, "长期记忆不再有开关控件");
   assert.equal(byOdId(harness.agentBody, "agent-field-memory_mode"), null, "也没有对应的探针 id");
   assert.equal(harness.agentBody.textContent.includes("长期记忆"), false, "详情页不再出现这个词条");
-  assert.equal(agentField(harness.agentBody, "context_window_messages").value, "60");
-  assert.equal(agentField(harness.agentBody, "context_trigger_ratio").value, "0.6");
-  assert.equal(agentField(harness.agentBody, "react_max_iters").value, "45");
+  // D2：上下文三项的控件整体撤除——库里有值（60 / 0.6 / 45）也不回填、不渲染。
+  for (const field of ["context_window_messages", "context_trigger_ratio", "react_max_iters"]) {
+    assert.equal(agentField(harness.agentBody, field), null, "控件已从界面撤除：" + field);
+    assert.equal(byOdId(harness.agentBody, "agent-field-" + field), null,
+      "也没有对应的探针 id：" + field);
+  }
 
-  await harness.edit("context_window_messages", "");
-  await harness.edit("context_trigger_ratio", "");
-  await harness.edit("react_max_iters", "");
+  await harness.edit("display_name", "换个名字");
   await harness.clickSaveBar(harness.saveButton);
 
+  // 本用例的正向作用（D2 守卫）：谁把这三键加回载荷 / 草稿，这里立刻红。
   const payload = harness.patches()[0].body;
   assert.equal("memory_mode" in payload, false, "保存载荷不再带这一字段");
-  assert.equal(payload.context_window_messages, null);
-  assert.equal(payload.context_trigger_ratio, null);
-  assert.equal(payload.react_max_iters, null);
+  for (const key of ["context_window_messages", "context_trigger_ratio", "react_max_iters"]) {
+    assert.equal(key in payload, false, "保存载荷里不存在 " + key + "（否则一次保存就清空库里那三列）");
+    assert.equal(key in harness.api.state.agentEdit.draft, false, "草稿里也不产出 " + key);
+  }
 });
 
 test("模型提供商 + 模型名：保存时拼回 provider:model", async () => {
@@ -1790,10 +2080,13 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agent.autoClaimOff",
     "agent.autoClaimOffHint",
     "agent.autoClaimNote",
-    "agent.contextWindow",
-    "agent.contextTrigger",
-    "agent.maxIters",
-    "agent.runtimeDefaultHint",
+    // 三个页签名（D1）：旧名 `tabOverview` / `tabRuntime` 不复用。
+    "agentDetail.tabsLabel",
+    "agentDetail.tabBase",
+    "agentDetail.tabSkills",
+    "agentDetail.tabMcp",
+    "agentDetail.skillsDetailPlaceholder",
+    "agentDetail.mcpFilePlaceholder",
     "agent.webAccessLabel",
     "agent.webAccessFollow",
     "agent.webAccessFollowHint",
@@ -1835,10 +2128,10 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
       assert.ok(typeof value === "string" && value.length > 0, locale + " 缺词条：" + key);
     }
   }
-  // 页签词条随页签一起删掉：留着它们等于留一个不存在的界面说法。
-  for (const key of ["agentDetail.tabsLabel", "agentDetail.tabOverview", "agentDetail.tabRuntime"]) {
+  // 页签词条：新名字必须有值（上一段已验），旧名字随旧页签一起删掉（D9 #4）。
+  for (const key of ["agentDetail.tabOverview", "agentDetail.tabRuntime"]) {
     for (const locale of ["zh-CN", "en"]) {
-      assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已删页签词条：" + key);
+      assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已复用旧页签词条：" + key);
     }
   }
   // 随「当前状态」「运行时」两区块、配置提示与统计区模型标识一起删掉的词条同此。
@@ -1872,6 +2165,11 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     // 头部的小标签与关闭控件一起删除：两条词条也随节点消失，不留孤儿键。
     "agentDetail.tag",
     "agentDetail.closeAria",
+    // D2 / D9 #5：上下文三项的控件与提示随控件撤除，只服务它们的词条一并删除（不留孤儿键）。
+    "agent.contextWindow",
+    "agent.contextTrigger",
+    "agent.maxIters",
+    "agent.runtimeDefaultHint",
   ]) {
     for (const locale of ["zh-CN", "en"]) {
       assert.equal(harness.catalogs[locale][key], undefined, locale + " 仍有已删词条：" + key);
@@ -1902,8 +2200,7 @@ test("配置区块的标签真的指向控件：单控件 label[for]、档位组
   await harness.clickRow("mem-1");
 
   // 单控件：`<label for>` 必须指向真实存在的 `id`，否则点标签不落焦点、读屏念不出字段名。
-  for (const field of ["display_name", "role", "provider", "model", "context_window_messages",
-    "context_trigger_ratio", "react_max_iters"]) {
+  for (const field of ["display_name", "role", "provider", "model"]) {
     const control = agentField(harness.agentBody, field);
     assert.ok(control, "配置区块缺少可编辑字段：" + field);
     assert.ok(control.id, field + " 的控件要有 id，作为 label[for] 的落点");
@@ -1967,8 +2264,9 @@ function detailFetchBase(url) {
 test("详情头部只剩强调色的「发送消息」：无 Agent 标签 / 状态行 / 关闭控件", async () => {
   const html = readStudio("index.html").replace(/<!--[\s\S]*?-->/g, "");
   const headStart = html.indexOf('class="agent-page-head"');
-  const headEnd = html.indexOf('class="agent-page-scroll"');
-  assert.ok(headStart >= 0 && headEnd > headStart, "index.html 里应有详情头部");
+  // 头部方块在页签容器之前结束：页签是详情页头**下面**的一条，不属于「头部只剩什么」这条判据。
+  const headEnd = html.indexOf('class="ad-tabs"');
+  assert.ok(headStart >= 0 && headEnd > headStart, "index.html 里应有详情头部与页签容器");
   const head = html.slice(headStart, headEnd);
   const send = /<button\b[^>]*id="btnAgentSendMessage"[^>]*>/.exec(head);
   assert.ok(send, "详情头部应有 #btnAgentSendMessage");

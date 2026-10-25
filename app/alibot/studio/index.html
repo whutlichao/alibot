@@ -325,8 +325,11 @@
     </footer>
 
     <!-- Agent 详情是**主线视图**（`state.mode === 'agent'`）：它占据整条右侧，dock 让位。
-         所有详情区块在同一页纵向铺开（统计 / 系统提示 / 配置 / 全局 MCP），没有页签：可编辑字段
-         直接长在「配置」区块里，底部出现固定保存条（只有草稿与后端读数不一致时才显示）。
+         正文是**三个页签**（`CONTEXT.md` **Agent 详情页签**）：基础信息和配置 / skills / mcp，
+         顺序固定、默认停在第一页、不落库也不写 URL。页签只切呈现：可编辑字段仍直接长在
+         「配置」区块里，底部保存条是全页级、跨页签可见（只有草稿与后端读数不一致时才显示）。
+         页签容器用自己的 `.ad-tabs`，**不复用** dock 的 `.dock-tabs`（详情不是 dock 的形态），
+         也不复用旧页签名 `#adTabOverview` / `#adTabRuntime`。
          区块内容全部是后端读数或草稿，因此由 `app.js` 渲染；这里只有骨架。
          统计的每个数字都来自后端既有事实（`GET /api/agents/{id}` 的 `stats`，由 `round_outcome`
          与任务行聚合）；模型标识 / 提供商 / 是否远端 / 远端数据流告知不再单独成节（可编辑的那几项
@@ -341,8 +344,21 @@
           <button class="btn btn-sm btn-primary" type="button" id="btnAgentSendMessage" data-i18n="agentDetail.sendMessage" data-od-id="btn-agent-send-message">发送消息</button>
         </div>
       </div>
+      <!-- 三个页签：原生 <button> + role="tab"，键盘靠浏览器自身的 Tab / Enter
+           （不自造方向键漫游）；`aria-controls` 指向下面对应的面板。选中态由 app.js 铺
+           `aria-selected` 与 `hidden`，初始值就是默认页签「基础信息和配置」。 -->
+      <div class="ad-tabs" id="adTabs" role="tablist" data-i18n-attr="aria-label:agentDetail.tabsLabel" aria-label="Agent 详情页签" data-od-id="agent-detail-tabs">
+        <button class="ad-tab is-active" type="button" role="tab" id="adTabBase" data-adtab="base" aria-selected="true" aria-controls="adPanelBase" data-i18n="agentDetail.tabBase" data-od-id="agent-detail-tab-base">基础信息和配置</button>
+        <button class="ad-tab" type="button" role="tab" id="adTabSkills" data-adtab="skills" aria-selected="false" aria-controls="adPanelSkills" data-i18n="agentDetail.tabSkills" data-od-id="agent-detail-tab-skills">skills</button>
+        <button class="ad-tab" type="button" role="tab" id="adTabMcp" data-adtab="mcp" aria-selected="false" aria-controls="adPanelMcp" data-i18n="agentDetail.tabMcp" data-od-id="agent-detail-tab-mcp">mcp</button>
+      </div>
       <div class="agent-page-scroll">
-        <div class="agent-page-inner" id="adBody" data-od-id="agent-detail-body"></div>
+        <div class="agent-page-inner" id="adBody" data-od-id="agent-detail-body">
+          <!-- 三个面板的**容器**是静态骨架（`aria-controls` 要有落点），面板里的区块由 app.js 铺。 -->
+          <div id="adPanelBase" role="tabpanel" aria-labelledby="adTabBase" data-adpanel="base" data-od-id="agent-detail-panel-base"></div>
+          <div id="adPanelSkills" role="tabpanel" aria-labelledby="adTabSkills" data-adpanel="skills" data-od-id="agent-detail-panel-skills" hidden></div>
+          <div id="adPanelMcp" role="tabpanel" aria-labelledby="adTabMcp" data-adpanel="mcp" data-od-id="agent-detail-panel-mcp" hidden></div>
+        </div>
       </div>
       <!-- 底部保存条：只在草稿与后端读数不一致时出现（`hidden` 由 app.js 裁决）。
            它是页面级的固定条，不随 `#adBody` 的整块重铺消失——因此错误原文与焦点不会被换掉。 -->

@@ -78,6 +78,10 @@ const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avat
     的命令，不是界面文案。`-g` 装到全局、`-a codex` 指向 `~/.agents/skills`（本应用只读那里）。 */
 const SKILL_INSTALL_COMMAND = 'npx skills add <owner/repo> -g -a codex -y';
 
+/** 三个页签的名字与顺序（`CONTEXT.md` **Agent 详情页签** / D1）：顺序固定，不开第四个。 */
+const AGENT_DETAIL_TABS = ['base', 'skills', 'mcp'];
+const AGENT_DETAIL_DEFAULT_TAB = 'base';
+
 /* ─── 界面文案一律按**词条**取值（`i18n.js` 的 `t(key, params)`） ────────────
    本文件里不再有裸中文文案：结构化状态词（四态状态点 / 任务状态 / 轮次结果状态）后端只给**词**，
    这里只把词翻译成界面说法；措辞全部住在词条表的两份取值里。
@@ -186,6 +190,9 @@ const state = {
   // dock 开合，关闭详情时按同一份判据恢复（`openAgentDetail()` / `closeAgentDetail()`）。
   activeAgentId: null,
   agentReturn: { mode: 'channel', dockOpen: false },
+  // 详情页当前页签（呈现状态，不是业务正本）：`'base' | 'skills' | 'mcp'`，顺序固定。
+  // 不落库、不写 URL、不记忆上次值：打开详情与切换成员都回到 `'base'`（D1）。
+  agentDetailTab: AGENT_DETAIL_DEFAULT_TAB,
   // 详情「配置」区块的**草稿**（呈现状态，不是业务正本）：`memberId` 是它属于谁，
   // `draft` 是还没提交的字段值，`error` 是后端拒绝时那句原文。与后端读数不一致时
   // 页面底部出现保存条；关闭详情 / 切换成员 / 切换主线视图时整体作废（不弹二次确认）。
@@ -4915,7 +4922,7 @@ function memberCard(member, agentsById, canJoin) {
   return card;
 }
 
-/* ─── Agent 详情（主线视图）：一页分区块 + 就地编辑 ───────────────────────
+/* ─── Agent 详情（主线视图）：三个页签 + 就地编辑 ─────────────────────────
    `CONTEXT.md` **Agent** 与 ADR-0011：详情页是**人类面**，可编辑字段全部落在同一个写路径
    `PATCH /api/agents/{id}` 上，后端零改动。
 
@@ -4923,8 +4930,13 @@ function memberCard(member, agentsById, canJoin) {
 
    - **它是主线视图，不是 dock 的形态**（用户 2026-10-22 裁定）：`state.mode === 'agent'` 时
      `#viewAgent` 占据整条右侧，dock 让位；关闭时回到进入前的视图与 dock 开合。
-   - **所有区块在同一页纵向铺开**：统计 / 系统提示 / 配置 / 全局 MCP。没有页签——
-     系统提示紧贴统计之下（用户 2026-10-24 裁定：它是这页上最常改的一格）。
+   - **正文是三个页签**（`CONTEXT.md` **Agent 详情页签**）：基础信息和配置 → skills → mcp，
+     顺序固定、默认停在第一页、不落库也不写 URL；切页签不丢草稿（`state.agentDetailTab`）。
+     基础信息和配置页签内仍是统计 → 系统提示 → 配置 → 危险操作（系统提示紧贴统计之下，
+     用户 2026-10-24 裁定：它是这页上最常改的一格）。
+   - **上下文三项的界面入口已撤除**（D2）：上下文条数 / 压缩阈值 / 迭代上限三格不再渲染，
+     草稿不产出、保存载荷也不提交那三个键（`PATCH` 是部分更新，不提交 ⇒ 库里既有值保持）。
+     那三列与 `PATCH` 的字段面在后端原样保留。
    - **统计只呈现有真实来源的读数**：四个数字全部来自后端 `GET /api/agents/{id}` 的 `stats`
      （`round_outcome` 聚合 + 任务行 + 频道成员表）。前端**不**自己算，也不为填满界面编数值。
      模型标识 / 提供商 / 是否远端 / 远端数据流告知不再在详情页重复一份只读读数：模型标识与
@@ -4988,11 +5000,6 @@ function agentDraftFrom(agent) {
     system_prompt: agent.system_prompt || '',
     enabled: agent.enabled !== false,
     auto_claim: agent.auto_claim === true,
-    context_window_messages:
-      agent.context_window_messages == null ? '' : String(agent.context_window_messages),
-    context_trigger_ratio:
-      agent.context_trigger_ratio == null ? '' : String(agent.context_trigger_ratio),
-    react_max_iters: agent.react_max_iters == null ? '' : String(agent.react_max_iters),
     // 联网档（#202）：`null` = 没有 Agent 级覆盖 = 「跟随频道」。四档之外的值一律落回它，
     // 不猜一个档出来（`submitAgentEdit()` 提交时也只把 `follow` 翻成 `null`，不推断生效档）。
     web_access: WEB_ACCESS_LEVELS.includes(agent.web_access) ? agent.web_access : WEB_ACCESS_FOLLOW,
@@ -5107,6 +5114,8 @@ async function openAgentDetail(memberId) {
   state.globalMcpServers = [];
   state.globalMcpError = '';
   resetAgentCapabilities(memberId);
+  // 页签回到默认那一页：新成员不继承上一个成员的页签位置（D1）。
+  state.agentDetailTab = AGENT_DETAIL_DEFAULT_TAB;
   setViewMode('agent');
   // 详情一打开，频道 / 私信行就得让位：这条路径不经过整体 `render()`，只重绘 Agent 段
   // 会把频道行留在「当前行」上（两行同时高亮）。
@@ -5190,9 +5199,10 @@ async function messageActiveAgent() {
   }
 }
 
-/** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。 */
+/** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。
+    面板容器本身是 `index.html` 的**静态骨架**（`aria-controls` 要有落点），因此只清空每个面板的子节点。 */
 function clearAgentDetail() {
-  replaceChildren($('#adBody'), []);
+  AGENT_DETAIL_TABS.forEach((name) => renderAgentTabPanel(name, []));
   agentNoticeNodes = null;
   const name = $('#adName');
   if (name) name.textContent = '';
@@ -5266,20 +5276,20 @@ function renderAgentDetail() {
   $('#adName').textContent = agent.display_name;
   syncAgentSendButton();
   if (agentDraftDirty() || capabilityDraftDirty()) {
-    // 草稿脏时不重铺整页，但**只读**的那几块仍要跟着后端读数走：全局 MCP 的确认动作
-    // 正是「点完要立刻变成已确认」，而它不经过草稿。这里只换那两节，输入控件原样留着。
+    // 草稿脏时不重铺整页，但**只读**与**只吃后端读数**的那几块仍要跟着后端读数走：
+    // 全局 MCP 的确认动作正是「点完要立刻变成已确认」，而它不过草稿。
     refreshGlobalMcpSection();
     // 能力段里有未提交输入时不碰它（后台重绘不该换掉持焦控件）；显式动作自己会重铺。
-    if (!capabilityDraftDirty()) refreshAgentCapabilitiesSection();
+    if (!capabilityDraftDirty()) refreshAgentCapabilitiesPanels();
   } else {
-    replaceChildren($('#adBody'), agentDetailNodes(agent));
+    renderAgentTabPanels(agent);
   }
   paintAgentDangerControls();
   paintAgentDeleteControls();
   renderAgentSaveBar();
 }
 
-/** 就地换掉「全局 MCP」小节（草稿脏时 `renderAgentDetail()` 不重铺整页，但这一节是只读的，
+/** 就地换掉「全局 MCP」小节（草稿脏时 `renderAgentDetail()` 不重铺面板，但这一节是只读的，
     它的读数变了就得跟着变）。找不到旧节点（还没铺过）时什么都不做。
 
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
@@ -5292,15 +5302,15 @@ function refreshGlobalMcpSection() {
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
     与测试替身都只保证前者。 */
 function replaceSectionNode(odId, replacement) {
-  const body = $('#adBody');
-  if (!body || !body.children) return;
+  const panel = agentTabPanel('mcp');
+  if (!panel || !panel.children) return;
   const hasOdId = (node) => node.getAttribute && node.getAttribute('data-od-id') === odId;
-  const nodes = Array.prototype.slice.call(body.children);
+  const nodes = Array.prototype.slice.call(panel.children);
   const index = nodes.findIndex((node) => hasOdId(node)
     || (node.querySelectorAll && Array.prototype.some.call(node.querySelectorAll('[data-od-id]'), hasOdId)));
   if (index < 0) return;
   nodes[index] = replacement;
-  replaceChildren(body, nodes);
+  replaceChildren(panel, nodes);
 }
 
 /** 详情页的分区标题：文案走词条，`data-od-id` 是 `alibot-design-system/SKILL.md` 对
@@ -5311,17 +5321,146 @@ function sectionTitle(key, odId) {
   return node;
 }
 
-/** 详情页的全部区块，按顺序纵向铺开（没有页签）：
-    统计 → 系统提示 → 配置 → 能力（MCP / 技能）→ 全局 MCP（mcp.json 只读）→ 危险操作。 */
-function agentDetailNodes(agent) {
+/** 页签的 DOM id（与 `index.html` 的静态骨架同一份拼法：按钮 `#adTabBase`、面板 `#adPanelBase`）。 */
+function agentTabId(prefix, name) {
+  return prefix + name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** 切页签：只改呈现状态与两个节点的属性，**不重铺**面板内容。
+
+    它不碰 `state.agentEdit.draft`——切页签不丢未提交的草稿是 D1 的硬约束，而面板重铺会把
+    正在输入的控件换成新节点（焦点与光标位置一起丢）。因此这里只对齐 `aria-selected`、`.is-active`
+    与面板的 `hidden`。 */
+function setAgentDetailTab(name) {
+  const tab = AGENT_DETAIL_TABS.indexOf(name) >= 0 ? name : AGENT_DETAIL_DEFAULT_TAB;
+  state.agentDetailTab = tab;
+  AGENT_DETAIL_TABS.forEach((item) => {
+    const on = item === tab;
+    const button = $('#' + agentTabId('adTab', item));
+    if (button) {
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+      button.classList.toggle('is-active', on);
+    }
+    const panel = $('#' + agentTabId('adPanel', item));
+    if (panel) panel.hidden = !on;
+  });
+}
+
+/** 一个页签的面板节点（`#adPanelBase` 等）。它是 `index.html` 的静态骨架（`aria-controls` 要有落点）。 */
+function agentTabPanel(name) {
+  return $('#' + agentTabId('adPanel', name));
+}
+
+/** 往一个页签里铺它自己的区块（只换面板的子节点，不碰其它页签与保存条）。 */
+function renderAgentTabPanel(name, nodes) {
+  const panel = agentTabPanel(name);
+  if (panel) replaceChildren(panel, nodes);
+}
+
+/** **基础信息和配置**页签的区块，按顺序：统计 → 系统提示 → 配置 → 危险操作
+    （危险操作仍是最后一块——误触面离配置字段最远）。 */
+function agentBaseTabNodes(agent) {
   return [
     agentFactsSection(agent),
     agentPromptSection(agent),
     agentConfigSection(agent),
-    agentCapabilitiesSection(agent),
-    globalMcpSection(),
     agentDangerSection(agent),
   ];
+}
+
+/** **skills** 页签：左栏技能列表（含启停 / 删除）+ 右栏选中技能的详情位置。
+
+    右栏本轮只给占位说明：选中态、元数据与 SKILL.md 正文由后续票补（D5）；
+    「从本机导入」的下拉框同样由后续票补，因此安装面仍保留既有两条入口（本票只搬不删）。 */
+function agentSkillsTabNodes(agent) {
+  const view = capabilitiesView((agent && agent.id) || state.activeAgentId || '');
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('agentCapabilities.skillTitle', 'agent-capabilities-skill'));
+  section.appendChild(
+    resourceNote(
+      'agentCapabilities.scopeNote',
+      'agent-capabilities-scope',
+      'is-faint',
+      { member: view.memberId },
+    ),
+  );
+
+  const columns = el('div', 'agent-skill-columns');
+  const left = el('div', 'agent-skill-left');
+  if (view.skillError) {
+    left.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
+  }
+  if (view.skillLoading) {
+    left.appendChild(el('div', 'resource-empty', t('skill.loading')));
+  } else if (!view.skills.length) {
+    left.appendChild(el('div', 'resource-empty', t('skill.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'skill-list');
+    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
+    left.appendChild(list);
+  }
+  columns.appendChild(left);
+
+  const right = el('div', 'agent-skill-right');
+  const detail = el('div', 'resource-empty', t('agentDetail.skillsDetailPlaceholder'));
+  detail.setAttribute('data-od-id', 'agent-skill-detail');
+  right.appendChild(detail);
+  columns.appendChild(right);
+  section.appendChild(columns);
+
+  // 安装面：既有两条入口（本机目录 / 上传 zip）与导入区块本票**原样搬过来**，
+  // 「从本机导入」的下拉框由后续票在原位替换它们（D3 / D4）。
+  section.appendChild(skillInstallForm(view));
+  section.appendChild(skillImportForm(view));
+  return [section];
+}
+
+/** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 的位置。
+
+    下块本轮只给占位说明：文本域与它的两条端点由后续票补（D7）。原「全局 MCP」只读小节
+    并在这里（同一个 `data-od-id`），不再单独成段。 */
+function agentMcpTabNodes(agent) {
+  const memberId = (agent && agent.id) || state.activeAgentId || '';
+  const view = capabilitiesView(memberId);
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('agentCapabilities.mcpTitle', 'agent-capabilities-mcp'));
+  section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
+  if (view.mcpError) {
+    section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
+  }
+  if (view.mcpLoading) {
+    section.appendChild(el('div', 'resource-empty', t('mcp.loading')));
+  } else if (!view.mcp.length) {
+    section.appendChild(el('div', 'resource-empty', t('mcp.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'mcp-list');
+    view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
+    section.appendChild(list);
+  }
+  section.appendChild(mcpForm(view));
+
+  // 原「全局 MCP」只读小节：与库行不是同一份数据（那是家目录文件里的条目）。
+  section.appendChild(globalMcpSection());
+
+  // 下块的位置：文本域由后续票补，本轮给占位说明。
+  const fileBox = el('section', 'd-sec');
+  fileBox.appendChild(sectionTitle('agentDetail.mcpFileTitle', 'agent-detail-section-mcp-file'));
+  fileBox.appendChild(
+    resourceNote('agentDetail.mcpFilePlaceholder', 'agent-detail-mcp-file-hint', 'is-faint'),
+  );
+  section.appendChild(fileBox);
+  return [section];
+}
+
+/** 把三个页签的内容按当前成员重铺（切成员 / 读路径 / 显式动作都走它）。 */
+function renderAgentTabPanels(agent) {
+  renderAgentTabPanel('base', agentBaseTabNodes(agent));
+  renderAgentTabPanel('skills', agentSkillsTabNodes(agent));
+  renderAgentTabPanel('mcp', agentMcpTabNodes(agent));
+
+  setAgentDetailTab(state.agentDetailTab);
 }
 
 /** 统计：四个数字（同一个 `stats` 来源）。 */
@@ -5468,23 +5607,6 @@ function agentConfigSection(agent) {
   );
   claimGroup.dataset.agentTier = 'auto_claim';
   section.appendChild(agentFieldRow('agent.autoClaimLabel', claimGroup, 'agent.autoClaimNote'));
-
-  section.appendChild(agentFieldRow(
-    'agent.contextWindow',
-    agentInput('context_window_messages', draft.context_window_messages,
-      { type: 'number', min: 1, step: 1, placeholder: '40' }),
-  ));
-  section.appendChild(agentFieldRow(
-    'agent.contextTrigger',
-    agentInput('context_trigger_ratio', draft.context_trigger_ratio,
-      { type: 'number', min: 0.01, max: 0.9, step: 0.01, placeholder: '0.7' }),
-  ));
-  section.appendChild(agentFieldRow(
-    'agent.maxIters',
-    agentInput('react_max_iters', draft.react_max_iters,
-      { type: 'number', min: 1, step: 1, placeholder: '30' }),
-    'agent.runtimeDefaultHint',
-  ));
 
   // 联网档（#202 / 2026-10-21 修订）：Agent 级入口。「跟随频道（默认）」= 不写 Agent 级覆盖，
   // 选中它保存时提交 `web_access: null`（库内列回到 NULL）；其余三档与频道设置里的同名同义。
@@ -5691,7 +5813,9 @@ async function submitAgentEdit() {
   const memberId = edit.memberId || state.activeAgentId;
   if (!memberId || !edit.draft) return;
   const draft = edit.draft;
-  const numberOrNull = (value) => (String(value).trim() === '' ? null : Number(value));
+  // 载荷只含界面真的有的字段（D2）：上下文条数 / 压缩阈值 / 迭代上限三格已从界面撤除，
+  // 因此**不提交**那三个键。`PATCH /api/agents/{id}` 是部分更新，不出现的字段不写入——
+  // 这是「撤界面不破坏库里既有值」的机械保证；反过来提交 `null` 会一次清空那三列。
   const payload = {
     display_name: String(draft.display_name || '').trim(),
     role: String(draft.role || '').trim(),
@@ -5699,9 +5823,6 @@ async function submitAgentEdit() {
     system_prompt: String(draft.system_prompt || '').trim(),
     enabled: Boolean(draft.enabled),
     auto_claim: Boolean(draft.auto_claim),
-    context_window_messages: numberOrNull(draft.context_window_messages),
-    context_trigger_ratio: numberOrNull(draft.context_trigger_ratio),
-    react_max_iters: numberOrNull(draft.react_max_iters),
     // 联网档（#202）：`follow` 是界面上的「跟随频道」档，提交 **`web_access: null`**——后端把它
     // 解释成「清除 Agent 级覆盖」（写库 NULL），所以从具体档位切回跟随频道真的会清掉覆盖，
     // 而不是只改界面（ADR-0026 §十五）。
@@ -7602,78 +7723,23 @@ function mcpForm(view) {
   return box;
 }
 
-/* ── Agent 详情的能力段（两个 kind 同屏，作用域恒为该成员） ─────────────── */
+/* ── 能力段的读路径（两个 kind 各在自己的页签里，作用域恒为该成员） ────────── */
 
-/** 能力段：标题 + 影响范围一句话 + MCP 小节 + 技能小节。
-    只吃**后端读数**；读不到只落在对应小节的错误行，不拖垮详情页的其它区块。 */
-function agentCapabilitiesSection(agent) {
-  const memberId = (agent && agent.id) || state.activeAgentId || '';
-  const view = capabilitiesView(memberId);
-  const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentCapabilities.title', 'agent-capabilities-section'));
-  section.appendChild(
-    resourceNote(
-      'agentCapabilities.scopeNote',
-      'agent-capabilities-scope',
-      'is-faint',
-      { member: memberId },
-    ),
-  );
+/** 重铺能力相关的那两个页签：读路径与**显式动作**（编辑 / 安装 / 复制 / 启停 / 删除）都走它。
 
-  // ① MCP 声明。
-  section.appendChild(el('div', 'd-sec-title', t('agentCapabilities.mcpTitle')))
-    .setAttribute('data-od-id', 'agent-capabilities-mcp');
-  section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
-  if (view.mcpError) {
-    section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
-  }
-  if (view.mcpLoading) {
-    section.appendChild(el('div', 'resource-empty', t('mcp.loading')));
-  } else if (!view.mcp.length) {
-    section.appendChild(el('div', 'resource-empty', t('mcp.empty')));
-  } else {
-    const list = el('div');
-    list.setAttribute('data-od-id', 'mcp-list');
-    view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
-    section.appendChild(list);
-  }
-  section.appendChild(mcpForm(view));
-
-  // ② 技能。
-  section.appendChild(el('div', 'd-sec-title', t('agentCapabilities.skillTitle')))
-    .setAttribute('data-od-id', 'agent-capabilities-skill');
-  section.appendChild(resourceNote('skill.scopeNote', 'skill-scope-note', 'is-faint'));
-  if (view.skillError) {
-    section.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
-  }
-  if (view.skillLoading) {
-    section.appendChild(el('div', 'resource-empty', t('skill.loading')));
-  } else if (!view.skills.length) {
-    section.appendChild(el('div', 'resource-empty', t('skill.empty')));
-  } else {
-    const list = el('div');
-    list.setAttribute('data-od-id', 'skill-list');
-    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
-    section.appendChild(list);
-  }
-  section.appendChild(skillInstallForm(view));
-  section.appendChild(skillImportForm(view));
-  return section;
-}
-
-/** 就地换掉能力段（草稿脏时 `renderAgentDetail()` 不整页重铺；这一段的读数是后端事实，
-    换了就得跟着换）。找不到旧节点（还没铺过）时什么都不做。 */
-function refreshAgentCapabilitiesSection() {
-  const agent = state.activeAgentId ? agentById(state.activeAgentId) : null;
-  if (!agent) return;
-  replaceSectionNode('agent-capabilities-section', agentCapabilitiesSection(agent));
-}
-
-/** 重铺能力段：读路径与**显式动作**（编辑 / 安装 / 启停 / 删除）都走它。
-    轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰这一段（见下）。 */
+    轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰它们（见那里的注释）——
+    后台重绘不该把持焦控件换成新节点。 */
 function paintAgentCapabilities() {
   if (!state.activeAgentId) return;
-  refreshAgentCapabilitiesSection();
+  const agent = agentById(state.activeAgentId);
+  if (!agent) return;
+  renderAgentTabPanel('skills', agentSkillsTabNodes(agent));
+  renderAgentTabPanel('mcp', agentMcpTabNodes(agent));
+}
+
+/** 草稿脏时 `renderAgentDetail()` 只换这两块（读数是后端事实，换了就得跟着换）。 */
+function refreshAgentCapabilitiesPanels() {
+  paintAgentCapabilities();
 }
 
 /* ── ③ 技能（列表 / 本机目录 / zip / 启停 / 删除） ─────────────────────── */
@@ -7792,7 +7858,7 @@ function updateMcpDraftField(field) {
   const key = field.dataset.mcpField;
   if (!key || !Object.prototype.hasOwnProperty.call(view.mcpDraft, key)) return;
   view.mcpDraft[key] = field.value;
-  if (key === 'transport') refreshAgentCapabilitiesSection();
+  if (key === 'transport') paintAgentCapabilities();
 }
 
 /** 表单 → 请求体（远端只留 url，本机只留 command / args；变量值从来没有输入口）。 */
@@ -9801,6 +9867,12 @@ function bindEvents() {
       syncAgentProviderHint(control.value);
       renderAgentEditNotice(control.value);
     }
+  });
+  // 页签：原生 <button> 的 click 就够了（键盘的 Tab / Enter 由浏览器自己的按钮行为提供，
+  // 不自造方向键漫游）。切页签只改呈现状态与两个节点属性，**不重铺**面板、不丢草稿（D1）。
+  $('#adTabs').addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-adtab]');
+    if (tab) setAgentDetailTab(tab.dataset.adtab);
   });
   $('#adBody').addEventListener('click', (event) => {
     const toggle = event.target.closest('[data-agent-toggle]');
