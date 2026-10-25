@@ -26,7 +26,7 @@
 （`agentDetailNodes()`，`studio/app.js:5317`）：**统计 → 系统提示 → 配置（含 MCP 表单与技能列表）→
 全局 MCP 只读小节 → 危险操作**。具体到用户的五个痛点：
 
-1. **改一个字段要滚过一整页。** 配置控件里有 10 个字段，其中三项（上下文条数 / 压缩阈值 / 迭代上限）
+1. **改一个字段要滚过一整页。** 配置区有 9 个可编辑控件（保存时整份提交 10 个键，多出来的那个是危险区的 `enabled`），其中三项（上下文条数 / 压缩阈值 / 迭代上限）
    用户从未因为「想调这个数字」而打开这一页；它们把真正常改的字段挤到需要滚动才能看到。
 2. **技能区与 MCP 区各自挤成一团。** 技能段今天同时挂着：列表 + 手填绝对路径安装 + 上传 zip 安装 +
    勾选式导入 + 每行「复制到其他成员」弹层。用户要「看这个技能到底是什么」时，页面上**没有正文入口**——
@@ -170,7 +170,7 @@
 一次保存就会把三列清空。这条边界是本设计里最容易做错的一格，必须写进实施票的验收项。
 
 **不做什么**（本票明确不选的替代方案）：给三项加一个「高级」折叠区（那是同一个入口的换皮，撤销不彻底）；
-把三项挪到 Agent 创建弹窗（那会让新建面从 6 个字段膨胀到 9 个，且创建之后仍无处可改）。
+把三项挪到 Agent 创建弹窗（那会让新建面从 4 个键膨胀到 7 个，且创建之后仍无处可改）。
 
 ### D3 · skills 只从本机导入（用户已定）
 
@@ -508,7 +508,7 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 | D1–D9 每条都有落点与结论，无「待定」占位 | 通过 | D1–D9 各一节；占位扫描 0 命中（A5） |
 | 术语决议 inline 落进 `CONTEXT.md` 的 `## Language` | 通过 | 新增 **Agent 详情页签** + 更新 **MCP 声明**（N1） |
 | ADR 处置按 D8 收口 | 通过 | ADR-0031 七处修订（`git diff` 可指）；#275 评论已发 |
-| 规格文件 seams 已声明且尽量少、user stories 足够长、Out of Scope 非空 | 通过 | `agent-detail-tabs-spec.md`：2 条 seam（都是既有缝）、71 条 user stories、12 条 Out of Scope |
+| 规格文件 seams 已声明且尽量少、user stories 足够长、Out of Scope 非空 | 通过 | `agent-detail-tabs-spec.md`：**2 条 seam**（都是既有缝）、**76 条 user stories**、**14 条 Out of Scope**；三个数字的产生命令与读数见 A5（不在这里二次自报） |
 | 票图逐票带标题 / 要构建什么 / 验收标准；blocking 用原生依赖；图无环；frontier ≥ 1 | 通过 | 见 A4 的票号回填与依赖读数 |
 | 项目文件改动时按 `pr` skill 写 PR body、推分支、`--body-file` 建/更新 PR | 通过 | 见 A6 |
 | worker_done 带真实 Task/Dispatch ID 并核实回执 | 通过 | 见 A6 |
@@ -540,12 +540,26 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 
 ### A5 · 实测读数
 
-| 项 | 读数 |
-| --- | --- |
-| 占位扫描（`待定\|TBD\|TODO`） | 本文件、规格、ADR-0031、`CONTEXT.md` 正文 **0 命中** |
-| 机械守卫 | 未触发：本票不碰 `app/alibot/studio/**`、`app/README.md`、`app/tests/**`；`test_docs_vocabulary_guard.py` 只读 `README` 与两个词表常量，`i18n_ui.test.cjs` 只扫 Studio 三件套 |
-| `git status` | 只有本文档 / 规格 / PR 正文 / `CONTEXT.md` / ADR-0031 五处 |
-| 源码 / 测试 / schema | **零改动**；`SCHEMA_VERSION` 未 bump |
+每条读数都是**可复核**的：给命令与当时的输出，而不是二次自报。
+
+| 项 | 命令 | 读数 |
+| --- | --- | --- |
+| user stories 条数 | `awk '/^## User Stories/,/^## Implementation Decisions/' app/specs/agent-detail-tabs-spec.md \| grep -cE '^\s*[-*] \|^[0-9]+\. '` | **76** |
+| Out of Scope 条数 | `awk '/^## Out of Scope/,/^## Further Notes/' app/specs/agent-detail-tabs-spec.md \| grep -cE '^[0-9]+\. '` | **14** |
+| seam 条数 | `awk '/^### D10 · Seam 选址/,/^### D11/' app/specs/agent-detail-tabs-spec.md \| grep -cE '^\| `(mcp\.json\|SKILL\.md)`'` | **2**（都是既有缝，零新增服务模块） |
+| D9 断言改写清单条数 | `awk '/### D9 · 既有测试与文档断言的改写清单/,/^\*\*`app\/tests\/test_skill_copy.py`/' app/specs/agent-detail-tabs-design-notes.md \| grep -cE '^\| [0-9]+ \|'` | **14**（7 条 `agent_detail_ui` + 7 条 `agent_capabilities_ui`） |
+| ADR-0031 被改的句子 | `git diff adc079b -- docs/adr/0031-agent-home-is-a-global-layer-beside-the-project-boundary.md`，逐块读 `-` / `+` 配对 | 七处对句（文件头标注 + §一 表格 + §二段 + §三 两处 bullet + §四 两行） |
+| 占位扫描（`待定\|TBD\|TODO`） | `grep -rnE '待定\|TBD\|TODO'` 对本文件 / 规格 / ADR-0031 / `CONTEXT.md`，再 `grep -vE '占位\|grep -rnE\|grep -nE\|0 命中'` 排掉自指行 | 原始 **3 行**（全是描述这条扫描本身的句子），排掉自指行后 **0 行**——即正文没有真实占位 |
+| 机械守卫 | — | 未触发：本票不碰 `app/alibot/studio/**`、`app/README.md`、`app/tests/**`；`test_docs_vocabulary_guard.py` 只读 `README` 与两个词表常量，`i18n_ui.test.cjs` 只扫 Studio 三件套 |
+| `git status` | `git status --porcelain` | 提交前只有本文档 / 规格 / PR 正文三处被本修正票改动（`CONTEXT.md` 与 ADR-0031 是上一轮已提交的） |
+| 源码 / 测试 / schema | `git diff adc079b..HEAD --name-only \| grep -E '^(app/alibot/\|app/tests/\|scripts/\|\.github/)'` | **无输出**（零改动）；`SCHEMA_VERSION` 未 bump |
+
+**为什么这三个数会错**（本票修正的一处）：A3 原来写「71 条 user stories、12 条 Out of Scope」——那是设计
+初稿的估计值，规格定稿后正文扩写到 76 / 14 时没回头改 A3。同一错误在 pr-body 里**没有**发生（那里写的
+是 76 / 14），而 `worker_done` 摘要里写的也是 76 / 14——因此这是一处**单点遗漏**，不是成体系的数错。
+修正后凡是引用这三个数的地方（本文件 A3 / A5、pr-body Summary）都指到本表的命令与读数。**同一个错误模式**
+在本票修正时又抓出三处（pr-body 的「4 个文档路径」实为 5 个；pr-body 里一段提交前的过期 `git diff --stat` 快照；
+A5 占位扫描的「唯一一行」实为 3 行），均已改掉或改成不随提交漂移的口径。存量错误一律换成**可复核命令 + 当时读数**。
 
 ### A6 · PR 与收尾
 
@@ -553,6 +567,7 @@ SQL、目录遍历顺序。沿用本仓既有两条纪律：前端只用 `vm` + 
 | --- | --- |
 | 分支 | `agent-detail-tabs-design` |
 | 本票 base | `adc079b`（= `origin/main`） |
-| PR | [#285](https://github.com/whutlichao/alibot/pull/285)（base `main`，head `agent-detail-tabs-design`），改动 5 个文件 / 1146 增 15 删 |
+| 改动规模（不随提交漂移的口径） | 两个历史锚点实测：`git diff adc079b..6219931 --shortstat` → `5 files changed, 1146 insertions(+), 15 deletions(-)`；`git diff adc079b..ce701ed --shortstat` → `5 files changed, 1148 insertions(+), 15 deletions(-)`（差 2 行 = 回填 PR 号那次）。**本修正提交之后的现值不在这里写死**，以 `git diff adc079b..HEAD --shortstat` 或 PR #285 的读数为准（会随后续修正提交继续增长） |
 | PR 正文 | `app/specs/agent-detail-tabs-pr-body.md`（`--body-file` 直接取仓库内路径，随本票一起被跟踪） |
-| 提交 | `6219931`（docs(specs): Agent 详情三分页签设计） |
+| PR | [#285](https://github.com/whutlichao/alibot/pull/285)（base `main`，head `agent-detail-tabs-design`）——本票的读数修正提交也推在**同一个** PR 上，未开新 PR |
+| 提交 | `6219931`（设计 + 规格 + ADR + 词条）→ `ce701ed`（回填 PR 号）→ 本次读数修正提交（只改 design-notes 与 pr-body） |

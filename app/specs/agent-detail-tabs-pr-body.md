@@ -1,6 +1,7 @@
 ## Summary
 
-设计票的三段交付面（设计笔记 → 规格 → 票图）一次落地，**零源码改动**：diff 只落在 4 个文档路径 + GitHub Issues。
+设计票的三段交付面（设计笔记 → 规格 → 票图）一次落地，**零源码改动**：diff 只落在 5 个文档路径 + GitHub Issues
+（`CONTEXT.md` / ADR-0031 / 设计笔记 / 规格 / 本 PR 正文）。
 
 ```text
 app/specs/
@@ -51,20 +52,22 @@ ticket map（原生 sub-issue + 原生 `blocked_by`，图无环，frontier = #28
 都不被触发；也没有任何守卫读 `CONTEXT.md` 或 `docs/adr/**` 的正文（实测 `grep -rln "CONTEXT.md" app/tests/`
 命中的三个文件只在注释里引用词条名，不读文件）。
 
-改动面（唯一允许的四处，`scripts/**` / `.github/**` / schema / 迁移链零触碰）：
+改动面（唯一允许的五个文档路径，`scripts/**` / `.github/**` / schema / 迁移链零触碰）：
 
 ```text
-$ git status --short
- M CONTEXT.md
- M docs/adr/0031-agent-home-is-a-global-layer-beside-the-project-boundary.md
-?? app/specs/agent-detail-tabs-design-notes.md
-?? app/specs/agent-detail-tabs-spec.md
+$ git diff adc079b..HEAD --name-only
+CONTEXT.md
+app/specs/agent-detail-tabs-design-notes.md
+app/specs/agent-detail-tabs-pr-body.md
+app/specs/agent-detail-tabs-spec.md
+docs/adr/0031-agent-home-is-a-global-layer-beside-the-project-boundary.md
 
-$ git diff --stat
- CONTEXT.md                                              | 28 +++++++++++-------
- ...global-layer-beside-the-project-boundary.md          | 16 ++++++------
- 2 files changed, 29 insertions(+), 15 deletions(-)
+$ git diff adc079b..HEAD --name-only | grep -E '^(app/alibot/|app/tests/|scripts/|\.github/)'
+(无输出 = 源码 / 测试 / 脚本 / CI 零改动)
 ```
+
+行数随本 PR 的后续修正提交增长，因此**不在这里写死**；以 `git diff adc079b..HEAD --shortstat` 或
+PR 页面的读数为准。
 
 ADR-0031 的七处修订逐条可指（`旧 → 新` 对照写在设计笔记 D8 的表里）：文件头修订标注、§一 表格 `mcp.json` 单元格、
 §二「技能与 MCP」段、§三「独立守卫」bullet、§三「Docker 后端」bullet、§四 表格 `§三` 行、§四 表格 `§六` 行。
