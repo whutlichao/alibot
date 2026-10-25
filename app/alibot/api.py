@@ -49,7 +49,8 @@
 - ``GET/PUT/DELETE /api/web-providers/{provider}/credential`` 掩码读写：保存 key / 设为默认 / 清空
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
 - ``GET  /api/skills/candidates``              ``~/.agents/skills`` 的只读候选扫描（外部 CLI 的落点，应用不执行 npx）
-- ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）
+- ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）；
+                                             当前 Studio 无入口，保留为脚本 / API 用法（#281 撤掉界面入口，端点不变）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -1277,6 +1278,9 @@ def create_app(
         那不是一次复制，而是把同一份字节写到同一处（必然冲突，且没有语义）。
 
         频道级旧行不参与复制（它们已弃用、装配忽略）：400 而不是静默搬到别处。
+
+        当前 Studio 无入口，保留为脚本 / API 用法（#281 撤掉了界面里的复制弹层与两个 kind 的
+        复制入口；端点与契约用例原样保留）。
         """
         current = database.get_skill(skill_id)
         if current is None:

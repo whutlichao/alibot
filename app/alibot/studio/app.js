@@ -228,9 +228,8 @@ const state = {
   channelConfigs: {},
   // 能力配置（#273 / ADR-0031 §二）：MCP 声明与技能**只有一个归口**——Agent 详情。作用域恒为
   // 该成员（`scope_kind=agent&scope_id=<member>`），因此这里按成员缓存：`mcp` / `skills` 是
-  // `GET /api/mcp-servers` / `GET /api/skills` 的镜像，`mcpDraft` 是**还没提交**的表单状态，
-  // `copy` 是「复制到其他成员」的弹层状态（目标多选 + 逐条结果）。清单里只有 `env_names`
-  // （变量名）——值从来不进这条通道。
+  // `GET /api/mcp-servers` / `GET /api/skills` 的镜像，`mcpDraft` 是**还没提交**的表单状态。
+  // 清单里只有 `env_names`（变量名）——值从来不进这条通道。
   agentCapabilities: {},
   // 名册的能力摘要（#273）：按成员缓存两个只读数字（`failed` 只影响那一行的占位），
   // 打开名册时整体作废重读，于是「读不到」不会被留成永久结论。
@@ -7003,7 +7002,7 @@ function renderChannelConfigModalContent() {
 
    - **只出现变量名**：MCP 载荷只有 `env_names`；表单也只收变量名，值没有输入口，
      因此界面不存在「把值带进请求」的形状。
-   - **配置动作不碰消息面**：增删改 / 启停 / 确认 / 复制之后只重读各自的清单，不刷新消息、
+   - **配置动作不碰消息面**：增删改 / 启停 / 确认之后只重读各自的清单，不刷新消息、
      不模拟唤醒。后端本来就不落消息（#151 / #152），前端也不制造「好像发生了什么」的假象。 */
 
 const MCP_TRANSPORTS = ['stdio', 'http', 'sse'];
@@ -7047,8 +7046,6 @@ function emptyCapabilitiesView(memberId) {
     skillImportPicks: [],
     skillImportResults: [],
     skillImportBusy: false,
-    // 复制弹层：`null` = 没开；`kind` / `id` 指向发起复制的那一行。
-    copy: null,
   };
 }
 
@@ -7341,7 +7338,7 @@ function skillImportForm(view) {
 }
 
 /** 导入结果的一行：`imported` / `skipped`（409 同名已存在）/ `failed`（其余可读原因）。
-    文案在**渲染时**取词条（与 `copyResultText` 同一口径）：切语言后已导入的行跟着换说法。 */
+    文案在**渲染时**取词条：切语言后已导入的行跟着换说法。 */
 function skillImportResultText(result) {
   if (result.status === 'imported') return t('skill.importResultDone', { name: result.name });
   if (result.status === 'skipped') return t('skill.importResultSkipped', { name: result.name });
@@ -7527,7 +7524,6 @@ function mcpRow(server, view) {
   }
   actions.appendChild(resourceButton('mcp.edit', 'mcpEdit', server.id, 'mcp-edit'));
   actions.appendChild(resourceButton('mcp.delete', 'mcpDelete', server.id, 'mcp-delete'));
-  actions.appendChild(resourceButton('agentCapabilities.copyTo', 'copyMcp', server.id, 'capability-copy'));
   row.appendChild(main);
   row.appendChild(actions);
   return row;
@@ -7608,7 +7604,7 @@ function mcpForm(view) {
 
 /* ── Agent 详情的能力段（两个 kind 同屏，作用域恒为该成员） ─────────────── */
 
-/** 能力段：标题 + 影响范围一句话 + MCP 小节 + 技能小节（含各自的复制弹层）。
+/** 能力段：标题 + 影响范围一句话 + MCP 小节 + 技能小节。
     只吃**后端读数**；读不到只落在对应小节的错误行，不拖垮详情页的其它区块。 */
 function agentCapabilitiesSection(agent) {
   const memberId = (agent && agent.id) || state.activeAgentId || '';
@@ -7641,7 +7637,6 @@ function agentCapabilitiesSection(agent) {
     view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
     section.appendChild(list);
   }
-  if (view.copy && view.copy.kind === 'mcp') section.appendChild(capabilityCopyNode(view));
   section.appendChild(mcpForm(view));
 
   // ② 技能。
@@ -7661,7 +7656,6 @@ function agentCapabilitiesSection(agent) {
     view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
     section.appendChild(list);
   }
-  if (view.copy && view.copy.kind === 'skill') section.appendChild(capabilityCopyNode(view));
   section.appendChild(skillInstallForm(view));
   section.appendChild(skillImportForm(view));
   return section;
@@ -7675,7 +7669,7 @@ function refreshAgentCapabilitiesSection() {
   replaceSectionNode('agent-capabilities-section', agentCapabilitiesSection(agent));
 }
 
-/** 重铺能力段：读路径与**显式动作**（编辑 / 安装 / 复制 / 启停 / 删除）都走它。
+/** 重铺能力段：读路径与**显式动作**（编辑 / 安装 / 启停 / 删除）都走它。
     轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰这一段（见下）。 */
 function paintAgentCapabilities() {
   if (!state.activeAgentId) return;
@@ -7711,7 +7705,6 @@ function skillRow(skill) {
     ),
   );
   actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
-  actions.appendChild(resourceButton('agentCapabilities.copyTo', 'copySkill', skill.id, 'capability-copy'));
   row.appendChild(main);
   row.appendChild(actions);
   return row;
@@ -7765,14 +7758,6 @@ function capabilityTarget() {
   const view = activeCapabilitiesView();
   if (!view || !view.memberId || !state.online) return null;
   return view;
-}
-
-/** 成员显示名的回退链：成员表 → Agent 快照 → id（复制结果里不能只剩一个裸 id）。 */
-function capabilityMemberName(memberId) {
-  const member = (state.members || []).find((item) => item.id === memberId);
-  if (member && member.display_name) return member.display_name;
-  const agent = (state.agents || []).find((item) => item.id === memberId);
-  return (agent && agent.display_name) || memberId;
 }
 
 function resetMcpDraft(view) {
@@ -8077,165 +8062,6 @@ async function deleteSkill(skillId) {
     view.skillError = t('skill.deleteFailed', { reason: err.message });
     paintAgentCapabilities();
   }
-}
-
-/* ── 复制到其他成员（行复制 / 字节复制；同名目标 409 ⇒ 逐条「已跳过」，绝不覆盖） ── */
-
-/** 打开某一行的复制弹层；目标候选 = 其他 Agent 成员（当前成员排除在外）。 */
-function openCapabilityCopy(kind, itemId) {
-  const view = activeCapabilitiesView();
-  if (!view) return;
-  view.copy = { kind, id: itemId, targets: [], results: [], error: '', busy: false };
-  paintAgentCapabilities();
-}
-
-function closeCapabilityCopy() {
-  const view = activeCapabilitiesView();
-  if (!view) return;
-  view.copy = null;
-  paintAgentCapabilities();
-}
-
-/** 多选目标：只改**未提交**的弹层状态。 */
-function toggleCapabilityCopyTarget(input) {
-  const view = activeCapabilitiesView();
-  if (!view || !view.copy) return;
-  const memberId = input.dataset.copyTarget;
-  if (!memberId) return;
-  const selected = Boolean(input.checked);
-  const index = view.copy.targets.indexOf(memberId);
-  if (selected && index < 0) view.copy.targets.push(memberId);
-  if (!selected && index >= 0) view.copy.targets.splice(index, 1);
-  view.copy.error = '';
-}
-
-/** 复制结果的一行：`copied` / `skipped`（目标已存在同名，409）/ `failed`（其余可读原因）。 */
-function copyResultText(result) {
-  const name = capabilityMemberName(result.memberId);
-  if (result.status === 'copied') return t('agentCapabilities.copyResultCopied', { name });
-  if (result.status === 'skipped') return t('agentCapabilities.copyResultSkipped', { name });
-  return t('agentCapabilities.copyResultFailed', { name, reason: result.reason || '' });
-}
-
-/** 逐个目标复制：MCP 是行复制（POST /api/mcp-servers），技能是字节复制
-    （POST /api/skills/{id}/copy，源字节在家目录，前端不参与路径）。 */
-async function submitCapabilityCopy() {
-  const view = capabilityTarget();
-  if (!view || !view.copy || view.copy.busy) return;
-  const copy = view.copy;
-  if (!copy.targets.length) {
-    copy.error = t('agentCapabilities.copyPickRequired');
-    paintAgentCapabilities();
-    return;
-  }
-  const mcpServer = copy.kind === 'mcp' ? view.mcp.find((item) => item.id === copy.id) : null;
-  const skill = copy.kind === 'skill' ? view.skills.find((item) => item.id === copy.id) : null;
-  if (!mcpServer && !skill) return;
-  copy.busy = true;
-  copy.error = '';
-  copy.results = [];
-  paintAgentCapabilities();
-  const targets = copy.targets.slice();
-  for (const targetId of targets) {
-    try {
-      if (mcpServer) {
-        await api('/api/mcp-servers', {
-          method: 'POST',
-          body: Object.assign({ scope_kind: 'agent', scope_id: targetId }, {
-            name: mcpServer.name,
-            transport: mcpServer.transport,
-            command: mcpServer.command || '',
-            args: mcpServer.args || [],
-            url: mcpServer.url || '',
-            env_names: mcpServer.env_names || [],
-            enabled: Boolean(mcpServer.enabled),
-          }),
-        });
-      } else {
-        await api('/api/skills/' + encodeURIComponent(skill.id) + '/copy', {
-          method: 'POST',
-          body: { scope_id: targetId },
-        });
-      }
-      copy.results.push({ memberId: targetId, status: 'copied' });
-    } catch (err) {
-      copy.results.push({
-        memberId: targetId,
-        status: err.status === 409 ? 'skipped' : 'failed',
-        reason: err.message,
-      });
-    }
-  }
-  copy.busy = false;
-  // 目标清单已变：清掉它们的名册摘要缓存，下次打开名册重读（不在这里猜计数）。
-  targets.forEach((targetId) => {
-    delete state.rosterCapabilities[targetId];
-  });
-  copy.targets = [];
-  if (state.activeAgentId !== view.memberId) return;
-  paintAgentCapabilities();
-  toast(t('agentCapabilities.copySummary', {
-    copied: copy.results.filter((item) => item.status === 'copied').length,
-    skipped: copy.results.filter((item) => item.status === 'skipped').length,
-    failed: copy.results.filter((item) => item.status === 'failed').length,
-  }));
-}
-
-/** 复制弹层：目标多选 + 确认 / 取消 + 逐条结果（结果留着，直到人关掉弹层）。 */
-function capabilityCopyNode(view) {
-  const copy = view.copy;
-  const box = el('div', 'resource-add');
-  box.setAttribute('data-od-id', 'capability-copy-dialog');
-  box.appendChild(el('div', 'd-sec-title', t('agentCapabilities.copyTitle')));
-  box.appendChild(resourceNote('agentCapabilities.copyHint', 'capability-copy-hint', 'is-faint'));
-
-  const others = (state.agents || []).filter((agent) => agent.id !== view.memberId);
-  if (!others.length) {
-    box.appendChild(el('div', 'resource-empty', t('agentCapabilities.copyNoTargets')));
-  } else {
-    const picker = el('div');
-    picker.setAttribute('data-od-id', 'capability-copy-targets');
-    others.forEach((agent) => {
-      const field = el('div', 'field');
-      const label = el('label');
-      const checkbox = el('input');
-      checkbox.type = 'checkbox';
-      checkbox.dataset.copyTarget = agent.id;
-      checkbox.setAttribute('data-od-id', 'capability-copy-target-' + agent.id);
-      checkbox.checked = copy.targets.indexOf(agent.id) >= 0;
-      label.appendChild(checkbox);
-      label.appendChild(document.createTextNode(' ' + agent.display_name));
-      field.appendChild(label);
-      picker.appendChild(field);
-    });
-    box.appendChild(picker);
-  }
-
-  if (copy.error) box.appendChild(resourceErrorNode(copy.error, 'capability-copy-error'));
-  if (copy.results.length) {
-    const results = el('div');
-    results.setAttribute('data-od-id', 'capability-copy-results');
-    copy.results.forEach((result) => {
-      const line = el('div', 'resource-meta copy-result', copyResultText(result));
-      line.dataset.copyStatus = result.status;
-      results.appendChild(line);
-    });
-    box.appendChild(results);
-  }
-  if (copy.busy) box.appendChild(el('div', 'resource-meta is-faint', t('agentCapabilities.copyBusy')));
-
-  const actions = el('div', 'agent-actions');
-  const confirm = resourceButton(
-    'agentCapabilities.copyConfirm',
-    'copyConfirm',
-    '1',
-    'capability-copy-confirm',
-  );
-  confirm.disabled = confirm.disabled || copy.busy;
-  actions.appendChild(confirm);
-  actions.appendChild(resourceButton('agentCapabilities.copyCancel', 'copyCancel', '1', 'capability-copy-cancel'));
-  box.appendChild(actions);
-  return box;
 }
 
 /** 保存：提交全部可写字段（`team_scope` 不在可写面上）；成功按响应重铺，失败只报可读原因。 */
@@ -9962,11 +9788,6 @@ function bindEvents() {
       if (view) view.mcpDraft.enabled = Boolean(enabled.checked);
       return;
     }
-    const target = event.target.closest('[data-copy-target]');
-    if (target) {
-      toggleCapabilityCopyTarget(target);
-      return;
-    }
     const control = event.target.closest('[data-agent-field]');
     if (!control) return;
     const name = control.dataset.agentField;
@@ -10065,24 +9886,6 @@ function bindEvents() {
     const skillDelete = event.target.closest('[data-skill-delete]');
     if (skillDelete) {
       deleteSkill(skillDelete.dataset.skillDelete);
-      return;
-    }
-    const copyMcp = event.target.closest('[data-copy-mcp]');
-    if (copyMcp) {
-      openCapabilityCopy('mcp', copyMcp.dataset.copyMcp);
-      return;
-    }
-    const copySkill = event.target.closest('[data-copy-skill]');
-    if (copySkill) {
-      openCapabilityCopy('skill', copySkill.dataset.copySkill);
-      return;
-    }
-    if (event.target.closest('[data-copy-confirm]')) {
-      submitCapabilityCopy();
-      return;
-    }
-    if (event.target.closest('[data-copy-cancel]')) {
-      closeCapabilityCopy();
       return;
     }
     if (event.target.closest('[data-agent-remote-confirm]')) {
