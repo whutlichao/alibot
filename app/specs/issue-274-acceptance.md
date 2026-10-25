@@ -122,7 +122,7 @@ EXIT=0
 
 迁移清单 JSON（节选）：
 
-```python
+```text
 entries: [('notes', 'create', 'mem_...', 2, 76), ('review', 'create', 'mem_...', 2, 84)]
 channel_level: [('ch_...', ['channel-only'], '频道级已弃用，请按成员安装')]
 ```
@@ -157,7 +157,7 @@ EXIT=6
 ```text
 $ scripts/check.sh --fast tests/test_skill_migration.py tests/test_migration_chain_guard.py tests/test_schema_version_pins_guard.py
 == pytest（指定文件）: tests/test_skill_migration.py tests/test_migration_chain_guard.py tests/test_schema_version_pins_guard.py
-37 passed in 31.90s
+37 passed in 32.15s
 All checks passed!                       # ruff check
 Success: no issues found in 126 source files   # mypy（仓库根）
 0 errors, 0 warnings, 0 informations     # pyright
