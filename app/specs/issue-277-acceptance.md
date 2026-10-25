@@ -132,7 +132,7 @@ node --test app/tests/*.test.cjs
 ### 5.2 全量 `scripts/check.sh`
 
 ```text
-== pytest（全量）        1210 passed, 11 skipped in 691.47s
+== pytest（全量）        1210 passed, 11 skipped in 695.02s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
 == mypy（仓库根）        Success: no issues found in 128 source files
@@ -141,7 +141,33 @@ node --test app/tests/*.test.cjs
 门禁全绿
 ```
 
-这是提交树（`48b8663` + 本文件）上的最终读数：全量 pytest 1210 passed / 11 skipped（比 review 前多 2 条，即新增的两条后端用例），其余门禁同前。
+**读数对应的 commit：`1000632`**（`chore(#277): 移除误提交的运行期日志，并堵住产生源`）——即
+`git rm -r --cached app/logs`（37 个文件）与 `.gitignore` 新增 `/logs/`、`/app/logs/` 之后的树。
+本文件在该树之后追加，属纯文档改动，不再改变任何门禁判据。
+
+与上一轮（`70fcb6d` 里那两行）的关系：**数字完全相同**（1210 passed / 11 skipped / 340 / 128 / 322），
+这不是「凑出来的同值」，而是必然——清掉的是 37 个**未被任何代码/测试引用**的运行期日志文件，删它们
+不改变用例集合、源文件数或格式化面。真正不自洽的是上一轮：那个 commit 声称只回填两行数字，实际却把
+37 个 `app/logs/2026-10-25_15-*.log` 一并带进了提交树（`main` 上该目录与 `.log` 文件数都是 0）。
+本轮用追加 commit 修正这一点，并堵住产生源：`.gitignore` 现在遮蔽 `app/logs/` 与仓库根 `logs/`，
+在 `app/` 下重跑 `pytest` 后 `git status --porcelain` 不再出现该目录（见 §5.3）。
+
+### 5.3 运行期日志不再进工作区（产生源的验证）
+
+```sh
+git ls-tree -r --name-only HEAD -- app/logs | wc -l        # 0（main 上也是 0）
+cd app && ../.venv/bin/python -m pytest tests/test_runtime_memory.py
+ls -1 app/logs | wc -l                                     # 1 —— logger 确实又写了
+git status --porcelain                                     # 不含 app/logs/
+git status --porcelain --ignored | grep '^!!' | grep logs   # !! app/logs/
+```
+
+`tests/test_runtime_memory.py` 是复现产生源最短的一条路径（ReMe 的 `application.py` 一被构造就
+`log_dir="logs"` 落盘）；`tests/test_skill_import.py` 走不到那条路径，跑它不会生成日志。全量门禁跑完
+后盘上有 75 个 `.log`，`git status --porcelain` 仍然只有本文件的改动——这就是「堵住产生源」的读数。
+
+`.gitignore` 的两条规则都是**锚定根**写法（`/logs/` 与 `/app/logs/`），已用 `git check-ignore -v`
+反向核对：只遮蔽这两个目录，`app/specs/`、`docs/`、`app/alibot/` 都不受影响。
 
 ## 6. 双轴 code-review（固定点 `5f7dd9c`，两个并行子代理）
 
@@ -201,6 +227,23 @@ candidates}` 形状；channel → 400 经 `resolve_install_root`；`POST /api/sk
 
 ## 8. 交付
 
-- 分支：`issue-277-skill-import`；PR 见 GitHub issue #277 的 Answer 评论
+- 分支：`issue-277-skill-import`；PR：https://github.com/whutlichao/alibot/pull/278（OPEN）
 - 验收文档：本文件（`app/specs/issue-277-acceptance.md`）
 - PR 正文正本：`app/specs/issue-277-pr-body.md`
+
+## 9. 打回补齐（同票 follow-up 轮）
+
+上一轮 Dispatch 结算后，coordinator 复核发现一处与提交树不自洽的事实：`70fcb6d` 除两行数字外，
+把 37 个 `app/logs/2026-10-25_15-*.log` 一并提交了（`main` 上该目录与 `.log` 文件数都是 0）。
+本轮只做三件事，**未动任何功能代码 / 测试 / ADR / CONTEXT 词条**。
+
+| # | 动作 | 读数 |
+| --- | --- | --- |
+| 1 | `git rm -r --cached app/logs` + 删盘，追加 commit `1000632`（不 rebase / 不 amend / 不 force-push） | `git ls-tree -r --name-only HEAD -- app/logs \| wc -l` → `0` |
+| 2 | `.gitignore` 补 `/logs/` 与 `/app/logs/`（锚定根，紧挨「本机数据目录候选 / 工作区临时目录」两条，附成因注释） | `git check-ignore -v` 只命中这两个目录；`app/specs/`、`docs/`、`app/alibot/` 不命中 |
+| 3 | 清理后的树（`1000632`）上重跑全量 `scripts/check.sh`，把真实读数回填 §5.2 并写明 commit SHA | `1210 passed, 11 skipped in 695.02s`；`门禁全绿` |
+
+产生源的验证见 §5.3：全量门禁跑完后盘上有 75 个 `.log`，`git status --porcelain` 不含 `app/logs/`。
+
+数字与上一轮完全相同的原因写在 §5.2：删掉的是 37 个没有任何代码/测试引用的运行期日志，用例集合、
+源文件数与格式化面都不变；**不自洽的是上一轮那个 commit 的内容，不是读数本身**。

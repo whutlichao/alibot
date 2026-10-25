@@ -72,9 +72,16 @@ POST /api/skills  {scope_kind, scope_id, source_path=<候选 path>}   ← 语义
   `review：已存在，已跳过`（`data-import-status="skipped"`）、技能列表仍 1 行、字节 md5 不变；
   刷新候选后 `review` 变 `disabled=true` + 后缀「已安装」；英文界面 `Import from ~/.agents/skills` /
   `Refresh candidates` / `Cannot import: …`。截图见 `app/specs/issue-277-acceptance.md` §4。
-- **门禁（`scripts/check.sh`，全量）**：pytest `1210 passed, 11 skipped`、ruff check `All checks passed!`、
-  ruff format `--check` `340 files already formatted`、mypy `no issues in 128 source files`、
-  pyright `0 errors`、node glob `322 pass / 0 fail`、`门禁全绿`。
+- **门禁（`scripts/check.sh`，全量，树 `1000632`）**：pytest `1210 passed, 11 skipped in 695.02s`、
+  ruff check `All checks passed!`、ruff format `--check` `340 files already formatted`、
+  mypy `no issues in 128 source files`、pyright `0 errors`、node glob `322 pass / 0 fail`、`门禁全绿`。
+  该树之后只有文档提交（`app/specs/**`），不改任何门禁判据；读数与上一轮同值，因为清掉的是 37 个
+  没有任何代码/测试引用的运行期日志（详见 `app/specs/issue-277-acceptance.md` §5.2）。
+- **误提交的运行期日志（本轮修正）**：`70fcb6d` 把 37 个 `app/logs/2026-10-25_15-*.log` 带进了提交树
+  （`main` 上该目录与 `.log` 文件数都是 0）。`1000632` 用 `git rm -r --cached app/logs` + 删盘移除，
+  并在 `.gitignore` 补 `/logs/` 与 `/app/logs/`（锚定根，附成因注释：ReMe / AgentScope 的 logger 默认
+  `log_dir="logs"`，按进程 cwd 落盘）。验证：全量门禁跑完盘上有 75 个 `.log`，`git status --porcelain`
+  不含 `app/logs/`；`git ls-tree -r --name-only HEAD -- app/logs` 为空。
 - **双轴 review（固定点 `5f7dd9c`）**：Standards 3 hard + 3 判断 → 6 条全修（文档串自相矛盾、
   ADR 计数与 CONTEXT/README 冲突、`installed` 按目录名判定、结果行存渲染后文案、Middle Man、
   证据计数）；Spec 3 missing + 3 scope + 2 wrong → missing 3 修（验收文档回填、交付流程、`data-skill-import-status`）、
