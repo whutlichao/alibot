@@ -1,22 +1,25 @@
-"""Skill 的安装与装配层（#152 / 规格 §3.6 / ADR-0021 §三）。
+"""Skill 的安装与装配层（#152 / 规格 §3.6 / ADR-0031 §二）。
 
 库里只存**元数据**（name / description / source_path / content_hash / enabled / scope），字节
-是安装时复制到 ``workspace_root/.alibot/skills/`` 下的一棵树：
+是安装时复制到**成员家目录**下的一棵树：
 
-- ``scope_kind='agent'``：``.alibot/skills/<member_id>/<name>/``——每个成员一个分区；
-- ``scope_kind='channel'``：``.alibot/skills/<channel_id>/<name>/``——频道级默认，装配时与成员
-  分区合并，Agent 级同名**覆盖**频道级（与 MCP 声明同一优先级方向）。
+- ``scope_kind='agent'``：``<全局根>/agents/<member_id>/skills/<name>/``——每个成员一个分区。
+
+``scope_kind='channel'`` 的旧行保留在库里但**不参与装配**（ADR-0031 #270 修订）；安装器不再
+接受频道作用域（HTTP 层返回明确 400）。项目层 ``<workspace_root>/.alibot/skills/`` 的旧字节同样
+保留、不搬运、不进入装配——搬迁是 T5 的显式动作。
 
 安装只接受**本机目录**或**上传 zip**（D21）：不访问远端市场、不自动下载、不自动更新。安装前
 校验 ``SKILL.md`` 的 YAML front matter（``name`` / ``description``）、路径安全与内容 hash；任何
 一项不合法都**整体拒绝**——不落库、不留半棵树。
 
 配置动作（安装 / 启停 / 删除）不落消息、不唤醒、不消耗预算（ADR-0011 同族；与 ADR-0021 §三
-“MCP / Skill 是配置，不是消息或任务”一致）。删除只删配置行与工作区副本，**绝不删除用户源目录**。
+“MCP / Skill 是配置，不是消息或任务”一致）。删除只删配置行与成员家目录副本，**绝不删除用户
+源目录**，也不触碰其他频道根。
 
 装配层把启用的技能变成 AgentScope 的 :class:`agentscope.skill.Skill` 对象，由 ``Toolkit`` 注入
-系统提示与内置 ``Skill`` 查看器；装配前重新核对 hash：工作区副本被改动或缺失时该技能不装配，
-但不影响其他工具（失败可读、不拖垮一轮）。
+系统提示与内置 ``Skill`` 查看器；装配前重新核对 hash：成员家目录副本被改动或缺失时该技能不
+装配，但不影响其他工具（失败可读、不拖垮一轮）。装配顺序只有两层：成员家目录 > 全局公共技能库。
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ import re
 import shutil
 import uuid
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,35 +41,31 @@ from typing import Any, BinaryIO
 
 import frontmatter
 
-from .i18n import Locale, render
+from .i18n import SOURCE_LOCALE, Locale, render
 from .workspace import (
     AGENTS_DIR,
-    ALIBOT_DIR,
     WorkspaceConfigError,
     docker_global_member_home,
     docker_global_skills_home,
     ensure_state_partition,
+    global_home_root,
+    global_member_home,
     resolve_global_read_path,
     safe_partition_id,
-    validate_workspace_root,
 )
 
 _log = logging.getLogger(__name__)
 
-#: ``<workspace_root>/.alibot/skills``（与 AgentScope 自己的 ``skills/`` 分区分开命名）。
+#: 成员家目录下的技能分区名（与 AgentScope 自己的 ``skills/`` 分区分开命名）。
 SKILLS_DIR = "skills"
 
-# ─── 四层归属（#232 / ADR-0031 D4）─────────────────────────────────────────
-#: 优先级从高到低；合并时先出现者胜出。项目层两级由库维护，全局层两级是纯文件。
-SKILL_LAYER_PROJECT_AGENT = "project-agent"
-SKILL_LAYER_PROJECT_CHANNEL = "project-channel"
+# ─── 两层归属（ADR-0031 §二 #270 修订）─────────────────────────────────────
+#: 优先级从高到低；合并时先出现者胜出。两层都是**成员家目录 / 全局公共库**。
 SKILL_LAYER_GLOBAL_MEMBER = "global-member"
 SKILL_LAYER_GLOBAL_PUBLIC = "global-public"
 
 #: 运行期提示里的层名（两种语言同键集，见 ``i18n.CATALOGS``）。
 _SKILL_LAYER_LABEL_KEYS = {
-    SKILL_LAYER_PROJECT_AGENT: "skill.layer.project-agent",
-    SKILL_LAYER_PROJECT_CHANNEL: "skill.layer.project-channel",
     SKILL_LAYER_GLOBAL_MEMBER: "skill.layer.global-member",
     SKILL_LAYER_GLOBAL_PUBLIC: "skill.layer.global-public",
 }
@@ -113,35 +112,28 @@ class _TreeFile:
     size: int
 
 
-def skills_partition(root: str, scope_id: str) -> str:
-    """一个 scope 的技能分区目录（``.alibot/skills/<scope_id>``）。"""
-    return os.path.join(root, ALIBOT_DIR, SKILLS_DIR, safe_partition_id(scope_id))
+def skills_partition(global_root: str, member_id: str) -> str:
+    """一个成员的技能分区目录（``<全局根>/agents/<member_id>/skills``）。
+
+    路径经 ``realpath`` 规范化：全局根自身可能带 symlink 前缀（macOS 的 ``/var`` →
+    ``/private/var``），而 ``ensure_state_partition`` 以 root 的 realpath 判定越界。
+    """
+    real_root = os.path.realpath(global_root)
+    return os.path.join(global_member_home(member_id, root=real_root), SKILLS_DIR)
 
 
 def _variant(raw: Any) -> str:
     return str(raw or "").strip()
 
 
-def _ensure_partition(root: str, partition: str, locale: Locale) -> None:
-    """创建 ``.alibot/skills/<scope>``；根外 symlink 祖先在**写入前**拒绝。"""
+def _ensure_partition(global_root: str, partition: str, locale: Locale) -> None:
+    """创建 ``<全局根>/agents/<member>/skills``；根外 symlink 祖先在**写入前**拒绝。"""
     try:
-        ensure_state_partition(root, partition)
+        ensure_state_partition(os.path.realpath(global_root), partition)
     except WorkspaceConfigError as error:
         raise SkillValidationError(
-            "error.skill_workspace_root_invalid",
+            "error.skill_member_home_invalid",
             field="scope_id",
-            locale=locale,
-            reason=str(error),
-        ) from error
-
-
-def _real_root(raw: str, locale: Locale) -> str:
-    """频道项目根必须是可用的绝对目录；读路径与安装路径同口径。"""
-    try:
-        return validate_workspace_root(raw)
-    except WorkspaceConfigError as error:
-        raise SkillValidationError(
-            "error.skill_workspace_root_invalid",
             locale=locale,
             reason=str(error),
         ) from error
@@ -152,96 +144,17 @@ def resolve_install_root(
     *,
     scope_kind: str,
     scope_id: str,
-    channel_id: str | None,
     locale: Locale,
 ) -> str:
-    """安装时的字节落点：由 scope + 可选频道上下文解析到**频道项目根**。
+    """安装时的字节落点：只接受成员（``agent``）作用域，返回**全局根**。
 
-    Agent 级技能按成员分区，但一个成员可能属于多个频道（各自项目根不同）；因此安装必须能
-    落到某个具体根上：显式 ``channel_id`` 优先，否则要求该成员**恰好只有一个**配置了根的频道。
-    频道级技能直接用 ``scope_id`` 频道的根。
+    成员技能落 ``<全局根>/agents/<member_id>/skills/``，与频道无关——成员跨频道只需要一份
+    正本。频道作用域是弃用路径（旧行保留、装配忽略），安装器给出明确的 400 而不是静默忽略。
     """
+    if scope_kind != "agent":
+        raise SkillValidationError("error.skill_scope_agent_only", field="scope_kind", locale=locale)
     database.validate_skill_scope(scope_kind, scope_id)
-    if scope_kind == "channel":
-        root = _variant(database.channel_workspace_root(scope_id))
-        if not root:
-            raise SkillValidationError(
-                "error.skill_workspace_root_missing",
-                field="scope_id",
-                locale=locale,
-                scope_id=scope_id,
-            )
-        return _real_root(root, locale)
-
-    if channel_id:
-        if not database.is_channel_member(channel_id, scope_id):
-            raise SkillValidationError(
-                "error.skill_member_not_in_channel",
-                field="channel_id",
-                locale=locale,
-                channel_id=channel_id,
-            )
-        root = _variant(database.channel_workspace_root(channel_id))
-        if not root:
-            raise SkillValidationError(
-                "error.skill_workspace_root_missing",
-                field="channel_id",
-                locale=locale,
-                scope_id=channel_id,
-            )
-        return _real_root(root, locale)
-
-    roots = [root for root in database.workspace_roots_for_member(scope_id) if _variant(root)]
-    if not roots:
-        raise SkillValidationError(
-            "error.skill_workspace_root_missing",
-            field="scope_id",
-            locale=locale,
-            scope_id=scope_id,
-        )
-    if len(roots) > 1:
-        raise SkillValidationError(
-            "error.skill_channel_ambiguous",
-            field="channel_id",
-            locale=locale,
-            scope_id=scope_id,
-        )
-    return _real_root(roots[0], locale)
-
-
-def resolve_delete_roots(
-    database: Any,
-    *,
-    scope_kind: str,
-    scope_id: str,
-    channel_id: str | None,
-) -> list[str]:
-    """删除时要清理的工作区副本所在根（不存在的根跳过；绝不触碰用户源目录）。
-
-    Agent 级技能可能被安装到多个频道根，删除按**成员的所有已配置根**清理；频道级只清该频道根。
-    """
-    roots: list[str] = []
-    candidates: list[str] = []
-    if scope_kind == "channel":
-        root = _variant(database.channel_workspace_root(scope_id))
-        if root:
-            candidates.append(root)
-    else:
-        # Agent 级技能可能装进多个频道根；成员退出频道后仍要能清掉遗留副本，因此按**库里
-        # 所有已配置根**清理（只动该成员分区里的同名目录，不会碰到别的技能）。
-        candidates.extend(database.all_workspace_roots())
-        if channel_id:
-            root = _variant(database.channel_workspace_root(channel_id))
-            if root:
-                candidates.append(root)
-    for raw in candidates:
-        try:
-            root = validate_workspace_root(raw)
-        except WorkspaceConfigError:
-            continue
-        if root not in roots:
-            roots.append(root)
-    return roots
+    return global_home_root()
 
 
 def _manifest_root(directory: Path) -> Path:
@@ -308,6 +221,29 @@ def _content_hash(files: Sequence[_TreeFile]) -> str:
     return digest.hexdigest()
 
 
+def read_skill_tree(directory: str | os.PathLike[str]) -> dict[str, Any]:
+    """校验并读取**一棵技能树**：清单元数据 + 内容 hash + 规模读数。
+
+    与安装路径共用同一个校验内核（:func:`_skill_files` / :func:`_content_hash` /
+    :func:`_front_matter`），因此「迁移时算出的 hash」与「装配时核对的 hash」是同一个算法：
+    普通文件、无 symlink、路径与大小上界、``SKILL.md`` front matter 齐全，任一不成立都抛
+    :class:`SkillValidationError`。它**只读**，不复制、不创建任何文件。
+
+    ``directory`` 必须是技能根（``SKILL.md`` 在根上）；不会像安装器那样探测「包了一层单目录」的
+    上传形态——迁移面对的是已安装的字节。
+    """
+    root = Path(directory)
+    files = _skill_files(root)
+    name, description = _front_matter(root, SOURCE_LOCALE)
+    return {
+        "name": name,
+        "description": description,
+        "content_hash": _content_hash(files),
+        "file_count": len(files),
+        "bytes": sum(item.size for item in files),
+    }
+
+
 def _front_matter(skill_root: Path, locale: Locale) -> tuple[str, str]:
     manifest = skill_root / SKILL_MANIFEST
     if manifest.is_symlink() or not manifest.is_file():
@@ -368,13 +304,13 @@ def _prepare(source: Path, staging: Path, *, locale: Locale) -> dict[str, Any]:
 def _install_prepared(
     prepared: Mapping[str, Any],
     *,
-    root: str,
-    scope_id: str,
+    global_root: str,
+    member_id: str,
     staging: Path,
     source_path: str,
     locale: Locale,
 ) -> dict[str, Any]:
-    partition = skills_partition(root, scope_id)
+    partition = skills_partition(global_root, member_id)
     destination = os.path.join(partition, str(prepared["name"]))
     if os.path.lexists(destination):
         raise SkillValidationError(
@@ -397,11 +333,11 @@ def _install_prepared(
 def install_directory(
     source_path: str | os.PathLike[str],
     *,
-    root: str,
-    scope_id: str,
+    global_root: str,
+    member_id: str,
     locale: Locale,
 ) -> dict[str, Any]:
-    """从**本机目录**安装：校验 front matter / 路径 / hash 后复制进成员（或频道）分区。"""
+    """从**本机目录**安装：校验 front matter / 路径 / hash 后复制进成员家目录的技能分区。"""
     raw = _variant(os.fspath(source_path))
     if not raw or not os.path.isabs(raw):
         raise SkillValidationError("error.skill_source_invalid", field="source_path", locale=locale)
@@ -409,20 +345,20 @@ def install_directory(
     if not source.is_dir():
         raise SkillValidationError("error.skill_source_not_directory", field="source_path", locale=locale)
 
-    partition = skills_partition(root, scope_id)
+    partition = skills_partition(global_root, member_id)
     partition_real = os.path.realpath(partition)
     if os.path.commonpath([partition_real, str(source)]) == str(source):
         # staging 就建在 partition 里；把 partition 的祖先当来源会复制到自己内部。
         raise SkillValidationError("error.skill_source_invalid", field="source_path", locale=locale)
-    _ensure_partition(root, partition, locale)
+    _ensure_partition(global_root, partition, locale)
     staging_root = Path(partition) / f".staging-{uuid.uuid4().hex}"
     staging_root.mkdir()
     try:
         prepared = _prepare(source, staging_root / "skill", locale=locale)
         return _install_prepared(
             prepared,
-            root=root,
-            scope_id=scope_id,
+            global_root=global_root,
+            member_id=member_id,
             staging=staging_root / "skill",
             source_path=str(source),
             locale=locale,
@@ -493,13 +429,13 @@ def install_zip(
     stream: BinaryIO,
     *,
     filename: str,
-    root: str,
-    scope_id: str,
+    global_root: str,
+    member_id: str,
     locale: Locale,
 ) -> dict[str, Any]:
     """从**上传 zip** 安装：路径安全、解包上限与 front matter 全部先校验，再原子落位。"""
-    partition = skills_partition(root, scope_id)
-    _ensure_partition(root, partition, locale)
+    partition = skills_partition(global_root, member_id)
+    _ensure_partition(global_root, partition, locale)
     staging_root = Path(partition) / f".staging-{uuid.uuid4().hex}"
     staging_root.mkdir()
     extracted = staging_root / "extracted"
@@ -519,8 +455,8 @@ def install_zip(
         prepared = _prepare(extracted, staging_root / "skill", locale=locale)
         return _install_prepared(
             prepared,
-            root=root,
-            scope_id=scope_id,
+            global_root=global_root,
+            member_id=member_id,
             staging=staging_root / "skill",
             source_path=f"zip:{_variant(filename) or 'upload.zip'}",
             locale=locale,
@@ -529,9 +465,9 @@ def install_zip(
         shutil.rmtree(staging_root, ignore_errors=True)
 
 
-def uninstall(root: str, *, scope_id: str, name: str) -> None:
-    """删除工作区副本（只删这个 scope 的同名目录；不触碰任何 ``source_path``）。"""
-    partition = skills_partition(root, scope_id)
+def uninstall(global_root: str, *, member_id: str, name: str) -> None:
+    """删除成员家目录里的副本（只删该成员的同名目录；不触碰 ``source_path`` 与项目根）。"""
+    partition = skills_partition(global_root, member_id)
     target = os.path.join(partition, name)
     if os.path.islink(target):
         os.unlink(target)
@@ -558,20 +494,16 @@ def _load_manifest_markdown(skill_root: Path) -> tuple[str, str, str, float] | N
 def load_skills(
     rows: Sequence[Mapping[str, Any]],
     *,
-    root: str,
-    container_root: str | None = None,
+    member_home: str,
+    container_home: str | None = None,
 ) -> list[Any]:
-    """把启用技能读成 AgentScope ``Skill`` 对象；hash 不符 / 缺失 / 非法都只跳过该技能。
+    """把**库行**对应的技能从成员家目录读成 AgentScope ``Skill`` 对象。
 
-    ``container_root`` 非空时（Docker 后端）``dir`` 换成容器内路径；字节仍从同一个 host 项目根
-    读取（宿主目录挂载到 ``/workspace``）。
+    字节正本是 ``<成员家目录>/skills/<name>/``；hash 不符 / 缺失 / 名字不符都只跳过该条并留
+    warning，不影响其他技能。``container_home`` 非空时（Docker 后端）``dir`` 换成容器内可见
+    路径 ``<container_home>/skills/<name>``，字节仍由宿主预读（成员家目录以 ``:ro`` 挂载）。
     """
     from agentscope.skill import Skill
-
-    try:
-        root_real = validate_workspace_root(root)
-    except WorkspaceConfigError:
-        return []
 
     skills: list[Any] = []
     for row in rows:
@@ -579,11 +511,12 @@ def load_skills(
         if not SKILL_NAME_PATTERN.fullmatch(name):
             _log.warning("skip skill with invalid name: %r", name)
             continue
-        scope = safe_partition_id(str(row.get("scope_id") or ""))
-        skill_root = Path(root_real) / ALIBOT_DIR / SKILLS_DIR / scope / name
-        if skill_root.is_symlink() or not skill_root.is_dir():
-            _log.warning("skill %r is missing from the workspace partition %s", name, scope)
+        # 只读守卫以成员家目录为根：根外 symlink 祖先 / 根外目标一律拒绝。
+        resolved = resolve_global_read_path(member_home, SKILLS_DIR, name)
+        if resolved is None or not os.path.isdir(resolved):
+            _log.warning("skill %r is missing from the member home %s", name, member_home)
             continue
+        skill_root = Path(resolved)
         try:
             files = _skill_files(skill_root)
         except SkillValidationError as error:
@@ -600,10 +533,7 @@ def load_skills(
         if loaded_name != name:
             _log.warning("skill %r manifest name %r does not match", name, loaded_name)
             continue
-        if container_root:
-            directory = posixpath.join(container_root, ALIBOT_DIR, SKILLS_DIR, scope, name)
-        else:
-            directory = str(skill_root)
+        directory = posixpath.join(container_home, SKILLS_DIR, name) if container_home else str(skill_root)
         skills.append(
             Skill(
                 name=name,
@@ -626,8 +556,12 @@ def _global_skill_layer(
     parts: tuple[str, ...],
     *,
     container_dir: str | None,
+    exclude: Collection[str] = (),
 ) -> list[Any]:
     """读一层全局技能（成员家目录或公共库）；目录缺失 / 条目损坏都只跳过。
+
+    ``exclude`` 里的名字整条略过：成员家目录的**手工目录**不得复活库行（含停用行与 hash
+    校验失败的行）——库里那一行仍是该技能的归属，改坏的字节不能退化成「人手工放的」。
 
     全部读取经 :func:`workspace.resolve_global_read_path`：以全局根自己的 ``realpath`` 为根，
     根外 symlink 祖先与根外目标一律拒绝。这里**只读**，绝不创建目录或写占位文件。
@@ -646,8 +580,11 @@ def _global_skill_layer(
         return []
 
     skills: list[Any] = []
+    excluded = {_variant(item) for item in exclude}
     for entry in entries:
         name = entry.name
+        if name in excluded:
+            continue
         if not SKILL_NAME_PATTERN.fullmatch(name):
             _log.warning("skip global skill with invalid name: %r", name)
             continue
@@ -693,6 +630,7 @@ def load_global_skills(
     member_id: str,
     *,
     docker: bool = False,
+    exclude_member_names: Collection[str] = (),
 ) -> dict[str, list[Any]]:
     """读全局层的两层技能（纯文件，不进库）。
 
@@ -702,12 +640,16 @@ def load_global_skills(
     目录缺失 ⇒ 该层零条、不报错、不创建。``docker`` 为真时 ``Skill.dir`` 换成容器内可见路径
     （``/alibot-home/agents/<member_id>/skills/<name>`` 与 ``/alibot-home/skills/<name>``），
     字节仍从宿主全局根读取；挂载缺失时宿主目录通常也不存在，于是按「该层缺席」降级。
+    ``exclude_member_names`` 交给成员层：该成员库行占用的名字不按「人手工放置」重复装配。
     """
     member_parts = (AGENTS_DIR, safe_partition_id(member_id), SKILLS_DIR)
     member_container = posixpath.join(docker_global_member_home(member_id), SKILLS_DIR) if docker else None
     return {
         SKILL_LAYER_GLOBAL_MEMBER: _global_skill_layer(
-            global_root, member_parts, container_dir=member_container
+            global_root,
+            member_parts,
+            container_dir=member_container,
+            exclude=exclude_member_names,
         ),
         SKILL_LAYER_GLOBAL_PUBLIC: _global_skill_layer(
             global_root,
@@ -730,10 +672,10 @@ def merge_skill_layers(
 ) -> tuple[list[tuple[str, Any]], list[str]]:
     """按「先出现者胜出」合并各层技能声明：返回 (``(胜出层, 条目)`` 列表, 落选提示)。
 
-    ``layers`` 必须按优先级从高到低排列（项目 Agent 级 → 项目频道级 → 全局成员家目录 →
-    全局公共技能库）。去重键是技能名；条目可以是**未装配的库行**（``Mapping``，装配层随后
-    按 ``enabled`` 过滤并读字节），也可以是已加载的 ``Skill`` 对象。每个落选条目产生一条
-    含「名字 + 胜出层」的可读提示，调用方只把它拼进运行期 ``reason``，**不**放进 provider
+    ``layers`` 必须按优先级从高到低排列（成员家目录 → 全局公共技能库）；成员家目录内部的
+    「库行」与「人手工放置」由同一个层标签给出，装配顺序已在上游排好。去重键是技能名；
+    条目是已加载的 ``Skill`` 对象（或任何带 ``name`` 的条目）。每个落选条目产生一条含
+    「名字 + 胜出层」的可读提示，调用方只把它拼进运行期 ``reason``，**不**放进 provider
     的 system prompt。
     """
     winners: list[tuple[str, Any]] = []

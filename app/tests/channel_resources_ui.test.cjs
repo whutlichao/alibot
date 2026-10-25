@@ -1,18 +1,17 @@
 /**
- * Studio 的**资源管理三段**（#156 / 规格 §4.6 / ADR-0021）：频道设置里的
- * Workspace 状态 / MCP / Skill。
+ * Studio 的**频道设置 · 工作区与数据面**段（原 #156 资源三段中的第一段），
+ * 以及 #273 之后的边界：MCP 与技能**不再**出现在频道配置里。
  *
  * 接缝沿用既有那一套（`vm` + `fetch` 替身 + DOM 替身；与 `channel_config_ui.test.cjs` 同款），
  * 不新开第二套前端测试框架。
  *
  * 断言只落在**外部可观察行为**上：
- * 1. 打开设置面时按频道 scope 读取 MCP 声明与技能列表；三段各有自己的读数；
- * 2. MCP 列表与表单只出现**变量名**：请求体里没有 `env`（值），界面里没有值的输入口；
- * 3. 新增 / 编辑 / 删除 / 远端确认（幂等）都提交到对应端点，成功按后端重新读回；
- * 4. 连接失败 / 安装失败 / 删除失败都显示后端可读原因；
- * 5. Skill 列表显示 name / description / hash / enabled；本机目录与 zip 两种安装、启停、删除；
- * 6. Docker 状态只陈述后端事实：有失败原因报不可用，否则按后端说未报告 / 未使用；
- * 7. 配置动作不触发消息面（没有任何 `/messages` 请求）。
+ * 1. 打开设置面显示已落库的项目根 / 后端 / Docker 状态（读数全部来自后端）；
+ * 2. Docker 状态只陈述后端事实：失败原因 / 未报告 / 未使用；
+ * 3. 频道配置里没有 MCP 段与技能段（#273 把它们搬到 Agent 详情），也不再按频道 scope 读
+ *    这两条清单——旧行仍留在库里但不展示、不做「已弃用」提示；
+ * 4. 频道配置的写动作不触发任何消息面请求；
+ * 5. 这一段用到的词条在 zh-CN / en 两份词条表里都取到值。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -189,9 +188,7 @@ function channel(id, name) {
 
 function membersPayload() {
   return {
-    members: [
-      { id: "m_1", kind: "agent", display_name: "Ada", avatar_slot: 1, enabled: true },
-    ],
+    members: [{ id: "m_1", kind: "agent", display_name: "Ada", avatar_slot: 1, enabled: true }],
   };
 }
 
@@ -260,20 +257,14 @@ function jsonResponse(payload, status) {
   };
 }
 
-function errorResponse(status, message) {
-  return jsonResponse({ error: { code: "validation_failed", message } }, status);
-}
-
 function createHarness(options) {
   const config = options || {};
   const calls = [];
   const elements = new Map();
   const member = { id: "owner", kind: "owner", display_name: "owner", avatar_slot: 4 };
-  // 清单在替身里是**可变**的：写路径成功后重新读取，读到的就是刚写过的那一份
-  // （与真实后端一致；否则「删除后重读」永远还能看见旧行）。
-  const servers = (config.mcp || []).map((server) => Object.assign({}, server));
-  const skills = (config.skills || []).map((skill) => Object.assign({}, skill));
-  const consents = {};
+  // 旧频道级行仍在库里：它们**可以**被后端读到，但频道配置不该展示、也不该去读。
+  const legacyServers = (config.mcp || []).map((server) => Object.assign({}, server));
+  const legacySkills = (config.skills || []).map((skill) => Object.assign({}, skill));
 
   class FakeEventSource {
     constructor() {
@@ -289,8 +280,6 @@ function createHarness(options) {
 
   function defaultFetch(url, request) {
     const method = request.method || "GET";
-    const mcpScope = "/api/mcp-servers?scope_kind=channel&scope_id=ch_1";
-    const skillScope = "/api/skills?scope_kind=channel&scope_id=ch_1";
     if (url === "/api/channels/ch_1/config" && method === "GET") {
       return jsonResponse(configPayload(config.config));
     }
@@ -298,57 +287,12 @@ function createHarness(options) {
       return jsonResponse(configPayload(Object.assign({}, config.config, request.body || {})));
     }
     if (url === "/api/channels/ch_1/members") return jsonResponse(membersPayload());
-    if (url === mcpScope && method === "GET") {
-      return jsonResponse({ mcp_servers: servers });
+    // 若前端仍按频道 scope 读这两条清单，这里会把旧行交给它——测试由此可判定「不该读」。
+    if (url === "/api/mcp-servers?scope_kind=channel&scope_id=ch_1" && method === "GET") {
+      return jsonResponse({ mcp_servers: legacyServers });
     }
-    if (url === skillScope && method === "GET") {
-      return jsonResponse({ skills });
-    }
-    if (url === "/api/mcp-servers" && method === "POST") {
-      const created = mcpPayload(Object.assign({ id: "mcp_new" }, request.body || {}));
-      servers.push(created);
-      return jsonResponse({ mcp_server: created }, 201);
-    }
-    if (url === "/api/skills" && method === "POST") {
-      const name = String(request.body || "").length ? "installed-dir" : "installed-zip";
-      const created = skillPayload({ id: "sk_new", name });
-      skills.push(created);
-      return jsonResponse({ skill: created }, 201);
-    }
-    if (url.startsWith("/api/mcp-servers/") && method === "PATCH") {
-      const id = url.split("/").pop();
-      const found = servers.find((server) => server.id === id);
-      if (found) Object.assign(found, request.body || {});
-      return jsonResponse({ mcp_server: found || mcpPayload({ id }) });
-    }
-    if (url.startsWith("/api/mcp-servers/") && method === "DELETE") {
-      const id = url.split("/").pop();
-      const index = servers.findIndex((server) => server.id === id);
-      const [removed] = index >= 0 ? servers.splice(index, 1) : [mcpPayload({ id })];
-      return jsonResponse({ mcp_server: removed });
-    }
-    if (url.startsWith("/api/mcp-servers/") && method === "POST" && url.endsWith("/consent")) {
-      const id = url.split("/").slice(-2)[0];
-      const found = servers.find((server) => server.id === id);
-      const acknowledged = consents[id] || "2026-10-18T00:00:00Z";
-      consents[id] = acknowledged;
-      if (found) found.consented = true;
-      return jsonResponse({
-        mcp_server: found || mcpPayload({ id, consented: true }),
-        consent: { acknowledged_at: acknowledged },
-      });
-    }
-    if (url.startsWith("/api/skills/") && method === "PATCH") {
-      const id = url.split("/").pop();
-      const found = skills.find((skill) => skill.id === id);
-      if (found) Object.assign(found, request.body || {});
-      return jsonResponse({ skill: found || skillPayload({ id }) });
-    }
-    if (url.startsWith("/api/skills/") && method === "DELETE") {
-      const id = url.split("/").pop();
-      const index = skills.findIndex((skill) => skill.id === id);
-      const [removed] = index >= 0 ? skills.splice(index, 1) : [skillPayload({ id })];
-      return jsonResponse({ skill: removed });
+    if (url === "/api/skills?scope_kind=channel&scope_id=ch_1" && method === "GET") {
+      return jsonResponse({ skills: legacySkills });
     }
     return jsonResponse({});
   }
@@ -362,9 +306,7 @@ function createHarness(options) {
       method: request.method || "GET",
       headers: request.headers || null,
       body: parsedBody,
-      rawBody: typeof request.body === "string" ? null : request.body,
     });
-    // 自定义替身只处理它关心的那几条；返回 `null` 表示「没接管」，落回默认替身。
     if (config.fetch) {
       const custom = config.fetch(String(url), request);
       if (custom) return custom;
@@ -372,15 +314,13 @@ function createHarness(options) {
     return defaultFetch(String(url), request);
   }
 
-  function buildNode(selector) {
-    const node = new FakeNode("div");
-    node.hidden = HIDDEN_IN_HTML.has(selector);
-    node.id = selector.startsWith("#") ? selector.slice(1) : "";
-    return node;
-  }
-
   function elementFor(selector) {
-    if (!elements.has(selector)) elements.set(selector, buildNode(selector));
+    if (!elements.has(selector)) {
+      const node = new FakeNode("div");
+      node.hidden = HIDDEN_IN_HTML.has(selector);
+      node.id = selector.startsWith("#") ? selector.slice(1) : "";
+      elements.set(selector, node);
+    }
     return elements.get(selector);
   }
 
@@ -429,10 +369,7 @@ function createHarness(options) {
       startup,
       "\nglobalThis.__resourceTest = { state, bindEvents, renderHeader, t,"
         + " openChannelConfigModal, closeChannelConfigModal, renderChannelConfigModal,"
-        + " submitChannelConfig, loadMcpServers, loadSkills, beginMcpEdit, cancelMcpEdit,"
-        + " submitMcpDraft, toggleMcpServer, deleteMcpServer, consentMcpServer,"
-        + " submitSkillDirectory, uploadSkillZip, toggleSkill, deleteSkill,"
-        + " dockerStatusOf, parseEnvNames };\n",
+        + " submitChannelConfig, dockerStatusOf };\n",
     ),
     context,
     { filename: appPath },
@@ -458,12 +395,6 @@ function createHarness(options) {
     body: elementFor("#channelConfigBody"),
     formError: elementFor("#channelConfigFormError"),
     entry: elementFor("#btnChannelSettings"),
-    patches() {
-      return calls.filter((call) => call.method === "PATCH");
-    },
-    posts() {
-      return calls.filter((call) => call.method === "POST");
-    },
     loadChannel(id, name) {
       api.state.channels = [channel(id || "ch_1", name || "设计系统重构")];
       api.state.dms = [];
@@ -479,34 +410,8 @@ function createHarness(options) {
       await harness.body.dispatchEvent({ type: "click", target: node });
       await settle();
     },
-    async change(node, value) {
-      node.value = value;
-      await harness.body.dispatchEvent({ type: "change", target: node });
-      await settle();
-    },
-    async input(node, value) {
-      node.value = value;
-      await harness.body.dispatchEvent({ type: "input", target: node });
-      await settle();
-    },
-    async upload(node, file) {
-      node.files = [file];
-      await harness.body.dispatchEvent({ type: "change", target: node });
-      await settle();
-    },
   };
   return harness;
-}
-
-/** 按 `data-*` 找一个节点（替身的选择器不支持 `[attr="value"]` 形式）。 */
-function byDataset(root, key, value) {
-  const attribute = "data-" + key.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase());
-  return (
-    descendants(root).find((node) => {
-      if (node.dataset && node.dataset[key] === value) return true;
-      return Boolean(node.attributes && node.attributes[attribute] === value);
-    }) || null
-  );
 }
 
 function byOdId(root, id) {
@@ -515,300 +420,54 @@ function byOdId(root, id) {
   );
 }
 
-/** 最新的那个节点（重铺之后旧节点已经不在正文里）。 */
-function fresh(harness, key, value) {
-  return byDataset(harness.body, key, value);
-}
+/* ─── 1. 打开设置面：工作区与数据面的读数 ───────────────────────────── */
 
-/* ─── 1. 打开设置面：按频道 scope 读三段 ─────────────────────────────── */
-
-test("打开设置面按频道 scope 读取 MCP 与技能，并显示已落库的项目根与后端", async () => {
-  const harness = createHarness({
-    mcp: [mcpPayload()],
-    skills: [skillPayload()],
-  });
+test("打开设置面显示已落库的项目根与后端", async () => {
+  const harness = createHarness();
   harness.loadChannel();
   await harness.open();
 
-  const reads = harness.calls.map((call) => call.url);
-  assert.ok(
-    reads.includes("/api/mcp-servers?scope_kind=channel&scope_id=ch_1"),
-    "MCP 读数应当按频道 scope 读取",
-  );
-  assert.ok(
-    reads.includes("/api/skills?scope_kind=channel&scope_id=ch_1"),
-    "技能读数应当按频道 scope 读取",
-  );
+  assert.equal(harness.overlay.hidden, false, "设置面打开");
   assert.equal(byOdId(harness.body, "workspace-mgmt-root").textContent, "/tmp/issue156-project");
   assert.equal(byOdId(harness.body, "workspace-mgmt-backend").textContent, "本地");
-  assert.ok(byOdId(harness.body, "mcp-list"), "MCP 段应当有清单");
-  assert.ok(byOdId(harness.body, "skill-list"), "技能段应当有清单");
+  assert.ok(byOdId(harness.body, "workspace-mgmt-notes"), "说明段落仍在");
 });
 
-/* ─── 2. MCP 只出现变量名 ────────────────────────────────────────────── */
+/* ─── 2. 频道配置里没有能力段（#273） ───────────────────────────────── */
 
-test("MCP 列表只显示 env 变量名；表单没有值的输入口", async () => {
-  const harness = createHarness({ mcp: [mcpPayload({ env_names: ["GITHUB_TOKEN", "LOG_LEVEL"] })] });
+test("频道配置不再有 MCP / 技能段，也不按频道 scope 读这两条清单", async () => {
+  const harness = createHarness({ mcp: [mcpPayload()], skills: [skillPayload()] });
   harness.loadChannel();
   await harness.open();
 
-  const row = byDataset(harness.body, "mcpServer", "mcp_1");
-  assert.ok(row, "应当有这一条 MCP 声明");
-  assert.match(row.textContent, /GITHUB_TOKEN/);
-  assert.match(row.textContent, /LOG_LEVEL/);
-  assert.doesNotMatch(row.textContent, /环境变量名：.*=/);
-  assert.equal(
-    descendants(harness.body).filter((node) => node.attributes["data-mcp-env-values"] !== undefined)
-      .length,
-    0,
-    "界面不得存在变量值的输入口",
+  for (const odId of [
+    "channel-config-section-mcp",
+    "channel-config-section-skill",
+    "mcp-list",
+    "mcp-form",
+    "mcp-error",
+    "skill-list",
+    "skill-install",
+    "skill-error",
+  ]) {
+    assert.equal(byOdId(harness.body, odId), null, `频道配置里不该再有：${odId}`);
+  }
+  assert.deepEqual(
+    descendants(harness.body).filter((node) => node.tagName === "input" && node.type === "file"),
+    [],
+    "频道配置里没有 zip 上传控件",
   );
-  assert.equal(byOdId(harness.body, "mcp-env-note").textContent.includes("不保存"), true);
-});
-
-/* ─── 3. 新增 / 编辑 / 删除 ─────────────────────────────────────────── */
-
-test("新增 MCP 提交 env_names 而不是 env 值，成功后按后端重新读回", async () => {
-  const harness = createHarness({ mcp: [] });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.input(byOdId(harness.body, "mcp-name"), "filesystem");
-  await harness.input(byOdId(harness.body, "mcp-command"), "npx");
-  await harness.input(byOdId(harness.body, "mcp-args"), "-y pkg /tmp");
-  await harness.input(byOdId(harness.body, "mcp-env-names"), "GITHUB_TOKEN, LOG_LEVEL");
-  await harness.click(byOdId(harness.body, "mcp-save"));
-
-  const post = harness.posts().find((call) => call.url === "/api/mcp-servers");
-  assert.ok(post, "应当提交一条新声明");
-  assert.equal(post.body.scope_kind, "channel");
-  assert.equal(post.body.scope_id, "ch_1");
-  assert.deepEqual(post.body.env_names, ["GITHUB_TOKEN", "LOG_LEVEL"]);
-  assert.equal(post.body.args.length, 3);
-  assert.equal(Object.prototype.hasOwnProperty.call(post.body, "env"), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(post.body, "env_values"), false);
-  const reads = harness.calls.filter(
-    (call) => call.url === "/api/mcp-servers?scope_kind=channel&scope_id=ch_1",
+  assert.deepEqual(
+    harness.calls.filter((call) => call.url.includes("scope_kind=channel")).map((call) => call.url),
+    [],
+    "打开频道配置不再按频道 scope 读 MCP / 技能",
   );
-  assert.equal(reads.length, 2, "成功后应当重新读一次清单");
+  // 旧行仍在库里（替身可提供），只是不展示——不做「已弃用」提示。
+  assert.equal(harness.body.textContent.includes("filesystem"), false);
+  assert.equal(harness.body.textContent.includes("已弃用"), false);
 });
 
-test("编辑 MCP 提交 PATCH，且不带 scope（scope 是身份，不可改）", async () => {
-  const harness = createHarness({ mcp: [mcpPayload()] });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.click(byOdId(harness.body, "mcp-edit"));
-  assert.equal(byOdId(harness.body, "mcp-name").value, "filesystem");
-  await harness.input(byOdId(harness.body, "mcp-name"), "fs-renamed");
-  await harness.click(byOdId(harness.body, "mcp-save"));
-
-  const patch = harness.patches().find((call) => call.url === "/api/mcp-servers/mcp_1");
-  assert.ok(patch, "应当 PATCH 这一条声明");
-  assert.equal(patch.body.name, "fs-renamed");
-  assert.equal(Object.prototype.hasOwnProperty.call(patch.body, "scope_kind"), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(patch.body, "scope_id"), false);
-});
-
-test("删除 MCP 提交 DELETE，成功清空清单", async () => {
-  const harness = createHarness({ mcp: [mcpPayload()] });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.click(byOdId(harness.body, "mcp-delete"));
-  const removed = harness.calls.find(
-    (call) => call.method === "DELETE" && call.url === "/api/mcp-servers/mcp_1",
-  );
-  assert.ok(removed, "应当删除这一条声明");
-  assert.equal(byDataset(harness.body, "mcpServer", "mcp_1"), null);
-});
-
-/* ─── 4. 远端确认（幂等） ────────────────────────────────────────────── */
-
-test("远端 MCP 未确认时给出告知与确认入口；确认动作幂等，显示后端返回的确认时刻", async () => {
-  const remote = mcpPayload({ id: "mcp_remote", name: "remote", transport: "http", url: "https://example.com/mcp", is_remote: true, consent_required: true, consented: false, command: "", args: [], env_names: [] });
-  const harness = createHarness({ mcp: [remote] });
-  harness.loadChannel();
-  await harness.open();
-
-  const row = byDataset(harness.body, "mcpServer", "mcp_remote");
-  assert.match(row.textContent, /未确认/);
-  await harness.click(byOdId(harness.body, "mcp-consent"));
-  const consents = harness.posts().filter((call) => call.url === "/api/mcp-servers/mcp_remote/consent");
-  assert.equal(consents.length, 1, "点击一次提交一次确认");
-  assert.match(
-    byDataset(harness.body, "mcpServer", "mcp_remote").textContent,
-    /2026-10-18T00:00:00Z/,
-  );
-
-  // 幂等：再确认一次仍然后端同一条记录（同一个时刻），界面不出现第二份事实。
-  await harness.api.consentMcpServer("mcp_remote");
-  await settle();
-  const repeated = harness.posts().filter((call) => call.url === "/api/mcp-servers/mcp_remote/consent");
-  assert.equal(repeated.length, 2);
-  const times = descendants(harness.body).filter((node) => node.textContent.includes("2026-10-18"));
-  assert.ok(times.length >= 1);
-});
-
-/* ─── 5. 运行读数 / 连接失败可读 ─────────────────────────────────────── */
-
-test("MCP 运行读数可读：未装配 / 已连接工具数 / 连接失败原因", async () => {
-  const harness = createHarness({
-    mcp: [
-      mcpPayload({ id: "mcp_1", name: "fresh", runtime: null }),
-      mcpPayload({
-        id: "mcp_2",
-        name: "ok",
-        runtime: { connected: true, error: null, tools: ["echo", "read"], checked_at: "2026-10-18T00:00:00Z" },
-      }),
-      mcpPayload({
-        id: "mcp_3",
-        name: "broken",
-        runtime: { connected: false, error: "Failed to start MCP 'broken': alibot-mcp-binary not found", tools: [], checked_at: "2026-10-18T00:00:00Z" },
-      }),
-    ],
-  });
-  harness.loadChannel();
-  await harness.open();
-
-  assert.match(byDataset(harness.body, "mcpRuntime", "mcp_1").textContent, /尚未装配/);
-  assert.match(byDataset(harness.body, "mcpRuntime", "mcp_2").textContent, /已连接 · 2 个工具/);
-  const broken = byDataset(harness.body, "mcpRuntime", "mcp_3");
-  assert.match(broken.textContent, /连接失败/);
-  assert.match(broken.textContent, /alibot-mcp-binary not found/);
-  assert.equal(broken.classList.contains("is-error"), true);
-});
-
-/* ─── 6. Skill 列表 / 启停 / 删除 / 安装 ────────────────────────────── */
-
-test("技能列表显示 name / description / hash / enabled；启停提交 PATCH {enabled}", async () => {
-  const harness = createHarness({ skills: [skillPayload()] });
-  harness.loadChannel();
-  await harness.open();
-
-  const row = byDataset(harness.body, "skill", "sk_1");
-  assert.ok(row, "应当有这一条技能");
-  assert.match(row.textContent, /review/);
-  assert.match(row.textContent, /在提交前做一次结构化自审/);
-  assert.match(row.textContent, /0123456789ab/);
-  assert.match(row.textContent, /已启用/);
-
-  await harness.click(byOdId(harness.body, "skill-toggle"));
-  const patch = harness.patches().find((call) => call.url === "/api/skills/sk_1");
-  assert.ok(patch, "启停应当 PATCH 该技能");
-  assert.deepEqual(patch.body, { enabled: false });
-  assert.equal(
-    harness.calls.filter((call) => call.method === "DELETE" && call.url.startsWith("/api/skills/"))
-      .length,
-    0,
-  );
-});
-
-test("技能删除提交 DELETE，并从清单里消失", async () => {
-  const harness = createHarness({ skills: [skillPayload()] });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.click(byOdId(harness.body, "skill-delete"));
-  assert.ok(
-    harness.calls.some((call) => call.method === "DELETE" && call.url === "/api/skills/sk_1"),
-    "应当删除该技能",
-  );
-  assert.equal(byDataset(harness.body, "skill", "sk_1"), null);
-});
-
-test("本机目录安装提交 JSON；空路径不发请求且错误可读", async () => {
-  const harness = createHarness({ skills: [] });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.click(byOdId(harness.body, "skill-install-dir"));
-  assert.equal(
-    harness.posts().filter((call) => call.url === "/api/skills").length,
-    0,
-    "空路径不应该发请求",
-  );
-  assert.match(byOdId(harness.body, "skill-error").textContent, /绝对路径/);
-
-  await harness.input(byOdId(harness.body, "skill-source"), "/Users/me/skills/review");
-  await harness.click(byOdId(harness.body, "skill-install-dir"));
-  const post = harness.posts().find((call) => call.url === "/api/skills");
-  assert.ok(post, "应当提交安装请求");
-  assert.deepEqual(post.body, {
-    scope_kind: "channel",
-    scope_id: "ch_1",
-    source_path: "/Users/me/skills/review",
-  });
-});
-
-test("zip 安装把原始字节送进正文，元数据走 query", async () => {
-  const harness = createHarness({ skills: [] });
-  harness.loadChannel();
-  await harness.open();
-
-  const file = { name: "review.zip", type: "application/zip", size: 128 };
-  await harness.upload(byOdId(harness.body, "skill-zip"), file);
-  const post = harness.posts().find((call) => call.url.startsWith("/api/skills?"));
-  assert.ok(post, "应当提交 zip 安装请求");
-  assert.equal(
-    post.url,
-    "/api/skills?scope_kind=channel&scope_id=ch_1&filename=review.zip",
-  );
-  assert.equal(post.headers["Content-Type"], "application/zip");
-  assert.equal(post.rawBody, file, "正文应当是原始字节（同一个文件对象）");
-});
-
-test("安装失败 / 启停失败都显示后端可读原因", async () => {
-  const harness = createHarness({
-    skills: [skillPayload()],
-    fetch: (url, request) => {
-      if (url === "/api/skills" && (request.method || "GET") === "POST") {
-        return errorResponse(400, "技能目录里没有 SKILL.md");
-      }
-      if (url === "/api/skills/sk_1" && request.method === "PATCH") {
-        return errorResponse(400, "技能不存在或已被删除");
-      }
-      return null;
-    },
-  });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.input(byOdId(harness.body, "skill-source"), "/Users/me/skills/broken");
-  await harness.click(byOdId(harness.body, "skill-install-dir"));
-  assert.match(byOdId(harness.body, "skill-error").textContent, /技能目录里没有 SKILL.md/);
-  assert.match(byOdId(harness.body, "skill-error").textContent, /安装失败/);
-
-  await harness.click(byOdId(harness.body, "skill-toggle"));
-  assert.match(byOdId(harness.body, "skill-error").textContent, /技能不存在或已被删除/);
-});
-
-test("MCP 保存失败显示后端可读原因，且不清空草稿", async () => {
-  const harness = createHarness({
-    mcp: [],
-    fetch: (url, request) => {
-      if (url === "/api/mcp-servers" && request.method === "POST") {
-        return errorResponse(
-          400,
-          "MCP 声明校验未通过：stdio 需要一个可执行命令",
-        );
-      }
-      return null;
-    },
-  });
-  harness.loadChannel();
-  await harness.open();
-
-  await harness.input(byOdId(harness.body, "mcp-name"), "broken");
-  await harness.click(byOdId(harness.body, "mcp-save"));
-  assert.match(
-    byOdId(harness.body, "mcp-error").textContent,
-    /MCP 声明校验未通过：stdio 需要一个可执行命令/,
-  );
-  assert.equal(byOdId(harness.body, "mcp-name").value, "broken", "失败的草稿不应被清掉");
-});
-
-/* ─── 7. Docker 状态 ────────────────────────────────────────────────── */
+/* ─── 3. Docker 状态只陈述后端事实 ──────────────────────────────────── */
 
 test("Docker 状态只陈述后端事实：失败原因 / 未报告 / 未使用", async () => {
   const unavailable = createHarness({ config: { workspace_backend: "docker" } });
@@ -839,52 +498,41 @@ test("Docker 状态只陈述后端事实：失败原因 / 未报告 / 未使用"
   assert.match(unusedCell.textContent, /本地/);
 });
 
-/* ─── 8. 配置动作不碰消息面 ─────────────────────────────────────────── */
+/* ─── 4. 频道配置的写动作不碰消息面 ─────────────────────────────────── */
 
-test("MCP / Skill 的配置动作不触发任何消息面请求", async () => {
-  const harness = createHarness({ mcp: [mcpPayload()], skills: [skillPayload()] });
+test("频道配置的动作不触发任何消息面请求", async () => {
+  const harness = createHarness();
   harness.loadChannel();
   await harness.open();
-  // 先打开一个频道消息会话面需要的数据：本测试只关心资源动作，因此直接清掉已有调用记录。
   harness.calls.length = 0;
 
-  await harness.click(byOdId(harness.body, "mcp-toggle"));
-  await harness.click(byOdId(harness.body, "mcp-delete"));
-  await harness.click(byOdId(harness.body, "skill-toggle"));
-  await harness.click(byOdId(harness.body, "skill-delete"));
+  await harness.click(byOdId(harness.body, "channel-config-save"));
 
   const urls = harness.calls.map((call) => call.url);
+  assert.ok(urls.includes("/api/channels/ch_1/config"), "保存仍走频道配置端点");
   assert.deepEqual(
     urls.filter((url) => url.includes("/messages") || url.includes("/events")),
     [],
     "配置动作不得触碰消息面",
   );
-  assert.deepEqual(
-    urls.filter((url) => url.includes("/channels/ch_1/config")),
-    [],
-    "资源动作也不重读频道配置（配置事实没有变化）",
-  );
 });
 
-/* ─── 9. 词条 ───────────────────────────────────────────────────────── */
+/* ─── 5. 词条 ───────────────────────────────────────────────────────── */
 
-test("资源三段的词条在 zh-CN / en 两份词条表里都取到值", () => {
+test("工作区段的词条在 zh-CN / en 两份词条表里都取到值", () => {
   const harness = createHarness();
   const keys = [
     "workspaceMgmt.section",
+    "workspaceMgmt.root",
+    "workspaceMgmt.backend",
+    "workspaceMgmt.dockerStatus",
     "workspaceMgmt.dockerUnavailableAgent",
-    "mcp.section",
-    "mcp.scopeNote",
-    "mcp.envNames",
-    "mcp.consentRequired",
-    "mcp.runtimeFailed",
-    "skill.section",
-    "skill.hashLabel",
-    "skill.installZipHint",
+    "workspaceMgmt.dockerReported",
+    "workspaceMgmt.dockerUnused",
+    "workspaceMgmt.noteTools",
   ];
   for (const key of keys) {
     assert.equal(typeof harness.catalogs["zh-CN"][key], "string", `${key} 缺少中文词条`);
     assert.equal(typeof harness.catalogs.en[key], "string", `${key} 缺少英文词条`);
   }
-  assert.equal(harness.api.parseEnvNames("A, B  A\nC").length, 3);
 });

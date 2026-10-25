@@ -821,8 +821,10 @@ CREATE TABLE IF NOT EXISTS mcp_server (
   UNIQUE (scope_kind, scope_id, name)
 );
 
--- Skill 元数据（#139 / ADR-0021 §三）：字节在 ``workspace_root/.alibot/skills/<member_id>/``，
--- 库里只存来源路径与内容 hash；同名 skill 在同一个 scope 内唯一。安装只接受本机来源。
+-- Skill 元数据（#139 / ADR-0021 §三 / #270）：字节由宿主应用写入
+-- ``~/.alibot/agents/<member_id>/skills/<name>/``（现行）；库里只存来源路径与内容 hash；
+-- 同名 skill 在同一个 scope 内唯一。安装只接受本机来源。旧的
+-- ``workspace_root/.alibot/skills/<member_id>/`` 字节保留但不再进入装配。
 CREATE TABLE IF NOT EXISTS skill (
   id           TEXT PRIMARY KEY,
   name         TEXT NOT NULL,
@@ -3639,52 +3641,38 @@ class Database:
         return refreshed, consent
 
     def mcp_servers_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """一轮装配的声明清单（频道级 + Agent 级；Agent 级同名覆盖频道级）。
+        """一轮装配的声明清单：**只有成员级**（``scope_kind='agent'``）的启用行。
 
-        只返回**启用**的声明。远端声明带 ``consented``：装配层据此决定是否连接。与
-        :meth:`permission_settings_for_target` 同一 target→channel 解析口径；DM / 未知 target
-        没有频道声明（Agent 级仍无上下文，返回空）。
+        频道级旧行保留在库里但弃用（ADR-0031 #270 修订）：装配忽略，不删行、不回填。远端声明
+        带 ``consented``，装配层据此决定是否连接。MCP 仍以 workspace 为宿主，因此 DM / 未知
+        target 没有频道上下文时返回空——与 :meth:`permission_settings_for_target` 同一口径。
         """
         with self._lock:
-            channel_id = self._channel_id_for_target_locked(target_id)
-            if channel_id is None:
+            if self._channel_id_for_target_locked(target_id) is None:
                 return []
             rows = self._conn.execute(
                 self._mcp_select_sql(
-                    " WHERE (ms.scope_kind = 'channel' AND ms.scope_id = ?) "
-                    "OR (ms.scope_kind = 'agent' AND ms.scope_id = ?) "
-                    # 先频道后 Agent：同名时 Agent 覆盖频道（与权限规则同一优先级方向）。
-                    "ORDER BY CASE ms.scope_kind WHEN 'channel' THEN 0 ELSE 1 END, "
-                    "ms.created_at, ms.id"
+                    " WHERE ms.scope_kind = 'agent' AND ms.scope_id = ? ORDER BY ms.created_at, ms.id"
                 ),
-                (channel_id, member_id),
+                (member_id,),
             ).fetchall()
-            merged: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                server = self._mcp_server_payload(row)
-                # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
-                merged[server["name"]] = server
-        return [server for server in merged.values() if server["enabled"]]
+            servers = [self._mcp_server_payload(row) for row in rows]
+        return [server for server in servers if server["enabled"]]
 
     def mcp_layers_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """**未合并**的两层声明（优先级从高到低：项目 Agent 级 → 项目频道级）。
+        """**未合并**的成员级声明行（含停用，供装配层生成落选提示）。
 
-        与 :meth:`mcp_servers_for_target` 同一 target→channel 解析口径，但保留同名落选者与
-        停用行——装配层需要它们生成「名字 + 胜出层」的运行期提示，并在合并后再过滤 enabled。
-        DM / 未知 target 没有频道上下文，返回空。
+        与 :meth:`mcp_servers_for_target` 同一 target 门控（无频道上下文返回空），但保留停用行
+        ——装配层先按名字排出胜出者，再只连接启用的胜出者。频道级旧行不返回。
         """
         with self._lock:
-            channel_id = self._channel_id_for_target_locked(target_id)
-            if channel_id is None:
+            if self._channel_id_for_target_locked(target_id) is None:
                 return []
             rows = self._conn.execute(
                 self._mcp_select_sql(
-                    " WHERE (ms.scope_kind = 'channel' AND ms.scope_id = ?) "
-                    "OR (ms.scope_kind = 'agent' AND ms.scope_id = ?) "
-                    "ORDER BY CASE ms.scope_kind WHEN 'agent' THEN 0 ELSE 1 END, "
-                    "ms.created_at, ms.id"
+                    " WHERE ms.scope_kind = 'agent' AND ms.scope_id = ? ORDER BY ms.created_at, ms.id"
                 ),
-                (channel_id, member_id),
+                (member_id,),
             ).fetchall()
         return [self._mcp_server_payload(row) for row in rows]
 
@@ -3706,7 +3694,11 @@ class Database:
         }
 
     def validate_skill_scope(self, scope_kind: str, scope_id: str) -> None:
-        """与 MCP / 权限规则同口径：channel 必须存在；agent 必须是未删除的 Agent。"""
+        """与 MCP / 权限规则同口径：channel 必须存在；agent 必须是未删除的 Agent。
+
+        ``channel`` 只为**历史行**保留（旧行不删、装配忽略）；安装器不再接受频道作用域，
+        HTTP 层对 ``scope_kind='channel'`` 明确返回 400。
+        """
         if scope_kind not in ("channel", "agent"):
             raise DomainError(
                 "validation_failed",
@@ -3723,44 +3715,6 @@ class Database:
         if exists is None:
             message = self._render_copy("error.skill_scope_unknown", scope_id=scope_id)
             raise DomainError("validation_failed", message, fields={"scope_id": message})
-
-    def channel_workspace_root(self, channel_id: str) -> str:
-        """频道的 ``workspace_root``（未配置 / 不存在返回空串；不校验目录是否存在）。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT workspace_root FROM channel WHERE id = ?", (channel_id,)
-            ).fetchone()
-        return str(row["workspace_root"] or "") if row is not None else ""
-
-    def is_channel_member(self, channel_id: str, member_id: str) -> bool:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM target_member WHERE target_id = ? AND member_id = ?",
-                (channel_id, member_id),
-            ).fetchone()
-        return row is not None
-
-    def workspace_roots_for_member(self, member_id: str) -> list[str]:
-        """该成员所属频道里**已配置**的项目根（去重、稳定顺序；用于 Agent 级技能落点/清理）。"""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT DISTINCT c.workspace_root FROM channel c "
-                "JOIN target_member cm ON cm.target_id = c.id "
-                "WHERE cm.member_id = ? AND c.workspace_root IS NOT NULL "
-                "AND TRIM(c.workspace_root) <> '' ORDER BY c.workspace_root",
-                (member_id,),
-            ).fetchall()
-        return [str(row["workspace_root"]) for row in rows]
-
-    def all_workspace_roots(self) -> list[str]:
-        """所有频道的已配置项目根（去重；删除 Agent 级技能时清掉可能遗留的副本）。"""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT DISTINCT workspace_root FROM channel "
-                "WHERE workspace_root IS NOT NULL AND TRIM(workspace_root) <> '' "
-                "ORDER BY workspace_root"
-            ).fetchall()
-        return [str(row["workspace_root"]) for row in rows]
 
     def _assert_skill_name_free_locked(
         self, *, scope_kind: str, scope_id: str, name: str, exclude_id: str | None = None
@@ -3904,64 +3858,20 @@ class Database:
         return self._skill_payload(row)
 
     def skills_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """一轮装配的技能清单（频道级 + Agent 级；Agent 级同名覆盖频道级，只返回启用的）。
+        """一轮装配的技能**库行**：该成员的全部行（``scope_kind='agent'``），含停用行。
 
-        与 :meth:`mcp_servers_for_target` 同一 target→channel 解析口径；DM / 未知 target 没有
-        频道级技能，Agent 级仍按成员自身分区装配。
+        频道级旧行保留在库里但弃用、装配忽略（ADR-0031 #270 修订）。技能装配不依赖 workspace，
+        因此私信 / 未知 target 与频道返回同一份成员行；``target_id`` 不在读路径里使用。
+
+        这里**不**过滤 ``enabled``：装配层要按名字为停用行占位（停用 = 该成员没有这个技能，
+        同名的「人手工放置」目录不得让它复活），再只装配启用的行。
         """
         with self._lock:
-            channel_id = self._channel_id_for_target_locked(target_id)
-            if channel_id is None:
-                rows = self._conn.execute(
-                    "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? ORDER BY created_at, id",
-                    (member_id,),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM skill WHERE "
-                    "(scope_kind = 'channel' AND scope_id = ?) OR "
-                    "(scope_kind = 'agent' AND scope_id = ?) "
-                    "ORDER BY CASE scope_kind WHEN 'channel' THEN 0 ELSE 1 END, "
-                    "created_at, id",
-                    (channel_id, member_id),
-                ).fetchall()
-            merged: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                skill = self._skill_payload(row)
-                # Agent 级覆盖频道级：同名只留 Agent 的那条，但保留首次出现的位置。
-                merged[skill["name"]] = skill
-        return [skill for skill in merged.values() if skill["enabled"]]
-
-    def skill_layers_for_target(self, target_id: str, member_id: str) -> dict[str, list[dict[str, Any]]]:
-        """**未合并**的两级项目技能行（含停用），供四层装配生成落选提示（#232）。
-
-        :meth:`skills_for_target` 在库层就把「项目频道级被项目 Agent 级覆盖」的行丢掉了，
-        装配层因此看不到落选者。本方法保留两层原始行、不按名字合并，返回
-        ``{"agent": [...], "channel": [...]}``；两条路径共享同一 target→channel 解析口径。
-
-        这里**不**过滤 ``enabled``：装配层先把各层按名字排出胜出者，再只装配启用的胜出者。
-        否则停用的 Agent 级技能会消失，频道级同名条目就会违规复活（既有语义是「停用 Agent
-        级 = 该成员没有这个技能」）。``load_skills`` 不读 ``enabled``，过滤由装配层负责。
-        """
-        with self._lock:
-            channel_id = self._channel_id_for_target_locked(target_id)
-            agent_rows = self._conn.execute(
+            rows = self._conn.execute(
                 "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? ORDER BY created_at, id",
                 (member_id,),
             ).fetchall()
-            channel_rows = (
-                []
-                if channel_id is None
-                else self._conn.execute(
-                    "SELECT * FROM skill WHERE scope_kind = 'channel' AND scope_id = ? "
-                    "ORDER BY created_at, id",
-                    (channel_id,),
-                ).fetchall()
-            )
-        return {
-            "agent": [self._skill_payload(row) for row in agent_rows],
-            "channel": [self._skill_payload(row) for row in channel_rows],
-        }
+        return [self._skill_payload(row) for row in rows]
 
     # ─── 审批（HITL；状态机正本，不存凭证） ───────────────────────────────
     @staticmethod

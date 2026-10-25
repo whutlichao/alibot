@@ -222,10 +222,15 @@ const state = {
   // 任务视图要读所属频道的同一份配置（#154 / 规格 §4.6）：按 channel id 缓存
   // `GET /api/channels/{id}/config` 的载荷，正本仍是后端。
   channelConfigs: {},
-  // 资源管理（#156 / 规格 §4.6）：频道设置里的 Workspace / MCP / Skill 三段。
-  // `mcp` / `skills` 是 `GET /api/mcp-servers` / `GET /api/skills` 的镜像；`mcpDraft` 是
-  // **还没提交**的表单状态。清单里只有 `env_names`（变量名）——值从来不进这条通道。
-  resources: emptyResourcesView(),
+  // 能力配置（#273 / ADR-0031 §二）：MCP 声明与技能**只有一个归口**——Agent 详情。作用域恒为
+  // 该成员（`scope_kind=agent&scope_id=<member>`），因此这里按成员缓存：`mcp` / `skills` 是
+  // `GET /api/mcp-servers` / `GET /api/skills` 的镜像，`mcpDraft` 是**还没提交**的表单状态，
+  // `copy` 是「复制到其他成员」的弹层状态（目标多选 + 逐条结果）。清单里只有 `env_names`
+  // （变量名）——值从来不进这条通道。
+  agentCapabilities: {},
+  // 名册的能力摘要（#273）：按成员缓存两个只读数字（`failed` 只影响那一行的占位），
+  // 打开名册时整体作废重读，于是「读不到」不会被留成永久结论。
+  rosterCapabilities: {},
   // 联网 provider 的掩码读数（#199）：`GET /api/web-providers` 的镜像。`draftKeys` 只放**还没
   // 提交**的输入值（password 框），绝不回填已保存的 key；`errors` 按 provider 记写失败原因。
   webProviders: emptyWebProvidersView(),
@@ -5091,18 +5096,22 @@ async function openAgentDetail(memberId) {
   state.taskMessages = [];
   state.taskOutcomes = {};
   state.taskSeenSeqs = new Set();
-  // 换人时草稿整体作废（与「关闭即放弃」同一条），全局 MCP 条目是**这个成员**的文件，一并清空。
+  // 换人时草稿整体作废（与「关闭即放弃」同一条）；全局 MCP 条目是**这个成员**的文件、
+  // 能力清单（MCP 声明 / 技能）也只属于这个成员，一并按新成员重置。
   state.activeAgentId = memberId;
   state.agentEdit = emptyAgentEditDraft();
   closeAgentDeleteModal();
   state.globalMcpServers = [];
   state.globalMcpError = '';
+  resetAgentCapabilities(memberId);
   setViewMode('agent');
   // 详情一打开，频道 / 私信行就得让位：这条路径不经过整体 `render()`，只重绘 Agent 段
   // 会把频道行留在「当前行」上（两行同时高亮）。
   renderRailRows();
   renderAgentDetail();
   await refreshAgentDetail(memberId);
+  // 能力清单与配置读数分开读：两条清单失败只落在能力段自己的错误行，不拖垮整页。
+  await loadAgentCapabilities(memberId);
 }
 
 /** 关闭详情：回到进入前的视图；dock 按进入前的开合恢复（落点判据与关闭线程共用）。 */
@@ -5253,10 +5262,12 @@ function renderAgentDetail() {
   syncAgentEditDraft(agent);
   $('#adName').textContent = agent.display_name;
   syncAgentSendButton();
-  if (agentDraftDirty()) {
+  if (agentDraftDirty() || capabilityDraftDirty()) {
     // 草稿脏时不重铺整页，但**只读**的那几块仍要跟着后端读数走：全局 MCP 的确认动作
-    // 正是「点完要立刻变成已确认」，而它不经过草稿。这里只换那一节，输入控件原样留着。
+    // 正是「点完要立刻变成已确认」，而它不经过草稿。这里只换那两节，输入控件原样留着。
     refreshGlobalMcpSection();
+    // 能力段里有未提交输入时不碰它（后台重绘不该换掉持焦控件）；显式动作自己会重铺。
+    if (!capabilityDraftDirty()) refreshAgentCapabilitiesSection();
   } else {
     replaceChildren($('#adBody'), agentDetailNodes(agent));
   }
@@ -5271,16 +5282,21 @@ function renderAgentDetail() {
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
     与测试替身都只保证前者，少一条浏览器专有 API 就少一条替身要追的差异。 */
 function refreshGlobalMcpSection() {
+  replaceSectionNode('agent-detail-section-global-mcp', globalMcpSection());
+}
+
+/** 把某个区块整段换成新节点（标识挂在区块自己的第一个子标题上）。找不到旧节点时什么都不做。
+    走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
+    与测试替身都只保证前者。 */
+function replaceSectionNode(odId, replacement) {
   const body = $('#adBody');
   if (!body || !body.children) return;
-  const odId = 'agent-detail-section-global-mcp';
   const hasOdId = (node) => node.getAttribute && node.getAttribute('data-od-id') === odId;
   const nodes = Array.prototype.slice.call(body.children);
-  // 标识挂在区块自己的标题上（`sectionTitle()` 的落点），因此按「区块子树里有没有它」认。
   const index = nodes.findIndex((node) => hasOdId(node)
     || (node.querySelectorAll && Array.prototype.some.call(node.querySelectorAll('[data-od-id]'), hasOdId)));
   if (index < 0) return;
-  nodes[index] = globalMcpSection();
+  nodes[index] = replacement;
   replaceChildren(body, nodes);
 }
 
@@ -5292,12 +5308,14 @@ function sectionTitle(key, odId) {
   return node;
 }
 
-/** 详情页的全部区块，按顺序纵向铺开（没有页签）：统计 → 系统提示 → 配置 → 全局 MCP → 危险操作。 */
+/** 详情页的全部区块，按顺序纵向铺开（没有页签）：
+    统计 → 系统提示 → 配置 → 能力（MCP / 技能）→ 全局 MCP（mcp.json 只读）→ 危险操作。 */
 function agentDetailNodes(agent) {
   return [
     agentFactsSection(agent),
     agentPromptSection(agent),
     agentConfigSection(agent),
+    agentCapabilitiesSection(agent),
     globalMcpSection(),
     agentDangerSection(agent),
   ];
@@ -5842,6 +5860,9 @@ function openRosterModal() {
   const channel = activeChannel();
   if (!channel) return;
   state.rosterChannelId = channel.id;
+  // 能力摘要按成员缓存，但缓存只在一次打开期间有效：重新打开就重读，于是「上次读不到」
+  // 不会被留成永久结论（计数会随能力配置变化）。
+  state.rosterCapabilities = {};
   $('#rosterOverlay').hidden = false;
   renderRoster();
   const close = $('#rosterClose');
@@ -5889,6 +5910,68 @@ function renderRoster() {
     return;
   }
   replaceChildren(body, members.map((member) => rosterRow(member, agentsById)));
+  // 行先铺出来，两个数字随后异步补上：读一条清单慢不阻塞名册的其它行。
+  void refreshRosterCapabilities(members);
+}
+
+/** 名册行右侧的能力摘要（只读两个数字；读不到只这一行占位，不阻塞其它行）。 */
+function rosterCapabilitiesNode(memberId) {
+  const node = el('span', 'roster-capabilities');
+  node.dataset.rosterCapabilities = memberId;
+  node.setAttribute('data-od-id', 'roster-capabilities-' + memberId);
+  node.textContent = rosterCapabilitiesText(memberId);
+  return node;
+}
+
+function rosterCapabilitiesText(memberId) {
+  const cache = state.rosterCapabilities[memberId];
+  if (!cache) return t('roster.capabilitiesLoading');
+  if (cache.failed) return t('roster.capabilitiesUnavailable');
+  return t('roster.capabilities', { mcp: cache.mcp, skills: cache.skills });
+}
+
+/** 读一个成员的两个计数（并行）；任一失败只把这一条摘要标成不可用，不外溢。 */
+async function readMemberCapabilityCounts(memberId) {
+  try {
+    const [mcp, skills] = await Promise.all([
+      api('/api/mcp-servers?scope_kind=agent&scope_id=' + encodeURIComponent(memberId)),
+      api('/api/skills?scope_kind=agent&scope_id=' + encodeURIComponent(memberId)),
+    ]);
+    return {
+      memberId,
+      mcp: (mcp && Array.isArray(mcp.mcp_servers) ? mcp.mcp_servers : []).length,
+      skills: (skills && Array.isArray(skills.skills) ? skills.skills : []).length,
+      failed: false,
+    };
+  } catch {
+    return { memberId, mcp: 0, skills: 0, failed: true };
+  }
+}
+
+/** 按需读取还缺的成员摘要，读回后就地改写已有的行（不整份重铺名册）。 */
+async function refreshRosterCapabilities(members) {
+  const channelId = state.rosterChannelId;
+  if (!channelId) return;
+  const pending = (members || [])
+    .filter((member) => member.kind === 'agent' && !state.rosterCapabilities[member.id])
+    .map((member) => member.id);
+  if (!pending.length) return;
+  const counts = await Promise.all(pending.map((memberId) => readMemberCapabilityCounts(memberId)));
+  if (state.rosterChannelId !== channelId) return; // 已经关掉或换了频道：不把旧读数铺上去
+  counts.forEach((item) => {
+    state.rosterCapabilities[item.memberId] = { mcp: item.mcp, skills: item.skills, failed: item.failed };
+  });
+  paintRosterCapabilities();
+}
+
+/** 就地改写摘要文本（节点按 `data-roster-capabilities` 找；名册已关时是空操作）。 */
+function paintRosterCapabilities() {
+  const body = $('#rosterBody');
+  if (!body || !body.querySelectorAll) return;
+  body.querySelectorAll('[data-roster-capabilities]').forEach((node) => {
+    const memberId = node.dataset.rosterCapabilities;
+    if (memberId) node.textContent = rosterCapabilitiesText(memberId);
+  });
 }
 
 /** 名册的一行：头像 + 姓名 / 角色，右侧是状态点。owner 那行右侧是「我」——原型 `:1601-1629`
@@ -5910,6 +5993,8 @@ function rosterRow(member, agentsById) {
   if (member.kind === 'owner') {
     row.appendChild(el('span', 'roster-me', t('identity.me')));
   } else {
+    // 能力摘要（#273）：只读两个数字，来自 agent scope 的两条清单；没有按钮（名册唯一动作是关闭）。
+    row.appendChild(rosterCapabilitiesNode(member.id));
     // 状态点按成员 id 查（Agent 配置快照里的 `status` 是后端 `member-statuses` 的回写；
     // 快照里没有这个 Agent 时直接查状态表，而不是凭缺失下一句「未启用」的结论）。
     row.appendChild(presenceNode(statusOf(agent || { id: member.id })));
@@ -6366,19 +6451,12 @@ async function openChannelConfigModal() {
   state.channelConfig = emptyChannelConfigView();
   state.channelConfig.channelId = channel.id;
   state.channelConfig.loading = true;
-  // 资源三段（#156）与频道配置同时读：三段各有自己的错误行，一段读不到不牵连其它段。
-  state.resources = emptyResourcesView();
-  state.resources.channelId = channel.id;
   state.webProviders = emptyWebProvidersView();
   $('#channelConfigOverlay').hidden = false;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
   renderChannelConfigModal();
-  await Promise.all([
-    loadChannelConfig(channel.id),
-    loadChannelResources(channel.id),
-    loadWebProviders(),
-  ]);
+  await Promise.all([loadChannelConfig(channel.id), loadWebProviders()]);
 }
 
 /** 读一次该频道的配置 + 成员表（队长候选）。读回后按**同一个频道**重铺。 */
@@ -6405,7 +6483,6 @@ async function loadChannelConfig(channelId) {
 
 function closeChannelConfigModal() {
   state.channelConfig = emptyChannelConfigView();
-  state.resources = emptyResourcesView();
   $('#channelConfigOverlay').hidden = true;
   const box = $('#channelConfigFormError');
   if (box) box.hidden = true;
@@ -6901,33 +6978,28 @@ function renderChannelConfigModalContent() {
   actions.appendChild(save);
   nodes.push(actions);
 
-  // ⑧–⑩ 资源管理（#156）：工作区与数据面 / MCP / Skill。三段都只吃**后端读数**；
-  // 打开的是同一个频道时用当前镜像，否则用空镜像（不把别的频道的清单一瞬间画过来）。
-  const resources = state.resources.channelId === view.channelId
-    ? state.resources
-    : emptyResourcesView();
+  // ⑧ 工作区与数据面（#156 的只读读数段）：项目根 / 后端 / Docker 状态。
+  // MCP 与技能**不在**这里（#273）：它们是 Agent 级能力，归口在 Agent 详情的能力段；
+  // 频道级旧行仍留在库里（弃用不删），但配置面不展示、也不做「已弃用」提示（ADR-0031 §二）。
   nodes.push(workspaceManagementSection(view));
-  nodes.push(mcpSection(resources));
-  nodes.push(skillSection(resources));
 
   replaceChildren(body, nodes);
 }
 
-/* ─── 资源管理（#156 / 规格 §4.6 / ADR-0021）─────────────────────────────────
+/* ─── 能力配置（#273 / ADR-0031 §二 #270 修订）──────────────────────────────
 
-   频道设置内新增三段，全部追加在「频道配置」之后，不重写上面那套渲染：
+   MCP 声明与技能**只有一个归口**：Agent 详情的能力段（同屏两个 kind，作用域恒为该成员
+   `scope_kind=agent&scope_id=<member>`，没有 scope 选择器）。
 
-   ① **工作区与数据面**：项目根 / 后端是**已落库事实**（`view.config`），Docker 状态从
-      Agent 的 `enabled_reason` 读（#150 把容器失败原因记进 availability）；路径错误由
-      `PATCH /config` 整体拒绝并在保存处显示——这一段不伪造第二套校验。
-   MCP `GET/POST/PATCH/DELETE /api/mcp-servers` + `POST /{id}/consent`；Skill
-      `GET/POST/PATCH/DELETE /api/skills`（本机目录 JSON / zip 原始字节）。
+   ① **频道配置只保留工作区与数据面的只读读数**（项目根 / 后端 / Docker 状态，均来自
+      `view.config` 与 Agent 的 `enabled_reason`）；频道级的 MCP / 技能段已删除，旧行留在库里
+      但不展示、不装配、也不做「已弃用」提示（归属由 ADR 说明）。
 
    两条硬边界：
 
    - **只出现变量名**：MCP 载荷只有 `env_names`；表单也只收变量名，值没有输入口，
      因此界面不存在「把值带进请求」的形状。
-   - **配置动作不碰消息面**：增删改 / 启停 / 确认之后只重读各自的清单，不刷新消息、
+   - **配置动作不碰消息面**：增删改 / 启停 / 确认 / 复制之后只重读各自的清单，不刷新消息、
      不模拟唤醒。后端本来就不落消息（#151 / #152），前端也不制造「好像发生了什么」的假象。 */
 
 const MCP_TRANSPORTS = ['stdio', 'http', 'sse'];
@@ -6945,22 +7017,54 @@ function emptyMcpDraft() {
   };
 }
 
-/** 弹窗的空镜像（打开 / 关闭都用它；`mcpDraft` 里没有任何凭据）。 */
-function emptyResourcesView() {
+/** 一个成员的能力镜像（首次打开该成员时建）；`mcpDraft` 里没有任何凭据。 */
+function emptyCapabilitiesView(memberId) {
   return {
-    channelId: null,
-    mcpLoading: false,
+    memberId: memberId || null,
+    mcpLoading: Boolean(memberId),
     mcpError: '',
     mcp: [],
     mcpDraft: emptyMcpDraft(),
     mcpEditingId: null,
     mcpConsentTimes: {},
-    skillLoading: false,
+    skillLoading: Boolean(memberId),
     skillError: '',
     skillInstalling: false,
     skills: [],
     skillSourcePath: '',
+    // 复制弹层：`null` = 没开；`kind` / `id` 指向发起复制的那一行。
+    copy: null,
   };
+}
+
+/** 某个成员的能力镜像（按成员缓存：详情页与写路径读的是同一份）。 */
+function capabilitiesView(memberId) {
+  if (!memberId) return emptyCapabilitiesView(null);
+  if (!state.agentCapabilities[memberId]) {
+    state.agentCapabilities[memberId] = emptyCapabilitiesView(memberId);
+  }
+  return state.agentCapabilities[memberId];
+}
+
+/** 当前详情页正在看的能力镜像（没有活动成员时 `null`——调用方一律先判）。 */
+function activeCapabilitiesView() {
+  return state.activeAgentId ? capabilitiesView(state.activeAgentId) : null;
+}
+
+/** 打开 / 切换成员时丢掉上一位的草稿与弹层（清单由读路径重新填）。 */
+function resetAgentCapabilities(memberId) {
+  if (!memberId) return;
+  state.agentCapabilities[memberId] = emptyCapabilitiesView(memberId);
+}
+
+/** 能力段的表单里有没有**未提交**的输入：有就不整段重铺（那会换掉持焦控件）。 */
+function capabilityDraftDirty() {
+  const view = activeCapabilitiesView();
+  if (!view) return false;
+  if (view.mcpEditingId) return true;
+  const draft = view.mcpDraft;
+  const typed = ['name', 'command', 'args', 'url', 'envNames'].some((key) => String(draft[key] || '').trim());
+  return typed || Boolean(String(view.skillSourcePath || '').trim());
 }
 
 function isRemoteTransport(transport) {
@@ -7045,54 +7149,56 @@ function dockerStatusOf(agents, backend) {
   return { state: 'unused', text: t('workspaceMgmt.dockerUnused') };
 }
 
-/** 读 MCP 声明（频道 scope）；失败只落在本段自己的错误行，不牵连其它段。 */
-async function loadMcpServers(channelId) {
-  const view = state.resources;
+/** 一个成员的两条能力清单（并行读；各段自己的错误行，一段读不到不牵连另一段）。 */
+async function loadAgentCapabilities(memberId) {
+  if (!memberId) return;
+  await Promise.all([loadAgentMcpServers(memberId), loadAgentSkills(memberId)]);
+}
+
+/** 读 MCP 声明（agent scope）；失败只落在 MCP 段自己的错误行。 */
+async function loadAgentMcpServers(memberId) {
+  const view = capabilitiesView(memberId);
   view.mcpLoading = true;
   view.mcpError = '';
-  if (view.channelId === channelId) renderChannelConfigModal();
+  paintAgentCapabilities();
   try {
     const payload = await api(
-      '/api/mcp-servers?scope_kind=channel&scope_id=' + encodeURIComponent(channelId),
+      '/api/mcp-servers?scope_kind=agent&scope_id=' + encodeURIComponent(memberId),
     );
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.mcp = payload.mcp_servers || [];
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.mcpError = t('mcp.loadFailed', { reason: err.message });
   }
-  if (view.channelId !== channelId) return;
+  if (state.activeAgentId !== memberId) return;
   view.mcpLoading = false;
-  renderChannelConfigModal();
+  paintAgentCapabilities();
 }
 
-/** 读技能列表（频道 scope；只含元数据与 hash）。 */
-async function loadSkills(channelId) {
-  const view = state.resources;
+/** 读技能列表（agent scope；只含元数据与 hash，不含字节）。 */
+async function loadAgentSkills(memberId) {
+  const view = capabilitiesView(memberId);
   view.skillLoading = true;
   view.skillError = '';
-  if (view.channelId === channelId) renderChannelConfigModal();
+  paintAgentCapabilities();
   try {
     const payload = await api(
-      '/api/skills?scope_kind=channel&scope_id=' + encodeURIComponent(channelId),
+      '/api/skills?scope_kind=agent&scope_id=' + encodeURIComponent(memberId),
     );
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skills = payload.skills || [];
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skillError = t('skill.loadFailed', { reason: err.message });
   }
-  if (view.channelId !== channelId) return;
+  if (state.activeAgentId !== memberId) return;
   view.skillLoading = false;
-  renderChannelConfigModal();
+  paintAgentCapabilities();
 }
 
-async function loadChannelResources(channelId) {
-  await Promise.all([loadMcpServers(channelId), loadSkills(channelId)]);
-}
-
-function resourceNote(key, odId, className) {
-  const node = el('div', 'resource-meta' + (className ? ' ' + className : ''), t(key));
+function resourceNote(key, odId, className, params) {
+  const node = el('div', 'resource-meta' + (className ? ' ' + className : ''), t(key, params));
   if (odId) node.setAttribute('data-od-id', odId);
   return node;
 }
@@ -7183,7 +7289,7 @@ function workspaceManagementSection(view) {
 function mcpRow(server, view) {
   const row = el('div', 'resource-row');
   row.dataset.mcpServer = server.id;
-  row.setAttribute('data-od-id', 'mcp-row');
+  row.setAttribute('data-od-id', 'capability-mcp-row');
   const main = el('div', 'resource-main');
   const title = el('div', 'resource-title');
   title.appendChild(el('b', null, server.name));
@@ -7237,6 +7343,7 @@ function mcpRow(server, view) {
   }
   actions.appendChild(resourceButton('mcp.edit', 'mcpEdit', server.id, 'mcp-edit'));
   actions.appendChild(resourceButton('mcp.delete', 'mcpDelete', server.id, 'mcp-delete'));
+  actions.appendChild(resourceButton('agentCapabilities.copyTo', 'copyMcp', server.id, 'capability-copy'));
   row.appendChild(main);
   row.appendChild(actions);
   return row;
@@ -7315,9 +7422,27 @@ function mcpForm(view) {
   return box;
 }
 
-function mcpSection(view) {
+/* ── Agent 详情的能力段（两个 kind 同屏，作用域恒为该成员） ─────────────── */
+
+/** 能力段：标题 + 影响范围一句话 + MCP 小节 + 技能小节（含各自的复制弹层）。
+    只吃**后端读数**；读不到只落在对应小节的错误行，不拖垮详情页的其它区块。 */
+function agentCapabilitiesSection(agent) {
+  const memberId = (agent && agent.id) || state.activeAgentId || '';
+  const view = capabilitiesView(memberId);
   const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('mcp.section', 'channel-config-section-mcp'));
+  section.appendChild(sectionTitle('agentCapabilities.title', 'agent-capabilities-section'));
+  section.appendChild(
+    resourceNote(
+      'agentCapabilities.scopeNote',
+      'agent-capabilities-scope',
+      'is-faint',
+      { member: memberId },
+    ),
+  );
+
+  // ① MCP 声明。
+  section.appendChild(el('div', 'd-sec-title', t('agentCapabilities.mcpTitle')))
+    .setAttribute('data-od-id', 'agent-capabilities-mcp');
   section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
   if (view.mcpError) {
     section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
@@ -7332,8 +7457,44 @@ function mcpSection(view) {
     view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
     section.appendChild(list);
   }
+  if (view.copy && view.copy.kind === 'mcp') section.appendChild(capabilityCopyNode(view));
   section.appendChild(mcpForm(view));
+
+  // ② 技能。
+  section.appendChild(el('div', 'd-sec-title', t('agentCapabilities.skillTitle')))
+    .setAttribute('data-od-id', 'agent-capabilities-skill');
+  section.appendChild(resourceNote('skill.scopeNote', 'skill-scope-note', 'is-faint'));
+  if (view.skillError) {
+    section.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
+  }
+  if (view.skillLoading) {
+    section.appendChild(el('div', 'resource-empty', t('skill.loading')));
+  } else if (!view.skills.length) {
+    section.appendChild(el('div', 'resource-empty', t('skill.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'skill-list');
+    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
+    section.appendChild(list);
+  }
+  if (view.copy && view.copy.kind === 'skill') section.appendChild(capabilityCopyNode(view));
+  section.appendChild(skillInstallForm(view));
   return section;
+}
+
+/** 就地换掉能力段（草稿脏时 `renderAgentDetail()` 不整页重铺；这一段的读数是后端事实，
+    换了就得跟着换）。找不到旧节点（还没铺过）时什么都不做。 */
+function refreshAgentCapabilitiesSection() {
+  const agent = state.activeAgentId ? agentById(state.activeAgentId) : null;
+  if (!agent) return;
+  replaceSectionNode('agent-capabilities-section', agentCapabilitiesSection(agent));
+}
+
+/** 重铺能力段：读路径与**显式动作**（编辑 / 安装 / 复制 / 启停 / 删除）都走它。
+    轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰这一段（见下）。 */
+function paintAgentCapabilities() {
+  if (!state.activeAgentId) return;
+  refreshAgentCapabilitiesSection();
 }
 
 /* ── ③ 技能（列表 / 本机目录 / zip / 启停 / 删除） ─────────────────────── */
@@ -7341,7 +7502,7 @@ function mcpSection(view) {
 function skillRow(skill) {
   const row = el('div', 'resource-row');
   row.dataset.skill = skill.id;
-  row.setAttribute('data-od-id', 'skill-row');
+  row.setAttribute('data-od-id', 'capability-skill-row');
   const main = el('div', 'resource-main');
   const title = el('div', 'resource-title');
   title.appendChild(el('b', null, skill.name));
@@ -7365,29 +7526,14 @@ function skillRow(skill) {
     ),
   );
   actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
+  actions.appendChild(resourceButton('agentCapabilities.copyTo', 'copySkill', skill.id, 'capability-copy'));
   row.appendChild(main);
   row.appendChild(actions);
   return row;
 }
 
-function skillSection(view) {
-  const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('skill.section', 'channel-config-section-skill'));
-  section.appendChild(resourceNote('skill.scopeNote', 'skill-scope-note', 'is-faint'));
-  if (view.skillError) {
-    section.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
-  }
-  if (view.skillLoading) {
-    section.appendChild(el('div', 'resource-empty', t('skill.loading')));
-  } else if (!view.skills.length) {
-    section.appendChild(el('div', 'resource-empty', t('skill.empty')));
-  } else {
-    const list = el('div');
-    list.setAttribute('data-od-id', 'skill-list');
-    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
-    section.appendChild(list);
-  }
-
+/** 安装表单：本机目录 + zip 两条既有路径（元数据进正文 / query，字节走正文）。 */
+function skillInstallForm(view) {
   const install = el('div', 'resource-add');
   install.setAttribute('data-od-id', 'skill-install');
   install.appendChild(el('div', 'd-sec-title', t('skill.installTitle')));
@@ -7424,11 +7570,25 @@ function skillSection(view) {
   if (view.skillInstalling) {
     install.appendChild(el('div', 'resource-meta is-faint', t('skill.installing')));
   }
-  section.appendChild(install);
-  return section;
+  return install;
 }
 
 /* ── 写路径（全部是配置动作：只重读各自的清单，不碰消息面） ─────────────── */
+
+/** 写路径的公共前置：当前详情页锁定的成员就是这次写的目标（切走了就什么都不写）。 */
+function capabilityTarget() {
+  const view = activeCapabilitiesView();
+  if (!view || !view.memberId || !state.online) return null;
+  return view;
+}
+
+/** 成员显示名的回退链：成员表 → Agent 快照 → id（复制结果里不能只剩一个裸 id）。 */
+function capabilityMemberName(memberId) {
+  const member = (state.members || []).find((item) => item.id === memberId);
+  if (member && member.display_name) return member.display_name;
+  const agent = (state.agents || []).find((item) => item.id === memberId);
+  return (agent && agent.display_name) || memberId;
+}
 
 function resetMcpDraft(view) {
   view.mcpDraft = emptyMcpDraft();
@@ -7436,39 +7596,39 @@ function resetMcpDraft(view) {
 }
 
 function beginMcpEdit(serverId) {
-  const view = state.resources;
+  const view = activeCapabilitiesView();
+  if (!view) return;
   const server = view.mcp.find((item) => item.id === serverId);
   if (!server) return;
   view.mcpEditingId = server.id;
   view.mcpDraft = mcpDraftFrom(server);
   view.mcpError = '';
-  renderChannelConfigModal();
+  paintAgentCapabilities();
 }
 
 function cancelMcpEdit() {
-  const view = state.resources;
+  const view = activeCapabilitiesView();
+  if (!view) return;
   view.mcpEditingId = null;
   view.mcpDraft = emptyMcpDraft();
   view.mcpError = '';
-  renderChannelConfigModal();
+  paintAgentCapabilities();
 }
 
 /** 表单字段只在**未提交**的镜像上改；transport 切换会重铺（command / url 二选一）。 */
 function updateMcpDraftField(field) {
-  const view = state.resources;
+  const view = activeCapabilitiesView();
+  if (!view) return;
   const key = field.dataset.mcpField;
   if (!key || !Object.prototype.hasOwnProperty.call(view.mcpDraft, key)) return;
   view.mcpDraft[key] = field.value;
-  if (key === 'transport') renderChannelConfigModal();
+  if (key === 'transport') refreshAgentCapabilitiesSection();
 }
 
-async function submitMcpDraft() {
-  const view = state.resources;
-  const channelId = view.channelId;
-  if (!channelId || !state.online) return;
-  const draft = view.mcpDraft;
+/** 表单 → 请求体（远端只留 url，本机只留 command / args；变量值从来没有输入口）。 */
+function mcpFieldsFromDraft(draft) {
   const remote = isRemoteTransport(draft.transport);
-  const fields = {
+  return {
     name: String(draft.name || '').trim(),
     transport: draft.transport,
     command: remote ? '' : String(draft.command || '').trim(),
@@ -7477,136 +7637,141 @@ async function submitMcpDraft() {
     env_names: parseEnvNames(draft.envNames),
     enabled: Boolean(draft.enabled),
   };
+}
+
+async function submitMcpDraft() {
+  const view = capabilityTarget();
+  if (!view) return;
+  const memberId = view.memberId;
+  const fields = mcpFieldsFromDraft(view.mcpDraft);
   const editingId = view.mcpEditingId;
   view.mcpError = '';
   try {
     if (editingId) {
-      await api('/api/mcp-servers/' + encodeURIComponent(editingId), {
-        method: 'PATCH',
-        body: fields,
-      });
+      await api('/api/mcp-servers/' + encodeURIComponent(editingId), { method: 'PATCH', body: fields });
     } else {
       await api('/api/mcp-servers', {
         method: 'POST',
-        body: Object.assign({ scope_kind: 'channel', scope_id: channelId }, fields),
+        body: Object.assign({ scope_kind: 'agent', scope_id: memberId }, fields),
       });
     }
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     resetMcpDraft(view);
     toast(t(editingId ? 'mcp.updated' : 'mcp.created'));
-    await loadMcpServers(channelId);
+    await loadAgentMcpServers(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.mcpError = t('mcp.saveFailed', { reason: err.message });
-    renderChannelConfigModal();
+    paintAgentCapabilities();
   }
 }
 
 async function toggleMcpServer(serverId) {
-  const view = state.resources;
-  const channelId = view.channelId;
+  const view = capabilityTarget();
+  if (!view) return;
   const server = view.mcp.find((item) => item.id === serverId);
-  if (!server || !state.online) return;
+  if (!server) return;
+  const memberId = view.memberId;
   view.mcpError = '';
   try {
     await api('/api/mcp-servers/' + encodeURIComponent(serverId), {
       method: 'PATCH',
       body: { enabled: !server.enabled },
     });
-    if (view.channelId !== channelId) return;
-    await loadMcpServers(channelId);
+    if (state.activeAgentId !== memberId) return;
+    await loadAgentMcpServers(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.mcpError = t('mcp.saveFailed', { reason: err.message });
-    renderChannelConfigModal();
+    paintAgentCapabilities();
   }
 }
 
 async function deleteMcpServer(serverId) {
-  const view = state.resources;
-  const channelId = view.channelId;
-  if (!state.online) return;
+  const view = capabilityTarget();
+  if (!view) return;
+  const memberId = view.memberId;
   view.mcpError = '';
   try {
     await api('/api/mcp-servers/' + encodeURIComponent(serverId), { method: 'DELETE' });
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     if (view.mcpEditingId === serverId) resetMcpDraft(view);
     toast(t('mcp.deleted'));
-    await loadMcpServers(channelId);
+    await loadAgentMcpServers(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.mcpError = t('mcp.deleteFailed', { reason: err.message });
-    renderChannelConfigModal();
+    paintAgentCapabilities();
   }
 }
 
 /** 远端 MCP 的数据面确认（**幂等**）：后端重复调用回同一个 `acknowledged_at`。 */
 async function consentMcpServer(serverId) {
-  const view = state.resources;
-  const channelId = view.channelId;
-  if (!state.online) return;
+  const view = capabilityTarget();
+  if (!view) return;
+  const memberId = view.memberId;
   view.mcpError = '';
   try {
     const payload = await api(
       '/api/mcp-servers/' + encodeURIComponent(serverId) + '/consent',
       { method: 'POST' },
     );
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     const acknowledged = (payload.consent || {}).acknowledged_at || '';
     if (acknowledged) view.mcpConsentTimes[serverId] = acknowledged;
     toast(t('mcp.consentDone'));
-    await loadMcpServers(channelId);
+    await loadAgentMcpServers(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.mcpError = t('mcp.consentFailed', { reason: err.message });
-    renderChannelConfigModal();
+    paintAgentCapabilities();
   }
 }
 
 async function submitSkillDirectory() {
-  const view = state.resources;
-  const channelId = view.channelId;
-  if (!channelId || !state.online) return;
+  const view = capabilityTarget();
+  if (!view) return;
+  const memberId = view.memberId;
   const sourcePath = String(view.skillSourcePath || '').trim();
   if (!sourcePath) {
     view.skillError = t('skill.sourceRequired');
-    renderChannelConfigModal();
+    paintAgentCapabilities();
     return;
   }
   view.skillError = '';
   view.skillInstalling = true;
-  renderChannelConfigModal();
+  paintAgentCapabilities();
   try {
     const payload = await api('/api/skills', {
       method: 'POST',
-      body: { scope_kind: 'channel', scope_id: channelId, source_path: sourcePath },
+      body: { scope_kind: 'agent', scope_id: memberId, source_path: sourcePath },
     });
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skillSourcePath = '';
     toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
-    await loadSkills(channelId);
+    await loadAgentSkills(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skillError = t('skill.installFailed', { reason: err.message });
   }
-  if (view.channelId !== channelId) return;
+  if (state.activeAgentId !== memberId) return;
   view.skillInstalling = false;
-  renderChannelConfigModal();
+  paintAgentCapabilities();
 }
 
 /** zip 安装：原始字节走正文、元数据走 query（与后端契约一致，不用 multipart）。 */
 async function uploadSkillZip(files) {
   const file = files && files[0];
-  const view = state.resources;
-  const channelId = view.channelId;
-  if (!file || !channelId || !state.online) return;
+  const view = capabilityTarget();
+  if (!file || !view) return;
+  const memberId = view.memberId;
   view.skillError = '';
   view.skillInstalling = true;
-  renderChannelConfigModal();
+  paintAgentCapabilities();
   try {
     const query =
-      '?scope_kind=channel&scope_id=' +
-      encodeURIComponent(channelId) +
+      '?scope_kind=agent&scope_id=' +
+      encodeURIComponent(memberId) +
       '&filename=' +
       encodeURIComponent(file.name || 'upload.zip');
     const response = await fetch('/api/skills' + query, {
@@ -7625,53 +7790,213 @@ async function uploadSkillZip(files) {
       error.status = response.status;
       throw error;
     }
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
-    await loadSkills(channelId);
+    await loadAgentSkills(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skillError = t('skill.installFailed', { reason: err.message });
   }
-  if (view.channelId !== channelId) return;
+  if (state.activeAgentId !== memberId) return;
   view.skillInstalling = false;
-  renderChannelConfigModal();
+  paintAgentCapabilities();
 }
 
 async function toggleSkill(skillId) {
-  const view = state.resources;
-  const channelId = view.channelId;
+  const view = capabilityTarget();
+  if (!view) return;
   const skill = view.skills.find((item) => item.id === skillId);
-  if (!skill || !state.online) return;
+  if (!skill) return;
+  const memberId = view.memberId;
   view.skillError = '';
   try {
     await api('/api/skills/' + encodeURIComponent(skillId), {
       method: 'PATCH',
       body: { enabled: !skill.enabled },
     });
-    if (view.channelId !== channelId) return;
-    await loadSkills(channelId);
+    if (state.activeAgentId !== memberId) return;
+    await loadAgentSkills(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skillError = t('skill.toggleFailed', { reason: err.message });
-    renderChannelConfigModal();
+    paintAgentCapabilities();
   }
 }
 
 async function deleteSkill(skillId) {
-  const view = state.resources;
-  const channelId = view.channelId;
-  if (!state.online) return;
+  const view = capabilityTarget();
+  if (!view) return;
+  const memberId = view.memberId;
   view.skillError = '';
   try {
     await api('/api/skills/' + encodeURIComponent(skillId), { method: 'DELETE' });
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     toast(t('skill.deleted'));
-    await loadSkills(channelId);
+    await loadAgentSkills(memberId);
   } catch (err) {
-    if (view.channelId !== channelId) return;
+    if (state.activeAgentId !== memberId) return;
     view.skillError = t('skill.deleteFailed', { reason: err.message });
-    renderChannelConfigModal();
+    paintAgentCapabilities();
   }
+}
+
+/* ── 复制到其他成员（行复制 / 字节复制；同名目标 409 ⇒ 逐条「已跳过」，绝不覆盖） ── */
+
+/** 打开某一行的复制弹层；目标候选 = 其他 Agent 成员（当前成员排除在外）。 */
+function openCapabilityCopy(kind, itemId) {
+  const view = activeCapabilitiesView();
+  if (!view) return;
+  view.copy = { kind, id: itemId, targets: [], results: [], error: '', busy: false };
+  paintAgentCapabilities();
+}
+
+function closeCapabilityCopy() {
+  const view = activeCapabilitiesView();
+  if (!view) return;
+  view.copy = null;
+  paintAgentCapabilities();
+}
+
+/** 多选目标：只改**未提交**的弹层状态。 */
+function toggleCapabilityCopyTarget(input) {
+  const view = activeCapabilitiesView();
+  if (!view || !view.copy) return;
+  const memberId = input.dataset.copyTarget;
+  if (!memberId) return;
+  const selected = Boolean(input.checked);
+  const index = view.copy.targets.indexOf(memberId);
+  if (selected && index < 0) view.copy.targets.push(memberId);
+  if (!selected && index >= 0) view.copy.targets.splice(index, 1);
+  view.copy.error = '';
+}
+
+/** 复制结果的一行：`copied` / `skipped`（目标已存在同名，409）/ `failed`（其余可读原因）。 */
+function copyResultText(result) {
+  const name = capabilityMemberName(result.memberId);
+  if (result.status === 'copied') return t('agentCapabilities.copyResultCopied', { name });
+  if (result.status === 'skipped') return t('agentCapabilities.copyResultSkipped', { name });
+  return t('agentCapabilities.copyResultFailed', { name, reason: result.reason || '' });
+}
+
+/** 逐个目标复制：MCP 是行复制（POST /api/mcp-servers），技能是字节复制
+    （POST /api/skills/{id}/copy，源字节在家目录，前端不参与路径）。 */
+async function submitCapabilityCopy() {
+  const view = capabilityTarget();
+  if (!view || !view.copy || view.copy.busy) return;
+  const copy = view.copy;
+  if (!copy.targets.length) {
+    copy.error = t('agentCapabilities.copyPickRequired');
+    paintAgentCapabilities();
+    return;
+  }
+  const mcpServer = copy.kind === 'mcp' ? view.mcp.find((item) => item.id === copy.id) : null;
+  const skill = copy.kind === 'skill' ? view.skills.find((item) => item.id === copy.id) : null;
+  if (!mcpServer && !skill) return;
+  copy.busy = true;
+  copy.error = '';
+  copy.results = [];
+  paintAgentCapabilities();
+  const targets = copy.targets.slice();
+  for (const targetId of targets) {
+    try {
+      if (mcpServer) {
+        await api('/api/mcp-servers', {
+          method: 'POST',
+          body: Object.assign({ scope_kind: 'agent', scope_id: targetId }, {
+            name: mcpServer.name,
+            transport: mcpServer.transport,
+            command: mcpServer.command || '',
+            args: mcpServer.args || [],
+            url: mcpServer.url || '',
+            env_names: mcpServer.env_names || [],
+            enabled: Boolean(mcpServer.enabled),
+          }),
+        });
+      } else {
+        await api('/api/skills/' + encodeURIComponent(skill.id) + '/copy', {
+          method: 'POST',
+          body: { scope_id: targetId },
+        });
+      }
+      copy.results.push({ memberId: targetId, status: 'copied' });
+    } catch (err) {
+      copy.results.push({
+        memberId: targetId,
+        status: err.status === 409 ? 'skipped' : 'failed',
+        reason: err.message,
+      });
+    }
+  }
+  copy.busy = false;
+  // 目标清单已变：清掉它们的名册摘要缓存，下次打开名册重读（不在这里猜计数）。
+  targets.forEach((targetId) => {
+    delete state.rosterCapabilities[targetId];
+  });
+  copy.targets = [];
+  if (state.activeAgentId !== view.memberId) return;
+  paintAgentCapabilities();
+  toast(t('agentCapabilities.copySummary', {
+    copied: copy.results.filter((item) => item.status === 'copied').length,
+    skipped: copy.results.filter((item) => item.status === 'skipped').length,
+    failed: copy.results.filter((item) => item.status === 'failed').length,
+  }));
+}
+
+/** 复制弹层：目标多选 + 确认 / 取消 + 逐条结果（结果留着，直到人关掉弹层）。 */
+function capabilityCopyNode(view) {
+  const copy = view.copy;
+  const box = el('div', 'resource-add');
+  box.setAttribute('data-od-id', 'capability-copy-dialog');
+  box.appendChild(el('div', 'd-sec-title', t('agentCapabilities.copyTitle')));
+  box.appendChild(resourceNote('agentCapabilities.copyHint', 'capability-copy-hint', 'is-faint'));
+
+  const others = (state.agents || []).filter((agent) => agent.id !== view.memberId);
+  if (!others.length) {
+    box.appendChild(el('div', 'resource-empty', t('agentCapabilities.copyNoTargets')));
+  } else {
+    const picker = el('div');
+    picker.setAttribute('data-od-id', 'capability-copy-targets');
+    others.forEach((agent) => {
+      const field = el('div', 'field');
+      const label = el('label');
+      const checkbox = el('input');
+      checkbox.type = 'checkbox';
+      checkbox.dataset.copyTarget = agent.id;
+      checkbox.setAttribute('data-od-id', 'capability-copy-target-' + agent.id);
+      checkbox.checked = copy.targets.indexOf(agent.id) >= 0;
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(' ' + agent.display_name));
+      field.appendChild(label);
+      picker.appendChild(field);
+    });
+    box.appendChild(picker);
+  }
+
+  if (copy.error) box.appendChild(resourceErrorNode(copy.error, 'capability-copy-error'));
+  if (copy.results.length) {
+    const results = el('div');
+    results.setAttribute('data-od-id', 'capability-copy-results');
+    copy.results.forEach((result) => {
+      const line = el('div', 'resource-meta copy-result', copyResultText(result));
+      line.dataset.copyStatus = result.status;
+      results.appendChild(line);
+    });
+    box.appendChild(results);
+  }
+  if (copy.busy) box.appendChild(el('div', 'resource-meta is-faint', t('agentCapabilities.copyBusy')));
+
+  const actions = el('div', 'agent-actions');
+  const confirm = resourceButton(
+    'agentCapabilities.copyConfirm',
+    'copyConfirm',
+    '1',
+    'capability-copy-confirm',
+  );
+  confirm.disabled = confirm.disabled || copy.busy;
+  actions.appendChild(confirm);
+  actions.appendChild(resourceButton('agentCapabilities.copyCancel', 'copyCancel', '1', 'capability-copy-cancel'));
+  box.appendChild(actions);
+  return box;
 }
 
 /** 保存：提交全部可写字段（`team_scope` 不在可写面上）；成功按响应重铺，失败只报可读原因。 */
@@ -9270,63 +9595,8 @@ function bindEvents() {
       submitChannelConfig();
       return;
     }
-    // ── 资源管理（#156）：四组配置动作各走自己的写路径（都不碰消息面）──
-    const mcpEdit = event.target.closest('[data-mcp-edit]');
-    if (mcpEdit) {
-      beginMcpEdit(mcpEdit.dataset.mcpEdit);
-      return;
-    }
-    if (event.target.closest('[data-mcp-cancel-edit]')) {
-      cancelMcpEdit();
-      return;
-    }
-    const mcpToggle = event.target.closest('[data-mcp-toggle]');
-    if (mcpToggle) {
-      toggleMcpServer(mcpToggle.dataset.mcpToggle);
-      return;
-    }
-    const mcpConsent = event.target.closest('[data-mcp-consent]');
-    if (mcpConsent) {
-      consentMcpServer(mcpConsent.dataset.mcpConsent);
-      return;
-    }
-    const mcpDelete = event.target.closest('[data-mcp-delete]');
-    if (mcpDelete) {
-      deleteMcpServer(mcpDelete.dataset.mcpDelete);
-      return;
-    }
-    if (event.target.closest('[data-mcp-save]')) {
-      submitMcpDraft();
-      return;
-    }
-    if (event.target.closest('[data-skill-install-dir]')) {
-      submitSkillDirectory();
-      return;
-    }
-    const skillToggle = event.target.closest('[data-skill-toggle]');
-    if (skillToggle) {
-      toggleSkill(skillToggle.dataset.skillToggle);
-      return;
-    }
-    const skillDelete = event.target.closest('[data-skill-delete]');
-    if (skillDelete) deleteSkill(skillDelete.dataset.skillDelete);
   });
   $('#channelConfigBody').addEventListener('change', (event) => {
-    const zip = event.target.closest('[data-skill-zip]');
-    if (zip) {
-      uploadSkillZip(zip.files);
-      return;
-    }
-    const field = event.target.closest('[data-mcp-field]');
-    if (field) {
-      updateMcpDraftField(field);
-      return;
-    }
-    const enabled = event.target.closest('[data-mcp-enabled]');
-    if (enabled) {
-      state.resources.mcpDraft.enabled = Boolean(enabled.checked);
-      return;
-    }
     const leader = event.target.closest('[data-config-leader]');
     if (!leader) return;
     state.channelConfig.draft.leader = leader.value;
@@ -9340,17 +9610,7 @@ function bindEvents() {
       return;
     }
     const key = event.target.closest('[data-web-key]');
-    if (key) {
-      state.webProviders.draftKeys[key.dataset.webKey] = key.value;
-      return;
-    }
-    const field = event.target.closest('[data-mcp-field]');
-    if (field) {
-      updateMcpDraftField(field);
-      return;
-    }
-    const source = event.target.closest('[data-skill-source]');
-    if (source) state.resources.skillSourcePath = source.value;
+    if (key) state.webProviders.draftKeys[key.dataset.webKey] = key.value;
   });
   // ── 运行面板（#155）：频道头入口 + 任务线程头入口 + 刷新 / 关闭 / 错误重试 ──
   // 正文整段重铺，因此重试按钮委派到 `#rpBody` 上（与预算 / 设置同一做法）。
@@ -9417,6 +9677,18 @@ function bindEvents() {
   $('#adSave').addEventListener('click', submitAgentEdit);
   $('#adDiscard').addEventListener('click', discardAgentEdit);
   $('#adBody').addEventListener('input', (event) => {
+    // 能力段的输入框：只写**未提交**的镜像（提交时才走后端）。
+    const field = event.target.closest('[data-mcp-field]');
+    if (field) {
+      updateMcpDraftField(field);
+      return;
+    }
+    const source = event.target.closest('[data-skill-source]');
+    if (source) {
+      const view = activeCapabilitiesView();
+      if (view) view.skillSourcePath = source.value;
+      return;
+    }
     const control = event.target.closest('[data-agent-field]');
     if (!control) return;
     const name = control.dataset.agentField;
@@ -9428,6 +9700,29 @@ function bindEvents() {
     if (name === 'provider') syncAgentProviderHint(control.value);
   });
   $('#adBody').addEventListener('change', (event) => {
+    // 能力段（#273）：两条清单的写动作与表单都委派到这里（正文整段由 `renderAgentDetail()`
+    // 或 `paintAgentCapabilities()` 重铺，逐个绑事件会随节点一起丢）。
+    const zip = event.target.closest('[data-skill-zip]');
+    if (zip) {
+      uploadSkillZip(zip.files);
+      return;
+    }
+    const field = event.target.closest('[data-mcp-field]');
+    if (field) {
+      updateMcpDraftField(field);
+      return;
+    }
+    const enabled = event.target.closest('[data-mcp-enabled]');
+    if (enabled) {
+      const view = activeCapabilitiesView();
+      if (view) view.mcpDraft.enabled = Boolean(enabled.checked);
+      return;
+    }
+    const target = event.target.closest('[data-copy-target]');
+    if (target) {
+      toggleCapabilityCopyTarget(target);
+      return;
+    }
     const control = event.target.closest('[data-agent-field]');
     if (!control) return;
     const name = control.dataset.agentField;
@@ -9474,6 +9769,67 @@ function bindEvents() {
     const consent = event.target.closest('[data-global-mcp-consent]');
     if (consent) {
       confirmGlobalMcpServer(consent.dataset.globalMcpConsent);
+      return;
+    }
+    // ── 能力段（#273）：MCP / 技能各自的写动作；每条只重读自己的清单 ──
+    const mcpEdit = event.target.closest('[data-mcp-edit]');
+    if (mcpEdit) {
+      beginMcpEdit(mcpEdit.dataset.mcpEdit);
+      return;
+    }
+    if (event.target.closest('[data-mcp-cancel-edit]')) {
+      cancelMcpEdit();
+      return;
+    }
+    const mcpToggle = event.target.closest('[data-mcp-toggle]');
+    if (mcpToggle) {
+      toggleMcpServer(mcpToggle.dataset.mcpToggle);
+      return;
+    }
+    const mcpConsent = event.target.closest('[data-mcp-consent]');
+    if (mcpConsent) {
+      consentMcpServer(mcpConsent.dataset.mcpConsent);
+      return;
+    }
+    const mcpDelete = event.target.closest('[data-mcp-delete]');
+    if (mcpDelete) {
+      deleteMcpServer(mcpDelete.dataset.mcpDelete);
+      return;
+    }
+    if (event.target.closest('[data-mcp-save]')) {
+      submitMcpDraft();
+      return;
+    }
+    if (event.target.closest('[data-skill-install-dir]')) {
+      submitSkillDirectory();
+      return;
+    }
+    const skillToggle = event.target.closest('[data-skill-toggle]');
+    if (skillToggle) {
+      toggleSkill(skillToggle.dataset.skillToggle);
+      return;
+    }
+    const skillDelete = event.target.closest('[data-skill-delete]');
+    if (skillDelete) {
+      deleteSkill(skillDelete.dataset.skillDelete);
+      return;
+    }
+    const copyMcp = event.target.closest('[data-copy-mcp]');
+    if (copyMcp) {
+      openCapabilityCopy('mcp', copyMcp.dataset.copyMcp);
+      return;
+    }
+    const copySkill = event.target.closest('[data-copy-skill]');
+    if (copySkill) {
+      openCapabilityCopy('skill', copySkill.dataset.copySkill);
+      return;
+    }
+    if (event.target.closest('[data-copy-confirm]')) {
+      submitCapabilityCopy();
+      return;
+    }
+    if (event.target.closest('[data-copy-cancel]')) {
+      closeCapabilityCopy();
       return;
     }
     if (event.target.closest('[data-agent-remote-confirm]')) {

@@ -39,19 +39,28 @@
 
 **审计落点**：数据目录内的 append-only 台账文件 :data:`MIGRATION_LEDGER_FILE_NAME`（JSON Lines）。
 它不引入 schema 变更、不 bump ``SCHEMA_VERSION``，人类面（HTTP）没有任何写入口。
+
+**技能字节迁移（#274）**：``migrate-skills`` 的扫描 / 计划 / 执行也住在本模块
+（:func:`plan_skill_migration` / :func:`apply_skill_migration`）。它不推进 schema 版本，只把旧项目层
+``<workspace_root>/.alibot/skills/<partition>/<name>/`` 的字节复制到成员家目录并重算 hash；
+备份沿用 :func:`_backup_data_dir`（带 ``label="skills"``，与 schema 迁移的 ``<from>-to-<to>`` 命名区分），
+清单落数据目录内的 ``skill-migration-<UTC>.json``。库行的 ``source_path`` 记录**来源**（旧项目层路径）。
+频道级分区只进报告、不复制；源字节不删除。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -65,9 +74,23 @@ from .db import (
     SCHEMA,
     SCHEMA_VERSION,
     STAMP_SCHEMA_VERSION_SQL,
+    new_id,
     utc_now,
 )
 from .repair import CHANNEL_SCOPE_MOVES, channel_scope_gaps
+from .skills import SKILLS_DIR, SkillValidationError, read_skill_tree, skills_partition
+from .workspace import (
+    AGENTS_DIR,
+    ALIBOT_DIR,
+    WorkspaceConfigError,
+    WorkspaceRootViolation,
+    ensure_state_partition,
+    global_home_root,
+    resolve_global_read_path,
+    resolve_in_root,
+    safe_partition_id,
+    validate_workspace_root,
+)
 
 # 迁移前整目录备份的落点：数据目录**同级**、命名自带方向与 UTC 时间戳（规格 D8）。
 BACKUP_INFIX = "-backup-"
@@ -1209,16 +1232,24 @@ def run_chain(conn: sqlite3.Connection, from_version: int, to_version: int = SCH
 
 
 # ─── 备份与审计 ──────────────────────────────────────────────────────────────
-def backup_directory_name(data_dir: Path | str, from_version: int, to_version: int) -> str:
-    """``<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>``（规格 D8 / S6）。"""
+def backup_directory_name(
+    data_dir: Path | str, from_version: int, to_version: int, label: str | None = None
+) -> str:
+    """``<数据目录>-backup-<from>-to-<to>-<UTC 时间戳>``（规格 D8 / S6）。
+
+    ``label`` 非空时改用 ``<数据目录>-backup-<label>-<UTC 时间戳>``：技能迁移不推进 schema
+    版本，把备份与 schema 迁移区分开（#274）。
+    """
     data_dir = Path(data_dir)
     stamp = datetime.now(UTC).strftime(BACKUP_TIMESTAMP_FORMAT)
+    if label:
+        return f"{data_dir.name}{BACKUP_INFIX}{label}-{stamp}"
     return f"{data_dir.name}{BACKUP_INFIX}{from_version}-to-{to_version}-{stamp}"
 
 
-def _backup_data_dir(data_dir: Path, from_version: int, to_version: int) -> Path:
+def _backup_data_dir(data_dir: Path, from_version: int, to_version: int, label: str | None = None) -> Path:
     """把**整个数据目录**（含 ``attachments/`` 字节）复制到同级；失败即拒绝迁移。"""
-    destination = data_dir.parent / backup_directory_name(data_dir, from_version, to_version)
+    destination = data_dir.parent / backup_directory_name(data_dir, from_version, to_version, label)
     try:
         shutil.copytree(data_dir, destination)
     except (OSError, shutil.Error) as exc:
@@ -1600,4 +1631,641 @@ def render_dry_run_untouched(report: DryRunReport) -> str:
     """
     lines = [f"预演未改动原库：{report.db_path}"]
     lines.extend(_dry_run_proof_lines(report))
+    return "\n".join(lines)
+
+
+# ─── 技能字节迁移（#274 / ADR-0031 §二） ────────────────────────────────────
+# 这是**显式**的一次性搬迁：项目层旧字节 ``<workspace_root>/.alibot/skills/<partition>/<name>/``
+# → 成员家目录 ``<全局根>/agents/<member>/skills/<name>/``。它不在启动路径上、不是 HTTP 端点、
+# 不改 schema、不删源字节：只复制、只重算 hash、只更新 ``skill`` 行。
+#
+# 三种处置（逐条计划里各占一行，报告里写明原因）：
+# - ``create``：目标不存在 → 复制并（必要时）建/更新行；
+# - ``skip``：目标已存在且**内容相同** → 不覆盖；行有差异时按需对齐；
+# - ``refuse``：目标已存在但内容不同（或两个源指向同一目标且内容不同）→ **拒绝执行**，
+#   要求人类先手动裁定。本命令不提供 ``--force``。
+SKILL_MIGRATION_MANIFEST_PREFIX = "skill-migration-"
+# 频道级字节不迁移：报告里只给数量与这一句建议（票面行为 1）。
+SKILL_MIGRATION_CHANNEL_NOTICE = "频道级已弃用，请按成员安装"
+SKILL_ACTION_CREATE = "create"
+SKILL_ACTION_SKIP = "skip"
+SKILL_ACTION_REFUSE = "refuse"
+_SKILL_ACTION_LABELS = {
+    SKILL_ACTION_CREATE: "新建",
+    SKILL_ACTION_SKIP: "跳过",
+    SKILL_ACTION_REFUSE: "拒绝",
+}
+# 迁移清单 / 报告里指向旧项目层技能目录的相对路径（与旧安装器的落点逐字一致）。
+LEGACY_SKILLS_PARTS: tuple[str, ...] = (ALIBOT_DIR, SKILLS_DIR)
+
+
+class SkillMigrationError(MigrationError):
+    """技能迁移**没能开始或没能完成**：库形态不对、目标冲突、复制/写库失败。"""
+
+
+class SkillMigrationFailed(SkillMigrationError):
+    """跑到一半失败：带上**已完成**的条目，调用方照实打印，已复制的文件保留、不回滚删除。"""
+
+    def __init__(self, message: str, result: SkillApplyResult) -> None:
+        super().__init__(message)
+        self.result = result
+
+
+@dataclass(frozen=True)
+class SkillMigrationEntry:
+    """一条逐条计划：一个 ``<partition>/<name>/`` 源树与它的目标、动作、原因与规模读数。"""
+
+    source: Path
+    target: Path
+    member_id: str
+    channel_id: str
+    name: str
+    description: str
+    content_hash: str
+    file_count: int
+    byte_count: int
+    action: str
+    reason: str
+    row_id: str | None
+    row_changes: tuple[str, ...]
+
+    @property
+    def needs_write(self) -> bool:
+        """这一条是否需要动文件或库行（已就位的条目重复 apply 时是空操作）。"""
+        return self.action == SKILL_ACTION_CREATE or bool(self.row_changes)
+
+
+@dataclass(frozen=True)
+class ChannelLevelSkills:
+    """一个频道级分区：只进报告（数量 + 建议），不复制、不入库。"""
+
+    channel_id: str
+    source: Path
+    names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillMigrationSkip:
+    """没能判定 / 不能迁移的源路径与一句原因（不猜、不跳过说明）。"""
+
+    source: Path
+    reason: str
+
+
+@dataclass(frozen=True)
+class SkillMigrationPlan:
+    """一次迁移的**只读**计划：逐条动作、频道级读数与跳过读数。"""
+
+    data_dir: Path
+    global_root: str
+    entries: tuple[SkillMigrationEntry, ...]
+    channel_level: tuple[ChannelLevelSkills, ...]
+    skipped: tuple[SkillMigrationSkip, ...]
+
+    @property
+    def refused(self) -> tuple[SkillMigrationEntry, ...]:
+        return tuple(entry for entry in self.entries if entry.action == SKILL_ACTION_REFUSE)
+
+    @property
+    def pending(self) -> tuple[SkillMigrationEntry, ...]:
+        """本次 apply 真的要写的条目（已就位 → 空）。"""
+        return tuple(entry for entry in self.entries if entry.needs_write)
+
+
+@dataclass(frozen=True)
+class SkillApplyEntry:
+    """一条 apply 的完成读数：字节去向 + 库行动作 + 实际写入的 hash。"""
+
+    entry: SkillMigrationEntry
+    outcome: str
+    row_action: str
+    content_hash: str
+
+
+@dataclass(frozen=True)
+class SkillApplyResult:
+    """一次 apply 的完成读数（失败时也带着已完成的部分）。"""
+
+    backup_path: Path | None
+    manifest_path: Path | None
+    completed: tuple[SkillApplyEntry, ...]
+
+    @property
+    def removable_sources(self) -> tuple[Path, ...]:
+        """已经确认复制成功的源路径（只打印，不删除）。"""
+        return tuple(item.entry.source for item in self.completed if item.outcome == "copied")
+
+
+def _existing_skill_tree(
+    global_root: str, member_id: str, name: str
+) -> tuple[str, Path | None, dict[str, object] | None]:
+    """目标路径的现状：``absent`` / ``present``（含读到的树）/ ``conflict``（不可读或越界）。
+
+    根检查与装配层**同一口径**：:func:`workspace.resolve_global_read_path` 以全局根自己的
+    ``realpath`` 为根，拒绝根外 symlink 祖先与根外目标。
+    """
+    raw = Path(skills_partition(global_root, member_id)) / name
+    resolved = resolve_global_read_path(
+        global_root, AGENTS_DIR, safe_partition_id(member_id), SKILLS_DIR, name
+    )
+    if resolved is None:
+        return ("conflict" if os.path.lexists(raw) else "absent"), raw, None
+    root = Path(resolved)
+    if not root.is_dir():
+        return "conflict", root, None
+    try:
+        return "present", root, read_skill_tree(root)
+    except (SkillValidationError, OSError):
+        return "conflict", root, None
+
+
+def _skill_row_changes(row: sqlite3.Row | None, source: Path, content_hash: str) -> tuple[str, ...]:
+    """这条源在 ``skill`` 行上要改哪些列（空 = 已对齐，重复 apply 不再写）。
+
+    ``source_path`` 记的是**来源**（旧项目层路径），不是目标家目录路径，所以重复 apply
+    比较的也是来源。
+    """
+    if row is None:
+        return ("insert",)
+    changes: list[str] = []
+    if str(row["source_path"]) != str(source):
+        changes.append("source_path")
+    if str(row["content_hash"]) != content_hash:
+        changes.append("content_hash")
+    if changes:
+        changes.append("updated_at")
+    return tuple(changes)
+
+
+def _plan_entry(
+    *,
+    global_root: str,
+    source: Path,
+    target: Path,
+    member_id: str,
+    channel_id: str,
+    tree: Mapping[str, object],
+    row: sqlite3.Row | None,
+) -> SkillMigrationEntry:
+    """按「目标现状 + 库行现状」给出逐条动作；内容不同一律 ``refuse``（不覆盖）。"""
+    name = str(tree["name"])
+    content_hash = str(tree["content_hash"])
+    state, resolved_target, existing = _existing_skill_tree(global_root, member_id, name)
+    resolved = resolved_target if resolved_target is not None else target
+    if state == "absent":
+        action, reason = SKILL_ACTION_CREATE, "目标不存在，将复制字节"
+    elif state == "present" and existing is not None and str(existing["content_hash"]) == content_hash:
+        action = SKILL_ACTION_SKIP
+        reason = "目标已存在且内容相同，不覆盖"
+    elif state == "present":
+        action = SKILL_ACTION_REFUSE
+        reason = "目标已存在但内容不同，需人工裁定后再迁移（本命令不覆盖、不提供 --force）"
+    else:
+        action = SKILL_ACTION_REFUSE
+        reason = "目标路径不可读或越出全局根，需人工裁定"
+    changes = () if action == SKILL_ACTION_REFUSE else _skill_row_changes(row, source, content_hash)
+    if changes == ("insert",):
+        reason = f"{reason}；库行不存在，将按成员作用域新建"
+    elif changes:
+        reason = f"{reason}；将同步库行（{', '.join(changes)}）"
+    return SkillMigrationEntry(
+        source=source,
+        target=resolved,
+        member_id=member_id,
+        channel_id=channel_id,
+        name=name,
+        description=str(tree["description"]),
+        content_hash=content_hash,
+        file_count=int(str(tree["file_count"])),
+        byte_count=int(str(tree["bytes"])),
+        action=action,
+        reason=reason,
+        row_id=None if row is None else str(row["id"]),
+        row_changes=changes,
+    )
+
+
+def plan_skill_migration(data_dir: Path | str, global_root: str | None = None) -> SkillMigrationPlan:
+    """扫描所有频道项目根的旧技能分区，产出**只读**的逐条计划（dry-run 的全部实现）。"""
+    data_dir_path = Path(data_dir)
+    db_path = data_dir_path / DATABASE_FILE_NAME
+    if not db_path.is_file():
+        raise SkillMigrationError(f"数据目录里没有 {DATABASE_FILE_NAME}：{data_dir_path}")
+    root = os.path.realpath(global_root if global_root is not None else global_home_root())
+
+    conn = connect(db_path)
+    try:
+        tables = _table_names(conn)
+        missing = {"channel", "member", "skill"} - tables
+        if missing:
+            raise SkillMigrationError(
+                "库里缺少技能迁移需要的表："
+                + "、".join(sorted(missing))
+                + "；请先用 `python -m alibot --migrate` 把库推进到本代码的 schema 版本。"
+            )
+        members = {
+            safe_partition_id(str(row["id"])): row
+            for row in conn.execute("SELECT id, kind, deleted_at FROM member")
+        }
+        all_channels = {
+            safe_partition_id(str(row["id"])): row
+            for row in conn.execute("SELECT id, workspace_root FROM channel ORDER BY id")
+        }
+        channels = {
+            key: row
+            for key, row in all_channels.items()
+            if row["workspace_root"] is not None and str(row["workspace_root"]).strip() != ""
+        }
+        rows = {
+            (str(row["scope_id"]), str(row["name"])): row
+            for row in conn.execute("SELECT * FROM skill WHERE scope_kind = 'agent'")
+        }
+
+        entries: list[SkillMigrationEntry] = []
+        channel_level: list[ChannelLevelSkills] = []
+        skipped: list[SkillMigrationSkip] = []
+        planned: dict[str, int] = {}
+        seen_sources: set[str] = set()
+        seen_roots: set[str] = set()
+
+        for channel in channels.values():
+            channel_id = str(channel["id"])
+            try:
+                workspace_root = validate_workspace_root(str(channel["workspace_root"]))
+                legacy_root = Path(resolve_in_root(os.path.join(*LEGACY_SKILLS_PARTS), workspace_root))
+            except (WorkspaceConfigError, WorkspaceRootViolation) as error:
+                skipped.append(
+                    SkillMigrationSkip(
+                        Path(str(channel["workspace_root"])),
+                        f"频道 {channel_id} 的项目根不可用：{error}",
+                    )
+                )
+                continue
+            if not legacy_root.is_dir() or str(legacy_root) in seen_roots:
+                continue
+            seen_roots.add(str(legacy_root))
+
+            for partition in sorted(legacy_root.iterdir(), key=lambda item: item.name):
+                if partition.is_symlink() or not partition.is_dir():
+                    continue
+                member = members.get(partition.name)
+                channel_partition = all_channels.get(partition.name)
+                if member is not None and channel_partition is not None:
+                    skipped.append(
+                        SkillMigrationSkip(partition, "分区同时命中成员与频道，无法判定归属，未迁移")
+                    )
+                    continue
+                if channel_partition is not None:
+                    names = tuple(
+                        sorted(
+                            child.name
+                            for child in partition.iterdir()
+                            if child.is_dir() and not child.is_symlink()
+                        )
+                    )
+                    channel_level.append(
+                        ChannelLevelSkills(
+                            channel_id=str(channel_partition["id"]), source=partition, names=names
+                        )
+                    )
+                    continue
+                if member is None:
+                    skipped.append(
+                        SkillMigrationSkip(partition, "分区既不是成员也不是频道，无法判定归属，未迁移")
+                    )
+                    continue
+                if str(member["kind"]) != "agent" or member["deleted_at"] is not None:
+                    skipped.append(SkillMigrationSkip(partition, "分区对应的成员不是未删除的 Agent，未迁移"))
+                    continue
+
+                member_id = str(member["id"])
+                for skill_dir in sorted(partition.iterdir(), key=lambda item: item.name):
+                    if skill_dir.is_symlink() or not skill_dir.is_dir():
+                        continue
+                    source_key = os.path.realpath(skill_dir)
+                    if source_key in seen_sources:
+                        skipped.append(
+                            SkillMigrationSkip(skill_dir, "同一源路径被多个频道根重复扫描，已去重")
+                        )
+                        continue
+                    seen_sources.add(source_key)
+                    try:
+                        tree = read_skill_tree(skill_dir)
+                    except (SkillValidationError, OSError) as error:
+                        skipped.append(SkillMigrationSkip(skill_dir, f"技能树校验不通过：{error}"))
+                        continue
+                    if str(tree["name"]) != skill_dir.name:
+                        skipped.append(
+                            SkillMigrationSkip(
+                                skill_dir,
+                                f"清单名 {tree['name']!r} 与目录名 {skill_dir.name!r} 不一致，未迁移",
+                            )
+                        )
+                        continue
+                    target = Path(skills_partition(root, member_id)) / str(tree["name"])
+                    entry = _plan_entry(
+                        global_root=root,
+                        source=skill_dir,
+                        target=target,
+                        member_id=member_id,
+                        channel_id=channel_id,
+                        tree=tree,
+                        row=rows.get((member_id, str(tree["name"]))),
+                    )
+                    prior_index = planned.get(str(entry.target))
+                    if prior_index is not None:
+                        prior = entries[prior_index]
+                        if prior.content_hash == entry.content_hash:
+                            entry = replace(
+                                entry,
+                                action=SKILL_ACTION_SKIP,
+                                reason="另一个源树已指向同一目标且内容相同，目标只写一次",
+                                row_changes=(),
+                            )
+                        else:
+                            entries[prior_index] = replace(
+                                prior,
+                                action=SKILL_ACTION_REFUSE,
+                                reason="多个源树指向同一目标但内容不同，需人工裁定",
+                                row_changes=(),
+                            )
+                            entry = replace(
+                                entry,
+                                action=SKILL_ACTION_REFUSE,
+                                reason="多个源树指向同一目标但内容不同，需人工裁定",
+                                row_changes=(),
+                            )
+                    # 目标 → 第一个**要写**的条目：后续同目标的源只跟它比（skip 不登记，
+                    # 否则第三个内容不同的源就找不到真正的创建者，冲突会被漏判）。
+                    if entry.action == SKILL_ACTION_CREATE and str(entry.target) not in planned:
+                        planned[str(entry.target)] = len(entries)
+                    entries.append(entry)
+    finally:
+        conn.close()
+
+    return SkillMigrationPlan(
+        data_dir=data_dir_path,
+        global_root=root,
+        entries=tuple(entries),
+        channel_level=tuple(channel_level),
+        skipped=tuple(skipped),
+    )
+
+
+def _manifest_payload(plan: SkillMigrationPlan) -> dict[str, object]:
+    """迁移清单 JSON 的数据面：逐条计划 + 频道级读数 + 跳过读数（审计用，不回写库）。"""
+    return {
+        "kind": "skill-migration",
+        "created_at": utc_now(),
+        "data_dir": str(plan.data_dir),
+        "global_root": plan.global_root,
+        "entries": [
+            {
+                "source": str(entry.source),
+                "target": str(entry.target),
+                "member_id": entry.member_id,
+                "channel_id": entry.channel_id,
+                "name": entry.name,
+                "action": entry.action,
+                "reason": entry.reason,
+                "content_hash": entry.content_hash,
+                "file_count": entry.file_count,
+                "bytes": entry.byte_count,
+                "row_id": entry.row_id,
+                "row_changes": list(entry.row_changes),
+            }
+            for entry in plan.entries
+        ],
+        "channel_level": [
+            {
+                "channel_id": item.channel_id,
+                "source": str(item.source),
+                "names": list(item.names),
+                "notice": SKILL_MIGRATION_CHANNEL_NOTICE,
+            }
+            for item in plan.channel_level
+        ],
+        "skipped": [{"source": str(item.source), "reason": item.reason} for item in plan.skipped],
+    }
+
+
+def _write_skill_manifest(plan: SkillMigrationPlan) -> Path:
+    """先落清单再复制：清单是本次迁移的审计正本（数据目录内，UTC 时间戳）。"""
+    stamp = datetime.now(UTC).strftime(BACKUP_TIMESTAMP_FORMAT)
+    path = plan.data_dir / f"{SKILL_MIGRATION_MANIFEST_PREFIX}{stamp}.json"
+    suffix = 1
+    while path.exists():
+        suffix += 1
+        path = plan.data_dir / f"{SKILL_MIGRATION_MANIFEST_PREFIX}{stamp}-{suffix}.json"
+    try:
+        path.write_text(
+            json.dumps(_manifest_payload(plan), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise SkillMigrationError(f"迁移清单写入失败，已停止（未复制任何文件）：{error}") from error
+    return path
+
+
+def _upsert_skill_row(conn: sqlite3.Connection, entry: SkillMigrationEntry, content_hash: str) -> str:
+    """按成员作用域更新 / 新建 ``skill`` 行；返回值是 ``created`` / ``updated`` / ``unchanged``。
+
+    ``source_path`` 写**来源**（旧项目层源路径），不写目标家目录路径——票面要求新建行也标注
+    来源；目标落点由字节位置自证，重复 apply 靠来源 + hash 判定幂等。
+    """
+    now = utc_now()
+    row = conn.execute(
+        "SELECT * FROM skill WHERE scope_kind = 'agent' AND scope_id = ? AND name = ?",
+        (entry.member_id, entry.name),
+    ).fetchone()
+    source = str(entry.source)
+    if row is None:
+        conn.execute(
+            "INSERT INTO skill(id, name, description, source_path, content_hash, enabled, "
+            "scope_kind, scope_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 'agent', ?, ?, ?)",
+            (
+                new_id("sk"),
+                entry.name,
+                entry.description,
+                source,
+                content_hash,
+                entry.member_id,
+                now,
+                now,
+            ),
+        )
+        return "created"
+    changes = _skill_row_changes(row, entry.source, content_hash)
+    if not changes:
+        return "unchanged"
+    conn.execute(
+        "UPDATE skill SET source_path = ?, content_hash = ?, updated_at = ? WHERE id = ?",
+        (source, content_hash, now, row["id"]),
+    )
+    return "updated"
+
+
+def _apply_skill_entry(
+    conn: sqlite3.Connection, plan: SkillMigrationPlan, entry: SkillMigrationEntry
+) -> SkillApplyEntry:
+    """复制一棵树（先 staging 后改名，不覆盖既有目标）并对齐库行。"""
+    outcome = "skipped"
+    if entry.action == SKILL_ACTION_CREATE:
+        if os.path.lexists(entry.target):
+            state, _resolved, existing = _existing_skill_tree(plan.global_root, entry.member_id, entry.name)
+            if state != "present" or existing is None or str(existing["content_hash"]) != entry.content_hash:
+                raise SkillMigrationError(f"目标在计划之后出现且内容不同，已停止：{entry.target}")
+            outcome = "skipped"
+        else:
+            parent = entry.target.parent
+            ensure_state_partition(plan.global_root, str(parent))
+            staging = parent / f".migration-{uuid.uuid4().hex}"
+            try:
+                shutil.copytree(entry.source, staging, copy_function=shutil.copy2)
+                staged = read_skill_tree(staging)
+                if str(staged["content_hash"]) != entry.content_hash:
+                    raise SkillMigrationError(f"复制结果与计划中的 hash 不一致，已停止：{entry.target}")
+                if os.path.lexists(entry.target):
+                    raise SkillMigrationError(f"目标在复制期间出现，已停止（未覆盖）：{entry.target}")
+                os.rename(staging, entry.target)
+                outcome = "copied"
+            finally:
+                if os.path.lexists(staging):
+                    shutil.rmtree(staging, ignore_errors=True)
+    row_action = _upsert_skill_row(conn, entry, entry.content_hash)
+    return SkillApplyEntry(
+        entry=entry, outcome=outcome, row_action=row_action, content_hash=entry.content_hash
+    )
+
+
+def apply_skill_migration(plan: SkillMigrationPlan) -> SkillApplyResult:
+    """执行**已计划**的迁移：备份 → 清单 → 逐条复制 → 重算 hash → 更新/新建行。
+
+    有拒绝条目时**在动手之前**整体停下（零写入）。任何异常：立即停、带上已完成条目、
+    已复制的文件保留、不回滚删除（票面行为 4/5）。
+    """
+    refused = plan.refused
+    if refused:
+        listing = "；".join(f"{entry.source} → {entry.target}" for entry in refused)
+        raise SkillMigrationError(f"存在需人工裁定的同名目标，已拒绝执行（未写入任何文件）：{listing}")
+
+    pending = plan.pending
+    if not pending:
+        return SkillApplyResult(backup_path=None, manifest_path=None, completed=())
+
+    try:
+        backup_path = _backup_data_dir(plan.data_dir, SCHEMA_VERSION, SCHEMA_VERSION, label="skills")
+    except BackupError as error:
+        raise SkillMigrationError(f"技能迁移前的整目录备份失败，已停止（未写入任何文件）：{error}") from error
+    try:
+        manifest_path = _write_skill_manifest(plan)
+    except SkillMigrationError as error:
+        raise SkillMigrationError(f"{error}（备份已建：{backup_path}）") from error
+
+    completed: list[SkillApplyEntry] = []
+    conn = connect(plan.data_dir / DATABASE_FILE_NAME)
+    try:
+        for entry in pending:
+            try:
+                completed.append(_apply_skill_entry(conn, plan, entry))
+            except (OSError, sqlite3.Error, SkillValidationError, WorkspaceConfigError) as error:
+                raise SkillMigrationFailed(
+                    f"迁移在中途失败：{error}",
+                    SkillApplyResult(
+                        backup_path=backup_path,
+                        manifest_path=manifest_path,
+                        completed=tuple(completed),
+                    ),
+                ) from error
+            except SkillMigrationError as error:
+                raise SkillMigrationFailed(
+                    str(error),
+                    SkillApplyResult(
+                        backup_path=backup_path,
+                        manifest_path=manifest_path,
+                        completed=tuple(completed),
+                    ),
+                ) from error
+    finally:
+        conn.close()
+    return SkillApplyResult(backup_path=backup_path, manifest_path=manifest_path, completed=tuple(completed))
+
+
+def render_skill_migration_plan(plan: SkillMigrationPlan) -> str:
+    """逐条计划的可读报告：源 → 目标、动作与原因、字节数 / 文件数；频道级只报数量与建议。"""
+    counts = dict.fromkeys(_SKILL_ACTION_LABELS, 0)
+    for entry in plan.entries:
+        counts[entry.action] = counts.get(entry.action, 0) + 1
+    lines = [
+        "技能迁移计划（migrate-skills，只读扫描）",
+        f"数据目录： {plan.data_dir}",
+        f"全局层根： {plan.global_root}",
+    ]
+    if plan.entries:
+        lines.append(
+            f"成员级技能： {len(plan.entries)} 条"
+            f"（新建 {counts[SKILL_ACTION_CREATE]} / 跳过 {counts[SKILL_ACTION_SKIP]}"
+            f" / 拒绝 {counts[SKILL_ACTION_REFUSE]}）"
+        )
+        for entry in plan.entries:
+            label = _SKILL_ACTION_LABELS.get(entry.action, entry.action)
+            lines.append(
+                f"  {label} {entry.source} → {entry.target}"
+                f"（{entry.file_count} 个文件 / {entry.byte_count} 字节；hash {entry.content_hash}）"
+            )
+            lines.append(f"    原因：{entry.reason}")
+    else:
+        lines.append("成员级技能： 0 条（没有可迁移的成员级字节）")
+    if plan.channel_level:
+        total = sum(len(item.names) for item in plan.channel_level)
+        lines.append(
+            f"频道级技能（不迁移）： {len(plan.channel_level)} 个分区 / {total} 个技能"
+            f" —— {SKILL_MIGRATION_CHANNEL_NOTICE}"
+        )
+        for partition in plan.channel_level:
+            names = "、".join(partition.names) if partition.names else "（空分区）"
+            lines.append(
+                f"  频道 {partition.channel_id}：{partition.source}（{len(partition.names)} 个技能：{names}）"
+            )
+            lines.append(f"    {SKILL_MIGRATION_CHANNEL_NOTICE}")
+    if plan.skipped:
+        lines.append(f"跳过（无法判定或不可用）： {len(plan.skipped)} 处")
+        for skip in plan.skipped:
+            lines.append(f"  {skip.source}：{skip.reason}")
+    return "\n".join(lines)
+
+
+def render_skill_migration_result(result: SkillApplyResult) -> str:
+    """apply 的完成读数：备份 / 清单落点、逐条去向、可手工删除的源路径。"""
+    lines: list[str] = []
+    if result.backup_path is None and result.manifest_path is None:
+        lines.append("技能迁移：没有需要写入的条目（全部已就位或没有成员级字节）；未写入任何文件。")
+    else:
+        lines.append("技能迁移完成")
+        if result.backup_path is not None:
+            lines.append(f"  数据目录备份： {result.backup_path}")
+        if result.manifest_path is not None:
+            lines.append(f"  迁移清单： {result.manifest_path}")
+    copied = sum(1 for item in result.completed if item.outcome == "copied")
+    lines.append(
+        f"处理条目： {len(result.completed)} 条（复制 {copied} / 跳过 {len(result.completed) - copied}）"
+    )
+    for item in result.completed:
+        entry = item.entry
+        action = "复制" if item.outcome == "copied" else "跳过"
+        lines.append(
+            f"  {action} {entry.source} → {entry.target}"
+            f"（{entry.file_count} 个文件 / {entry.byte_count} 字节；hash {item.content_hash}）"
+        )
+        if item.row_action == "created":
+            lines.append(f"    库行：新建（scope_kind=agent，scope_id={entry.member_id}）")
+        elif item.row_action == "updated":
+            lines.append(f"    库行：更新 {entry.row_id}（{', '.join(entry.row_changes)}）")
+        else:
+            lines.append("    库行：无需改动")
+    if result.removable_sources:
+        lines.append("可手工删除的源路径（确认后；本命令不删除任何源文件）：")
+        for source in result.removable_sources:
+            lines.append(f"  {source}")
     return "\n".join(lines)
