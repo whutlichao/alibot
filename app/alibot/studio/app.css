@@ -1246,8 +1246,8 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
   overflow-wrap: anywhere;
   user-select: all;
 }
-/* 导入区块的动作组：两个按钮**不铺满**整行（`.agent-actions .btn` 默认 `flex: 1`，那会把
-   「刷新候选 / 导入选中」拉成两条与命令提示等宽的巨条）。 */
+/* 导入区块的动作组：「刷新候选」按钮**不铺满**整行（`.agent-actions .btn` 默认 `flex: 1`，
+   那会把它拉成一条与命令提示等宽的巨条）。 */
 .resource-import-actions .btn { flex: 0 0 auto; }
 
 /* ─── 联网 provider 凭据（#199）：一行 = 名称 + 掩码状态 + password 输入 + 动作组 ───
