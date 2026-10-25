@@ -86,8 +86,8 @@ $ cd app && ../.venv/bin/python -m pytest tests/test_test_layering_guard.py test
 $ git diff --check
 （无输出）
 
-$ ../.venv/bin/python -m pytest          # 全量回归
-… 100%（所有点均为通过 / 既有 skip，无失败）
+$ cd app && ../.venv/bin/python -m pytest          # 全量回归（已合入集成分支 tip a3036b2）
+1182 passed, 11 skipped in 674.57s (0:11:14)
 ```
 
 `scripts/check.sh --fast` 的 ruff / ruff format --check / mypy / pyright 与 node 用例族（319 个）
