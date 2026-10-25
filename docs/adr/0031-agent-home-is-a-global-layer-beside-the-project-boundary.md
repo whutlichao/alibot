@@ -1,6 +1,6 @@
 # Agent 家目录是项目边界之外的全局层：成员技能与全局公共库合并，MCP 声明以库行为正本
 
-**修订（#270，2026-10-25）**：下文 2026-10-22 的「项目就近合并、全局素材由人维护」是原始历史记录，现行决策以 §一、§二、§三与 §四为准：技能只按成员家目录 > 全局公共库装配；MCP 以 Agent 级 `mcp_server` 行为正本；成员技能与 MCP 导出由宿主应用写入。旧 `rules/` / `memory/Memory/` 仍由人维护，ReMe `reme/` 仍按 ADR-0034 由应用写入。项目层旧技能字节与频道级旧行保留但不进入装配。
+**修订（#270，2026-10-25）**：下文 2026-10-22 的「项目就近合并、全局素材由人维护」是原始历史记录，现行决策以 §一、§二、§三与 §四为准：技能只按成员家目录 > 全局公共库装配；MCP 以 Agent 级 `mcp_server` 行为正本；成员技能由宿主应用写入，`mcp.json` 保持只读导入源（过渡期仍是只读装配层，**本轮不提供导出写路径**，由 follow-up #275 收尾）。旧 `rules/` / `memory/Memory/` 仍由人维护，ReMe `reme/` 仍按 ADR-0034 由应用写入。项目层旧技能字节与频道级旧行保留但不进入装配。
 
 用户于 2026-10-22 人定「方案 B：全局层 + 项目层」：在频道**项目边界**（ADR-0021）之外增加一层
 **本机级的 Agent 全局层**，让同一个 Agent 跨项目保留规则基座、全局技能与全局记忆；项目层目录结构
@@ -24,7 +24,7 @@
 
 | 层 | 根 | 内容 | 写权限 |
 | --- | --- | --- | --- |
-| 全局成员家目录 | `~/.alibot/agents/<member_id>/` | `AGENTS.md`（规则基座）、`reme/`（ReMe）、`skills/<name>/`、`mcp.json`；历史 `rules/`、`memory/Memory/` 若存在不作为现行路径 | `AGENTS.md` 与历史 `rules/` / `memory/Memory/` 只由人维护；`reme/` 由应用写（ADR-0034）；`skills/` 由应用写；`mcp.json` 只在导出时由应用写，导入时只读 |
+| 全局成员家目录 | `~/.alibot/agents/<member_id>/` | `AGENTS.md`（规则基座）、`reme/`（ReMe）、`skills/<name>/`、`mcp.json`；历史 `rules/`、`memory/Memory/` 若存在不作为现行路径 | `AGENTS.md` 与历史 `rules/` / `memory/Memory/` 只由人维护；`reme/` 由应用写（ADR-0034）；`skills/` 由应用写；`mcp.json` 只读（人工维护的导入源；过渡期仍是只读装配层，本轮不提供导出写路径，#275 收尾） |
 | 全局公共技能库 | `~/.alibot/skills/` | 跨项目公共技能 | 人维护；装配只读 |
 | 数据目录 | `~/.alibot/data/` | `alibot.db`、`attachments/`、迁移审计台账 | 应用写；备份与搬迁单位 |
 | 项目层 | `<workspace_root>/.alibot/` | `agents/<member_id>/`（运行状态 / stdio MCP cwd）、`sessions/<session_id>/`、项目规则；旧 `skills/<member_id>/` 技能字节保留 | 旧技能字节不搬迁、不自动删除、不进入装配；项目其余文件按既有权限档 |
@@ -57,9 +57,9 @@ Agent；两者同名时成员家目录更具体，优先胜出。
 
 技能按技能名去重，装配顺序只有两层：**成员家目录 `~/.alibot/agents/<member_id>/skills/<name>/` > 全局公共库 `~/.alibot/skills/<name>/`**；不再有项目 Agent 级或项目频道级技能层。
 
-`skill` 表存 Agent 级技能元数据与内容 hash，成员技能字节由宿主应用写入成员家目录；技能装配不依赖 workspace，因此 DM 与未配置项目根的频道同样生效。旧 `scope_kind='channel'` Skill 行及项目层 `<workspace_root>/.alibot/skills/<member_id>/` 字节保留、装配忽略，不回填或自动删除。显式迁移由独立 `migrate-skills` 命令完成（T5），本轮不执行。
+`skill` 表存 Agent 级技能元数据与内容 hash，成员技能字节由宿主应用写入成员家目录；技能装配不依赖 workspace，因此 DM 与未配置项目根的频道同样生效。旧 `scope_kind='channel'` Skill 行及项目层 `<workspace_root>/.alibot/skills/<member_id>/` 字节保留、装配忽略，不回填或自动删除。显式迁移由独立 `migrate-skills` 命令完成（#274；默认 dry-run，`--apply --yes` 才动手，退出码 6 = 拒绝/中途失败），启动时绝不自动迁移。
 
-MCP 声明以 `mcp_server` 中 `scope_kind='agent'` 的行作为数据库正本。`scope_kind='channel'` 旧行保留但弃用、装配忽略；家目录 `mcp.json` 只作只读导入源与应用导出结果，不是并列的装配层或正本。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace），没有 workspace 时不装配 MCP。
+MCP 声明以 `mcp_server` 中 `scope_kind='agent'` 的行作为数据库正本。`scope_kind='channel'` 旧行保留但弃用、装配忽略；家目录 `mcp.json` 只作只读导入源，过渡期仍是**只读装配层**（同名时低于 Agent 级库行，落选条目进 `RoundOutcome.reason` 的 `layer=global` 提示），不是并列的正本，**本轮不提供导出写路径**（#275 收尾）。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace），没有 workspace 时不装配 MCP。
 
 ### 记忆
 
@@ -72,9 +72,9 @@ MCP 声明以 `mcp_server` 中 `scope_kind='agent'` 的行作为数据库正本�
 
 ## 三、安全与后端边界
 
-- **工作根与只读根分开**。文件工具的可写工作根仍只是频道项目根；本地 Read / Glob / Grep 另可把成员技能目录作为只读第二根，Write / Edit 仍限项目根。全局规则由宿主读出后作为提示文本注入；技能字节由宿主应用写入家目录，不会使家目录成为项目工作根。
-- **独立守卫**。`ensure_state_partition` 与 `WorkspaceRootGuard` 仍以项目根为唯一可写根；成员技能只读第二根另做 `realpath` 检查，拒绝根外 symlink 祖先与根外目标。应用安装技能与导出 MCP 由宿主进程执行，不经文件工具的 Write / Edit 路径。
-- **Docker 后端**：频道根仍挂到 `/workspace`；成员家目录与全局公共技能库继续以 `:ro` 挂载，数据目录（库与附件字节）不进容器。`:ro` 保留的理由是技能写入与 MCP 导出都发生在宿主进程；Skill.markdown 已在宿主预读，容器只需读取 `references/`，ReMe 也由宿主进程写入，容器无需写权限。
+- **工作根与只读根分开**。文件工具的可写工作根仍只是频道项目根；只有**装配了项目根的 local 轮次**才把成员技能目录作为只读第二根（Read / Glob / Grep 可读），Write / Edit 仍限项目根；DM / 无项目根轮次没有这套文件工具，只有卸载目录的只读 `Read`。全局规则由宿主读出后作为提示文本注入；技能字节由宿主应用写入家目录，不会使家目录成为项目工作根。
+- **独立守卫**。`ensure_state_partition` 与 `WorkspaceRootGuard` 仍以项目根为唯一可写根；成员技能只读第二根另做 `realpath` 检查，拒绝根外 symlink 祖先与根外目标。应用安装技能由宿主进程执行，不经文件工具的 Write / Edit 路径；MCP 无导出写路径（`mcp.json` 只读）。
+- **Docker 后端**：频道根仍挂到 `/workspace`；成员家目录与全局公共技能库继续以 `:ro` 挂载，数据目录（库与附件字节）不进容器。`:ro` 保留的理由是技能写入发生在宿主进程（`mcp.json` 只读，应用不写它）；Skill.markdown 已在宿主预读，容器只需读取 `references/`，ReMe 也由宿主进程写入，容器无需写权限。
 - **权限档不变**：`read-only` / `ask-writes` / `trusted-writes` 三档语义一字不动，不引入 `BYPASS`，也不因为全局层新增第四档。成员技能只读第二根不增加项目根可写范围。
 
 ## 四、与 ADR-0021 的逐句关系
@@ -83,13 +83,13 @@ MCP 声明以 `mcp_server` 中 `scope_kind='agent'` 的行作为数据库正本�
 
 | ADR-0021 原决策 | 处置 | 当前说明 |
 | --- | --- | --- |
-| §一：频道 `workspace_root` 是项目边界，文件工具相对路径从此起算 | **保留** | 项目根仍是文件工具的可写工作根；成员技能目录只为本地 Read / Glob / Grep 提供只读第二根。 |
+| §一：频道 `workspace_root` 是项目边界，文件工具相对路径从此起算 | **保留** | 项目根仍是文件工具的可写工作根；只有装配了项目根的 local 轮次才为本地 Read / Glob / Grep 提供成员技能只读第二根（DM / 无项目根轮次没有这套文件工具）。 |
 | §一（原）：项目侧 `.alibot/agents/<member_id>/` 放技能分区、MCP 声明与会话状态 | **修订（#270）** | 项目侧保留运行状态与 stdio MCP cwd；技能字节改落成员家目录。项目旧技能字节保留，不装配。 |
 | §二：Docker 容器挂载项目根，文件工具只看 `/workspace` | **保留并补充** | 成员家目录与全局公共技能库仍以 `:ro` 挂载；宿主进程负责写入，容器仅读取 Skill references，不需要写权限。 |
-| §三（原）：MCP 声明按项目与全局层合并 | **修订（#270）** | 运行时正本为 `mcp_server` 的 Agent 级行；频道级旧行保留但弃用、装配忽略。`mcp.json` 只读导入、应用导出；MCP 仍以 workspace 为宿主，无 workspace 不装配。 |
-| §三（原）：Skill 字节在 `workspace_root/.alibot/skills/<member_id>/` | **修订（#270）** | 当前成员 Skill 字节由宿主应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`；装配不依赖 workspace，顺序为成员家目录 > 全局公共库。旧频道行与项目层字节保留、不回填、不自动删除；迁移由 T5 `migrate-skills` 显式执行。 |
+| §三（原）：MCP 声明按项目与全局层合并 | **修订（#270）** | 运行时正本为 `mcp_server` 的 Agent 级行；频道级旧行保留但弃用、装配忽略。`mcp.json` 只读导入源，过渡期仍是只读装配层（同名低于库行），本轮不提供导出写路径（#275）；MCP 仍以 workspace 为宿主，无 workspace 不装配。 |
+| §三（原）：Skill 字节在 `workspace_root/.alibot/skills/<member_id>/` | **修订（#270）** | 当前成员 Skill 字节由宿主应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`；装配不依赖 workspace，顺序为成员家目录 > 全局公共库。旧频道行与项目层字节保留、不回填、不自动删除；迁移由 #274 `migrate-skills` 显式执行。 |
 | §五：数据目录与项目文件分开备份 | **保留** | 数据目录与项目文件仍是不同备份单位；全局层也不在数据目录备份内。 |
-| §六：Agent 家目录是只读素材层 | **修订（#270）** | 规则文件仍由人维护；成员技能由应用写入；`mcp.json` 只由应用写出导出结果。ReMe `reme/` 的应用写入沿 ADR-0034 保持。 |
+| §六：Agent 家目录是只读素材层 | **修订（#270）** | 规则文件仍由人维护；成员技能由应用写入；`mcp.json` 只读（本轮无导出写路径，#275 收尾）。ReMe `reme/` 的应用写入沿 ADR-0034 保持。 |
 
 ADR-0030 对项目记忆的边界继续有效。现行长期记忆落在 ReMe `reme/` 并跨项目共享（ADR-0034）；旧 `memory/Memory/` 是历史路径，保留时仍由人维护，不自动导入。
 

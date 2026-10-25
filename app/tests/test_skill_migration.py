@@ -263,15 +263,17 @@ def test_apply_copies_bytes_recomputes_hash_and_updates_the_row(tmp_path: Path) 
         assert (target / "notes.txt").read_text(encoding="utf-8") == "a\nb\n"
         # 源字节不删除。
         assert (source / "SKILL.md").is_file()
-        # 行：source_path / content_hash / updated_at 都对齐到新落点与真实安装器的 hash。
+        # 行：source_path 标注来源（旧项目层源路径），content_hash / updated_at 对齐真实安装器的 hash。
         row = _read_row(db, str(agent["id"]), "review")
         assert row is not None
         assert row["id"] == skill_id
-        assert row["source_path"] == str(target)
+        assert row["source_path"] == str(source)
         assert row["content_hash"] == ctx["expected_hash"]
         assert row["updated_at"] != LEGACY_UPDATED_AT
-        # 备份 + 迁移清单都落在数据目录侧（清单在数据目录里）。
-        assert _backup_dirs(data_dir)
+        # 备份 + 迁移清单都落在数据目录侧（清单在数据目录里）；备份名与 schema 迁移可区分。
+        backups = _backup_dirs(data_dir)
+        assert len(backups) == 1
+        assert "-backup-skills-" in backups[0].name
         manifests = sorted(data_dir.glob("skill-migration-*.json"))
         assert len(manifests) == 1
         assert str(source) in manifests[0].read_text(encoding="utf-8")
@@ -296,7 +298,7 @@ def test_apply_creates_an_agent_row_when_the_library_row_is_missing(tmp_path: Pa
     with _seeded(tmp_path) as ctx:
         agent = ctx["agent"]
         assert isinstance(agent, dict)
-        _legacy_skill(ctx, partition=str(agent["id"]), name="review")
+        source = _legacy_skill(ctx, partition=str(agent["id"]), name="review")
         db = Path(str(ctx["db"]))
         data_dir = Path(str(ctx["data_dir"]))
         home = Path(str(ctx["home"]))
@@ -309,7 +311,7 @@ def test_apply_creates_an_agent_row_when_the_library_row_is_missing(tmp_path: Pa
         assert row is not None
         assert row["scope_kind"] == "agent"
         assert row["scope_id"] == agent["id"]
-        assert row["source_path"] == str(_skills_partition(home, str(agent["id"])) / "review")
+        assert row["source_path"] == str(source)
         assert row["content_hash"] == ctx["expected_hash"]
         assert row["enabled"] == 1
 

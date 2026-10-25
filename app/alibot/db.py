@@ -821,8 +821,10 @@ CREATE TABLE IF NOT EXISTS mcp_server (
   UNIQUE (scope_kind, scope_id, name)
 );
 
--- Skill 元数据（#139 / ADR-0021 §三）：字节在 ``workspace_root/.alibot/skills/<member_id>/``，
--- 库里只存来源路径与内容 hash；同名 skill 在同一个 scope 内唯一。安装只接受本机来源。
+-- Skill 元数据（#139 / ADR-0021 §三 / #270）：字节由宿主应用写入
+-- ``~/.alibot/agents/<member_id>/skills/<name>/``（现行）；库里只存来源路径与内容 hash；
+-- 同名 skill 在同一个 scope 内唯一。安装只接受本机来源。旧的
+-- ``workspace_root/.alibot/skills/<member_id>/`` 字节保留但不再进入装配。
 CREATE TABLE IF NOT EXISTS skill (
   id           TEXT PRIMARY KEY,
   name         TEXT NOT NULL,

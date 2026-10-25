@@ -32,8 +32,9 @@
 | 数据目录 | `<data_dir>/` | `alibot.db`、`attachments/`、`sessions/`、迁移审计台账 | 应用写；备份与搬迁单位 |
 
 `skills/` 与 `mcp.json` 只在全局家目录存在（ADR-0031 的既有口径不变：公共技能库
-`~/.alibot/skills/` 面向全部 Agent，成员私有技能在家目录）。项目层的技能字节仍在
-`.alibot/skills/<scope>/<name>/`，不由家目录承载。
+`~/.alibot/skills/` 面向全部 Agent，成员私有技能在家目录）。修订（#270）：项目层的旧技能字节仍保留在
+`.alibot/skills/<scope>/<name>/`，但**不再进入装配**；现行技能字节在成员家目录
+`~/.alibot/agents/<member_id>/skills/<name>/`，由宿主应用写入。
 
 一处已知的同名空间：`_AlibotLayoutMixin` 把 AgentScope 的技能分区重定向到 `.alibot/agents/`，
 于是项目层 `.alibot/agents/` 下同时出现「技能名目录」与「`mem_*` 成员家目录」。两者键空间不同
