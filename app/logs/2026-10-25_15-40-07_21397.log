@@ -1,0 +1,46 @@
+2026-10-25 15:40:07 | INFO | application.py:43 | __init__ | Initializing ReMe Application v0.4.1.10
+2026-10-25 15:40:07 | INFO | base_agent_wrapper.py:47 | __init__ | Agent SDK name=default package=agentscope version=2.0.10
+2026-10-25 15:40:07 | INFO | local_file_store.py:230 | load | default: chunk store load complete: chunks=0, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:237 | load | default: graph consistency check complete: repaired=False, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:246 | load | default: BM25/keyword index sync complete: backend=BM25Index, docs=0, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:250 | load | default: file store load phases complete: elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:88 | _start | default: file store load complete: chunks=0, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:320 | _start_embedding_backfill | default: embedding backfill skipped: reason=embedding_disabled, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:95 | _start | default: embedding backfill scheduling complete: scheduled=False, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:100 | _start | default: file store startup complete: elapsed=0.000s
+2026-10-25 15:40:07 | INFO | application.py:211 | _start_one | Starting background job: index_update_loop
+2026-10-25 15:40:07 | INFO | application.py:211 | _start_one | Starting background job: dream_cron
+2026-10-25 15:40:07 | INFO | init_changes.py:78 | execute | [InitChangesStep] file_store:default is up to date
+2026-10-25 15:40:07 | INFO | watch_changes.py:88 | execute | Watching: ['/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_6d63ac968547/reme/daily', '/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_6d63ac968547/reme/digest'] step=1000ms debounce=5000ms poll_delay=5000ms
+2026-10-25 15:40:07 | INFO | application.py:43 | __init__ | Initializing ReMe Application v0.4.1.10
+2026-10-25 15:40:07 | INFO | base_agent_wrapper.py:47 | __init__ | Agent SDK name=default package=agentscope version=2.0.10
+2026-10-25 15:40:07 | INFO | local_file_store.py:227 | load | Loaded 0 chunks from /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/metadata/file_store/file_chunks_default_v1.jsonl.zst
+2026-10-25 15:40:07 | INFO | local_file_store.py:230 | load | default: chunk store load complete: chunks=0, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:237 | load | default: graph consistency check complete: repaired=False, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:246 | load | default: BM25/keyword index sync complete: backend=BM25Index, docs=0, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:250 | load | default: file store load phases complete: elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:88 | _start | default: file store load complete: chunks=0, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:320 | _start_embedding_backfill | default: embedding backfill skipped: reason=embedding_disabled, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:95 | _start | default: embedding backfill scheduling complete: scheduled=False, elapsed=0.000s
+2026-10-25 15:40:07 | INFO | local_file_store.py:100 | _start | default: file store startup complete: elapsed=0.000s
+2026-10-25 15:40:07 | INFO | application.py:211 | _start_one | Starting background job: index_update_loop
+2026-10-25 15:40:07 | INFO | application.py:211 | _start_one | Starting background job: dream_cron
+2026-10-25 15:40:07 | INFO | init_changes.py:78 | execute | [InitChangesStep] file_store:default is up to date
+2026-10-25 15:40:07 | INFO | watch_changes.py:88 | execute | Watching: ['/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/daily', '/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/digest'] step=1000ms debounce=5000ms poll_delay=5000ms
+2026-10-25 15:40:07 | INFO | search.py:227 | execute | [SearchStep] query='开工' candidates=15 vector_hits=0 keyword_hits=0
+2026-10-25 15:40:07 | INFO | auto_memory.py:287 | execute | [AutoMemoryStep] start session_id='615207b2474245adb467d2dec404a8ef' raw_messages=2 messages=2 hint=False
+2026-10-25 15:40:07 | INFO | auto_memory.py:165 | _save_session_messages | [AutoMemoryStep] save session start session_id='615207b2474245adb467d2dec404a8ef' messages=2 path=/private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/session/dialog/615207b2474245adb467d2dec404a8ef.jsonl
+2026-10-25 15:40:07 | INFO | auto_memory.py:213 | _save_session_messages | [AutoMemoryStep] save session rewrote session_id='615207b2474245adb467d2dec404a8ef' existing=0 total=2
+2026-10-25 15:40:07 | INFO | daily_list.py:74 | execute | [DailyListStep] date=2026-10-25 notes=0
+2026-10-25 15:40:07 | INFO | auto_memory.py:335 | execute | [AutoMemoryStep] note lookup session_id='615207b2474245adb467d2dec404a8ef' path='' created=True msgs=2 hint=False
+2026-10-25 15:40:07 | INFO | auto_memory.py:350 | execute | [AutoMemoryStep] agent start path= template=user_message_create
+2026-10-25 15:40:07 | ERROR | as_agent_wrapper.py:362 | reply | AgentScope did not return token usage; token accounting is unavailable for this reply.
+2026-10-25 15:40:07 | INFO | auto_memory.py:363 | execute | [AutoMemoryStep] agent done path= has_result=True
+2026-10-25 15:40:07 | INFO | daily_list.py:74 | execute | [DailyListStep] date=2026-10-25 notes=0
+2026-10-25 15:40:07 | INFO | auto_memory.py:382 | execute | [AutoMemoryStep] done without note session_id='615207b2474245adb467d2dec404a8ef' modified=False
+2026-10-25 15:40:08 | INFO | local_file_store.py:628 | _dump_owned_state | Saved 0 chunks to /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_6d63ac968547/reme/metadata/file_store/file_chunks_default_v1.jsonl.zst
+2026-10-25 15:40:08 | INFO | local_file_graph.py:45 | dump | Saved 0 nodes to /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_6d63ac968547/reme/metadata/file_graph/default.jsonl.zst
+2026-10-25 15:40:08 | INFO | local_file_catalog.py:33 | dump | Saved 0 nodes to /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_6d63ac968547/reme/metadata/file_catalog/dream.jsonl.zst
+2026-10-25 15:40:09 | INFO | local_file_store.py:628 | _dump_owned_state | Saved 0 chunks to /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/metadata/file_store/file_chunks_default_v1.jsonl.zst
+2026-10-25 15:40:09 | INFO | local_file_graph.py:45 | dump | Saved 0 nodes to /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/metadata/file_graph/default.jsonl.zst
+2026-10-25 15:40:09 | INFO | local_file_catalog.py:33 | dump | Saved 0 nodes to /private/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/pytest-of-apple/pytest-161/test_blank_display_name_leaves0/home/.alibot/agents/mem_9154d83b373c/reme/metadata/file_catalog/dream.jsonl.zst

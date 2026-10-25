@@ -72,8 +72,8 @@ POST /api/skills  {scope_kind, scope_id, source_path=<候选 path>}   ← 语义
   `review：已存在，已跳过`（`data-import-status="skipped"`）、技能列表仍 1 行、字节 md5 不变；
   刷新候选后 `review` 变 `disabled=true` + 后缀「已安装」；英文界面 `Import from ~/.agents/skills` /
   `Refresh candidates` / `Cannot import: …`。截图见 `app/specs/issue-277-acceptance.md` §4。
-- **门禁（`scripts/check.sh`，全量）**：pytest `1208 passed, 11 skipped`、ruff check `All checks passed!`、
-  ruff format `--check` `339 files already formatted`、mypy `no issues in 128 source files`、
+- **门禁（`scripts/check.sh`，全量）**：pytest `1210 passed, 11 skipped`、ruff check `All checks passed!`、
+  ruff format `--check` `340 files already formatted`、mypy `no issues in 128 source files`、
   pyright `0 errors`、node glob `322 pass / 0 fail`、`门禁全绿`。
 - **双轴 review（固定点 `5f7dd9c`）**：Standards 3 hard + 3 判断 → 6 条全修（文档串自相矛盾、
   ADR 计数与 CONTEXT/README 冲突、`installed` 按目录名判定、结果行存渲染后文案、Middle Man、

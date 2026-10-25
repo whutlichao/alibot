@@ -132,7 +132,7 @@ node --test app/tests/*.test.cjs
 ### 5.2 全量 `scripts/check.sh`
 
 ```text
-== pytest（全量）        1208 passed, 11 skipped in 700.37s
+== pytest（全量）        1210 passed, 11 skipped in 691.47s
 == ruff check            All checks passed!
 == ruff format --check   340 files already formatted
 == mypy（仓库根）        Success: no issues found in 128 source files
@@ -141,7 +141,7 @@ node --test app/tests/*.test.cjs
 门禁全绿
 ```
 
-定稿前那一次全量（review 修正前的代码）与这一次都绿；上表是 review 修正后的最终读数。
+这是提交树（`48b8663` + 本文件）上的最终读数：全量 pytest 1210 passed / 11 skipped（比 review 前多 2 条，即新增的两条后端用例），其余门禁同前。
 
 ## 6. 双轴 code-review（固定点 `5f7dd9c`，两个并行子代理）
 
