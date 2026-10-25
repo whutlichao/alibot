@@ -190,11 +190,6 @@ const I18N_CATALOGS = {
     'typing.nameSeparator': '、',
     'typing.stopNamedShort': '停止 {name}',
     'typing.stopNamed': '停止 {name} 的本轮',
-    'agent.contextWindow': '上下文条数',
-    'agent.contextTrigger': '上下文压缩阈值',
-    'agent.maxIters': '最大迭代次数',
-    'agent.runtimeDefaultHint': '数值留空时跟随默认配置。',
-
     /* ─── composer 与 @ 补全 ────────────────────────────────────────── */
     'composer.mentionLabel': '可提及的当前频道 Agent 成员',
     'composer.placeholder': '发消息到 #频道名',
@@ -429,15 +424,28 @@ const I18N_CATALOGS = {
     'agent.webAccessSearchFetchHint': '额外挂 fetch；开启后不再逐次审批，可按 host 配 deny / ask 规则收紧',
     'agent.webAccessNote': '跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。',
 
-    /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：一页分区块 + 就地编辑 ──
-       详情不再是 dock 的形态（用户 2026-10-22 裁定）：它占据整条右侧，dock 让位。
-       所有区块在同一页纵向铺开，**没有页签**（`tabOverview` / `tabRuntime` / `tabsLabel`
-       随页签一起删除）。统计的每个数字都由**后端既有事实**推导（`stats`：`round_outcome`
-       聚合 + 任务行）；模型标识 / 提供商 / 是否远端 / 远端数据流告知不再在详情页重复一份只读读数
-       （用户 2026-10-24 裁定），它们可编辑的那一份长在「配置」区块里（词条见 `agent.*`）。
+    /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：三个页签 + 就地编辑 ──
+       详情不是 dock 的形态（用户 2026-10-22 裁定）：它占据整条右侧，dock 让位。
+       正文是**三个页签**（`CONTEXT.md` **Agent 详情页签**）：基础信息和配置 → skills → mcp，
+       顺序固定、默认停在第一页、不落库也不写 URL（`tabsLabel` / `tabBase` / `tabSkills` /
+       `tabMcp`；旧名 `tabOverview` / `tabRuntime` 不复用）。统计的每个数字都由**后端既有事实**
+       推导（`stats`：`round_outcome` 聚合 + 任务行）；模型标识 / 提供商 / 是否远端 / 远端数据流
+       告知不再在详情页重复一份只读读数（用户 2026-10-24 裁定），它们可编辑的那一份长在「配置」
+       区块里（词条见 `agent.*`）。上下文条数 / 压缩阈值 / 迭代上限三格的**界面入口已撤除**
+       （只服务它们的那四条 `agent.contextWindow` / `contextTrigger` / `maxIters` /
+       `runtimeDefaultHint` 也随控件删除，库里的列与 `PATCH` 字段面原样）。
        原型的内存 / 延迟 / 工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，
        因此这里也没有它们的词条。 */
     'agentDetail.sendMessage': '发送消息',
+    'agentDetail.tabsLabel': 'Agent 详情页签',
+    'agentDetail.tabBase': '基础信息和配置',
+    'agentDetail.tabSkills': 'skills',
+    'agentDetail.tabMcp': 'mcp',
+    'agentDetail.skillsDetailPlaceholder':
+      '右栏将显示这个技能的元数据与 SKILL.md 正文；「从本机导入」下拉框同在后续补上。',
+    'agentDetail.mcpFileTitle': '家目录 mcp.json',
+    'agentDetail.mcpFilePlaceholder':
+      '这里将直接编辑这个 Agent 家目录里的 mcp.json 原文；同名时库行胜出（上块是装配正本）。',
     'agentDetail.openAria': '查看 {name} 的详情',
     'agentDetail.sectionFacts': '统计',
     'agentDetail.statChannels': '所属频道数',
@@ -488,7 +496,6 @@ const I18N_CATALOGS = {
        归口只有这一处：Agent 详情里的 MCP 声明与技能。作用域恒为该成员
        （`scope_kind=agent&scope_id=<member>`），没有 scope 选择器；频道级旧行保留在库里但
        不展示、不装配。复制是「行复制 / 字节复制」，目标已存在同名时**跳过并逐条说明**。 */
-    'agentCapabilities.title': '能力配置',
     'agentCapabilities.scopeNote':
       '这些能力只属于这个 Agent；技能字节在 ~/.alibot/agents/{member}/skills/（公共库 ~/.alibot/skills/ 只读）。',
     'agentCapabilities.mcpTitle': 'MCP 声明',
@@ -1005,11 +1012,6 @@ const I18N_CATALOGS = {
     'typing.nameSeparator': ', ',
     'typing.stopNamedShort': 'Stop {name}',
     'typing.stopNamed': 'Stop the current round for {name}',
-    'agent.contextWindow': 'Context messages',
-    'agent.contextTrigger': 'Context compression threshold',
-    'agent.maxIters': 'Maximum iterations',
-    'agent.runtimeDefaultHint': 'Leave numbers empty to follow the defaults.',
-
     /* ─── Composer and @ completion ────────────────────────────────── */
     'composer.mentionLabel': 'Agent members of this channel that can be mentioned',
     'composer.placeholder': 'Message #channel-name',
@@ -1257,16 +1259,31 @@ const I18N_CATALOGS = {
     'agent.webAccessNote':
       'Follow channel = no agent-level override (submit null); a direct message uses the default "search only" level and never mounts fetch.',
 
-    /* ─── Agent detail (main view `state.mode === 'agent'`): one page of sections, edited in place ──
-       The detail is no longer a dock form (user decision 2026-10-22): it takes the whole right side
-       and the dock steps aside. Every section sits on the same page in one column — **no tabs**
-       (`tabOverview` / `tabRuntime` / `tabsLabel` were removed with the tabs). Every number is
-       derived from **backend facts** (`stats`: aggregates over `round_outcome` plus task rows).
-       The model id / provider / remote flag / remote data-flow notice are no longer repeated as a
-       read-only block (decision 2026-10-24): their editable form lives in the configuration section
-       (see the `agent.*` keys). Memory / latency / tool permissions / temperature / token usage /
-       context usage have no data surface in this repo, so there are no strings for them here. */
+    /* ─── Agent detail (main view `state.mode === 'agent'`): three tabs, edited in place ──
+       The detail is not a dock form (user decision 2026-10-22): it takes the whole right side and
+       the dock steps aside. The page holds **three tabs** (`CONTEXT.md`, Agent Detail Tab):
+       Basics and configuration → skills → mcp, in that fixed order, defaulting to the first tab and
+       stored nowhere (`tabsLabel` / `tabBase` / `tabSkills` / `tabMcp`; the old `tabOverview` /
+       `tabRuntime` names are not reused). Every number is derived from **backend facts**
+       (`stats`: aggregates over `round_outcome` plus task rows). The model id / provider / remote
+       flag / remote data-flow notice are no longer repeated as a read-only block (decision
+       2026-10-24): their editable form lives in the configuration section (see the `agent.*` keys).
+       The three context numbers (window / compression threshold / max iterations) no longer have a
+       UI entry point, so the four keys that served them only (`agent.contextWindow` /
+       `contextTrigger` / `maxIters` / `runtimeDefaultHint`) are gone too — the columns and the
+       PATCH field set stay as they were. Memory / latency / tool permissions / temperature /
+       token usage / context usage have no data surface in this repo, so there are no strings for
+       them here. */
     'agentDetail.sendMessage': 'Send message',
+    'agentDetail.tabsLabel': 'Agent detail tabs',
+    'agentDetail.tabBase': 'Basics and configuration',
+    'agentDetail.tabSkills': 'skills',
+    'agentDetail.tabMcp': 'mcp',
+    'agentDetail.skillsDetailPlaceholder':
+      'This pane will show the selected skill’s metadata and its SKILL.md body; the “import from this machine” dropdown lands here too, in a follow-up.',
+    'agentDetail.mcpFileTitle': 'Home-directory mcp.json',
+    'agentDetail.mcpFilePlaceholder':
+      'This pane will edit the mcp.json in this agent’s home directory directly; on a name clash the database row wins (the block above is the assembly authority).',
     'agentDetail.openAria': 'Open the details of {name}',
     'agentDetail.sectionFacts': 'Stats',
     'agentDetail.statChannels': 'Channel memberships',
@@ -1323,7 +1340,6 @@ const I18N_CATALOGS = {
        always this member (`scope_kind=agent&scope_id=<member>`) with no scope picker; legacy
        channel-level rows stay in the database but are neither shown nor assembled. Copying means
        row copy / byte copy and skips (with a per-target line) when the target already has the name. */
-    'agentCapabilities.title': 'Capabilities',
     'agentCapabilities.scopeNote':
       'These capabilities belong to this agent only; skill bytes live in ~/.alibot/agents/{member}/skills/ (the shared library ~/.alibot/skills/ is read-only).',
     'agentCapabilities.mcpTitle': 'MCP declarations',

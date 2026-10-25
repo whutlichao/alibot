@@ -470,6 +470,27 @@ function createHarness(options) {
     return elements.get(selector);
   }
 
+  // 页签与面板在 `index.html` 里是静态骨架：按钮在 `#adTabs` 里、面板在 `#adBody` 里。
+  // 替身按同一份结构把它们的 `id` 接上（「找得到」与「点得到」都靠这层父子关系）。
+  const adTabs = elementFor("#adTabs");
+  for (const name of ["base", "skills", "mcp"]) {
+    const suffix = name.charAt(0).toUpperCase() + name.slice(1);
+    const tab = elementFor("#adTab" + suffix);
+    tab.tagName = "button";
+    tab.dataset.adtab = name;
+    tab.id = "adTab" + suffix;
+    adTabs.appendChild(tab);
+    const panel = elementFor("#adPanel" + suffix);
+    panel.dataset.adpanel = name;
+    panel.id = "adPanel" + suffix;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", "adTab" + suffix);
+    tab.setAttribute("aria-controls", "adPanel" + suffix);
+    elementFor("#adBody").appendChild(panel);
+  }
+  adTabs.setAttribute("role", "tablist");
+  adTabs.className = "ad-tabs";
+
   const document = {
     documentElement: new FakeNode("html"),
     activeElement: null,
@@ -539,6 +560,11 @@ function createHarness(options) {
     catalogs: context.AlibotI18n.catalogs,
     elementFor,
     agentBody: elementFor("#adBody"),
+    /** 某个页签的面板（`#adPanelBase` / `#adPanelSkills` / `#adPanelMcp`）：它是 `index.html` 的
+        静态骨架，因此与 `#adBody` 一样按选择器取替身节点。 */
+    panel(name) {
+      return elementFor("#adPanel" + name.charAt(0).toUpperCase() + name.slice(1));
+    },
     channelBody: elementFor("#channelConfigBody"),
     channelOverlay: elementFor("#channelConfigOverlay"),
     rosterBody: elementFor("#rosterBody"),
@@ -614,15 +640,15 @@ function catalogText(harness, locale, key, params) {
   return value.replace(/\{(\w+)\}/g, (_whole, name) => String(params[name]));
 }
 
-/* ─── 1. Agent 详情：两 kind 同屏，作用域固定为该成员 ────────────────────── */
+/* ─── 1. Agent 详情：两 kind 各归自己的页签，作用域固定为该成员 ──────────── */
 
-test("Agent 详情的能力段：两种能力同屏，请求固定带 agent scope", async () => {
+test("skills 页签：左栏技能列表与技能行入口，请求固定带 agent scope", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
 
-  assert.ok(byOdId(harness.agentBody, "agent-capabilities-section"), "能力段应当在详情页里");
-  assert.ok(byOdId(harness.agentBody, "agent-capabilities-mcp"), "MCP 小节标题应当在");
-  assert.ok(byOdId(harness.agentBody, "agent-capabilities-skill"), "技能小节标题应当在");
+  const panel = harness.panel("skills");
+  assert.ok(panel, "技能列表应在 skills 页签里");
+  assert.ok(byOdId(panel, "agent-capabilities-scope"), "skills 页签顶部要有影响范围一句话");
 
   // 两条清单都按 agent scope 读取（没有频道 scope 的读取路径）。
   const reads = harness.calls.map((call) => call.url);
@@ -634,33 +660,65 @@ test("Agent 详情的能力段：两种能力同屏，请求固定带 agent scop
     "能力配置不再有频道 scope 的读取",
   );
 
-  // 两种行同屏，信息面与既有行组件一致。
-  const mcpRow = byDataset(harness.agentBody, "mcpServer", "mcp_1");
-  assert.ok(mcpRow, "MCP 行应当渲染");
-  assert.equal(mcpRow.getAttribute("data-od-id"), "capability-mcp-row");
-  assert.match(mcpRow.textContent, /filesystem/);
-  assert.match(mcpRow.textContent, /GITHUB_TOKEN/);
-  const skillRow = byDataset(harness.agentBody, "skill", "sk_1");
-  assert.ok(skillRow, "技能行应当渲染");
+  // 技能行在 skills 页签里，信息面与既有行组件一致。
+  const skillRow = byDataset(panel, "skill", "sk_1");
+  assert.ok(skillRow, "技能行应当在 skills 页签里渲染");
   assert.equal(skillRow.getAttribute("data-od-id"), "capability-skill-row");
   assert.match(skillRow.textContent, /review/);
   assert.match(skillRow.textContent, /在提交前做一次结构化自审/);
   assert.match(skillRow.textContent, /0123456789ab/, "hash 前缀仍可见");
-
-  // 每行的入口：编辑（MCP）/ 启停 + 删除（两 kind）/ 安装（技能段）/ 复制（两 kind）。
-  assert.ok(byDataset(harness.agentBody, "mcpEdit", "mcp_1"), "MCP 行要有编辑入口");
-  assert.ok(byDataset(harness.agentBody, "mcpToggle", "mcp_1"), "MCP 行要有启停入口");
-  assert.ok(byDataset(harness.agentBody, "mcpDelete", "mcp_1"), "MCP 行要有删除入口");
-  assert.ok(byDataset(harness.agentBody, "skillToggle", "sk_1"), "技能行要有启停入口");
-  assert.ok(byDataset(harness.agentBody, "skillDelete", "sk_1"), "技能行要有删除入口");
-  assert.ok(byOdId(harness.agentBody, "skill-install"), "技能段要有安装入口");
-  assert.ok(byDataset(harness.agentBody, "copyMcp", "mcp_1"), "MCP 行要有复制入口");
-  assert.ok(byDataset(harness.agentBody, "copySkill", "sk_1"), "技能行要有复制入口");
+  assert.ok(byDataset(panel, "skillToggle", "sk_1"), "技能行要有启停入口");
+  assert.ok(byDataset(panel, "skillDelete", "sk_1"), "技能行要有删除入口");
+  assert.ok(byOdId(panel, "skill-install"), "技能段要有安装入口");
+  assert.ok(byDataset(panel, "copySkill", "sk_1"), "技能行要有复制入口");
 
   // 影响范围一句话：只属于本 Agent，字节在家目录。
-  const note = byOdId(harness.agentBody, "agent-capabilities-scope");
-  assert.ok(note, "能力段顶部要有影响范围一句话");
+  const note = byOdId(panel, "agent-capabilities-scope");
   assert.match(note.textContent, /\.alibot\/agents\/mem-1\/skills\//);
+});
+
+test("mcp 页签：库行列表、表单与行入口，请求固定带 agent scope", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  assert.ok(panel, "MCP 声明块应在 mcp 页签里");
+
+  // 库行列表与表单在 mcp 页签里，信息面与既有行组件一致。
+  const mcpRow = byDataset(panel, "mcpServer", "mcp_1");
+  assert.ok(mcpRow, "MCP 行应当在 mcp 页签里渲染");
+  assert.equal(mcpRow.getAttribute("data-od-id"), "capability-mcp-row");
+  assert.match(mcpRow.textContent, /filesystem/);
+  assert.match(mcpRow.textContent, /GITHUB_TOKEN/);
+  assert.ok(byOdId(panel, "mcp-form"), "库行表单在 mcp 页签里");
+
+  assert.ok(byDataset(panel, "mcpEdit", "mcp_1"), "MCP 行要有编辑入口");
+  assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "MCP 行要有启停入口");
+  assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "MCP 行要有删除入口");
+  assert.ok(byDataset(panel, "copyMcp", "mcp_1"), "MCP 行要有复制入口");
+});
+
+test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能读数只在 skills 页签", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const skills = harness.panel("skills");
+  const mcp = harness.panel("mcp");
+  assert.ok(skills && mcp, "两个页签面板都要在");
+
+  assert.ok(byDataset(skills, "skill", "sk_1"), "技能行在 skills 页签里");
+  assert.equal(byDataset(skills, "mcpServer", "mcp_1"), null, "skills 页签里不出现 MCP 行");
+  assert.equal(byOdId(skills, "mcp-form"), null, "skills 页签里不出现 MCP 表单");
+
+  assert.ok(byDataset(mcp, "mcpServer", "mcp_1"), "MCP 行在 mcp 页签里");
+  assert.equal(byDataset(mcp, "skill", "sk_1"), null, "mcp 页签里不出现技能行");
+  assert.equal(byOdId(mcp, "skill-install"), null, "mcp 页签里不出现安装表单");
+
+  // 基础信息和配置页签只管配置，两条能力清单都不在那里。
+  const base = harness.panel("base");
+  assert.ok(base, "基础信息和配置页签也要在");
+  assert.equal(byOdId(base, "skill-list"), null);
+  assert.equal(byOdId(base, "mcp-list"), null);
 });
 
 test("能力段里没有 scope 选择器：作用域恒为当前成员", async () => {
@@ -987,7 +1045,6 @@ test("名册的 Agent 行显示 MCP n / 技能 n，读不到时只让那一行�
 test("新增文案在两份词条里同键同参数位", () => {
   const harness = createHarness();
   const keys = [
-    "agentCapabilities.title",
     "agentCapabilities.scopeNote",
     "agentCapabilities.mcpTitle",
     "agentCapabilities.skillTitle",
@@ -1034,4 +1091,10 @@ test("新增文案在两份词条里同键同参数位", () => {
     true,
     "scopeNote 的 {member} 参数位要能用",
   );
+  // 能力不再「两 kind 同屏」而是各在自己的页签里，因此那个跨两 kind 的总标题
+  // `agentCapabilities.title` 失去全部消费点：两份词条一并移除，不留孤儿键。
+  for (const locale of ["zh-CN", "en"]) {
+    assert.equal(harness.catalogs[locale]["agentCapabilities.title"], undefined,
+      locale + " 仍有已删词条：agentCapabilities.title");
+  }
 });

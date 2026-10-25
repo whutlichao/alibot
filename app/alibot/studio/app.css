@@ -455,7 +455,7 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .modal-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-8) var(--sp-7); }
 .modal-foot .sep { flex: 1; }
 
-/* ─── Agent 详情：**主线视图**（整条右侧），一页分区块 ────────────────────
+/* ─── Agent 详情：**主线视图**（整条右侧），三个页签 ────────────────────
    它不是 dock 的形态（用户 2026-10-22 裁定）：`state.mode === 'agent'` 时它占据 `.main` 的
    整块内容区，dock 让位。区块骨架（`.d-sec` / `.stat-grid` / `.kv`）沿用既有语汇，形状照
    设计系统切片 `screens/agent-detail.html`（:86-104 的四格与分区），但只消费本仓已有的
@@ -473,6 +473,29 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 /* 正文：与消息流同一个阅读宽度（`--stream-max`），于是「整条右侧」不等于「一行拉满」。 */
 .agent-page-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9) var(--sp-10); }
 .agent-page-inner { max-width: var(--stream-max); margin: 0 auto; }
+/* 三个页签（`CONTEXT.md` **Agent 详情页签**）：详情页自己的容器类 `.ad-tabs`，**不复用** dock 的
+   `.dock-tabs`（那是 dock 形态的容器，`.dock-tabs` 不存在是「详情不是 dock 形态」那条既有结论的
+   机械证据）。选中态只消费 `--selected` 族：底边 = graphic 档、文字 = 正文色，与频道页签
+   （`.tab.is-active`）同一档位语义，零新增色位。 */
+.ad-tabs {
+  display: flex; gap: var(--sp-2); padding: var(--sp-4) var(--sp-9) 0;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+  overflow-x: auto;
+}
+.ad-tab {
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-sm) var(--r-sm) 0 0;
+  color: var(--muted); font-size: var(--fs-sm); font-weight: var(--fw-semi);
+  border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.ad-tab:hover { color: var(--fg); background: var(--fg-soft); }
+.ad-tab.is-active { color: var(--fg); border-bottom-color: var(--selected-graphic); }
+/* skills 页签的双栏：左栏列表、右栏选中技能的详情位置。窄视口下退成一栏（本仓无浏览器图形
+   测试框架，这里只做 CSS 层的换行核对）。 */
+.agent-skill-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-6); }
+.agent-skill-left, .agent-skill-right { min-width: 0; }
+@media (max-width: 900px) {
+  .agent-skill-columns { grid-template-columns: minmax(0, 1fr); }
+}
 /* 底部保存条：页面级固定条（不随 `#adBody` 的整块重铺消失，因此错误原文与焦点不会被换掉）。 */
 .agent-save-bar {
   display: flex; align-items: center; gap: var(--sp-4);
