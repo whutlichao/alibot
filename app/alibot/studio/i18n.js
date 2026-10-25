@@ -484,6 +484,29 @@ const I18N_CATALOGS = {
     'agentDetail.discard': '放弃',
     'agentDetail.unsaved': '有未保存的改动',
 
+    /* ─── 能力配置（#273 / ADR-0031 §二 #270 修订） ────────────────────────
+       归口只有这一处：Agent 详情里的 MCP 声明与技能。作用域恒为该成员
+       （`scope_kind=agent&scope_id=<member>`），没有 scope 选择器；频道级旧行保留在库里但
+       不展示、不装配。复制是「行复制 / 字节复制」，目标已存在同名时**跳过并逐条说明**。 */
+    'agentCapabilities.title': '能力配置',
+    'agentCapabilities.scopeNote':
+      '这些能力只属于这个 Agent；技能字节在 ~/.alibot/agents/{member}/skills/（公共库 ~/.alibot/skills/ 只读）。',
+    'agentCapabilities.mcpTitle': 'MCP 声明',
+    'agentCapabilities.skillTitle': '技能',
+    'agentCapabilities.copyTo': '复制到…',
+    'agentCapabilities.copyTitle': '复制到其他成员',
+    'agentCapabilities.copyHint':
+      '只复制到选中的成员；目标已有同名项时跳过并逐条说明，不覆盖目标。',
+    'agentCapabilities.copyConfirm': '开始复制',
+    'agentCapabilities.copyCancel': '取消',
+    'agentCapabilities.copyNoTargets': '没有其他成员可复制。',
+    'agentCapabilities.copyPickRequired': '请至少选择一个目标成员。',
+    'agentCapabilities.copyBusy': '正在复制…',
+    'agentCapabilities.copyResultCopied': '{name}：已复制',
+    'agentCapabilities.copyResultSkipped': '{name}：已存在同名，已跳过',
+    'agentCapabilities.copyResultFailed': '{name}：失败：{reason}',
+    'agentCapabilities.copySummary': '复制完成：{copied} 个已复制，{skipped} 个已跳过，{failed} 个失败。',
+
     /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
        两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
        别在这里笼统替它承诺——有归属的提醒到点确实落一条 `system` 消息进该频道消息流
@@ -517,6 +540,11 @@ const I18N_CATALOGS = {
     'roster.unavailable': '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开名册即可。',
     'roster.empty': '这个频道还没有成员。',
     'roster.roleFallback': '成员',
+    // 能力摘要（#273）：只读两个数字，来源是 agent scope 的两条清单。读不到时只占位，
+    // 不阻塞名册的其它行，也不把「读不到」说成 0。
+    'roster.capabilities': 'MCP {mcp} / 技能 {skills}',
+    'roster.capabilitiesLoading': 'MCP … / 技能 …',
+    'roster.capabilitiesUnavailable': '能力摘要暂不可用',
     'roster.closeAria': '关闭成员名册',
 
     /* ─── 频道设置：回应预算（#54 / ADR-0007 / 规格 #31 §2） ──────────────────
@@ -657,11 +685,10 @@ const I18N_CATALOGS = {
     'workspaceMgmt.noteLocal': '本地后端：工具直接作用于本机项目根，路径必须落在根内。',
     'workspaceMgmt.noteDocker': 'Docker 后端：每个 Agent / 会话一个容器，只承诺容器与主机的隔离；远端镜像需要先确认数据面告知。',
     'workspaceMgmt.noteConfig': '项目根与后端在上方「项目根与默认后端」中修改；非法路径会被后端整体拒绝，保存处显示可读原因。',
-    'mcp.section': 'MCP 服务',
     'mcp.scopeNote': '只显示环境变量名；变量值由服务进程的环境提供，界面与后端响应都不保存值。',
     'mcp.loading': '正在读取 MCP 声明…',
     'mcp.loadFailed': 'MCP 声明读取失败：{reason}',
-    'mcp.empty': '这个频道还没有 MCP 声明。',
+    'mcp.empty': '这个 Agent 还没有 MCP 声明。',
     'mcp.name': '名称',
     'mcp.namePlaceholder': '例如 filesystem',
     'mcp.transport': '传输',
@@ -707,11 +734,10 @@ const I18N_CATALOGS = {
     'mcp.runtimeFailed': '运行读数：连接失败：{reason}',
     'mcp.isRemote': '远端',
     'mcp.isLocal': '本机',
-    'skill.section': '技能（Skills）',
-    'skill.scopeNote': '安装到本频道的技能分区；启用后才会装配进 Agent 的工具集。',
+    'skill.scopeNote': '安装在成员的全局家目录；启用后才会装配进这个 Agent 的工具集。',
     'skill.loading': '正在读取技能列表…',
     'skill.loadFailed': '技能列表读取失败：{reason}',
-    'skill.empty': '这个频道还没有安装技能。',
+    'skill.empty': '这个 Agent 还没有安装技能。',
     'skill.hashLabel': 'hash',
     'skill.hashTitle': '完整内容 hash：{hash}',
     'skill.enabled': '已启用',
@@ -723,9 +749,9 @@ const I18N_CATALOGS = {
     'skill.installDir': '从本机目录安装',
     'skill.installDirPlaceholder': '技能目录的绝对路径（含 SKILL.md）',
     'skill.installDirButton': '安装目录',
-    'skill.installDirHint': '必须是本机绝对目录，且含 SKILL.md；安装会复制到本频道的技能分区。',
+    'skill.installDirHint': '必须是本机绝对目录，且含 SKILL.md；安装会复制到这个 Agent 的家目录技能分区。',
     'skill.installZip': '上传 zip 安装',
-    'skill.installZipHint': '或选择一个含 SKILL.md 的 zip 包（不覆盖同 scope 同名技能）。',
+    'skill.installZipHint': '或选择一个含 SKILL.md 的 zip 包（不覆盖这个 Agent 已有的同名技能）。',
     'skill.installing': '正在安装…',
     'skill.installed': '技能已安装：{name}',
     'skill.installFailed': '安装失败：{reason}',
@@ -1271,6 +1297,31 @@ const I18N_CATALOGS = {
     'agentDetail.discard': 'Discard',
     'agentDetail.unsaved': 'Unsaved changes',
 
+    /* ─── Capabilities (#273 / ADR-0031 §2 as revised by #270) ───
+       One place only: the MCP declarations and skills inside the agent detail page. The scope is
+       always this member (`scope_kind=agent&scope_id=<member>`) with no scope picker; legacy
+       channel-level rows stay in the database but are neither shown nor assembled. Copying means
+       row copy / byte copy and skips (with a per-target line) when the target already has the name. */
+    'agentCapabilities.title': 'Capabilities',
+    'agentCapabilities.scopeNote':
+      'These capabilities belong to this agent only; skill bytes live in ~/.alibot/agents/{member}/skills/ (the shared library ~/.alibot/skills/ is read-only).',
+    'agentCapabilities.mcpTitle': 'MCP declarations',
+    'agentCapabilities.skillTitle': 'Skills',
+    'agentCapabilities.copyTo': 'Copy to…',
+    'agentCapabilities.copyTitle': 'Copy to other members',
+    'agentCapabilities.copyHint':
+      'Copies only to the selected members; when a target already has the same name the line is skipped with a reason and the target is never overwritten.',
+    'agentCapabilities.copyConfirm': 'Start copying',
+    'agentCapabilities.copyCancel': 'Cancel',
+    'agentCapabilities.copyNoTargets': 'There are no other members to copy to.',
+    'agentCapabilities.copyPickRequired': 'Select at least one target member.',
+    'agentCapabilities.copyBusy': 'Copying…',
+    'agentCapabilities.copyResultCopied': '{name}: copied',
+    'agentCapabilities.copyResultSkipped': '{name}: already exists, skipped',
+    'agentCapabilities.copyResultFailed': '{name}: failed: {reason}',
+    'agentCapabilities.copySummary':
+      'Copy finished: {copied} copied, {skipped} skipped, {failed} failed.',
+
     /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
        Both values state existence and persistence only: reminders live in the backend and
        survive a refresh or a restart. Due time is a separate truth, so do not promise it from
@@ -1306,6 +1357,12 @@ const I18N_CATALOGS = {
       'The channel member list is not readable right now (the backend request failed): reopen the roster once it recovers.',
     'roster.empty': 'This channel has no members yet.',
     'roster.roleFallback': 'member',
+    // Capability summary (#273): two read-only numbers from the two agent-scoped lists. A failed
+    // read only leaves a placeholder on that row; it never blocks the rest of the roster and it
+    // never reports "could not read" as 0.
+    'roster.capabilities': 'MCP {mcp} / Skills {skills}',
+    'roster.capabilitiesLoading': 'MCP … / Skills …',
+    'roster.capabilitiesUnavailable': 'Capability summary unavailable',
     'roster.closeAria': 'Close the member roster',
 
     /* ─── Channel settings: response budget (#54 / ADR-0007 / spec #31 §2) ────
@@ -1461,12 +1518,11 @@ const I18N_CATALOGS = {
       'Docker backend: one container per Agent or session; it only isolates container from host, and a remote image needs the data-flow acknowledgement first.',
     'workspaceMgmt.noteConfig':
       'Edit the project root and backend in “Project root and default backend” above; an illegal path is rejected as a whole and the save line shows the readable reason.',
-    'mcp.section': 'MCP servers',
     'mcp.scopeNote':
       'Variable names only; values come from the server process environment, and neither the UI nor API responses store them.',
     'mcp.loading': 'Reading MCP declarations…',
     'mcp.loadFailed': 'Could not read the MCP declarations: {reason}',
-    'mcp.empty': 'This channel has no MCP declarations yet.',
+    'mcp.empty': 'This agent has no MCP declarations yet.',
     'mcp.name': 'Name',
     'mcp.namePlaceholder': 'For example filesystem',
     'mcp.transport': 'Transport',
@@ -1513,12 +1569,11 @@ const I18N_CATALOGS = {
     'mcp.runtimeFailed': 'Runtime reading: connection failed: {reason}',
     'mcp.isRemote': 'Remote',
     'mcp.isLocal': 'Local',
-    'skill.section': 'Skills',
     'skill.scopeNote':
-      'Installed into this channel’s skill partition; a skill reaches Agent toolkits only while enabled.',
+      'Installed into the member home; a skill reaches this agent’s toolkit only while enabled.',
     'skill.loading': 'Reading the skill list…',
     'skill.loadFailed': 'Could not read the skill list: {reason}',
-    'skill.empty': 'This channel has no installed skills yet.',
+    'skill.empty': 'This agent has no installed skills yet.',
     'skill.hashLabel': 'hash',
     'skill.hashTitle': 'Full content hash: {hash}',
     'skill.enabled': 'Enabled',
@@ -1531,10 +1586,10 @@ const I18N_CATALOGS = {
     'skill.installDirPlaceholder': 'Absolute path of a skill directory (containing SKILL.md)',
     'skill.installDirButton': 'Install directory',
     'skill.installDirHint':
-      'Must be an absolute host directory containing SKILL.md; installing copies it into this channel’s skill partition.',
+      'Must be an absolute host directory containing SKILL.md; installing copies it into this agent’s home skill partition.',
     'skill.installZip': 'Upload a zip',
     'skill.installZipHint':
-      'Or pick a zip containing SKILL.md (it does not overwrite a same-name skill in the same scope).',
+      'Or pick a zip containing SKILL.md (it does not overwrite a same-name skill this agent already has).',
     'skill.installing': 'Installing…',
     'skill.installed': 'Skill installed: {name}',
     'skill.installFailed': 'Install failed: {reason}',

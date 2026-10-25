@@ -48,6 +48,7 @@
 - ``GET  /api/web-providers``                 五家 provider 的掩码状态 + 当前生效 provider 与来源
 - ``GET/PUT/DELETE /api/web-providers/{provider}/credential`` 掩码读写：保存 key / 设为默认 / 清空
 - ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
+- ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -111,6 +112,7 @@ from .reminder_delivery import (
 from .service import WorkspaceService
 from .skills import (
     MAX_ARCHIVE_BYTES,
+    SKILLS_DIR,
     SkillValidationError,
     install_directory,
     install_zip,
@@ -119,9 +121,12 @@ from .skills import (
 )
 from .sop import SOPRunner
 from .workspace import (
+    AGENTS_DIR,
     clear_docker_failure,
     docker_unavailable_reason,
     global_home_root,
+    resolve_global_read_path,
+    safe_partition_id,
     shutdown_docker_workspaces,
     start_docker_reaper,
     sweep_stale_docker_workspaces,
@@ -587,6 +592,18 @@ class SkillUpdate(BaseModel):
         if value is None:
             raise ValueError("null is not accepted; omit the field instead")
         return value
+
+
+class SkillCopy(BaseModel):
+    """把一条技能复制到另一个成员：目标只有成员 id（源是路径里的 ``skill_id``）。
+
+    ``extra="forbid"`` 与安装 / 更新同口径：正文里出现 ``source_path`` 之类的键会整体拒绝——
+    复制**不接受**调用方给路径，源字节固定取自源成员的技能分区。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_id: str = ""
 
 
 class ApprovalDecision(BaseModel):
@@ -1216,6 +1233,74 @@ def create_app(
             # 落库失败（冲突 / 校验）与安装一起收口：删掉刚复制的成员家目录副本，不留半成品。
             with suppress(OSError):
                 uninstall(global_root, member_id=target_scope_id, name=prepared["name"])
+            raise
+        return {"skill": skill}
+
+    @app.post("/api/skills/{skill_id}/copy", status_code=201)
+    def copy_skill(skill_id: str, payload: SkillCopy) -> dict[str, Any]:
+        """把一个成员的技能**字节**复制到另一个成员（行复制 + 家目录复制）。
+
+        源字节固定取自源成员的技能分区 ``~/.alibot/agents/<source>/skills/<name>/``——前端
+        不知道也不该知道这个路径。源路径经**全局只读守卫**解析（``resolve_global_read_path``），
+        与技能装配同口径：根外 symlink 祖先 / 根外目标一律拒绝，因此复制不会把根外内容搬进
+        另一个成员的家目录。
+
+        复制走既有安装器（front matter / 路径 / hash 全量重校验）；目标已有同名行或同名目录
+        一律 409，**不覆盖**；源行与源字节只读不改。复制给自己（``scope_id`` == 源成员）400：
+        那不是一次复制，而是把同一份字节写到同一处（必然冲突，且没有语义）。
+
+        频道级旧行不参与复制（它们已弃用、装配忽略）：400 而不是静默搬到别处。
+        """
+        current = database.get_skill(skill_id)
+        if current is None:
+            raise NotFound(_render_copy("error.skill_not_found", skill_id=skill_id))
+        locale = locale_of(database)
+        if current["scope_kind"] != "agent":
+            message = _render_copy("error.skill_scope_agent_only")
+            raise DomainError("validation_failed", message, fields={"scope_kind": message})
+        target_member = payload.scope_id
+        # 先校验目标成员（不存在 ⇒ 可读 400），再动字节：失败不留半棵树。
+        database.validate_skill_scope("agent", target_member)
+        if target_member == current["scope_id"]:
+            message = _render_copy("error.skill_conflict", name=current["name"])
+            raise DomainError("validation_failed", message, status=400, fields={"scope_id": message})
+
+        global_root = global_home_root()
+        source_parts = (AGENTS_DIR, safe_partition_id(current["scope_id"]), SKILLS_DIR, current["name"])
+        source_dir = resolve_global_read_path(global_root, *source_parts)
+        if source_dir is None:
+            # 守卫只说「不可用」：路径确实在（symlink 指到根外 / 目标是 symlink）按「路径不安全」，
+            # 真的不存在按「来源目录不存在」——两种都整体拒绝，绝不复制根外内容。
+            lexical = os.path.join(os.path.realpath(global_root), *source_parts)
+            key = (
+                "error.skill_path_invalid" if os.path.lexists(lexical) else "error.skill_source_not_directory"
+            )
+            message = _render_copy(key)
+            raise DomainError("validation_failed", message, fields={"source_path": message})
+        try:
+            prepared = install_directory(
+                source_dir,
+                global_root=global_root,
+                member_id=target_member,
+                locale=locale,
+            )
+        except SkillValidationError as error:
+            raise _skill_error(error) from None
+
+        try:
+            skill = database.create_skill(
+                scope_kind="agent",
+                scope_id=target_member,
+                name=prepared["name"],
+                description=prepared["description"],
+                source_path=prepared["source_path"],
+                content_hash=prepared["content_hash"],
+                enabled=bool(current.get("enabled", True)),
+            )
+        except Exception:
+            # 落库失败（同名行 / 校验）与复制一起收口：删掉刚复制到目标家目录的那一份。
+            with suppress(OSError):
+                uninstall(global_root, member_id=target_member, name=prepared["name"])
             raise
         return {"skill": skill}
 

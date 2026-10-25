@@ -546,6 +546,10 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .roster-role { font-size: var(--fs-caption); color: var(--faint); }
 /* owner 那一行右侧是「我」（原型与切片对 owner 的呈现），因此它用文字档而不是状态点。 */
 .roster-me { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
+/* 能力摘要（#273）：只读两个数字，与「我」同一文字档；数字不抢姓名列。 */
+.roster-capabilities {
+  font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); white-space: nowrap;
+}
 
 .field { margin-bottom: 13px; }
 .field label { display: block; font-size: var(--fs-sm); font-weight: var(--fw-semi); color: var(--fg); margin-bottom: 5px; }
