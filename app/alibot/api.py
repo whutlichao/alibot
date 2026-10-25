@@ -114,7 +114,6 @@ from .skills import (
     SkillValidationError,
     install_directory,
     install_zip,
-    resolve_delete_roots,
     resolve_install_root,
     uninstall,
 )
@@ -564,8 +563,8 @@ class MCPServerUpdate(BaseModel):
 class SkillCreateLocal(BaseModel):
     """从**本机目录**安装：``source_path`` 是绝对目录；其余键出现即整体拒绝。
 
-    ``channel_id`` 是解析 ``workspace_root`` 的上下文（Agent 级技能按成员分区，但成员可能属于
-    多个频道）；频道级安装可省略，此时用 ``scope_id`` 对应的频道。
+    技能只装到成员家目录（``scope_kind='agent'`` + ``scope_id=<member>``），不再是频道级配置；
+    因此没有 ``channel_id``——成员跨频道共享同一份正本。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -573,7 +572,6 @@ class SkillCreateLocal(BaseModel):
     scope_kind: str = ""
     scope_id: str = ""
     source_path: str = ""
-    channel_id: str | None = None
 
 
 class SkillUpdate(BaseModel):
@@ -725,15 +723,13 @@ def create_app(
             workspace_of=database.workspace_settings_for_target,
             # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
             permission_of=database.permission_settings_for_target,
-            # MCP 声明（#151 / #233）：项目两层由装配层按「Agent 级 → 频道级 → 全局」合并，
-            # 因此这里给**未合并**读路径（保留落选者以生成可读提示）；启用 + 已确认的远端声明
-            # 由装配层物化为 MCPClient；未配置时为空。
+            # MCP 声明（#151 / #233 / #271）：只读成员级库行（频道级旧行装配忽略），因此这里给
+            # **未合并**读路径（保留落选者与停用行以生成可读提示）；启用 + 已确认的远端声明由
+            # 装配层物化为 MCPClient；未配置时为空。
             mcp_of=database.mcp_layers_for_target,
-            # Skill 元数据（#152）：启用 + 已安装的技能由装配层读成 AgentScope Skill；未配置时为空。
+            # Skill 元数据（#152 / #271）：启用 + 已安装的成员级技能行；字节由装配层从成员家目录
+            # 读成 AgentScope Skill，并与人手工放置的全局层合并。
             skills_of=database.skills_for_target,
-            # 未合并的项目技能两层（#232）：保留「频道级被 Agent 级覆盖」的落选行，供四层合并
-            # 生成运行期提示；返回形状是新增路径，既有 ``skills_for_target`` 语义不变。
-            skill_layers_of=database.skill_layers_for_target,
             # 联网配置（#186 / ADR-0026 §二）：``web_access`` 未配置时不挂任何联网工具。这条读路径
             # **不经过** workspace——两个配置位同级但不同开关（频道没配项目根时联网仍可生效）。
             web_of=database.web_settings_for_target,
@@ -1120,7 +1116,13 @@ def create_app(
         scope_kind: str | None = None,
         scope_id: str | None = None,
     ) -> dict[str, Any]:
-        """Skill 列表（配置只读面；不含字节，只含 hash 与启用态）。"""
+        """Skill 列表（配置只读面；不含字节，只含 hash 与启用态）。
+
+        ``scope_kind=channel`` 是弃用形态（ADR-0031 #270 修订）：返回空列表并保持形状，
+        直到 Studio 移除该入口；旧行仍在库里、只是不再装配。
+        """
+        if scope_kind == "channel":
+            return {"skills": []}
         return {"skills": database.list_skills(scope_kind=scope_kind, scope_id=scope_id)}
 
     @app.post("/api/skills", status_code=201)
@@ -1128,20 +1130,19 @@ def create_app(
         request: Request,
         scope_kind: str = "",
         scope_id: str = "",
-        channel_id: str = "",
         filename: str = "",
     ) -> dict[str, Any]:
         """安装一个技能：JSON 正文 = 本机目录；原始 zip 字节 = 上传包。
 
-        两种来源都先校验 ``SKILL.md`` front matter、路径与内容 hash，任何一项不合法都**整体
-        拒绝**：不落库、不留半棵树。不是 multipart——与附件上传一致，原始字节走正文，元数据
-        走 query，因此后端不需要 multipart 解析依赖。
+        技能只装到**成员家目录**（``scope_kind='agent'``）。两种来源都先校验 ``SKILL.md``
+        front matter、路径与内容 hash，任何一项不合法都**整体拒绝**：不落库、不留半棵树。
+        不是 multipart——与附件上传一致，原始字节走正文，元数据走 query，因此后端不需要
+        multipart 解析依赖。
         """
         content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
         locale = locale_of(database)
         target_scope_kind = scope_kind
         target_scope_id = scope_id
-        target_channel_id = channel_id or None
         source_kind = "directory"
         if content_type in ("application/zip", "application/x-zip-compressed", "application/octet-stream"):
             source_kind = "zip"
@@ -1163,7 +1164,6 @@ def create_app(
                 ) from None
             target_scope_kind = payload.scope_kind
             target_scope_id = payload.scope_id
-            target_channel_id = payload.channel_id or None
             source_path = payload.source_path
         else:
             body = await request.body()
@@ -1179,26 +1179,25 @@ def create_app(
             source_path = ""
 
         try:
-            root = resolve_install_root(
+            global_root = resolve_install_root(
                 database,
                 scope_kind=target_scope_kind,
                 scope_id=target_scope_id,
-                channel_id=target_channel_id,
                 locale=locale,
             )
             if source_kind == "zip":
                 prepared = install_zip(
                     io.BytesIO(body),
                     filename=filename or "upload.zip",
-                    root=root,
-                    scope_id=target_scope_id,
+                    global_root=global_root,
+                    member_id=target_scope_id,
                     locale=locale,
                 )
             else:
                 prepared = install_directory(
                     source_path,
-                    root=root,
-                    scope_id=target_scope_id,
+                    global_root=global_root,
+                    member_id=target_scope_id,
                     locale=locale,
                 )
         except SkillValidationError as error:
@@ -1214,9 +1213,9 @@ def create_app(
                 content_hash=prepared["content_hash"],
             )
         except Exception:
-            # 落库失败（冲突 / 校验）与安装一起收口：删掉刚复制的工作区副本，不留半成品。
+            # 落库失败（冲突 / 校验）与安装一起收口：删掉刚复制的成员家目录副本，不留半成品。
             with suppress(OSError):
-                uninstall(root, scope_id=target_scope_id, name=prepared["name"])
+                uninstall(global_root, member_id=target_scope_id, name=prepared["name"])
             raise
         return {"skill": skill}
 
@@ -1227,20 +1226,17 @@ def create_app(
 
     @app.delete("/api/skills/{skill_id}")
     def delete_skill(skill_id: str) -> dict[str, Any]:
-        """删除配置与工作区副本（不删用户源目录；只影响该 scope）。"""
+        """删除配置与成员家目录副本（不删用户源目录，也不触碰任何项目根）。
+
+        频道级旧行可能仍在库里：只删行，不动任何字节（旧频道根/项目根由 T5 显式迁移处置）。
+        """
         current = database.get_skill(skill_id)
         if current is None:
             raise NotFound(_render_copy("error.skill_not_found", skill_id=skill_id))
-        roots = resolve_delete_roots(
-            database,
-            scope_kind=current["scope_kind"],
-            scope_id=current["scope_id"],
-            channel_id=None,
-        )
         deleted = database.delete_skill(skill_id)
-        for root in roots:
+        if current["scope_kind"] == "agent":
             with suppress(OSError):
-                uninstall(root, scope_id=current["scope_id"], name=current["name"])
+                uninstall(global_home_root(), member_id=current["scope_id"], name=current["name"])
         return {"skill": deleted}
 
     @app.post("/api/mcp-servers/{server_id}/consent")
