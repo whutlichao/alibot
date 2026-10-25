@@ -72,13 +72,19 @@ POST /api/skills  {scope_kind, scope_id, source_path=<候选 path>}   ← 语义
   `review：已存在，已跳过`（`data-import-status="skipped"`）、技能列表仍 1 行、字节 md5 不变；
   刷新候选后 `review` 变 `disabled=true` + 后缀「已安装」；英文界面 `Import from ~/.agents/skills` /
   `Refresh candidates` / `Cannot import: …`。截图见 `app/specs/issue-277-acceptance.md` §4。
-- **门禁（`scripts/check.sh`，全量）**：代码树 `1000632` 起共跑四次全量（`1000632` / `d2eec4f` /
-  `bedd553` / `7f82383`），计数完全一致，只有 pytest 耗时随负载波动
-  （695.02s / 692.52s / 689.73s / 689.09s）：pytest `1210 passed, 11 skipped`、
-  ruff check `All checks passed!`、ruff format `--check` `340 files already formatted`、
-  mypy `no issues in 128 source files`、pyright `0 errors`、node glob `322 pass / 0 fail`、`门禁全绿`。
-  `1000632` 之后只有 `app/specs/**` 的文档提交，不改任何门禁判据；读数与上一轮同值，因为清掉的是
-  37 个没有任何代码/测试引用的运行期日志（详见 `app/specs/issue-277-acceptance.md` §5.2）。
+- **门禁（`scripts/check.sh`，全量）**：代码树 `1000632` 起共跑六次全量，**五次全绿**，计数完全一致
+  （只有 pytest 耗时随负载波动：695.02s / 692.52s / 689.73s / 689.09s / 693.00s）：pytest
+  `1210 passed, 11 skipped`、ruff check `All checks passed!`、ruff format `--check`
+  `340 files already formatted`、mypy `no issues in 128 source files`、pyright `0 errors`、
+  node glob `322 pass / 0 fail`、`门禁全绿`。`1000632` 之后只有 `app/specs/**` 的文档提交，
+  不改任何门禁判据；读数与上一轮同值，因为清掉的是 37 个没有任何代码/测试引用的运行期日志
+  （详见 `app/specs/issue-277-acceptance.md` §5.2）。
+- **一次既有偶发（如实登记，未修）**：第六次全量红过一次，唯一失败是
+  `test_agent_round.py::test_ignored_round_advances_the_cursor_so_it_is_not_reread`
+  （`assert [2, 1] == [1, 2]`）。根因在 `db.py:2502` 的 `ORDER BY finished_at, id`：同一毫秒的两条
+  `round_outcome` 由**随机 UUID** 决胜。该行在 `main` 上完全相同，本分支从未触碰 `db.py` 与该测试；
+  单跑 3 次、整文件连跑 30 次全过，同树重跑全量即绿。修它要改排序键（另一张票），本票范围内未动。
+  详见 `app/specs/issue-277-acceptance.md` §5.3。
 - **误提交的运行期日志（本轮修正）**：`70fcb6d` 把 37 个 `app/logs/2026-10-25_15-*.log` 带进了提交树
   （`main` 上该目录与 `.log` 文件数都是 0）。`1000632` 用 `git rm -r --cached app/logs` + 删盘移除，
   并在 `.gitignore` 补 `/logs/` 与 `/app/logs/`（锚定根，附成因注释：ReMe / AgentScope 的 logger 默认

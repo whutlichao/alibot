@@ -131,8 +131,8 @@ node --test app/tests/*.test.cjs
 
 ### 5.2 全量 `scripts/check.sh`
 
-清理后的树上跑了四次全量（同一工作区、同一 `.venv`、同一台机器）；计数四次完全一致，只有 pytest 耗时
-随机器负载波动：
+清理后的树上跑了六次全量（同一工作区、同一 `.venv`、同一台机器）：五次全绿、一次红（§5.3 的既有偶发，
+已用重跑与独立复现定性）。计数完全一致，只有 pytest 耗时随机器负载波动：
 
 ```text
 # 树 1000632（chore：移除 app/logs + .gitignore 两条规则）——代码树
@@ -160,12 +160,22 @@ node --test app/tests/*.test.cjs
 == pyright               0 errors, 0 warnings, 0 informations
 ℹ tests 322 / ℹ pass 322 / ℹ fail 0
 门禁全绿
+
+# 树 261148a（docs：收口读数口径）—— 第 5 次跑红了一次，见 §5.3；紧接的重跑即下面这段
+== pytest（全量）        1210 passed, 11 skipped in 693.00s
+== ruff check            All checks passed!
+== ruff format --check   340 files already formatted
+== mypy（仓库根）        Success: no issues found in 128 source files
+== pyright               0 errors, 0 warnings, 0 informations
+ℹ tests 322 / ℹ pass 322 / ℹ fail 0
+门禁全绿
 ```
 
 **读数对应的 commit：`1000632`** —— `chore(#277): 移除误提交的运行期日志，并堵住产生源`，即
 `git rm -r --cached app/logs`（37 个文件）与 `.gitignore` 新增 `/logs/`、`/app/logs/` 之后的树。
 `1000632` 之后的提交只动 `app/specs/**`（本文件与 PR 正文正本），`git diff --stat 1000632..HEAD` 可核，
-不改变用例集合、源文件数或格式化面——上表在 `d2eec4f` / `bedd553` / `7f82383` 上各复跑一次全量，计数同值。
+不改变用例集合、源文件数或格式化面——上表在 `d2eec4f` / `bedd553` / `7f82383` / `261148a` 上各复跑过全量，
+绿的那些计数同值。
 
 **为什么不把「最终 head 的 SHA」写进本文：** 写它本身就是一次提交，写完 head 立刻变了，这个数字会
 自指失效。所以这里钉**代码树** `1000632`，并把之后每次全量的实测计数并列出来——读者要核的是「这批代码
@@ -177,9 +187,38 @@ node --test app/tests/*.test.cjs
 不改变用例集合、源文件数或格式化面。真正不自洽的是上一轮：那个 commit 声称只回填两行数字，实际却把
 37 个 `app/logs/2026-10-25_15-*.log` 一并带进了提交树（`main` 上该目录与 `.log` 文件数都是 0）。
 本轮用追加 commit 修正这一点，并堵住产生源：`.gitignore` 现在遮蔽 `app/logs/` 与仓库根 `logs/`，
-在 `app/` 下重跑 `pytest` 后 `git status --porcelain` 不再出现该目录（见 §5.3）。
+在 `app/` 下重跑 `pytest` 后 `git status --porcelain` 不再出现该目录（见 §5.4）。
 
-### 5.3 运行期日志不再进工作区（产生源的验证）
+### 5.3 一次偶发失败（如实记录，不抹平）
+
+第 5 次全量（树 `261148a`）**红过一次**，唯一失败是：
+
+```text
+FAILED tests/test_agent_round.py::test_ignored_round_advances_the_cursor_so_it_is_not_reread
+  assert [2, 1] == [1, 2]      # [row["base_seq"] for row in outcomes(...)]
+```
+
+**与本次改动无关**，证据三条：
+
+1. 本分支从未触碰该文件或其生产代码：`git log 70fcb6d..HEAD -- app/alibot/db.py app/tests/test_agent_round.py`
+   为空；`git diff --stat 70fcb6d..HEAD -- app/alibot app/tests` 为空。
+2. 单跑该用例 3 次全过；`tests/test_agent_round.py` 整文件连跑 30 次 **0 失败**；同一棵树紧接着重跑全量
+   **1210 passed / 11 skipped，门禁全绿**。
+3. 根因可复现：`db.py:2502` 的 `ORDER BY finished_at, id` 用**随机 UUID**（`new_id("round")`）作同一毫秒的
+   决胜键。两次 `append_round_outcome` 落在同一毫秒（`utc_now()` 只到毫秒）时，顺序由 uuid 决定。用一份
+   临时 sqlite 复现：
+
+   ```text
+   INSERT (round_zzz9, base_seq=1, finished_at=…00.000Z)
+   INSERT (round_aaa1, base_seq=2, finished_at=…00.000Z)
+   ORDER BY finished_at, id  →  [2, 1]        # 期望 [1, 2]
+   ```
+
+该行在 `main` 上**一字不差**（`git show main:app/alibot/db.py` 同在第 2502 行），所以这是既有缺陷，不是
+本票引入的。按本票范围（只动 `.gitignore` 与文档）**未修**——修它要动 `db.py` 的排序键（例如按
+`started_at, base_seq` 或给 `round_outcome` 一个单调序号），属另一张票。此处如实登记，供后续认领。
+
+### 5.4 运行期日志不再进工作区（产生源的验证）
 
 ```sh
 git ls-tree -r --name-only HEAD -- app/logs | wc -l        # 0（main 上也是 0）
@@ -271,7 +310,7 @@ candidates}` 形状；channel → 400 经 `resolve_install_root`；`POST /api/sk
 | 2 | `.gitignore` 补 `/logs/` 与 `/app/logs/`（锚定根，紧挨「本机数据目录候选 / 工作区临时目录」两条，附成因注释） | `git check-ignore -v` 只命中这两个目录；`app/specs/`、`docs/`、`app/alibot/` 不命中 |
 | 3 | 清理后的树（`1000632`）上重跑全量 `scripts/check.sh`，把真实读数回填 §5.2 并写明代码树 SHA | `1210 passed, 11 skipped in 695.02s`；`门禁全绿` |
 
-产生源的验证见 §5.3：全量门禁跑完后盘上有 75 个 `.log`，`git status --porcelain` 不含 `app/logs/`。
+产生源的验证见 §5.4：全量门禁跑完后盘上有 75 个 `.log`，`git status --porcelain` 不含 `app/logs/`。
 
 数字与上一轮完全相同的原因写在 §5.2：删掉的是 37 个没有任何代码/测试引用的运行期日志，用例集合、
 源文件数与格式化面都不变；**不自洽的是上一轮那个 commit 的内容，不是读数本身**。
