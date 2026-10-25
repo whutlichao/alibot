@@ -231,7 +231,21 @@ grep -rn "skill-import-picker" app/alibot/studio/
 `skill-source` / `skill-zip` 等字面量在全仓仍有命中，但只在**本票测试文件**（断言用的字面量）与
 **设计笔记 D9 表**（登记「改成断言 0 命中」）里 —— 产品代码 0 命中。
 
-## 7. 已知边界与偏差
+## 7. 与集成分支的合并
+
+```sh
+git fetch origin agent-detail-tabs-integration
+git merge agent-detail-tabs-integration
+# → Already up to date.
+```
+
+`origin/agent-detail-tabs-integration` 的 tip 仍是 `a5bdf49`（本分支的 base），因此**零冲突**、
+无需解决。若之后 integration 推进到 #283 / #284 的 tip，本分支的改动面（`skillImportForm()` /
+`agentSkillsTabNodes()` 顶部一处挂载 / 两份 catalog 的 `skill.import*` 段）与那两张票的改动面
+（右栏详情、`mcp.json` 文本域）不重叠，唯一的邻接是 `agentSkillsTabNodes()` 与
+`agentDetail.skillsDetailPlaceholder` 这两个位置。
+
+## 8. 已知边界与偏差
 
 | 项 | 说明 |
 | --- | --- |
