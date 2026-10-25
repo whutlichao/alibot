@@ -173,14 +173,14 @@ def test_a_broken_server_is_readable_and_does_not_block_other_tools(
     database, channel_id, agent_id = declarations
     good = _stdio(
         database,
-        scope_kind="channel",
-        scope_id=channel_id,
+        scope_kind="agent",
+        scope_id=agent_id,
         name="good",
         script=stub_script,
     )
     broken = database.create_mcp_server(
-        scope_kind="channel",
-        scope_id=channel_id,
+        scope_kind="agent",
+        scope_id=agent_id,
         name="broken",
         transport="stdio",
         command="/nonexistent/alibot-mcp-binary",
@@ -226,8 +226,8 @@ def test_unconfirmed_remote_is_not_connected_and_consent_unlocks_the_attempt(
 
     database, channel_id, agent_id = declarations
     server = database.create_mcp_server(
-        scope_kind="channel",
-        scope_id=channel_id,
+        scope_kind="agent",
+        scope_id=agent_id,
         name="remote",
         transport="http",
         url="http://127.0.0.1:9/mcp",
@@ -283,8 +283,8 @@ def test_clients_are_isolated_per_agent_and_session(
     database, channel_id, agent_id = declarations
     _stdio(
         database,
-        scope_kind="channel",
-        scope_id=channel_id,
+        scope_kind="agent",
+        scope_id=agent_id,
         name="stub",
         script=stub_script,
     )
@@ -379,26 +379,33 @@ def stub_provider() -> Iterator[str]:
         thread.join(timeout=10)
 
 
-def test_agent_scope_overrides_channel_scope_by_name(declarations: Any) -> None:
-    """频道声明对成员生效；Agent 声明同名时覆盖它，且只返回启用项。"""
+def test_channel_scope_rows_are_ignored_and_only_member_rows_are_resolved(declarations: Any) -> None:
+    """频道级旧行保留在库中，但读路径只返回成员级行（① #271）。"""
     database, channel_id, agent_id = declarations
     database.create_mcp_server(
         scope_kind="channel",
         scope_id=channel_id,
         name="shared",
         transport="stdio",
-        command="python3",
+        command="channel-cmd",
     )
     database.create_mcp_server(
         scope_kind="agent",
         scope_id=agent_id,
         name="shared",
         transport="stdio",
-        command="python3.11",
+        command="agent-cmd",
     )
     database.create_mcp_server(
         scope_kind="channel",
         scope_id=channel_id,
+        name="channel-only",
+        transport="stdio",
+        command="channel-only-cmd",
+    )
+    database.create_mcp_server(
+        scope_kind="agent",
+        scope_id=agent_id,
         name="disabled",
         transport="stdio",
         command="python3",
@@ -406,22 +413,32 @@ def test_agent_scope_overrides_channel_scope_by_name(declarations: Any) -> None:
     )
 
     resolved = database.mcp_servers_for_target(channel_id, agent_id)
+    assert [(server["name"], server["scope_kind"], server["command"]) for server in resolved] == [
+        ("shared", "agent", "agent-cmd")
+    ]
 
-    assert [server["name"] for server in resolved] == ["shared"]
-    assert resolved[0]["scope_kind"] == "agent"
-    assert resolved[0]["command"] == "python3.11"
+    # 未合并读路径保留停用行、不返回任何频道行。
+    layers = database.mcp_layers_for_target(channel_id, agent_id)
+    assert {(row["name"], row["scope_kind"]) for row in layers} == {
+        ("shared", "agent"),
+        ("disabled", "agent"),
+    }
+    # 行本身没有被删。
+    assert {row["name"] for row in database.list_mcp_servers(scope_kind="channel", scope_id=channel_id)} == {
+        "shared",
+        "channel-only",
+    }
 
 
-def test_a_real_round_exposes_the_mcp_tool_to_the_provider(
+def test_a_channel_only_declaration_never_reaches_the_provider(
     declarations: Any, stub_script: Path, tmp_path: Path, stub_provider: str
 ) -> None:
-    """缝的下一轮真的把声明装配进 toolkit：provider 请求里能看到 ``mcp__stub__echo``。"""
     database, channel_id, agent_id = declarations
     root = tmp_path / "project"
     root.mkdir()
     database.update_channel_config(channel_id, workspace_root=str(root))
     database.update_agent(agent_id, model_id="openai:stub-model")
-    _stdio(
+    channel_only = _stdio(
         database,
         scope_kind="channel",
         scope_id=channel_id,
@@ -432,7 +449,7 @@ def test_a_real_round_exposes_the_mcp_tool_to_the_provider(
     seam = AgentScopeAgentSeam(
         timeout_seconds=10.0,
         workspace_of=database.workspace_settings_for_target,
-        mcp_of=database.mcp_servers_for_target,
+        mcp_of=database.mcp_layers_for_target,
     )
     outcome = seam.run_round(
         database.get_agent(agent_id),
@@ -443,7 +460,8 @@ def test_a_real_round_exposes_the_mcp_tool_to_the_provider(
 
     assert outcome.status == "replied", outcome.reason
     names = {tool["function"]["name"] for tool in _CaptureHandler.request_bodies[0].get("tools") or []}
-    assert "mcp__stub__echo" in names
+    assert not [name for name in names if name.startswith("mcp__")]
+    assert runtime_status(channel_only["id"]) is None
 
 
 def _docker_available() -> bool:
@@ -483,8 +501,8 @@ def test_docker_backend_materializes_mcp_through_the_workspace_gateway(
     root.mkdir()
     (root / "stub_mcp.py").write_text(STUB_SERVER, encoding="utf-8")
     server = database.create_mcp_server(
-        scope_kind="channel",
-        scope_id=channel_id,
+        scope_kind="agent",
+        scope_id=agent_id,
         name="dockerstub",
         transport="stdio",
         command="python3",

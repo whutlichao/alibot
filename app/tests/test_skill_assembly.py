@@ -1,4 +1,4 @@
-"""#152 Skill 装配层：启用态进入 AgentScope toolkit（Skill 查看器 + 系统提示）。
+"""#152 / #271 Skill 装配层：启用态进入 AgentScope toolkit（Skill 查看器 + 系统提示）。
 
 装配不在 HTTP 面上，测试落在公开的安装函数与真实 seam 上：
 
@@ -6,7 +6,8 @@
    出现技能名与描述；
 2. 停用后同一轮不再出现（列表与启用态是 DB 事实，装配只消费它）；
 3. 被篡改 / 缺失的技能字节不装配（hash 校验在装配层再核一次），也不拖垮工作区工具；
-4. Docker 后端把 ``dir`` 翻译成容器内路径，字节仍来自同一个 host 项目根（容器只挂载）。
+4. Docker 后端把 ``dir`` 翻译成容器内路径，字节仍来自宿主成员家目录（容器只挂载）；
+5. 字节正本是成员家目录 ``<全局根>/agents/<member>/skills/``：频道级旧行不进入读路径。
 """
 
 from __future__ import annotations
@@ -114,6 +115,7 @@ def test_enabled_skill_reaches_the_toolkit_and_the_system_prompt(tmp_path: Path,
 
     root = tmp_path / "project"
     root.mkdir()
+    global_root = tmp_path / "home" / ".alibot"
     database = open_database(tmp_path / "data")
     try:
         agent = database.create_agent("小明", "工程师", "openai:stub-model", "简短回复。")
@@ -121,7 +123,9 @@ def test_enabled_skill_reaches_the_toolkit_and_the_system_prompt(tmp_path: Path,
         database.update_channel_config(channel["id"], workspace_root=str(root))
 
         source = _skill_source(tmp_path)
-        prepared = install_directory(source, root=str(root), scope_id=agent["id"], locale=SOURCE_LOCALE)
+        prepared = install_directory(
+            source, global_root=str(global_root), member_id=agent["id"], locale=SOURCE_LOCALE
+        )
         database.create_skill(
             scope_kind="agent",
             scope_id=agent["id"],
@@ -132,6 +136,7 @@ def test_enabled_skill_reaches_the_toolkit_and_the_system_prompt(tmp_path: Path,
             timeout_seconds=10.0,
             workspace_of=database.workspace_settings_for_target,
             skills_of=database.skills_for_target,
+            global_home=str(global_root),
         )
         outcome = _round(seam, database.get_agent(agent["id"]), channel["id"])
         assert outcome.status == "replied", outcome.reason
@@ -173,6 +178,7 @@ def test_tampered_skill_bytes_are_not_assembled_and_do_not_block_other_tools(
 
     root = tmp_path / "project"
     root.mkdir()
+    global_root = tmp_path / "home" / ".alibot"
     database = open_database(tmp_path / "data")
     try:
         agent = database.create_agent("小明", "工程师", "openai:stub-model", "简短回复。")
@@ -180,14 +186,16 @@ def test_tampered_skill_bytes_are_not_assembled_and_do_not_block_other_tools(
         database.update_channel_config(channel["id"], workspace_root=str(root))
 
         source = _skill_source(tmp_path)
-        prepared = install_directory(source, root=str(root), scope_id=agent["id"], locale=SOURCE_LOCALE)
+        prepared = install_directory(
+            source, global_root=str(global_root), member_id=agent["id"], locale=SOURCE_LOCALE
+        )
         database.create_skill(
             scope_kind="agent",
             scope_id=agent["id"],
             **{key: prepared[key] for key in ("name", "description", "source_path", "content_hash")},
         )
-        # 安装之后有人改了工作区副本：hash 不匹配，装配层拒绝加载。
-        (root / ".alibot" / "skills" / agent["id"] / "review" / "SKILL.md").write_text(
+        # 安装之后有人改了成员家目录副本：hash 不匹配，装配层拒绝加载。
+        (global_root / "agents" / agent["id"] / "skills" / "review" / "SKILL.md").write_text(
             "---\nname: review\ndescription: 被篡改\n---\n\nchanged\n", encoding="utf-8"
         )
 
@@ -195,6 +203,7 @@ def test_tampered_skill_bytes_are_not_assembled_and_do_not_block_other_tools(
             timeout_seconds=10.0,
             workspace_of=database.workspace_settings_for_target,
             skills_of=database.skills_for_target,
+            global_home=str(global_root),
         )
         outcome = _round(seam, database.get_agent(agent["id"]), channel["id"])
         assert outcome.status == "replied", outcome.reason
@@ -209,12 +218,13 @@ def test_tampered_skill_bytes_are_not_assembled_and_do_not_block_other_tools(
 def test_docker_backend_points_the_skill_at_the_container_mount(tmp_path: Path) -> None:
     from alibot.i18n import SOURCE_LOCALE
     from alibot.skills import load_skills
-    from alibot.workspace import DOCKER_WORKDIR
+    from alibot.workspace import docker_global_member_home
 
-    root = tmp_path / "project"
-    root.mkdir()
+    global_root = tmp_path / "home" / ".alibot"
     source = _skill_source(tmp_path)
-    prepared = install_directory(source, root=str(root), scope_id="mem_docker", locale=SOURCE_LOCALE)
+    prepared = install_directory(
+        source, global_root=str(global_root), member_id="mem_docker", locale=SOURCE_LOCALE
+    )
     rows = [
         {
             "id": "sk_1",
@@ -226,69 +236,49 @@ def test_docker_backend_points_the_skill_at_the_container_mount(tmp_path: Path) 
             "scope_id": "mem_docker",
         }
     ]
+    member_home = global_root / "agents" / "mem_docker"
 
-    local = load_skills(rows, root=str(root))
-    assert [skill.dir for skill in local] == [str(root / ".alibot" / "skills" / "mem_docker" / "review")]
+    local = load_skills(rows, member_home=str(member_home))
+    assert [skill.dir for skill in local] == [str(member_home / "skills" / "review")]
 
-    container = load_skills(rows, root=str(root), container_root=DOCKER_WORKDIR)
-    assert [skill.dir for skill in container] == [f"{DOCKER_WORKDIR}/.alibot/skills/mem_docker/review"]
+    container = load_skills(
+        rows,
+        member_home=str(member_home),
+        container_home=docker_global_member_home("mem_docker"),
+    )
+    assert [skill.dir for skill in container] == [f"{docker_global_member_home('mem_docker')}/skills/review"]
     assert container[0].markdown.strip().startswith("# Review")
 
     # 构造一个「workspace root 在 host 上，但后端是 docker」的最小 settings 形态做自证。
-    assert WorkspaceSettings(root=str(root), backend="docker").is_docker is True
+    project = tmp_path / "project"
+    project.mkdir()
+    assert WorkspaceSettings(root=str(project), backend="docker").is_docker is True
 
 
-def test_agent_scope_overrides_channel_scope_by_name(tmp_path: Path) -> None:
+def test_channel_scope_rows_are_never_the_assembly_source(tmp_path: Path) -> None:
     from alibot.i18n import SOURCE_LOCALE
-    from alibot.skills import load_skills
 
-    root = tmp_path / "project"
-    root.mkdir()
+    global_root = tmp_path / "home" / ".alibot"
     database = open_database(tmp_path / "data")
     try:
         agent = database.create_agent("小明", "工程师", "ollama:qwen2.5", "简短回复。")
         channel = database.create_channel("项目频道", member_ids=[agent["id"]])
-        database.update_channel_config(channel["id"], workspace_root=str(root))
-
-        channel_source = _skill_source(tmp_path)
-        channel_prepared = install_directory(
-            channel_source, root=str(root), scope_id=channel["id"], locale=SOURCE_LOCALE
+        prepared = install_directory(
+            _skill_source(tmp_path),
+            global_root=str(global_root),
+            member_id=agent["id"],
+            locale=SOURCE_LOCALE,
         )
         database.create_skill(
             scope_kind="channel",
             scope_id=channel["id"],
-            **{key: channel_prepared[key] for key in ("name", "description", "source_path", "content_hash")},
+            **{key: prepared[key] for key in ("name", "description", "source_path", "content_hash")},
         )
 
-        agent_source = tmp_path / "agent-source"
-        agent_source.mkdir()
-        (agent_source / "SKILL.md").write_text(
-            "---\nname: review\ndescription: 成员版清单\n---\n\n# Member Review\n",
-            encoding="utf-8",
-        )
-        agent_prepared = install_directory(
-            agent_source, root=str(root), scope_id=agent["id"], locale=SOURCE_LOCALE
-        )
-        agent_row = database.create_skill(
-            scope_kind="agent",
-            scope_id=agent["id"],
-            **{key: agent_prepared[key] for key in ("name", "description", "source_path", "content_hash")},
-        )
-
-        rows = database.skills_for_target(channel["id"], agent["id"])
-        assert [(row["name"], row["description"], row["scope_kind"]) for row in rows] == [
-            ("review", "成员版清单", "agent")
-        ]
-        loaded = load_skills(rows, root=str(root))
-        assert [skill.description for skill in loaded] == ["成员版清单"]
-
-        # Agent 级覆盖是**整条**的：停用它等于该成员没有这个技能，频道级不会重新浮现。
-        database.update_skill(agent_row["id"], {"enabled": False})
+        # 目标读路径只给成员行：频道级旧行仍在库里，但不参与装配。
         assert database.skills_for_target(channel["id"], agent["id"]) == []
-
-        # 删除 Agent 级后，频道级默认恢复。
-        database.delete_skill(agent_row["id"])
-        rows = database.skills_for_target(channel["id"], agent["id"])
-        assert [(row["name"], row["scope_kind"]) for row in rows] == [("review", "channel")]
+        assert [
+            row["name"] for row in database.list_skills(scope_kind="channel", scope_id=channel["id"])
+        ] == ["review"]
     finally:
         database.close()

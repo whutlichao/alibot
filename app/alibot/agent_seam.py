@@ -687,7 +687,6 @@ class AgentScopeAgentSeam:
         permission_of: Callable[[str, str], Any] | None = None,
         mcp_of: Callable[[str, str], Any] | None = None,
         skills_of: Callable[[str, str], Any] | None = None,
-        skill_layers_of: Callable[[str, str], Any] | None = None,
         web_of: Callable[[str, str], Any] | None = None,
         global_home: str | os.PathLike[str] | None = None,
         global_mcp_consent_of: Callable[[str], bool] | None = None,
@@ -713,14 +712,11 @@ class AgentScopeAgentSeam:
         # MCP 声明读路径（#151）：生产是 ``Database.mcp_servers_for_target``。不注入时这一轮
         # 不挂 MCP——未配置声明的工作区行为逐字不变。
         self._mcp_of = mcp_of
-        # Skill 读路径（#152）：生产是 ``Database.skills_for_target``。只返回**启用**的技能；
-        # 字节在频道项目根的 ``.alibot/skills/`` 下，装配层再核一次 hash。不注入时这一轮不挂
-        # Skill——未配置技能的工作区行为逐字不变。
+        # Skill 读路径（#152 / #271）：生产是 ``Database.skills_for_target``。返回该成员的
+        # 成员级技能行（含停用行，供装配层占位）；字节在成员家目录 ``agents/<member>/skills/``
+        # 下，装配层再核一次 hash、只装配启用的行。不注入时这一轮没有库行技能（人手工放置的
+        # 全局层仍按全局根读取）。
         self._skills_of = skills_of
-        # 未合并的项目技能读路径（#232）：生产是 ``Database.skill_layers_for_target``。它保留
-        # 「项目频道级被项目 Agent 级覆盖」的行，装配层才能为落选者生成提示；未注入时退回
-        # ``skills_of`` 的已合并结果（行为与 #232 之前逐字相同）。
-        self._skill_layers_of = skill_layers_of
         # 全局层读路径（#230 / ADR-0031 Seam A）：生产是 ``workspace.global_home_root()``，
         # 测试传临时全局根。**默认 None** = 未接线，这一轮的三段规则里只剩
         # ``agent_config.system_prompt``，行为与 #230 之前逐字相同。全局层只读、不建目录、
@@ -908,20 +904,20 @@ class AgentScopeAgentSeam:
         }
 
     def _mcp_declarations(self, target_id: str, member_id: str, notes: list[str]) -> list[dict[str, Any]]:
-        """本轮胜出的 MCP 声明（项目 Agent 级 → 项目频道级 → 全局成员家目录）。
+        """本轮胜出的 MCP 声明（成员级库行 → 全局成员家目录的 ``mcp.json``）。
 
-        未注入读路径 / 读路径失败时项目层为空，不拖垮一轮。全局层是**纯文件**、只读；同名
-        落选条目各追加一条只进 ``RoundOutcome.reason`` 的可读提示（名字 + 胜出层），**不进**
-        provider system prompt。
+        未注入读路径 / 读路径失败时库行层为空，不拖垮一轮。频道级旧行**不进入装配**
+        （ADR-0031 #270 修订；行仍留在库里）。全局层是**纯文件**、只读；同名落选条目各追加
+        一条只进 ``RoundOutcome.reason`` 的可读提示（名字 + 胜出层），**不进** provider system
+        prompt。
         """
-        project_rows: list[dict[str, Any]] = []
+        database_rows: list[dict[str, Any]] = []
         if self._mcp_of is not None:
             try:
-                project_rows = [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
+                database_rows = [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
             except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
                 _log.debug("mcp declaration lookup failed", exc_info=True)
-        agent_rows = [row for row in project_rows if str(row.get("scope_kind") or "agent") == "agent"]
-        channel_rows = [row for row in project_rows if str(row.get("scope_kind") or "") == "channel"]
+        agent_rows = [row for row in database_rows if str(row.get("scope_kind") or "agent") == "agent"]
         global_rows: list[dict[str, Any]] = []
         if self._global_home is not None:
             from .mcp import load_global_mcp_declarations
@@ -931,9 +927,7 @@ class AgentScopeAgentSeam:
             )
         from .mcp import merge_mcp_layers
 
-        winners, losers = merge_mcp_layers(
-            (("agent", agent_rows), ("channel", channel_rows), ("global", global_rows))
-        )
+        winners, losers = merge_mcp_layers((("agent", agent_rows), ("global", global_rows)))
         locale = self._locale()
         for name, layer in losers:
             notes.append(
@@ -979,50 +973,6 @@ class AgentScopeAgentSeam:
                 session_id=session_id,
             )
 
-    def _skill_rows(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """本轮启用的技能元数据；读路径失败只记 debug，不影响其他工具。"""
-        if self._skills_of is None:
-            return []
-        try:
-            return [dict(item) for item in (self._skills_of(target_id, member_id) or [])]
-        except Exception:  # 配置读不出来等价于没有技能；不阻塞其他工具
-            _log.debug("skill lookup failed", exc_info=True)
-            return []
-
-    def _skill_layers(self, target_id: str, member_id: str) -> list[tuple[str, list[dict[str, Any]]]]:
-        """项目层两级的**未合并**行（Agent 级在频道级之前）；读失败只记 debug。"""
-        from .skills import SKILL_LAYER_PROJECT_AGENT, SKILL_LAYER_PROJECT_CHANNEL
-
-        if self._skill_layers_of is not None:
-            try:
-                raw = self._skill_layers_of(target_id, member_id) or {}
-            except Exception:  # 配置读不出来等价于没有项目技能；不阻塞其他工具
-                _log.debug("skill layer lookup failed", exc_info=True)
-                raw = {}
-            if isinstance(raw, Mapping):
-                return [
-                    (
-                        SKILL_LAYER_PROJECT_AGENT,
-                        [dict(item) for item in raw.get("agent") or []],
-                    ),
-                    (
-                        SKILL_LAYER_PROJECT_CHANNEL,
-                        [dict(item) for item in raw.get("channel") or []],
-                    ),
-                ]
-        # 未注入未合并读路径：退回既有已合并结果，仅按 scope_kind 分层（落选者已在库层丢失）。
-        rows = self._skill_rows(target_id, member_id)
-        return [
-            (
-                SKILL_LAYER_PROJECT_AGENT,
-                [row for row in rows if row.get("scope_kind") == "agent"],
-            ),
-            (
-                SKILL_LAYER_PROJECT_CHANNEL,
-                [row for row in rows if row.get("scope_kind") != "agent"],
-            ),
-        ]
-
     def _skills_for(
         self,
         target_id: str,
@@ -1030,15 +980,23 @@ class AgentScopeAgentSeam:
         settings: Any,
         notes: list[str] | None = None,
     ) -> list[Any]:
-        """按四层归属装配技能：项目 Agent 级 → 项目频道级 → 全局成员家目录 → 全局公共库。
+        """按两层归属装配技能：成员家目录 → 全局公共技能库。
 
-        - 无项目根（私信 / 未配置 workspace）⇒ 零技能，既有门控逐字不变；
-        - 全局层只在有项目根时读取；全局根未接线或目录缺失 ⇒ 该层零条，不创建目录；
-        - 同名只装配胜出的一条；每个落选条目追加一条只进 ``RoundOutcome.reason`` 的提示
-          （``notes``），**不**进入 provider 的 system prompt。
+        只有两层（ADR-0031 #270 修订）：
+
+        1. **库行**：``Database.skills_for_target`` 给出的成员行（停用行只按名字占位），字节从
+           ``<全局根>/agents/<member_id>/skills/<name>/`` 读取并复核 ``content_hash``；
+        2. **人手工放置**：同一成员技能目录里**没有库行**的名字按纯文件装配；
+        3. **全局公共库**：``<全局根>/skills/<name>/``。
+
+        技能装配**不依赖 workspace**：私信 / 未配置项目根的频道（``settings is None``）同样
+        装配，``settings`` 只用于判断是否换成容器内可见路径。频道级旧行与项目层旧字节不参与。
+        全局根未接线时零技能（不建目录、不读盘）。同名只装配胜出的一条；每个落选条目追加一条
+        只进 ``RoundOutcome.reason`` 的提示（``notes``），**不**进入 provider 的 system prompt。
         """
-        if settings is None:
+        if self._global_home is None:
             return []
+
         from .skills import (
             SKILL_LAYER_GLOBAL_MEMBER,
             SKILL_LAYER_GLOBAL_PUBLIC,
@@ -1046,37 +1004,43 @@ class AgentScopeAgentSeam:
             load_skills,
             merge_skill_layers,
         )
-        from .workspace import DOCKER_WORKDIR
+        from .workspace import docker_global_member_home, global_member_home
 
-        container_root = DOCKER_WORKDIR if settings.is_docker else None
-        # 各层**声明**（项目层行含 enabled，全局层是已校验的文件技能）按优先级合并；
-        # 先排出胜出者再过滤 enabled：停用的项目 Agent 级仍挡住同名频道级（既有语义）。
+        docker = bool(settings is not None and getattr(settings, "is_docker", False))
+        member_home = global_member_home(member_id, root=self._global_home)
+        container_home = docker_global_member_home(member_id) if docker else None
+
+        rows: list[dict[str, Any]] = []
+        if self._skills_of is not None:
+            try:
+                rows = [dict(item) for item in (self._skills_of(target_id, member_id) or [])]
+            except Exception:  # 配置读不出来等价于没有库行技能；不阻塞其他工具
+                _log.debug("skill lookup failed", exc_info=True)
+        # 停用 / 坏行仍占用名字：它们的字节不能退化成「人手工放置」的条目复活。
+        known_names = {str(row.get("name") or "") for row in rows}
+        enabled_rows = [row for row in rows if row.get("enabled", True)]
+
+        global_layers = load_global_skills(
+            self._global_home,
+            member_id,
+            docker=docker,
+            exclude_member_names=known_names,
+        )
         layers: list[tuple[str, Sequence[Any]]] = [
-            (layer, rows) for layer, rows in self._skill_layers(target_id, member_id)
+            (
+                SKILL_LAYER_GLOBAL_MEMBER,
+                [
+                    *load_skills(enabled_rows, member_home=member_home, container_home=container_home),
+                    *global_layers[SKILL_LAYER_GLOBAL_MEMBER],
+                ],
+            ),
+            (SKILL_LAYER_GLOBAL_PUBLIC, global_layers[SKILL_LAYER_GLOBAL_PUBLIC]),
         ]
-        if self._global_home is not None:
-            global_layers = load_global_skills(self._global_home, member_id, docker=settings.is_docker)
-            layers.append((SKILL_LAYER_GLOBAL_MEMBER, global_layers[SKILL_LAYER_GLOBAL_MEMBER]))
-            layers.append((SKILL_LAYER_GLOBAL_PUBLIC, global_layers[SKILL_LAYER_GLOBAL_PUBLIC]))
 
         winners, merged_notes = merge_skill_layers(layers, locale=self._locale())
         if notes is not None:
             notes.extend(merged_notes)
-
-        project_rows: list[dict[str, Any]] = []
-        file_skills: list[Any] = []
-        for _layer, entry in winners:
-            if isinstance(entry, Mapping):
-                if entry.get("enabled", True):
-                    project_rows.append(dict(entry))
-            else:
-                file_skills.append(entry)
-        project_skills = (
-            load_skills(project_rows, root=settings.root, container_root=container_root)
-            if project_rows
-            else []
-        )
-        return [*project_skills, *file_skills]
+        return [entry for _layer, entry in winners]
 
     def _rule_layers(self, member_id: str, project_root: str | None) -> tuple[str | None, str | None]:
         """本轮的两段文件规则：``(全局基座, 项目补充)``（ADR-0031 §二）。
@@ -1894,9 +1858,8 @@ class AgentScopeAgentSeam:
                 return tools or None
 
             async def _skills_for_member(member_id_value: str) -> list[Any]:
+                # 技能不依赖 workspace：没有项目根的成员同样装配成员家目录与公共库。
                 settings = self._workspace_settings(target_id, member_id_value)
-                if settings is None:
-                    return []
                 return self._skills_for(target_id, member_id_value, settings, assembly_notes)
 
             def _build_agent(

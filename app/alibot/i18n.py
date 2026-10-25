@@ -242,9 +242,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope 不认识这个凭证类型：{credential_type}",
         "seam.approval_timeout": "审批等待超时（{seconds} 秒）：本轮失败",
-        # ─── 技能四层合并（#232 / ADR-0031 D4）────────────────────────────
-        "skill.layer.project-agent": "项目 Agent 级",
-        "skill.layer.project-channel": "项目频道级",
+        # ─── 技能两层合并（#232 / ADR-0031 D4；#271 修订为成员家目录 > 公共库）──
         "skill.layer.global-member": "全局成员家目录",
         "skill.layer.global-public": "全局公共技能库",
         "skill.assembly.shadowed": ("技能「{name}」装配{winner}的版本，忽略{loser}的同名条目"),
@@ -290,10 +288,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_consent_local": "stdio MCP 在本机运行，不需要远端数据面确认",
         "error.skill_scope_invalid": "Skill 作用域只能是 channel 或 agent",
         "error.skill_scope_unknown": "Skill 作用域不存在：{scope_id}",
-        "error.skill_workspace_root_missing": "频道没有配置 workspace_root，Skill 没有落点",
-        "error.skill_workspace_root_invalid": "频道 workspace_root 不可用：{reason}",
-        "error.skill_channel_ambiguous": "成员属于多个配置了项目根的频道，请指定 channel_id",
-        "error.skill_member_not_in_channel": "成员不在该频道：{channel_id}",
+        "error.skill_scope_agent_only": "Skill 只能安装在成员作用域（scope_kind=agent），频道级已弃用",
+        "error.skill_member_home_invalid": "成员家目录不可用：{reason}",
         "error.skill_source_invalid": "Skill 来源必须是本机绝对目录",
         "error.skill_source_not_directory": "Skill 来源目录不存在或不是目录",
         "error.skill_manifest_missing": "技能根目录缺少 SKILL.md",
@@ -311,10 +307,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.skill_conflict": "同一作用域内已存在同名 Skill：{name}",
         "mcp.runtime.consent_required": "远端 MCP 尚未确认数据面告知，未连接：{name}",
         "mcp.runtime.connect_failed": "MCP 连接失败：{name}",
-        # 三层合并（#233）：落选条目只进 ``RoundOutcome.reason``，**不进** system prompt。
+        # 两层合并（#233 / #271）：落选条目只进 ``RoundOutcome.reason``，**不进** system prompt。
         "mcp.assembly.shadowed": "MCP 声明「{name}」被更高优先级的{layer}同名声明覆盖，本轮未装配",
-        "mcp.layer.agent": "项目 Agent 级",
-        "mcp.layer.channel": "项目频道级",
+        "mcp.layer.agent": "成员级库行",
         "mcp.layer.global": "全局成员家目录",
         "error.approval_not_found": "审批请求不存在：{reply_id}",
         "error.approval_state_conflict": "审批请求已是 {state}，不能再提交决策",
@@ -711,8 +706,6 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "seam.unknown_credential_type": "AgentScope does not know this credential type: {credential_type}",
         "seam.approval_timeout": "Approval wait timed out ({seconds} seconds); this round failed",
-        "skill.layer.project-agent": "project agent scope",
-        "skill.layer.project-channel": "project channel scope",
         "skill.layer.global-member": "global member home",
         "skill.layer.global-public": "global public skill library",
         "skill.assembly.shadowed": (
@@ -768,12 +761,10 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_consent_local": "A stdio MCP runs locally and needs no remote data-flow acknowledgement",
         "error.skill_scope_invalid": "A skill scope must be channel or agent",
         "error.skill_scope_unknown": "No such skill scope: {scope_id}",
-        "error.skill_workspace_root_missing": "The channel has no workspace_root, so a skill has nowhere to land",
-        "error.skill_workspace_root_invalid": "The channel workspace_root is unusable: {reason}",
-        "error.skill_channel_ambiguous": (
-            "The member belongs to multiple channels with a workspace root; pass channel_id"
+        "error.skill_scope_agent_only": (
+            "Skills can only be installed in the member (agent) scope; channel scope is deprecated"
         ),
-        "error.skill_member_not_in_channel": "The member is not in that channel: {channel_id}",
+        "error.skill_member_home_invalid": "The member home is unusable: {reason}",
         "error.skill_source_invalid": "A skill source must be an absolute local directory",
         "error.skill_source_not_directory": "The skill source directory is missing or is not a directory",
         "error.skill_manifest_missing": "The skill root has no SKILL.md",
@@ -799,8 +790,7 @@ CATALOGS: dict[str, dict[str, str]] = {
             'MCP declaration "{name}" is shadowed by a same-name declaration in {layer}; '
             "not assembled this round"
         ),
-        "mcp.layer.agent": "the project agent scope",
-        "mcp.layer.channel": "the project channel scope",
+        "mcp.layer.agent": "the member-scope database row",
         "mcp.layer.global": "the global member home",
         "error.approval_not_found": "No such approval request: {reply_id}",
         "error.approval_state_conflict": "The approval request is already {state}; no further decisions are accepted",

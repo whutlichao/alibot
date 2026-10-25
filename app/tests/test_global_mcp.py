@@ -1,4 +1,4 @@
-"""#233 MCP 声明三层合并：项目 Agent 级 / 项目频道级 / 全局成员家目录。
+"""#233 / #271 MCP 声明两层合并：成员级库行 / 全局成员家目录（频道级旧行装配忽略）。
 
 判据落在**这一轮真的发生了什么**上：真 seam + 进程内 stub provider 读本轮工具清单与
 system prompt，真实最小 stdio 子进程取证「只连接胜出条目」，全局远端用传输替身计数。
@@ -243,7 +243,7 @@ def declarations(tmp_path: Path) -> Iterator[Any]:
         database.close()
 
 
-def test_project_layers_keep_both_scopes_while_the_merged_reader_is_unchanged(
+def test_only_member_scope_rows_are_read_while_channel_rows_stay_in_the_database(
     declarations: Any,
 ) -> None:
     database, channel_id, agent_id = declarations
@@ -260,30 +260,29 @@ def test_project_layers_keep_both_scopes_while_the_merged_reader_is_unchanged(
         transport="stdio",
         command="channel-only-cmd",
     )
+    database.create_mcp_server(
+        scope_kind="agent",
+        scope_id=agent_id,
+        name="disabled",
+        transport="stdio",
+        command="disabled-cmd",
+        enabled=False,
+    )
 
+    # 未合并读路径只给成员行（含停用行），频道级旧行不进入装配。
     layers = database.mcp_layers_for_target(channel_id, agent_id)
-
-    # 优先级从高到低（Agent 级在前），同名两条都在：合并与落选提示由装配层负责。
-    # 层内顺序没有契约：`created_at` 只有毫秒精度、`id` 是随机前缀，同一毫秒插入的两行
-    # 先后不确定（`ORDER BY created_at, id`），因此只断言「Agent 级整体在频道级之前」与内容。
-    assert len(layers) == 3
-    seen_channel = False
-    for row in layers:
-        if row["scope_kind"] == "agent":
-            assert not seen_channel, layers
-        else:
-            seen_channel = True
-    assert {(row["scope_kind"], row["name"], row["command"]) for row in layers} == {
-        ("agent", "shared", "agent-cmd"),
-        ("channel", "shared", "channel-cmd"),
-        ("channel", "channel-only", "channel-only-cmd"),
+    assert {(row["name"], row["scope_kind"], row["command"]) for row in layers} == {
+        ("shared", "agent", "agent-cmd"),
+        ("disabled", "agent", "disabled-cmd"),
     }
-    # 既有合并读路径保持原形状：同名只留 Agent 级那一条。
     merged = database.mcp_servers_for_target(channel_id, agent_id)
-    assert len(merged) == 2
-    assert {(row["scope_kind"], row["name"]) for row in merged} == {
-        ("agent", "shared"),
-        ("channel", "channel-only"),
+    assert [(row["name"], row["scope_kind"], row["command"]) for row in merged] == [
+        ("shared", "agent", "agent-cmd")
+    ]
+    # 频道级行本身没有被删。
+    assert {row["name"] for row in database.list_mcp_servers(scope_kind="channel", scope_id=channel_id)} == {
+        "shared",
+        "channel-only",
     }
 
 
@@ -371,7 +370,7 @@ def _tool_descriptions(body: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reason(
+def test_two_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reason(
     declarations: Any, stub_script: Path, stub_provider: str, tmp_path: Path
 ) -> None:
     database, channel_id, agent_id = declarations
@@ -380,6 +379,7 @@ def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reas
     database.update_channel_config(channel_id, workspace_root=str(project))
     database.update_agent(agent_id, model_id="openai:stub-model")
 
+    # 频道级旧行：保留但不进入装配（若被装配，``channel`` 会出现在工具清单里）。
     database.create_mcp_server(
         scope_kind="channel",
         scope_id=channel_id,
@@ -387,14 +387,6 @@ def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reas
         transport="stdio",
         command=sys.executable,
         args=[str(stub_script), "channel"],
-    )
-    database.create_mcp_server(
-        scope_kind="agent",
-        scope_id=agent_id,
-        name="team",
-        transport="stdio",
-        command=sys.executable,
-        args=[str(stub_script), "agent"],
     )
     database.create_mcp_server(
         scope_kind="channel",
@@ -404,13 +396,22 @@ def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reas
         command=sys.executable,
         args=[str(stub_script), "channel"],
     )
-    # 落选的频道声明指向不存在的命令：若被装配，运行期读数会留下失败痕迹。
+    # 频道级旧行指向不存在的命令：若被装配，运行期读数会留下失败痕迹。
     loser = database.create_mcp_server(
         scope_kind="channel",
         scope_id=channel_id,
         name="broken",
         transport="stdio",
         command="/nonexistent/global-mcp-loser",
+    )
+    # 成员级库行。
+    database.create_mcp_server(
+        scope_kind="agent",
+        scope_id=agent_id,
+        name="team",
+        transport="stdio",
+        command=sys.executable,
+        args=[str(stub_script), "agent"],
     )
     database.create_mcp_server(
         scope_kind="agent",
@@ -425,7 +426,6 @@ def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reas
         agent_id,
         [
             _global_stdio("team", stub_script, label="global"),
-            _global_stdio("channel", stub_script, label="global"),
             _global_stdio("global", stub_script, label="global"),
         ],
     )
@@ -445,15 +445,9 @@ def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reas
         for name, description in _tool_descriptions(body).items()
         if name.startswith("mcp__")
     }
-    # 同名恰好一条，且来自胜出层。
-    assert sorted(descriptions) == [
-        "mcp__broken__echo",
-        "mcp__channel__echo",
-        "mcp__global__echo",
-        "mcp__team__echo",
-    ]
+    # 同名恰好一条，且来自胜出层；频道级独有的声明不装配。
+    assert sorted(descriptions) == ["mcp__broken__echo", "mcp__global__echo", "mcp__team__echo"]
     assert "layer=agent" in descriptions["mcp__team__echo"]
-    assert "layer=channel" in descriptions["mcp__channel__echo"]
     assert "layer=global" in descriptions["mcp__global__echo"]
     # 全局 stdio 的 cwd 仍是项目侧成员分区（不指向全局层）。
     assert f"cwd={project / '.alibot' / 'agents' / agent_id}" in descriptions["mcp__global__echo"]
@@ -462,27 +456,19 @@ def test_three_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reas
     assert SECRET_VALUE in descriptions["mcp__global__echo"]
 
     # 落选条目各一条可读提示（名字 + 胜出层）；胜出条目不产生提示。
-    for name, layer in [
-        ("team", "项目 Agent 级"),
-        ("broken", "项目 Agent 级"),
-        ("channel", "项目频道级"),
-    ]:
-        assert f"「{name}」" in outcome.reason
-        assert layer in outcome.reason
-    # team 有频道级与全局级两条落选者 ⇒ 两条提示。
-    assert outcome.reason.count("「team」") == 2
+    assert "「team」" in outcome.reason and "成员级库行" in outcome.reason
+    assert outcome.reason.count("「team」") == 1
     assert "「global」" not in outcome.reason
     assert outcome.reason.count("mcp__") == 0
 
     # 提示不进 provider system prompt。
     system_prompt = _system_text(body)
     assert "被更高优先级" not in system_prompt
-    assert "项目频道级" not in system_prompt
+    assert "频道级" not in system_prompt
 
-    # 落选的频道声明没有被连接（运行期读数里没有它）。
+    # 频道级旧行没有被连接（运行期读数里没有它们）。
     assert runtime_status(loser["id"]) is None
     assert runtime_status(f"global:{agent_id}:team") is None
-    assert runtime_status(f"global:{agent_id}:channel") is None
 
 
 def test_unconfirmed_global_remote_is_not_connected_until_the_consent_row_exists(
