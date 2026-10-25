@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | 全局成员家目录 | `~/.alibot/agents/<member_id>/` | `AGENTS.md`（规则基座）、`reme/`（ReMe）、`skills/<name>/`、`mcp.json`；历史 `rules/`、`memory/Memory/` 若存在不作为现行路径 | `AGENTS.md` 与历史 `rules/` / `memory/Memory/` 只由人维护；`reme/` 由应用写（ADR-0034）；`skills/` 由应用写；`mcp.json` 只读（人工维护的导入源；过渡期仍是只读装配层，本轮不提供导出写路径，#275 收尾） |
 | 全局公共技能库 | `~/.alibot/skills/` | 跨项目公共技能 | 人维护；装配只读 |
-| 数据目录 | `~/.alibot/data/` | `alibot.db`、`attachments/`、迁移审计台账 | 应用写；备份与搬迁单位 |
+| 数据目录 | `~/.alibot/data/` | `alibot.db`、`attachments/`、迁移审计台账、技能迁移清单 `skill-migration-<UTC>.json`（#274） | 应用写；备份与搬迁单位（技能迁移备份名带 `skills` 标签） |
 | 项目层 | `<workspace_root>/.alibot/` | `agents/<member_id>/`（运行状态 / stdio MCP cwd）、`sessions/<session_id>/`、项目规则；旧 `skills/<member_id>/` 技能字节保留 | 旧技能字节不搬迁、不自动删除、不进入装配；项目其余文件按既有权限档 |
 
 项目层其余目录与运行状态保持原落点；其旧技能字节仍留在项目树中，不搬家、不改名，但不再是装配来源。
