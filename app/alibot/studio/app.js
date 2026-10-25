@@ -5408,7 +5408,6 @@ function agentSkillsTabNodes(agent) {
   right.appendChild(detail);
   columns.appendChild(right);
   section.appendChild(columns);
-  if (view.copy && view.copy.kind === 'skill') section.appendChild(capabilityCopyNode(view));
 
   // 安装面：既有两条入口（本机目录 / 上传 zip）与导入区块本票**原样搬过来**，
   // 「从本机导入」的下拉框由后续票在原位替换它们（D3 / D4）。
@@ -5440,7 +5439,6 @@ function agentMcpTabNodes(agent) {
     view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
     section.appendChild(list);
   }
-  if (view.copy && view.copy.kind === 'mcp') section.appendChild(capabilityCopyNode(view));
   section.appendChild(mcpForm(view));
 
   // 原「全局 MCP」只读小节：与库行不是同一份数据（那是家目录文件里的条目）。

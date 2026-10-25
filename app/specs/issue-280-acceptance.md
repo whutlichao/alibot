@@ -205,7 +205,7 @@
 ```sh
 # 全量门禁（本票动了 .cjs 测试与 Studio 三件套 ⇒ 全量一次）
 scripts/check.sh
-# → pytest 1210 passed, 11 skipped（739.86s）
+# → pytest 1210 passed, 11 skipped（739.86s；合并 #281 后重跑 734.76s，同一读数）
 # → ruff check: All checks passed!
 # → ruff format --check: 通过
 # → mypy: Success: no issues found in 128 source files
@@ -213,13 +213,29 @@ scripts/check.sh
 # → node --test app/tests/*.test.cjs: 329 tests / 329 pass / 0 fail
 # → 门禁全绿
 
-# 两个目标文件
+# 两个目标文件（合并 #281 之后：`agent_capabilities_ui` 从 16 条变成 15 条 = −2 条复制弹层用例 +1 条撤除守卫）
 node --test app/tests/agent_detail_ui.test.cjs        # 58 tests / 58 pass / 0 fail
-node --test app/tests/agent_capabilities_ui.test.cjs  # 16 tests / 16 pass / 0 fail
+node --test app/tests/agent_capabilities_ui.test.cjs  # 15 tests / 15 pass / 0 fail
 
 # 全量前端用例
-node --test app/tests/*.test.cjs                      # 329 tests / 329 pass / 0 fail
+node --test app/tests/*.test.cjs                      # 328 tests / 328 pass / 0 fail
+# （合并集成分支 tip `974f5ed`（含 #281）之后：329 − 2（#281 删掉的复制弹层用例）+ 1（#281 的
+#   「复制入口与弹层撤除」守卫，本分支解决冲突时一度丢失、已恢复）= 328）
 ```
+
+### 与集成分支的合并（#281 撤复制弹层之后）
+
+`git merge origin/agent-detail-tabs-integration --no-ff` 的三处冲突与解决口径：
+
+| 文件 | 冲突来源 | 解决 |
+| --- | --- | --- |
+| `studio/app.js` | 本票用 `agentSkillsTabNodes` / `agentMcpTabNodes` 取代了 `agentCapabilitiesSection()`；#281 删掉了 `capabilityCopyNode()` 一族 | 取本票的页签版本；并把两个页签函数里各一处 `capabilityCopyNode` 调用删掉（否则引用已删函数） |
+| `studio/i18n.js` | 段头注释：#281 改成「控件只作用于当前成员」，本票改成三分页签口径 | 取 #281 的句子 + 本票的页签说明；`agentCapabilities.title` 两份仍删（拆页签后无消费点） |
+| `agent_capabilities_ui.test.cjs` | 本票「两 kind 各归自己页签」三条用例 vs #281「复制入口撤除」一条 | 两者并存；本票 skills 用例里删掉 `copySkill` 断言（#281 已撤）；「已删词条」清单合并成一份（`agentCapabilities.title` + `agentCapabilities.copy*`） |
+
+合并后的额外自查：`capabilityCopyNode` / `view.copy` / `state.copy` 在 `studio/app.js` 里 **0 命中**
+（#281 的守卫用例「复制入口与弹层撤除」会拦这条；实测把 `if (view.copy) capabilityCopyNode(view);`
+注入回去 ⇒ 该用例立刻红，删除后恢复绿）。
 
 ### 红 → 绿证据
 
@@ -229,7 +245,7 @@ scripts/red-evidence.sh 0a359b8 app/tests/agent_capabilities_ui.test.cjs
 ```
 
 - 基线 `app.js` md5：`104ad4258577290d598cfc69fbf3066a`
-- `agent_detail_ui.test.cjs` 读数：**58 tests / 48 pass / 10 fail**
+- `agent_detail_ui.test.cjs` 读数（基线 `0a359b8`，合并前）：**58 tests / 48 pass / 10 fail**
   （证据目录 `/var/folders/bf/27rt5fsx01q0bq602vmhprsw0000gn/T/alibot-red.PBdqq5`）
   红的 10 条正是本票要改的点：页签节点 / 默认页签 / 切页签不丢草稿 / 三条页签内容 /
   `index.html` 页签正本 / 保存载荷 10→7 / 上下文三项撤除 / 词条四条键变 `undefined`。

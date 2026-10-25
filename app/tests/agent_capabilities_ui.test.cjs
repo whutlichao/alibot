@@ -724,6 +724,51 @@ test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能�
   assert.equal(byOdId(base, "mcp-list"), null);
 });
 
+test("复制入口与弹层撤除：正本里 data-copy-* 零命中，运行时也没有弹层节点", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  // 运行时：MCP 行与技能行都不再可能点出弹层。
+  assert.equal(byDataset(harness.agentBody, "copyMcp", "mcp_1"), null, "MCP 行不该再有复制入口");
+  assert.equal(byDataset(harness.agentBody, "copySkill", "sk_1"), null, "技能行不该再有复制入口");
+  assert.equal(byOdId(harness.agentBody, "capability-copy-dialog"), null, "弹层节点不再渲染");
+  assert.equal(byOdId(harness.agentBody, "capability-copy-targets"), null, "目标多选也不再渲染");
+  assert.equal(byOdId(harness.agentBody, "capability-copy-confirm"), null, "确认按钮不再渲染");
+
+  // 正本：两个 kind 的入口标识与弹层标识一处都不剩。
+  const studio = ["app.js", "index.html", "app.css"].map(readStudio).join("\n");
+  for (const needle of [
+    "data-copy-mcp",
+    "data-copy-skill",
+    "data-copy-target",
+    "data-copy-confirm",
+    "data-copy-cancel",
+    "capability-copy",
+  ]) {
+    assert.equal(studio.includes(needle), false, `正本里不该再出现 ${needle}`);
+  }
+
+  // 只为弹层存在的函数与呈现状态（含只被它调用的两个辅助函数）也不留。
+  const appSource = stripComments(readStudio("app.js"));
+  for (const symbol of [
+    "capabilityCopyNode",
+    "openCapabilityCopy",
+    "closeCapabilityCopy",
+    "toggleCapabilityCopyTarget",
+    "submitCapabilityCopy",
+    "copyResultText",
+    "capabilityMemberName",
+    "view.copy",
+    "state.copy",
+  ]) {
+    assert.equal(
+      new RegExp(`\\b${symbol.replace(".", "\\.")}\\b`).test(appSource),
+      false,
+      `app.js 里不该再有 ${symbol}`,
+    );
+  }
+});
+
 test("能力段里没有 scope 选择器：作用域恒为当前成员", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
