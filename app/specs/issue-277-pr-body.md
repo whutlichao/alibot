@@ -72,14 +72,14 @@ POST /api/skills  {scope_kind, scope_id, source_path=<候选 path>}   ← 语义
   `review：已存在，已跳过`（`data-import-status="skipped"`）、技能列表仍 1 行、字节 md5 不变；
   刷新候选后 `review` 变 `disabled=true` + 后缀「已安装」；英文界面 `Import from ~/.agents/skills` /
   `Refresh candidates` / `Cannot import: …`。截图见 `app/specs/issue-277-acceptance.md` §4。
-- **门禁（`scripts/check.sh`，全量）**：代码树 `1000632` 起共跑六次全量，**五次全绿**，计数完全一致
-  （只有 pytest 耗时随负载波动：695.02s / 692.52s / 689.73s / 689.09s / 693.00s）：pytest
-  `1210 passed, 11 skipped`、ruff check `All checks passed!`、ruff format `--check`
-  `340 files already formatted`、mypy `no issues in 128 source files`、pyright `0 errors`、
-  node glob `322 pass / 0 fail`、`门禁全绿`。`1000632` 之后只有 `app/specs/**` 的文档提交，
-  不改任何门禁判据；读数与上一轮同值，因为清掉的是 37 个没有任何代码/测试引用的运行期日志
-  （详见 `app/specs/issue-277-acceptance.md` §5.2）。
-- **一次既有偶发（如实登记，未修）**：第六次全量红过一次，唯一失败是
+- **门禁（`scripts/check.sh`，全量）**：代码树 `1000632` 起反复跑全量，**除下面那次既有偶发外全绿**，
+  计数每次完全一致（只有 pytest 耗时随负载波动：695.02s / 692.52s / 689.73s / 689.09s / 693.00s /
+  707.89s / 708.85s）：pytest `1210 passed, 11 skipped`、ruff check `All checks passed!`、
+  ruff format `--check` `340 files already formatted`、mypy `no issues in 128 source files`、
+  pyright `0 errors`、node glob `322 pass / 0 fail`、`门禁全绿`。`1000632` 之后只有 `app/specs/**`
+  的文档提交，不改任何门禁判据；读数与上一轮同值，因为清掉的是 37 个没有任何代码/测试引用的运行期
+  日志（详见 `app/specs/issue-277-acceptance.md` §5.2）。
+- **一次既有偶发（如实登记，未修）**：其中一轮全量红过一次，唯一失败是
   `test_agent_round.py::test_ignored_round_advances_the_cursor_so_it_is_not_reread`
   （`assert [2, 1] == [1, 2]`）。根因在 `db.py:2502` 的 `ORDER BY finished_at, id`：同一毫秒的两条
   `round_outcome` 由**随机 UUID** 决胜。该行在 `main` 上完全相同，本分支从未触碰 `db.py` 与该测试；
