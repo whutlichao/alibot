@@ -21,7 +21,7 @@
 | 名册每行 `MCP n / 技能 n` | `rosterCapabilitiesNode()` + `refreshRosterCapabilities()` / `readMemberCapabilityCounts()`（`data-od-id="roster-capabilities-<member>"`） |
 | 单成员读取失败只占位、不阻塞名册 | `readMemberCapabilityCounts()` 捕获后返回 `failed`，只改那一行的文字（`roster.capabilitiesUnavailable`） |
 | 文案走 `i18n.js` 双语 | 新增 `agentCapabilities.*`（17 条）与 `roster.capabilities*`（3 条）；两份词条同键集、占位参数一致 |
-| 服务端复制端点 | `api.py`：`SkillCopy` 模型 + `POST /api/skills/{id}/copy`（源字节 = 源成员家目录，走既有 `install_directory` 重校验；目标校验在前；落库失败回收目标副本） |
+| 服务端复制端点 | `api.py`：`SkillCopy` 模型 + `POST /api/skills/{id}/copy`（源路径经全局只读守卫 `resolve_global_read_path` 解析，根外 symlink 一律 400；目标成员校验在前；复制给自己 400；走既有 `install_directory` 重校验；落库失败回收目标副本） |
 
 ## 2. 先红后绿
 
@@ -54,6 +54,14 @@ node --test app/tests/*.test.cjs
 ## 3. 门禁读数
 
 ```sh
+scripts/check.sh --fast tests/test_skill_copy.py
+# 8 passed in 4.38s
+# == ruff check            All checks passed!
+# == ruff format --check   通过（不跑 ruff format）
+# == mypy / pyright        通过
+# ℹ tests 317 / ℹ pass 317 / ℹ fail 0（node glob）
+# 门禁全绿
+
 scripts/check.sh --fast tests/test_skills.py tests/test_skill_assembly.py
 # （ruff check / ruff format --check / mypy / pyright / node glob 全过）
 # ℹ tests 317 / ℹ pass 317 / ℹ fail 0
@@ -78,28 +86,32 @@ scripts/check.sh --studio
 .venv/bin/python -m mypy app/alibot/api.py         # Success: no issues found in 1 source file
 ```
 
-## 4. 复制端点的真实读数（隔离 HOME + 隔离数据目录）
+## 4. 复制端点：pytest 覆盖（`app/tests/test_skill_copy.py`）
 
-脚本 `/tmp/verify_copy.py`（`HOME` 指向临时目录，`TestClient` 起同一个 `create_app`）：
-
-```
-members mem_b1abdcb07a45 mem_83025ac89cef
-install 201 review 1b5cb9f7254d
-copy 201 {"skill": {..., "content_hash": "1b5cb9f7…"}}
-copy again 409 同一作用域内已存在同名 Skill：review
-copy to self 409 同一作用域内已存在同名 Skill：review
-unknown target 400 Skill 作用域不存在：nope
-unknown skill 404 Skill 不存在：sk_missing
-extra field 400 请求体校验未通过
-src bytes [.../mem_b1abdcb07a45/skills/review/SKILL.md, .../references/a.txt]
-dst bytes [.../mem_83025ac89cef/skills/review/SKILL.md, .../references/a.txt]
-dst reinstall (row exists) 409
-dst list [('review', '1b5cb9f7', True)]
-hash match True
+```sh
+.venv/bin/python -m pytest tests/test_skill_copy.py     # 在 app/ 下
+# 8 passed in 0.53s
 ```
 
-要点：目标字节由服务端从源成员家目录复制、hash 与源一致；重复复制 / 复制给自己 409 **且不覆盖**；
-源行与源字节未被修改（源路径仍是原内容，行仍在原 scope）；`extra="forbid"` 挡住 `source_path`。
+| 用例 | 判据 |
+| --- | --- |
+| `test_copy_writes_the_same_bytes_and_inherits_enabled` | 201；目标家目录整棵树与源**逐字节相同**；`content_hash` 与源一致；`enabled=False` 继承；源行 / 源字节不变 |
+| `test_copy_to_a_member_that_already_has_the_name_conflicts_without_overwriting` | 409 `skill_conflict`；目标字节与目标行 hash 都保持原样（目标自己的版本没被覆盖）；源字节不变 |
+| `test_copy_to_the_same_member_is_rejected_without_a_second_copy` | 400 `validation_failed` + 可读文案；清单一字不多、分区里只有那一个目录 |
+| `test_unknown_skill_and_unknown_target_are_readable_errors` | 未知 `skill_id` → 404 `not_found`；未知目标成员 → 400 且正文带那个 id，目标家目录不被创建 |
+| `test_channel_scoped_legacy_rows_are_rejected` | 频道级旧行 → 400（含「agent」可读原因）；目标清单为空、无字节（旧行用公开 `open_database` 预置——这条形状没有 HTTP 创建面） |
+| `test_extra_fields_in_the_body_are_rejected` | 正文带 `source_path` → 400；目标无行无字节（复制不接受调用方给路径） |
+| `test_source_outside_the_global_root_is_never_copied[skills_dir_symlink / skill_dir_symlink]` | `<家目录>/skills` 或 `<家目录>/skills/<name>` 指向根外 → 400「技能路径不安全（… symlink …）」，根外内容不被复制进目标 |
+
+实现要点：
+
+- 源路径经**全局只读守卫**解析，与技能装配同口径：
+  `resolve_global_read_path(global_home, AGENTS_DIR, safe_partition_id(source_member), SKILLS_DIR, name)`；
+  `None` ⇒ 400（`os.path.lexists` 为真按 `error.skill_path_invalid`，否则按
+  `error.skill_source_not_directory`），因此根外 symlink 祖先 / 根外目标在**复制之前**就被拒。
+- 复制给自己（`scope_id` == 源成员）显式 400：那不是一次复制，而是把同一份字节写到同一处
+  （必然冲突、没有语义）。响应 `code=validation_failed`，正文复用 `error.skill_conflict` 的文案。
+- 目标字节由服务端从源成员家目录复制，hash 在复制结果上重算；落库失败回收目标副本。
 
 ## 5. 真实浏览器（隔离端口 8793 + 隔离 HOME/数据目录）
 
@@ -143,10 +155,8 @@ cd app && HOME=/tmp/alibot273-home ALIBOT_DATA_DIR=/tmp/alibot273-data ../.venv/
 
 ## 6. 遗留 / 说明
 
-- **后端复制端点没有 pytest 用例**：本票的文件所有权只允许改 `app/alibot/api.py` 与
-  `app/tests/*.test.cjs`，而 `app/tests/test_skills.py` 不在允许范围内（#274 只拥有
-  `test_skill_migration.py`）。因此端点用第 4 节的真实 HTTP 读数复核；把这三条（201 同 hash /
-  409 不覆盖 / 400·404 / `extra=forbid`）落成 pytest 用例需要另开一张票或由协调者明确改所有权。
+- **后端复制端点的 pytest 用独立文件** `app/tests/test_skill_copy.py`（不碰 `test_skills.py`、
+  也不碰 #274 的 `test_skill_migration.py`）；覆盖率见第 4 节。
 - 频道级 MCP / 技能旧行仍在库里（本票不迁移、不回填、不删），频道配置面不展示、也不做「已弃用」提示（ADR-0031 §二）。
 - `POST /api/skills/{id}/copy` 写入的目标行 `source_path` 记录的是**源成员的技能目录**（复制来源），
   与安装路径的语义一致；目标成员的家目录副本才是装配来源。

@@ -112,18 +112,21 @@ from .reminder_delivery import (
 from .service import WorkspaceService
 from .skills import (
     MAX_ARCHIVE_BYTES,
+    SKILLS_DIR,
     SkillValidationError,
     install_directory,
     install_zip,
     resolve_install_root,
-    skills_partition,
     uninstall,
 )
 from .sop import SOPRunner
 from .workspace import (
+    AGENTS_DIR,
     clear_docker_failure,
     docker_unavailable_reason,
     global_home_root,
+    resolve_global_read_path,
+    safe_partition_id,
     shutdown_docker_workspaces,
     start_docker_reaper,
     sweep_stale_docker_workspaces,
@@ -1238,8 +1241,13 @@ def create_app(
         """把一个成员的技能**字节**复制到另一个成员（行复制 + 家目录复制）。
 
         源字节固定取自源成员的技能分区 ``~/.alibot/agents/<source>/skills/<name>/``——前端
-        不知道也不该知道这个路径。复制走既有安装器（front matter / 路径 / hash 全量重校验），
-        目标已有同名行或同名目录一律 409，**不覆盖**；源行与源字节只读不改。
+        不知道也不该知道这个路径。源路径经**全局只读守卫**解析（``resolve_global_read_path``），
+        与技能装配同口径：根外 symlink 祖先 / 根外目标一律拒绝，因此复制不会把根外内容搬进
+        另一个成员的家目录。
+
+        复制走既有安装器（front matter / 路径 / hash 全量重校验）；目标已有同名行或同名目录
+        一律 409，**不覆盖**；源行与源字节只读不改。复制给自己（``scope_id`` == 源成员）400：
+        那不是一次复制，而是把同一份字节写到同一处（必然冲突，且没有语义）。
 
         频道级旧行不参与复制（它们已弃用、装配忽略）：400 而不是静默搬到别处。
         """
@@ -1253,11 +1261,22 @@ def create_app(
         target_member = payload.scope_id
         # 先校验目标成员（不存在 ⇒ 可读 400），再动字节：失败不留半棵树。
         database.validate_skill_scope("agent", target_member)
+        if target_member == current["scope_id"]:
+            message = _render_copy("error.skill_conflict", name=current["name"])
+            raise DomainError("validation_failed", message, status=400, fields={"scope_id": message})
+
         global_root = global_home_root()
-        source_dir = os.path.join(
-            skills_partition(global_root, current["scope_id"]),
-            current["name"],
-        )
+        source_parts = (AGENTS_DIR, safe_partition_id(current["scope_id"]), SKILLS_DIR, current["name"])
+        source_dir = resolve_global_read_path(global_root, *source_parts)
+        if source_dir is None:
+            # 守卫只说「不可用」：路径确实在（symlink 指到根外 / 目标是 symlink）按「路径不安全」，
+            # 真的不存在按「来源目录不存在」——两种都整体拒绝，绝不复制根外内容。
+            lexical = os.path.join(os.path.realpath(global_root), *source_parts)
+            key = (
+                "error.skill_path_invalid" if os.path.lexists(lexical) else "error.skill_source_not_directory"
+            )
+            message = _render_copy(key)
+            raise DomainError("validation_failed", message, fields={"source_path": message})
         try:
             prepared = install_directory(
                 source_dir,
