@@ -479,3 +479,123 @@ def test_seam_round_mounts_the_guarded_tools_and_creates_partitions(
     assert "Bash" not in names
     assert (root / ".alibot" / "agents" / member_id).is_dir()
     assert (root / ".alibot" / "sessions" / session_partition_id(member_id, "ch_workspace")).is_dir()
+
+
+# ─── 6. 成员技能目录：本地只读第二根（#272） ──────────────────────────────
+_MEMBER = "mem_workspace"
+
+
+def _point_home_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """把 HOME 指向临时目录，返回全局层根 ``<home>/.alibot``（ADR-0031：只看 HOME）。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home / ".alibot"
+
+
+def _member_skills_root(global_root: Path, member: str = _MEMBER) -> Path:
+    return global_root / "agents" / member / "skills"
+
+
+def _write_member_reference(global_root: Path, member: str = _MEMBER) -> Path:
+    """铺出 ``<家目录>/agents/<member>/skills/<name>/references/x.md`` 并返回该文件。"""
+    reference = _member_skills_root(global_root, member) / "code-review" / "references"
+    reference.mkdir(parents=True)
+    target = reference / "x.md"
+    target.write_text("reference-marker\n", encoding="utf-8")
+    return target
+
+
+def test_read_glob_and_grep_reach_the_member_skills_read_only_root(
+    tmp_path: Path, layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_root = _point_home_at(tmp_path, monkeypatch)
+    target = _write_member_reference(global_root)
+    mount = _mount(layout["root"])
+
+    read = _run(_latest_chunk(_tool(mount, "Read"), file_path=str(target)))
+    assert read.state is not ToolResultState.ERROR, read.content[0].text
+    assert "reference-marker" in read.content[0].text
+
+    globbed = _run(_latest_chunk(_tool(mount, "Glob"), pattern="*.md", path=str(target.parent)))
+    assert globbed.state is not ToolResultState.ERROR, globbed.content[0].text
+    assert "x.md" in globbed.content[0].text
+
+    grepped = _run(_latest_chunk(_tool(mount, "Grep"), pattern="reference-marker", path=str(target.parent)))
+    assert grepped.state is not ToolResultState.ERROR, grepped.content[0].text
+    assert "x.md" in grepped.content[0].text
+
+
+def test_write_and_edit_in_the_member_skills_root_are_rejected_like_an_escape(
+    tmp_path: Path, layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_root = _point_home_at(tmp_path, monkeypatch)
+    target = _write_member_reference(global_root)
+    mount = _mount(layout["root"])
+    new_file = target.parent / "new.md"
+
+    cases = (
+        ("Write", {"file_path": str(target), "content": "overwritten\n"}),
+        ("Write", {"file_path": str(new_file), "content": "x\n"}),
+        (
+            "Edit",
+            {
+                "file_path": str(target),
+                "old_string": "reference-marker",
+                "new_string": "changed",
+            },
+        ),
+    )
+    for tool_name, kwargs in cases:
+        result = _run(_latest_chunk(_tool(mount, tool_name), **kwargs))
+        assert result.state is ToolResultState.ERROR, f"{tool_name} 必须拒绝只读根内的写入"
+        assert result.content[0].text == (f"Error: path escapes workspace root: {kwargs['file_path']!r}")
+
+    assert target.read_text(encoding="utf-8") == "reference-marker\n"
+    assert not new_file.exists()
+
+
+def test_paths_outside_both_roots_are_still_rejected(
+    tmp_path: Path, layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """只读根只覆盖技能目录：全局层的兄弟路径与项目根外都不放开。"""
+    global_root = _point_home_at(tmp_path, monkeypatch)
+    _write_member_reference(global_root)
+    rules = global_root / "agents" / _MEMBER / "AGENTS.md"
+    rules.write_text("# rules\n", encoding="utf-8")
+    mcp = global_root / "mcp.json"
+    mcp.write_text("{}", encoding="utf-8")
+    mount = _mount(layout["root"])
+
+    for path in (layout["outside"] / "secret.txt", rules, mcp):
+        result = _run(_latest_chunk(_tool(mount, "Read"), file_path=str(path)))
+        assert result.state is ToolResultState.ERROR, f"{path} 必须仍在根外"
+        assert result.content[0].text == f"Error: path escapes workspace root: {str(path)!r}"
+
+
+def test_symlinks_inside_the_skills_root_cannot_escape_it(
+    tmp_path: Path, layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_root = _point_home_at(tmp_path, monkeypatch)
+    skills = _member_skills_root(global_root)
+    skills.mkdir(parents=True)
+    os.symlink(layout["outside"] / "secret.txt", skills / "secret_link.md")
+    os.symlink(layout["outside"], skills / "linked_dir")
+    mount = _mount(layout["root"])
+
+    for path in (skills / "secret_link.md", skills / "linked_dir" / "secret.txt"):
+        result = _run(_latest_chunk(_tool(mount, "Read"), file_path=str(path)))
+        assert result.state is ToolResultState.ERROR, f"{path} 必须仍被 realpath 拒绝"
+
+
+def test_absent_member_skills_dir_is_neither_created_nor_readable(
+    tmp_path: Path, layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_root = _point_home_at(tmp_path, monkeypatch)
+    mount = _mount(layout["root"])
+    absent = _member_skills_root(global_root) / "ghost" / "references" / "x.md"
+
+    result = _run(_latest_chunk(_tool(mount, "Read"), file_path=str(absent)))
+
+    assert result.state is ToolResultState.ERROR
+    assert not _member_skills_root(global_root).exists(), "只读根不存在时不创建"

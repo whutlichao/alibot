@@ -7,6 +7,9 @@ Read/Glob/Grep 完全不检查；Write/Edit 的 realpath 只影响 ``ACCEPT_EDIT
 - 五个文件工具（Read / Write / Edit / Glob / Grep）各自挂一层 :class:`WorkspaceRootGuard`；
 - 每个输入路径先锚到根（相对路径不再落到进程 cwd），再 ``realpath``，必须落在根内；
 - ``..``、根外绝对路径、指向根外的 symlink 一律返回 ``ToolResultState.ERROR``；
+- 本地后端另有**一个只读第二根**：成员技能目录（``~/.alibot/agents/<member_id>/skills``，#272）。
+  Read / Glob / Grep 可读它，Write / Edit 仍只认项目根；Docker 后端不改（全局层已 ``:ro`` 挂载，
+  写入发生在宿主进程）；
 - 默认工具集**不含 Bash**（D15）：本地 Bash 是主机进程、cwd 不是沙箱。``allow_local_shell``
   只作为标记暴露给权限/审批层（W2），本模块不在那里绕过审批。
 
@@ -400,16 +403,48 @@ def _reject_dotdot_segments(pattern: Any, root: str) -> None:
 class WorkspaceRootGuard(ToolMiddlewareBase):
     """调用前把路径锚到根并做 ``realpath`` 根检查；根外直接产出 ERROR chunk。
 
-    文件工具只有一个工作根：**频道项目根**。相对路径从它起算，绝对路径 ``realpath`` 后必须仍在
-    根内（ADR-0021 §一）。家目录不再是白名单例外（ADR-0034 §四：记忆不再由文件工具写入）。
+    **唯一可写根**是频道项目根：相对路径从它起算，绝对路径 ``realpath`` 后必须仍在根内
+    （ADR-0021 §一）。家目录不再是白名单例外（ADR-0034 §四：记忆不再由文件工具写入）。
+
+    ``read_only_roots`` 是**只读第二根**（#272：本地成员技能目录 ``~/.alibot/agents/<member>/skills``），
+    只对 ``Read`` / ``Glob`` / ``Grep`` 生效：路径 ``realpath`` 后落在其中任一根内即放行。
+    ``Write`` / ``Edit`` 只认项目根，落在只读根内与落在根外同样拒绝（同一 ERROR 形状、不改文案）。
+    全局层的兄弟路径（``rules/`` 实质是 ``AGENTS.md``、``mcp.json``、``memory/``）**不是**根；
+    不存在的只读根按「空根」跳过，本类**不创建**任何目录（ADR-0031 §三）。
     """
 
-    def __init__(self, root: str) -> None:
+    def __init__(self, root: str, read_only_roots: Sequence[str] = ()) -> None:
         self.root = root
+        self.read_only_roots = tuple(str(path) for path in read_only_roots)
 
     def resolve(self, raw: Any) -> str:
         """把工具输入规范化为根内绝对路径；根外抛 :class:`WorkspaceRootViolation`。"""
         return resolve_in_root(raw, self.root)
+
+    def resolve_read(self, raw: Any) -> str:
+        """读类工具的解析：项目根优先，其次任一存在的只读根；都不命中则抛根外违规。"""
+        try:
+            return self.resolve(raw)
+        except WorkspaceRootViolation:
+            real = self._match_read_only_root(raw)
+            if real is None:
+                raise
+            return real
+
+    def _match_read_only_root(self, raw: Any) -> str | None:
+        """``raw`` 是落在某个只读根内的绝对路径时返回其 ``realpath``，否则 ``None``。
+
+        只看绝对路径：相对路径一律锚到项目根，不参与只读根匹配。``realpath`` 在**匹配前**做，
+        于是只读根内的 symlink 指向根外时不命中（不允许借 symlink 逃逸）。不存在的根直接跳过。
+        """
+        if not isinstance(raw, str) or not os.path.isabs(raw):
+            return None
+        real = os.path.realpath(raw)
+        for root in self.read_only_roots:
+            real_root = os.path.realpath(root)
+            if os.path.isdir(real_root) and _within(real, real_root):
+                return real
+        return None
 
     async def on_tool_call(
         self,
@@ -431,8 +466,9 @@ class WorkspaceRootGuard(ToolMiddlewareBase):
             return
 
         raw = input_kwargs.get(key)
+        write = str(getattr(tool, "name", "")) in {"Write", "Edit"}
         try:
-            real = self.resolve(raw)
+            real = self.resolve(raw) if write else self.resolve_read(raw)
             if tool.name == "Glob":
                 _reject_dotdot_segments(input_kwargs.get("pattern"), self.root)
         except WorkspaceRootViolation as error:
@@ -537,10 +573,13 @@ class ProjectDockerWorkspace(_AlibotLayoutMixin, DockerWorkspace):
         self._backend = DockerBackend(self._container, DOCKER_WORKDIR)
 
 
-def _guarded_tools(workspace: WorkspaceBase, root: str) -> list[Any]:
-    """五个文件工具各挂根检查；**刻意不调用** ``workspace.list_tools()``，因为后者无条件含 Bash。"""
+def _guarded_tools(workspace: WorkspaceBase, root: str, read_only_roots: Sequence[str] = ()) -> list[Any]:
+    """五个文件工具各挂根检查；**刻意不调用** ``workspace.list_tools()``，因为后者无条件含 Bash。
+
+    ``read_only_roots`` 只对 Read / Glob / Grep 开放（#272），Write / Edit 仍只认 ``root``。
+    """
     backend = workspace.get_backend()
-    guard = WorkspaceRootGuard(root)
+    guard = WorkspaceRootGuard(root, read_only_roots)
     middlewares: list[ToolMiddlewareBase] = [guard]
     return [
         Edit(backend=backend, middlewares=middlewares),
@@ -614,13 +653,20 @@ async def assemble_local_workspace(
     """按频道项目根装配一轮可用的 LocalWorkspace（文件工具受限、默认无 Bash）。
 
     项目层家目录（``.alibot/agents/<member_id>/``）只是规则文件的宿主，不进入文件工具白名单：
-    文件工具唯一的根是频道项目根（ADR-0021 §一 / ADR-0034 §四）。
+    文件工具的**可写**根仍唯一是频道项目根（ADR-0021 §一 / ADR-0034 §四）。
+
+    成员技能字节住在全局层 ``<HOME>/.alibot/agents/<member_id>/skills``（ADR-0031）；本地后端把它
+    作为**只读第二根**交给 :class:`WorkspaceRootGuard`，于是 Read / Glob / Grep 能读
+    ``references/``，Write / Edit 仍被拒（#272）。该目录可能还不存在：这里**只给路径、不创建**
+    （ADR-0031：全局层是人的维护面），守卫按「空根」跳过。全局层的其它路径（``AGENTS.md``、
+    ``mcp.json``、``memory/``）都不是根。
     """
     root = validate_workspace_root(settings.root)
     member = safe_partition_id(member_id)
     session = safe_partition_id(session_id)
     agent_dir = os.path.join(root, ALIBOT_DIR, AGENTS_DIR, member)
     session_dir = project_session_dir(root, session)
+    member_skills = os.path.join(global_member_home(member, root=global_home_root()), SKILLS_DIR)
     ensure_state_partition(root, agent_dir)
     ensure_state_partition(root, session_dir)
     workspace = ProjectLocalWorkspace(workdir=root)
@@ -632,7 +678,7 @@ async def assemble_local_workspace(
         member_id=member,
         session_id=session,
         workspace=workspace,
-        tools=_guarded_tools(workspace, root),
+        tools=_guarded_tools(workspace, root, (member_skills,)),
         agent_dir=agent_dir,
         session_dir=session_dir,
     )
