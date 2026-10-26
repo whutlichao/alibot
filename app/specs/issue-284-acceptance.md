@@ -31,7 +31,7 @@ test_mcp_assembly,test_mcp_servers}.py` 的既有断言一字未动（只新增�
 | 上块（库行）在下块（文件）之前 | `app.js` `agentMcpTabNodes()` 返回 `[rowsBox, fileBox]` | 用例「mcp 页签：上块库行、下块 mcp.json 文本域，两块各有一行数据来源说明」：`descendants(panel).indexOf(dbBlock.parentNode) < indexOf(fileBlock.parentNode)` |
 | 上块一行数据来源 = 库行 `mcp_server`（`scope_kind='agent'`），装配正本 | `resourceNote('mcp.sourceDb', 'mcp-source-db', …)` | 同用例：`byOdId(panel,'mcp-source-db').textContent === 词条 mcp.sourceDb`（zh-CN：「来自库行 mcp_server（scope_kind=agent）：装配正本，改这里会改变装配结果。」） |
 | 下块一行数据来源**必须写明同名时库行胜出** | `resourceNote('agentDetail.mcpFileSource', 'agent-detail-mcp-file-source', …)` | 同用例：`textContent === 词条取值` 且 `assert.match(textContent, /同名时库行胜出/)`；另在词条用例里对**渲染出的文本**再咬一次（`catalogText(...,'agentDetail.mcpFileSource')` 匹配 `/同名时库行胜出/`） |
-| 上块的增删改 / 启停 / 删除 / 远端确认行为不变 | 库行块仍是 `mcpRow()` + `mcpForm()` + `globalMcpSection()`，端点与数据集一字未改 | 用例「mcp 页签：库行列表、表单与行入口，请求固定带 agent scope」（`:mcpEdit` / `:mcpToggle` / `:mcpDelete` / `mcp-form` 全命中）+「MCP 编辑表单沿用既有形状…」（PATCH body 逐字段）+ `agent_detail_ui` 的两条全局 MCP 确认用例（stdio 不可确认、确认按「成员 + 名字」发出、确认后按钮消失） |
+| 上块的增删改 / 启停 / 删除 / 远端确认行为不变 | 库行块仍是 `mcpRow()` + `mcpForm()`，端点与数据集一字未改（`globalMcpSection()` 的条目视图按 D1 在下块，见 review-fix 的 F2/F3） | 用例「mcp 页签：库行列表、表单与行入口，请求固定带 agent scope」（`:mcpEdit` / `:mcpToggle` / `:mcpDelete` / `mcp-form` 全命中）+「MCP 编辑表单沿用既有形状…」（PATCH body 逐字段）+ `agent_detail_ui` 的两条全局 MCP 确认用例（stdio 不可确认、确认按「成员 + 名字」发出、确认后按钮消失） |
 
 ### AC2 · 打开页签时文本域显示文件当前原文；文件不存在时文本域为空 + 可读说明（不是「读到空文件」）
 
@@ -325,7 +325,8 @@ git diff e1af8b1 -- app/tests/test_global_mcp.py app/tests/test_global_mcp_conse
 
 1. **D9 之外必改 3 处**（§3.1 的 A–C），全部按「断言与新行为正相反 ⇒ 必须改、不许删原意」处置，没有一处是「删断言让测试变绿」。
 2. **本票新增 2 条读结果口径**（§3.3）：`servers` 取原文条目计数；不可读 / 非 UTF-8 文件回 `400`（而不是 `exists=true, text=""`）。票面九条 AC 未覆盖这两格，按 coordinator 前几票的判据授权处置并登记。
-3. **`app/README.md` 未改**：本票边界不含它（D9 末段的文档同步面）。它的「Agent 详情、配置编辑与软删除」一节仍写「所有区块在同一页纵向铺开……没有页签」——那是 #280 已登记的既存偏差，不是本票新引入的；两条新端点也尚未写进 `api.py` 模块 docstring 之外的位置（本票已在模块 docstring 端点清单里补了两行）。
+3. **`app/README.md` 未改**：本票边界不含它（D9 末段的文档同步面）。它的「Agent 详情、配置编辑与软删除」一节当时仍写「所有区块在同一页纵向铺开……没有页签」——那是 #280 已登记的既存偏差，不是本票新引入的。**本条事实修正（review-fix）**：本票当时**并未**真的在 `api.py` 模块 docstring 端点清单里补两行（原文写「已补」是错的），那两行由
+   `agent-detail-tabs-review-fix` 补上；README 的三分页签 / 撤除口径 / `mcp.json` 写面与三条新端点也由那一票收口，见 `app/specs/agent-detail-tabs-review-fix-acceptance.md` 的 F1 / F4。
 4. **`pi-lens` 的陈旧索引噪声（已定根因，不是代码问题）**：本票过程中 pi-lens 反复报
    `app/alibot/service.py:48` 的 `"mcp_document_entry_count" is unknown import symbol`。
    **根因已定位**：worktree 复用的 `.venv` 里那份 editable 安装指向**主仓**：

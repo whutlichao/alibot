@@ -832,15 +832,12 @@ test("mcp 页签：库行块在上、家目录 mcp.json 块在下，两块各归
 
   const panel = harness.panel("mcp");
   assert.ok(panel, "详情页要有 mcp 页签面板");
-  const ids = [
-    "agent-capabilities-mcp",
-    "agent-detail-section-global-mcp",
-    "agent-detail-section-mcp-file",
-  ];
+  // 上块 = 库行，下块 = 家目录 `mcp.json`（D1）：只读条目视图并入下块，不再单独成段。
+  const ids = ["agent-capabilities-mcp", "agent-detail-section-mcp-file"];
   const order = descendants(panel)
     .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
     .filter((id) => ids.indexOf(id) >= 0);
-  assert.deepEqual(order, ids, "上块（库行）→ 只读 mcp.json 条目 → 下块（文件文本域）");
+  assert.deepEqual(order, ids, "上块（库行）→ 下块（家目录 mcp.json）");
 
   assert.ok(byDataset(panel, "mcpServer", "mcp_1"), "库行列表在 mcp 页签里");
   assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "库行启停在 mcp 页签里");
@@ -1904,7 +1901,7 @@ test("全局 MCP 小节不再有「来自家目录 mcp.json」那句提示；空
   harness.load([agentDetail()]);
   await harness.clickRow("mem-1");
 
-  const section = sectionOf(harness.agentBody, "agent-detail-section-global-mcp");
+  const section = byOdId(harness.agentBody, "agent-detail-section-global-mcp");
   assert.equal(section.textContent.includes("来自该成员家目录的 mcp.json"), false,
     "那句提示已删除");
   const hints = byClass(section, "hint").map((node) => node.textContent);
@@ -1914,7 +1911,7 @@ test("全局 MCP 小节不再有「来自家目录 mcp.json」那句提示；空
   harness.i18n.setLocale("en");
   try {
     harness.api.renderAgentDetail();
-    const enHints = byClass(sectionOf(harness.agentBody, "agent-detail-section-global-mcp"), "hint")
+    const enHints = byClass(byOdId(harness.agentBody, "agent-detail-section-global-mcp"), "hint")
       .map((node) => node.textContent);
     assert.equal(enHints.includes("No MCP servers are declared in the global mcp.json."), true,
       "英文空态同步改写");
@@ -1961,6 +1958,179 @@ test("草稿脏时确认全局 MCP：只读小节照常刷新，人的输入不�
   assert.equal(agentField(harness.agentBody, "display_name"), before, "输入控件没被换成新节点");
   assert.equal(before.value, "打到一半", "人的输入还在");
   assert.equal(harness.saveBar.hidden, false, "草稿仍脏，保存条还在");
+});
+
+test("全局 MCP 条目视图在 mcp 页签的下块里（与 mcp.json 文本域同一块），不在库行块里", async () => {
+  const servers = [
+    { name: "notes", transport: "stdio", is_remote: false, consented: false, runtime: null },
+  ];
+  const harness = withChannel({
+    fetch: (url, init) => {
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers") {
+        return { ok: true, status: 200, json: async () => ({ global_mcp_servers: servers }) };
+      }
+      return capabilitiesFetch({ mcp: [mcpDeclaration()] })(url, init);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const panel = harness.panel("mcp");
+  const entries = byOdId(panel, "agent-detail-section-global-mcp");
+  assert.ok(entries, "全局 MCP 条目视图要有一个带自己 od-id 的节点");
+  // 下块 = 家目录 `mcp.json` 这一份数据（D1）：条目视图与文本域是同一份数据的两种视图。
+  const fileBox = byOdId(panel, "agent-detail-section-mcp-file").parentNode;
+  assert.ok(fileBox, "下块是 mcp.json 文件块");
+  const textarea = byOdId(fileBox, "agent-mcp-file-text");
+  assert.ok(textarea, "下块里有文本域");
+  assert.ok(fileBox.contains(entries), "条目视图在下块子树里");
+  assert.ok(
+    descendants(fileBox).indexOf(entries) > descendants(fileBox).indexOf(textarea),
+    "条目视图紧跟在文本域之后（下块内自上而下的顺序：标题 → 来源 → 文本域 → 条目）",
+  );
+  // 上块（库行）只留库行表单：条目视图不在它里面。
+  const rowsBox = byOdId(panel, "agent-capabilities-mcp").parentNode;
+  assert.ok(rowsBox, "上块是库行块");
+  assert.equal(rowsBox.contains(entries), false, "条目视图不在库行块里");
+  assert.ok(byOdId(rowsBox, "mcp-form"), "上块仍是库行表单");
+});
+
+test("草稿脏时确认全局 MCP：上下两块都还在，只有条目视图被就地换掉", async () => {
+  const servers = [
+    { name: "remote", transport: "http", is_remote: true, consented: false, runtime: null },
+  ];
+  const harness = withChannel({
+    fetch: async (url, init) => {
+      const method = (init && init.method) || "GET";
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers" && method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ global_mcp_servers: servers.map((s) => ({ ...s })) }) };
+      }
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers/remote/consent" && method === "POST") {
+        servers[0] = { ...servers[0], consented: true };
+        return { ok: true, status: 200, json: async () => ({ global_mcp_server: { ...servers[0] }, consent: {} }) };
+      }
+      if (String(url) === "/api/agents/mem-1") {
+        return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+      }
+      return capabilitiesFetch({ mcp: [mcpDeclaration()] })(url, init);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const panel = harness.panel("mcp");
+  assert.ok(byOdId(panel, "mcp-list"), "前提：上块有库行列表");
+  assert.ok(byOdId(panel, "agent-mcp-file-text"), "前提：下块有文本域");
+
+  // 草稿弄脏：系统提示改了字（页级草稿），mcp 页签自己的表单不算脏。
+  await harness.edit("system_prompt", "打到一半的系统提示");
+  const row = byDataset(panel, "globalMcpServer", "remote");
+  await harness.clickInBody(row.querySelector("[data-global-mcp-consent]"));
+  await settle();
+
+  // 上块（库行）与下块（家目录 mcp.json）都还在：一次确认不能把它们吃掉。
+  const after = harness.panel("mcp");
+  assert.ok(byOdId(after, "agent-capabilities-mcp"), "上块的标题还在");
+  assert.ok(byOdId(after, "mcp-list"), "上块的库行列表还在");
+  assert.ok(byDataset(after, "mcpServer", "mcp_1"), "库行还在");
+  assert.ok(byOdId(after, "mcp-source-db"), "上块的数据来源标注还在");
+  assert.ok(byOdId(after, "mcp-form"), "上块的库行表单还在");
+  assert.ok(byOdId(after, "agent-detail-section-mcp-file"), "下块的标题还在");
+  const textarea = byOdId(after, "agent-mcp-file-text");
+  assert.ok(textarea && textarea.tagName === "textarea", "下块的文本域还在");
+  assert.equal(textarea.value, MCP_FILE_TEXT, "文本域仍显示文件原文");
+  // 条目视图跟着后端读数走：换成已确认态。
+  const refreshed = byDataset(after, "globalMcpServer", "remote");
+  assert.ok(refreshed, "条目视图还在");
+  assert.equal(refreshed.querySelector("[data-global-mcp-consent]"), null, "确认后按钮消失");
+  assert.ok(
+    refreshed.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.globalMcpConsented")),
+    "条目视图已更新为已确认态",
+  );
+});
+
+test("mcp 页签自己有未提交输入时确认全局 MCP：只换条目视图，下块文本域与上块都不换", async () => {
+  const servers = [
+    { name: "remote", transport: "http", is_remote: true, consented: false, runtime: null },
+  ];
+  const harness = withChannel({
+    fetch: async (url, init) => {
+      const method = (init && init.method) || "GET";
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers" && method === "GET") {
+        return { ok: true, status: 200, json: async () => ({ global_mcp_servers: servers.map((s) => ({ ...s })) }) };
+      }
+      if (String(url) === "/api/agents/mem-1/global-mcp-servers/remote/consent" && method === "POST") {
+        servers[0] = { ...servers[0], consented: true };
+        return { ok: true, status: 200, json: async () => ({ global_mcp_server: { ...servers[0] }, consent: {} }) };
+      }
+      if (String(url) === "/api/agents/mem-1") {
+        return { ok: true, status: 200, json: async () => ({ agent: agentDetail() }) };
+      }
+      return capabilitiesFetch({ mcp: [mcpDeclaration()] })(url, init);
+    },
+  });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const panel = harness.panel("mcp");
+  const listBefore = byOdId(panel, "mcp-list");
+  const textareaBefore = byOdId(panel, "agent-mcp-file-text");
+  assert.ok(listBefore, "前提：上块有库行列表");
+  assert.ok(textareaBefore, "前提：下块有文本域");
+
+  // 人正在文本域里打字（未提交）：mcp 页签算脏 ⇒ 后台重绘不重铺面板。
+  const typed = "{ 我还没保存的原文";
+  textareaBefore.value = typed;
+  await harness.agentBody.dispatchEvent({ type: "input", target: textareaBefore });
+  await flush();
+
+  const row = byDataset(panel, "globalMcpServer", "remote");
+  await harness.clickInBody(row.querySelector("[data-global-mcp-consent]"));
+  await settle();
+
+  const after = harness.panel("mcp");
+  // 关键回归（F3）：条目视图长在下块里，换掉它不能把包围它的整块（文本域）一起换掉。
+  assert.equal(byOdId(after, "agent-mcp-file-text"), textareaBefore, "下块的文本域节点没被换掉");
+  assert.equal(textareaBefore.value, typed, "人打的原文还在");
+  assert.equal(byOdId(after, "mcp-list"), listBefore, "上块的库行列表节点也没被换掉");
+  assert.ok(byOdId(after, "mcp-form"), "上块的库行表单还在");
+  // 条目视图仍是那条刷新后的条目（只换了它自己）。
+  const refreshed = byDataset(after, "globalMcpServer", "remote");
+  assert.ok(refreshed, "条目视图还在");
+  assert.equal(refreshed.querySelector("[data-global-mcp-consent]"), null, "确认后按钮消失");
+  assert.ok(
+    refreshed.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.globalMcpConsented")),
+    "条目视图已更新为已确认态",
+  );
+});
+
+test("mcp.json 文本域有未提交输入时，后台重绘不换掉文本域节点，人打的字与节点都留着", async () => {
+  const harness = withChannel({ fetch: (url, init) => capabilitiesFetch({})(url, init) });
+  harness.load([agentDetail()]);
+  await harness.clickRow("mem-1");
+  await settle();
+
+  const panel = harness.panel("mcp");
+  const textarea = byOdId(panel, "agent-mcp-file-text");
+  assert.ok(textarea, "前提：下块有文本域");
+  assert.equal(textarea.value, MCP_FILE_TEXT, "前提：文本域先是后端那份原文");
+
+  // 人在文本域里改字：只写未提交的镜像（保存时才 PUT）。
+  const typed = "{ 我还没保存的原文";
+  textarea.value = typed;
+  await harness.agentBody.dispatchEvent({ type: "input", target: textarea });
+  await flush();
+
+  // 后台重绘走 `renderAgentDetail()`（轮次状态这类推送落点）。文本域算脏 ⇒ 不重铺页签面板。
+  harness.api.renderAgentDetail();
+  await flush();
+
+  const after = byOdId(harness.panel("mcp"), "agent-mcp-file-text");
+  assert.equal(after, textarea, "文本域节点没被换成新节点（焦点与光标不丢）");
+  assert.equal(after.value, typed, "人打的原文还在");
 });
 
 /* ─── 5. 离开详情：仍在的真实出口，dock 不自动弹回，草稿丢弃 ─────────────── */
