@@ -5356,10 +5356,16 @@ function agentTabId(prefix, name) {
 
     它不碰 `state.agentEdit.draft`——切页签不丢未提交的草稿是 D1 的硬约束，而面板重铺会把
     正在输入的控件换成新节点（焦点与光标位置一起丢）。因此这里只对齐 `aria-selected`、`.is-active`
-    与面板的 `hidden`。 */
+    与面板的 `hidden`。
+
+    skills 页签在桌面下是固定高度的工作区（`is-skills-fixed`，样式见 `app.css` 的
+    `min-width: 901px` 档）：导入区留在顶部，双栏各自内部滚动，页面不被长列表撑高。
+    另外两个页签与 ≤900px 单栏仍是整页滚动。 */
 function setAgentDetailTab(name) {
   const tab = AGENT_DETAIL_TABS.indexOf(name) >= 0 ? name : AGENT_DETAIL_DEFAULT_TAB;
   state.agentDetailTab = tab;
+  const page = $('#viewAgent');
+  if (page) page.classList.toggle('is-skills-fixed', tab === 'skills');
   AGENT_DETAIL_TABS.forEach((item) => {
     const on = item === tab;
     const button = $('#' + agentTabId('adTab', item));
@@ -5402,11 +5408,14 @@ function agentBaseTabNodes(agent) {
     动作（启用 / 停用、删除，作用于**当前选中**项）→ SKILL.md 正文（纯文本）。
 
     选中态是 `state.agentDetailSkillId`：进入页签默认选中左栏第一行，列表重读后选中项不存在就
-    回落第一行，左栏为空时右栏给空态（`skill.detailEmpty`）。 */
+    回落第一行，左栏为空时右栏给空态（`skill.detailEmpty`）。
+
+    根节点带 `agent-skill-section`：固定高度布局要在双栏的祖父上断开 `min-height: auto` 的传递，
+    而 `.d-sec` 是全局共用语汇，不给它加只有本页需要的规则。 */
 function agentSkillsTabNodes(agent) {
   const view = capabilitiesView((agent && agent.id) || state.activeAgentId || '');
   syncAgentDetailSkill(view);
-  const section = el('section', 'd-sec');
+  const section = el('section', 'd-sec agent-skill-section');
   section.appendChild(sectionTitle('agentCapabilities.skillTitle', 'agent-capabilities-skill'));
   section.appendChild(
     resourceNote(
