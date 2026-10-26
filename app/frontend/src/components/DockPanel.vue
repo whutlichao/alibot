@@ -3,10 +3,14 @@
      旧页面的 `#dock` 里住着三种形态（`#dockAgent` 频道成员 / `#dockTask` 任务线程 / `#dockRun`
      运行面板），共用一个 380px 容器，于是「同时显示两件东西」在构造上不可能发生。
 
-     **本版只有第三种形态**（运行面板）。成员面板与任务线程还没迁过来，所以它们的子树根本不存在
-     ——不是渲染出来再 `hidden` 掉：一个占着位置、看不见也可能被 Tab 命中的空容器，比不渲染更难解释。
-     那两张票各自迁完时，往这里加一棵子树并把 `mode` 判据扩一档即可（形态仍是「由现在打开着
-     哪一个对象推导」，不另存一份状态）。
+     形态是**推导**出来的，不另存一份状态：`dockTarget` 由父组件给（`{ kind: 'run' | 'members' |
+     'task' }`），`null` ⇒ 整栏不渲染。于是「关掉了但 dock 还停在旧形态」这类漂移在构造上不存在。
+
+     本票只把**第三档**（运行面板）接到真内容上：成员面板与任务线程的子树分别归 T3 与 T7，
+     这里先留 `<slot name="members">` / `<slot name="task">` 两个空占位——形态判据与几何
+     （宽 380 / `.dock.is-open` / ≤900px 右抽屉）本票就要立起来，否则那两张票各自还得再改一遍
+     这个外壳。空占位**不会**出现在产品里：`App.vue` 目前只会把 `kind` 写成 `'run'`
+     （另外两档没有任何调用点），私信下 `dockTarget` 恒为 `null`。
 
      ≤900px 下它是右抽屉（`app.css` 的 `.dock.is-open` / `.dock[hidden]` 两条规则）：`hidden` 的语义
      被改写成「离屏 + 不可见」，`.is-open` 决定滑入。`.dock-close` 是这个抽屉**自己的**出口
@@ -17,11 +21,13 @@ import RunPanel from './RunPanel.vue';
 import { t } from '../i18n/index.js';
 
 const props = defineProps({
-  // 运行面板 store（`createRunPanelStore()` 的返回值）。
-  panel: { type: Object, required: true },
+  // 当前打开着哪一个对象：`{ kind: 'run' | 'members' | 'task', ... }`；`null` = 没有可显示的东西。
+  dockTarget: { type: Object, default: null },
+  // 运行面板 store（`createRunPanelStore()` 的返回值）。只有 `kind === 'run'` 的形态用它。
+  panel: { type: Object, default: null },
   // 成员名的三个来源池（工作区成员 / Agent / 频道成员）——**必须往下传**：
   // 不传的话运行面板会退回把 `member_id` 当名字显示。真浏览器实测抓到过这一次，
-  // 单测直接挂 RunPanel（自己传 pools）看不到它，因此 `components.test.js` 里另有一条
+  // 单测直接挂 RunPanel（自己传 pools）看不到它，因此 `run-panel.test.js` 里另有一条
   // 「通过 DockPanel 挂上来也拿到成员名」的用例。
   pools: { type: Array, default: () => [] },
   // 抽屉形态（≤900px）：由 App.vue 决定开合，与 `hidden` 同进同出。
@@ -30,12 +36,13 @@ const props = defineProps({
 
 const emit = defineEmits(['close']);
 
-/** 当前形态：`run` 是唯一已迁的形态，`null` = 收起整列（没有可显示的东西）。 */
-const mode = computed(() => (props.panel.state.open ? 'run' : null));
-
-// 会员面板 / 任务线程还没迁：`dockAvailable()` 的判据在本版只剩运行面板这一支。
-// 频道成员面板缺席意味着「打开频道就把右栏撑开」不再是默认行为——那是旧页面的形态，
-// 在这里它是「人显式打开了运行面板」的结果。
+/** 当前形态：由 `dockTarget` 推导。`run` 那一档没有 store 就没有内容可铺，按「没有形态」处理。 */
+const mode = computed(() => {
+  const target = props.dockTarget;
+  if (!target || !target.kind) return null;
+  if (target.kind === 'run' && !props.panel) return null;
+  return target.kind;
+});
 </script>
 
 <template>
@@ -53,5 +60,8 @@ const mode = computed(() => (props.panel.state.open ? 'run' : null));
       :pools="pools"
       @close="emit('close')"
     />
+    <!-- 频道成员面板（T3）与任务线程（T7）的落点：内容归那两张票，形态与几何归本票。 -->
+    <slot v-else-if="mode === 'members'" name="members" />
+    <slot v-else-if="mode === 'task'" name="task" />
   </aside>
 </template>

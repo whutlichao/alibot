@@ -9,7 +9,7 @@
      `studio/app.css` 是同一套类名的两个落点）：三栏尺寸、方形头像块、未读徽标色族、
      四态状态点都按名字消费，因此视觉上两版页面是同一个产品，不是一个新皮肤。 -->
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import ChannelHeader from './components/ChannelHeader.vue';
 import ComposerBox from './components/ComposerBox.vue';
 import DockPanel from './components/DockPanel.vue';
@@ -17,6 +17,7 @@ import MessageStream from './components/MessageStream.vue';
 import RailSidebar from './components/RailSidebar.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
+import { hasOpenModal } from './lib/modal-stack.js';
 import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
 import { useUiState } from './stores/ui-state.js';
 
@@ -32,9 +33,13 @@ const { state, store } = ctx;
 
 const stream = ref(null);
 const railOpen = ref(false);
-// 右侧 dock 在 ≤900px 是抽屉：`.is-open` 与 `hidden` 同进同出（两者不同步就会出现
-// 「看起来收起了、Tab 还能命中」）。桌面它是常驻列，这一位不生效。
-const dockOpen = ref(false);
+// 右侧 dock 在 ≤900px 是抽屉：`.is-open` 与「这一栏在不在」是两件事——
+// `dockDrawerOpen` 管抽屉的滑入，`dockTarget` 管**形态**（推导，不另存一份）。
+// 桌面它是常驻列，`dockDrawerOpen` 这一位不生效。
+const dockDrawerOpen = ref(false);
+// 当前打开着哪一个对象：`{ kind: 'run' | 'members' | 'task' }`，`null` ⇒ 整栏不渲染。
+// 本票只有运行面板这一档会写它（`members` / `task` 归 T3 与 T7）。
+const dockTarget = ref(null);
 const activeTab = ref('messages');
 // 折叠态（摘要行 / 旁白行）按 **seq** 认，跨 target 不通用：切 target 时必须整体清掉，
 // 否则「在 A 频道展开过的第 3 条」到了 B 频道会莫名展开。这个状态住在模块级（见 ui-state.js），
@@ -67,7 +72,8 @@ async function selectTarget(targetId) {
   // 运行面板读的是**上一个 target** 的快照与 live 归属：换 target 时整个作废，
   // 不把旧频道的分派留在新频道旁边（旧实现同一条：`resetRunPanelState()`）。
   dockPanel.resetForTarget(true);
-  dockOpen.value = false;
+  dockTarget.value = null;
+  dockDrawerOpen.value = false;
   store.setActiveTargetId(targetId);
   railOpen.value = false;
   activeTab.value = 'messages';
@@ -105,6 +111,10 @@ onMounted(async () => {
   if (firstSuccessfulLoad && stream.value) stream.value.scrollToBottom();
 });
 
+// 整页只有这一个键盘监听：ESC 的层序表在 `onEscape()` 里（T4 复用它，不另写一份）。
+document.addEventListener('keydown', onEscape);
+onBeforeUnmount(() => document.removeEventListener('keydown', onEscape));
+
 function retryPending(clientId) {
   store.retryPending(clientId);
 }
@@ -119,14 +129,57 @@ function unsupportedMention(name) {
 
 /** 频道头的运行面板入口：打开 dock 的第三种形态（读完快照前先铺加载态）。 */
 async function openRunPanel() {
-  dockOpen.value = true;
+  dockTarget.value = { kind: 'run' };
+  dockDrawerOpen.value = true;
   await dockPanel.openForChannel();
 }
 
 /** 关闭运行面板：把形态整个作废（下次打开是干净的一帧），并收起移动端抽屉。 */
 function closeRunPanel() {
   dockPanel.close();
-  dockOpen.value = false;
+  dockTarget.value = null;
+  dockDrawerOpen.value = false;
+}
+
+/** 私信下三档一档都不出现：`dockAvailable()` 的判据（私信既没有 team 运行，也没有频道成员）。
+    运行面板不是私信的东西，因此私信下 `dockTarget` 恒为 `null`，整栏消失。 */
+const visibleDockTarget = computed(() => (isDm.value ? null : dockTarget.value));
+
+/** ≤900px（单列壳）判据：右抽屉只在那一档是「盖在内容上的一层」。 */
+const MOBILE_SHELL_QUERY = '(max-width: 900px)';
+
+function mobileShell() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return Boolean(window.matchMedia(MOBILE_SHELL_QUERY).matches);
+}
+
+/**
+ * ESC 的层序（唯一一份，T4 落地时直接复用本函数，不另写第二份）：
+ * **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 rail > ≤900px 右抽屉 dock > 搜索视图**。
+ *
+ * 依据是旧页面 `app/alibot/studio/app.js:10578-10620` 的 document keydown 逐行顺序：
+ * ① `#cmdOverlay` 未隐藏 ⇒ closeCmd；② `#agentDeleteOverlay` 未隐藏 ⇒ `busy` 时不收，否则关闭；
+ * ③ 其余弹窗（settings / reminders / roster / budget / channel / agent / task）；④ 移动左抽屉；
+ * ⑤ ≤900px 的右抽屉（桌面 dock 是常驻列，ESC 不管它）；⑥ `state.mode === 'search'` **最后**一层。
+ * 有两处是**有意差异**：③ 在旧页面是无栈、一次全关，本版改成「只关最上面那一层」
+ * （栈在 `lib/modal-stack.js`）；① 与 ⑥ 的面（命令面板 / 搜索视图）还没迁到本版，归 T4。
+ */
+function onEscape(event) {
+  if (event.key !== 'Escape') return;
+  // ①+②+③：命令面板与模态栈由 `ModalShell` 的模块级栈裁决（它在 document 的捕获阶段吃掉
+  // ESC 并判 `busy`），因此这里只需要早退——两边都在，ESC 的唯一性就不依赖监听注册顺序。
+  if (hasOpenModal()) return;
+  // ④ 移动左抽屉盖在内容上，先收它。
+  if (railOpen.value) {
+    railOpen.value = false;
+    return;
+  }
+  // ⑤ ≤900px 的右抽屉同样盖在内容上（它没有遮罩，ESC 是它的键盘出口）。
+  if (mobileShell() && dockDrawerOpen.value) {
+    closeRunPanel();
+    return;
+  }
+  // ⑥ 搜索视图（`state.mode === 'search'`）是最后一层：随 T4 在这里补。
 }
 
 // 提醒 / 设置 / Agent 详情 / 名册 / 配置 / 预算都还没迁到本版：
@@ -207,9 +260,10 @@ function closeRunPanel() {
     </main>
 
     <DockPanel
+      :dock-target="visibleDockTarget"
       :panel="dockPanel"
       :pools="dockPools"
-      :open="dockOpen"
+      :open="dockDrawerOpen"
       @close="closeRunPanel"
     />
 

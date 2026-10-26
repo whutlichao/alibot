@@ -260,3 +260,58 @@ npx vitest run（app/frontend）          9 files / 171 passed（新增 tests/ru
 | 「不新开第二套前端测试框架」 | 按**页面范围**读：旧页面不新开；v2 是 Vue 组件，用 Vitest 是同一层选择 | ADR-0038 §四 |
 | pytest 只断言外部可观察行为 | **不变**。产物新鲜度判据没有塞进 pytest（曾写过 `test_studio_v2_build_guard.py`，被 `test_test_layering_guard.py` 判红后移到前端用例族） | ADR-0038 §六 |
 | 「DOM 一律 createElement / textContent」 | **不变**，且扩到 Vue：组件里不出现 `v-html`，正文仍由渲染器产出节点树后 `appendChild` | ADR-0038 §二 |
+
+### 阶段 A · 票 #300：共享弹窗壳 ModalShell + dock 形态扩到三档（读数）
+
+本票是阶段 A 的 **P0**：先把「弹窗外壳」与「dock 三档形态」抽出来，让 T1–T5 与 ⌘K 只写自己的内容。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 弹窗骨架（四个 slot 位与类名） | `components/ModalShell.vue` | 根 `.overlay` / 内容 `.modal`（`:class="{ wide }"`）/ `.modal-head` / `.modal-body` / `.modal-foot`，**逐字沿用**旧页面十个 `#*Overlay` 段；`app.css` 零改动（`git diff app/alibot/studio/app.css` 为空） |
+| 显隐用 `hidden` 属性而不是 `v-if` | 同上 | `.overlay` 的 `hidden` 随 `open` 变，内容节点在开 / 关之间是**同一个 DOM 节点**（用例断言 `element` 引用相等，人填了一半的表单不被撕毁） |
+| ESC 只关最上面那一层 | `lib/modal-stack.js` | 模块级栈 + **一个** `document` 捕获阶段监听；叠两层时第一次 ESC 只关上层、下层仍 `hidden:false`，第二次才关下层。旧页面 `app.js:10578-10620` 是无栈、一次全关——这里是**有意改进** |
+| `busy` 时整层不收 | `ModalShell.vue` 的 `requestClose()` 与栈的 `isBusy()` | ESC、遮罩点击、关闭键三处同一条判据（等价于旧页面对删除确认弹窗的 `state.agentDelete.busy`，`app.js:10075-10086`） |
+| 焦点进入与回收 | 同上的 `firstFocusable()` / `restoreFocus()` | 打开 ⇒ `.modal-body` 里第一个可聚焦元素（跳过 `disabled` 与 `hidden` 子树；正文没有可聚焦件时才落到标题行的关闭键）；关闭 ⇒ 打开那一刻的 `document.activeElement`（不是 `body`） |
+| dock 三档由 `dockTarget` 推导 | `components/DockPanel.vue` | `dockTarget = { kind: 'run' \| 'members' \| 'task' }`；`null` ⇒ 整栏不渲染；`run` 档没有 `panel` 也按「没有形态」处理（不铺空壳）。`run` 接 `RunPanel`（`pools` 照旧往下传），另两档是 `<slot name="members">` / `<slot name="task">`，内容归 T3 / T7 |
+| 私信下一档都不出现 | `App.vue` 的 `visibleDockTarget` | 私信下 `dockTarget` 恒 `null`（`dockAvailable()` 判据：私信既没有 team 运行也没有频道成员），整栏消失 |
+| ESC 层序表 | `App.vue` 的 `onEscape()` | **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 > 搜索视图**，依据 `app.js:10578-10620` 的逐行顺序；T4（#304）直接复用这个函数 |
+
+**测试装置上的一处取舍**：`App.vue` 没有新增 props / `defineExpose`——`mount(App, { props: { sourceFactory }, attachTo: document.body })`
+配上 `fetch` 替身就足以驱动 dock 的三档判据与 ESC 层序（挂到 body 之后 `document.dispatchEvent` 与
+`document.activeElement` 都是真实落点）。少一个测试专用的公开面，就少一处「只在测试里成立」的行为。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     11 files / 196 passed（新增 tests/modal-shell.test.js 14 条、
+                                   tests/app-shell.test.js 6 条、components.test.js 的 dock 形态 5 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+```
+
+真浏览器实测（ego-browser，`python -m alibot --port 8803 --data-dir /tmp/alibot-p2a-300`）：
+
+| 判据 | 读数 |
+| --- | --- |
+| 弹窗关闭态 | `.overlay#settingsOverlay`：`hidden=true`、`getComputedStyle().display='none'`，四个类名齐全 |
+| 弹窗打开态 | `hidden=false`、`display='grid'`、遮罩色 `oklch(0.33 0.045 300 / 0.42)`；`.modal` 宽 **440**，`.modal.wide` 宽 **560** |
+| 焦点进入 | 打开后 `document.activeElement` = `INPUT[data-od-id="settings-first"]`（正文第一个可聚焦元素，不是标题行的关闭键） |
+| ESC 关闭 + 焦点回收 | ESC 后 `hidden=true`，`document.activeElement` = `BUTTON#opener[data-od-id="opener"]`（打开它的那个按钮） |
+| 遮罩点击 | 点根 `.overlay` 自身 ⇒ `hidden=true`；点弹窗内部不关 |
+| 叠两层 | 两层都开 ⇒ ESC #1 `{lower:false, upper:true}`（只关上层），ESC #2 `{lower:true, upper:true}` |
+| `busy` | ESC 后 `hidden=false`、遮罩点击后 `hidden=false`；解除 `busy` 再 ESC ⇒ `hidden=true` |
+| dock 形态与几何（桌面 1970 宽） | 无形态时 `#dock === null`；`run` 档 `.dock.is-open`、`getBoundingClientRect().width` = **380**、`transform: none` |
+| 桌面 ESC 不关 dock | ESC 后 `#dock` 仍在、`cls='dock is-open'`、宽 380（它是常驻列） |
+| 私信下 | 切到 `@Ada` 后 `#dock === null`，且 `btn-run-panel` 入口本身也不存在 |
+| ≤900px 右抽屉（800×900） | 关闭时 `#dock === null`；打开后 `width=380`、`left=420`（= 800−380）、`transform: none`、`visibility: visible`、`cls='dock is-open'` |
+| ESC 层序（800×900） | rail 与 dock 都开 ⇒ ESC #1 收 rail（`railOpen=false`、遮罩消失）而 dock 仍在；ESC #2 才收 dock（`#dock === null`） |
+
+截图（`.scratch/v2-p2a/`，已 gitignore）：`issue-300-01-dock-run-380.png`（桌面 run 档 380）、
+`issue-300-02-modal-open.png`（弹窗打开 + 焦点在第一个输入框）、`issue-300-03-modal-esc-closed.png`、
+`issue-300-04-modal-stack-both.png`（叠两层）、`issue-300-05-modal-wide.png`（`.modal.wide` 560）、
+`issue-300-06-dm-no-dock.png`（私信下整栏消失）、`issue-300-07-dock-mobile-drawer.png`（≤900px 右抽屉）、
+`issue-300-08-dock-desktop-esc-kept.png`（桌面 ESC 不关 dock）、`issue-300-09-rail-and-dock.png`（层序现场）。
+
+**本轮的已知边界**：产品 UI 里还**没有**任何入口会打开弹窗（它们归 T1–T3 与 ⌘K），因此弹窗的
+真浏览器读数取自一个临时的 Vite harness 页（复用同一份 `app.css` 与同一个 `ModalShell.vue`，
+取证后已删除、未入库）。dock 的 `members` / `task` 两档同理没有调用点，只在用例里按 `dockTarget`
+直接驱动——那是「形态与几何先立起来」的代价，也是那两张票不必再改外壳的前提。
