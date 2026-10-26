@@ -354,6 +354,18 @@ class DockerConsent(BaseModel):
     image: str = ""
 
 
+class GlobalMcpDocumentUpdate(BaseModel):
+    """成员家目录 ``mcp.json`` 的**整份原文**（#284 / D7）。
+
+    提交的是人正在编辑的那份文本，不是一份归一化后的结构：写路径要把同一串字节落盘
+    （不重排、不重缩进），因此这里只收一个字符串，三道校验在 service 层。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = ""
+
+
 class WebProviderCredentialUpdate(BaseModel):
     """联网 provider 凭据的写请求。
 
@@ -1854,9 +1866,31 @@ def create_app(
         """该成员全局 ``mcp.json`` 的只读条目 + 运行期读数（#236）。
 
         只列出文件里真实存在的条目，字段是名字 / transport / 是否远端 / 是否已确认 / 进程内
-        ``runtime``。全局层由人维护：这里**没有**编辑、启停、删除，也不写回文件。
+        ``runtime``。这里**不写回文件**；条目形状的校验与条目视图同族，但原文读写走下面的
+        ``…/global-mcp-file``（本票 #284 新增的写面）——两个端点看的是**同一份文件**，边界是
+        「条目视图（供装配读数）」与「整份原文（供人直接编辑）」。
         """
         return service.global_mcp_servers(member_id)
+
+    @app.get("/api/agents/{member_id}/global-mcp-file")
+    def get_global_mcp_file(member_id: str) -> dict[str, Any]:
+        """该成员家目录 ``mcp.json`` 的**原文**与条目计数（#284 / D7 读一半）。
+
+        ``text`` 是文件原文（逐字）；文件不存在时为空串 + ``exists=false``（不是「读到空文件」）。
+        读经全局只读守卫，不创建、不写入。成员不存在 ⇒ 404（与上面的条目视图同一条校验）。
+        """
+        return service.global_mcp_document(member_id)
+
+    @app.put("/api/agents/{member_id}/global-mcp-file")
+    def put_global_mcp_file(member_id: str, payload: GlobalMcpDocumentUpdate) -> dict[str, Any]:
+        """把整份 ``mcp.json`` 原文写进该成员家目录（#284 / D7 写一半）。
+
+        三道校验（JSON 可解析 → 顶层是对象且 ``servers`` 是数组 → 每条经既有声明归一化内核）
+        **全部通过才写盘**；任一条不合法 ⇒ 400 + 可读原因 + ``fields``，**零写入**。写盘逐字
+        （不重排、不重缩进、不动末尾换行），先写同目录临时文件再原子替换。家目录不存在 ⇒ 400
+        且不创建任何目录；文件不存在但家目录在 ⇒ 新建；文件存在 ⇒ 覆盖。
+        """
+        return service.save_global_mcp_document(member_id, payload.text)
 
     @app.post("/api/agents/{member_id}/global-mcp-servers/{name}/consent")
     def consent_global_mcp_server(member_id: str, name: str) -> dict[str, Any]:

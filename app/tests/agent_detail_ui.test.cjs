@@ -736,7 +736,7 @@ function mcpDeclaration(overrides) {
   );
 }
 
-/** 详情页两条能力清单与全局 MCP 的读数替身（其余端点照默认应答）。 */
+/** 详情页两条能力清单、全局 MCP 与家目录 `mcp.json` 原文的读数替身（其余端点照默认应答）。 */
 function capabilitiesFetch(config) {
   const options = config || {};
   return (url, init) => {
@@ -747,6 +747,19 @@ function capabilitiesFetch(config) {
     }
     if (method === "GET" && String(url) === "/api/mcp-servers?scope_kind=agent&scope_id=mem-1") {
       return { ok: true, status: 200, json: async () => ({ mcp_servers: options.mcp || [] }) };
+    }
+    // 家目录 mcp.json 的原文（#284 / D7）：读与写的形状与后端一致。
+    if (/^\/api\/agents\/[^/]+\/global-mcp-file$/.test(String(url))) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          member_id: "mem-1",
+          exists: options.mcpFileExists === undefined ? true : options.mcpFileExists,
+          text: options.mcpFileText === undefined ? MCP_FILE_TEXT : options.mcpFileText,
+          servers: options.mcpFileServers === undefined ? 2 : options.mcpFileServers,
+        }),
+      };
     }
     // 技能正文（#283 / D5）：右栏选中时按需读，形状与后端一致。
     if (method === "GET" && /^\/api\/skills\/[^/]+\/markdown$/.test(String(url))) {
@@ -762,6 +775,10 @@ function capabilitiesFetch(config) {
 
 /** 右栏正文的替身（磁盘上 `SKILL.md` 里 front matter 之后的那段字节）。 */
 const SKILL_BODY = "# Review\n\n按步骤评审：\n\n    先读改动，再读测试\n\n- 一\n- 二";
+
+/** 家目录 `mcp.json` 的原文替身：**非标准缩进 + 倒键序 + 末尾换行**，用来断言「文本域显示原文」。 */
+const MCP_FILE_TEXT =
+  '{\n  "servers": [\n    {"transport": "stdio", "command": "python3", "name": "notes"}\n  ]\n}\n';
 
 test("skills 页签：左栏技能列表 + 右栏选中技能详情，启停 / 删除跟着列表走", async () => {
   const harness = withChannel({ fetch: capabilitiesFetch({ skills: [skillDetail()] }) });
@@ -823,7 +840,7 @@ test("mcp 页签：库行块在上、家目录 mcp.json 块在下，两块各归
   const order = descendants(panel)
     .map((node) => (node.getAttribute ? node.getAttribute("data-od-id") : null))
     .filter((id) => ids.indexOf(id) >= 0);
-  assert.deepEqual(order, ids, "上块（库行）→ 只读 mcp.json 条目 → 文件块占位");
+  assert.deepEqual(order, ids, "上块（库行）→ 只读 mcp.json 条目 → 下块（文件文本域）");
 
   assert.ok(byDataset(panel, "mcpServer", "mcp_1"), "库行列表在 mcp 页签里");
   assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "库行启停在 mcp 页签里");
@@ -832,10 +849,10 @@ test("mcp 页签：库行块在上、家目录 mcp.json 块在下，两块各归
   assert.ok(byDataset(panel, "globalMcpServer", "notes"), "原「全局 MCP」小节并入 mcp 页签");
   const fileBlock = byOdId(panel, "agent-detail-section-mcp-file");
   assert.ok(fileBlock && fileBlock.parentNode, "下块是 mcp.json 文件块");
-  assert.ok(
-    fileBlock.parentNode.textContent.includes(catalogText(harness, "zh-CN", "agentDetail.mcpFilePlaceholder")),
-    "文件块先给占位说明（文本域由后续票补）",
-  );
+  // 下块不再是一句占位说明：它是直接接家目录文件原文的文本域（#284 / D7）。
+  const textarea = byOdId(panel, "agent-mcp-file-text");
+  assert.ok(textarea && textarea.tagName === "textarea", "下块是一个文本域");
+  assert.equal(textarea.value, MCP_FILE_TEXT, "文本域显示文件当前原文");
   // 库行不再长在「基础信息和配置」页签里。
   assert.equal(byDataset(harness.panel("base"), "mcpServer", "mcp_1"), null,
     "基础信息和配置页签里不再有 MCP 行");
@@ -2098,7 +2115,16 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     "agentDetail.tabBase",
     "agentDetail.tabSkills",
     "agentDetail.tabMcp",
-    "agentDetail.mcpFilePlaceholder",
+    // mcp 页签下块（#284 / D7）：文本域的两行标注 + 四态文案 + 保存入口。
+    // 占位词条 `agentDetail.mcpFilePlaceholder` 随占位节点一起删（文本域取代了它）。
+    "agentDetail.mcpFileTitle",
+    "agentDetail.mcpFileSource",
+    "agentDetail.mcpFileLoading",
+    "agentDetail.mcpFileMissing",
+    "agentDetail.mcpFileServers",
+    "agentDetail.mcpFileSave",
+    "agentDetail.mcpFileLoadFailed",
+    "agentDetail.mcpFileSaveFailed",
     "agent.webAccessLabel",
     "agent.webAccessFollow",
     "agent.webAccessFollowHint",
@@ -2168,6 +2194,9 @@ test("本票新增 / 沿用的文案在两份词条里都取到值", () => {
     // 词条也一并移除，不留没有消费点的孤儿键。
     "agentDetail.pauseNote",
     "agentDetail.globalMcpNote",
+    // mcp 页签下块的占位提示随占位节点一起删（#284：真实文本域取代了它，与
+    // `agent.contextWindow` 那四项同一规则——随消费点消失而删键）。
+    "agentDetail.mcpFilePlaceholder",
     // 「启用状态」档位随配置区的删除而失去全部消费点：两份词条一并移除，不留孤儿键。
     "agent.enabledLabel",
     "agent.enabledOn",

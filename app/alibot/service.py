@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -40,7 +41,14 @@ from .db import (
 )
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
-from .mcp import load_global_mcp_declarations, runtime_status
+from .mcp import (
+    GLOBAL_MCP_FILENAME,
+    InvalidMCPDocument,
+    load_global_mcp_declarations,
+    mcp_document_entry_count,
+    runtime_status,
+    validate_mcp_document,
+)
 from .memory import memory_workspace_dir
 from .mentions import parse_mentions
 from .team import TEAM_SCOPE
@@ -51,7 +59,16 @@ from .web import (
     describe_search_provider,
     web_env,
 )
-from .workspace import WorkspaceConfigError, clear_docker_failure, global_home_root
+from .workspace import (
+    AGENTS_DIR,
+    WorkspaceConfigError,
+    clear_docker_failure,
+    global_home_root,
+    global_member_home,
+    resolve_global_read_path,
+    resolve_global_write_path,
+    safe_partition_id,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -982,6 +999,96 @@ class WorkspaceService:
 
     def _global_home(self) -> str:
         return self._global_home_override if self._global_home_override is not None else global_home_root()
+
+    def global_mcp_document(self, member_id: str) -> dict[str, Any]:
+        """该成员家目录 ``mcp.json`` 的**原文**与条目计数（D7 读一半）。
+
+        ``text`` 是文件原文（逐字，不做摘要、不重排）；不存在时为**空串**且 ``exists=false``——
+        「没有这个文件」与「读到空文件」是两件事，前端据此给不同的说明。``servers`` 是文件里
+        ``servers`` 数组的条目计数（原文事实，不做合规过滤）。读经全局只读守卫
+        :func:`workspace.resolve_global_read_path`，**不创建、不写入**任何字节。
+        """
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        path = resolve_global_read_path(
+            self._global_home(), AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
+        )
+        if path is None:
+            # 既包括「这一层没有这个文件」，也包括「路径被守卫拒（根外 symlink 祖先 / 目标）」。
+            # 两者对外都是「读不到原文」，但都不能退化成直读。
+            return {"member_id": member_id, "exists": False, "text": "", "servers": 0}
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
+            return {"member_id": member_id, "exists": False, "text": "", "servers": 0}
+        except (OSError, UnicodeDecodeError) as error:
+            # 文件在但不可读 / 非 UTF-8：这不是「没有文件」，也不能静默当成空原文。
+            message = render("error.global_mcp_read_failed", self._locale(), reason=str(error))
+            raise DomainError("validation_failed", message, fields={"text": message}) from None
+        return {
+            "member_id": member_id,
+            "exists": True,
+            "text": text,
+            "servers": mcp_document_entry_count(text),
+        }
+
+    def save_global_mcp_document(self, member_id: str, text: str) -> dict[str, Any]:
+        """把整份 ``mcp.json`` **原文**写进该成员家目录（D7 写一半）。
+
+        三道校验（JSON 可解析 → 顶层是对象且 ``servers`` 是数组 → 每条经
+        :func:`mcp.validate_mcp_document` 的同一份内核）**全部通过才写盘**；任一条不合法 ⇒
+        ``400`` + 可读原因 + ``fields`` 指出出错的那一条 / 字段，**零写入**。
+
+        写盘语义（N3 第三格）：先写同目录临时文件再用 ``os.replace`` 原子替换（先例
+        ``runtime.py`` 的状态落盘）；**原文逐字写**——不 ``json.dumps`` 重排、不重缩进、不动
+        末尾换行。文件不存在但成员家目录存在 ⇒ 新建；**家目录本身不存在 ⇒ 400** 且不创建任何
+        目录（应用不自动创建全局层，ADR-0031 §三）。文件存在 ⇒ 覆盖（人类显式动作）。
+
+        守卫：写前用同一内核（:func:`workspace.resolve_global_write_path`，与只读守卫共用
+        ``realpath`` 判定）取目标的真实路径，拒绝根外 symlink 祖先与根外目标。
+        """
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        locale = self._locale()
+        try:
+            validate_mcp_document(text, locale)
+        except InvalidMCPDocument as error:
+            raise DomainError(
+                "validation_failed", error.message, fields={error.location: error.message}
+            ) from None
+
+        root = self._global_home()
+        home = global_member_home(member_id, root=root)
+        if not os.path.isdir(home):
+            message = render("error.global_mcp_home_missing", locale, path=home)
+            raise DomainError("validation_failed", message, fields={"text": message})
+        target = resolve_global_write_path(
+            root, AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
+        )
+        if target is None:
+            message = render(
+                "error.global_mcp_path_invalid",
+                locale,
+                path=os.path.join(home, GLOBAL_MCP_FILENAME),
+            )
+            raise DomainError("validation_failed", message, fields={"text": message})
+
+        temporary = os.path.join(os.path.dirname(target), f".{GLOBAL_MCP_FILENAME}.{os.urandom(8).hex()}.tmp")
+        try:
+            with open(temporary, "xb") as stream:
+                stream.write(text.encode("utf-8"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except OSError as error:
+            with suppress(OSError):
+                os.unlink(temporary)
+            message = render("error.global_mcp_write_failed", locale, reason=str(error))
+            raise DomainError("validation_failed", message, fields={"text": message}) from None
+        return {
+            "member_id": member_id,
+            "exists": True,
+            "text": text,
+            "servers": mcp_document_entry_count(text),
+        }
 
     def confirm_global_mcp_server(self, member_id: str, name: str) -> dict[str, Any]:
         """确认该成员全局 ``mcp.json`` 的一条远端声明（#236 / D8）。

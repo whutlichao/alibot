@@ -442,8 +442,16 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': '家目录 mcp.json',
-    'agentDetail.mcpFilePlaceholder':
-      '这里将直接编辑这个 Agent 家目录里的 mcp.json 原文；同名时库行胜出（上块是装配正本）。',
+    // mcp 页签下块（#284 / D7）：文本域直接接家目录文件的**原文**，两块各标注数据来源。
+    'agentDetail.mcpFileSource':
+      '来自这个 Agent 家目录的 mcp.json（文件原文）；同名时库行胜出，落选条目会进轮次结果的可读提示。',
+    'agentDetail.mcpFileLoading': '正在读取家目录 mcp.json…',
+    'agentDetail.mcpFileMissing':
+      '这个 Agent 的家目录里还没有 mcp.json（不是空文件）：保存一次会按你写的内容新建它。',
+    'agentDetail.mcpFileServers': '文件里的条目数：{count}',
+    'agentDetail.mcpFileSave': '保存 mcp.json',
+    'agentDetail.mcpFileLoadFailed': '家目录 mcp.json 读取失败：{reason}',
+    'agentDetail.mcpFileSaveFailed': '家目录 mcp.json 保存失败：{reason}',
     'agentDetail.openAria': '查看 {name} 的详情',
     'agentDetail.sectionFacts': '统计',
     'agentDetail.statChannels': '所属频道数',
@@ -679,6 +687,7 @@ const I18N_CATALOGS = {
     'workspaceMgmt.noteDocker': 'Docker 后端：每个 Agent / 会话一个容器，只承诺容器与主机的隔离；远端镜像需要先确认数据面告知。',
     'workspaceMgmt.noteConfig': '项目根与后端在上方「项目根与默认后端」中修改；非法路径会被后端整体拒绝，保存处显示可读原因。',
     'mcp.scopeNote': '只显示环境变量名；变量值由服务进程的环境提供，界面与后端响应都不保存值。',
+    'mcp.sourceDb': '来自库行 mcp_server（scope_kind=agent）：装配正本，改这里会改变装配结果。',
     'mcp.loading': '正在读取 MCP 声明…',
     'mcp.loadFailed': 'MCP 声明读取失败：{reason}',
     'mcp.empty': '这个 Agent 还没有 MCP 声明。',
@@ -1275,8 +1284,17 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': 'Home-directory mcp.json',
-    'agentDetail.mcpFilePlaceholder':
-      'This pane will edit the mcp.json in this agent’s home directory directly; on a name clash the database row wins (the block above is the assembly authority).',
+    // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text, and each
+    // block labels its data source.
+    'agentDetail.mcpFileSource':
+      'From the mcp.json in this agent’s home directory (the file’s raw text); on a name clash the database row wins, and the entry that loses is reported in the round outcome.',
+    'agentDetail.mcpFileLoading': 'Reading the home-directory mcp.json…',
+    'agentDetail.mcpFileMissing':
+      'This agent’s home directory has no mcp.json yet (that is not an empty file): saving once creates it from what you write.',
+    'agentDetail.mcpFileServers': 'Entries in the file: {count}',
+    'agentDetail.mcpFileSave': 'Save mcp.json',
+    'agentDetail.mcpFileLoadFailed': 'Could not read the home-directory mcp.json: {reason}',
+    'agentDetail.mcpFileSaveFailed': 'Could not save the home-directory mcp.json: {reason}',
     'agentDetail.openAria': 'Open the details of {name}',
     'agentDetail.sectionFacts': 'Stats',
     'agentDetail.statChannels': 'Channel memberships',
@@ -1537,6 +1555,10 @@ const I18N_CATALOGS = {
       'Edit the project root and backend in “Project root and default backend” above; an illegal path is rejected as a whole and the save line shows the readable reason.',
     'mcp.scopeNote':
       'Variable names only; values come from the server process environment, and neither the UI nor API responses store them.',
+    // Source label of the top block (#284 / D7): it is the assembly authority, a different dataset
+    // from the home-directory file in the bottom block.
+    'mcp.sourceDb':
+      'From the database rows in mcp_server (scope_kind=agent): the assembly authority; editing here changes what gets assembled.',
     'mcp.loading': 'Reading MCP declarations…',
     'mcp.loadFailed': 'Could not read the MCP declarations: {reason}',
     'mcp.empty': 'This agent has no MCP declarations yet.',
