@@ -531,9 +531,8 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   /* 面板按既有的 `data-adpanel` 选，不引入 id 选择器（全表其余 0 处 id 选择器）。 */
   .agent-page.is-skills-fixed [data-adpanel='skills'] { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .agent-page.is-skills-fixed .agent-skill-section { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-bottom: 0; }
-  /* 导入区不可压缩：「顶部导入区固定」的承重行——矮视口下让位的是它下面的双栏，
-     而不是把导入区挤成几像素。导入结果行累积到装不下时，由外层整页滚（见上方那条注释），
-     不在导入区块里再套一根滚动条（那会把它的下拉框自己滚出去）。 */
+  /* 导入区不可压缩：「顶部导入区固定」的承重行——矮视口下让位的是它下面的双栏，而不是把
+     导入区挤成几像素。（结果行每次导入前先清空，只留刚刚那一条，不会累积；装不下时由外层整页滚。） */
   .agent-page.is-skills-fixed .agent-skill-section > :not(.agent-skill-columns) { flex: none; }
   /* 右栏是一列 `flex`，表格行会被压缩成扁条、内容被截断，因此只有本档把它们钉住不缩。 */
   .agent-page.is-skills-fixed .skill-detail > .kv { flex: none; }
