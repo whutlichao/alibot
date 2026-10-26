@@ -498,9 +498,43 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 /* skills 右栏的详情（#283 / D5）：元数据 → 动作 → 正文。左栏当前行的选中态与左栏导航行同一
    档位语义（`--selected` 族）：竖条 = graphic 档、字色 = deep 档，零新增色位。 */
-.skill-row { cursor: pointer; padding-left: var(--sp-3); border-left: 2px solid transparent; }
+/* 一行 = 文字区（真 `<button>`）+ 启停开关（兄弟节点，物理不重叠，见 `app.js:skillRow()`）。
+   上下 10px 把热区撑到 48px（`--fs-body` 行高 + hash 行约 28px + 20px）：40px 上下时名称与
+   开关贴得太近，触控板上点开关容易漤到行上换了选中项。左右用 `--sp-3`，与原先的竖条缩进同节奇。 */
+.skill-row { padding: 10px var(--sp-3); gap: var(--sp-5); border-bottom: 1px solid var(--border); border-left: 2px solid transparent; }
+.skill-row:last-child { border-bottom: 0; }
+/* 文字区：铺满剩下的宽度、左对齐（`<button>` 默认居中），视觉上仍是一条行。
+   `min-height: 48px` 是**点击靶**而不是排版值：实测删除描述后文字区只有 38px，名称与开关
+   贴得太近，触控板上点开关容易漥到行上换了选中项。撑到 48px 且不靠加 padding 撑
+   （padding 会把 hash 行推得更远、行看起来更空），实际占据仍是两行文字的高度、内容居中。 */
+.skill-pick {
+  flex: 1; min-width: 0; min-height: 48px; display: flex; flex-direction: column;
+  justify-content: center; gap: 2px;
+  padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
 .skill-row.is-active { border-left-color: var(--selected-graphic); background: var(--selected-soft); }
-.skill-row.is-active b { color: var(--selected-deep); }
+.skill-row.is-active .skill-pick b { color: var(--selected-deep); }
+/* 停用态：名称走 `--muted`（不是 `--faint`——那会把可点目标读成不可用），不删除线、不染红。
+   开关自己会在左侧位置表达「关」，这里是给扫视时的第二眼确认。 */
+.skill-row.is-disabled .skill-pick b { color: var(--muted); }
+/* 启停开关：与设计系统 `ui_kits/app/app.css` 的 `.switch` 同形同值（见 `.radio-card` 的既有先例），
+   不新造色位、不新造尺寸。`align-self: center` 让它在两行文字里居中对齐而不是顶在上缘。 */
+.skill-row .switch { align-self: center; }
+.switch {
+  appearance: none; width: 34px; height: 20px; border-radius: var(--r-pill);
+  background: var(--panel-2); position: relative; transition: background var(--dur) var(--ease);
+  flex: 0 0 auto; cursor: pointer; border: 0;
+}
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: var(--r-pill); background: var(--surface);
+  box-shadow: 0 1px 2px oklch(33% .045 300 / .2); transition: transform var(--dur) var(--ease);
+}
+.switch[aria-checked='true'] { background: var(--accent-graphic); }
+.switch[aria-checked='true']::after { transform: translateX(14px); }
+/* 请求在飞与离线两颗都走这一条：与 `.btn:disabled` 同一口径（透明度降一档、光标说不能点）。 */
+.switch:disabled { opacity: .45; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .switch, .switch::after { transition: none; } }
 .skill-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .skill-detail-actions { margin: var(--sp-4) 0 var(--sp-5); }
 .kv .v.is-mono { font-family: var(--mono); font-size: var(--fs-mono-xs); overflow-wrap: anywhere; }

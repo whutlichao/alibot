@@ -1409,7 +1409,10 @@ function renderBoardToolbar() {
 }
 
 /** 「激活」键：Enter 与 Space（`Spacebar` 是旧版 Edge/IE 的写法）。
-    卡片按钮、卡片菜单触发器、菜单项三处共用一条判据，免得三份 `key !== …` 漂移。 */
+    卡片按钮、卡片菜单触发器、菜单项三处共用一条判据，免得三份 `key !== …` 漂移。
+
+    **原生 `<button>` 不要接这道判据**：Enter / Space 由浏览器自己翻成 `click`，再加一层
+    委派就是「按一下跳两次」（技能行的文字区与开关都是真 button，因此不走这里）。 */
 function isActivationKey(event) {
   return event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar';
 }
@@ -5441,7 +5444,7 @@ function agentSkillsTabNodes(agent) {
     const list = el('div');
     list.setAttribute('data-od-id', 'skill-list');
     view.skills.forEach((skill) =>
-      list.appendChild(skillRow(skill, skill.id === state.agentDetailSkillId)),
+      list.appendChild(skillRow(skill, skill.id === state.agentDetailSkillId, view)),
     );
     left.appendChild(list);
   }
@@ -5502,16 +5505,10 @@ function skillDetailNode(view) {
     ),
   );
 
-  // 动作作用于**当前选中**项：启停成功后按后端重读，右栏的启停态跟着变（同一次重铺）。
+  // 动作作用于**当前选中**项：只剩删除。启停的**唯一**写入口是左栏行内的开关（见 `skillRow()`）——
+  // 同一个可写字段挂两个无差别的写入口，只会逼人问「这里和那里有区别吗」。上面那格
+  // `skill-detail-state` 留着：它**陈述**当前装配状态，不是第二个入口。
   const actions = el('div', 'agent-actions skill-detail-actions');
-  actions.appendChild(
-    resourceButton(
-      skill.enabled ? 'skill.disable' : 'skill.enable',
-      'skillToggle',
-      skill.id,
-      'skill-toggle',
-    ),
-  );
   actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
   node.appendChild(actions);
 
@@ -7439,6 +7436,9 @@ function emptyCapabilitiesView(memberId) {
     skillLoading: Boolean(memberId),
     skillError: '',
     skills: [],
+    // 正在等后端确认的那一条技能 id（启停的**不乐观**口径：请求期间开关禁用并保持旧值）。
+    // 它是呈现状态，不是业务正本；成功 / 失败都回到 `null`。
+    skillTogglingId: null,
     // 「从 ~/.agents/skills 导入」区块（#277 / ADR-0036；#282 收成一个下拉框）：候选是后端只读读数，
     // `skillImportPick` 只是**未提交**的单选（默认空 = 不预选任何项），`skillImportResults`
     // 是上一次导入的结果（保留到下一次导入或重新打开详情）。
@@ -7682,6 +7682,9 @@ async function selectAgentSkill(skillId) {
   state.agentDetailSkillId = skillId;
   paintAgentCapabilities();
   await loadSkillMarkdown(view.memberId);
+  // 选中行换了 ⇒ 焦点送到**新选中行的文字区**：行内按钮（Enter / Space 激活）随重铺消失，
+  // 不还焦点的话键盘用户要多 Tab 好几回才能回到列表。
+  focusSkillControl('pick', skillId);
 }
 
 /** 读外部 CLI 落点 ``~/.agents/skills`` 的候选（只读端点；失败只落在导入区块自己的错误行）。
@@ -8084,16 +8087,36 @@ function mcpForm(view) {
 
 /* ── 能力段的读路径（两个 kind 各在自己的页签里，作用域恒为该成员） ────────── */
 
-/** 重铺能力相关的那两个页签：读路径与**显式动作**（编辑 / 安装 / 启停 / 删除）都走它。
+/** 重铺能力页签：读路径与**显式动作**（编辑 / 安装 / 启停 / 删除）都走它。
 
     轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰它们（见那里的注释）——
-    后台重绘不该把持焦控件换成新节点。 */
+    后台重绘不该把持焦控件换成新节点。
+
+    显式动作不一样：动作本身就是从那个控件发起的，重铺把它换掉之后焦点会掉到 `body`。那一条
+    **不在这函数里**应对：谁能知道「下一次重铺是否就是终态」？只有发起方知道，所以焦点由
+    `focusSkillControl()` 在**最后一次重铺之后**显式还（见 `toggleSkill()` / `selectAgentSkill()`）。
+    把标记挂在这里自动排空是错的：`toggleSkill()` 内部要重铺两次，标记会在请求中那次就被消耗。 */
 function paintAgentCapabilities() {
   if (!state.activeAgentId) return;
   const agent = agentById(state.activeAgentId);
   if (!agent) return;
   renderAgentTabPanel('skills', agentSkillsTabNodes(agent));
   renderAgentTabPanel('mcp', agentMcpTabNodes(agent));
+}
+
+/** 把焦点还给重铺后**新生成**的那个控件（`kind`：`'switch'` 启停开关 / `'pick'` 行文字区）。
+
+    为什么要显式在动作末尾调、而不做成“下一次 paint 自动排空”的标记：`toggleSkill()` 内部会
+    经历**两次**重铺（请求中一次、重读后一次），标记会在请求中那次就被消耗掉，焦点又掉了。
+    由发起方在**最后一次重铺之后**调一次，才真正落在终态节点上。 */
+function focusSkillControl(kind, skillId) {
+  const panel = $('#adPanelSkills');
+  if (!panel || typeof panel.querySelectorAll !== 'function') return;
+  const attribute = kind === 'switch' ? 'data-skill-toggle' : 'data-skill-pick';
+  const key = kind === 'switch' ? 'skillToggle' : 'skillPick';
+  const nodes = Array.prototype.slice.call(panel.querySelectorAll('[' + attribute + ']'));
+  const target = nodes.find((node) => node.dataset && node.dataset[key] === skillId);
+  if (target) focusNode(target);
 }
 
 /** 草稿脏时 `renderAgentDetail()` 只换这两块（读数是后端事实，换了就得跟着换）。 */
@@ -8103,27 +8126,53 @@ function refreshAgentCapabilitiesPanels() {
 
 /* ── ③ 技能（列表 / 从本机导入 / 启停 / 删除） ───────────────────────── */
 
-function skillRow(skill, current) {
-  const row = el('div', 'resource-row skill-row' + (current ? ' is-active' : ''));
+/** 左栏一行：**文字区（真 `<button>`）** + **启停开关**，两个兄弟节点。
+
+    为什么行本身不再是 `div[role=button]`：开关是可交互控件，而 ARIA 禁止把它嵌进 `role=button`
+    （读屏会把开关吞掉，或者报非法嵌套）。左栏的 `.nav-row` 一直是原生 `<button>`，技能行是
+    全文件里唯一还在合成 role 的行——顺手收回同一口径，Enter / Space / 读屏「按钮」全部免费。
+
+    为什么开关**不**绝对定位压在文字区上：那需要手工划分 `z-index` 与 `pointer-events`，正是
+    「点开关结果换了选中项」的高发地。两个 flex 子项物理不重叠，谁也不用猜自己点中了谁。 */
+function skillRow(skill, current, view) {
+  const row = el(
+    'div',
+    'resource-row skill-row' + (current ? ' is-active' : '') + (skill.enabled ? '' : ' is-disabled'),
+  );
   row.dataset.skill = skill.id;
   row.setAttribute('data-od-id', 'capability-skill-row');
-  row.setAttribute('role', 'button');
-  row.setAttribute('tabindex', '0');
-  // 选中态是**一条事实的两处呈现**：`is-active` 给视觉、`aria-current` 给读屏（与左栏导航行同一口径）。
-  if (current) row.setAttribute('aria-current', 'true');
-  const main = el('div', 'resource-main');
+
+  const pick = el('button', 'skill-pick');
+  pick.type = 'button';
+  pick.dataset.skillPick = skill.id;
+  // 选中态是**一条事实的两处呈现**：`is-active` 给视觉、`aria-current` 给读屏（与 `.nav-row` 同一口径）。
+  if (current) pick.setAttribute('aria-current', 'true');
   const title = el('div', 'resource-title');
   title.appendChild(el('b', null, skill.name));
-  title.appendChild(el('span', 'badge', t(skill.enabled ? 'skill.enabled' : 'skill.disabled')));
-  main.appendChild(title);
-  if (skill.description) main.appendChild(el('div', 'resource-meta', skill.description));
+  pick.appendChild(title);
+  // 描述不进列表：右栏 `skill-detail-description` 是它的**唯一**去处，列表里那段长文本是噪声。
   const hash = el('div', 'resource-meta is-faint');
   hash.appendChild(el('span', null, t('skill.hashLabel') + ' '));
   const short = el('span', 'resource-hash', String(skill.content_hash || '').slice(0, 12));
   short.setAttribute('title', t('skill.hashTitle', { hash: skill.content_hash || '' }));
   hash.appendChild(short);
-  main.appendChild(hash);
-  row.appendChild(main);
+  pick.appendChild(hash);
+  row.appendChild(pick);
+
+  // 开关是技能的启停**唯一**写入口（右栏只留读数格，不再有第二个按钮）。
+  const toggle = el('button', 'switch');
+  toggle.type = 'button';
+  toggle.setAttribute('role', 'switch');
+  toggle.setAttribute('aria-checked', skill.enabled ? 'true' : 'false');
+  // 可见文案一律不给（不给每个行再添一段刚删掉的那种文字）：可访问名由这里承担，
+  // 状态由 `aria-checked` 播报。
+  toggle.setAttribute('aria-label', t('skill.toggleLabel', { name: skill.name }));
+  toggle.dataset.skillToggle = skill.id;
+  toggle.setAttribute('data-od-id', 'skill-toggle');
+  // **不乐观**：请求期间保持旧值并禁用（翻转只由后端重读带来，见 `toggleSkill()`）；
+  // 离线禁用与 `resourceButton()` 的 `disabled = !state.online` 同一口径。
+  toggle.disabled = !state.online || Boolean(view && view.skillTogglingId === skill.id);
+  row.appendChild(toggle);
   return row;
 }
 
@@ -8321,16 +8370,27 @@ async function toggleSkill(skillId) {
   if (!view) return;
   const skill = view.skills.find((item) => item.id === skillId);
   if (!skill) return;
+  if (view.skillTogglingId) return; // 一次只飞一个请求：连点不会让两条 PATCH 互相覆盖。
   const memberId = view.memberId;
   view.skillError = '';
+  view.skillTogglingId = skill.id;
+  paintAgentCapabilities();
   try {
     await api('/api/skills/' + encodeURIComponent(skillId), {
       method: 'PATCH',
       body: { enabled: !skill.enabled },
     });
+    // 请求一结束就解除禁用，**然后**才重读：下面的 `loadAgentSkills()` 会重铺两次，
+    // 若等到 `finally` 才清标记，那两次画出来的开关都还是禁用的，而禁用控件不能接焦点
+    // （浏览器会默默忽略 `focus()`）——「还焦点」就会变成一个静默失败的假动作。
+    view.skillTogglingId = null;
     if (state.activeAgentId !== memberId) return;
     await loadAgentSkills(memberId);
+    // 重铺后把焦点还给**同一技能的新开关**（开关节点被换掉了，不还焦点的话键盘用户
+    // 每切一次都要重新 Tab 回列表）。
+    focusSkillControl('switch', skill.id);
   } catch (err) {
+    view.skillTogglingId = null;
     if (state.activeAgentId !== memberId) return;
     view.skillError = t('skill.toggleFailed', { reason: err.message });
     paintAgentCapabilities();
@@ -10167,16 +10227,16 @@ function bindEvents() {
       if (view && !view.skillImportLoading) loadSkillImportCandidates(view.memberId);
       return;
     }
-    // 左栏一行：选中它（右栏跟着换人并读它的正文）。行上有 `data-skill` 但没有动作时就是选行。
-    const skillPick = event.target.closest('[data-skill]');
+    // 左栏一行：点**文字区**选中它（右栏跟着换人并读它的正文）。
+    const skillPick = event.target.closest('[data-skill-pick]');
     if (skillPick) {
-      if (!event.target.closest('[data-skill-toggle]') && !event.target.closest('[data-skill-delete]')) {
-        selectAgentSkill(skillPick.dataset.skill);
-        return;
-      }
+      selectAgentSkill(skillPick.dataset.skillPick);
+      return;
     }
     const skillToggle = event.target.closest('[data-skill-toggle]');
     if (skillToggle) {
+      // 开关**不**换选中项（与原来那个右栏启停按钮同一口径）：否则批量关几个技能时，
+      // 右栏一路乱跳、正文反复重读。
       toggleSkill(skillToggle.dataset.skillToggle);
       return;
     }
@@ -10188,16 +10248,6 @@ function bindEvents() {
     if (event.target.closest('[data-agent-remote-confirm]')) {
       confirmAgentEditRemoteFlow();
     }
-  });
-  // 左栏技能行是 div（不是原生 button）：Enter / Space 选中它的键盘语义显式补上（与看板卡片
-  // 的 `#taskColumns` keydown 委派同一口径）。
-  $('#adBody').addEventListener('keydown', (event) => {
-    if (!isActivationKey(event)) return;
-    const row = event.target.closest('[data-skill]');
-    if (!row) return;
-    if (event.target.closest('[data-skill-toggle]') || event.target.closest('[data-skill-delete]')) return;
-    if (event.preventDefault) event.preventDefault();
-    selectAgentSkill(row.dataset.skill);
   });
   $('#channelCancel').addEventListener('click', closeChannelModal);
   $('#channelModalClose').addEventListener('click', closeChannelModal);
