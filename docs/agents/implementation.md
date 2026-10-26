@@ -7,7 +7,8 @@
 ## 门禁只有一个入口
 
 ```sh
-scripts/check.sh            # 全量：pytest + ruff check + ruff format --check + mypy + pyright + node --test（glob）
+scripts/check.sh            # 全量：pytest + ruff check + ruff format --check + mypy + pyright
+                            #       + node --test（glob）+ vitest（app/frontend）
 scripts/check.sh --fast     # 开发循环：除全量 pytest 外的一切（秒级）
 scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（路径**相对 app/**）
 scripts/check.sh --studio   # Studio 窄档：--fast + 审批 HTTP 契约 + 前端静态守卫（不跑全量 pytest）
@@ -21,12 +22,22 @@ scripts/check.sh --studio   # Studio 窄档：--fast + 审批 HTTP 契约 + 前�
 - **本地全量只跑一次**：开发循环用 `--fast` / 指定文件；代码定稿时跑一次 `scripts/check.sh`
   并留存读数，PR 的 CI 再跑同一脚本复核。代码未再变化的 docs-only commit 不重跑本地全量；
   同一份代码不在本机重复跑全量。
-- **Node 用例族一律走 glob**（`app/tests/*.test.cjs`）：新增一个 DOM 用例文件不需要改任何清单。
-  曾经把 5 个文件名抄进票面门禁，同一轮新增的 3 套前端用例就不在门禁里了。
+- **前端用例族有两套，都走 glob**（ADR-0038 §四）：
+  - `app/tests/*.test.cjs`（`node --test`，389 个用例）守**旧页面** `/studio/`；
+  - `app/frontend/tests/*.test.js`（Vitest，jsdom + `@vue/test-utils`）守 **Vue 版** `/studio/v2/`。
+  新增一个用例文件不需要改任何清单。曾经把 5 个文件名抄进票面门禁，同一轮新增的 3 套前端用例
+  就不在门禁里了——两族都用 glob 是同一个教训。
+- **旧用例族不随迁移删除**：旧页面在迁完之前仍是可用入口，删掉用例等于让那个入口失去保护。
+  「不新开第二套前端测试框架」按**页面范围**读：旧页面不新开；v2 页面是 Vue 组件，用 Vue 的测试
+  工具是同一层的选择。
 - **不要在命令行再补 `-q`**：`app/pyproject.toml` 已有 `addopts = "-q"`，再补一次变成 `-qq`，
   pytest 会连结果行一起吞掉（「跑了五分钟却看不到 passed 数」就是这么来的）。
 - pyright 不在 repo 依赖里：脚本按 `PYRIGHT_BIN` → `node_modules/.bin/pyright` → PATH →
   `~/.pi-lens/tools/node_modules/pyright/index.js` 依次解析；CI 用 `pip install pyright`。
+- **前端依赖**在 `app/frontend/`（`package.json` + `package-lock.json`）。`scripts/check.sh` 只在缺
+  `node_modules` 时 `npm ci --include=dev`；`CHECK_FRONTEND_REINSTALL=1` 强制重装。
+  `NODE_ENV=production` 会让 npm 跳过 devDependencies（本机常见），因此脚本与 CI 都显式 unset / 加
+  `--include=dev`。**`package-lock.json` 必须入库**（构建可复现，且它是产物指纹的输入之一）。
 - **不要跑 `ruff format`**：它会整文件重排，把一次小改动变成不可 review 的大 diff。
   只跑 `ruff format --check`（脚本已含）。
 
@@ -95,6 +106,10 @@ scripts/red-evidence.sh <base-rev> app/tests/approval_badge_ui.test.cjs
 - Studio 的 DOM 行为由 `node --test app/tests/*.test.cjs` 覆盖，沿用既有 `vm` + fetch 替身 + DOM
   替身；**不新开第二套前端测试框架**。每个用例文件只放断言；共用装置放
   `app/tests/approval_dom_harness.cjs` 这类非 `*.test.cjs` 的辅助文件。
+- **Vue 版工作台**（`/studio/v2/`，ADR-0038）的组件与 store 由 Vitest 覆盖
+  （`app/frontend/tests/*.test.js`）。它与上面那条不冲突：那是**另一张页面**，用 Vue 的测试工具是
+  同一层的选择；旧页面的用例族不因此迁移或删除。测试里读的是**正本**词条表与渲染器
+  （`tests/helpers/studio-globals.js` 用间接 `eval` 复现 classic script 的全局语义），不复制一份。
 - 浏览器探针优先按 `data-od-id` 定位（左栏频道 `channel-<id>`、卡片 `task-card-<id>`…），不要用
   纯文本选择器：同一个名字可能同时出现在左栏与看板筛选 chip，会命中两个元素。
 - Agent 行为由 `app/tests/scripted.py` 的脚本化替身固定（回应 / 忽略 / 失败 / 延迟 / 声明沉默）；

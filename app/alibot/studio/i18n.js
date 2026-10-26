@@ -35,6 +35,10 @@ const I18N_CATALOGS = {
     /* ─── 应用外壳 ─────────────────────────────────────────────────── */
     'app.title': 'alibot · 协作工作区',
     'app.brandSub': 'LOCAL · 本机工作台',
+    // 「这个入口还没迁到 Vue 版工作台」：Vue 版是**分阶段迁移**的入口（ADR-0038 §五），
+    // 尚未迁过去的面在那一版里不渲染入口；仍保留可见的那些（新建频道 / 新建 Agent）用它作禁用说明，
+    // 于是「按下去没反应」不会发生——按钮是禁用的，理由写在 title 里。
+    'app.notMigrated': '这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开',
     'identity.human': '人类 · 本机',
     'identity.me': '我',
 
@@ -855,6 +859,7 @@ const I18N_CATALOGS = {
     /* ─── App shell ────────────────────────────────────────────────── */
     'app.title': 'alibot · collaboration workspace',
     'app.brandSub': 'LOCAL · this machine',
+    'app.notMigrated': 'This entry is not in the Vue workspace yet — use /studio/',
     'identity.human': 'Human · this machine',
     'identity.me': 'Me',
 

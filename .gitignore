@@ -22,3 +22,9 @@ __pycache__/
 # 按**进程 cwd** 落盘，于是在 app/ 下跑 pytest 就写进 app/logs/；根目录同理。
 /logs/
 /app/logs/
+
+
+# 前端（Vue 版工作台，ADR-0038）
+# `node_modules` 不入库；`package-lock.json` **必须**入库——构建可复现，且产物新鲜度指纹
+# （`app/frontend/build-info.js`）把它算进源码指纹里。
+node_modules/

@@ -1,0 +1,23 @@
+{
+  "name": "alibot-studio-vue",
+  "version": "0.1.0",
+  "private": true,
+  "description": "alibot 工作台的 Vue 3 前端（Vite 构建，产物入库到 app/alibot/studio/v2）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^25.0.1",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  }
+}

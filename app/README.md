@@ -829,7 +829,7 @@ Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Age
 ## 测试与检查
 
 ```sh
-./scripts/check.sh            # 全量门禁：pytest + ruff check + ruff format --check + mypy + pyright + node --test（glob）
+./scripts/check.sh            # 全量门禁：pytest + ruff + mypy + pyright + node --test（glob）+ vitest
 ./scripts/check.sh --fast     # 开发循环：除全量 pytest 外的一切（秒级）
 ./scripts/check.sh --fast tests/test_send_message.py   # 再补跑指定 pytest（路径相对 app/）
 ./scripts/check.sh --studio   # Studio 窄档：--fast + 审批 HTTP 契约 + 前端静态守卫（diff 只在 studio/** + *.test.cjs）
@@ -842,7 +842,10 @@ Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Age
 在 `app/pyproject.toml` / 仓库根 `mypy.ini` / 仓库根 `pyrightconfig.json`。**不要在命令行补 `-q`**
 （配置里已有 `addopts = "-q"`，补了会变 `-qq`，结果行会被吞掉）；**不要跑 `ruff format`**，只跑
 `--check`。Studio 的 DOM 用例族由 `node --test app/tests/*.test.cjs` **按 glob** 跑（新增文件自动
-纳入；每个文件覆盖什么写在各自的文件头注释里）。CI（`.github/workflows/check.yml`）跑的是同一个
+纳入；每个文件覆盖什么写在各自的文件头注释里）。**Vue 版工作台**（`/studio/v2/`，ADR-0038）的组件、
+store 与事件流由 `npx vitest run` 覆盖（`app/frontend/tests/*.test.js`，同样走 glob）；前端依赖在
+`app/frontend/`，`scripts/check.sh` 缺 `node_modules` 时自己 `npm ci --include=dev`。
+CI（`.github/workflows/check.yml`）跑的是同一个
 `scripts/check.sh`。**本地全量只跑一次**：开发循环用 `--fast` 或指定用例；代码定稿时跑一次全量
 并留存读数，PR 的 CI 再跑同一脚本复核；代码未再变化的 docs-only commit 不重跑本地全量。
 
@@ -937,6 +940,19 @@ toast 的状态点在深色档改用 `--bg`（深色档 toast 反相成浅片）
 业务状态的唯一正本是后端；前端不使用 `localStorage` 保存任何业务状态
 （唯一允许的本地记忆是「上次打开的频道 id」）。后端不可达时前端**禁止提交**并给出明确提示，
 不做本地消息队列、不静默吞消息，重连后自动恢复。
+
+**两条入口共用一套正本（ADR-0038）**：`/studio/`（旧页面，零构建）与 `/studio/v2/`（Vue 版，
+Vite 构建、产物入库到 `app/alibot/studio/v2/`）加载**同一批** `app.css` / `product-tokens.css` /
+设计系统 token，并共用同一份 `i18n.js`（词条表）与 `markdown.js`（正文渲染器）——因此上面这些
+token 名、尺寸与色位只有一处定义，重构不会顺手改掉任何一处。v2 页面是**分阶段迁移**的入口，
+只承诺已迁完的链路（外壳 / 左栏 / 频道头 / 消息流 / **附件渲染** / composer / `@` 补全 /
+全局事件流 / 标读 / 乐观发送），未迁的面仍由旧页面承载。未迁入口**不做假按钮**：纯导航类的
+（搜索 / 提醒 / 设置 / 名册 / 配置 / 预算 / 运行面板 / Agent 详情 / 附件上传 / 作为任务发送 /
+任务页签与任务 chip）**整块不渲染**；空工作台的出路（新建频道 / 新建 Agent）**可见但禁用**，
+理由写在 `title` 里（词条 `app.notMigrated`）。附件的**读**已迁（绑定与否决定是不是下载链接）、
+**写**（上传）未迁。
+产物新鲜度是机械判据：`app/frontend/build-info.js` 写源码指纹，`app/frontend/tests/build-guard.test.js`
+复算比对——改了 `app/frontend/src` 没重新 `npm run build` 并提交产物，门禁就红。
 
 **Agent 详情 skills 页签的固定高度工作区**：长技能列表与长 `SKILL.md` 会把页面撑高，右栏详情
 随之跑出视口，因此桌面档（`≥901px`）下 skills 页签改成**固定高度**：顶部导入区留在原处，

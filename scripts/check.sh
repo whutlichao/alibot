@@ -15,10 +15,15 @@
 #   scripts/check.sh --studio             # Studio 窄档：--fast + 审批 HTTP 契约 + 静态守卫
 #                                         # （仅限 diff 只落在 app/alibot/studio/** + *.test.cjs；CI 仍跑全量）
 #
+# 前端有**两套**用例，都在本脚本里跑，都走 glob：
+#   - `node --test app/tests/*.test.cjs`      旧页面（classic script + vm 替身）
+#   - `npx vitest run`（app/frontend）        Vue 版工作台（组件 + store + 事件流）
+#
 # 环境变量：
 #   CHECK_PYTHON  覆盖解释器（默认 `仓库根/.venv/bin/python`，没有则 `python3`——CI 走这条）
 #   PYRIGHT_BIN   覆盖 pyright 入口（默认依次尝试 `node_modules/.bin/pyright`、PATH、
 #                 `~/.pi-lens/tools/node_modules/pyright/index.js`）
+#   CHECK_FRONTEND_REINSTALL=1  强制 `npm ci` 重装前端依赖（默认只在缺 node_modules 时装）
 #
 # 退出码：0 = 全绿；非 0 = 第一个失败的门禁（与命令本身的退出码一致）。
 
@@ -123,5 +128,22 @@ step "pyright"
 # ─── 前端（Studio DOM 用例族，glob）──
 step "node --test（Studio DOM 用例族：glob，新增文件自动纳入）"
 node --test app/tests/*.test.cjs
+
+# ─── 前端（Vue 版工作台：Vitest）──
+# 用例在 `app/frontend/tests/*.test.js`，由 `app/frontend/vite.config.js` 的 `test.include`
+# 收集（同样是 glob：新增文件自动纳入，不需要改清单）。
+#
+# 为什么这里要 `npm ci` 而不是假设 `node_modules` 存在：本仓的 CI 是一个干净 runner，
+# 而本地开发常常只装过一次。`npm ci` 严格按 `package-lock.json` 装（可复现）；
+# 已经装好时它也会重装一遍，但这是几十秒的事，比「本地绿、CI 红」便宜得多。
+# `NODE_ENV=production` 会让 npm 跳过 devDependencies（本机常见），因此显式 unset。
+step "Vitest（Vue 版工作台：app/frontend）"
+(
+  cd app/frontend
+  if [[ ! -d node_modules ]] || [[ "${CHECK_FRONTEND_REINSTALL:-0}" == "1" ]]; then
+    env -u NODE_ENV npm ci --include=dev --no-audit --no-fund
+  fi
+  env -u NODE_ENV npx vitest run
+)
 
 printf '\n\033[1m门禁全绿\033[0m\n'
