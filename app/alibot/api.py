@@ -35,6 +35,8 @@
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
 - ``GET  /api/agents/{id}/global-mcp-servers`` 全局 mcp.json 的只读条目 + 运行期读数
+- ``GET  /api/agents/{id}/global-mcp-file``    家目录 mcp.json 的原文 + 条目计数（不存在 ⇒ exists=false + 空串）
+- ``PUT  /api/agents/{id}/global-mcp-file``    整份原文写盘（JSON / 顶层形状 / 每条归一化三道校验全过才写，原文逐字）
 - ``POST /api/agents/{id}/global-mcp-servers/{name}/consent`` 全局远端 MCP 的数据面确认
 - ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
 - ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）

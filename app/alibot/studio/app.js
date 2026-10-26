@@ -206,7 +206,7 @@ const state = {
   // 危险操作（本票）：删除走**确认弹窗**——`memberId` 是弹窗里等着被删的那个成员，
   // `busy` 在请求进行中禁用按钮。它是呈现状态，不是业务正本（正本在后端软删除）。
   agentDelete: emptyAgentDeleteState(),
-  // Agent 详情里的**全局 MCP 只读小节**（#236）：列表是 `GET
+  // 全局 MCP **条目视图**（#236；#280 起它在 mcp 页签的下块里）：列表是 `GET
   // /api/agents/{id}/global-mcp-servers` 的镜像；`error` 只用于把读取失败讲人话。
   // 它不是业务正本（真值在成员家目录的 mcp.json + 确认行），切换成员时整体作废。
   globalMcpServers: [],
@@ -5241,7 +5241,8 @@ async function refreshAgentDetail(memberId) {
 }
 
 /** 读**这一个**成员的全局 `mcp.json` 条目（只读列表 + 运行期读数）。
-    列表失败只影响这一小节：详情其余读数照常可用；未知响应（测试替身默认 `{}`）按空列表处理。 */
+    列表失败只影响这一块（mcp 页签下块的条目视图）：详情其余读数照常可用；未知响应
+    （测试替身默认 `{}`）按空列表处理。 */
 async function loadGlobalMcpServers(memberId) {
   try {
     const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-servers');
@@ -5285,8 +5286,8 @@ function renderAgentDetail() {
   $('#adName').textContent = agent.display_name;
   syncAgentSendButton();
   if (agentDraftDirty() || capabilityDraftDirty()) {
-    // 草稿脏时不重铺整页，但**只读**与**只吃后端读数**的那几块仍要跟着后端读数走：
-    // 全局 MCP 的确认动作正是「点完要立刻变成已确认」，而它不过草稿。
+    // 草稿脏时不重铺整页，但**只读**的全局 MCP 条目视图仍要跟着后端读数走：
+    // 确认动作正是「点完要立刻变成已确认」，而它不过草稿。
     refreshGlobalMcpSection();
     // 能力段里有未提交输入时不碰它（后台重绘不该换掉持焦控件）；显式动作自己会重铺。
     if (!capabilityDraftDirty()) refreshAgentCapabilitiesPanels();
@@ -5298,7 +5299,7 @@ function renderAgentDetail() {
   renderAgentSaveBar();
 }
 
-/** 就地换掉「全局 MCP」小节（草稿脏时 `renderAgentDetail()` 不重铺面板，但这一节是只读的，
+/** 就地换掉「全局 MCP」条目视图（草稿脏时 `renderAgentDetail()` 不重铺面板，但这一节是只读的，
     它的读数变了就得跟着变）。找不到旧节点（还没铺过）时什么都不做。
 
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
@@ -5307,19 +5308,35 @@ function refreshGlobalMcpSection() {
   replaceSectionNode('agent-detail-section-global-mcp', globalMcpSection());
 }
 
-/** 把某个区块整段换成新节点（标识挂在区块自己的第一个子标题上）。找不到旧节点时什么都不做。
+/** 在某个页签面板的子树里找**自身**带这个 `data-od-id` 的节点（前序：浅的先于深的）。 */
+function findNodeByOdId(root, odId) {
+  if (!root) return null;
+  if (root.getAttribute && root.getAttribute('data-od-id') === odId) return root;
+  const children = Array.prototype.slice.call(root.children || []);
+  for (let index = 0; index < children.length; index += 1) {
+    const found = findNodeByOdId(children[index], odId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 把一个区块换成新节点：在 `#adPanelMcp` 的子树里找到**自身**命中 odId 的那个节点，再用它的
+    `parentNode` 的 children 原位替换（只影响兄弟位次，不动包围它的块）。找不到时什么都不做。
+
+    判据必须是「自身命中」：命中落在后代时换掉**直接子块**会连它包围的整块一起丢掉——
+    mcp 页签的条目视图长在下块（家目录 `mcp.json` 那一块）里，按后代匹配会把整块文本域换掉。
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
     与测试替身都只保证前者。 */
 function replaceSectionNode(odId, replacement) {
   const panel = agentTabPanel('mcp');
-  if (!panel || !panel.children) return;
-  const hasOdId = (node) => node.getAttribute && node.getAttribute('data-od-id') === odId;
-  const nodes = Array.prototype.slice.call(panel.children);
-  const index = nodes.findIndex((node) => hasOdId(node)
-    || (node.querySelectorAll && Array.prototype.some.call(node.querySelectorAll('[data-od-id]'), hasOdId)));
+  const target = findNodeByOdId(panel, odId);
+  const parent = target && target.parentNode;
+  if (!parent || !parent.children) return;
+  const nodes = Array.prototype.slice.call(parent.children);
+  const index = nodes.indexOf(target);
   if (index < 0) return;
   nodes[index] = replacement;
-  replaceChildren(panel, nodes);
+  replaceChildren(parent, nodes);
 }
 
 /** 详情页的分区标题：文案走词条，`data-od-id` 是 `alibot-design-system/SKILL.md` 对
@@ -5543,14 +5560,15 @@ function skillDetailBody(skill) {
   return box;
 }
 
-/** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 的**原文文本域**。
+/** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 这一份数据。
 
     两块各自一行数据来源标注（D7）：上块写明「库行 `mcp_server`（`scope_kind='agent'`），装配
     正本」；下块写明「家目录文件，**同名时库行胜出**」——人看得出同名时谁赢，而装配行为一字不改。
 
-    下块的文本域接 `GET/PUT /api/agents/{id}/global-mcp-file` 的**整份原文**：打开页签时显示文件
-    当前原文，保存成功后按后端读数刷新。它是**纯文本域**，不做 JSON 格式化（N3 第三格：重排就是
-    一次隐式格式化）。原「全局 MCP」只读小节（条目视图）并在上块里，不另成一段。 */
+    下块是**同一份文件的两种视图**（D1）：文本域编辑原文（接 `GET/PUT
+    /api/agents/{id}/global-mcp-file` 的**整份原文**，打开页签时显示文件当前原文，保存成功后按
+    后端读数刷新），紧随其后的「全局 MCP」条目视图列出该文件里真实存在的条目与运行期读数。文本域是
+    **纯文本域**，不做 JSON 格式化（N3 第三格：重排就是一次隐式格式化）。 */
 function agentMcpTabNodes(agent) {
   const memberId = (agent && agent.id) || state.activeAgentId || '';
   const view = capabilitiesView(memberId);
@@ -5574,14 +5592,13 @@ function agentMcpTabNodes(agent) {
     rowsBox.appendChild(list);
   }
   rowsBox.appendChild(mcpForm(view));
-  // 原「全局 MCP」条目视图：与库行不是同一份数据（那是家目录文件里的条目）。
-  rowsBox.appendChild(globalMcpSection());
 
-  // 下块：家目录 `mcp.json` 的原文文本域。
+  // 下块：家目录 `mcp.json` 的原文文本域 + 该文件的条目视图（原「全局 MCP」小节，D1 并入下块）。
   const fileBox = el('section', 'd-sec');
   fileBox.appendChild(sectionTitle('agentDetail.mcpFileTitle', 'agent-detail-section-mcp-file'));
   fileBox.appendChild(resourceNote('agentDetail.mcpFileSource', 'agent-detail-mcp-file-source', 'is-faint'));
   fileBox.appendChild(mcpFileNode(view));
+  fileBox.appendChild(globalMcpSection());
 
   return [rowsBox, fileBox];
 }
@@ -5644,7 +5661,7 @@ async function loadAgentMcpFile(memberId) {
     view.mcpFileExists = Boolean(payload && payload.exists);
     view.mcpFileServers = Number((payload && payload.servers) || 0);
     // 原文逐字铺进文本域：不做 JSON 格式化（那会静默重排人写的键序与缩进）。
-    view.mcpFileDraft = typeof (payload && payload.text) === 'string' ? payload.text : '';
+    setMcpFileText(view, typeof (payload && payload.text) === 'string' ? payload.text : '');
   } catch (err) {
     if (state.activeAgentId !== memberId) return;
     view.mcpFileError = t('agentDetail.mcpFileLoadFailed', { reason: err.message });
@@ -5652,6 +5669,13 @@ async function loadAgentMcpFile(memberId) {
   if (state.activeAgentId !== memberId) return;
   view.mcpFileLoading = false;
   paintAgentCapabilities();
+}
+
+/** 把后端读回来的原文写进镜像：`draft`（文本域显示的那一份）与 `base`（后端那一份）同时落，
+    于是「刚读完 / 刚保存成功」时 `mcpFileDraft === mcpFileBase`，文本域不算脏。 */
+function setMcpFileText(view, text) {
+  view.mcpFileDraft = text;
+  view.mcpFileBase = text;
 }
 
 /** 保存下块的原文：一次 `PUT`，body 是**整份原文**（不拆字段、不归一化）。
@@ -5674,7 +5698,7 @@ async function saveAgentMcpFile() {
     if (state.activeAgentId !== memberId) return;
     view.mcpFileExists = Boolean(payload && payload.exists);
     view.mcpFileServers = Number((payload && payload.servers) || 0);
-    if (typeof (payload && payload.text) === 'string') view.mcpFileDraft = payload.text;
+    if (typeof (payload && payload.text) === 'string') setMcpFileText(view, payload.text);
   } catch (err) {
     if (state.activeAgentId !== memberId) return;
     view.mcpFileError = t('agentDetail.mcpFileSaveFailed', { reason: err.message });
@@ -5956,11 +5980,17 @@ function agentPromptSection(agent) {
   return section;
 }
 
-/** 全局 MCP 小节（#236）：**只读**展示成员家目录 `mcp.json` 里的真实条目。
-    全局层由人维护，因此这里没有编辑 / 启停 / 删除；只对远端未确认条目给一个确认动作。 */
+/** 全局 MCP 条目视图（#236 / D1 并入 mcp 页签**下块**）：**只读**展示成员家目录 `mcp.json`
+    里的真实条目——它与下块的文本域是同一份数据的两种视图，因此挂在同一个块里而不是单独成段。
+    条目视图自身没有编辑 / 启停 / 删除（要改原文走上方的文本域）；只对远端未确认条目给一个确认动作。
+
+    标识挂在这个 `<section>` **自己**身上（而不是像别处那样挂在标题上）：草稿脏时的
+    `refreshGlobalMcpSection()` 要原位换掉整节，而标识不在根节点上就只能靠「后代命中」找到它
+    ——那会把包围它的整块（下块）一起换掉。 */
 function globalMcpSection() {
   const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentDetail.globalMcpTitle', 'agent-detail-section-global-mcp'));
+  section.setAttribute('data-od-id', 'agent-detail-section-global-mcp');
+  section.appendChild(sectionTitle('agentDetail.globalMcpTitle', 'agent-detail-section-global-mcp-title'));
   if (state.globalMcpError) {
     section.appendChild(el('div', 'hint', state.globalMcpError));
   } else if (!state.globalMcpServers.length) {
@@ -7336,8 +7366,9 @@ function renderChannelConfigModalContent() {
   nodes.push(actions);
 
   // ⑧ 工作区与数据面（#156 的只读读数段）：项目根 / 后端 / Docker 状态。
-  // MCP 与技能**不在**这里（#273）：它们是 Agent 级能力，归口在 Agent 详情的能力段；
-  // 频道级旧行仍留在库里（弃用不删），但配置面不展示、也不做「已弃用」提示（ADR-0031 §二）。
+  // MCP 与技能**不在**这里（#273）：它们是 Agent 级能力，归口在 Agent 详情页（MCP 在 mcp 页签、
+  // 技能在 skills 页签）；频道级旧行仍留在库里（弃用不删），但配置面不展示、也不做「已弃用」提示
+  // （ADR-0031 §二）。
   nodes.push(workspaceManagementSection(view));
 
   replaceChildren(body, nodes);
@@ -7345,7 +7376,8 @@ function renderChannelConfigModalContent() {
 
 /* ─── 能力配置（#273 / ADR-0031 §二 #270 修订）──────────────────────────────
 
-   MCP 声明与技能**只有一个归口**：Agent 详情的能力段（同屏两个 kind，作用域恒为该成员
+   MCP 声明与技能**只有一个归口**：Agent 详情页（`#280` 起拆成 skills / mcp 两个页签，
+   MCP 在 mcp 页签、技能在 skills 页签；两处作用域恒为该成员
    `scope_kind=agent&scope_id=<member>`，没有 scope 选择器）。
 
    ① **频道配置只保留工作区与数据面的只读读数**（项目根 / 后端 / Docker 状态，均来自
@@ -7386,9 +7418,12 @@ function emptyCapabilitiesView(memberId) {
     mcpConsentTimes: {},
     // mcp 页签**下块**的家目录 `mcp.json` 原文镜像（#284 / D7）：`exists` / `servers` / `text`
     // 是后端读数，`error` 是读 / 写失败时那句可读原因。真值永远在那个文件里，这里只是镜像。
+    // `mcpFileBase` 是**后端读回来的那一份原文**（读路径与保存成功都写它），与 `mcpFileDraft`
+    // 不一致 ⇒ 文本域有未提交的改动（`capabilityDraftDirty()` 的判据之一）。
     mcpFileLoading: Boolean(memberId),
     mcpFileError: '',
     mcpFileDraft: '',
+    mcpFileBase: '',
     mcpFileSaving: false,
     mcpFileExists: false,
     mcpFileServers: 0,
@@ -7429,11 +7464,17 @@ function resetAgentCapabilities(memberId) {
   state.agentCapabilities[memberId] = emptyCapabilitiesView(memberId);
 }
 
-/** 能力段的表单里有没有**未提交**的输入：有就不整段重铺（那会换掉持焦控件）。 */
+/** 能力段的表单里有没有**未提交**的输入：有就不整段重铺（那会换掉持焦控件）。
+
+    两处输入面都算：MCP 库行表单（`mcpEditingId` / `mcpDraft` 五个字段）与 mcp 页签下块的
+    `mcp.json` 文本域（`mcpFileDraft` 与后端读数 `mcpFileBase` 不一致）。文本域算进来是必须的：
+    `renderAgentDetail()` 的非脏分支会整块重铺 mcp 页签，换掉节点就是丢焦点与光标（输入委派只
+    保住了文字，没保住光标）。 */
 function capabilityDraftDirty() {
   const view = activeCapabilitiesView();
   if (!view) return false;
   if (view.mcpEditingId) return true;
+  if (view.mcpFileDraft !== view.mcpFileBase) return true;
   const draft = view.mcpDraft;
   return ['name', 'command', 'args', 'url', 'envNames'].some((key) =>
     String(draft[key] || '').trim(),
@@ -8034,7 +8075,7 @@ function mcpForm(view) {
 
 /* ── 能力段的读路径（两个 kind 各在自己的页签里，作用域恒为该成员） ────────── */
 
-/** 重铺能力相关的那两个页签：读路径与**显式动作**（编辑 / 安装 / 复制 / 启停 / 删除）都走它。
+/** 重铺能力相关的那两个页签：读路径与**显式动作**（编辑 / 安装 / 启停 / 删除）都走它。
 
     轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰它们（见那里的注释）——
     后台重绘不该把持焦控件换成新节点。 */

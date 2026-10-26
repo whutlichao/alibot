@@ -470,8 +470,9 @@ const I18N_CATALOGS = {
     'agentDetail.kvPrompt': '系统提示',
     // 联网档（#202 / 2026-10-21 修订）：读数缺失（`null`）= 没有 Agent 级覆盖 = 跟随频道，
     // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在详情页里替人推断私聊的生效档。
-    // 全局 MCP（#236 / ADR-0031 D8）：成员家目录 mcp.json 是**只读素材层**。这里只展示真实条目
-    // 与运行期读数，只对远端未确认条目给一个确认动作；不渲染编辑 / 启停 / 删除，也不写回文件。
+    // 全局 MCP（#236 / ADR-0031 D8）：条目视图**只读**（它住在 mcp 页签的下块里，与旁边的
+    // mcp.json 文本域是同一份数据的两种视图）。条目视图自身不渲染编辑 / 启停 / 删除——要改原文
+    // 走上方的文本域；它只对远端未确认条目给一个确认动作。
     'agentDetail.globalMcpTitle': '全局 MCP（只读）',
     'agentDetail.globalMcpEmpty': '“全局mcp.json”里没有声明MCP服务',
     'agentDetail.globalMcpRemote': '远端（数据会离开本机）',
@@ -1316,9 +1317,10 @@ const I18N_CATALOGS = {
     // Web access (#202 / 2026-10-21 revision): a missing value (`null`) means there is no
     // agent-level override, i.e. "follow channel" — a reading, not an empty field; an override
     // shows its level. The detail page never derives the level that is live in a DM.
-    // Global MCP (#236 / ADR-0031 D8): the member's home mcp.json is a read-only source layer.
-    // Only real entries and runtime readings are shown; only an unacknowledged remote entry gets
-    // an acknowledge action. No edit / enable / delete, and nothing is written back to the file.
+    // Global MCP (#236 / ADR-0031 D8): the entry view is read-only (it lives in the lower block of
+    // the mcp tab, next to the mcp.json textarea -- two views of the same data). The entry view itself
+    // renders no edit / enable / delete; changing the source text goes through the textarea above.
+    // Only an unacknowledged remote entry gets an acknowledge action.
     'agentDetail.globalMcpTitle': 'Global MCP (read-only)',
     'agentDetail.globalMcpEmpty': 'No MCP servers are declared in the global mcp.json.',
     'agentDetail.globalMcpRemote': 'Remote (data leaves this machine)',

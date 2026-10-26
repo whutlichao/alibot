@@ -272,7 +272,9 @@ git diff f5cc826 -- app/tests/test_skill_copy.py app/tests/test_skill_import.py 
 3. **`skill.detail*` 的 13 个键是新增**（两份 catalog 同键同参数位）；`agentDetail.skillsDetailPlaceholder`
    是本票唯一删除的键。
 4. **`app/README.md` 未改**：本票边界不含它（D9 末段的文档同步面仍挂在骨架票/后续票）。它的
-   「Agent 详情、配置编辑与软删除」一节仍写「所有区块在同一页纵向铺开……没有页签」——那是 #280 已登记的
-   既存偏差，不是本票新引入的。
+   「Agent 详情、配置编辑与软删除」一节当时仍写「所有区块在同一页纵向铺开……没有页签」——那是 #280 已登记的
+   既存偏差，不是本票新引入的。**（review-fix 已补）** 该节的三分页签口径与
+   `GET /api/skills/{id}/markdown` 端点行由 `agent-detail-tabs-review-fix` 补上，见
+   `app/specs/agent-detail-tabs-review-fix-acceptance.md` 的 F1。
 5. **键鼠可达性**：左栏技能行是 `div role="button" tabindex="0"`（与看板卡片同形），Enter / Space 由
    `#adBody` 的 `keydown` 委派补上；动作按钮上的 Enter 不换选中项（有用例咬这条）。

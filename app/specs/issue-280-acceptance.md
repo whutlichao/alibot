@@ -121,7 +121,7 @@
 | `capability-copy` / `copyMcp` / `copySkill` / `capability-copy-dialog` | 各自页签内（#281 的范围是撤除） | `agent_capabilities_ui.test.cjs` 复制用例仍绿 |
 | `agent-capabilities-mcp` | `#adPanelMcp` | 用例「mcp 页签…」序列断言首位 |
 | `mcp-list` / `capability-mcp-row` / `mcp-form` / `mcp-*` | `#adPanelMcp` | 同上 |
-| `agent-detail-section-global-mcp` | `#adPanelMcp`（**不再单独成段**，按 D1 并入下块） | 同上序列断言第 2 位 |
+| `agent-detail-section-global-mcp` | `#adPanelMcp` → 下块（`agent-detail-section-mcp-file` 那一块）**之内**，按 D1 并入下块、不再单独成段；该 od-id 按 review-fix 从「区块首个标题」改挂到 `<section>` **自身**（标题改 `agent-detail-section-global-mcp-title`） | 见 `agent-detail-tabs-review-fix-acceptance.md` 的 F2 / F3 |
 | `agent-skill-detail`（新） | `#adPanelSkills` 右栏占位 | 占位文案 = `agentDetail.skillsDetailPlaceholder` |
 | `agent-detail-section-mcp-file`（新） | `#adPanelMcp` 下块 | 占位文案 = `agentDetail.mcpFilePlaceholder` |
 
@@ -267,7 +267,8 @@ scripts/red-evidence.sh 0a359b8 app/tests/agent_capabilities_ui.test.cjs
    顶部**没有**下拉框，D1 的「导入 → 左栏 / 右栏」顺序由 #282 兑现。
 3. **mcp 页签下块是占位，不是文本域**：`mcp.json` 的读写端点与文本域是 #284 的范围；本票只留
    `agent-detail-section-mcp-file` 节点 + 一行占位说明，并按 D1 把原「全局 MCP」只读小节并入 mcp 页签
-   （该小节不再单独成段，`agent-detail-section-global-mcp` 这个既有 od-id 保住）。
+   （该小节不再单独成段，`agent-detail-section-global-mcp` 这个既有 od-id 保住；review-fix 把它落进下块，
+   并把 od-id 从标题改挂到区块自身——见 `agent-detail-tabs-review-fix-acceptance.md` F2 / F3）。
 4. **AC4 的「用两份不同的既有值各验一次」**：本票的验证面是**前端载荷**（后端零改动、`PATCH` 部分更新
    语义原样），因此两处等价覆盖是「非默认既有值 60 / 0.6 / 45」与「默认 null / null / null」两组读数，
    都断言三键不出现。若要的是「真的落一次 PATCH 再读库」的端到端双值验证，那需要后端写路径用例
