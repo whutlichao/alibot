@@ -870,8 +870,11 @@
   </div>
 </div>
 
-<!-- 词条表先于 app.js：前者提供 `t()` / `setLocale()` / `applyStaticI18n()`，后者只消费。 -->
+<!-- 词条表先于 app.js：前者提供 `t()` / `setLocale()` / `applyStaticI18n()`，后者只消费。
+     markdown.js 也先于 app.js：它是纯函数模块（输入正文、输出节点），不碰 `state` / `t()`，
+     由 app.js 的 `messageText()` 调用（ADR-0037）。 -->
 <script src="./i18n.js"></script>
+<script src="./markdown.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

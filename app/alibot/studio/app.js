@@ -493,21 +493,20 @@ function mentionSpans(message) {
     .sort((a, b) => a.start - b.start);
 }
 
+/** 消息正文 → `.msg-text` 节点。
+
+    正文里的 Markdown 记号在这里被解释成结构（ADR-0037）。渲染本身交给 `markdown.js` 的
+    `renderMarkdown()`——它是纯函数模块，不碰 `state`、不调 `t()`、不发请求。
+
+    **提及仍由后端判定**：`mention_snapshot` 的区间随正文一起落库，渲染器只按区间包标签。
+    区间是 **UTF-16** 下标（#291 之后的口径），因此可以直接在 JS 字符串上换算，前端不重算。
+
+    `kind='system'` 的事件消息**不走这里**（它们是记录不是说话，见 `messageNode()` 的 system 分支）；
+    搜索命中行也不走这里（高亮区间基于原始正文，正文成树区间就落不到字符上）。 */
 function messageText(message) {
   const body = String(message.body == null ? '' : message.body);
-  const spans = mentionSpans(message);
   const container = el('div', 'msg-text');
-  let cursor = 0;
-  spans.forEach((span) => {
-    // 快照与正文不一致时（理论上不可能，后端同时写入）宁可退化为纯文本，也不切错字符。
-    if (span.start < cursor || span.end > body.length) return;
-    if (span.start > cursor) container.appendChild(document.createTextNode(body.slice(cursor, span.start)));
-    const mention = el('span', 'mention', body.slice(span.start, span.end));
-    mention.dataset.member = span.member_id;
-    container.appendChild(mention);
-    cursor = span.end;
-  });
-  if (cursor < body.length) container.appendChild(document.createTextNode(body.slice(cursor)));
+  container.appendChild(renderMarkdown(body, mentionSpans(message)));
   return container;
 }
 
