@@ -3,6 +3,7 @@
 **票型**：review-fix（不是新票；处置对象 = `agent-detail-tabs-integration` 上那一次双轴 `code-review`
 的 findings）｜**门禁**：G-impl（全量 `scripts/check.sh`；合并由 coordinator 执行）
 **base**：`25da05b`（= `agent-detail-tabs-integration` tip）｜**branch**：`agent-detail-tabs-review-fix`
+**commit**：`52bd278`（代码 + 测试 + 文档一体；只动注释的两次修订也在这一个提交里）
 
 **上游正本**：
 
@@ -305,10 +306,11 @@ cd app && ../.venv/bin/python -m pytest tests/test_skills.py tests/test_skill_co
 
 ### 11.3 全量 `scripts/check.sh`
 
-后台跑（`nohup`），跑完读 `/tmp/check_reviewfix.log`：
+后台跑（`nohup`），跑完读日志；在**已提交的树**上跑过两次（第二次是定稿树的权威读数，
+第一次跑完后只动过两条注释 / 文档句，两次读数一致）：
 
 ```text
-== pytest（全量）      1232 passed, 11 skipped in 689.04s (0:11:29)
+== pytest（全量）      1232 passed, 11 skipped (0:11:22 / 0:11:29)
 == ruff check          All checks passed!
 == ruff format --check 351 files already formatted
 == mypy（仓库根）      Success: no issues found in 130 source files
