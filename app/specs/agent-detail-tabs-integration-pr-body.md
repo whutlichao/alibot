@@ -83,13 +83,36 @@ Agent 详情从「一页纵向铺开的区块列」变成三个页签，且每�
 
 ## Merge Danger
 
-**Door:** two-way
+**Door:** one-way（**移除功能**）
 
-五张票都是呈现层重排 + 两条既有资源族内的子资源端点；后端装配、优先级、消息面、预算与唤醒纪律一字未动，`SCHEMA_VERSION` 与迁移链未碰（两条新端点都不需要新列）。回退只需 revert 这一个 PR：没有数据形状变化，没有一次性动作，唯一「人往里存东西」的新面（`mcp.json` 文本域）写的是人本来就有的文件，撤掉写端点即回到上一轮状态。
+判据问的不是「回退难不难」，而是这个 PR 对**用户可观察能力**做了什么。除了「呈现层重排 + 两条既有资源族内的子资源端点」之外，本 PR 还从界面上撤掉了四类**用户原本能做的事**，因此是单向门（`git diff 0a359b8 origin/agent-detail-tabs-integration -- app/alibot/studio/app.js` 可逐条指认）：
+
+| # | 被撤掉的用户能力 | 后端是否保留 |
+| --- | --- | --- |
+| 1 | **上下文三项的界面编辑**：上下文条数 / 压缩阈值 / 迭代上限三格控件与词条（`agent.contextWindow` / `agent.contextTrigger` / `agent.maxIters` / `agent.runtimeDefaultHint`）一并删除 | **保留**：`PATCH /api/agents/{id}` 的三个可选字段（`context_window_messages` / `context_trigger_ratio` / `react_max_iters`）、`agent_config` 三列与默认值 40 / 0.7 / 30 原样，脚本仍可写 ⇒ 「界面彻底没了，API 还在」 |
+| 2 | **技能「从本机目录安装」（手填绝对路径）**：文本框、按钮及其专有词条（`skill.installTitle` / `installDir` / `installDirPlaceholder` / `installDirButton` / `installDirHint` / `installing` / `sourceRequired`）一并删除 | **保留**：`POST /api/skills` 的 directory 分支（`source_path`）；docstring 标注「当前 Studio 无入口，保留为脚本 / API 用法」 |
+| 3 | **技能「上传 zip 安装」**：文件框与 `skill.installZip` / `installZipHint` 词条删除 | **保留**：`POST /api/skills` 的 zip 分支；docstring 同上标注 |
+| 4 | **「复制到其他成员」**：技能行与 MCP 行的复制入口、整个 `capabilityCopyNode()` 弹层（两 kind 共用一份实现）与 12 个 `agentCapabilities.copy*` 词条（两份 catalog 共 24 行）删除 | **保留**：`POST /api/skills/{skill_id}/copy`（`api.py:1288`）与 `app/tests/test_skill_copy.py` 原样绿；MCP 侧的复制本来就只走 `POST /api/mcp-servers`（无专用端点） |
+
+第 1 类尤其是能力上的净减少：三项从界面上**完全消失**，只是库内既有值不会被一次保存清空（载荷 7 字段，三键不提交——这是本次刻意守住的第一格）。第 2–4 类是「界面没了、API 还在」的可回退收缩：后端分支与端点都在，撤掉界面不是不可逆的删除。
+
+**Gate：** 因含单向门触发项，**本 PR 保持开放，由人类手动合并**（不设自动合并路径）。人类读完 Evidence 与上表后手动执行：
+
+```sh
+# 合并（merge commit，保留五票的 --no-ff 结构）
+gh pr merge 286 --merge
+
+# 合并后同步本地 main（主工作副本 /Users/apple/orca/alibot）
+cd /Users/apple/orca/alibot
+unset GIT_CONFIG_COUNT GIT_CONFIG_VALUE_0 GIT_CONFIG_VALUE_1
+git switch main && git pull --ff-only origin main
+```
 
 **Blast Radius:** wide
 
-触碰 `app/alibot/studio/**` 呈现层、`app/alibot/{api,service,mcp,skills,workspace,i18n}.py` 资源面与两个测试族，影响面不可圈定，因此按 `scripts/check.sh` 全量跑（含 344 条 Studio DOM 用例 / 1232 条 pytest / ruff / mypy / pyright）。已知的可观察变化：详情页多了三个页签与两处新面；上下文三项不再能在界面上改（库内值保留）；技能与 MCP 行的「复制到其他成员」入口消失（端点仍在）；安装面只剩「从本机导入」下拉框（zip 与 directory 两个后端分支仍在）。`workspace.py` 的只读守卫被拆成内核 + 两道公开门（只读 / 写目标），只读路径行为与签名不变，`test_global_rules.py` 的守卫用例原样绿。
+触碰 `app/alibot/studio/**` 呈现层、`app/alibot/{api,service,mcp,skills,workspace,i18n}.py` 资源面与两个测试族，影响面不可圈定，因此按 `scripts/check.sh` 全量跑（含 344 条 Studio DOM 用例 / 1232 条 pytest / ruff / mypy / pyright）。已知的可观察变化：详情页多了三个页签与两处新面；上下文三项不再能在界面上改（库内值保留）；技能与 MCP 行的「复制到其他成员」入口消失（端点仍在）；安装面只剩「从本机导入」下拉框（zip 与 directory 两个后端分支仍在）。
+
+**既有模块结构的变化（`workspace.py`）**：只读守卫被拆成「判定内核 + 两道公开门」——私有 `_resolve_path()` 只判逃逸（根外 symlink 祖先 / 根外目标），`_resolve_read_path()` 在它上面加「存在吗」（行为与原因串 `escape` / `absent` 一字不变），新增的公开 `resolve_global_write_path()` 复用同一个内核、只不判存在性（写路径要区分「父目录不存在」与「目标文件不存在」）。**只读路径的行为与签名不变**，既有调用点（技能装配 / `copy_skill()` / `load_global_mcp_declarations` / `migrate.py`）零改动，`app/tests/test_global_rules.py` 的守卫用例**原样绿**。它不是单向门，但写面从此多了一个公开入口，一并记在这里。
 
 Closes #280
 Closes #281
