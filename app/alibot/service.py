@@ -38,6 +38,7 @@ from .db import (
     DomainError,
     NotFound,
     SearchFacet,
+    clean_message_body,
 )
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
@@ -1160,9 +1161,13 @@ class WorkspaceService:
 
         顺序是契约的一部分：``append_message`` 抛错时后面两步都不执行（落库失败不唤醒）。
         提及解析结果作为**快照**随消息一起落库，唤醒与前端高亮都消费这一份。
+
+        解析用的是 ``clean_message_body()`` 清洗过的正文，**不是**入参原文：快照的位置是相对正文的
+        坐标，而 ``append_message`` 落库前会 strip。两边不是同一个串时，前导空白会让每个提及整体
+        偏前（#291）。清洗与落库共用同一个函数，因此「解析的串」与「落库的串」在构造上是同一个。
         """
         members = self._db.list_members()
-        snapshot = parse_mentions(body, members)
+        snapshot = parse_mentions(clean_message_body(body), members)
         message = self._db.append_message(
             target_id=target_id,
             body=body,

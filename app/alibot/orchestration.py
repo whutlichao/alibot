@@ -56,7 +56,7 @@ from .agent_seam import (
     provider_of,
     read_api_key,
 )
-from .db import OWNER_ID, TASK_WORK_ROUNDS_PER_EPOCH, Database, DomainError, utc_now
+from .db import OWNER_ID, TASK_WORK_ROUNDS_PER_EPOCH, Database, DomainError, clean_message_body, utc_now
 from .events import EventBus, agent_event
 from .i18n import Locale, join_list, locale_of, render
 from .mentions import mentioned_member_ids, parse_mentions
@@ -1499,7 +1499,9 @@ class WakeOrchestrator:
             body=body,
             author_member_id=agent["id"],
             kind="agent",
-            mention_snapshot=parse_mentions(body, members),
+            # 与 `service._send_target_message` 同一条纪律：快照的位置相对**落库后的正文**，
+            # 而 `append_message` 落库前会 strip，因此解析必须用同一个清洗函数（#291）。
+            mention_snapshot=parse_mentions(clean_message_body(body), members),
         )
         self._events.publish(target_id, {"type": "message", "seq": message["seq"], "message": message})
         # 回复落库后照常唤醒（作者自己会被排除）。单 Agent 场景下唤醒集为空，即一次「零唤醒」。
