@@ -1,5 +1,5 @@
 /**
- * Studio 的**能力配置**（#273）：Agent 详情里的 MCP / 技能两段 + 复制到其他成员 + 名册摘要，
+ * Studio 的**能力配置**（#273）：Agent 详情里的 MCP / 技能两段 + 名册摘要，
  * 以及「频道配置里不再有这两段」。
  *
  * 接缝沿用既有那一套（`vm` + `fetch` 替身 + DOM 替身；与 `agent_detail_ui.test.cjs` /
@@ -7,12 +7,18 @@
  *
  * 断言只落在**外部可观察行为**上：
  * 1. 打开 Agent 详情：能力段按 `scope_kind=agent&scope_id=<member>` 读两条清单，MCP 行与技能行
- *    同屏；每行都带编辑 / 安装 / 启停 / 删除入口，没有 scope 选择器；
- * 2. 复制到其他成员：每行一个入口，弹多选（排除当前成员）；目标已存在同名时逐条给出「已跳过」
- *    且不覆盖（没有 PATCH、没有第二个写入体）；
- * 3. 频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读这两条清单（Workspace 段仍在）；
- * 4. 名册的 Agent 行显示 `MCP n / 技能 n`；单成员读取失败只让那一个摘要显示占位，名册照常列出；
- * 5. 新增文案在两份词条表里都取到值。
+ *    各在自己的页签里；每行都带编辑 / 启停 / 删除入口，没有 scope 选择器；
+ * 2. 复制到其他成员这条通道整个撤除（#281 / D6）：两 kind 的入口、弹层、呈现状态与函数都不在
+ *    正本里（`data-copy-*` 零命中），`POST /api/skills/{id}/copy` 端点仍由 pytest 契约守着；
+ * 3. skills 页签的安装面只剩**一个**「从本机导入」下拉框（#282 / D3 / D4）：候选按 可选 / 已安装 /
+ *    不可导入 三组呈现、默认不预选、选中一项发**一次** POST /api/skills；手填路径与上传 zip 两条
+ *    入口连同只服务它们的呈现状态一并撤除（`skill-source` / `skill-install-dir` / `skill-zip` 零命中）；
+ * 3b. skills 页签的右栏是**选中技能**的详情（#283 / D5）：五格元数据 + 启停 / 删除（作用于当前选中项）
+ *    + SKILL.md 正文（`GET /api/skills/{id}/markdown`，按需读、纯文本呈现、四态各有说法）；默认选中
+ *    左栏第一行，删除后回落第一行，左栏为空给空态；
+ * 4. 频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读这两条清单（Workspace 段仍在）；
+ * 5. 名册的 Agent 行显示 `MCP n / 技能 n`；单成员读取失败只让那一个摘要显示占位，名册照常列出；
+ * 6. 新增文案在两份词条表里都取到值，撤除的那些键必须在两份表里都消失。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -261,6 +267,24 @@ function skillPayload(overrides) {
   );
 }
 
+/** 家目录 `mcp.json` 的原文替身：**非标准缩进 + 倒键序 + 末尾换行**，与后端逐字写盘口径同形。 */
+const MCP_FILE_TEXT =
+  '{\n  "servers": [\n    {"transport": "stdio", "command": "python3", "name": "notes"}\n  ]\n}\n';
+
+/** 技能正文的替身（形状与 `GET /api/skills/{id}/markdown` 一致）。
+
+    `SKILL_BODY` 是「磁盘上 `SKILL.md` 里 front matter 之后的那段字节」的替身：保留空行与缩进、
+    含 `#` / `*` / `|` 这些 Markdown 记号——右栏必须把它当**纯文本**原样呈现。 */
+const SKILL_BODY =
+  "# 提交前自审\n\n按步骤来：\n\n    先读改动，再读测试\n\n- 一\n- 二\n\n**重点**：边界条件。";
+
+function markdownPayload(overrides) {
+  return Object.assign(
+    { state: "ok", markdown: SKILL_BODY },
+    overrides || {},
+  );
+}
+
 /** `GET /api/skills/candidates` 的一条候选（形状与后端一致）；`path` 默认跟随 `name`。 */
 function candidatePayload(overrides) {
   const base = { name: "review" };
@@ -320,6 +344,15 @@ function createHarness(options) {
       : config.candidates.map((entry) => Object.assign({}, entry));
   const candidateSource = config.candidateSource || "/Users/me/.agents/skills";
   const candidatesAvailable = config.candidatesAvailable !== false;
+  // 家目录 mcp.json 的原文镜像（#284 / D7）：读 / 写共用同一份，所以「保存后按后端读数刷新」
+  // 可以被观测到（PUT 之后下一次 GET / 同一次响应的 readers 都是同一个值）。
+  const mcpFileDoc = {
+    exists: config.mcpFileExists === undefined ? true : config.mcpFileExists,
+    text: config.mcpFileText === undefined ? MCP_FILE_TEXT : config.mcpFileText,
+    servers: config.mcpFileServers === undefined ? 1 : config.mcpFileServers,
+  };
+  // 正文端点逐 id 的替身：没登记的技能按「字节缺失」回（与后端 `state="missing"` 同形）。
+  const skillMarkdown = config.skillMarkdown || { sk_1: markdownPayload() };
 
   class FakeEventSource {
     constructor() {
@@ -356,6 +389,32 @@ function createHarness(options) {
     if (/^\/api\/agents\/[^/]+\/global-mcp-servers$/.test(url) && method === "GET") {
       return jsonResponse({ global_mcp_servers: [] });
     }
+    // 家目录 mcp.json 的原文（#284 / D7）：读回后端读数，写（PUT）回提交的原文 + 同一条数。
+    const mcpFile = /^\/api\/agents\/([^/]+)\/global-mcp-file$/.exec(url);
+    if (mcpFile && method === "GET") {
+      return jsonResponse({
+        member_id: mcpFile[1],
+        exists: mcpFileDoc.exists,
+        text: mcpFileDoc.text,
+        servers: mcpFileDoc.servers,
+      });
+    }
+    if (mcpFile && method === "PUT") {
+      const body =
+        typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body || {};
+      if (config.mcpFilePutError) {
+        return errorResponse(400, config.mcpFilePutError);
+      }
+      mcpFileDoc.text = String(body.text || "");
+      mcpFileDoc.exists = true;
+      mcpFileDoc.servers = mcpFileDoc.servers + 1;
+      return jsonResponse({
+        member_id: mcpFile[1],
+        exists: true,
+        text: mcpFileDoc.text,
+        servers: mcpFileDoc.servers,
+      });
+    }
     if (/^\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
       const id = url.split("/").pop();
       return jsonResponse({ agent: agents.find((item) => item.id === id) || agentRow(id, id) });
@@ -387,6 +446,26 @@ function createHarness(options) {
     if (url === skillScope("mem-1") && method === "GET") {
       return jsonResponse({ skills });
     }
+    const markdownRead = /^\/api\/skills\/([^/]+)\/markdown$/.exec(url);
+    if (markdownRead && method === "GET") {
+      const id = markdownRead[1];
+      const spec = skillMarkdown[id] || markdownPayload({ state: "missing", markdown: null });
+      const row = skills.find((item) => item.id === id) || skillPayload({ id });
+      return jsonResponse({ skill: Object.assign({}, row), markdown: spec.markdown, state: spec.state });
+    }
+    const skillWrite = /^\/api\/skills\/([^/]+)$/.exec(url);
+    if (skillWrite && method === "PATCH") {
+      const body =
+        typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body || {};
+      const row = skills.find((item) => item.id === skillWrite[1]);
+      if (row && "enabled" in body) row.enabled = Boolean(body.enabled);
+      return jsonResponse({ skill: Object.assign({}, row || skillPayload({ id: skillWrite[1] })) });
+    }
+    if (skillWrite && method === "DELETE") {
+      const index = skills.findIndex((item) => item.id === skillWrite[1]);
+      const removed = index >= 0 ? skills.splice(index, 1)[0] : skillPayload({ id: skillWrite[1] });
+      return jsonResponse({ skill: Object.assign({}, removed) });
+    }
     if (url === candidateScope("mem-1") && method === "GET") {
       return jsonResponse({
         source: candidateSource,
@@ -412,14 +491,8 @@ function createHarness(options) {
       }
     }
     if (url === "/api/mcp-servers" && method === "POST") {
-      if (config.copyConflict) return errorResponse(409, "同名 MCP 声明已存在");
       const created = mcpPayload(Object.assign({ id: "mcp_new" }, request.body || {}));
       return jsonResponse({ mcp_server: created }, 201);
-    }
-    if (/^\/api\/skills\/[^/]+\/copy$/.test(url) && method === "POST") {
-      if (config.copyConflict) return errorResponse(409, "同名技能已存在");
-      const skill = skillPayload({ id: "sk_new" });
-      return jsonResponse({ skill }, 201);
     }
     if (url === "/api/skills" && method === "POST") {
       const body =
@@ -469,6 +542,27 @@ function createHarness(options) {
     }
     return elements.get(selector);
   }
+
+  // 页签与面板在 `index.html` 里是静态骨架：按钮在 `#adTabs` 里、面板在 `#adBody` 里。
+  // 替身按同一份结构把它们的 `id` 接上（「找得到」与「点得到」都靠这层父子关系）。
+  const adTabs = elementFor("#adTabs");
+  for (const name of ["base", "skills", "mcp"]) {
+    const suffix = name.charAt(0).toUpperCase() + name.slice(1);
+    const tab = elementFor("#adTab" + suffix);
+    tab.tagName = "button";
+    tab.dataset.adtab = name;
+    tab.id = "adTab" + suffix;
+    adTabs.appendChild(tab);
+    const panel = elementFor("#adPanel" + suffix);
+    panel.dataset.adpanel = name;
+    panel.id = "adPanel" + suffix;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", "adTab" + suffix);
+    tab.setAttribute("aria-controls", "adPanel" + suffix);
+    elementFor("#adBody").appendChild(panel);
+  }
+  adTabs.setAttribute("role", "tablist");
+  adTabs.className = "ad-tabs";
 
   const document = {
     documentElement: new FakeNode("html"),
@@ -539,6 +633,11 @@ function createHarness(options) {
     catalogs: context.AlibotI18n.catalogs,
     elementFor,
     agentBody: elementFor("#adBody"),
+    /** 某个页签的面板（`#adPanelBase` / `#adPanelSkills` / `#adPanelMcp`）：它是 `index.html` 的
+        静态骨架，因此与 `#adBody` 一样按选择器取替身节点。 */
+    panel(name) {
+      return elementFor("#adPanel" + name.charAt(0).toUpperCase() + name.slice(1));
+    },
     channelBody: elementFor("#channelConfigBody"),
     channelOverlay: elementFor("#channelConfigOverlay"),
     rosterBody: elementFor("#rosterBody"),
@@ -567,6 +666,11 @@ function createHarness(options) {
       else node.value = value;
       const type = node.type === "checkbox" ? "change" : "input";
       await harness.agentBody.dispatchEvent({ type, target: node });
+      await settle();
+    },
+    /** 切到 skills 页签（点真实页签按钮：监听挂在 `#adTabs` 上）。 */
+    async openSkillsTab() {
+      await elementFor("#adTabs").dispatchEvent({ type: "click", target: elementFor("#adTabSkills") });
       await settle();
     },
     async openChannelConfig() {
@@ -607,6 +711,15 @@ function byClass(root, name) {
   return descendants(root).filter((node) => node.classList && node.classList.contains(name));
 }
 
+function readStudio(file) {
+  return fs.readFileSync(path.join(STUDIO_DIR, file), "utf8");
+}
+
+/** 注释不算代码：扫「某符号是否还在」以前先剥两种注释（与 `i18n_ui.test.cjs` 同款）。 */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
 function catalogText(harness, locale, key, params) {
   const value = harness.catalogs[locale][key];
   assert.equal(typeof value, "string", `${locale} 缺少词条：${key}`);
@@ -614,15 +727,15 @@ function catalogText(harness, locale, key, params) {
   return value.replace(/\{(\w+)\}/g, (_whole, name) => String(params[name]));
 }
 
-/* ─── 1. Agent 详情：两 kind 同屏，作用域固定为该成员 ────────────────────── */
+/* ─── 1. Agent 详情：两 kind 各归自己的页签，作用域固定为该成员 ──────────── */
 
-test("Agent 详情的能力段：两种能力同屏，请求固定带 agent scope", async () => {
+test("skills 页签：左栏技能列表与技能行入口，请求固定带 agent scope", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
 
-  assert.ok(byOdId(harness.agentBody, "agent-capabilities-section"), "能力段应当在详情页里");
-  assert.ok(byOdId(harness.agentBody, "agent-capabilities-mcp"), "MCP 小节标题应当在");
-  assert.ok(byOdId(harness.agentBody, "agent-capabilities-skill"), "技能小节标题应当在");
+  const panel = harness.panel("skills");
+  assert.ok(panel, "技能列表应在 skills 页签里");
+  assert.ok(byOdId(panel, "agent-capabilities-scope"), "skills 页签顶部要有影响范围一句话");
 
   // 两条清单都按 agent scope 读取（没有频道 scope 的读取路径）。
   const reads = harness.calls.map((call) => call.url);
@@ -634,33 +747,223 @@ test("Agent 详情的能力段：两种能力同屏，请求固定带 agent scop
     "能力配置不再有频道 scope 的读取",
   );
 
-  // 两种行同屏，信息面与既有行组件一致。
-  const mcpRow = byDataset(harness.agentBody, "mcpServer", "mcp_1");
-  assert.ok(mcpRow, "MCP 行应当渲染");
-  assert.equal(mcpRow.getAttribute("data-od-id"), "capability-mcp-row");
-  assert.match(mcpRow.textContent, /filesystem/);
-  assert.match(mcpRow.textContent, /GITHUB_TOKEN/);
-  const skillRow = byDataset(harness.agentBody, "skill", "sk_1");
-  assert.ok(skillRow, "技能行应当渲染");
+  // 技能行在 skills 页签里，信息面与既有行组件一致。
+  const skillRow = byDataset(panel, "skill", "sk_1");
+  assert.ok(skillRow, "技能行应当在 skills 页签里渲染");
   assert.equal(skillRow.getAttribute("data-od-id"), "capability-skill-row");
   assert.match(skillRow.textContent, /review/);
   assert.match(skillRow.textContent, /在提交前做一次结构化自审/);
   assert.match(skillRow.textContent, /0123456789ab/, "hash 前缀仍可见");
-
-  // 每行的入口：编辑（MCP）/ 启停 + 删除（两 kind）/ 安装（技能段）/ 复制（两 kind）。
-  assert.ok(byDataset(harness.agentBody, "mcpEdit", "mcp_1"), "MCP 行要有编辑入口");
-  assert.ok(byDataset(harness.agentBody, "mcpToggle", "mcp_1"), "MCP 行要有启停入口");
-  assert.ok(byDataset(harness.agentBody, "mcpDelete", "mcp_1"), "MCP 行要有删除入口");
-  assert.ok(byDataset(harness.agentBody, "skillToggle", "sk_1"), "技能行要有启停入口");
-  assert.ok(byDataset(harness.agentBody, "skillDelete", "sk_1"), "技能行要有删除入口");
-  assert.ok(byOdId(harness.agentBody, "skill-install"), "技能段要有安装入口");
-  assert.ok(byDataset(harness.agentBody, "copyMcp", "mcp_1"), "MCP 行要有复制入口");
-  assert.ok(byDataset(harness.agentBody, "copySkill", "sk_1"), "技能行要有复制入口");
+  // 技能行的入口：启停 + 删除 + 安装（技能段）。复制入口已随弹层撤除（#281 / D6），
+  // 反向断言在下面的「复制入口与弹层撤除」用例里。
+  // 动作入口在**右栏**，作用于当前选中项（#283 / D5）；左栏行只负责选人（复制入口已随弹层
+  // 撤除，反向断言在下面的「复制入口与弹层撤除」用例里）。
+  assert.ok(byDataset(panel, "skillToggle", "sk_1"), "右栏的启停入口指向当前选中项");
+  assert.ok(byDataset(panel, "skillDelete", "sk_1"), "右栏的删除入口指向当前选中项");
+  // 安装入口只有一个：从本机导入的下拉框（#282 / D3）。
+  assert.ok(byOdId(panel, "skill-import-picker"), "skills 页签的安装入口是「从本机导入」下拉框");
 
   // 影响范围一句话：只属于本 Agent，字节在家目录。
-  const note = byOdId(harness.agentBody, "agent-capabilities-scope");
-  assert.ok(note, "能力段顶部要有影响范围一句话");
+  const note = byOdId(panel, "agent-capabilities-scope");
   assert.match(note.textContent, /\.alibot\/agents\/mem-1\/skills\//);
+});
+
+test("mcp 页签：库行列表、表单与行入口，请求固定带 agent scope", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  assert.ok(panel, "MCP 声明块应在 mcp 页签里");
+
+  // 库行列表与表单在 mcp 页签里，信息面与既有行组件一致。
+  const mcpRow = byDataset(panel, "mcpServer", "mcp_1");
+  assert.ok(mcpRow, "MCP 行应当在 mcp 页签里渲染");
+  assert.equal(mcpRow.getAttribute("data-od-id"), "capability-mcp-row");
+  assert.match(mcpRow.textContent, /filesystem/);
+  assert.match(mcpRow.textContent, /GITHUB_TOKEN/);
+  assert.ok(byOdId(panel, "mcp-form"), "库行表单在 mcp 页签里");
+
+  assert.ok(byDataset(panel, "mcpEdit", "mcp_1"), "MCP 行要有编辑入口");
+  assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "MCP 行要有启停入口");
+  assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "MCP 行要有删除入口");
+});
+
+test("mcp 页签：上块库行、下块 mcp.json 文本域，两块各有一行数据来源说明", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  assert.ok(panel, "MCP 页签要在");
+
+  // 两块按顺序：库行块在上，文件块在下。
+  const dbBlock = byOdId(panel, "agent-capabilities-mcp");
+  const fileBlock = byOdId(panel, "agent-detail-section-mcp-file");
+  assert.ok(dbBlock && fileBlock, "两块都要在");
+  assert.ok(
+    descendants(panel).indexOf(dbBlock.parentNode) < descendants(panel).indexOf(fileBlock.parentNode),
+    "库行块在上、文件块在下",
+  );
+
+  // 上块：一行数据来源说明 + 库行表单本身。
+  const dbSource = byOdId(panel, "mcp-source-db");
+  assert.ok(dbSource, "上块要给一行数据来源说明");
+  assert.equal(dbSource.textContent, catalogText(harness, "zh-CN", "mcp.sourceDb"));
+  assert.ok(byOdId(panel, "mcp-form"), "上块是库行表单");
+  assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "上块的库行启停还在");
+  assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "上块的库行删除还在");
+
+  // 下块：一行数据来源说明（**必须写明「同名时库行胜出」**）+ 文本域。
+  const fileSource = byOdId(panel, "agent-detail-mcp-file-source");
+  assert.ok(fileSource, "下块要给一行数据来源说明");
+  assert.equal(fileSource.textContent, catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"));
+  assert.match(fileSource.textContent, /同名时库行胜出/, "数据来源要写明同名时谁胜出");
+  const textarea = byOdId(panel, "agent-mcp-file-text");
+  assert.ok(textarea, "下块是 mcp.json 文本域");
+  assert.equal(textarea.tagName, "textarea", "下块是纯文本域，不做 JSON 格式化");
+});
+
+test("mcp 页签下块：打开页签时文本域显示文件当前原文，并给出条目计数", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  // 读的是这个成员的原文端点（不是别的成员，也不是列表响应里的摘要）。
+  assert.ok(
+    harness.calls.some((call) => call.url === "/api/agents/mem-1/global-mcp-file" && call.method === "GET"),
+    "打开页签读该成员的 mcp.json 原文",
+  );
+  assert.equal(byOdId(panel, "agent-mcp-file-text").value, MCP_FILE_TEXT, "文本域显示原文（逐字）");
+  assert.equal(
+    byOdId(panel, "agent-mcp-file-count").textContent,
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileServers", { count: "1" }),
+    "条目计数按后端读数呈现",
+  );
+});
+
+test("mcp 页签下块：文件不存在时文本域为空，并给出「还没有这个文件」的可读说明", async () => {
+  const harness = createHarness({ mcpFileExists: false, mcpFileText: "", mcpFileServers: 0 });
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  assert.equal(byOdId(panel, "agent-mcp-file-text").value, "", "文件不存在时文本域为空");
+  const missing = byOdId(panel, "agent-mcp-file-missing");
+  assert.ok(missing, "文件不存在时要有一句可读说明");
+  assert.equal(missing.textContent, catalogText(harness, "zh-CN", "agentDetail.mcpFileMissing"));
+  // 那句话说的必须是「还没有这个文件」，不能被读成「读到空文件」。
+  assert.match(missing.textContent, /还没有/);
+});
+
+test("mcp 页签下块：保存发一次 PUT（body 是整份原文），成功后按后端读数刷新", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  const textarea = byOdId(panel, "agent-mcp-file-text");
+  // 人改了文本域（包括换行与缩进）：保存发的是**整份原文**，不是拆开的字段。
+  const edited = '{\n    "servers": [\n        {"name": "later", "transport": "stdio", "command": "node"}\n    ]\n}';
+  await harness.changeInBody(textarea, edited);
+  await harness.clickInBody(byOdId(panel, "agent-mcp-file-save"));
+
+  const puts = harness.calls.filter((call) => call.method === "PUT");
+  assert.equal(puts.length, 1, "保存只发一次 PUT");
+  assert.equal(puts[0].url, "/api/agents/mem-1/global-mcp-file");
+  assert.deepEqual(puts[0].body, { text: edited }, "body 是整份原文（一个 text 字段）");
+
+  // 保存成功后文本域与条目计数按**后端读数**刷新（不是把本地输入当结果）。
+  assert.equal(byOdId(harness.panel("mcp"), "agent-mcp-file-text").value, edited);
+  assert.equal(
+    byOdId(harness.panel("mcp"), "agent-mcp-file-count").textContent,
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileServers", { count: "2" }),
+    "计数跟着后端读数走",
+  );
+});
+
+test("mcp 页签下块：保存失败时给出后端可读原因，且不清空人的输入", async () => {
+  const harness = createHarness({ mcpFilePutError: "mcp.json 不是可解析的 JSON" });
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  await harness.changeInBody(byOdId(panel, "agent-mcp-file-text"), "{ 坏掉的 json");
+  await harness.clickInBody(byOdId(panel, "agent-mcp-file-save"));
+
+  const error = byOdId(harness.panel("mcp"), "agent-mcp-file-error");
+  assert.ok(error, "失败落在下块自己的错误行");
+  assert.match(error.textContent, /不是可解析的 JSON/, "原因来自后端可读正文");
+  assert.equal(
+    byOdId(harness.panel("mcp"), "agent-mcp-file-text").value,
+    "{ 坏掉的 json",
+    "文本域保留人的输入（不清空）",
+  );
+});
+
+/** 下块的两行数据来源说明与「同名时库行胜出」的语义不需要屏上文本外的事实：
+    `agentDetail.mcpFileSource` 的词条值本身就写明了它（上一条用例咬的是渲染出的文本）。 */
+
+test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能读数只在 skills 页签", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const skills = harness.panel("skills");
+  const mcp = harness.panel("mcp");
+  assert.ok(skills && mcp, "两个页签面板都要在");
+
+  assert.ok(byDataset(skills, "skill", "sk_1"), "技能行在 skills 页签里");
+  assert.equal(byDataset(skills, "mcpServer", "mcp_1"), null, "skills 页签里不出现 MCP 行");
+
+  assert.ok(byDataset(mcp, "mcpServer", "mcp_1"), "MCP 行在 mcp 页签里");
+  assert.equal(byDataset(mcp, "skill", "sk_1"), null, "mcp 页签里不出现技能行");
+  assert.equal(byOdId(mcp, "skill-import-picker"), null, "mcp 页签里不出现导入下拉框");
+
+  // 基础信息和配置页签只管配置，两条能力清单都不在那里。
+  const base = harness.panel("base");
+  assert.ok(base, "基础信息和配置页签也要在");
+  assert.equal(byOdId(base, "skill-list"), null);
+  assert.equal(byOdId(base, "mcp-list"), null);
+});
+
+test("复制入口与弹层撤除：正本里 data-copy-* 零命中，运行时也没有弹层节点", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  // 运行时：MCP 行与技能行都不再可能点出弹层。
+  assert.equal(byDataset(harness.agentBody, "copyMcp", "mcp_1"), null, "MCP 行不该再有复制入口");
+  assert.equal(byDataset(harness.agentBody, "copySkill", "sk_1"), null, "技能行不该再有复制入口");
+  assert.equal(byOdId(harness.agentBody, "capability-copy-dialog"), null, "弹层节点不再渲染");
+  assert.equal(byOdId(harness.agentBody, "capability-copy-targets"), null, "目标多选也不再渲染");
+  assert.equal(byOdId(harness.agentBody, "capability-copy-confirm"), null, "确认按钮不再渲染");
+
+  // 正本：两个 kind 的入口标识与弹层标识一处都不剩。
+  const studio = ["app.js", "index.html", "app.css"].map(readStudio).join("\n");
+  for (const needle of [
+    "data-copy-mcp",
+    "data-copy-skill",
+    "data-copy-target",
+    "data-copy-confirm",
+    "data-copy-cancel",
+    "capability-copy",
+  ]) {
+    assert.equal(studio.includes(needle), false, `正本里不该再出现 ${needle}`);
+  }
+
+  // 只为弹层存在的函数与呈现状态（含只被它调用的两个辅助函数）也不留。
+  const appSource = stripComments(readStudio("app.js"));
+  for (const symbol of [
+    "capabilityCopyNode",
+    "openCapabilityCopy",
+    "closeCapabilityCopy",
+    "toggleCapabilityCopyTarget",
+    "submitCapabilityCopy",
+    "copyResultText",
+    "capabilityMemberName",
+    "view.copy",
+    "state.copy",
+  ]) {
+    assert.equal(
+      new RegExp(`\\b${symbol.replace(".", "\\.")}\\b`).test(appSource),
+      false,
+      `app.js 里不该再有 ${symbol}`,
+    );
+  }
 });
 
 test("能力段里没有 scope 选择器：作用域恒为当前成员", async () => {
@@ -696,37 +999,62 @@ test("MCP 编辑表单沿用既有形状，提交走 agent scope 的 PATCH / POS
   assert.equal("scope_kind" in patch.body, false, "PATCH 不带 scope（scope 是身份）");
 });
 
-test("技能本机目录安装在 agent scope 下提交，成功按后端重读", async () => {
+test("两条既有安装入口撤除：正本里 skill-source / skill-install-dir / skill-zip 三处零命中", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
 
-  await harness.changeInBody(byOdId(harness.agentBody, "skill-source"), "/Users/me/skills/audit");
-  const before = harness.calls.filter((call) => call.url === "/api/skills?scope_kind=agent&scope_id=mem-1").length;
-  await harness.clickInBody(byOdId(harness.agentBody, "skill-install-dir"));
+  // 运行时：安装面只剩一个下拉框，既没有手填路径的文本框，也没有文件选择控件。
+  assert.equal(byOdId(harness.agentBody, "skill-source"), null, "不再有手填路径的输入框");
+  assert.equal(byOdId(harness.agentBody, "skill-install-dir"), null, "不再有「安装目录」按钮");
+  assert.equal(byOdId(harness.agentBody, "skill-zip"), null, "不再有 zip 文件框");
+  assert.deepEqual(
+    descendants(harness.panel("skills")).filter(
+      (node) => node.tagName === "input" && node.type === "file",
+    ),
+    [],
+    "skills 页签里没有文件选择控件",
+  );
 
-  const install = harness.posts().find((call) => call.url === "/api/skills");
-  assert.ok(install, "本机目录安装提交 POST /api/skills");
-  assert.deepEqual(install.body, {
-    scope_kind: "agent",
-    scope_id: "mem-1",
-    source_path: "/Users/me/skills/audit",
-  });
-  const after = harness.calls.filter((call) => call.url === "/api/skills?scope_kind=agent&scope_id=mem-1").length;
-  assert.ok(after > before, "成功后按后端重读清单");
+  // 正本：三处标识与其专属函数 / 呈现状态一处都不剩。
+  const studio = ["app.js", "index.html", "app.css"].map(readStudio).join("\n");
+  for (const needle of [
+    "skill-source",
+    "skill-install-dir",
+    "skill-zip",
+    "data-skill-source",
+    "data-skill-zip",
+    "skillSourcePath",
+    "submitSkillDirectory",
+    "uploadSkillZip",
+  ]) {
+    assert.equal(studio.includes(needle), false, `正本里不该再出现 ${needle}`);
+  }
 });
 
-/* ─── 2. 从 ~/.agents/skills 导入（#277 / ADR-0036） ─────────────────────── */
+/* ─── 2. 从 ~/.agents/skills 导入（#277 / ADR-0036；#282 收成一个下拉框） ──────── */
 
-test("导入区块：读候选、默认勾选「可导入且未安装」、已安装与不可导入项禁用", async () => {
+/** 下拉框里的一个候选选项（`<option value="<name>">`）。 */
+function option(picker, name) {
+  return (
+    descendants(picker).find((node) => node.tagName === "option" && node.value === name) || null
+  );
+}
+
+/** 下拉框里的分组（`<optgroup>`），按渲染顺序。 */
+function groups(picker) {
+  return descendants(picker).filter((node) => node.tagName === "optgroup");
+}
+
+test("导入下拉框：候选按 可选 / 已安装 / 不可导入 三组呈现，不可选项禁用且带原因，默认不预选", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
+  const panel = harness.panel("skills");
 
-  const block = byOdId(harness.agentBody, "skill-import");
-  assert.ok(block, "技能段要有「从 ~/.agents/skills 导入」区块");
-  assert.ok(byOdId(harness.agentBody, "skill-install"), "既有安装表单仍在（区块追加在它之后）");
+  const block = byOdId(panel, "skill-import");
+  assert.ok(block, "skills 页签要有「从本机导入」区块");
 
-  // 命令提示是 ASCII 常量，原样可复制。
-  const command = byOdId(harness.agentBody, "skill-import-command");
+  // 命令提示是 ASCII 常量，原样可复制（来源仍是 ~/.agents/skills）。
+  const command = byOdId(panel, "skill-import-command");
   assert.ok(command, "要有可复制的命令提示");
   assert.equal(command.textContent, "npx skills add <owner/repo> -g -a codex -y");
 
@@ -738,92 +1066,90 @@ test("导入区块：读候选、默认勾选「可导入且未安装」、已�
     "候选读数按成员读",
   );
 
-  const ready = byDataset(harness.agentBody, "skillImportPick", "review");
-  const blocked = byDataset(harness.agentBody, "skillImportPick", "t18-escape");
-  const installed = byDataset(harness.agentBody, "skillImportPick", "installed-one");
-  assert.ok(ready && blocked && installed, "三条候选各有一行");
-  assert.equal(ready.checked, true, "可导入且未安装的项默认勾选");
-  assert.equal(ready.disabled, false, "可导入的项可勾选");
-  assert.equal(blocked.checked, false, "不可导入的项不预选");
-  assert.equal(blocked.disabled, true, "不可导入的项禁用");
-  assert.equal(installed.disabled, true, "已安装的项禁用");
+  // 入口形态：一个下拉框（`<select>`），不是弹窗、也不是多选勾选列表。
+  const picker = byOdId(panel, "skill-import-picker");
+  assert.ok(picker, "安装入口是一个下拉框");
+  assert.equal(picker.tagName, "select");
+  assert.equal(
+    descendants(panel).filter((node) => node.tagName === "input" && node.type === "checkbox").length,
+    0,
+    "候选不是一个多选勾选列表",
+  );
 
-  const row = byDataset(harness.agentBody, "skillImportCandidate", "t18-escape");
-  assert.match(row.textContent, /不可导入/);
-  assert.match(row.textContent, /缺少 SKILL\.md/, "不可导入的原因要渲染出来");
-  assert.match(
-    byDataset(harness.agentBody, "skillImportCandidate", "installed-one").textContent,
-    /已安装/,
+  // 三组按 可选 / 已安装 / 不可导入 的顺序呈现。
+  assert.deepEqual(
+    groups(picker).map((group) => group.getAttribute("label")),
+    [
+      catalogText(harness, "zh-CN", "skill.importGroupReady"),
+      catalogText(harness, "zh-CN", "skill.importGroupInstalled"),
+      catalogText(harness, "zh-CN", "skill.importGroupBlocked"),
+    ],
+    "候选按 可选 / 已安装 / 不可导入 分组",
+  );
+
+  const ready = option(picker, "review");
+  const blocked = option(picker, "t18-escape");
+  const installed = option(picker, "installed-one");
+  assert.ok(ready && blocked && installed, "三条候选各有一个选项");
+  assert.equal(ready.disabled, false, "可选的项可选");
+  assert.equal(installed.disabled, true, "已安装的项禁用");
+  assert.equal(blocked.disabled, true, "不可导入的项禁用");
+  assert.match(blocked.textContent, /缺少 SKILL\.md/, "不可导入的原因写进选项文本");
+
+  // 默认不预选：空选项的文案是 `skill.importPickPlaceholder`。
+  assert.equal(picker.value, "", "默认不预选任何候选");
+  assert.equal(
+    option(picker, "").textContent,
+    catalogText(harness, "zh-CN", "skill.importPickPlaceholder"),
+    "空选项文案",
   );
 });
 
-test("导入选中：逐条 POST /api/skills（source_path = 候选 path），409 记已跳过，失败记原因", async () => {
-  const harness = createHarness({ importConflict: ["installed-one"], importFail: ["t18-escape"] });
+test("导入：选中一项后发一次 POST /api/skills（source_path = 候选 path），结束后重扫候选并回到空选择", async () => {
+  const harness = createHarness();
   await harness.openAgent("mem-1");
+  const panel = harness.panel("skills");
 
-  // 全部取消勾选后「导入选中」应当是禁用的（真人也点不动），不发任何请求。
-  await harness.changeInBody(byDataset(harness.agentBody, "skillImportPick", "review"), false);
-  const postsBefore = harness.posts().length;
-  assert.equal(
-    byOdId(harness.agentBody, "skill-import-run").disabled,
-    true,
-    "一个都没勾时「导入选中」禁用",
-  );
-  await harness.clickInBody(byOdId(harness.agentBody, "skill-import-run"));
-  assert.equal(
-    harness.posts().slice(postsBefore).filter((call) => call.url === "/api/skills").length,
-    0,
-    "没勾选就不发请求",
-  );
+  const scansBefore = harness.calls.filter((call) => call.url.startsWith("/api/skills/candidates"))
+    .length;
+  const readsBefore = harness.calls.filter((call) => call.url === "/api/skills?scope_kind=agent&scope_id=mem-1")
+    .length;
 
-  // 重新勾上：按钮恢复可用，导入照常提交。
-  await harness.changeInBody(byDataset(harness.agentBody, "skillImportPick", "review"), true);
-  assert.equal(
-    byOdId(harness.agentBody, "skill-import-run").disabled,
-    false,
-    "勾上之后「导入选中」可用",
-  );
-  await harness.clickInBody(byOdId(harness.agentBody, "skill-import-run"));
+  const picker = byOdId(panel, "skill-import-picker");
+  picker.value = "review";
+  await harness.agentBody.dispatchEvent({ type: "change", target: picker });
+  await settle();
 
-  const imports = harness
-    .posts()
-    .slice(postsBefore)
-    .filter((call) => call.url === "/api/skills");
-  assert.deepEqual(
-    imports.map((call) => call.body.source_path),
-    ["/Users/me/.agents/skills/review"],
-    "只提交勾选的那一项",
-  );
+  const imports = harness.posts().filter((call) => call.url === "/api/skills");
+  assert.equal(imports.length, 1, "一次只导入一个技能：只发一次 POST（候选共三条，可选一条）");
   assert.deepEqual(imports[0].body, {
     scope_kind: "agent",
     scope_id: "mem-1",
     source_path: "/Users/me/.agents/skills/review",
   });
 
-  const status = byDataset(harness.agentBody, "skillImportStatus", "1");
-  assert.ok(status, "逐条结果要渲染（票面的 data-skill-import-status）");
+  // 结果按条归因（成功）以及后续刷新：候选重扫 + 技能列表重读 + 下拉框回到空选择。
+  const status = byDataset(harness.panel("skills"), "skillImportStatus", "1");
+  assert.ok(status, "导入结果要渲染在导入区自己的结果行");
   assert.match(status.textContent, /review/);
   assert.match(status.textContent, /已导入/);
-
-  // 导入结束后重读技能列表。
-  const reads = harness.calls.filter(
-    (call) => call.url === "/api/skills?scope_kind=agent&scope_id=mem-1",
+  assert.ok(
+    harness.calls.filter((call) => call.url.startsWith("/api/skills/candidates")).length > scansBefore,
+    "导入结束后重扫候选",
   );
-  assert.ok(reads.length >= 2, "导入结束后重读技能列表");
+  assert.ok(
+    harness.calls.filter((call) => call.url === "/api/skills?scope_kind=agent&scope_id=mem-1").length >
+      readsBefore,
+    "导入结束后重读技能列表",
+  );
+  assert.equal(
+    byOdId(harness.panel("skills"), "skill-import-picker").value,
+    "",
+    "导入结束后下拉框回到空选择",
+  );
 });
 
-test("候选为空（来源在但没有技能）给空态指引，不渲染空列表", async () => {
-  const harness = createHarness({ candidates: [] });
-  await harness.openAgent("mem-1");
-
-  const block = byOdId(harness.agentBody, "skill-import");
-  assert.ok(block, "区块照常渲染");
-  assert.equal(byOdId(harness.agentBody, "skill-import-candidates"), null, "空候选不渲染列表");
-  assert.match(block.textContent, /先运行上面的命令/, "空态要给「先跑命令」的指引");
-  assert.equal(byOdId(harness.agentBody, "skill-import-error"), null, "空态不是错误");
-});
-
-test("导入结果：409 记「已存在，已跳过」且不覆盖，其他失败记可读原因", async () => {
+test("导入归因：409 记「已安装，已跳过」，其他失败记后端可读原因并留在导入区自己的错误行", async () => {
   const harness = createHarness({
     candidates: [candidatePayload({ name: "review" }), candidatePayload({ name: "other" })],
     importConflict: ["review"],
@@ -831,23 +1157,32 @@ test("导入结果：409 记「已存在，已跳过」且不覆盖，其他失�
   });
   await harness.openAgent("mem-1");
 
-  // 两条都默认勾选（可导入且未安装）：服务端分别回 409 与 400。
-  await harness.clickInBody(byOdId(harness.agentBody, "skill-import-run"));
+  // 同名（409）：不是静默失败，给出「已安装，已跳过」。
+  let picker = byOdId(harness.panel("skills"), "skill-import-picker");
+  picker.value = "review";
+  await harness.agentBody.dispatchEvent({ type: "change", target: picker });
+  await settle();
 
-  const posts = harness.posts().filter((call) => call.url === "/api/skills");
-  assert.deepEqual(
-    posts.map((call) => call.body.source_path),
-    ["/Users/me/.agents/skills/review", "/Users/me/.agents/skills/other"],
-    "逐条提交，顺序照候选表",
-  );
-  const lines = byClass(
-    byDataset(harness.agentBody, "skillImportStatus", "1"),
-    "import-result",
-  ).map((node) => node.textContent);
-  assert.equal(lines.length, 2, "两项各一条结果");
-  assert.match(lines[0], /review：已存在，已跳过/);
-  assert.match(lines[1], /other：导入失败/);
-  assert.match(lines[1], /缺少 SKILL\.md/, "失败原因来自后端可读正文");
+  const skipped = byDataset(harness.panel("skills"), "skillImportStatus", "1");
+  assert.ok(skipped, "409 要有一条结果行");
+  assert.match(skipped.textContent, /review：已安装，已跳过/);
+  assert.equal(byOdId(harness.panel("skills"), "skill-import-error"), null, "同名不是错误");
+
+  // 其他失败：后端那一句可读原因落在导入区自己的错误行，不拖垮右栏。
+  picker = byOdId(harness.panel("skills"), "skill-import-picker");
+  picker.value = "other";
+  await harness.agentBody.dispatchEvent({ type: "change", target: picker });
+  await settle();
+
+  const error = byOdId(harness.panel("skills"), "skill-import-error");
+  assert.ok(error, "失败落在导入区自己的错误行");
+  assert.match(error.textContent, /other/);
+  assert.match(error.textContent, /导入失败/);
+  assert.match(error.textContent, /缺少 SKILL\.md/, "失败原因来自后端可读正文");
+  assert.equal(byOdId(harness.panel("skills"), "skill-error"), null, "不拖垮技能列表错误行");
+  assert.ok(byOdId(harness.panel("skills"), "agent-skill-detail"), "右栏详情不受影响");
+
+  // 冲突时不许改用 PATCH 覆盖。
   assert.equal(
     harness.patches().filter((call) => call.url.startsWith("/api/skills/")).length,
     0,
@@ -855,13 +1190,28 @@ test("导入结果：409 记「已存在，已跳过」且不覆盖，其他失�
   );
 });
 
+test("候选为空（来源在但没有技能）给空态指引，不渲染下拉框", async () => {
+  const harness = createHarness({ candidates: [] });
+  await harness.openAgent("mem-1");
+
+  const block = byOdId(harness.panel("skills"), "skill-import");
+  assert.ok(block, "区块照常渲染");
+  assert.equal(byOdId(harness.panel("skills"), "skill-import-picker"), null, "没有候选就不渲染下拉框");
+  assert.match(block.textContent, /先运行上面的命令/, "空态要给「先跑命令」的指引");
+  assert.equal(byOdId(harness.panel("skills"), "skill-import-error"), null, "空态不是错误");
+});
+
 test("候选来源缺席 / 扫描失败：只落在导入区块自己的行，不拖垮技能段", async () => {
   const missing = createHarness({ candidates: [], candidatesAvailable: false });
   await missing.openAgent("mem-1");
-  const block = byOdId(missing.agentBody, "skill-import");
+  const block = byOdId(missing.panel("skills"), "skill-import");
+  assert.equal(
+    byOdId(missing.panel("skills"), "skill-import-picker"),
+    null,
+    "来源目录缺席时不渲染下拉框",
+  );
   assert.match(block.textContent, /先运行上面的命令/, "来源缺席时给「先跑命令」的指引");
-  assert.ok(byOdId(missing.agentBody, "skill-install"), "既有安装表单照常渲染");
-  assert.equal(byOdId(missing.agentBody, "skill-error"), null, "缺席不是错误");
+  assert.equal(byOdId(missing.panel("skills"), "skill-error"), null, "缺席不是错误");
 
   const broken = createHarness({
     fetch: (url) =>
@@ -870,72 +1220,268 @@ test("候选来源缺席 / 扫描失败：只落在导入区块自己的行，�
         : null,
   });
   await broken.openAgent("mem-1");
-  assert.ok(byOdId(broken.agentBody, "skill-import-error"), "扫描失败落在导入区块自己的错误行");
-  assert.equal(byOdId(broken.agentBody, "skill-error"), null, "不牵连技能列表的错误行");
-  assert.ok(byOdId(broken.agentBody, "skill-install"), "技能段其余部分照常");
+  assert.ok(
+    byOdId(broken.panel("skills"), "skill-import-error"),
+    "扫描失败落在导入区块自己的错误行",
+  );
+  assert.equal(byOdId(broken.panel("skills"), "skill-error"), null, "不牵连技能列表的错误行");
+  assert.ok(byOdId(broken.panel("skills"), "skill-list"), "技能段其余部分照常");
 });
 
-/* ─── 3. 复制到其他成员 ─────────────────────────────────────────────────── */
+/* ─── 2b. skills 右栏：选中技能的详情与 SKILL.md 正文（#283 / D5） ─────────
 
-test("复制入口列出其他成员（排除当前成员），选目标后逐条提交", async () => {
+  观察面：`data-od-id="agent-skill-detail"` 子树的五格元数据、两个动作入口、正文节点
+  （`skill-detail-markdown`）的 `textContent`，以及点左栏一行时发出的正文读取。 */
+
+/** 右栏的一格元数据（`data-od-id="skill-detail-<key>"`）。 */
+function detailCell(panel, key) {
+  return byOdId(panel, "skill-detail-" + key);
+}
+
+/** 某一行的选中态读法：`is-active` 与 `aria-current` 是同一条事实的两处呈现。 */
+function rowIsCurrent(panel, id) {
+  const row = byDataset(panel, "skill", id);
+  return Boolean(row) && row.getAttribute("aria-current") === "true";
+}
+
+test("skills 右栏：默认选中第一行，五项元数据 + 正文与磁盘 SKILL.md 逐字相等", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: {
+      sk_1: markdownPayload(),
+      sk_2: markdownPayload({ markdown: "# Triage\n\n先分级。" }),
+    },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const panel = harness.panel("skills");
+  const detail = byOdId(panel, "agent-skill-detail");
+  assert.ok(detail, "右栏是选中技能的详情");
+
+  // 进入页签默认选中左栏第一行（不需要先点一下）。
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_1", "默认选中左栏第一行");
+  assert.equal(rowIsCurrent(panel, "sk_1"), true, "第一行有可读的选中态");
+  assert.equal(rowIsCurrent(panel, "sk_2"), false);
+
+  // 五项元数据：名称 / 描述 / 来源路径 / 内容 hash / 启停态。
+  assert.equal(detailCell(panel, "name").textContent, "review");
+  assert.equal(detailCell(panel, "description").textContent, "在提交前做一次结构化自审");
+  assert.equal(detailCell(panel, "source").textContent, "/Users/me/skills/review");
+  assert.equal(
+    detailCell(panel, "hash").textContent,
+    "0123456789abcdef".repeat(4),
+    "内容 hash 是完整值（不是列表里那个 12 位前缀）",
+  );
+  assert.equal(
+    detailCell(panel, "state").textContent,
+    catalogText(harness, "zh-CN", "skill.enabled"),
+  );
+
+  // 正文按需读：选中时调新端点，而不是塞进列表响应。
+  assert.ok(
+    harness.calls.some((call) => call.url === "/api/skills/sk_1/markdown"),
+    "正文走 GET /api/skills/{id}/markdown",
+  );
+  assert.equal(
+    descendants(panel).filter((node) => node.tagName === "pre").length,
+    1,
+    "正文节点是一个 <pre>（保留换行与缩进）",
+  );
+  const body = byOdId(panel, "skill-detail-markdown");
+  assert.ok(body, "右栏要有正文节点");
+  assert.equal(body.textContent, SKILL_BODY, "正文与磁盘上的 SKILL.md 正文逐字相等");
+});
+
+test("skills 右栏：点左栏另一行切换选中项，正文按需重读", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: {
+      sk_1: markdownPayload(),
+      sk_2: markdownPayload({ markdown: "# Triage\n\n先分级。" }),
+    },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+  const panel = harness.panel("skills");
+
+  await harness.clickInBody(byDataset(panel, "skill", "sk_2"));
+
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "选中态跟着点中那一行");
+  assert.equal(rowIsCurrent(harness.panel("skills"), "sk_2"), true);
+  const reads = harness.calls.filter((call) => /\/markdown$/.test(call.url)).map((call) => call.url);
+  assert.deepEqual(
+    reads,
+    ["/api/skills/sk_1/markdown", "/api/skills/sk_2/markdown"],
+    "每选中一行读一次正文（不预读整列）",
+  );
+  assert.equal(
+    byOdId(harness.panel("skills"), "skill-detail-markdown").textContent,
+    "# Triage\n\n先分级。",
+  );
+  assert.equal(detailCell(harness.panel("skills"), "name").textContent, "triage");
+});
+
+test("skills 右栏：启停与删除作用于当前选中项，启停成功后右栏启停态立刻跟着变", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  // 选中第二行，然后按**右栏**的启停入口。
+  await harness.clickInBody(byDataset(harness.panel("skills"), "skill", "sk_2"));
+  const toggle = byDataset(harness.panel("skills"), "skillToggle", "sk_2");
+  assert.ok(toggle, "右栏的启停入口指向当前选中项");
+  assert.equal(toggle.textContent, catalogText(harness, "zh-CN", "skill.disable"));
+
+  await harness.clickInBody(toggle);
+  const patched = harness.patches().filter((call) => call.url.startsWith("/api/skills/"));
+  assert.deepEqual(patched.map((call) => call.url), ["/api/skills/sk_2"], "只改当前选中项");
+  assert.deepEqual(patched[0].body, { enabled: false });
+  // 启停成功后右栏的启停态立刻跟着变（不用重开页签）。
+  assert.equal(
+    detailCell(harness.panel("skills"), "state").textContent,
+    catalogText(harness, "zh-CN", "skill.disabled"),
+  );
+  assert.equal(
+    byDataset(harness.panel("skills"), "skillToggle", "sk_2").textContent,
+    catalogText(harness, "zh-CN", "skill.enable"),
+  );
+  // 未选中那一行不动。
+  assert.match(byDataset(harness.panel("skills"), "skill", "sk_1").textContent, /已启用/);
+
+  // 删除同样只作用于当前选中项。
+  await harness.clickInBody(byDataset(harness.panel("skills"), "skillDelete", "sk_2"));
+  assert.deepEqual(
+    harness.calls.filter((call) => call.method === "DELETE").map((call) => call.url),
+    ["/api/skills/sk_2"],
+    "删除只发当前选中项",
+  );
+  // 删掉当前选中项 ⇒ 右栏回落到第一行，不停在一个已删的技能上。
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_1", "选中项回落第一行");
+  assert.equal(detailCell(harness.panel("skills"), "name").textContent, "review");
+});
+
+test("skills 右栏：左栏行可键盘选中（Enter / Space），选中态带 aria-current", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const row = byDataset(harness.panel("skills"), "skill", "sk_2");
+  assert.ok(row, "技能行要在左栏");
+  assert.equal(row.getAttribute("tabindex"), "0", "行可被 Tab 抵达");
+  await harness.agentBody.dispatchEvent({ type: "keydown", target: row, key: "Enter" });
+  await settle();
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "Enter 选中该行");
+  assert.ok(
+    descendants(harness.panel("skills")).some((node) => node.getAttribute("aria-current") === "true"),
+    "选中态有一条 aria 事实",
+  );
+  // 焦点停在动作按钮上时 Enter 不该顺带换选中项（否则键盘用户按启停会磒到别的技能）。
+  const toggle = byDataset(harness.panel("skills"), "skillToggle", "sk_2");
+  await harness.agentBody.dispatchEvent({ type: "keydown", target: toggle, key: "Enter" });
+  await settle();
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "动作按钮上的 Enter 不换选中项");
+});
+
+test("skills 右栏：左栏为空时给空态指引，不读正文", async () => {
+  const harness = createHarness({ skills: [] });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  const panel = harness.panel("skills");
+  const detail = byOdId(panel, "agent-skill-detail");
+  assert.ok(detail, "左栏为空时右栏仍有落点");
+  assert.equal(
+    detail.textContent,
+    catalogText(harness, "zh-CN", "skill.detailEmpty"),
+    "空列表给空态指引",
+  );
+  assert.equal(
+    harness.calls.filter((call) => /\/markdown$/.test(call.url)).length,
+    0,
+    "没有选中项就不读正文",
+  );
+});
+
+test("skills 右栏：正文按纯文本呈现，不把 Markdown 解析成 HTML", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
 
-  await harness.clickInBody(byDataset(harness.agentBody, "copyMcp", "mcp_1"));
-  const dialog = byOdId(harness.agentBody, "capability-copy-dialog");
-  assert.ok(dialog, "按下复制后出现多选弹层");
-  assert.ok(byDataset(harness.agentBody, "copyTarget", "mem-2"), "其他成员可选");
-  assert.ok(byDataset(harness.agentBody, "copyTarget", "mem-3"), "其他成员可选");
-  assert.equal(byDataset(harness.agentBody, "copyTarget", "mem-1"), null, "当前成员不在目标清单里");
-
-  // 没选目标就确认：不发请求，给可读提示。
-  await harness.clickInBody(byOdId(harness.agentBody, "capability-copy-confirm"));
-  assert.equal(harness.posts().length, 0, "没选目标不发请求");
-  assert.ok(byOdId(harness.agentBody, "capability-copy-error"), "要提示先选目标");
-
-  const target = byDataset(harness.agentBody, "copyTarget", "mem-2");
-  await harness.changeInBody(target, true);
-  await harness.clickInBody(byOdId(harness.agentBody, "capability-copy-confirm"));
-
-  const copy = harness.posts().find((call) => call.url === "/api/mcp-servers");
-  assert.ok(copy, "MCP 复制用既有 POST /api/mcp-servers");
-  assert.equal(copy.body.scope_kind, "agent");
-  assert.equal(copy.body.scope_id, "mem-2", "复制目标就是选中的成员");
-  assert.equal(copy.body.name, "filesystem");
-  assert.deepEqual(copy.body.env_names, ["GITHUB_TOKEN"], "只复制变量名");
-  const results = byOdId(harness.agentBody, "capability-copy-results");
-  assert.ok(results, "结果逐条回显");
-  assert.match(results.textContent, /小红/);
-  assert.match(results.textContent, /已复制/);
+  const panel = harness.panel("skills");
+  const body = byOdId(panel, "skill-detail-markdown");
+  assert.ok(body, "正文节点在右栏");
+  assert.equal(body.tagName, "pre", "正文是一个 <pre>（纯文本容器）");
+  // 正文里的 Markdown 记号原样呈现：`#` 与 `**` 不被消费成标签。
+  assert.equal(body.textContent, SKILL_BODY);
+  assert.match(body.textContent, /^# 提交前自审/);
+  assert.match(body.textContent, /\*\*重点\*\*/);
+  assert.match(body.textContent, /\n {4}先读改动，再读测试/, "缩进保留");
+  for (const tag of ["h1", "h2", "strong", "em", "ul", "li", "code", "p"]) {
+    assert.equal(
+      descendants(body).filter((node) => node.tagName === tag).length,
+      0,
+      `正文里不该有 <${tag}>：Markdown 不被解析`,
+    );
+  }
+  // 正文只经 textContent 写：正本里没有 innerHTML。
+  assert.equal(stripComments(readStudio("app.js")).includes("innerHTML"), false, "不引入 HTML 注入面");
 });
 
-test("目标已存在同名时逐条提示已跳过，且不覆盖（没有 PATCH、没有改名写入）", async () => {
-  const harness = createHarness({ copyConflict: true });
+test("skills 右栏：ok / missing / invalid / unreadable 各有自己的说明文案", async () => {
+  const harness = createHarness({
+    skills: [
+      skillPayload(),
+      skillPayload({ id: "sk_2", name: "missing-one" }),
+      skillPayload({ id: "sk_3", name: "invalid-one" }),
+      skillPayload({ id: "sk_4", name: "unreadable-one" }),
+    ],
+    skillMarkdown: {
+      sk_1: markdownPayload(),
+      sk_2: markdownPayload({ state: "missing", markdown: null }),
+      sk_3: markdownPayload({ state: "invalid", markdown: null }),
+      sk_4: markdownPayload({ state: "unreadable", markdown: null }),
+    },
+  });
   await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
 
-  await harness.clickInBody(byDataset(harness.agentBody, "copySkill", "sk_1"));
-  await harness.changeInBody(byDataset(harness.agentBody, "copyTarget", "mem-2"), true);
-  await harness.changeInBody(byDataset(harness.agentBody, "copyTarget", "mem-3"), true);
-  await harness.clickInBody(byOdId(harness.agentBody, "capability-copy-confirm"));
+  const readings = {};
+  for (const id of ["sk_1", "sk_2", "sk_3", "sk_4"]) {
+    await harness.clickInBody(byDataset(harness.panel("skills"), "skill", id));
+    const panel = harness.panel("skills");
+    const stateNode = byOdId(panel, "skill-detail-body-state");
+    readings[id] = {
+      bodyState: stateNode ? stateNode.getAttribute("data-detail-state") : null,
+      text: stateNode ? stateNode.textContent : byOdId(panel, "skill-detail-markdown").textContent,
+    };
+  }
 
-  const copies = harness.posts().filter((call) => call.url === "/api/skills/sk_1/copy");
-  assert.deepEqual(copies.map((call) => call.body.scope_id), ["mem-2", "mem-3"], "逐目标复制");
-  const results = byOdId(harness.agentBody, "capability-copy-results");
-  const lines = byClass(results, "copy-result").map((node) => node.textContent);
-  assert.equal(lines.length, 2, "两个目标各一条结果");
-  assert.match(lines[0], /小红/);
-  assert.match(lines[0], /已跳过/);
-  assert.match(lines[1], /小刚/);
-  assert.match(lines[1], /已跳过/);
-  assert.equal(
-    harness.patches().filter((call) => call.url.startsWith("/api/skills/")).length,
-    0,
-    "冲突时不许改用 PATCH 覆盖",
-  );
-  assert.equal(harness.posts().filter((call) => call.url === "/api/skills").length, 0, "冲突时不再装上第二份");
+  assert.equal(readings.sk_1.bodyState, null, "ok 没有空态行，正文就在那里");
+  assert.equal(readings.sk_2.bodyState, "missing");
+  assert.equal(readings.sk_3.bodyState, "invalid");
+  assert.equal(readings.sk_4.bodyState, "unreadable");
+
+  // 四种状态的说明文案各不相同（「读不到」不会被读成「这个技能是空的」）。
+  for (const [id, expected] of [
+    ["sk_2", "skill.detailMissing"],
+    ["sk_3", "skill.detailInvalid"],
+    ["sk_4", "skill.detailUnreadable"],
+  ]) {
+    assert.equal(readings[id].text, catalogText(harness, "zh-CN", expected), `${id} 的说明文案`);
+  }
+  const texts = [readings.sk_1.text, readings.sk_2.text, readings.sk_3.text, readings.sk_4.text];
+  assert.equal(new Set(texts).size, 4, "四种状态的说明互不相同");
 });
 
 /* ─── 3. 频道配置：两段已删 ─────────────────────────────────────────────── */
+
 
 test("频道配置里不再出现 MCP / 技能段，也不再按频道 scope 读两份清单", async () => {
   const harness = createHarness();
@@ -984,44 +1530,58 @@ test("名册的 Agent 行显示 MCP n / 技能 n，读不到时只让那一行�
 
 /* ─── 5. 词条 ───────────────────────────────────────────────────────────── */
 
-test("新增文案在两份词条里同键同参数位", () => {
+test("新增文案在两份词条里同键同参数位，随入口撤除的键必须消失", () => {
   const harness = createHarness();
   const keys = [
-    "agentCapabilities.title",
     "agentCapabilities.scopeNote",
     "agentCapabilities.mcpTitle",
     "agentCapabilities.skillTitle",
-    "agentCapabilities.copyTo",
-    "agentCapabilities.copyTitle",
-    "agentCapabilities.copyHint",
-    "agentCapabilities.copyConfirm",
-    "agentCapabilities.copyCancel",
-    "agentCapabilities.copyNoTargets",
-    "agentCapabilities.copyPickRequired",
-    "agentCapabilities.copyBusy",
-    "agentCapabilities.copyResultCopied",
-    "agentCapabilities.copyResultSkipped",
-    "agentCapabilities.copyResultFailed",
     "roster.capabilities",
     "roster.capabilitiesLoading",
     "roster.capabilitiesUnavailable",
+    // #282 的下拉框与导入区块的沿用键。
     "skill.importTitle",
     "skill.importCommandHint",
     "skill.importScanButton",
-    "skill.importRunButton",
+    "skill.importPickLabel",
+    "skill.importPickPlaceholder",
+    "skill.importGroupReady",
+    "skill.importGroupInstalled",
+    "skill.importGroupBlocked",
     "skill.importLoading",
     "skill.importScanFailed",
     "skill.importUnavailable",
     "skill.importEmpty",
-    "skill.importStatusReady",
     "skill.importStatusInstalled",
     "skill.importStatusBlocked",
     "skill.importBusy",
     "skill.importResultDone",
     "skill.importResultSkipped",
     "skill.importResultFailed",
-    "skill.importPickRequired",
-    "skill.importSummary",
+    // #283 的右栏详情（D5）：五格元数据的标签、两个动作入口、正文标题与四态空态文案。
+    "skill.detailTitle",
+    "skill.detailName",
+    "skill.detailDescription",
+    "skill.detailSource",
+    "skill.detailHash",
+    "skill.detailState",
+    "skill.detailEmpty",
+    "skill.detailBodyTitle",
+    "skill.detailBodyLoading",
+    "skill.detailBodyFailed",
+    "skill.detailMissing",
+    "skill.detailInvalid",
+    "skill.detailUnreadable",
+    // #284 的 mcp 页签两块面（D7）：上块的数据来源标注 + 下块的文本域、四态说明与保存入口。
+    "mcp.sourceDb",
+    "agentDetail.mcpFileTitle",
+    "agentDetail.mcpFileSource",
+    "agentDetail.mcpFileLoading",
+    "agentDetail.mcpFileMissing",
+    "agentDetail.mcpFileServers",
+    "agentDetail.mcpFileSave",
+    "agentDetail.mcpFileLoadFailed",
+    "agentDetail.mcpFileSaveFailed",
   ];
   for (const key of keys) {
     for (const locale of ["zh-CN", "en"]) {
@@ -1034,4 +1594,58 @@ test("新增文案在两份词条里同键同参数位", () => {
     true,
     "scopeNote 的 {member} 参数位要能用",
   );
+  // #284：下块的数据来源标注**必须**写明「同名时库行胜出」——那是 D7 的优先级口径，
+  // 少了这句人就看不出同名时谁赢（装配行为本身一字不改）。
+  for (const locale of ["zh-CN", "en"]) {
+    const source = harness.catalogs[locale]["agentDetail.mcpFileSource"];
+    assert.equal(typeof source, "string", `${locale} 缺少词条：agentDetail.mcpFileSource`);
+    assert.ok(source.length > 0, `${locale} 的 agentDetail.mcpFileSource 不能为空`);
+  }
+  assert.match(
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"),
+    /同名时库行胜出/,
+    "中文的数据来源写明同名时库行胜出",
+  );
+  // 能力不再「两 kind 同屏」而是各在自己的页签里，因此那个跨两 kind 的总标题
+  // `agentCapabilities.title` 失去全部消费点：两份词条一并移除，不留孤儿键。
+  // D6 / D9 第 14 条同理：复制入口撤除后那些键也没有消费点（与 `agent.contextWindow` 那四项同一规则）；
+  // #282 撤掉手填路径与上传 zip 两条入口，只服务它们的 `skill.install*` / `sourceRequired` /
+  // `importRunButton`（多选「导入选中」）/ `importStatusReady`（可选项不再是行上的状态后缀）/ `importPickRequired` /
+  // `importSummary`（一次只导一个，不再有汇总）一并删除。
+  for (const key of [
+    "agentCapabilities.title",
+    "agentCapabilities.copyTo",
+    "agentCapabilities.copyTitle",
+    "agentCapabilities.copyHint",
+    "agentCapabilities.copyConfirm",
+    "agentCapabilities.copyCancel",
+    "agentCapabilities.copyNoTargets",
+    "agentCapabilities.copyPickRequired",
+    "agentCapabilities.copyBusy",
+    "agentCapabilities.copyResultCopied",
+    "agentCapabilities.copyResultSkipped",
+    "agentCapabilities.copyResultFailed",
+    "agentCapabilities.copySummary",
+    "skill.installTitle",
+    "skill.installDir",
+    "skill.installDirPlaceholder",
+    "skill.installDirButton",
+    "skill.installDirHint",
+    "skill.installZip",
+    "skill.installZipHint",
+    "skill.installing",
+    "skill.sourceRequired",
+    "skill.importRunButton",
+    "skill.importStatusReady",
+    "skill.importPickRequired",
+    "skill.importSummary",
+  ]) {
+    for (const locale of ["zh-CN", "en"]) {
+      assert.equal(
+        harness.catalogs[locale][key],
+        undefined,
+        locale + " 仍有已删词条：" + key,
+      );
+    }
+  }
 });

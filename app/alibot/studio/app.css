@@ -455,7 +455,7 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .modal-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-8) var(--sp-7); }
 .modal-foot .sep { flex: 1; }
 
-/* ─── Agent 详情：**主线视图**（整条右侧），一页分区块 ────────────────────
+/* ─── Agent 详情：**主线视图**（整条右侧），三个页签 ────────────────────
    它不是 dock 的形态（用户 2026-10-22 裁定）：`state.mode === 'agent'` 时它占据 `.main` 的
    整块内容区，dock 让位。区块骨架（`.d-sec` / `.stat-grid` / `.kv`）沿用既有语汇，形状照
    设计系统切片 `screens/agent-detail.html`（:86-104 的四格与分区），但只消费本仓已有的
@@ -473,6 +473,54 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 /* 正文：与消息流同一个阅读宽度（`--stream-max`），于是「整条右侧」不等于「一行拉满」。 */
 .agent-page-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-8) var(--sp-9) var(--sp-10); }
 .agent-page-inner { max-width: var(--stream-max); margin: 0 auto; }
+/* 三个页签（`CONTEXT.md` **Agent 详情页签**）：详情页自己的容器类 `.ad-tabs`，**不复用** dock 的
+   `.dock-tabs`（那是 dock 形态的容器，`.dock-tabs` 不存在是「详情不是 dock 形态」那条既有结论的
+   机械证据）。选中态只消费 `--selected` 族：底边 = graphic 档、文字 = 正文色，与频道页签
+   （`.tab.is-active`）同一档位语义，零新增色位。 */
+.ad-tabs {
+  display: flex; gap: var(--sp-2); padding: var(--sp-4) var(--sp-9) 0;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+  overflow-x: auto;
+}
+.ad-tab {
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-sm) var(--r-sm) 0 0;
+  color: var(--muted); font-size: var(--fs-sm); font-weight: var(--fw-semi);
+  border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.ad-tab:hover { color: var(--fg); background: var(--fg-soft); }
+.ad-tab.is-active { color: var(--fg); border-bottom-color: var(--selected-graphic); }
+/* skills 页签的双栏：左栏列表、右栏选中技能的详情位置。窄视口下退成一栏（本仓无浏览器图形
+   测试框架，这里只做 CSS 层的换行核对）。 */
+.agent-skill-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-6); }
+.agent-skill-left, .agent-skill-right { min-width: 0; }
+@media (max-width: 900px) {
+  .agent-skill-columns { grid-template-columns: minmax(0, 1fr); }
+}
+/* skills 右栏的详情（#283 / D5）：元数据 → 动作 → 正文。左栏当前行的选中态与左栏导航行同一
+   档位语义（`--selected` 族）：竖条 = graphic 档、字色 = deep 档，零新增色位。 */
+.skill-row { cursor: pointer; padding-left: var(--sp-3); border-left: 2px solid transparent; }
+.skill-row.is-active { border-left-color: var(--selected-graphic); background: var(--selected-soft); }
+.skill-row.is-active b { color: var(--selected-deep); }
+.skill-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.skill-detail-actions { margin: var(--sp-4) 0 var(--sp-5); }
+.kv .v.is-mono { font-family: var(--mono); font-size: var(--fs-mono-xs); overflow-wrap: anywhere; }
+/* SKILL.md 正文：**纯文本**（`white-space: pre-wrap` 保留换行与缩进）+ 等宽族。
+   不解析 Markdown，因此这里不给它任何标题 / 列表的字形——`#` 与 `**` 原样可见。 */
+.skill-detail-markdown {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow-y: auto;
+}
 /* 底部保存条：页面级固定条（不随 `#adBody` 的整块重铺消失，因此错误原文与焦点不会被换掉）。 */
 .agent-save-bar {
   display: flex; align-items: center; gap: var(--sp-4);
@@ -1223,8 +1271,8 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
   overflow-wrap: anywhere;
   user-select: all;
 }
-/* 导入区块的动作组：两个按钮**不铺满**整行（`.agent-actions .btn` 默认 `flex: 1`，那会把
-   「刷新候选 / 导入选中」拉成两条与命令提示等宽的巨条）。 */
+/* 导入区块的动作组：「刷新候选」按钮**不铺满**整行（`.agent-actions .btn` 默认 `flex: 1`，
+   那会把它拉成一条与命令提示等宽的巨条）。 */
 .resource-import-actions .btn { flex: 0 0 auto; }
 
 /* ─── 联网 provider 凭据（#199）：一行 = 名称 + 掩码状态 + password 输入 + 动作组 ───

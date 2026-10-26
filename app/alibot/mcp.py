@@ -59,6 +59,15 @@ class InvalidMCPDeclaration(ValueError):
         super().__init__(f"invalid MCP declaration: {field}")
 
 
+class InvalidMCPDocument(ValueError):
+    """一份 ``mcp.json`` 原文不合法：``location`` 是字段级错误的位置，``message`` 已经渲染好。"""
+
+    def __init__(self, location: str, key: str, locale: Locale | None = None, **params: Any) -> None:
+        self.location = location
+        self.message = render(key, locale, **params)
+        super().__init__(self.message)
+
+
 def normalize_mcp_declaration(values: Mapping[str, Any]) -> dict[str, Any]:
     """校验并收敛一条声明的**完整**形态（库写路径与全局文件读路径共用的唯一实现）。
 
@@ -125,6 +134,76 @@ def normalize_mcp_declaration(values: Mapping[str, Any]) -> dict[str, Any]:
         "env_names": env_names,
         "enabled": bool(values.get("enabled", True)),
     }
+
+
+def mcp_document_entry_count(text: str) -> int:
+    """一份 ``mcp.json`` 原文里的条目计数（``servers`` 数组长度；原文不可解析时为 0）。
+
+    这是**原文事实**，不做合规过滤：一条形状不合法的条目也算一条（它在文件里，装配层才会
+    跳过它并留日志）。写路径已用 :func:`validate_mcp_document` 验过形状，读路径面对的是人
+    手工改过的文件，因此两者都按这同一份计数口径讲话。
+    """
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return 0
+    if not isinstance(payload, Mapping):
+        return 0
+    servers = payload.get("servers")
+    return len(servers) if isinstance(servers, list) else 0
+
+
+def validate_mcp_document(text: str, locale: Locale | None = None) -> list[dict[str, Any]]:
+    """校验一份 ``mcp.json`` **原文**并返回归一化后的条目（写盘路径的唯一内核）。
+
+    三道校验必须全部通过，任何一条不成立都抛 :class:`InvalidMCPDocument`（它的 ``location`` 指出
+    出错的条目 / 字段）：① 文本是可解析的 JSON；② 顶层是对象且 ``servers`` 是数组；
+    ③ 每条经 :func:`normalize_mcp_declaration`（与库写路径、全局文件读路径**同一份实现**）。
+    因此这里只做「形状是否可接受」的判定，一个字都不写。
+
+    与读路径的差异只有一处，且是刻意的：读路径**跳过**坏条目继续装配，写路径**整体拒绝**——
+    人类正在提交一份文件，静默丢掉他写的一条才是坏结果。重名同理（读路径首条生效；这里因为
+    装配层无法表达「同名两条」，也归入拒绝）。
+    """
+    try:
+        payload = json.loads(text)
+    except ValueError as error:
+        raise InvalidMCPDocument(
+            "text", "error.global_mcp_text_invalid_json", locale, reason=str(error)
+        ) from None
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("servers"), list):
+        raise InvalidMCPDocument("servers", "error.global_mcp_servers_missing", locale)
+
+    declarations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(payload["servers"]):
+        position = index + 1
+        if not isinstance(entry, Mapping):
+            raise InvalidMCPDocument(
+                f"servers[{index}]", "error.global_mcp_entry_not_object", locale, position=position
+            )
+        try:
+            normalized = normalize_mcp_declaration(entry)
+        except InvalidMCPDeclaration as error:
+            raise InvalidMCPDocument(
+                f"servers[{index}].{error.field}",
+                "error.global_mcp_entry_invalid",
+                locale,
+                position=position,
+                field=error.field,
+            ) from None
+        name = str(normalized["name"])
+        if name in seen:
+            raise InvalidMCPDocument(
+                f"servers[{index}].name",
+                "error.global_mcp_entry_duplicate",
+                locale,
+                position=position,
+                name=name,
+            )
+        seen.add(name)
+        declarations.append(normalized)
+    return declarations
 
 
 def load_global_mcp_declarations(

@@ -78,6 +78,10 @@ const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avat
     的命令，不是界面文案。`-g` 装到全局、`-a codex` 指向 `~/.agents/skills`（本应用只读那里）。 */
 const SKILL_INSTALL_COMMAND = 'npx skills add <owner/repo> -g -a codex -y';
 
+/** 三个页签的名字与顺序（`CONTEXT.md` **Agent 详情页签** / D1）：顺序固定，不开第四个。 */
+const AGENT_DETAIL_TABS = ['base', 'skills', 'mcp'];
+const AGENT_DETAIL_DEFAULT_TAB = 'base';
+
 /* ─── 界面文案一律按**词条**取值（`i18n.js` 的 `t(key, params)`） ────────────
    本文件里不再有裸中文文案：结构化状态词（四态状态点 / 任务状态 / 轮次结果状态）后端只给**词**，
    这里只把词翻译成界面说法；措辞全部住在词条表的两份取值里。
@@ -186,6 +190,15 @@ const state = {
   // dock 开合，关闭详情时按同一份判据恢复（`openAgentDetail()` / `closeAgentDetail()`）。
   activeAgentId: null,
   agentReturn: { mode: 'channel', dockOpen: false },
+  // 详情页当前页签（呈现状态，不是业务正本）：`'base' | 'skills' | 'mcp'`，顺序固定。
+  // 不落库、不写 URL、不记忆上次值：打开详情与切换成员都回到 `'base'`（D1）。
+  agentDetailTab: AGENT_DETAIL_DEFAULT_TAB,
+  // skills 页签右栏的**选中项**（呈现状态）：技能 id，或 `null`（左栏为空）。
+  // 打开详情 / 切换成员时清空，由 `syncAgentDetailSkill()` 按列表默认选中第一行或回落第一行（D5）。
+  agentDetailSkillId: null,
+  // skills 页签右栏的正文镜像：`{ skillId, loading, error, state, markdown }`。
+  // 它不是业务正本：真值在家目录的 `SKILL.md`；`skillId` 记住读的是哪一条，选中项变了才重读。
+  agentSkillDetail: { skillId: null, loading: false, error: '', state: '', markdown: null },
   // 详情「配置」区块的**草稿**（呈现状态，不是业务正本）：`memberId` 是它属于谁，
   // `draft` 是还没提交的字段值，`error` 是后端拒绝时那句原文。与后端读数不一致时
   // 页面底部出现保存条；关闭详情 / 切换成员 / 切换主线视图时整体作废（不弹二次确认）。
@@ -193,7 +206,7 @@ const state = {
   // 危险操作（本票）：删除走**确认弹窗**——`memberId` 是弹窗里等着被删的那个成员，
   // `busy` 在请求进行中禁用按钮。它是呈现状态，不是业务正本（正本在后端软删除）。
   agentDelete: emptyAgentDeleteState(),
-  // Agent 详情里的**全局 MCP 只读小节**（#236）：列表是 `GET
+  // 全局 MCP **条目视图**（#236；#280 起它在 mcp 页签的下块里）：列表是 `GET
   // /api/agents/{id}/global-mcp-servers` 的镜像；`error` 只用于把读取失败讲人话。
   // 它不是业务正本（真值在成员家目录的 mcp.json + 确认行），切换成员时整体作废。
   globalMcpServers: [],
@@ -228,9 +241,8 @@ const state = {
   channelConfigs: {},
   // 能力配置（#273 / ADR-0031 §二）：MCP 声明与技能**只有一个归口**——Agent 详情。作用域恒为
   // 该成员（`scope_kind=agent&scope_id=<member>`），因此这里按成员缓存：`mcp` / `skills` 是
-  // `GET /api/mcp-servers` / `GET /api/skills` 的镜像，`mcpDraft` 是**还没提交**的表单状态，
-  // `copy` 是「复制到其他成员」的弹层状态（目标多选 + 逐条结果）。清单里只有 `env_names`
-  // （变量名）——值从来不进这条通道。
+  // `GET /api/mcp-servers` / `GET /api/skills` 的镜像，`mcpDraft` 是**还没提交**的表单状态。
+  // 清单里只有 `env_names`（变量名）——值从来不进这条通道。
   agentCapabilities: {},
   // 名册的能力摘要（#273）：按成员缓存两个只读数字（`failed` 只影响那一行的占位），
   // 打开名册时整体作废重读，于是「读不到」不会被留成永久结论。
@@ -4916,7 +4928,7 @@ function memberCard(member, agentsById, canJoin) {
   return card;
 }
 
-/* ─── Agent 详情（主线视图）：一页分区块 + 就地编辑 ───────────────────────
+/* ─── Agent 详情（主线视图）：三个页签 + 就地编辑 ─────────────────────────
    `CONTEXT.md` **Agent** 与 ADR-0011：详情页是**人类面**，可编辑字段全部落在同一个写路径
    `PATCH /api/agents/{id}` 上，后端零改动。
 
@@ -4924,8 +4936,13 @@ function memberCard(member, agentsById, canJoin) {
 
    - **它是主线视图，不是 dock 的形态**（用户 2026-10-22 裁定）：`state.mode === 'agent'` 时
      `#viewAgent` 占据整条右侧，dock 让位；关闭时回到进入前的视图与 dock 开合。
-   - **所有区块在同一页纵向铺开**：统计 / 系统提示 / 配置 / 全局 MCP。没有页签——
-     系统提示紧贴统计之下（用户 2026-10-24 裁定：它是这页上最常改的一格）。
+   - **正文是三个页签**（`CONTEXT.md` **Agent 详情页签**）：基础信息和配置 → skills → mcp，
+     顺序固定、默认停在第一页、不落库也不写 URL；切页签不丢草稿（`state.agentDetailTab`）。
+     基础信息和配置页签内仍是统计 → 系统提示 → 配置 → 危险操作（系统提示紧贴统计之下，
+     用户 2026-10-24 裁定：它是这页上最常改的一格）。
+   - **上下文三项的界面入口已撤除**（D2）：上下文条数 / 压缩阈值 / 迭代上限三格不再渲染，
+     草稿不产出、保存载荷也不提交那三个键（`PATCH` 是部分更新，不提交 ⇒ 库里既有值保持）。
+     那三列与 `PATCH` 的字段面在后端原样保留。
    - **统计只呈现有真实来源的读数**：四个数字全部来自后端 `GET /api/agents/{id}` 的 `stats`
      （`round_outcome` 聚合 + 任务行 + 频道成员表）。前端**不**自己算，也不为填满界面编数值。
      模型标识 / 提供商 / 是否远端 / 远端数据流告知不再在详情页重复一份只读读数：模型标识与
@@ -4989,11 +5006,6 @@ function agentDraftFrom(agent) {
     system_prompt: agent.system_prompt || '',
     enabled: agent.enabled !== false,
     auto_claim: agent.auto_claim === true,
-    context_window_messages:
-      agent.context_window_messages == null ? '' : String(agent.context_window_messages),
-    context_trigger_ratio:
-      agent.context_trigger_ratio == null ? '' : String(agent.context_trigger_ratio),
-    react_max_iters: agent.react_max_iters == null ? '' : String(agent.react_max_iters),
     // 联网档（#202）：`null` = 没有 Agent 级覆盖 = 「跟随频道」。四档之外的值一律落回它，
     // 不猜一个档出来（`submitAgentEdit()` 提交时也只把 `follow` 翻成 `null`，不推断生效档）。
     web_access: WEB_ACCESS_LEVELS.includes(agent.web_access) ? agent.web_access : WEB_ACCESS_FOLLOW,
@@ -5108,6 +5120,11 @@ async function openAgentDetail(memberId) {
   state.globalMcpServers = [];
   state.globalMcpError = '';
   resetAgentCapabilities(memberId);
+  // 页签回到默认那一页：新成员不继承上一个成员的页签位置（D1）。
+  state.agentDetailTab = AGENT_DETAIL_DEFAULT_TAB;
+  // 右栏的选中项与正文也跟着换人：新成员不继承上一个成员选中的技能（D5）。
+  state.agentDetailSkillId = null;
+  state.agentSkillDetail = { skillId: null, loading: false, error: '', state: '', markdown: null };
   setViewMode('agent');
   // 详情一打开，频道 / 私信行就得让位：这条路径不经过整体 `render()`，只重绘 Agent 段
   // 会把频道行留在「当前行」上（两行同时高亮）。
@@ -5191,9 +5208,10 @@ async function messageActiveAgent() {
   }
 }
 
-/** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。 */
+/** 清掉详情页的内容与保存条（关闭 / 切换视图时）：隐藏的节点也不留一帧过期读数。
+    面板容器本身是 `index.html` 的**静态骨架**（`aria-controls` 要有落点），因此只清空每个面板的子节点。 */
 function clearAgentDetail() {
-  replaceChildren($('#adBody'), []);
+  AGENT_DETAIL_TABS.forEach((name) => renderAgentTabPanel(name, []));
   agentNoticeNodes = null;
   const name = $('#adName');
   if (name) name.textContent = '';
@@ -5223,7 +5241,8 @@ async function refreshAgentDetail(memberId) {
 }
 
 /** 读**这一个**成员的全局 `mcp.json` 条目（只读列表 + 运行期读数）。
-    列表失败只影响这一小节：详情其余读数照常可用；未知响应（测试替身默认 `{}`）按空列表处理。 */
+    列表失败只影响这一块（mcp 页签下块的条目视图）：详情其余读数照常可用；未知响应
+    （测试替身默认 `{}`）按空列表处理。 */
 async function loadGlobalMcpServers(memberId) {
   try {
     const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-servers');
@@ -5267,20 +5286,20 @@ function renderAgentDetail() {
   $('#adName').textContent = agent.display_name;
   syncAgentSendButton();
   if (agentDraftDirty() || capabilityDraftDirty()) {
-    // 草稿脏时不重铺整页，但**只读**的那几块仍要跟着后端读数走：全局 MCP 的确认动作
-    // 正是「点完要立刻变成已确认」，而它不经过草稿。这里只换那两节，输入控件原样留着。
+    // 草稿脏时不重铺整页，但**只读**的全局 MCP 条目视图仍要跟着后端读数走：
+    // 确认动作正是「点完要立刻变成已确认」，而它不过草稿。
     refreshGlobalMcpSection();
     // 能力段里有未提交输入时不碰它（后台重绘不该换掉持焦控件）；显式动作自己会重铺。
-    if (!capabilityDraftDirty()) refreshAgentCapabilitiesSection();
+    if (!capabilityDraftDirty()) refreshAgentCapabilitiesPanels();
   } else {
-    replaceChildren($('#adBody'), agentDetailNodes(agent));
+    renderAgentTabPanels(agent);
   }
   paintAgentDangerControls();
   paintAgentDeleteControls();
   renderAgentSaveBar();
 }
 
-/** 就地换掉「全局 MCP」小节（草稿脏时 `renderAgentDetail()` 不重铺整页，但这一节是只读的，
+/** 就地换掉「全局 MCP」条目视图（草稿脏时 `renderAgentDetail()` 不重铺面板，但这一节是只读的，
     它的读数变了就得跟着变）。找不到旧节点（还没铺过）时什么都不做。
 
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
@@ -5289,19 +5308,35 @@ function refreshGlobalMcpSection() {
   replaceSectionNode('agent-detail-section-global-mcp', globalMcpSection());
 }
 
-/** 把某个区块整段换成新节点（标识挂在区块自己的第一个子标题上）。找不到旧节点时什么都不做。
+/** 在某个页签面板的子树里找**自身**带这个 `data-od-id` 的节点（前序：浅的先于深的）。 */
+function findNodeByOdId(root, odId) {
+  if (!root) return null;
+  if (root.getAttribute && root.getAttribute('data-od-id') === odId) return root;
+  const children = Array.prototype.slice.call(root.children || []);
+  for (let index = 0; index < children.length; index += 1) {
+    const found = findNodeByOdId(children[index], odId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 把一个区块换成新节点：在 `#adPanelMcp` 的子树里找到**自身**命中 odId 的那个节点，再用它的
+    `parentNode` 的 children 原位替换（只影响兄弟位次，不动包围它的块）。找不到时什么都不做。
+
+    判据必须是「自身命中」：命中落在后代时换掉**直接子块**会连它包围的整块一起丢掉——
+    mcp 页签的条目视图长在下块（家目录 `mcp.json` 那一块）里，按后代匹配会把整块文本域换掉。
     走 `replaceChildren` 换整份子节点列表、而不是 `Node.replaceWith()`：`el()` 建出来的节点
     与测试替身都只保证前者。 */
 function replaceSectionNode(odId, replacement) {
-  const body = $('#adBody');
-  if (!body || !body.children) return;
-  const hasOdId = (node) => node.getAttribute && node.getAttribute('data-od-id') === odId;
-  const nodes = Array.prototype.slice.call(body.children);
-  const index = nodes.findIndex((node) => hasOdId(node)
-    || (node.querySelectorAll && Array.prototype.some.call(node.querySelectorAll('[data-od-id]'), hasOdId)));
+  const panel = agentTabPanel('mcp');
+  const target = findNodeByOdId(panel, odId);
+  const parent = target && target.parentNode;
+  if (!parent || !parent.children) return;
+  const nodes = Array.prototype.slice.call(parent.children);
+  const index = nodes.indexOf(target);
   if (index < 0) return;
   nodes[index] = replacement;
-  replaceChildren(body, nodes);
+  replaceChildren(parent, nodes);
 }
 
 /** 详情页的分区标题：文案走词条，`data-od-id` 是 `alibot-design-system/SKILL.md` 对
@@ -5312,17 +5347,377 @@ function sectionTitle(key, odId) {
   return node;
 }
 
-/** 详情页的全部区块，按顺序纵向铺开（没有页签）：
-    统计 → 系统提示 → 配置 → 能力（MCP / 技能）→ 全局 MCP（mcp.json 只读）→ 危险操作。 */
-function agentDetailNodes(agent) {
+/** 页签的 DOM id（与 `index.html` 的静态骨架同一份拼法：按钮 `#adTabBase`、面板 `#adPanelBase`）。 */
+function agentTabId(prefix, name) {
+  return prefix + name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** 切页签：只改呈现状态与两个节点的属性，**不重铺**面板内容。
+
+    它不碰 `state.agentEdit.draft`——切页签不丢未提交的草稿是 D1 的硬约束，而面板重铺会把
+    正在输入的控件换成新节点（焦点与光标位置一起丢）。因此这里只对齐 `aria-selected`、`.is-active`
+    与面板的 `hidden`。 */
+function setAgentDetailTab(name) {
+  const tab = AGENT_DETAIL_TABS.indexOf(name) >= 0 ? name : AGENT_DETAIL_DEFAULT_TAB;
+  state.agentDetailTab = tab;
+  AGENT_DETAIL_TABS.forEach((item) => {
+    const on = item === tab;
+    const button = $('#' + agentTabId('adTab', item));
+    if (button) {
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+      button.classList.toggle('is-active', on);
+    }
+    const panel = $('#' + agentTabId('adPanel', item));
+    if (panel) panel.hidden = !on;
+  });
+}
+
+/** 一个页签的面板节点（`#adPanelBase` 等）。它是 `index.html` 的静态骨架（`aria-controls` 要有落点）。 */
+function agentTabPanel(name) {
+  return $('#' + agentTabId('adPanel', name));
+}
+
+/** 往一个页签里铺它自己的区块（只换面板的子节点，不碰其它页签与保存条）。 */
+function renderAgentTabPanel(name, nodes) {
+  const panel = agentTabPanel(name);
+  if (panel) replaceChildren(panel, nodes);
+}
+
+/** **基础信息和配置**页签的区块，按顺序：统计 → 系统提示 → 配置 → 危险操作
+    （危险操作仍是最后一块——误触面离配置字段最远）。 */
+function agentBaseTabNodes(agent) {
   return [
     agentFactsSection(agent),
     agentPromptSection(agent),
     agentConfigSection(agent),
-    agentCapabilitiesSection(agent),
-    globalMcpSection(),
     agentDangerSection(agent),
   ];
+}
+
+/** **skills** 页签：顶部一个「从本机导入」下拉框（#282 / D3 / D4），往下是双栏：左栏技能列表、
+    右栏**选中技能**的详情（#283 / D5）。
+
+    安装面只剩这一条入口：手填绝对路径与上传 zip 两条由 #282 撤除（文本框、文件框与只服务它们的
+    呈现状态一并删）。右栏自上而下：元数据（名称 / 描述 / 来源路径 / 内容 hash / 启停态）→
+    动作（启用 / 停用、删除，作用于**当前选中**项）→ SKILL.md 正文（纯文本）。
+
+    选中态是 `state.agentDetailSkillId`：进入页签默认选中左栏第一行，列表重读后选中项不存在就
+    回落第一行，左栏为空时右栏给空态（`skill.detailEmpty`）。 */
+function agentSkillsTabNodes(agent) {
+  const view = capabilitiesView((agent && agent.id) || state.activeAgentId || '');
+  syncAgentDetailSkill(view);
+  const section = el('section', 'd-sec');
+  section.appendChild(sectionTitle('agentCapabilities.skillTitle', 'agent-capabilities-skill'));
+  section.appendChild(
+    resourceNote(
+      'agentCapabilities.scopeNote',
+      'agent-capabilities-scope',
+      'is-faint',
+      { member: view.memberId },
+    ),
+  );
+
+  section.appendChild(skillImportForm(view));
+
+  const columns = el('div', 'agent-skill-columns');
+  const left = el('div', 'agent-skill-left');
+  if (view.skillError) {
+    left.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
+  }
+  if (view.skillLoading) {
+    left.appendChild(el('div', 'resource-empty', t('skill.loading')));
+  } else if (!view.skills.length) {
+    left.appendChild(el('div', 'resource-empty', t('skill.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'skill-list');
+    view.skills.forEach((skill) =>
+      list.appendChild(skillRow(skill, skill.id === state.agentDetailSkillId)),
+    );
+    left.appendChild(list);
+  }
+  columns.appendChild(left);
+
+  const right = el('div', 'agent-skill-right');
+  right.appendChild(skillDetailNode(view));
+  columns.appendChild(right);
+  section.appendChild(columns);
+  return [section];
+}
+
+/** 当前选中的技能（选中 id 不在列表里时回落第一行）。 */
+function selectedSkill(view) {
+  if (!view || !view.skills.length) return null;
+  return view.skills.find((skill) => skill.id === state.agentDetailSkillId) || view.skills[0];
+}
+
+/** 把选中态落成一条事实：`state.agentDetailSkillId` 与列表里的「当前行」同一处对齐。
+
+    列表重读会换掉整段节点，因此选中项的校正（默认第一行 / 回落第一行 / 清空）也在这里做，
+    调用方不必各自记得。 */
+function syncAgentDetailSkill(view) {
+  const fallback = view && view.skills.length ? view.skills[0].id : null;
+  const keep = view && view.skills.some((skill) => skill.id === state.agentDetailSkillId);
+  state.agentDetailSkillId = keep ? state.agentDetailSkillId : fallback;
+  return state.agentDetailSkillId;
+}
+
+/** 右栏：选中技能的详情（元数据 → 动作 → SKILL.md 正文），左栏为空时给空态。 */
+function skillDetailNode(view) {
+  const node = el('div', 'skill-detail');
+  node.setAttribute('data-od-id', 'agent-skill-detail');
+  const skill = selectedSkill(view);
+  if (!skill) {
+    node.appendChild(el('div', 'resource-empty', t('skill.detailEmpty')));
+    return node;
+  }
+
+  node.appendChild(el('div', 'd-sec-title', t('skill.detailTitle')));
+  // 能力段原有的五格读数：名称 / 描述 / 来源路径 / 内容 hash（**完整**值）/ 启停态。
+  node.appendChild(skillDetailRow('name', t('skill.detailName'), skill.name, 'skill-detail-name'));
+  node.appendChild(
+    skillDetailRow('description', t('skill.detailDescription'), skill.description, 'skill-detail-description'),
+  );
+  node.appendChild(
+    skillDetailRow('source', t('skill.detailSource'), skill.source_path, 'skill-detail-source', true),
+  );
+  node.appendChild(
+    skillDetailRow('hash', t('skill.detailHash'), skill.content_hash, 'skill-detail-hash', true),
+  );
+  node.appendChild(
+    skillDetailRow(
+      'state',
+      t('skill.detailState'),
+      t(skill.enabled ? 'skill.enabled' : 'skill.disabled'),
+      'skill-detail-state',
+    ),
+  );
+
+  // 动作作用于**当前选中**项：启停成功后按后端重读，右栏的启停态跟着变（同一次重铺）。
+  const actions = el('div', 'agent-actions skill-detail-actions');
+  actions.appendChild(
+    resourceButton(
+      skill.enabled ? 'skill.disable' : 'skill.enable',
+      'skillToggle',
+      skill.id,
+      'skill-toggle',
+    ),
+  );
+  actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
+  node.appendChild(actions);
+
+  node.appendChild(skillDetailBody(skill));
+  return node;
+}
+
+/** 右栏的一格读数（键 mono 小字 + 值）。`mono` 的值用等宽族（路径与 hash）。 */
+function skillDetailRow(key, label, value, odId, mono) {
+  const row = el('div', 'kv');
+  row.setAttribute('data-od-id', 'skill-detail-row-' + key);
+  row.appendChild(el('span', 'k', label));
+  const cell = el('span', mono ? 'v is-mono' : 'v', value);
+  cell.setAttribute('data-od-id', odId);
+  row.appendChild(cell);
+  return row;
+}
+
+/** 右栏的 SKILL.md 正文块（纯文本）。
+
+    正文来自 `GET /api/skills/{id}/markdown`（选中时按需读，不塞进列表响应）。它按**纯文本**
+    呈现：节点是 `<pre>`、内容只经 `textContent` 写，因此 Markdown 的 `#` / `**` 原样可见、
+    也不会引入任何转义 / XSS 面（D5：首版不解析 Markdown）。
+
+    四种状态各有各的说法：`markdown` 是正文（`ok`）；`missing` / `invalid` / `unreadable` 各给
+    一句不同的原因——「读不到」不会被读成「这个技能是空的」。 */
+function skillDetailBody(skill) {
+  const box = el('div', 'skill-detail-body');
+  box.setAttribute('data-od-id', 'skill-detail-body');
+  box.appendChild(el('div', 'd-sec-title', t('skill.detailBodyTitle')));
+  const read = state.agentSkillDetail;
+  if (!read || read.skillId !== skill.id || read.loading) {
+    box.appendChild(el('div', 'resource-empty', t('skill.detailBodyLoading')));
+    return box;
+  }
+  if (read.error) {
+    box.appendChild(resourceErrorNode(t('skill.detailBodyFailed', { reason: read.error }), 'skill-detail-body-error'));
+    return box;
+  }
+  if (read.state !== 'ok' || typeof read.markdown !== 'string') {
+    const key = read.state === 'invalid'
+      ? 'skill.detailInvalid'
+      : read.state === 'unreadable'
+        ? 'skill.detailUnreadable'
+        : 'skill.detailMissing';
+    const empty = el('div', 'resource-empty', t(key));
+    empty.setAttribute('data-od-id', 'skill-detail-body-state');
+    empty.setAttribute('data-detail-state', read.state);
+    box.appendChild(empty);
+    return box;
+  }
+  const body = el('pre', 'skill-detail-markdown', read.markdown);
+  body.setAttribute('data-od-id', 'skill-detail-markdown');
+  box.appendChild(body);
+  return box;
+}
+
+/** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 这一份数据。
+
+    两块各自一行数据来源标注（D7）：上块写明「库行 `mcp_server`（`scope_kind='agent'`），装配
+    正本」；下块写明「家目录文件，**同名时库行胜出**」——人看得出同名时谁赢，而装配行为一字不改。
+
+    下块是**同一份文件的两种视图**（D1）：文本域编辑原文（接 `GET/PUT
+    /api/agents/{id}/global-mcp-file` 的**整份原文**，打开页签时显示文件当前原文，保存成功后按
+    后端读数刷新），紧随其后的「全局 MCP」条目视图列出该文件里真实存在的条目与运行期读数。文本域是
+    **纯文本域**，不做 JSON 格式化（N3 第三格：重排就是一次隐式格式化）。 */
+function agentMcpTabNodes(agent) {
+  const memberId = (agent && agent.id) || state.activeAgentId || '';
+  const view = capabilitiesView(memberId);
+
+  // 上块：库行（表 + 表单 + 启停 + 删除 + 远端确认）。
+  const rowsBox = el('section', 'd-sec');
+  rowsBox.appendChild(sectionTitle('agentCapabilities.mcpTitle', 'agent-capabilities-mcp'));
+  rowsBox.appendChild(resourceNote('mcp.sourceDb', 'mcp-source-db', 'is-faint'));
+  rowsBox.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
+  if (view.mcpError) {
+    rowsBox.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
+  }
+  if (view.mcpLoading) {
+    rowsBox.appendChild(el('div', 'resource-empty', t('mcp.loading')));
+  } else if (!view.mcp.length) {
+    rowsBox.appendChild(el('div', 'resource-empty', t('mcp.empty')));
+  } else {
+    const list = el('div');
+    list.setAttribute('data-od-id', 'mcp-list');
+    view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
+    rowsBox.appendChild(list);
+  }
+  rowsBox.appendChild(mcpForm(view));
+
+  // 下块：家目录 `mcp.json` 的原文文本域 + 该文件的条目视图（原「全局 MCP」小节，D1 并入下块）。
+  const fileBox = el('section', 'd-sec');
+  fileBox.appendChild(sectionTitle('agentDetail.mcpFileTitle', 'agent-detail-section-mcp-file'));
+  fileBox.appendChild(resourceNote('agentDetail.mcpFileSource', 'agent-detail-mcp-file-source', 'is-faint'));
+  fileBox.appendChild(mcpFileNode(view));
+  fileBox.appendChild(globalMcpSection());
+
+  return [rowsBox, fileBox];
+}
+
+/** 下块的文本域 + 读数 + 保存动作（#284 / D7）。
+
+    三种状态各有各的说法：读失败是错误行；文件不存在时文本域为空 + 一句「这个文件还没有」的
+    说明（**不是**「读到空文件」）；文件在时文本域显示**原文**。保存成功后按后端读数刷新
+    （文本域与条目计数都是后端返回的那一份）。 */
+function mcpFileNode(view) {
+  const box = el('div', 'agent-mcp-file');
+  box.setAttribute('data-od-id', 'agent-mcp-file');
+
+  if (view.mcpFileLoading) {
+    box.appendChild(el('div', 'resource-empty', t('agentDetail.mcpFileLoading')));
+    return box;
+  }
+  if (view.mcpFileError) {
+    box.appendChild(resourceErrorNode(view.mcpFileError, 'agent-mcp-file-error'));
+  } else if (!view.mcpFileExists) {
+    const empty = el('div', 'hint is-faint', t('agentDetail.mcpFileMissing'));
+    empty.setAttribute('data-od-id', 'agent-mcp-file-missing');
+    box.appendChild(empty);
+  }
+
+  const textarea = el('textarea', 'textarea agent-mcp-file-text');
+  textarea.dataset.mcpFileText = '1';
+  textarea.setAttribute('data-od-id', 'agent-mcp-file-text');
+  textarea.setAttribute('aria-label', t('agentDetail.mcpFileTitle'));
+  textarea.setAttribute('spellcheck', 'false');
+  textarea.value = view.mcpFileDraft;
+  box.appendChild(textarea);
+
+  const meta = el(
+    'div',
+    'resource-meta is-faint',
+    t('agentDetail.mcpFileServers', { count: String(view.mcpFileServers) }),
+  );
+  meta.dataset.mcpFileCount = '1';
+  meta.setAttribute('data-od-id', 'agent-mcp-file-count');
+  box.appendChild(meta);
+
+  const actions = el('div', 'agent-actions');
+  const save = resourceButton('agentDetail.mcpFileSave', 'mcpFileSave', '1', 'agent-mcp-file-save');
+  save.disabled = save.disabled || view.mcpFileSaving;
+  actions.appendChild(save);
+  box.appendChild(actions);
+  return box;
+}
+
+/** 读这个成员家目录 `mcp.json` 的原文（失败只落在下块自己的错误行，不拖垮上块）。 */
+async function loadAgentMcpFile(memberId) {
+  const view = capabilitiesView(memberId);
+  view.mcpFileLoading = !view.mcpFileDraft;
+  view.mcpFileError = '';
+  paintAgentCapabilities();
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-file');
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileExists = Boolean(payload && payload.exists);
+    view.mcpFileServers = Number((payload && payload.servers) || 0);
+    // 原文逐字铺进文本域：不做 JSON 格式化（那会静默重排人写的键序与缩进）。
+    setMcpFileText(view, typeof (payload && payload.text) === 'string' ? payload.text : '');
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileError = t('agentDetail.mcpFileLoadFailed', { reason: err.message });
+  }
+  if (state.activeAgentId !== memberId) return;
+  view.mcpFileLoading = false;
+  paintAgentCapabilities();
+}
+
+/** 把后端读回来的原文写进镜像：`draft`（文本域显示的那一份）与 `base`（后端那一份）同时落，
+    于是「刚读完 / 刚保存成功」时 `mcpFileDraft === mcpFileBase`，文本域不算脏。 */
+function setMcpFileText(view, text) {
+  view.mcpFileDraft = text;
+  view.mcpFileBase = text;
+}
+
+/** 保存下块的原文：一次 `PUT`，body 是**整份原文**（不拆字段、不归一化）。
+
+    成功后按后端返回的读数刷新文本域与条目计数（响应里的 `text` 就是刚写下去的那一份）；
+    失败把后端那句可读原因落到下块自己的错误行，文本域保留人的输入（不清空）。 */
+async function saveAgentMcpFile() {
+  const memberId = state.activeAgentId;
+  if (!memberId) return;
+  const view = capabilitiesView(memberId);
+  if (view.mcpFileSaving) return;
+  view.mcpFileSaving = true;
+  view.mcpFileError = '';
+  paintAgentCapabilities();
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-file', {
+      method: 'PUT',
+      body: { text: view.mcpFileDraft },
+    });
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileExists = Boolean(payload && payload.exists);
+    view.mcpFileServers = Number((payload && payload.servers) || 0);
+    if (typeof (payload && payload.text) === 'string') setMcpFileText(view, payload.text);
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileError = t('agentDetail.mcpFileSaveFailed', { reason: err.message });
+    view.mcpFileSaving = false;
+    paintAgentCapabilities();
+    return;
+  }
+  if (state.activeAgentId !== memberId) return;
+  view.mcpFileSaving = false;
+  paintAgentCapabilities();
+}
+
+/** 把三个页签的内容按当前成员重铺（切成员 / 读路径 / 显式动作都走它）。 */
+function renderAgentTabPanels(agent) {
+  renderAgentTabPanel('base', agentBaseTabNodes(agent));
+  renderAgentTabPanel('skills', agentSkillsTabNodes(agent));
+  renderAgentTabPanel('mcp', agentMcpTabNodes(agent));
+
+  setAgentDetailTab(state.agentDetailTab);
 }
 
 /** 统计：四个数字（同一个 `stats` 来源）。 */
@@ -5470,23 +5865,6 @@ function agentConfigSection(agent) {
   claimGroup.dataset.agentTier = 'auto_claim';
   section.appendChild(agentFieldRow('agent.autoClaimLabel', claimGroup, 'agent.autoClaimNote'));
 
-  section.appendChild(agentFieldRow(
-    'agent.contextWindow',
-    agentInput('context_window_messages', draft.context_window_messages,
-      { type: 'number', min: 1, step: 1, placeholder: '40' }),
-  ));
-  section.appendChild(agentFieldRow(
-    'agent.contextTrigger',
-    agentInput('context_trigger_ratio', draft.context_trigger_ratio,
-      { type: 'number', min: 0.01, max: 0.9, step: 0.01, placeholder: '0.7' }),
-  ));
-  section.appendChild(agentFieldRow(
-    'agent.maxIters',
-    agentInput('react_max_iters', draft.react_max_iters,
-      { type: 'number', min: 1, step: 1, placeholder: '30' }),
-    'agent.runtimeDefaultHint',
-  ));
-
   // 联网档（#202 / 2026-10-21 修订）：Agent 级入口。「跟随频道（默认）」= 不写 Agent 级覆盖，
   // 选中它保存时提交 `web_access: null`（库内列回到 NULL）；其余三档与频道设置里的同名同义。
   const accessGroup = agentTierGroup(
@@ -5602,11 +5980,17 @@ function agentPromptSection(agent) {
   return section;
 }
 
-/** 全局 MCP 小节（#236）：**只读**展示成员家目录 `mcp.json` 里的真实条目。
-    全局层由人维护，因此这里没有编辑 / 启停 / 删除；只对远端未确认条目给一个确认动作。 */
+/** 全局 MCP 条目视图（#236 / D1 并入 mcp 页签**下块**）：**只读**展示成员家目录 `mcp.json`
+    里的真实条目——它与下块的文本域是同一份数据的两种视图，因此挂在同一个块里而不是单独成段。
+    条目视图自身没有编辑 / 启停 / 删除（要改原文走上方的文本域）；只对远端未确认条目给一个确认动作。
+
+    标识挂在这个 `<section>` **自己**身上（而不是像别处那样挂在标题上）：草稿脏时的
+    `refreshGlobalMcpSection()` 要原位换掉整节，而标识不在根节点上就只能靠「后代命中」找到它
+    ——那会把包围它的整块（下块）一起换掉。 */
 function globalMcpSection() {
   const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentDetail.globalMcpTitle', 'agent-detail-section-global-mcp'));
+  section.setAttribute('data-od-id', 'agent-detail-section-global-mcp');
+  section.appendChild(sectionTitle('agentDetail.globalMcpTitle', 'agent-detail-section-global-mcp-title'));
   if (state.globalMcpError) {
     section.appendChild(el('div', 'hint', state.globalMcpError));
   } else if (!state.globalMcpServers.length) {
@@ -5692,7 +6076,9 @@ async function submitAgentEdit() {
   const memberId = edit.memberId || state.activeAgentId;
   if (!memberId || !edit.draft) return;
   const draft = edit.draft;
-  const numberOrNull = (value) => (String(value).trim() === '' ? null : Number(value));
+  // 载荷只含界面真的有的字段（D2）：上下文条数 / 压缩阈值 / 迭代上限三格已从界面撤除，
+  // 因此**不提交**那三个键。`PATCH /api/agents/{id}` 是部分更新，不出现的字段不写入——
+  // 这是「撤界面不破坏库里既有值」的机械保证；反过来提交 `null` 会一次清空那三列。
   const payload = {
     display_name: String(draft.display_name || '').trim(),
     role: String(draft.role || '').trim(),
@@ -5700,9 +6086,6 @@ async function submitAgentEdit() {
     system_prompt: String(draft.system_prompt || '').trim(),
     enabled: Boolean(draft.enabled),
     auto_claim: Boolean(draft.auto_claim),
-    context_window_messages: numberOrNull(draft.context_window_messages),
-    context_trigger_ratio: numberOrNull(draft.context_trigger_ratio),
-    react_max_iters: numberOrNull(draft.react_max_iters),
     // 联网档（#202）：`follow` 是界面上的「跟随频道」档，提交 **`web_access: null`**——后端把它
     // 解释成「清除 Agent 级覆盖」（写库 NULL），所以从具体档位切回跟随频道真的会清掉覆盖，
     // 而不是只改界面（ADR-0026 §十五）。
@@ -6983,8 +7366,9 @@ function renderChannelConfigModalContent() {
   nodes.push(actions);
 
   // ⑧ 工作区与数据面（#156 的只读读数段）：项目根 / 后端 / Docker 状态。
-  // MCP 与技能**不在**这里（#273）：它们是 Agent 级能力，归口在 Agent 详情的能力段；
-  // 频道级旧行仍留在库里（弃用不删），但配置面不展示、也不做「已弃用」提示（ADR-0031 §二）。
+  // MCP 与技能**不在**这里（#273）：它们是 Agent 级能力，归口在 Agent 详情页（MCP 在 mcp 页签、
+  // 技能在 skills 页签）；频道级旧行仍留在库里（弃用不删），但配置面不展示、也不做「已弃用」提示
+  // （ADR-0031 §二）。
   nodes.push(workspaceManagementSection(view));
 
   replaceChildren(body, nodes);
@@ -6992,7 +7376,8 @@ function renderChannelConfigModalContent() {
 
 /* ─── 能力配置（#273 / ADR-0031 §二 #270 修订）──────────────────────────────
 
-   MCP 声明与技能**只有一个归口**：Agent 详情的能力段（同屏两个 kind，作用域恒为该成员
+   MCP 声明与技能**只有一个归口**：Agent 详情页（`#280` 起拆成 skills / mcp 两个页签，
+   MCP 在 mcp 页签、技能在 skills 页签；两处作用域恒为该成员
    `scope_kind=agent&scope_id=<member>`，没有 scope 选择器）。
 
    ① **频道配置只保留工作区与数据面的只读读数**（项目根 / 后端 / Docker 状态，均来自
@@ -7003,7 +7388,7 @@ function renderChannelConfigModalContent() {
 
    - **只出现变量名**：MCP 载荷只有 `env_names`；表单也只收变量名，值没有输入口，
      因此界面不存在「把值带进请求」的形状。
-   - **配置动作不碰消息面**：增删改 / 启停 / 确认 / 复制之后只重读各自的清单，不刷新消息、
+   - **配置动作不碰消息面**：增删改 / 启停 / 确认之后只重读各自的清单，不刷新消息、
      不模拟唤醒。后端本来就不落消息（#151 / #152），前端也不制造「好像发生了什么」的假象。 */
 
 const MCP_TRANSPORTS = ['stdio', 'http', 'sse'];
@@ -7031,24 +7416,31 @@ function emptyCapabilitiesView(memberId) {
     mcpDraft: emptyMcpDraft(),
     mcpEditingId: null,
     mcpConsentTimes: {},
+    // mcp 页签**下块**的家目录 `mcp.json` 原文镜像（#284 / D7）：`exists` / `servers` / `text`
+    // 是后端读数，`error` 是读 / 写失败时那句可读原因。真值永远在那个文件里，这里只是镜像。
+    // `mcpFileBase` 是**后端读回来的那一份原文**（读路径与保存成功都写它），与 `mcpFileDraft`
+    // 不一致 ⇒ 文本域有未提交的改动（`capabilityDraftDirty()` 的判据之一）。
+    mcpFileLoading: Boolean(memberId),
+    mcpFileError: '',
+    mcpFileDraft: '',
+    mcpFileBase: '',
+    mcpFileSaving: false,
+    mcpFileExists: false,
+    mcpFileServers: 0,
     skillLoading: Boolean(memberId),
     skillError: '',
-    skillInstalling: false,
     skills: [],
-    skillSourcePath: '',
-    // 「从 ~/.agents/skills 导入」区块（#277 / ADR-0036）：候选是后端只读读数，
-    // `skillImportPicks` 只是**未提交**的勾选（默认 = 可导入且未安装），`skillImportResults`
-    // 是逐条导入结果（留到下一次扫描）。
+    // 「从 ~/.agents/skills 导入」区块（#277 / ADR-0036；#282 收成一个下拉框）：候选是后端只读读数，
+    // `skillImportPick` 只是**未提交**的单选（默认空 = 不预选任何项），`skillImportResults`
+    // 是上一次导入的结果（保留到下一次导入或重新打开详情）。
     skillImportLoading: false,
     skillImportError: '',
     skillImportSource: '',
     skillImportAvailable: false,
     skillImportCandidates: [],
-    skillImportPicks: [],
+    skillImportPick: '',
     skillImportResults: [],
     skillImportBusy: false,
-    // 复制弹层：`null` = 没开；`kind` / `id` 指向发起复制的那一行。
-    copy: null,
   };
 }
 
@@ -7072,14 +7464,21 @@ function resetAgentCapabilities(memberId) {
   state.agentCapabilities[memberId] = emptyCapabilitiesView(memberId);
 }
 
-/** 能力段的表单里有没有**未提交**的输入：有就不整段重铺（那会换掉持焦控件）。 */
+/** 能力段的表单里有没有**未提交**的输入：有就不整段重铺（那会换掉持焦控件）。
+
+    两处输入面都算：MCP 库行表单（`mcpEditingId` / `mcpDraft` 五个字段）与 mcp 页签下块的
+    `mcp.json` 文本域（`mcpFileDraft` 与后端读数 `mcpFileBase` 不一致）。文本域算进来是必须的：
+    `renderAgentDetail()` 的非脏分支会整块重铺 mcp 页签，换掉节点就是丢焦点与光标（输入委派只
+    保住了文字，没保住光标）。 */
 function capabilityDraftDirty() {
   const view = activeCapabilitiesView();
   if (!view) return false;
   if (view.mcpEditingId) return true;
+  if (view.mcpFileDraft !== view.mcpFileBase) return true;
   const draft = view.mcpDraft;
-  const typed = ['name', 'command', 'args', 'url', 'envNames'].some((key) => String(draft[key] || '').trim());
-  return typed || Boolean(String(view.skillSourcePath || '').trim());
+  return ['name', 'command', 'args', 'url', 'envNames'].some((key) =>
+    String(draft[key] || '').trim(),
+  );
 }
 
 function isRemoteTransport(transport) {
@@ -7164,13 +7563,15 @@ function dockerStatusOf(agents, backend) {
   return { state: 'unused', text: t('workspaceMgmt.dockerUnused') };
 }
 
-/** 一个成员的两条能力清单 + 导入候选（并行读；各段自己的错误行，一段读不到不牵连另一段）。 */
+/** 一个成员的两条能力清单 + 导入候选 + 家目录 `mcp.json` 原文（并行读；各段自己的错误行，
+    一段读不到不牵连另一段）。 */
 async function loadAgentCapabilities(memberId) {
   if (!memberId) return;
   await Promise.all([
     loadAgentMcpServers(memberId),
     loadAgentSkills(memberId),
     loadSkillImportCandidates(memberId),
+    loadAgentMcpFile(memberId),
   ]);
 }
 
@@ -7195,7 +7596,10 @@ async function loadAgentMcpServers(memberId) {
   paintAgentCapabilities();
 }
 
-/** 读技能列表（agent scope；只含元数据与 hash，不含字节）。 */
+/** 读技能列表（agent scope；只含元数据与 hash，不含字节）。
+
+    列表重读后选中项要重新对齐（默认第一行 / 已删则回落第一行），因此这里调 `paint` 前先
+    校正选中态；正文始终跟着当前选中项读（`loadSkillMarkdown()`），不塞进列表响应。 */
 async function loadAgentSkills(memberId) {
   const view = capabilitiesView(memberId);
   view.skillLoading = true;
@@ -7213,11 +7617,66 @@ async function loadAgentSkills(memberId) {
   }
   if (state.activeAgentId !== memberId) return;
   view.skillLoading = false;
+  syncAgentDetailSkill(view);
+  paintAgentCapabilities();
+  await loadSkillMarkdown(memberId);
+}
+
+/** 读右栏的 SKILL.md 正文（**按需**：选中项变了才读）。
+
+    正文不塞进列表响应（列表仍然轻）。响应恒带 `state`：`ok` 是正文，其余三种是三种空态，
+    前端的呈现按 `state` 分开说（「读不到」不会被读成「这个技能是空的」）。 */
+async function loadSkillMarkdown(memberId) {
+  const view = capabilitiesView(memberId);
+  const skill = selectedSkill(view);
+  if (!skill) {
+    state.agentSkillDetail = { skillId: null, loading: false, error: '', state: '', markdown: null };
+    paintAgentCapabilities();
+    return;
+  }
+  if (state.agentSkillDetail.skillId === skill.id && !state.agentSkillDetail.error) return;
+  state.agentSkillDetail = { skillId: skill.id, loading: true, error: '', state: '', markdown: null };
+  paintAgentCapabilities();
+  try {
+    const payload = await api('/api/skills/' + encodeURIComponent(skill.id) + '/markdown');
+    if (state.activeAgentId !== memberId || state.agentDetailSkillId !== skill.id) return;
+    state.agentSkillDetail = {
+      skillId: skill.id,
+      loading: false,
+      error: '',
+      state: String(payload.state || ''),
+      markdown: typeof payload.markdown === 'string' ? payload.markdown : null,
+    };
+  } catch (err) {
+    if (state.activeAgentId !== memberId || state.agentDetailSkillId !== skill.id) return;
+    state.agentSkillDetail = {
+      skillId: skill.id,
+      loading: false,
+      error: err.message,
+      state: '',
+      markdown: null,
+    };
+  }
+  if (state.activeAgentId !== memberId) return;
   paintAgentCapabilities();
 }
 
+/** 点左栏一行：换选中项并读它的正文（选中即读，一次一条）。
+
+    换选中项本身是**呈现**动作，离线也照样生效（读不到正文时右栏给「读取失败」那一行）；
+    只有读正文需要在线。 */
+async function selectAgentSkill(skillId) {
+  const view = activeCapabilitiesView();
+  if (!view || !view.memberId) return;
+  if (!view.skills.some((skill) => skill.id === skillId)) return;
+  if (state.agentDetailSkillId === skillId) return;
+  state.agentDetailSkillId = skillId;
+  paintAgentCapabilities();
+  await loadSkillMarkdown(view.memberId);
+}
+
 /** 读外部 CLI 落点 ``~/.agents/skills`` 的候选（只读端点；失败只落在导入区块自己的错误行）。
-    默认勾选「可导入且未安装」的项：那是这个动作的常见意图，已安装 / 不可导入的项不预选。 */
+    下拉框**默认不预选**任何项（空选项的文案是 `skill.importPickPlaceholder`）。 */
 async function loadSkillImportCandidates(memberId) {
   const view = capabilitiesView(memberId);
   view.skillImportLoading = true;
@@ -7231,10 +7690,11 @@ async function loadSkillImportCandidates(memberId) {
     view.skillImportSource = payload.source || '';
     view.skillImportAvailable = Boolean(payload.available);
     view.skillImportCandidates = payload.candidates || [];
-    view.skillImportPicks = view.skillImportCandidates
-      .filter((candidate) => candidate.importable && !candidate.installed)
-      .map((candidate) => candidate.name);
-    view.skillImportResults = [];
+    // 重扫可能让已选中的那一条变成「已安装」：那就不再是可选项，回到空选择。
+    const picked = view.skillImportCandidates.find(
+      (candidate) => candidate.name === view.skillImportPick,
+    );
+    if (!picked || !skillImportSelectable(picked)) view.skillImportPick = '';
   } catch (err) {
     if (state.activeAgentId !== memberId) return;
     view.skillImportError = t('skill.importScanFailed', { reason: err.message });
@@ -7244,34 +7704,38 @@ async function loadSkillImportCandidates(memberId) {
   paintAgentCapabilities();
 }
 
-/** 候选行的状态后缀：可导入 / 已安装 / 不可导入：<reason>（三种互斥，按优先级取一个）。 */
-function skillImportStatusKey(candidate) {
-  if (candidate.installed) return 'skill.importStatusInstalled';
-  if (candidate.importable) return 'skill.importStatusReady';
-  return 'skill.importStatusBlocked';
+/** 一条候选属于哪一组：可选 / 已安装（禁用）/ 不可导入（禁用 + 原因）。
+    三者互斥，已安装优先于不可导入（那一行存在的意义是「不用再导」）。 */
+function skillImportGroupKey(candidate) {
+  if (candidate.installed) return 'skill.importGroupInstalled';
+  if (candidate.importable) return 'skill.importGroupReady';
+  return 'skill.importGroupBlocked';
 }
 
-/** 一条候选是否可勾选：不可导入与已安装都渲染成禁用复选框（不许提交一个必然失败的导入）。 */
+/** 一条候选的选项文本：可选项只有名字；后两组拼上状态后缀（不可导入的带原因）。 */
+function skillImportOptionText(candidate) {
+  if (candidate.installed) return candidate.name + '（' + t('skill.importStatusInstalled') + '）';
+  if (candidate.importable) return candidate.name;
+  return candidate.name + '（' + t('skill.importStatusBlocked', { reason: candidate.reason || '' }) + '）';
+}
+
+/** 一条候选能不能被选中：已安装与不可导入都渲染成禁用选项（不许提交一个必然失败的导入）。 */
 function skillImportSelectable(candidate) {
   return Boolean(candidate.importable) && !candidate.installed;
 }
 
-function toggleSkillImportPick(input) {
+/** 下拉框的选择变化：只记**未提交**的单选（写路径在选中时立即发，见 `submitSkillImport`）。 */
+function pickSkillImportCandidate(select) {
   const view = activeCapabilitiesView();
   if (!view) return;
-  const name = input.dataset.skillImportPick;
-  if (!name) return;
-  const selected = Boolean(input.checked);
-  const index = view.skillImportPicks.indexOf(name);
-  if (selected && index < 0) view.skillImportPicks.push(name);
-  if (!selected && index >= 0) view.skillImportPicks.splice(index, 1);
-  view.skillImportError = '';
-  // 「导入选中」的可用性跟着勾选走（一个都没勾就该禁用），因此这里重铺这一段。
-  paintAgentCapabilities();
+  view.skillImportPick = String(select.value || '');
+  if (view.skillImportPick) submitSkillImport();
 }
 
-/** 「从 ~/.agents/skills 导入」区块：命令提示 + 刷新 + 多选 + 逐条结果。
-    命令是 ASCII 常量（不放进词条值）；说明文字走词条表。 */
+/** 「从本机导入」区块：命令提示 + 刷新 + **一个**下拉框（#282 / D3 / D4）。
+
+    入口形态是下拉框——不是弹窗、也不是多选勾选列表；候选按 可选 / 已安装 / 不可导入 三组呈现，
+    **一次只导一个**（选中即发一次 POST）。命令是 ASCII 常量（不放进词条值）；说明文字走词条表。 */
 function skillImportForm(view) {
   const box = el('div', 'resource-add');
   box.setAttribute('data-od-id', 'skill-import');
@@ -7290,37 +7754,26 @@ function skillImportForm(view) {
   const scan = resourceButton('skill.importScanButton', 'skillImportScan', '1', 'skill-import-scan');
   scan.disabled = scan.disabled || view.skillImportLoading || view.skillImportBusy;
   actions.appendChild(scan);
-  const run = resourceButton('skill.importRunButton', 'skillImportRun', '1', 'skill-import-run');
-  run.disabled = run.disabled || view.skillImportBusy || !view.skillImportPicks.length;
-  actions.appendChild(run);
   box.appendChild(actions);
 
   if (view.skillImportLoading) {
     box.appendChild(el('div', 'resource-empty', t('skill.importLoading')));
-  }
-  if (view.skillImportError) {
+  } else if (view.skillImportError) {
+    // 扫描失败：下拉框没有可信内容，只给这一行（再说一次「读不到」没有意义）。
     box.appendChild(resourceErrorNode(view.skillImportError, 'skill-import-error'));
-  }
-  if (!view.skillImportLoading) {
-    if (view.skillImportCandidates.length) {
-      const list = el('div');
-      list.setAttribute('data-od-id', 'skill-import-candidates');
-      view.skillImportCandidates.forEach((candidate) => {
-        list.appendChild(skillImportRow(candidate, view));
-      });
-      box.appendChild(list);
-    } else if (!view.skillImportError) {
-      // 没有候选、也没有读失败：来源缺席与「来源在但还没装技能」是两种不同的空态。
-      box.appendChild(
-        el(
-          'div',
-          'resource-empty',
-          view.skillImportAvailable
-            ? t('skill.importEmpty')
-            : t('skill.importUnavailable', { source: view.skillImportSource || '~/.agents/skills' }),
-        ),
-      );
-    }
+  } else if (!view.skillImportCandidates.length) {
+    // 没有候选：来源缺席与「来源在但还没装技能」是两种不同的空态。
+    box.appendChild(
+      el(
+        'div',
+        'resource-empty',
+        view.skillImportAvailable
+          ? t('skill.importEmpty')
+          : t('skill.importUnavailable', { source: view.skillImportSource || '~/.agents/skills' }),
+      ),
+    );
+  } else {
+    box.appendChild(skillImportPicker(view));
   }
 
   if (view.skillImportResults.length) {
@@ -7328,8 +7781,18 @@ function skillImportForm(view) {
     results.setAttribute('data-od-id', 'skill-import-status');
     results.dataset.skillImportStatus = '1';
     view.skillImportResults.forEach((result) => {
-      const line = el('div', 'resource-meta import-result', skillImportResultText(result));
+      const failed = result.status === 'failed';
+      const line = el(
+        'div',
+        'resource-meta import-result' + (failed ? ' is-error' : ''),
+        skillImportResultText(result),
+      );
       line.dataset.importStatus = result.status;
+      if (failed) {
+        // 失败的那一条就是导入区**自己的错误行**：后端那句可读原因落在这里，不拖垮右栏。
+        line.setAttribute('role', 'alert');
+        line.setAttribute('data-od-id', 'skill-import-error');
+      }
       results.appendChild(line);
     });
     box.appendChild(results);
@@ -7340,45 +7803,50 @@ function skillImportForm(view) {
   return box;
 }
 
+/** 「从本机导入」的下拉框：空选项 + 三个 `<optgroup>`（可选 / 已安装 / 不可导入）。
+
+    空集合的组不渲染（一个没有内容的组标题只是噪声）；一个可选项都没有时仍然渲染下拉框，
+    因为「全都装过了」与「来源缺席」是两种不同的状态。 */
+function skillImportPicker(view) {
+  const field = el('div', 'field');
+  field.appendChild(el('label', null, t('skill.importPickLabel')));
+  const select = el('select', 'input');
+  select.setAttribute('data-od-id', 'skill-import-picker');
+  select.dataset.skillImportPick = '1';
+  select.disabled = view.skillImportBusy || !state.online;
+
+  const placeholder = el('option', null, t('skill.importPickPlaceholder'));
+  placeholder.value = '';
+  select.appendChild(placeholder);
+
+  ['skill.importGroupReady', 'skill.importGroupInstalled', 'skill.importGroupBlocked'].forEach(
+    (groupKey) => {
+      const members = view.skillImportCandidates.filter(
+        (candidate) => skillImportGroupKey(candidate) === groupKey,
+      );
+      if (!members.length) return;
+      const group = el('optgroup');
+      group.setAttribute('label', t(groupKey));
+      members.forEach((candidate) => {
+        const item = el('option', null, skillImportOptionText(candidate));
+        item.value = candidate.name;
+        item.disabled = !skillImportSelectable(candidate);
+        group.appendChild(item);
+      });
+      select.appendChild(group);
+    },
+  );
+  select.value = view.skillImportPick;
+  field.appendChild(select);
+  return field;
+}
+
 /** 导入结果的一行：`imported` / `skipped`（409 同名已存在）/ `failed`（其余可读原因）。
-    文案在**渲染时**取词条（与 `copyResultText` 同一口径）：切语言后已导入的行跟着换说法。 */
+    文案在**渲染时**取词条：切语言后已导入的行跟着换说法。 */
 function skillImportResultText(result) {
   if (result.status === 'imported') return t('skill.importResultDone', { name: result.name });
   if (result.status === 'skipped') return t('skill.importResultSkipped', { name: result.name });
   return t('skill.importResultFailed', { name: result.name, reason: result.reason || '' });
-}
-
-/** 一个候选：复选框 + 名字 + 描述 + 状态后缀（已安装 / 不可导入的项禁用）。 */
-function skillImportRow(candidate, view) {
-  const row = el('div', 'resource-row');
-  row.setAttribute('data-od-id', 'skill-import-row');
-  row.dataset.skillImportCandidate = candidate.name;
-  const main = el('div', 'resource-main');
-  const title = el('div', 'resource-title');
-  const label = el('label');
-  const checkbox = el('input');
-  checkbox.type = 'checkbox';
-  checkbox.dataset.skillImportPick = candidate.name;
-  checkbox.setAttribute('data-od-id', 'skill-import-pick-' + candidate.name);
-  checkbox.checked = view.skillImportPicks.indexOf(candidate.name) >= 0;
-  checkbox.disabled = !skillImportSelectable(candidate);
-  label.appendChild(checkbox);
-  label.appendChild(document.createTextNode(' ' + candidate.name));
-  title.appendChild(label);
-  main.appendChild(title);
-  if (candidate.description) main.appendChild(el('div', 'resource-meta', candidate.description));
-  const statusKey = skillImportStatusKey(candidate);
-  main.appendChild(
-    el(
-      'div',
-      'resource-meta is-faint',
-      candidate.importable || candidate.installed
-        ? t(statusKey)
-        : t(statusKey, { reason: candidate.reason || '' }),
-    ),
-  );
-  row.appendChild(main);
-  return row;
 }
 
 function resourceNote(key, odId, className, params) {
@@ -7527,7 +7995,6 @@ function mcpRow(server, view) {
   }
   actions.appendChild(resourceButton('mcp.edit', 'mcpEdit', server.id, 'mcp-edit'));
   actions.appendChild(resourceButton('mcp.delete', 'mcpDelete', server.id, 'mcp-delete'));
-  actions.appendChild(resourceButton('agentCapabilities.copyTo', 'copyMcp', server.id, 'capability-copy'));
   row.appendChild(main);
   row.appendChild(actions);
   return row;
@@ -7606,88 +8073,35 @@ function mcpForm(view) {
   return box;
 }
 
-/* ── Agent 详情的能力段（两个 kind 同屏，作用域恒为该成员） ─────────────── */
+/* ── 能力段的读路径（两个 kind 各在自己的页签里，作用域恒为该成员） ────────── */
 
-/** 能力段：标题 + 影响范围一句话 + MCP 小节 + 技能小节（含各自的复制弹层）。
-    只吃**后端读数**；读不到只落在对应小节的错误行，不拖垮详情页的其它区块。 */
-function agentCapabilitiesSection(agent) {
-  const memberId = (agent && agent.id) || state.activeAgentId || '';
-  const view = capabilitiesView(memberId);
-  const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentCapabilities.title', 'agent-capabilities-section'));
-  section.appendChild(
-    resourceNote(
-      'agentCapabilities.scopeNote',
-      'agent-capabilities-scope',
-      'is-faint',
-      { member: memberId },
-    ),
-  );
+/** 重铺能力相关的那两个页签：读路径与**显式动作**（编辑 / 安装 / 启停 / 删除）都走它。
 
-  // ① MCP 声明。
-  section.appendChild(el('div', 'd-sec-title', t('agentCapabilities.mcpTitle')))
-    .setAttribute('data-od-id', 'agent-capabilities-mcp');
-  section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
-  if (view.mcpError) {
-    section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
-  }
-  if (view.mcpLoading) {
-    section.appendChild(el('div', 'resource-empty', t('mcp.loading')));
-  } else if (!view.mcp.length) {
-    section.appendChild(el('div', 'resource-empty', t('mcp.empty')));
-  } else {
-    const list = el('div');
-    list.setAttribute('data-od-id', 'mcp-list');
-    view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
-    section.appendChild(list);
-  }
-  if (view.copy && view.copy.kind === 'mcp') section.appendChild(capabilityCopyNode(view));
-  section.appendChild(mcpForm(view));
-
-  // ② 技能。
-  section.appendChild(el('div', 'd-sec-title', t('agentCapabilities.skillTitle')))
-    .setAttribute('data-od-id', 'agent-capabilities-skill');
-  section.appendChild(resourceNote('skill.scopeNote', 'skill-scope-note', 'is-faint'));
-  if (view.skillError) {
-    section.appendChild(resourceErrorNode(view.skillError, 'skill-error'));
-  }
-  if (view.skillLoading) {
-    section.appendChild(el('div', 'resource-empty', t('skill.loading')));
-  } else if (!view.skills.length) {
-    section.appendChild(el('div', 'resource-empty', t('skill.empty')));
-  } else {
-    const list = el('div');
-    list.setAttribute('data-od-id', 'skill-list');
-    view.skills.forEach((skill) => list.appendChild(skillRow(skill)));
-    section.appendChild(list);
-  }
-  if (view.copy && view.copy.kind === 'skill') section.appendChild(capabilityCopyNode(view));
-  section.appendChild(skillInstallForm(view));
-  section.appendChild(skillImportForm(view));
-  return section;
-}
-
-/** 就地换掉能力段（草稿脏时 `renderAgentDetail()` 不整页重铺；这一段的读数是后端事实，
-    换了就得跟着换）。找不到旧节点（还没铺过）时什么都不做。 */
-function refreshAgentCapabilitiesSection() {
-  const agent = state.activeAgentId ? agentById(state.activeAgentId) : null;
-  if (!agent) return;
-  replaceSectionNode('agent-capabilities-section', agentCapabilitiesSection(agent));
-}
-
-/** 重铺能力段：读路径与**显式动作**（编辑 / 安装 / 复制 / 启停 / 删除）都走它。
-    轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰这一段（见下）。 */
+    轮次状态这类后台重绘走 `renderAgentDetail()`，那一支在表单脏时不碰它们（见那里的注释）——
+    后台重绘不该把持焦控件换成新节点。 */
 function paintAgentCapabilities() {
   if (!state.activeAgentId) return;
-  refreshAgentCapabilitiesSection();
+  const agent = agentById(state.activeAgentId);
+  if (!agent) return;
+  renderAgentTabPanel('skills', agentSkillsTabNodes(agent));
+  renderAgentTabPanel('mcp', agentMcpTabNodes(agent));
 }
 
-/* ── ③ 技能（列表 / 本机目录 / zip / 启停 / 删除） ─────────────────────── */
+/** 草稿脏时 `renderAgentDetail()` 只换这两块（读数是后端事实，换了就得跟着换）。 */
+function refreshAgentCapabilitiesPanels() {
+  paintAgentCapabilities();
+}
 
-function skillRow(skill) {
-  const row = el('div', 'resource-row');
+/* ── ③ 技能（列表 / 从本机导入 / 启停 / 删除） ───────────────────────── */
+
+function skillRow(skill, current) {
+  const row = el('div', 'resource-row skill-row' + (current ? ' is-active' : ''));
   row.dataset.skill = skill.id;
   row.setAttribute('data-od-id', 'capability-skill-row');
+  row.setAttribute('role', 'button');
+  row.setAttribute('tabindex', '0');
+  // 选中态是**一条事实的两处呈现**：`is-active` 给视觉、`aria-current` 给读屏（与左栏导航行同一口径）。
+  if (current) row.setAttribute('aria-current', 'true');
   const main = el('div', 'resource-main');
   const title = el('div', 'resource-title');
   title.appendChild(el('b', null, skill.name));
@@ -7700,62 +8114,8 @@ function skillRow(skill) {
   short.setAttribute('title', t('skill.hashTitle', { hash: skill.content_hash || '' }));
   hash.appendChild(short);
   main.appendChild(hash);
-
-  const actions = el('div', 'resource-actions');
-  actions.appendChild(
-    resourceButton(
-      skill.enabled ? 'skill.disable' : 'skill.enable',
-      'skillToggle',
-      skill.id,
-      'skill-toggle',
-    ),
-  );
-  actions.appendChild(resourceButton('skill.delete', 'skillDelete', skill.id, 'skill-delete'));
-  actions.appendChild(resourceButton('agentCapabilities.copyTo', 'copySkill', skill.id, 'capability-copy'));
   row.appendChild(main);
-  row.appendChild(actions);
   return row;
-}
-
-/** 安装表单：本机目录 + zip 两条既有路径（元数据进正文 / query，字节走正文）。 */
-function skillInstallForm(view) {
-  const install = el('div', 'resource-add');
-  install.setAttribute('data-od-id', 'skill-install');
-  install.appendChild(el('div', 'd-sec-title', t('skill.installTitle')));
-
-  const dirRow = el('div', 'resource-form-row');
-  const dirField = el('div', 'field');
-  dirField.appendChild(el('label', null, t('skill.installDir')));
-  const dir = el('input', 'input');
-  dir.type = 'text';
-  dir.dataset.skillSource = '1';
-  dir.setAttribute('data-od-id', 'skill-source');
-  dir.placeholder = t('skill.installDirPlaceholder');
-  dir.value = view.skillSourcePath;
-  dirField.appendChild(dir);
-  dirRow.appendChild(dirField);
-  const dirActions = el('div', 'agent-actions');
-  dirActions.appendChild(resourceButton('skill.installDirButton', 'skillInstallDir', '1', 'skill-install-dir'));
-  dirRow.appendChild(dirActions);
-  install.appendChild(dirRow);
-  install.appendChild(resourceNote('skill.installDirHint', 'skill-install-dir-hint', 'is-faint'));
-
-  const zipRow = el('div', 'resource-form-row');
-  const zipField = el('div', 'field');
-  zipField.appendChild(el('label', null, t('skill.installZip')));
-  const zip = el('input', 'input');
-  zip.type = 'file';
-  zip.accept = '.zip,application/zip';
-  zip.dataset.skillZip = '1';
-  zip.setAttribute('data-od-id', 'skill-zip');
-  zipField.appendChild(zip);
-  zipRow.appendChild(zipField);
-  install.appendChild(zipRow);
-  install.appendChild(resourceNote('skill.installZipHint', 'skill-install-zip-hint', 'is-faint'));
-  if (view.skillInstalling) {
-    install.appendChild(el('div', 'resource-meta is-faint', t('skill.installing')));
-  }
-  return install;
 }
 
 /* ── 写路径（全部是配置动作：只重读各自的清单，不碰消息面） ─────────────── */
@@ -7765,14 +8125,6 @@ function capabilityTarget() {
   const view = activeCapabilitiesView();
   if (!view || !view.memberId || !state.online) return null;
   return view;
-}
-
-/** 成员显示名的回退链：成员表 → Agent 快照 → id（复制结果里不能只剩一个裸 id）。 */
-function capabilityMemberName(memberId) {
-  const member = (state.members || []).find((item) => item.id === memberId);
-  if (member && member.display_name) return member.display_name;
-  const agent = (state.agents || []).find((item) => item.id === memberId);
-  return (agent && agent.display_name) || memberId;
 }
 
 function resetMcpDraft(view) {
@@ -7807,7 +8159,7 @@ function updateMcpDraftField(field) {
   const key = field.dataset.mcpField;
   if (!key || !Object.prototype.hasOwnProperty.call(view.mcpDraft, key)) return;
   view.mcpDraft[key] = field.value;
-  if (key === 'transport') refreshAgentCapabilitiesSection();
+  if (key === 'transport') paintAgentCapabilities();
 }
 
 /** 表单 → 请求体（远端只留 url，本机只留 command / args；变量值从来没有输入口）。 */
@@ -7913,132 +8265,46 @@ async function consentMcpServer(serverId) {
   }
 }
 
-async function submitSkillDirectory() {
-  const view = capabilityTarget();
-  if (!view) return;
-  const memberId = view.memberId;
-  const sourcePath = String(view.skillSourcePath || '').trim();
-  if (!sourcePath) {
-    view.skillError = t('skill.sourceRequired');
-    paintAgentCapabilities();
-    return;
-  }
-  view.skillError = '';
-  view.skillInstalling = true;
-  paintAgentCapabilities();
-  try {
-    const payload = await api('/api/skills', {
-      method: 'POST',
-      body: { scope_kind: 'agent', scope_id: memberId, source_path: sourcePath },
-    });
-    if (state.activeAgentId !== memberId) return;
-    view.skillSourcePath = '';
-    toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
-    await loadAgentSkills(memberId);
-  } catch (err) {
-    if (state.activeAgentId !== memberId) return;
-    view.skillError = t('skill.installFailed', { reason: err.message });
-  }
-  if (state.activeAgentId !== memberId) return;
-  view.skillInstalling = false;
-  paintAgentCapabilities();
-}
+/** 导入**一个**技能（#282 / D4）：写路径**复用** `POST /api/skills`（`source_path` = 候选 path），
+    一条请求一条技能，不批量提交多项。
 
-/** zip 安装：原始字节走正文、元数据走 query（与后端契约一致，不用 multipart）。 */
-async function uploadSkillZip(files) {
-  const file = files && files[0];
-  const view = capabilityTarget();
-  if (!file || !view) return;
-  const memberId = view.memberId;
-  view.skillError = '';
-  view.skillInstalling = true;
-  paintAgentCapabilities();
-  try {
-    const query =
-      '?scope_kind=agent&scope_id=' +
-      encodeURIComponent(memberId) +
-      '&filename=' +
-      encodeURIComponent(file.name || 'upload.zip');
-    const response = await fetch('/api/skills' + query, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/zip' },
-      body: file,
-    });
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
-    if (!response.ok) {
-      const error = new Error(readError(payload, response));
-      error.status = response.status;
-      throw error;
-    }
-    if (state.activeAgentId !== memberId) return;
-    toast(t('skill.installed', { name: (payload.skill || {}).name || '' }));
-    await loadAgentSkills(memberId);
-  } catch (err) {
-    if (state.activeAgentId !== memberId) return;
-    view.skillError = t('skill.installFailed', { reason: err.message });
-  }
-  if (state.activeAgentId !== memberId) return;
-  view.skillInstalling = false;
-  paintAgentCapabilities();
-}
-
-/** 逐条导入选中项：写路径**复用** `POST /api/skills`（`source_path` = 候选 path）。
-    `409` 记「已存在，已跳过」（不覆盖）；其他失败记可读原因；全部结束后重读技能列表。 */
+    结果按条归因：`409` 记「已安装，已跳过」（不覆盖）；其他失败把后端那句可读原因落在导入区
+    自己的错误行（不拖垮右栏）。结束后重扫候选 + 重读技能列表，下拉框回到空选择。 */
 async function submitSkillImport() {
   const view = capabilityTarget();
   if (!view || view.skillImportBusy) return;
   const memberId = view.memberId;
-  const picked = view.skillImportCandidates.filter(
-    (candidate) =>
-      view.skillImportPicks.indexOf(candidate.name) >= 0 && skillImportSelectable(candidate),
+  const candidate = view.skillImportCandidates.find(
+    (item) => item.name === view.skillImportPick && skillImportSelectable(item),
   );
-  if (!picked.length) {
-    view.skillImportError = t('skill.importPickRequired');
-    paintAgentCapabilities();
-    return;
-  }
+  if (!candidate) return;
   view.skillImportError = '';
   view.skillImportBusy = true;
   view.skillImportResults = [];
   paintAgentCapabilities();
-  for (const candidate of picked) {
-    try {
-      await api('/api/skills', {
-        method: 'POST',
-        body: { scope_kind: 'agent', scope_id: memberId, source_path: candidate.path },
-      });
-      view.skillImportResults.push({ name: candidate.name, status: 'imported', reason: '' });
-    } catch (err) {
-      view.skillImportResults.push({
-        name: candidate.name,
-        status: err.status === 409 ? 'skipped' : 'failed',
-        reason: err.message,
-      });
-    }
+  try {
+    await api('/api/skills', {
+      method: 'POST',
+      body: { scope_kind: 'agent', scope_id: memberId, source_path: candidate.path },
+    });
+    if (state.activeAgentId !== memberId) return;
+    view.skillImportResults.push({ name: candidate.name, status: 'imported', reason: '' });
+    toast(t('skill.installed', { name: candidate.name }));
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    view.skillImportResults.push({
+      name: candidate.name,
+      status: err.status === 409 ? 'skipped' : 'failed',
+      reason: err.message,
+    });
   }
   if (state.activeAgentId !== memberId) return;
   view.skillImportBusy = false;
-  // 导入成功的名字从此「已安装」：清掉勾选，下一次扫描会把它们渲染成禁用的「已安装」。
-  const imported = new Set(
-    view.skillImportResults.filter((result) => result.status !== 'failed').map((result) => result.name),
-  );
-  view.skillImportPicks = view.skillImportPicks.filter((name) => !imported.has(name));
-  const count = (status) => view.skillImportResults.filter((item) => item.status === status).length;
-  toast(
-    t('skill.importSummary', {
-      imported: count('imported'),
-      skipped: count('skipped'),
-      failed: count('failed'),
-    }),
-  );
+  // 下拉框回到空选择（重扫会把刚导入的那条渲染成禁用的「已安装」）。
+  view.skillImportPick = '';
   await loadAgentSkills(memberId);
   if (state.activeAgentId !== memberId) return;
-  paintAgentCapabilities();
+  await loadSkillImportCandidates(memberId);
 }
 
 async function toggleSkill(skillId) {
@@ -8077,165 +8343,6 @@ async function deleteSkill(skillId) {
     view.skillError = t('skill.deleteFailed', { reason: err.message });
     paintAgentCapabilities();
   }
-}
-
-/* ── 复制到其他成员（行复制 / 字节复制；同名目标 409 ⇒ 逐条「已跳过」，绝不覆盖） ── */
-
-/** 打开某一行的复制弹层；目标候选 = 其他 Agent 成员（当前成员排除在外）。 */
-function openCapabilityCopy(kind, itemId) {
-  const view = activeCapabilitiesView();
-  if (!view) return;
-  view.copy = { kind, id: itemId, targets: [], results: [], error: '', busy: false };
-  paintAgentCapabilities();
-}
-
-function closeCapabilityCopy() {
-  const view = activeCapabilitiesView();
-  if (!view) return;
-  view.copy = null;
-  paintAgentCapabilities();
-}
-
-/** 多选目标：只改**未提交**的弹层状态。 */
-function toggleCapabilityCopyTarget(input) {
-  const view = activeCapabilitiesView();
-  if (!view || !view.copy) return;
-  const memberId = input.dataset.copyTarget;
-  if (!memberId) return;
-  const selected = Boolean(input.checked);
-  const index = view.copy.targets.indexOf(memberId);
-  if (selected && index < 0) view.copy.targets.push(memberId);
-  if (!selected && index >= 0) view.copy.targets.splice(index, 1);
-  view.copy.error = '';
-}
-
-/** 复制结果的一行：`copied` / `skipped`（目标已存在同名，409）/ `failed`（其余可读原因）。 */
-function copyResultText(result) {
-  const name = capabilityMemberName(result.memberId);
-  if (result.status === 'copied') return t('agentCapabilities.copyResultCopied', { name });
-  if (result.status === 'skipped') return t('agentCapabilities.copyResultSkipped', { name });
-  return t('agentCapabilities.copyResultFailed', { name, reason: result.reason || '' });
-}
-
-/** 逐个目标复制：MCP 是行复制（POST /api/mcp-servers），技能是字节复制
-    （POST /api/skills/{id}/copy，源字节在家目录，前端不参与路径）。 */
-async function submitCapabilityCopy() {
-  const view = capabilityTarget();
-  if (!view || !view.copy || view.copy.busy) return;
-  const copy = view.copy;
-  if (!copy.targets.length) {
-    copy.error = t('agentCapabilities.copyPickRequired');
-    paintAgentCapabilities();
-    return;
-  }
-  const mcpServer = copy.kind === 'mcp' ? view.mcp.find((item) => item.id === copy.id) : null;
-  const skill = copy.kind === 'skill' ? view.skills.find((item) => item.id === copy.id) : null;
-  if (!mcpServer && !skill) return;
-  copy.busy = true;
-  copy.error = '';
-  copy.results = [];
-  paintAgentCapabilities();
-  const targets = copy.targets.slice();
-  for (const targetId of targets) {
-    try {
-      if (mcpServer) {
-        await api('/api/mcp-servers', {
-          method: 'POST',
-          body: Object.assign({ scope_kind: 'agent', scope_id: targetId }, {
-            name: mcpServer.name,
-            transport: mcpServer.transport,
-            command: mcpServer.command || '',
-            args: mcpServer.args || [],
-            url: mcpServer.url || '',
-            env_names: mcpServer.env_names || [],
-            enabled: Boolean(mcpServer.enabled),
-          }),
-        });
-      } else {
-        await api('/api/skills/' + encodeURIComponent(skill.id) + '/copy', {
-          method: 'POST',
-          body: { scope_id: targetId },
-        });
-      }
-      copy.results.push({ memberId: targetId, status: 'copied' });
-    } catch (err) {
-      copy.results.push({
-        memberId: targetId,
-        status: err.status === 409 ? 'skipped' : 'failed',
-        reason: err.message,
-      });
-    }
-  }
-  copy.busy = false;
-  // 目标清单已变：清掉它们的名册摘要缓存，下次打开名册重读（不在这里猜计数）。
-  targets.forEach((targetId) => {
-    delete state.rosterCapabilities[targetId];
-  });
-  copy.targets = [];
-  if (state.activeAgentId !== view.memberId) return;
-  paintAgentCapabilities();
-  toast(t('agentCapabilities.copySummary', {
-    copied: copy.results.filter((item) => item.status === 'copied').length,
-    skipped: copy.results.filter((item) => item.status === 'skipped').length,
-    failed: copy.results.filter((item) => item.status === 'failed').length,
-  }));
-}
-
-/** 复制弹层：目标多选 + 确认 / 取消 + 逐条结果（结果留着，直到人关掉弹层）。 */
-function capabilityCopyNode(view) {
-  const copy = view.copy;
-  const box = el('div', 'resource-add');
-  box.setAttribute('data-od-id', 'capability-copy-dialog');
-  box.appendChild(el('div', 'd-sec-title', t('agentCapabilities.copyTitle')));
-  box.appendChild(resourceNote('agentCapabilities.copyHint', 'capability-copy-hint', 'is-faint'));
-
-  const others = (state.agents || []).filter((agent) => agent.id !== view.memberId);
-  if (!others.length) {
-    box.appendChild(el('div', 'resource-empty', t('agentCapabilities.copyNoTargets')));
-  } else {
-    const picker = el('div');
-    picker.setAttribute('data-od-id', 'capability-copy-targets');
-    others.forEach((agent) => {
-      const field = el('div', 'field');
-      const label = el('label');
-      const checkbox = el('input');
-      checkbox.type = 'checkbox';
-      checkbox.dataset.copyTarget = agent.id;
-      checkbox.setAttribute('data-od-id', 'capability-copy-target-' + agent.id);
-      checkbox.checked = copy.targets.indexOf(agent.id) >= 0;
-      label.appendChild(checkbox);
-      label.appendChild(document.createTextNode(' ' + agent.display_name));
-      field.appendChild(label);
-      picker.appendChild(field);
-    });
-    box.appendChild(picker);
-  }
-
-  if (copy.error) box.appendChild(resourceErrorNode(copy.error, 'capability-copy-error'));
-  if (copy.results.length) {
-    const results = el('div');
-    results.setAttribute('data-od-id', 'capability-copy-results');
-    copy.results.forEach((result) => {
-      const line = el('div', 'resource-meta copy-result', copyResultText(result));
-      line.dataset.copyStatus = result.status;
-      results.appendChild(line);
-    });
-    box.appendChild(results);
-  }
-  if (copy.busy) box.appendChild(el('div', 'resource-meta is-faint', t('agentCapabilities.copyBusy')));
-
-  const actions = el('div', 'agent-actions');
-  const confirm = resourceButton(
-    'agentCapabilities.copyConfirm',
-    'copyConfirm',
-    '1',
-    'capability-copy-confirm',
-  );
-  confirm.disabled = confirm.disabled || copy.busy;
-  actions.appendChild(confirm);
-  actions.appendChild(resourceButton('agentCapabilities.copyCancel', 'copyCancel', '1', 'capability-copy-cancel'));
-  box.appendChild(actions);
-  return box;
 }
 
 /** 保存：提交全部可写字段（`team_scope` 不在可写面上）；成功按响应重铺，失败只报可读原因。 */
@@ -9916,16 +10023,17 @@ function bindEvents() {
   $('#adSave').addEventListener('click', submitAgentEdit);
   $('#adDiscard').addEventListener('click', discardAgentEdit);
   $('#adBody').addEventListener('input', (event) => {
+    // 下块的 mcp.json 文本域：输入只写**未提交**的镜像（保存时才 PUT）。
+    const fileText = event.target.closest('[data-mcp-file-text]');
+    if (fileText) {
+      const view = activeCapabilitiesView();
+      if (view) view.mcpFileDraft = String(fileText.value);
+      return;
+    }
     // 能力段的输入框：只写**未提交**的镜像（提交时才走后端）。
     const field = event.target.closest('[data-mcp-field]');
     if (field) {
       updateMcpDraftField(field);
-      return;
-    }
-    const source = event.target.closest('[data-skill-source]');
-    if (source) {
-      const view = activeCapabilitiesView();
-      if (view) view.skillSourcePath = source.value;
       return;
     }
     const control = event.target.closest('[data-agent-field]');
@@ -9941,14 +10049,9 @@ function bindEvents() {
   $('#adBody').addEventListener('change', (event) => {
     // 能力段（#273）：两条清单的写动作与表单都委派到这里（正文整段由 `renderAgentDetail()`
     // 或 `paintAgentCapabilities()` 重铺，逐个绑事件会随节点一起丢）。
-    const zip = event.target.closest('[data-skill-zip]');
-    if (zip) {
-      uploadSkillZip(zip.files);
-      return;
-    }
     const pick = event.target.closest('[data-skill-import-pick]');
     if (pick) {
-      toggleSkillImportPick(pick);
+      pickSkillImportCandidate(pick);
       return;
     }
     const field = event.target.closest('[data-mcp-field]');
@@ -9960,11 +10063,6 @@ function bindEvents() {
     if (enabled) {
       const view = activeCapabilitiesView();
       if (view) view.mcpDraft.enabled = Boolean(enabled.checked);
-      return;
-    }
-    const target = event.target.closest('[data-copy-target]');
-    if (target) {
-      toggleCapabilityCopyTarget(target);
       return;
     }
     const control = event.target.closest('[data-agent-field]');
@@ -9980,6 +10078,12 @@ function bindEvents() {
       syncAgentProviderHint(control.value);
       renderAgentEditNotice(control.value);
     }
+  });
+  // 页签：原生 <button> 的 click 就够了（键盘的 Tab / Enter 由浏览器自己的按钮行为提供，
+  // 不自造方向键漫游）。切页签只改呈现状态与两个节点属性，**不重铺**面板、不丢草稿（D1）。
+  $('#adTabs').addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-adtab]');
+    if (tab) setAgentDetailTab(tab.dataset.adtab);
   });
   $('#adBody').addEventListener('click', (event) => {
     const toggle = event.target.closest('[data-agent-toggle]');
@@ -10044,8 +10148,9 @@ function bindEvents() {
       submitMcpDraft();
       return;
     }
-    if (event.target.closest('[data-skill-install-dir]')) {
-      submitSkillDirectory();
+    // mcp 页签下块：保存家目录 `mcp.json` 的整份原文（一次 PUT）。
+    if (event.target.closest('[data-mcp-file-save]')) {
+      saveAgentMcpFile();
       return;
     }
     if (event.target.closest('[data-skill-import-scan]')) {
@@ -10053,9 +10158,13 @@ function bindEvents() {
       if (view && !view.skillImportLoading) loadSkillImportCandidates(view.memberId);
       return;
     }
-    if (event.target.closest('[data-skill-import-run]')) {
-      submitSkillImport();
-      return;
+    // 左栏一行：选中它（右栏跟着换人并读它的正文）。行上有 `data-skill` 但没有动作时就是选行。
+    const skillPick = event.target.closest('[data-skill]');
+    if (skillPick) {
+      if (!event.target.closest('[data-skill-toggle]') && !event.target.closest('[data-skill-delete]')) {
+        selectAgentSkill(skillPick.dataset.skill);
+        return;
+      }
     }
     const skillToggle = event.target.closest('[data-skill-toggle]');
     if (skillToggle) {
@@ -10067,27 +10176,19 @@ function bindEvents() {
       deleteSkill(skillDelete.dataset.skillDelete);
       return;
     }
-    const copyMcp = event.target.closest('[data-copy-mcp]');
-    if (copyMcp) {
-      openCapabilityCopy('mcp', copyMcp.dataset.copyMcp);
-      return;
-    }
-    const copySkill = event.target.closest('[data-copy-skill]');
-    if (copySkill) {
-      openCapabilityCopy('skill', copySkill.dataset.copySkill);
-      return;
-    }
-    if (event.target.closest('[data-copy-confirm]')) {
-      submitCapabilityCopy();
-      return;
-    }
-    if (event.target.closest('[data-copy-cancel]')) {
-      closeCapabilityCopy();
-      return;
-    }
     if (event.target.closest('[data-agent-remote-confirm]')) {
       confirmAgentEditRemoteFlow();
     }
+  });
+  // 左栏技能行是 div（不是原生 button）：Enter / Space 选中它的键盘语义显式补上（与看板卡片
+  // 的 `#taskColumns` keydown 委派同一口径）。
+  $('#adBody').addEventListener('keydown', (event) => {
+    if (!isActivationKey(event)) return;
+    const row = event.target.closest('[data-skill]');
+    if (!row) return;
+    if (event.target.closest('[data-skill-toggle]') || event.target.closest('[data-skill-delete]')) return;
+    if (event.preventDefault) event.preventDefault();
+    selectAgentSkill(row.dataset.skill);
   });
   $('#channelCancel').addEventListener('click', closeChannelModal);
   $('#channelModalClose').addEventListener('click', closeChannelModal);

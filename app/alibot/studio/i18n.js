@@ -190,11 +190,6 @@ const I18N_CATALOGS = {
     'typing.nameSeparator': '、',
     'typing.stopNamedShort': '停止 {name}',
     'typing.stopNamed': '停止 {name} 的本轮',
-    'agent.contextWindow': '上下文条数',
-    'agent.contextTrigger': '上下文压缩阈值',
-    'agent.maxIters': '最大迭代次数',
-    'agent.runtimeDefaultHint': '数值留空时跟随默认配置。',
-
     /* ─── composer 与 @ 补全 ────────────────────────────────────────── */
     'composer.mentionLabel': '可提及的当前频道 Agent 成员',
     'composer.placeholder': '发消息到 #频道名',
@@ -429,15 +424,34 @@ const I18N_CATALOGS = {
     'agent.webAccessSearchFetchHint': '额外挂 fetch；开启后不再逐次审批，可按 host 配 deny / ask 规则收紧',
     'agent.webAccessNote': '跟随频道 = 不写 Agent 级覆盖（提交 null）；私聊里按默认档「只搜索」，且私聊不装配 fetch。',
 
-    /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：一页分区块 + 就地编辑 ──
-       详情不再是 dock 的形态（用户 2026-10-22 裁定）：它占据整条右侧，dock 让位。
-       所有区块在同一页纵向铺开，**没有页签**（`tabOverview` / `tabRuntime` / `tabsLabel`
-       随页签一起删除）。统计的每个数字都由**后端既有事实**推导（`stats`：`round_outcome`
-       聚合 + 任务行）；模型标识 / 提供商 / 是否远端 / 远端数据流告知不再在详情页重复一份只读读数
-       （用户 2026-10-24 裁定），它们可编辑的那一份长在「配置」区块里（词条见 `agent.*`）。
+    /* ─── Agent 详情（主线视图 `state.mode === 'agent'`）：三个页签 + 就地编辑 ──
+       详情不是 dock 的形态（用户 2026-10-22 裁定）：它占据整条右侧，dock 让位。
+       正文是**三个页签**（`CONTEXT.md` **Agent 详情页签**）：基础信息和配置 → skills → mcp，
+       顺序固定、默认停在第一页、不落库也不写 URL（`tabsLabel` / `tabBase` / `tabSkills` /
+       `tabMcp`；旧名 `tabOverview` / `tabRuntime` 不复用）。统计的每个数字都由**后端既有事实**
+       推导（`stats`：`round_outcome` 聚合 + 任务行）；模型标识 / 提供商 / 是否远端 / 远端数据流
+       告知不再在详情页重复一份只读读数（用户 2026-10-24 裁定），它们可编辑的那一份长在「配置」
+       区块里（词条见 `agent.*`）。上下文条数 / 压缩阈值 / 迭代上限三格的**界面入口已撤除**
+       （只服务它们的那四条 `agent.contextWindow` / `contextTrigger` / `maxIters` /
+       `runtimeDefaultHint` 也随控件删除，库里的列与 `PATCH` 字段面原样）。
        原型的内存 / 延迟 / 工具权限 / 温度 / Token 消耗 / 上下文占用在本仓没有数据面，
        因此这里也没有它们的词条。 */
     'agentDetail.sendMessage': '发送消息',
+    'agentDetail.tabsLabel': 'Agent 详情页签',
+    'agentDetail.tabBase': '基础信息和配置',
+    'agentDetail.tabSkills': 'skills',
+    'agentDetail.tabMcp': 'mcp',
+    'agentDetail.mcpFileTitle': '家目录 mcp.json',
+    // mcp 页签下块（#284 / D7）：文本域直接接家目录文件的**原文**，两块各标注数据来源。
+    'agentDetail.mcpFileSource':
+      '来自这个 Agent 家目录的 mcp.json（文件原文）；同名时库行胜出，落选条目会进轮次结果的可读提示。',
+    'agentDetail.mcpFileLoading': '正在读取家目录 mcp.json…',
+    'agentDetail.mcpFileMissing':
+      '这个 Agent 的家目录里还没有 mcp.json（不是空文件）：保存一次会按你写的内容新建它。',
+    'agentDetail.mcpFileServers': '文件里的条目数：{count}',
+    'agentDetail.mcpFileSave': '保存 mcp.json',
+    'agentDetail.mcpFileLoadFailed': '家目录 mcp.json 读取失败：{reason}',
+    'agentDetail.mcpFileSaveFailed': '家目录 mcp.json 保存失败：{reason}',
     'agentDetail.openAria': '查看 {name} 的详情',
     'agentDetail.sectionFacts': '统计',
     'agentDetail.statChannels': '所属频道数',
@@ -456,8 +470,9 @@ const I18N_CATALOGS = {
     'agentDetail.kvPrompt': '系统提示',
     // 联网档（#202 / 2026-10-21 修订）：读数缺失（`null`）= 没有 Agent 级覆盖 = 跟随频道，
     // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在详情页里替人推断私聊的生效档。
-    // 全局 MCP（#236 / ADR-0031 D8）：成员家目录 mcp.json 是**只读素材层**。这里只展示真实条目
-    // 与运行期读数，只对远端未确认条目给一个确认动作；不渲染编辑 / 启停 / 删除，也不写回文件。
+    // 全局 MCP（#236 / ADR-0031 D8）：条目视图**只读**（它住在 mcp 页签的下块里，与旁边的
+    // mcp.json 文本域是同一份数据的两种视图）。条目视图自身不渲染编辑 / 启停 / 删除——要改原文
+    // 走上方的文本域；它只对远端未确认条目给一个确认动作。
     'agentDetail.globalMcpTitle': '全局 MCP（只读）',
     'agentDetail.globalMcpEmpty': '“全局mcp.json”里没有声明MCP服务',
     'agentDetail.globalMcpRemote': '远端（数据会离开本机）',
@@ -487,25 +502,12 @@ const I18N_CATALOGS = {
     /* ─── 能力配置（#273 / ADR-0031 §二 #270 修订） ────────────────────────
        归口只有这一处：Agent 详情里的 MCP 声明与技能。作用域恒为该成员
        （`scope_kind=agent&scope_id=<member>`），没有 scope 选择器；频道级旧行保留在库里但
-       不展示、不装配。复制是「行复制 / 字节复制」，目标已存在同名时**跳过并逐条说明**。 */
-    'agentCapabilities.title': '能力配置',
+       不展示、不装配。控件只作用于当前成员（#281 撤掉了「复制到其他成员」这条跨成员通道）；
+       #280 把这两块拆进 skills / mcp 两个页签，跨两 kind 的总标题因此没有消费点、已随票删除。 */
     'agentCapabilities.scopeNote':
       '这些能力只属于这个 Agent；技能字节在 ~/.alibot/agents/{member}/skills/（公共库 ~/.alibot/skills/ 只读）。',
     'agentCapabilities.mcpTitle': 'MCP 声明',
     'agentCapabilities.skillTitle': '技能',
-    'agentCapabilities.copyTo': '复制到…',
-    'agentCapabilities.copyTitle': '复制到其他成员',
-    'agentCapabilities.copyHint':
-      '只复制到选中的成员；目标已有同名项时跳过并逐条说明，不覆盖目标。',
-    'agentCapabilities.copyConfirm': '开始复制',
-    'agentCapabilities.copyCancel': '取消',
-    'agentCapabilities.copyNoTargets': '没有其他成员可复制。',
-    'agentCapabilities.copyPickRequired': '请至少选择一个目标成员。',
-    'agentCapabilities.copyBusy': '正在复制…',
-    'agentCapabilities.copyResultCopied': '{name}：已复制',
-    'agentCapabilities.copyResultSkipped': '{name}：已存在同名，已跳过',
-    'agentCapabilities.copyResultFailed': '{name}：失败：{reason}',
-    'agentCapabilities.copySummary': '复制完成：{copied} 个已复制，{skipped} 个已跳过，{failed} 个失败。',
 
     /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
        两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
@@ -686,6 +688,7 @@ const I18N_CATALOGS = {
     'workspaceMgmt.noteDocker': 'Docker 后端：每个 Agent / 会话一个容器，只承诺容器与主机的隔离；远端镜像需要先确认数据面告知。',
     'workspaceMgmt.noteConfig': '项目根与后端在上方「项目根与默认后端」中修改；非法路径会被后端整体拒绝，保存处显示可读原因。',
     'mcp.scopeNote': '只显示环境变量名；变量值由服务进程的环境提供，界面与后端响应都不保存值。',
+    'mcp.sourceDb': '来自库行 mcp_server（scope_kind=agent）：装配正本，改这里会改变装配结果。',
     'mcp.loading': '正在读取 MCP 声明…',
     'mcp.loadFailed': 'MCP 声明读取失败：{reason}',
     'mcp.empty': '这个 Agent 还没有 MCP 声明。',
@@ -745,41 +748,50 @@ const I18N_CATALOGS = {
     'skill.enable': '启用',
     'skill.disable': '停用',
     'skill.delete': '删除',
-    'skill.installTitle': '安装技能',
-    'skill.installDir': '从本机目录安装',
-    'skill.installDirPlaceholder': '技能目录的绝对路径（含 SKILL.md）',
-    'skill.installDirButton': '安装目录',
-    'skill.installDirHint': '必须是本机绝对目录，且含 SKILL.md；安装会复制到这个 Agent 的家目录技能分区。',
-    'skill.installZip': '上传 zip 安装',
-    'skill.installZipHint': '或选择一个含 SKILL.md 的 zip 包（不覆盖这个 Agent 已有的同名技能）。',
-    'skill.installing': '正在安装…',
     'skill.installed': '技能已安装：{name}',
     'skill.installFailed': '安装失败：{reason}',
-    'skill.sourceRequired': '请填技能目录的绝对路径。',
     'skill.toggleFailed': '启停失败：{reason}',
     'skill.deleted': '技能已删除。',
     'skill.deleteFailed': '删除失败：{reason}',
-    /* ─── 从 ~/.agents/skills 导入（#277 / ADR-0036） ────────────────────
+    /* ─── 从本机导入（#277 / ADR-0036；#282 收成一个下拉框） ─────────────
        命令本身是 ASCII 常量（`app.js` 的 `SKILL_INSTALL_COMMAND`），不进词条值；
-       这里只说它做什么。 */
-    'skill.importTitle': '从 ~/.agents/skills 导入',
+       这里只说它做什么。三组标题只用于下拉框的 `<optgroup>`，状态后缀用于选项文本。 */
+    'skill.importTitle': '从本机导入',
     'skill.importCommandHint':
-      '先在本机终端运行上面的命令：-g 装到全局，-a codex 指向 ~/.agents/skills（codex / cline / pi 共用的全局技能目录）。应用只读这个目录，不代为执行。',
+      '先在本机终端运行上面的命令：-g 装到全局，-a codex 指向 ~/.agents/skills（codex / cline / pi 共用的全局技能目录）。应用只读这个目录，不代为执行；装好之后在下面的下拉框里选它。',
     'skill.importScanButton': '刷新候选',
-    'skill.importRunButton': '导入选中',
+    'skill.importPickLabel': '从本机导入',
+    'skill.importPickPlaceholder': '选择一个技能导入…',
+    'skill.importGroupReady': '可选',
+    'skill.importGroupInstalled': '已安装',
+    'skill.importGroupBlocked': '不可导入',
     'skill.importLoading': '正在扫描 ~/.agents/skills…',
     'skill.importScanFailed': '候选扫描失败：{reason}',
     'skill.importUnavailable': '没有找到 {source}：先运行上面的命令装一个技能，再回来刷新候选。',
     'skill.importEmpty': '这个目录里还没有技能：先运行上面的命令，再回来刷新候选。',
-    'skill.importStatusReady': '可导入',
     'skill.importStatusInstalled': '已安装',
     'skill.importStatusBlocked': '不可导入：{reason}',
     'skill.importBusy': '正在导入…',
     'skill.importResultDone': '{name}：已导入',
-    'skill.importResultSkipped': '{name}：已存在，已跳过',
+    'skill.importResultSkipped': '{name}：已安装，已跳过',
     'skill.importResultFailed': '{name}：导入失败：{reason}',
-    'skill.importPickRequired': '先勾选要导入的技能。',
-    'skill.importSummary': '导入完成：成功 {imported}，跳过 {skipped}，失败 {failed}',
+    /* ── skills 页签的右栏详情（#283 / D5）──
+       五项元数据 + 两个动作 + SKILL.md 正文（纯文本）。正文的四种状态各有一句话：
+       `missing`（字节缺席）/ `invalid`（路径越界）/ `unreadable`（读不出来）互不相同，
+       因为用户要靠这句话知道自己该去修什么。 */
+    'skill.detailTitle': '技能详情',
+    'skill.detailName': '名称',
+    'skill.detailDescription': '描述',
+    'skill.detailSource': '来源路径',
+    'skill.detailHash': '内容 hash',
+    'skill.detailState': '启停态',
+    'skill.detailEmpty': '这个 Agent 还没有技能：先从上面的「从本机导入」装一个，再回来看它的详情。',
+    'skill.detailBodyTitle': 'SKILL.md 正文',
+    'skill.detailBodyLoading': '正在读取 SKILL.md…',
+    'skill.detailBodyFailed': 'SKILL.md 读取失败：{reason}',
+    'skill.detailMissing': '这个技能的字节不在家目录（技能目录或 SKILL.md 缺失）：元数据还在，正文读不到。',
+    'skill.detailInvalid': 'SKILL.md 的路径越出全局根（根外 symlink）：为安全起见不显示正文。',
+    'skill.detailUnreadable': 'SKILL.md 读不出来（权限或非 UTF-8）：元数据还在，正文读不到。',
 
     /* ─── 工作区设置（本票只有语言偏好与消息密度两档） ───────────────── */
     'settings.title': '设置',
@@ -1005,11 +1017,6 @@ const I18N_CATALOGS = {
     'typing.nameSeparator': ', ',
     'typing.stopNamedShort': 'Stop {name}',
     'typing.stopNamed': 'Stop the current round for {name}',
-    'agent.contextWindow': 'Context messages',
-    'agent.contextTrigger': 'Context compression threshold',
-    'agent.maxIters': 'Maximum iterations',
-    'agent.runtimeDefaultHint': 'Leave numbers empty to follow the defaults.',
-
     /* ─── Composer and @ completion ────────────────────────────────── */
     'composer.mentionLabel': 'Agent members of this channel that can be mentioned',
     'composer.placeholder': 'Message #channel-name',
@@ -1257,16 +1264,38 @@ const I18N_CATALOGS = {
     'agent.webAccessNote':
       'Follow channel = no agent-level override (submit null); a direct message uses the default "search only" level and never mounts fetch.',
 
-    /* ─── Agent detail (main view `state.mode === 'agent'`): one page of sections, edited in place ──
-       The detail is no longer a dock form (user decision 2026-10-22): it takes the whole right side
-       and the dock steps aside. Every section sits on the same page in one column — **no tabs**
-       (`tabOverview` / `tabRuntime` / `tabsLabel` were removed with the tabs). Every number is
-       derived from **backend facts** (`stats`: aggregates over `round_outcome` plus task rows).
-       The model id / provider / remote flag / remote data-flow notice are no longer repeated as a
-       read-only block (decision 2026-10-24): their editable form lives in the configuration section
-       (see the `agent.*` keys). Memory / latency / tool permissions / temperature / token usage /
-       context usage have no data surface in this repo, so there are no strings for them here. */
+    /* ─── Agent detail (main view `state.mode === 'agent'`): three tabs, edited in place ──
+       The detail is not a dock form (user decision 2026-10-22): it takes the whole right side and
+       the dock steps aside. The page holds **three tabs** (`CONTEXT.md`, Agent Detail Tab):
+       Basics and configuration → skills → mcp, in that fixed order, defaulting to the first tab and
+       stored nowhere (`tabsLabel` / `tabBase` / `tabSkills` / `tabMcp`; the old `tabOverview` /
+       `tabRuntime` names are not reused). Every number is derived from **backend facts**
+       (`stats`: aggregates over `round_outcome` plus task rows). The model id / provider / remote
+       flag / remote data-flow notice are no longer repeated as a read-only block (decision
+       2026-10-24): their editable form lives in the configuration section (see the `agent.*` keys).
+       The three context numbers (window / compression threshold / max iterations) no longer have a
+       UI entry point, so the four keys that served them only (`agent.contextWindow` /
+       `contextTrigger` / `maxIters` / `runtimeDefaultHint`) are gone too — the columns and the
+       PATCH field set stay as they were. Memory / latency / tool permissions / temperature /
+       token usage / context usage have no data surface in this repo, so there are no strings for
+       them here. */
     'agentDetail.sendMessage': 'Send message',
+    'agentDetail.tabsLabel': 'Agent detail tabs',
+    'agentDetail.tabBase': 'Basics and configuration',
+    'agentDetail.tabSkills': 'skills',
+    'agentDetail.tabMcp': 'mcp',
+    'agentDetail.mcpFileTitle': 'Home-directory mcp.json',
+    // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text, and each
+    // block labels its data source.
+    'agentDetail.mcpFileSource':
+      'From the mcp.json in this agent’s home directory (the file’s raw text); on a name clash the database row wins, and the entry that loses is reported in the round outcome.',
+    'agentDetail.mcpFileLoading': 'Reading the home-directory mcp.json…',
+    'agentDetail.mcpFileMissing':
+      'This agent’s home directory has no mcp.json yet (that is not an empty file): saving once creates it from what you write.',
+    'agentDetail.mcpFileServers': 'Entries in the file: {count}',
+    'agentDetail.mcpFileSave': 'Save mcp.json',
+    'agentDetail.mcpFileLoadFailed': 'Could not read the home-directory mcp.json: {reason}',
+    'agentDetail.mcpFileSaveFailed': 'Could not save the home-directory mcp.json: {reason}',
     'agentDetail.openAria': 'Open the details of {name}',
     'agentDetail.sectionFacts': 'Stats',
     'agentDetail.statChannels': 'Channel memberships',
@@ -1288,9 +1317,10 @@ const I18N_CATALOGS = {
     // Web access (#202 / 2026-10-21 revision): a missing value (`null`) means there is no
     // agent-level override, i.e. "follow channel" — a reading, not an empty field; an override
     // shows its level. The detail page never derives the level that is live in a DM.
-    // Global MCP (#236 / ADR-0031 D8): the member's home mcp.json is a read-only source layer.
-    // Only real entries and runtime readings are shown; only an unacknowledged remote entry gets
-    // an acknowledge action. No edit / enable / delete, and nothing is written back to the file.
+    // Global MCP (#236 / ADR-0031 D8): the entry view is read-only (it lives in the lower block of
+    // the mcp tab, next to the mcp.json textarea -- two views of the same data). The entry view itself
+    // renders no edit / enable / delete; changing the source text goes through the textarea above.
+    // Only an unacknowledged remote entry gets an acknowledge action.
     'agentDetail.globalMcpTitle': 'Global MCP (read-only)',
     'agentDetail.globalMcpEmpty': 'No MCP servers are declared in the global mcp.json.',
     'agentDetail.globalMcpRemote': 'Remote (data leaves this machine)',
@@ -1321,27 +1351,13 @@ const I18N_CATALOGS = {
     /* ─── Capabilities (#273 / ADR-0031 §2 as revised by #270) ───
        One place only: the MCP declarations and skills inside the agent detail page. The scope is
        always this member (`scope_kind=agent&scope_id=<member>`) with no scope picker; legacy
-       channel-level rows stay in the database but are neither shown nor assembled. Copying means
-       row copy / byte copy and skips (with a per-target line) when the target already has the name. */
-    'agentCapabilities.title': 'Capabilities',
+       channel-level rows stay in the database but are neither shown nor assembled. Every control
+       acts on this member only (#281 removed the cross-member "copy to other members" path); #280
+       split these two blocks into the skills / mcp tabs, so the shared title has no consumer. */
     'agentCapabilities.scopeNote':
       'These capabilities belong to this agent only; skill bytes live in ~/.alibot/agents/{member}/skills/ (the shared library ~/.alibot/skills/ is read-only).',
     'agentCapabilities.mcpTitle': 'MCP declarations',
     'agentCapabilities.skillTitle': 'Skills',
-    'agentCapabilities.copyTo': 'Copy to…',
-    'agentCapabilities.copyTitle': 'Copy to other members',
-    'agentCapabilities.copyHint':
-      'Copies only to the selected members; when a target already has the same name the line is skipped with a reason and the target is never overwritten.',
-    'agentCapabilities.copyConfirm': 'Start copying',
-    'agentCapabilities.copyCancel': 'Cancel',
-    'agentCapabilities.copyNoTargets': 'There are no other members to copy to.',
-    'agentCapabilities.copyPickRequired': 'Select at least one target member.',
-    'agentCapabilities.copyBusy': 'Copying…',
-    'agentCapabilities.copyResultCopied': '{name}: copied',
-    'agentCapabilities.copyResultSkipped': '{name}: already exists, skipped',
-    'agentCapabilities.copyResultFailed': '{name}: failed: {reason}',
-    'agentCapabilities.copySummary':
-      'Copy finished: {copied} copied, {skipped} skipped, {failed} failed.',
 
     /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
        Both values state existence and persistence only: reminders live in the backend and
@@ -1541,6 +1557,10 @@ const I18N_CATALOGS = {
       'Edit the project root and backend in “Project root and default backend” above; an illegal path is rejected as a whole and the save line shows the readable reason.',
     'mcp.scopeNote':
       'Variable names only; values come from the server process environment, and neither the UI nor API responses store them.',
+    // Source label of the top block (#284 / D7): it is the assembly authority, a different dataset
+    // from the home-directory file in the bottom block.
+    'mcp.sourceDb':
+      'From the database rows in mcp_server (scope_kind=agent): the assembly authority; editing here changes what gets assembled.',
     'mcp.loading': 'Reading MCP declarations…',
     'mcp.loadFailed': 'Could not read the MCP declarations: {reason}',
     'mcp.empty': 'This agent has no MCP declarations yet.',
@@ -1602,41 +1622,50 @@ const I18N_CATALOGS = {
     'skill.enable': 'Enable',
     'skill.disable': 'Disable',
     'skill.delete': 'Delete',
-    'skill.installTitle': 'Install a skill',
-    'skill.installDir': 'Install from a local directory',
-    'skill.installDirPlaceholder': 'Absolute path of a skill directory (containing SKILL.md)',
-    'skill.installDirButton': 'Install directory',
-    'skill.installDirHint':
-      'Must be an absolute host directory containing SKILL.md; installing copies it into this agent’s home skill partition.',
-    'skill.installZip': 'Upload a zip',
-    'skill.installZipHint':
-      'Or pick a zip containing SKILL.md (it does not overwrite a same-name skill this agent already has).',
-    'skill.installing': 'Installing…',
     'skill.installed': 'Skill installed: {name}',
     'skill.installFailed': 'Install failed: {reason}',
-    'skill.sourceRequired': 'Enter the absolute path of the skill directory.',
     'skill.toggleFailed': 'Could not toggle the skill: {reason}',
     'skill.deleted': 'Skill deleted.',
     'skill.deleteFailed': 'Not deleted: {reason}',
-    'skill.importTitle': 'Import from ~/.agents/skills',
+    'skill.importTitle': 'Import from this machine',
     'skill.importCommandHint':
-      'Run the command above in a local terminal first: -g installs globally, -a codex targets ~/.agents/skills (the global skill directory shared by codex / cline / pi). The app only reads that directory and never runs it for you.',
+      'Run the command above in a local terminal first: -g installs globally, -a codex targets ~/.agents/skills (the global skill directory shared by codex / cline / pi). The app only reads that directory and never runs it for you; once it is installed, pick it in the dropdown below.',
     'skill.importScanButton': 'Refresh candidates',
-    'skill.importRunButton': 'Import selected',
+    'skill.importPickLabel': 'Import from this machine',
+    'skill.importPickPlaceholder': 'Pick one skill to import…',
+    'skill.importGroupReady': 'Available',
+    'skill.importGroupInstalled': 'Already installed',
+    'skill.importGroupBlocked': 'Cannot import',
     'skill.importLoading': 'Scanning ~/.agents/skills…',
     'skill.importScanFailed': 'Could not scan the candidates: {reason}',
     'skill.importUnavailable':
       'No {source} found: run the command above to install a skill, then refresh the candidates.',
     'skill.importEmpty': 'That directory holds no skills yet: run the command above, then refresh the candidates.',
-    'skill.importStatusReady': 'Ready to import',
     'skill.importStatusInstalled': 'Already installed',
     'skill.importStatusBlocked': 'Cannot import: {reason}',
     'skill.importBusy': 'Importing…',
     'skill.importResultDone': '{name}: imported',
-    'skill.importResultSkipped': '{name}: already exists, skipped',
+    'skill.importResultSkipped': '{name}: already installed, skipped',
     'skill.importResultFailed': '{name}: import failed: {reason}',
-    'skill.importPickRequired': 'Select the skills to import first.',
-    'skill.importSummary': 'Import finished: {imported} imported, {skipped} skipped, {failed} failed',
+    /* ── Skills tab, right pane (#283 / D5) ──
+       Five metadata cells + two actions + the SKILL.md body as plain text. Each of the three
+       unreadable states gets its own sentence: the user needs to know what to go and fix. */
+    'skill.detailTitle': 'Skill detail',
+    'skill.detailName': 'Name',
+    'skill.detailDescription': 'Description',
+    'skill.detailSource': 'Source path',
+    'skill.detailHash': 'Content hash',
+    'skill.detailState': 'Enablement',
+    'skill.detailEmpty': 'This agent has no skills yet: import one above, then come back to read its details.',
+    'skill.detailBodyTitle': 'SKILL.md body',
+    'skill.detailBodyLoading': 'Reading SKILL.md…',
+    'skill.detailBodyFailed': 'Could not read SKILL.md: {reason}',
+    'skill.detailMissing':
+      'This skill’s bytes are gone from the member home (skill directory or SKILL.md missing): the metadata is still here, the body is not.',
+    'skill.detailInvalid':
+      'The SKILL.md path escapes the global root (symlink pointing outside): the body is withheld for safety.',
+    'skill.detailUnreadable':
+      'SKILL.md cannot be read (permissions or non-UTF-8): the metadata is still here, the body is not.',
 
     /* ─── Workspace settings (this ticket: locale + message density only) ── */
     'settings.title': 'Settings',

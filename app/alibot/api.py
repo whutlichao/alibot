@@ -35,6 +35,8 @@
 - ``POST /api/agents``                         新建 Agent（名称 + 角色 + 模型 + 系统提示）
 - ``GET  /api/agents/{id}``                    单个 Agent（含「为什么未启用」的可读原因）
 - ``GET  /api/agents/{id}/global-mcp-servers`` 全局 mcp.json 的只读条目 + 运行期读数
+- ``GET  /api/agents/{id}/global-mcp-file``    家目录 mcp.json 的原文 + 条目计数（不存在 ⇒ exists=false + 空串）
+- ``PUT  /api/agents/{id}/global-mcp-file``    整份原文写盘（JSON / 顶层形状 / 每条归一化三道校验全过才写，原文逐字）
 - ``POST /api/agents/{id}/global-mcp-servers/{name}/consent`` 全局远端 MCP 的数据面确认
 - ``GET  /api/remote-data-flow``               远端数据流告知文案与已确认记录
 - ``POST /api/remote-data-flow/ack``           确认一次告知（按模型提供商）
@@ -47,9 +49,12 @@
 - ``POST /api/web-providers/{provider}/consent`` 联网 provider 的数据面确认（幂等；未确认不装配带凭据工具）
 - ``GET  /api/web-providers``                 五家 provider 的掩码状态 + 当前生效 provider 与来源
 - ``GET/PUT/DELETE /api/web-providers/{provider}/credential`` 掩码读写：保存 key / 设为默认 / 清空
-- ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）
+- ``GET/POST/PATCH/DELETE /api/skills``       Skill 的读写：本机目录 / 上传 zip 安装，启停与删除（配置动作）；
+                                             zip 上传当前 Studio 无入口，保留为脚本 / API 用法（#282）
 - ``GET  /api/skills/candidates``              ``~/.agents/skills`` 的只读候选扫描（外部 CLI 的落点，应用不执行 npx）
-- ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）
+- ``GET  /api/skills/{id}/markdown``          一个技能 ``SKILL.md`` 的正文（只读；front matter 之后的字节）
+- ``POST /api/skills/{id}/copy``             把成员家目录里的技能字节复制到另一个成员（冲突 409，不覆盖）；
+                                             当前 Studio 无入口，保留为脚本 / API 用法（#281 撤掉界面入口，端点不变）
 
 **HTTP 面自始至终属于人类面**：Agent 的任何动作不经 HTTP，由后端调用点（唤醒编排）直接执行。
 因此这里没有「以某成员名义调用」的路径，也**没有**创建或编辑系统消息的端点。
@@ -117,6 +122,7 @@ from .skills import (
     SkillValidationError,
     install_directory,
     install_zip,
+    read_skill_markdown,
     resolve_install_root,
     scan_import_candidates,
     uninstall,
@@ -348,6 +354,18 @@ class DockerConsent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     image: str = ""
+
+
+class GlobalMcpDocumentUpdate(BaseModel):
+    """成员家目录 ``mcp.json`` 的**整份原文**（#284 / D7）。
+
+    提交的是人正在编辑的那份文本，不是一份归一化后的结构：写路径要把同一串字节落盘
+    （不重排、不重缩进），因此这里只收一个字符串，三道校验在 service 层。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = ""
 
 
 class WebProviderCredentialUpdate(BaseModel):
@@ -1182,6 +1200,10 @@ def create_app(
         front matter、路径与内容 hash，任何一项不合法都**整体拒绝**：不落库、不留半棵树。
         不是 multipart——与附件上传一致，原始字节走正文，元数据走 query，因此后端不需要
         multipart 解析依赖。
+
+        zip 与 directory 两条分支保留不动（既有契约用例守着）：其中 zip 上传这条界面入口当前
+        Studio 无入口，保留为脚本 / API 用法（#282 把 skills 页签的安装面收成一个「从本机导入」
+        下拉框，导入走的正是这里的 directory 分支）。
         """
         content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
         locale = locale_of(database)
@@ -1277,6 +1299,9 @@ def create_app(
         那不是一次复制，而是把同一份字节写到同一处（必然冲突，且没有语义）。
 
         频道级旧行不参与复制（它们已弃用、装配忽略）：400 而不是静默搬到别处。
+
+        当前 Studio 无入口，保留为脚本 / API 用法（#281 撤掉了界面里的复制弹层与两个 kind 的
+        复制入口；端点与契约用例原样保留）。
         """
         current = database.get_skill(skill_id)
         if current is None:
@@ -1330,6 +1355,36 @@ def create_app(
                 uninstall(global_root, member_id=target_member, name=prepared["name"])
             raise
         return {"skill": skill}
+
+    @app.get("/api/skills/{skill_id}/markdown")
+    def get_skill_markdown(skill_id: str) -> dict[str, Any]:
+        """一个技能 ``SKILL.md`` 的**正文**（只读子资源；不落消息、不唤醒、不消耗预算）。
+
+        正文是 **front matter 之后**的那段字节，与技能装配读进 ``Skill.markdown`` 的同一份（前端
+        把 Agent 真正拿到的指令原样给人看，不用去翻家目录）。字节读取经全局只读守卫，参数与技能
+        装配同族——``(全局根, AGENTS_DIR, safe_partition_id(scope_id), SKILLS_DIR, name, SKILL.md)``。
+
+        响应恒带既有的技能元数据载荷（``skill``）+ ``markdown`` + ``state``：
+
+        - ``ok``：读到了正文；
+        - ``missing``：行在、字节不在（成员家目录 / 技能目录 / ``SKILL.md``）；
+        - ``invalid``：路径越出全局根（根外 symlink 祖先或根外目标）——**不**回任何根外内容；
+        - ``unreadable``：读不出来（权限 / 非 UTF-8 / front matter 解析不出正文边界）。
+
+        后三种都是 ``200``：行在、字节有状况是真实状态，不是请求错误（空态文案由前端按 ``state``
+        分别说）。``skill_id`` 不存在 ⇒ 404；弃用的频道级旧行 ⇒ 400（它们没有家目录字节，也没有
+        「当前成员的技能详情」这一语义）。
+        """
+        current = database.get_skill(skill_id)
+        if current is None:
+            raise NotFound(_render_copy("error.skill_not_found", skill_id=skill_id))
+        if current["scope_kind"] != "agent":
+            message = _render_copy("error.skill_scope_agent_only")
+            raise DomainError("validation_failed", message, fields={"scope_kind": message})
+        markdown, state = read_skill_markdown(
+            global_home_root(), member_id=current["scope_id"], name=current["name"]
+        )
+        return {"skill": current, "markdown": markdown, "state": state}
 
     @app.patch("/api/skills/{skill_id}")
     def update_skill(skill_id: str, payload: SkillUpdate) -> dict[str, Any]:
@@ -1813,9 +1868,31 @@ def create_app(
         """该成员全局 ``mcp.json`` 的只读条目 + 运行期读数（#236）。
 
         只列出文件里真实存在的条目，字段是名字 / transport / 是否远端 / 是否已确认 / 进程内
-        ``runtime``。全局层由人维护：这里**没有**编辑、启停、删除，也不写回文件。
+        ``runtime``。这里**不写回文件**；条目形状的校验与条目视图同族，但原文读写走下面的
+        ``…/global-mcp-file``（本票 #284 新增的写面）——两个端点看的是**同一份文件**，边界是
+        「条目视图（供装配读数）」与「整份原文（供人直接编辑）」。
         """
         return service.global_mcp_servers(member_id)
+
+    @app.get("/api/agents/{member_id}/global-mcp-file")
+    def get_global_mcp_file(member_id: str) -> dict[str, Any]:
+        """该成员家目录 ``mcp.json`` 的**原文**与条目计数（#284 / D7 读一半）。
+
+        ``text`` 是文件原文（逐字）；文件不存在时为空串 + ``exists=false``（不是「读到空文件」）。
+        读经全局只读守卫，不创建、不写入。成员不存在 ⇒ 404（与上面的条目视图同一条校验）。
+        """
+        return service.global_mcp_document(member_id)
+
+    @app.put("/api/agents/{member_id}/global-mcp-file")
+    def put_global_mcp_file(member_id: str, payload: GlobalMcpDocumentUpdate) -> dict[str, Any]:
+        """把整份 ``mcp.json`` 原文写进该成员家目录（#284 / D7 写一半）。
+
+        三道校验（JSON 可解析 → 顶层是对象且 ``servers`` 是数组 → 每条经既有声明归一化内核）
+        **全部通过才写盘**；任一条不合法 ⇒ 400 + 可读原因 + ``fields``，**零写入**。写盘逐字
+        （不重排、不重缩进、不动末尾换行），先写同目录临时文件再原子替换。家目录不存在 ⇒ 400
+        且不创建任何目录；文件不存在但家目录在 ⇒ 新建；文件存在 ⇒ 覆盖。
+        """
+        return service.save_global_mcp_document(member_id, payload.text)
 
     @app.post("/api/agents/{member_id}/global-mcp-servers/{name}/consent")
     def consent_global_mcp_server(member_id: str, name: str) -> dict[str, Any]:
