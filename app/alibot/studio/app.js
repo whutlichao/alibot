@@ -5543,42 +5543,148 @@ function skillDetailBody(skill) {
   return box;
 }
 
-/** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 的位置。
+/** **mcp** 页签：上块是库行表单（**装配正本**），下块是家目录 `mcp.json` 的**原文文本域**。
 
-    下块本轮只给占位说明：文本域与它的两条端点由后续票补（D7）。原「全局 MCP」只读小节
-    并在这里（同一个 `data-od-id`），不再单独成段。 */
+    两块各自一行数据来源标注（D7）：上块写明「库行 `mcp_server`（`scope_kind='agent'`），装配
+    正本」；下块写明「家目录文件，**同名时库行胜出**」——人看得出同名时谁赢，而装配行为一字不改。
+
+    下块的文本域接 `GET/PUT /api/agents/{id}/global-mcp-file` 的**整份原文**：打开页签时显示文件
+    当前原文，保存成功后按后端读数刷新。它是**纯文本域**，不做 JSON 格式化（N3 第三格：重排就是
+    一次隐式格式化）。原「全局 MCP」只读小节（条目视图）并在上块里，不另成一段。 */
 function agentMcpTabNodes(agent) {
   const memberId = (agent && agent.id) || state.activeAgentId || '';
   const view = capabilitiesView(memberId);
-  const section = el('section', 'd-sec');
-  section.appendChild(sectionTitle('agentCapabilities.mcpTitle', 'agent-capabilities-mcp'));
-  section.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
+
+  // 上块：库行（表 + 表单 + 启停 + 删除 + 远端确认）。
+  const rowsBox = el('section', 'd-sec');
+  rowsBox.appendChild(sectionTitle('agentCapabilities.mcpTitle', 'agent-capabilities-mcp'));
+  rowsBox.appendChild(resourceNote('mcp.sourceDb', 'mcp-source-db', 'is-faint'));
+  rowsBox.appendChild(resourceNote('mcp.scopeNote', 'mcp-scope-note', 'is-faint'));
   if (view.mcpError) {
-    section.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
+    rowsBox.appendChild(resourceErrorNode(view.mcpError, 'mcp-error'));
   }
   if (view.mcpLoading) {
-    section.appendChild(el('div', 'resource-empty', t('mcp.loading')));
+    rowsBox.appendChild(el('div', 'resource-empty', t('mcp.loading')));
   } else if (!view.mcp.length) {
-    section.appendChild(el('div', 'resource-empty', t('mcp.empty')));
+    rowsBox.appendChild(el('div', 'resource-empty', t('mcp.empty')));
   } else {
     const list = el('div');
     list.setAttribute('data-od-id', 'mcp-list');
     view.mcp.forEach((server) => list.appendChild(mcpRow(server, view)));
-    section.appendChild(list);
+    rowsBox.appendChild(list);
   }
-  section.appendChild(mcpForm(view));
+  rowsBox.appendChild(mcpForm(view));
+  // 原「全局 MCP」条目视图：与库行不是同一份数据（那是家目录文件里的条目）。
+  rowsBox.appendChild(globalMcpSection());
 
-  // 原「全局 MCP」只读小节：与库行不是同一份数据（那是家目录文件里的条目）。
-  section.appendChild(globalMcpSection());
-
-  // 下块的位置：文本域由后续票补，本轮给占位说明。
+  // 下块：家目录 `mcp.json` 的原文文本域。
   const fileBox = el('section', 'd-sec');
   fileBox.appendChild(sectionTitle('agentDetail.mcpFileTitle', 'agent-detail-section-mcp-file'));
-  fileBox.appendChild(
-    resourceNote('agentDetail.mcpFilePlaceholder', 'agent-detail-mcp-file-hint', 'is-faint'),
+  fileBox.appendChild(resourceNote('agentDetail.mcpFileSource', 'agent-detail-mcp-file-source', 'is-faint'));
+  fileBox.appendChild(mcpFileNode(view));
+
+  return [rowsBox, fileBox];
+}
+
+/** 下块的文本域 + 读数 + 保存动作（#284 / D7）。
+
+    三种状态各有各的说法：读失败是错误行；文件不存在时文本域为空 + 一句「这个文件还没有」的
+    说明（**不是**「读到空文件」）；文件在时文本域显示**原文**。保存成功后按后端读数刷新
+    （文本域与条目计数都是后端返回的那一份）。 */
+function mcpFileNode(view) {
+  const box = el('div', 'agent-mcp-file');
+  box.setAttribute('data-od-id', 'agent-mcp-file');
+
+  if (view.mcpFileLoading) {
+    box.appendChild(el('div', 'resource-empty', t('agentDetail.mcpFileLoading')));
+    return box;
+  }
+  if (view.mcpFileError) {
+    box.appendChild(resourceErrorNode(view.mcpFileError, 'agent-mcp-file-error'));
+  } else if (!view.mcpFileExists) {
+    const empty = el('div', 'hint is-faint', t('agentDetail.mcpFileMissing'));
+    empty.setAttribute('data-od-id', 'agent-mcp-file-missing');
+    box.appendChild(empty);
+  }
+
+  const textarea = el('textarea', 'textarea agent-mcp-file-text');
+  textarea.dataset.mcpFileText = '1';
+  textarea.setAttribute('data-od-id', 'agent-mcp-file-text');
+  textarea.setAttribute('aria-label', t('agentDetail.mcpFileTitle'));
+  textarea.setAttribute('spellcheck', 'false');
+  textarea.value = view.mcpFileDraft;
+  box.appendChild(textarea);
+
+  const meta = el(
+    'div',
+    'resource-meta is-faint',
+    t('agentDetail.mcpFileServers', { count: String(view.mcpFileServers) }),
   );
-  section.appendChild(fileBox);
-  return [section];
+  meta.dataset.mcpFileCount = '1';
+  meta.setAttribute('data-od-id', 'agent-mcp-file-count');
+  box.appendChild(meta);
+
+  const actions = el('div', 'agent-actions');
+  const save = resourceButton('agentDetail.mcpFileSave', 'mcpFileSave', '1', 'agent-mcp-file-save');
+  save.disabled = save.disabled || view.mcpFileSaving;
+  actions.appendChild(save);
+  box.appendChild(actions);
+  return box;
+}
+
+/** 读这个成员家目录 `mcp.json` 的原文（失败只落在下块自己的错误行，不拖垮上块）。 */
+async function loadAgentMcpFile(memberId) {
+  const view = capabilitiesView(memberId);
+  view.mcpFileLoading = !view.mcpFileDraft;
+  view.mcpFileError = '';
+  paintAgentCapabilities();
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-file');
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileExists = Boolean(payload && payload.exists);
+    view.mcpFileServers = Number((payload && payload.servers) || 0);
+    // 原文逐字铺进文本域：不做 JSON 格式化（那会静默重排人写的键序与缩进）。
+    view.mcpFileDraft = typeof (payload && payload.text) === 'string' ? payload.text : '';
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileError = t('agentDetail.mcpFileLoadFailed', { reason: err.message });
+  }
+  if (state.activeAgentId !== memberId) return;
+  view.mcpFileLoading = false;
+  paintAgentCapabilities();
+}
+
+/** 保存下块的原文：一次 `PUT`，body 是**整份原文**（不拆字段、不归一化）。
+
+    成功后按后端返回的读数刷新文本域与条目计数（响应里的 `text` 就是刚写下去的那一份）；
+    失败把后端那句可读原因落到下块自己的错误行，文本域保留人的输入（不清空）。 */
+async function saveAgentMcpFile() {
+  const memberId = state.activeAgentId;
+  if (!memberId) return;
+  const view = capabilitiesView(memberId);
+  if (view.mcpFileSaving) return;
+  view.mcpFileSaving = true;
+  view.mcpFileError = '';
+  paintAgentCapabilities();
+  try {
+    const payload = await api('/api/agents/' + encodeURIComponent(memberId) + '/global-mcp-file', {
+      method: 'PUT',
+      body: { text: view.mcpFileDraft },
+    });
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileExists = Boolean(payload && payload.exists);
+    view.mcpFileServers = Number((payload && payload.servers) || 0);
+    if (typeof (payload && payload.text) === 'string') view.mcpFileDraft = payload.text;
+  } catch (err) {
+    if (state.activeAgentId !== memberId) return;
+    view.mcpFileError = t('agentDetail.mcpFileSaveFailed', { reason: err.message });
+    view.mcpFileSaving = false;
+    paintAgentCapabilities();
+    return;
+  }
+  if (state.activeAgentId !== memberId) return;
+  view.mcpFileSaving = false;
+  paintAgentCapabilities();
 }
 
 /** 把三个页签的内容按当前成员重铺（切成员 / 读路径 / 显式动作都走它）。 */
@@ -7278,6 +7384,14 @@ function emptyCapabilitiesView(memberId) {
     mcpDraft: emptyMcpDraft(),
     mcpEditingId: null,
     mcpConsentTimes: {},
+    // mcp 页签**下块**的家目录 `mcp.json` 原文镜像（#284 / D7）：`exists` / `servers` / `text`
+    // 是后端读数，`error` 是读 / 写失败时那句可读原因。真值永远在那个文件里，这里只是镜像。
+    mcpFileLoading: Boolean(memberId),
+    mcpFileError: '',
+    mcpFileDraft: '',
+    mcpFileSaving: false,
+    mcpFileExists: false,
+    mcpFileServers: 0,
     skillLoading: Boolean(memberId),
     skillError: '',
     skills: [],
@@ -7408,13 +7522,15 @@ function dockerStatusOf(agents, backend) {
   return { state: 'unused', text: t('workspaceMgmt.dockerUnused') };
 }
 
-/** 一个成员的两条能力清单 + 导入候选（并行读；各段自己的错误行，一段读不到不牵连另一段）。 */
+/** 一个成员的两条能力清单 + 导入候选 + 家目录 `mcp.json` 原文（并行读；各段自己的错误行，
+    一段读不到不牵连另一段）。 */
 async function loadAgentCapabilities(memberId) {
   if (!memberId) return;
   await Promise.all([
     loadAgentMcpServers(memberId),
     loadAgentSkills(memberId),
     loadSkillImportCandidates(memberId),
+    loadAgentMcpFile(memberId),
   ]);
 }
 
@@ -9866,6 +9982,13 @@ function bindEvents() {
   $('#adSave').addEventListener('click', submitAgentEdit);
   $('#adDiscard').addEventListener('click', discardAgentEdit);
   $('#adBody').addEventListener('input', (event) => {
+    // 下块的 mcp.json 文本域：输入只写**未提交**的镜像（保存时才 PUT）。
+    const fileText = event.target.closest('[data-mcp-file-text]');
+    if (fileText) {
+      const view = activeCapabilitiesView();
+      if (view) view.mcpFileDraft = String(fileText.value);
+      return;
+    }
     // 能力段的输入框：只写**未提交**的镜像（提交时才走后端）。
     const field = event.target.closest('[data-mcp-field]');
     if (field) {
@@ -9982,6 +10105,11 @@ function bindEvents() {
     }
     if (event.target.closest('[data-mcp-save]')) {
       submitMcpDraft();
+      return;
+    }
+    // mcp 页签下块：保存家目录 `mcp.json` 的整份原文（一次 PUT）。
+    if (event.target.closest('[data-mcp-file-save]')) {
+      saveAgentMcpFile();
       return;
     }
     if (event.target.closest('[data-skill-import-scan]')) {

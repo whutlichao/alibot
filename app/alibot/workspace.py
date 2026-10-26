@@ -307,16 +307,28 @@ def ensure_member_home(global_root: str, member_id: str) -> str:
     return home
 
 
-def _resolve_read_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
-    """只读路径守卫的内核：``(realpath, None)`` 或 ``(None, 原因)``。
+def _resolve_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """路径判定的内核：``(realpath, None)`` 或 ``(None, "escape")``。
 
-    原因只有两种：``escape``（根外 symlink 祖先 / 根外目标）与 ``absent``（不存在）。
+    只判**逃逸**（根外 symlink 祖先 / 根外目标），不判存在性——只读守卫在上面再加一层
+    「存在吗」，写路径则要把「父目录不存在」与「目标文件不存在」分开读。
     """
     root_real = os.path.realpath(root)
     candidate = os.path.join(root_real, *parts)
     real = os.path.realpath(candidate)
     if not _within(real, root_real):
         return None, "escape"
+    return real, None
+
+
+def _resolve_read_path(root: str, parts: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """只读路径守卫的内核：``(realpath, None)`` 或 ``(None, 原因)``。
+
+    原因只有两种：``escape``（根外 symlink 祖先 / 根外目标）与 ``absent``（不存在）。
+    """
+    real, reason = _resolve_path(root, parts)
+    if real is None:
+        return None, reason
     if not os.path.exists(real):
         return None, "absent"
     return real, None
@@ -332,6 +344,19 @@ def resolve_global_read_path(root: str, *parts: str) -> str | None:
     if not root:
         return None
     real, _reason = _resolve_read_path(root, parts)
+    return real
+
+
+def resolve_global_write_path(root: str, *parts: str) -> str | None:
+    """全局层**写目标**的路径判定（与只读守卫共用 :func:`_resolve_path` 同一个内核）。
+
+    返回目标真实路径，或者 ``None`` = **逃逸到根外**（根外 symlink 祖先 / 根外目标）。
+    与只读守卫的唯一差异是**不判存在性**：写路径要区分「父目录不存在」与「目标文件不存在」
+    （后者可以新建，前者是「应用不自动创建全局层」）。
+    """
+    if not root:
+        return None
+    real, _reason = _resolve_path(root, parts)
     return real
 
 

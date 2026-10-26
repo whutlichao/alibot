@@ -286,6 +286,18 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.global_mcp_declaration_not_found": "该成员的全局 mcp.json 里没有这个声明：{name}",
         "error.mcp_server_conflict": "同一作用域内已存在同名 MCP 声明：{name}",
         "error.mcp_consent_local": "stdio MCP 在本机运行，不需要远端数据面确认",
+        # 全局 mcp.json 的写面（#284 / D7）：三道校验各有自己的可读原因，fields 指认出错的那一条。
+        "error.global_mcp_text_invalid_json": "mcp.json 不是可解析的 JSON：{reason}",
+        "error.global_mcp_servers_missing": "mcp.json 的顶层必须是对象，且 servers 必须是数组",
+        "error.global_mcp_entry_not_object": "servers 的第 {position} 条不是对象",
+        "error.global_mcp_entry_invalid": "servers 的第 {position} 条的 {field} 不合法",
+        "error.global_mcp_entry_duplicate": "servers 的第 {position} 条与前面的条目重名：{name}",
+        "error.global_mcp_home_missing": (
+            "该 Agent 的家目录不存在（{path}）：应用不自动创建全局层，请先手动建出这一层"
+        ),
+        "error.global_mcp_path_invalid": "mcp.json 的路径不安全（根外 symlink 祖先或根外目标）：{path}",
+        "error.global_mcp_write_failed": "写入 mcp.json 失败：{reason}",
+        "error.global_mcp_read_failed": "读取 mcp.json 失败：{reason}",
         "error.skill_scope_invalid": "Skill 作用域只能是 channel 或 agent",
         "error.skill_scope_unknown": "Skill 作用域不存在：{scope_id}",
         "error.skill_scope_agent_only": "Skill 只能安装在成员作用域（scope_kind=agent），频道级已弃用",
@@ -760,6 +772,24 @@ CATALOGS: dict[str, dict[str, str]] = {
         ),
         "error.mcp_server_conflict": "An MCP declaration with that name already exists in this scope: {name}",
         "error.mcp_consent_local": "A stdio MCP runs locally and needs no remote data-flow acknowledgement",
+        # Global mcp.json write surface (#284 / D7): one readable reason per validation step, with
+        # `fields` naming the offending entry.
+        "error.global_mcp_text_invalid_json": "mcp.json is not parseable JSON: {reason}",
+        "error.global_mcp_servers_missing": (
+            "The top level of mcp.json must be an object and `servers` must be an array"
+        ),
+        "error.global_mcp_entry_not_object": "Entry {position} of `servers` is not an object",
+        "error.global_mcp_entry_invalid": "The {field} of entry {position} in `servers` is invalid",
+        "error.global_mcp_entry_duplicate": ("Entry {position} of `servers` reuses an earlier name: {name}"),
+        "error.global_mcp_home_missing": (
+            "This agent's home directory does not exist ({path}): the app never creates the global "
+            "layer on its own; create it first"
+        ),
+        "error.global_mcp_path_invalid": (
+            "The mcp.json path is unsafe (a symlink ancestor or target outside the global root): {path}"
+        ),
+        "error.global_mcp_write_failed": "Could not write mcp.json: {reason}",
+        "error.global_mcp_read_failed": "Could not read mcp.json: {reason}",
         "error.skill_scope_invalid": "A skill scope must be channel or agent",
         "error.skill_scope_unknown": "No such skill scope: {scope_id}",
         "error.skill_scope_agent_only": (

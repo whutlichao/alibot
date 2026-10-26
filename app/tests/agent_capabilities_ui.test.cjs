@@ -267,6 +267,10 @@ function skillPayload(overrides) {
   );
 }
 
+/** 家目录 `mcp.json` 的原文替身：**非标准缩进 + 倒键序 + 末尾换行**，与后端逐字写盘口径同形。 */
+const MCP_FILE_TEXT =
+  '{\n  "servers": [\n    {"transport": "stdio", "command": "python3", "name": "notes"}\n  ]\n}\n';
+
 /** 技能正文的替身（形状与 `GET /api/skills/{id}/markdown` 一致）。
 
     `SKILL_BODY` 是「磁盘上 `SKILL.md` 里 front matter 之后的那段字节」的替身：保留空行与缩进、
@@ -340,6 +344,13 @@ function createHarness(options) {
       : config.candidates.map((entry) => Object.assign({}, entry));
   const candidateSource = config.candidateSource || "/Users/me/.agents/skills";
   const candidatesAvailable = config.candidatesAvailable !== false;
+  // 家目录 mcp.json 的原文镜像（#284 / D7）：读 / 写共用同一份，所以「保存后按后端读数刷新」
+  // 可以被观测到（PUT 之后下一次 GET / 同一次响应的 readers 都是同一个值）。
+  const mcpFileDoc = {
+    exists: config.mcpFileExists === undefined ? true : config.mcpFileExists,
+    text: config.mcpFileText === undefined ? MCP_FILE_TEXT : config.mcpFileText,
+    servers: config.mcpFileServers === undefined ? 1 : config.mcpFileServers,
+  };
   // 正文端点逐 id 的替身：没登记的技能按「字节缺失」回（与后端 `state="missing"` 同形）。
   const skillMarkdown = config.skillMarkdown || { sk_1: markdownPayload() };
 
@@ -377,6 +388,32 @@ function createHarness(options) {
     }
     if (/^\/api\/agents\/[^/]+\/global-mcp-servers$/.test(url) && method === "GET") {
       return jsonResponse({ global_mcp_servers: [] });
+    }
+    // 家目录 mcp.json 的原文（#284 / D7）：读回后端读数，写（PUT）回提交的原文 + 同一条数。
+    const mcpFile = /^\/api\/agents\/([^/]+)\/global-mcp-file$/.exec(url);
+    if (mcpFile && method === "GET") {
+      return jsonResponse({
+        member_id: mcpFile[1],
+        exists: mcpFileDoc.exists,
+        text: mcpFileDoc.text,
+        servers: mcpFileDoc.servers,
+      });
+    }
+    if (mcpFile && method === "PUT") {
+      const body =
+        typeof request.body === "string" ? JSON.parse(request.body || "{}") : request.body || {};
+      if (config.mcpFilePutError) {
+        return errorResponse(400, config.mcpFilePutError);
+      }
+      mcpFileDoc.text = String(body.text || "");
+      mcpFileDoc.exists = true;
+      mcpFileDoc.servers = mcpFileDoc.servers + 1;
+      return jsonResponse({
+        member_id: mcpFile[1],
+        exists: true,
+        text: mcpFileDoc.text,
+        servers: mcpFileDoc.servers,
+      });
     }
     if (/^\/api\/agents\/[^/]+$/.test(url) && method === "GET") {
       const id = url.split("/").pop();
@@ -751,6 +788,117 @@ test("mcp 页签：库行列表、表单与行入口，请求固定带 agent sco
   assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "MCP 行要有删除入口");
 });
 
+test("mcp 页签：上块库行、下块 mcp.json 文本域，两块各有一行数据来源说明", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  assert.ok(panel, "MCP 页签要在");
+
+  // 两块按顺序：库行块在上，文件块在下。
+  const dbBlock = byOdId(panel, "agent-capabilities-mcp");
+  const fileBlock = byOdId(panel, "agent-detail-section-mcp-file");
+  assert.ok(dbBlock && fileBlock, "两块都要在");
+  assert.ok(
+    descendants(panel).indexOf(dbBlock.parentNode) < descendants(panel).indexOf(fileBlock.parentNode),
+    "库行块在上、文件块在下",
+  );
+
+  // 上块：一行数据来源说明 + 库行表单本身。
+  const dbSource = byOdId(panel, "mcp-source-db");
+  assert.ok(dbSource, "上块要给一行数据来源说明");
+  assert.equal(dbSource.textContent, catalogText(harness, "zh-CN", "mcp.sourceDb"));
+  assert.ok(byOdId(panel, "mcp-form"), "上块是库行表单");
+  assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "上块的库行启停还在");
+  assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "上块的库行删除还在");
+
+  // 下块：一行数据来源说明（**必须写明「同名时库行胜出」**）+ 文本域。
+  const fileSource = byOdId(panel, "agent-detail-mcp-file-source");
+  assert.ok(fileSource, "下块要给一行数据来源说明");
+  assert.equal(fileSource.textContent, catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"));
+  assert.match(fileSource.textContent, /同名时库行胜出/, "数据来源要写明同名时谁胜出");
+  const textarea = byOdId(panel, "agent-mcp-file-text");
+  assert.ok(textarea, "下块是 mcp.json 文本域");
+  assert.equal(textarea.tagName, "textarea", "下块是纯文本域，不做 JSON 格式化");
+});
+
+test("mcp 页签下块：打开页签时文本域显示文件当前原文，并给出条目计数", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  // 读的是这个成员的原文端点（不是别的成员，也不是列表响应里的摘要）。
+  assert.ok(
+    harness.calls.some((call) => call.url === "/api/agents/mem-1/global-mcp-file" && call.method === "GET"),
+    "打开页签读该成员的 mcp.json 原文",
+  );
+  assert.equal(byOdId(panel, "agent-mcp-file-text").value, MCP_FILE_TEXT, "文本域显示原文（逐字）");
+  assert.equal(
+    byOdId(panel, "agent-mcp-file-count").textContent,
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileServers", { count: "1" }),
+    "条目计数按后端读数呈现",
+  );
+});
+
+test("mcp 页签下块：文件不存在时文本域为空，并给出「还没有这个文件」的可读说明", async () => {
+  const harness = createHarness({ mcpFileExists: false, mcpFileText: "", mcpFileServers: 0 });
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  assert.equal(byOdId(panel, "agent-mcp-file-text").value, "", "文件不存在时文本域为空");
+  const missing = byOdId(panel, "agent-mcp-file-missing");
+  assert.ok(missing, "文件不存在时要有一句可读说明");
+  assert.equal(missing.textContent, catalogText(harness, "zh-CN", "agentDetail.mcpFileMissing"));
+  // 那句话说的必须是「还没有这个文件」，不能被读成「读到空文件」。
+  assert.match(missing.textContent, /还没有/);
+});
+
+test("mcp 页签下块：保存发一次 PUT（body 是整份原文），成功后按后端读数刷新", async () => {
+  const harness = createHarness();
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  const textarea = byOdId(panel, "agent-mcp-file-text");
+  // 人改了文本域（包括换行与缩进）：保存发的是**整份原文**，不是拆开的字段。
+  const edited = '{\n    "servers": [\n        {"name": "later", "transport": "stdio", "command": "node"}\n    ]\n}';
+  await harness.changeInBody(textarea, edited);
+  await harness.clickInBody(byOdId(panel, "agent-mcp-file-save"));
+
+  const puts = harness.calls.filter((call) => call.method === "PUT");
+  assert.equal(puts.length, 1, "保存只发一次 PUT");
+  assert.equal(puts[0].url, "/api/agents/mem-1/global-mcp-file");
+  assert.deepEqual(puts[0].body, { text: edited }, "body 是整份原文（一个 text 字段）");
+
+  // 保存成功后文本域与条目计数按**后端读数**刷新（不是把本地输入当结果）。
+  assert.equal(byOdId(harness.panel("mcp"), "agent-mcp-file-text").value, edited);
+  assert.equal(
+    byOdId(harness.panel("mcp"), "agent-mcp-file-count").textContent,
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileServers", { count: "2" }),
+    "计数跟着后端读数走",
+  );
+});
+
+test("mcp 页签下块：保存失败时给出后端可读原因，且不清空人的输入", async () => {
+  const harness = createHarness({ mcpFilePutError: "mcp.json 不是可解析的 JSON" });
+  await harness.openAgent("mem-1");
+
+  const panel = harness.panel("mcp");
+  await harness.changeInBody(byOdId(panel, "agent-mcp-file-text"), "{ 坏掉的 json");
+  await harness.clickInBody(byOdId(panel, "agent-mcp-file-save"));
+
+  const error = byOdId(harness.panel("mcp"), "agent-mcp-file-error");
+  assert.ok(error, "失败落在下块自己的错误行");
+  assert.match(error.textContent, /不是可解析的 JSON/, "原因来自后端可读正文");
+  assert.equal(
+    byOdId(harness.panel("mcp"), "agent-mcp-file-text").value,
+    "{ 坏掉的 json",
+    "文本域保留人的输入（不清空）",
+  );
+});
+
+/** 下块的两行数据来源说明与「同名时库行胜出」的语义不需要屏上文本外的事实：
+    `agentDetail.mcpFileSource` 的词条值本身就写明了它（上一条用例咬的是渲染出的文本）。 */
+
 test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能读数只在 skills 页签", async () => {
   const harness = createHarness();
   await harness.openAgent("mem-1");
@@ -761,7 +909,6 @@ test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能�
 
   assert.ok(byDataset(skills, "skill", "sk_1"), "技能行在 skills 页签里");
   assert.equal(byDataset(skills, "mcpServer", "mcp_1"), null, "skills 页签里不出现 MCP 行");
-  assert.equal(byOdId(skills, "mcp-form"), null, "skills 页签里不出现 MCP 表单");
 
   assert.ok(byDataset(mcp, "mcpServer", "mcp_1"), "MCP 行在 mcp 页签里");
   assert.equal(byDataset(mcp, "skill", "sk_1"), null, "mcp 页签里不出现技能行");
@@ -1425,6 +1572,16 @@ test("新增文案在两份词条里同键同参数位，随入口撤除的键�
     "skill.detailMissing",
     "skill.detailInvalid",
     "skill.detailUnreadable",
+    // #284 的 mcp 页签两块面（D7）：上块的数据来源标注 + 下块的文本域、四态说明与保存入口。
+    "mcp.sourceDb",
+    "agentDetail.mcpFileTitle",
+    "agentDetail.mcpFileSource",
+    "agentDetail.mcpFileLoading",
+    "agentDetail.mcpFileMissing",
+    "agentDetail.mcpFileServers",
+    "agentDetail.mcpFileSave",
+    "agentDetail.mcpFileLoadFailed",
+    "agentDetail.mcpFileSaveFailed",
   ];
   for (const key of keys) {
     for (const locale of ["zh-CN", "en"]) {
@@ -1436,6 +1593,18 @@ test("新增文案在两份词条里同键同参数位，随入口撤除的键�
     catalogText(harness, "zh-CN", "agentCapabilities.scopeNote", { member: "m1" }).includes("m1"),
     true,
     "scopeNote 的 {member} 参数位要能用",
+  );
+  // #284：下块的数据来源标注**必须**写明「同名时库行胜出」——那是 D7 的优先级口径，
+  // 少了这句人就看不出同名时谁赢（装配行为本身一字不改）。
+  for (const locale of ["zh-CN", "en"]) {
+    const source = harness.catalogs[locale]["agentDetail.mcpFileSource"];
+    assert.equal(typeof source, "string", `${locale} 缺少词条：agentDetail.mcpFileSource`);
+    assert.ok(source.length > 0, `${locale} 的 agentDetail.mcpFileSource 不能为空`);
+  }
+  assert.match(
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"),
+    /同名时库行胜出/,
+    "中文的数据来源写明同名时库行胜出",
   );
   // 能力不再「两 kind 同屏」而是各在自己的页签里，因此那个跨两 kind 的总标题
   // `agentCapabilities.title` 失去全部消费点：两份词条一并移除，不留孤儿键。
