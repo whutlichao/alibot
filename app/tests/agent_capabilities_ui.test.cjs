@@ -673,6 +673,12 @@ function createHarness(options) {
       await elementFor("#adTabs").dispatchEvent({ type: "click", target: elementFor("#adTabSkills") });
       await settle();
     },
+    /** 点任意一个页签按钮（`base` / `skills` / `mcp`）。 */
+    async openTab(name) {
+      const suffix = name.charAt(0).toUpperCase() + name.slice(1);
+      await elementFor("#adTabs").dispatchEvent({ type: "click", target: elementFor("#adTab" + suffix) });
+      await settle();
+    },
     async openChannelConfig() {
       await harness.api.openChannelConfigModal();
       await settle();
@@ -1478,6 +1484,196 @@ test("skills 右栏：ok / missing / invalid / unreadable 各有自己的说明�
   }
   const texts = [readings.sk_1.text, readings.sk_2.text, readings.sk_3.text, readings.sk_4.text];
   assert.equal(new Set(texts).size, 4, "四种状态的说明互不相同");
+});
+
+/* ─── 2c. skills 页签的**固定高度工作区**（用户 2026-10-26："skills 页窗口固定，下拉列表高度
+   固定，否则窗口拉下去右侧 skill 详情都看不到了"）───────────────────────
+   两层判据，各管一件事：
+   1. 状态层（Node 能判）：切页签时 `.agent-page` 上的状态类**跟着走**——skills 置上，base / mcp
+      不带；同时不重铺面板、不发请求（切页签不丢草稿是 D1 的硬约束，不能被布局改动拌坏）。
+   2. 样式层（同理可判）：`app.css` 摊平后按视口求值，断言桌面档（1280 / 1440）里固定高度链条
+      的每一环都在位，而 ≤900px 单栏断点下这一整块**不生效**（那里仍是页面滚动）。
+      真机计算值（clientHeight / scrollHeight / getBoundingClientRect）由 ego-browser 实测给出，
+      不在 Node 里假装。 */
+
+/** 一条声明的 `prop: value` 表（`!important` 从取值里剥掉，本判据不看优先级）。 */
+function declarationsOf(body) {
+  const out = {};
+  for (const chunk of body.split(";")) {
+    const at = chunk.indexOf(":");
+    if (at < 0) continue;
+    const prop = chunk.slice(0, at).trim();
+    const value = chunk.slice(at + 1).replace(/!important/g, "").trim();
+    if (prop) out[prop] = value;
+  }
+  return out;
+}
+
+/** 摊平 `app.css` 成有序的 `{ conditions, selector, declarations }`（与 `mobile_shell.test.cjs`
+    同一套读法，本文件自带一份，不跨用例文件 import）。 */
+function flattenCss(css, conditions, out) {
+  const list = out || [];
+  let index = 0;
+  while (index < css.length) {
+    const open = css.indexOf("{", index);
+    if (open < 0) break;
+    const head = css.slice(index, open).trim();
+    let depth = 1;
+    let cursor = open + 1;
+    while (cursor < css.length && depth > 0) {
+      if (css[cursor] === "{") depth += 1;
+      else if (css[cursor] === "}") depth -= 1;
+      cursor += 1;
+    }
+    const body = css.slice(open + 1, cursor - 1);
+    if (head.startsWith("@media")) {
+      flattenCss(body, (conditions || []).concat([head.slice("@media".length).trim()]), list);
+    } else if (!head.startsWith("@")) {
+      for (const selector of head.split(",")) {
+        list.push({
+          conditions: conditions || [],
+          selector: selector.trim(),
+          declarations: declarationsOf(body),
+        });
+      }
+    }
+    index = cursor;
+  }
+  return list;
+}
+
+/** 本票只需要宽度两个方向的条件；其它条件（`prefers-color-scheme` 等）一律算不生效。 */
+function mediaMatches(condition, width) {
+  const max = /^\(max-width:\s*(\d+)px\)$/.exec(condition);
+  if (max) return width <= Number(max[1]);
+  const min = /^\(min-width:\s*(\d+)px\)$/.exec(condition);
+  if (min) return width >= Number(min[1]);
+  return false;
+}
+
+/** 某个视口宽度下的「基础选择器 + 状态选择器」合并后的声明表（靠后的规则赢）。 */
+function declarationsAt(width, base, state) {
+  const map = new Map();
+  const css = readStudio("app.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const rule of flattenCss(css, [], [])) {
+    if (!rule.conditions.every((condition) => mediaMatches(condition, width))) continue;
+    map.set(rule.selector, Object.assign(map.get(rule.selector) || {}, rule.declarations));
+  }
+  const merged = Object.assign({}, map.get(base) || {});
+  if (state && map.has(state)) Object.assign(merged, map.get(state));
+  return merged;
+}
+
+test("切页签：skills 置上固定高度状态类，base / mcp 不带，且不重铺面板也不发请求", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage" })],
+    skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
+  });
+  await harness.openAgent("mem-1");
+  const viewAgent = harness.elementFor("#viewAgent");
+
+  // 默认页签（基础信息和配置）不带：那一页仍是整页滚动。
+  assert.equal(viewAgent.classList.contains("is-skills-fixed"), false, "基础信息和配置页签不带固定高度状态");
+
+  await harness.openSkillsTab();
+  assert.equal(viewAgent.classList.contains("is-skills-fixed"), true, "skills 页签置上固定高度状态");
+
+  // 切页签只改呈现状态：面板节点**还是原来那批**（不重铺 ⇒ 焦点与草稿不会被换掉）。
+  const skillsPanelBefore = harness.panel("skills");
+  const rowBefore = byDataset(skillsPanelBefore, "skill", "sk_1");
+  const callsBefore = harness.calls.length;
+
+  await harness.openTab("base");
+  assert.equal(viewAgent.classList.contains("is-skills-fixed"), false, "回到基础信息和配置就撤掉固定高度状态");
+  assert.equal(harness.panel("base").hidden, false);
+  assert.equal(harness.panel("skills").hidden, true);
+
+  await harness.openTab("mcp");
+  assert.equal(viewAgent.classList.contains("is-skills-fixed"), false, "mcp 页签也不带固定高度状态");
+
+  await harness.openSkillsTab();
+  assert.equal(viewAgent.classList.contains("is-skills-fixed"), true, "再切回 skills 又置上");
+  assert.equal(byDataset(harness.panel("skills"), "skill", "sk_1"), rowBefore, "面板内容一个节点都没被换掉");
+  assert.equal(
+    harness.calls.length,
+    callsBefore,
+    "来回切页签不发任何请求（选中项与正文缓存都还是一次读取的结果）",
+  );
+});
+
+test("桌面档样式契约：skills 固定高度链条逐环在位，右栏只有一处滚动、正文不再自带 60vh", () => {
+  for (const width of [1280, 1440]) {
+    const prefix = width + "px：";
+    // 外层滚动器：桌面 skills 档下不再承担滚动（子层各自滚）。
+    assert.equal(
+      declarationsAt(width, ".agent-page", ".agent-page.is-skills-fixed > .agent-page-scroll")["overflow-y"],
+      "auto",
+      prefix + "外层滚动器留 auto（矮视口下导入区装不下时还能滚到它，不裁掉）",
+    );
+    // 高度链条：每一环都要断开默认的 `min-height: auto`，缺一层就会重新被内容撑高。
+    const inner = declarationsAt(width, ".agent-page-inner", ".agent-page.is-skills-fixed .agent-page-inner");
+    assert.equal(inner["flex-direction"], "column", prefix + "内层是列 flex");
+    assert.equal(inner["min-height"], "0", prefix + "内层允许收缩");
+    assert.equal(inner.height, "100%", prefix + "内层占满外层");
+
+    const panel = declarationsAt(width, "#adPanelSkills", ".agent-page.is-skills-fixed #adPanelSkills");
+    assert.equal(panel["flex-direction"], "column");
+    assert.equal(panel.flex, "1");
+    assert.equal(panel["min-height"], "0");
+
+    const section = declarationsAt(
+      width,
+      ".agent-skill-section",
+      ".agent-page.is-skills-fixed .agent-skill-section",
+    );
+    assert.equal(section["flex-direction"], "column");
+    assert.equal(section["min-height"], "0");
+
+    const columns = declarationsAt(
+      width,
+      ".agent-skill-columns",
+      ".agent-page.is-skills-fixed .agent-skill-columns",
+    );
+    assert.match(String(columns.flex), /^1 1 auto$/, prefix + "双栏拿余下高度（可伸缩）");
+    assert.ok(columns["min-height"], prefix + "双栏有极矮视口的兜底高度");
+
+    // 左右两栏**各自**滚动（不是只滚左栏、也不是都不滚）。
+    for (const column of [".agent-skill-left", ".agent-skill-right"]) {
+      const side = declarationsAt(
+        width,
+        column,
+        ".agent-page.is-skills-fixed " + column,
+      );
+      assert.ok(side["overflow-y"], prefix + column + " 有内部滚动");
+      assert.equal(side["min-height"], "0", prefix + column + " 能收缩到容器高度");
+    }
+
+    // 右栏只有**一处**滚动：正文不再自带 60vh 滚动盒。
+    const markdown = declarationsAt(
+      width,
+      ".skill-detail-markdown",
+      ".agent-page.is-skills-fixed .skill-detail-markdown",
+    );
+    assert.equal(markdown["max-height"], "none", prefix + "正文不再有固定最大高度");
+    assert.equal(markdown.overflow, "visible", prefix + "正文不再自己滚（否则长正文要滚两根条）");
+  }
+});
+
+test("≤900px 单栏档：固定高度整块不生效，页面滚动与旧行为不变", () => {
+  const css = readStudio("app.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const mobile = flattenCss(css, [], []).filter(
+    (rule) =>
+      rule.conditions.some((condition) => condition === "(max-width: 900px)")
+      && rule.selector.includes("is-skills-fixed"),
+  );
+  assert.deepEqual(mobile, [], "≤900px 里没有任何固定高度规则（单栏靠页面滚动，不用固定盒子）");
+
+  // 单栏断点本身仍在：两栏上下堆叠。
+  const columns = declarationsAt(900, ".agent-skill-columns");
+  assert.match(String(columns["grid-template-columns"]), /minmax\(0, 1fr\)/);
+  // 两栏在 900 宽下没有内部滚动（那一条只写在 >=901px）。
+  assert.equal(declarationsAt(900, ".agent-skill-left")["overflow-y"], undefined, "≤900px 左栏没有内部滚动");
+  assert.equal(declarationsAt(900, ".agent-skill-right")["overflow-y"], undefined, "≤900px 右栏没有内部滚动");
 });
 
 /* ─── 3. 频道配置：两段已删 ─────────────────────────────────────────────── */
