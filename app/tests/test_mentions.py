@@ -146,6 +146,61 @@ def test_mention_after_punctuation_or_whitespace_is_a_mention(client: TestClient
         assert [span["member_id"] for span in spans] == [agent["id"]], body
 
 
+def test_mention_offsets_are_utf16_code_units(client: TestClient) -> None:
+    """区间是 **UTF-16 code unit** 下标，前端 `String.slice` 直接切得对（#291）。
+
+    前端只有一处消费这份快照（`app.js` 的 `messageText()`），它用 `body.slice(start, end)`
+    取提及原文。JS 的 `slice` 数的是 UTF-16 code unit，而 Python 的 `len()` 数的是码点：
+    emoji 这类代理对在两边差一位，于是**提及之前每有一个 emoji，前端就整体偏移一位**。
+
+    这条用例守的是「后端给的口径 = 前端消费的口径」。同一仓库里搜索高亮已经这么做了
+    （`db.py` 的 `_search_highlight_ranges`），提及侧此前漏了。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    channel = channel_with_agent(client, agent["id"])
+
+    cases = [
+        # (正文, 期望 start, 期望 end, 说明)
+        ("@小明", 0, 3, "无 emoji 时与码点下标相同"),
+        ("@小明 😀", 0, 3, "emoji 在提及**之后**，不偏移"),
+        ("😀 @小明", 3, 6, "一个 emoji 在前，整体 +1"),
+        ("😀😀 @小明", 5, 8, "两个 emoji 在前，整体 +2"),
+        ("😀 你好 @小明 看这个", 6, 9, "emoji 与提及之间有别的字符"),
+    ]
+    for body, start, end, why in cases:
+        spans = snapshot_of(client, channel["id"], body)
+        assert len(spans) == 1, body
+        assert (spans[0]["start"], spans[0]["end"]) == (start, end), f"{why}：{body!r}"
+        # 按 UTF-16 口径切出来的必须正是 `@名字` 本身——这才是前端要用的那一刀。
+        assert _utf16_slice(body, start, end) == "@小明", why
+
+
+def test_mention_offsets_survive_leading_whitespace(client: TestClient) -> None:
+    """前导空白被 `append_message` strip 掉，快照必须按**存库后的正文**定位（#291）。
+
+    此前 `service.py` 拿**原始** body 解析、`db.py` 落库前 `.strip()`，两边不是同一个串：
+    `"  你好 @小明"` 的区间按 8 字符的原始串算，前端拿到的却是 6 字符的存库串，于是切到 `"明"`。
+    """
+    agent = create_agent(client, name="小明").json()["agent"]
+    channel = channel_with_agent(client, agent["id"])
+
+    response = send(client, channel["id"], "  你好 @小明  ")
+    assert response.status_code == 201, response.text
+    message = response.json()["message"]
+    stored = message["body"]
+    assert stored == "你好 @小明", "落库正文被 strip 过"
+    spans = message["mention_snapshot"]
+    assert len(spans) == 1
+    # 判据只用**存库正文**：区间必须在这份串上切得出 `@小明`。
+    assert _utf16_slice(stored, spans[0]["start"], spans[0]["end"]) == "@小明"
+
+
+def _utf16_slice(body: str, start: int, end: int) -> str:
+    """按 JavaScript `String.slice` 的口径切（UTF-16 code unit 下标）。"""
+    encoded = body.encode("utf-16-le")
+    return encoded[start * 2 : end * 2].decode("utf-16-le")
+
+
 def test_snapshot_is_persisted_and_not_re_resolved_later(client: TestClient) -> None:
     """改名不让历史提及关系漂移：快照随消息落库，之后按当前名表重新解析也读到旧快照。"""
     agent = create_agent(client, name="小明").json()["agent"]
