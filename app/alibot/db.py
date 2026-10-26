@@ -2509,11 +2509,24 @@ class Database:
         }
 
     def list_round_outcomes(self, target_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
-        """按 ``finished_at`` 升序取该 target 的轮次结果（``after_seq`` 按 ``base_seq`` 过滤）。"""
+        """按 ``finished_at`` 升序取该 target 的轮次结果（``after_seq`` 按 ``base_seq`` 过滤）。
+
+        定序靠 ``(finished_at, base_seq, rowid)`` 三级，**不靠** ``id``：
+
+        - ``finished_at`` 只有毫秒精度（:func:`utc_now`），同一毫秒内的多轮收口在它上面相等；
+        - ``id`` 是 ``new_id()`` 的 ``uuid4`` 尾段——**随机且不单调**，拿它当 tiebreaker
+          等于每次读都可能给出不同顺序（#297：CI 里一条测试就报 ``[2, 1] != [1, 2]``）；
+        - ``base_seq`` 是这一轮**读到哪一条消息**的业务事实，同毫秒内它才能表达「谁更近」；
+        - ``rowid`` 是插入序（同一毫秒、同一 ``base_seq``、不同成员时用它分开），与
+          ``plan_run`` / ``sop_run`` 的读面同一条口径。
+
+        读取顺序是外部可观察行为：运行面板的成员事件与分派吃同一份顺序。
+        """
         self.get_target(target_id)  # 404 早退
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM round_outcome WHERE target_id = ? AND base_seq >= ? ORDER BY finished_at, id",
+                "SELECT * FROM round_outcome WHERE target_id = ? AND base_seq >= ? "
+                "ORDER BY finished_at, base_seq, rowid",
                 (target_id, after_seq),
             ).fetchall()
         return [
@@ -5792,7 +5805,8 @@ class Database:
 
         状态点的「出错」必须由**落库的事实**推导，而不是内存里的一张失败表：
         否则后端重启后状态点会回到「在线」，而库里最近一轮仍是 failed —— 同一条事实两个说法。
-        按 ``finished_at`` 与 ``id`` 同序列定序，与列表端点的顺序一致。
+        按 ``(finished_at, base_seq, rowid)`` 同序列定序，与列表端点的顺序一致（同一套 tiebreaker，
+        不在这里另写一份判据）：返回的总是「按列表端点读到的最后一条」——那个语义才有外部意义。
 
         ``merged`` 行被跳过：被合并是**它正在跑的那一轮**的调度事实（那条事实写在同一成员自己的
         行为轮次收口时落库的行上），不是「它刚刚跑完一轮」—— 把它当最近一条轮次结果会让
@@ -5801,7 +5815,7 @@ class Database:
         with self._lock:
             row = self._conn.execute(
                 "SELECT status FROM round_outcome WHERE member_id = ? AND status != 'merged' "
-                "ORDER BY finished_at DESC, id DESC LIMIT 1",
+                "ORDER BY finished_at DESC, base_seq DESC, rowid DESC LIMIT 1",
                 (member_id,),
             ).fetchone()
         return row["status"] if row is not None else None
