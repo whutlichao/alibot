@@ -38,6 +38,11 @@
 
 ### AC3 · 右栏的启用 / 停用与删除作用于当前选中项，成功后启停态立刻跟着变
 
+> **本行已由 [#288](https://github.com/whutlichao/alibot/issues/288) 修订（2026-10-26）**：启停的**唯一写入口**
+> 迁到左栏行内开关，右栏不再有启停按钮（只保留 `skill-detail-state` 读数格）；`skill.enable` /
+> `skill.disable` 两键随按钮一起删掉，`skill.enabled` / `skill.disabled` 保留。**按 283 当时的口径，下表照旧**
+> （它是那时的验收记录，不改写历史）；现状见 `app/specs/skill-row-switch-acceptance.md`。
+
 | 判据 | 落点 | 读数 |
 | --- | --- | --- |
 | 动作入口在右栏、指向当前选中项 | `skillDetailNode()` 的 `skillToggle` / `skillDelete`（`dataset.skillToggle` / `skillDelete` = 选中项 id） | 用例：选中 `sk_2` 后 `skillToggle=sk_2` 的文案是 `skill.disable` |
