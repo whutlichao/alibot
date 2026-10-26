@@ -1509,8 +1509,13 @@ function declarationsOf(body) {
   return out;
 }
 
-/** 摊平 `app.css` 成有序的 `{ conditions, selector, declarations }`（与 `mobile_shell.test.cjs`
-    同一套读法，本文件自带一份，不跨用例文件 import）。 */
+/** 摊平 `app.css` 成有序的 `{ conditions, selector, declarations }`。
+
+    与 `mobile_shell.test.cjs` 的那一份同源，但**刻意不是同一份**：那边判的是移动壳（需要
+    `prefers-reduced-motion` 条件），本文件只需要宽度两个方向（`mediaMatches` 只认这两个），
+    于是那边把不认识的写成「不生效」。跨文件抽公用模块会让两份判据绑在一起，而 
+    `approval_dom_harness.cjs` 那种共享装置的正当理由是「需要假时钟 / 定时器」这类非它不可的能力，
+    这里没有。两份的差异就只有这一条，已在 `mediaMatches` 的注释里写明。 */
 function flattenCss(css, conditions, out) {
   const list = out || [];
   let index = 0;
@@ -1542,7 +1547,8 @@ function flattenCss(css, conditions, out) {
   return list;
 }
 
-/** 本票只需要宽度两个方向的条件；其它条件（`prefers-color-scheme` 等）一律算不生效。 */
+/** 本票只需要宽度两个方向的条件；其它条件（`prefers-color-scheme`、`prefers-reduced-motion` 等）
+    一律算不生效——这就是与 `mobile_shell.test.cjs` 同名函数唯一的差异（那边多认一个动效档）。 */
 function mediaMatches(condition, width) {
   const max = /^\(max-width:\s*(\d+)px\)$/.exec(condition);
   if (max) return width <= Number(max[1]);
@@ -1604,11 +1610,17 @@ test("切页签：skills 置上固定高度状态类，base / mcp 不带，且�
 test("桌面档样式契约：skills 固定高度链条逐环在位，右栏只有一处滚动、正文不再自带 60vh", () => {
   for (const width of [1280, 1440]) {
     const prefix = width + "px：";
-    // 外层滚动器：桌面 skills 档下不再承担滚动（子层各自滚）。
+    // 外层滚动器：基础规则里的 `overflow-y: auto` 原样保留（固定布局**不加**覆盖），于是矮视口下
+    // 导入区装不下时整页还能滚到它——skills 档正常高度下它不产生溢出，因为子层各自滚。
+    assert.equal(
+      declarationsAt(width, ".agent-page-scroll")["overflow-y"],
+      "auto",
+      prefix + "外层滚动器保持 auto（矮视口下还能滚到导入区，不裁掉）",
+    );
     assert.equal(
       declarationsAt(width, ".agent-page", ".agent-page.is-skills-fixed > .agent-page-scroll")["overflow-y"],
-      "auto",
-      prefix + "外层滚动器留 auto（矮视口下导入区装不下时还能滚到它，不裁掉）",
+      undefined,
+      prefix + "固定高度不靠覆盖外层 overflow 实现（不写零效果的重复声明）",
     );
     // 高度链条：每一环都要断开默认的 `min-height: auto`，缺一层就会重新被内容撑高。
     const inner = declarationsAt(width, ".agent-page-inner", ".agent-page.is-skills-fixed .agent-page-inner");
@@ -1616,10 +1628,20 @@ test("桌面档样式契约：skills 固定高度链条逐环在位，右栏只�
     assert.equal(inner["min-height"], "0", prefix + "内层允许收缩");
     assert.equal(inner.height, "100%", prefix + "内层占满外层");
 
-    const panel = declarationsAt(width, "#adPanelSkills", ".agent-page.is-skills-fixed #adPanelSkills");
+    const panel = declarationsAt(
+      width,
+      "[data-adpanel='skills']",
+      ".agent-page.is-skills-fixed [data-adpanel='skills']",
+    );
     assert.equal(panel["flex-direction"], "column");
     assert.equal(panel.flex, "1");
     assert.equal(panel["min-height"], "0");
+    // 面板按 `data-adpanel` 选：全表不再有 id 选择器（否则改 `index.html` 的 id 会静默断样式）。
+    assert.equal(
+      declarationsAt(width, "#adPanelSkills").display,
+      undefined,
+      prefix + "skills 面板不靠 id 选择器定位",
+    );
 
     const section = declarationsAt(
       width,
@@ -1628,6 +1650,29 @@ test("桌面档样式契约：skills 固定高度链条逐环在位，右栏只�
     );
     assert.equal(section["flex-direction"], "column");
     assert.equal(section["min-height"], "0");
+
+    // 导入区不被压缩：「顶部导入区固定」的承重行。删了它双栏就会把导入区挤成几像素，
+    // 而下面那三条用例（两栏滚动、正文、页签状态）仍全绿——所以它必须单独钉住。
+    assert.equal(
+      declarationsAt(
+        width,
+        ".agent-skill-section > :not(.agent-skill-columns)",
+        ".agent-page.is-skills-fixed .agent-skill-section > :not(.agent-skill-columns)",
+      ).flex,
+      "none",
+      prefix + "导入区不参与收缩",
+    );
+    // 导入结果行会累积：它不被压缩（`flex: none`），装不下时由外层整页滚，
+    // 不在导入区块里再套一根滚动条（那会把它的下拉框自己滚出去）。
+    assert.equal(
+      declarationsAt(
+        width,
+        "[data-od-id='skill-import']",
+        ".agent-page.is-skills-fixed [data-od-id='skill-import']",
+      )["overflow-y"],
+      undefined,
+      prefix + "导入区块没有自己的滚动条",
+    );
 
     const columns = declarationsAt(
       width,
@@ -1656,6 +1701,17 @@ test("桌面档样式契约：skills 固定高度链条逐环在位，右栏只�
     );
     assert.equal(markdown["max-height"], "none", prefix + "正文不再有固定最大高度");
     assert.equal(markdown.overflow, "visible", prefix + "正文不再自己滚（否则长正文要滚两根条）");
+
+    // 右栏表格行不被压扁（列 flex 的直接子节点默认会缩）。
+    assert.equal(
+      declarationsAt(
+        width,
+        ".skill-detail > .kv",
+        ".agent-page.is-skills-fixed .skill-detail > .kv",
+      ).flex,
+      "none",
+      prefix + "元数据行不被压缩",
+    );
   }
 });
 

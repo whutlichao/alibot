@@ -502,8 +502,6 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .skill-row.is-active { border-left-color: var(--selected-graphic); background: var(--selected-soft); }
 .skill-row.is-active b { color: var(--selected-deep); }
 .skill-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-/* 表格行（`.kv`）是列 `flex` 的直接子节点：不压平的话它们会被压缩成扁条，详情内容被截断。 */
-.skill-detail > .kv { flex: none; }
 .skill-detail-actions { margin: var(--sp-4) 0 var(--sp-5); }
 .kv .v.is-mono { font-family: var(--mono); font-size: var(--fs-mono-xs); overflow-wrap: anywhere; }
 /* SKILL.md 正文：**纯文本**（`white-space: pre-wrap` 保留换行与缩进）+ 等宽族。
@@ -523,30 +521,28 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   max-height: 60vh;
   overflow-y: auto;
 }
-/* skills 页签在桌面下是**固定高度的工作区**（用户 2026-10-26：“skills 页窗口固定，下拉列表高度
-   固定，否则窗口拉下去右侧 skill 详情都看不到了”）：顶部导入区不动，双栏占满余下高度、左右**各自**
-   内部滚动，页面本身不再被长技能列表撑高。状态由 `setAgentDetailTab()` 落在 `.agent-page` 的
-   `is-skills-fixed` 上，因此基础信息和配置 / mcp 两页仍然是原来的整页滚动。
-   最后一行链条就是全部机制：`.agent-page` 已经是 `flex` 列，只需把 `min-height: 0` 一路传到
-   `.agent-skill-columns` 的两个滚动体上（缺一层就会因默认 `min-height: auto` 重新撑高）。
-   ≤900px 的单栏断点与页面滚动**不变**：那里两栏上下堆叠、高度由内容决定，固定高度反而会把
-   右栏挤出视口，所以整块写在 `min-width: 901px` 里。 */
+/* skills 页签在桌面下是**固定高度的工作区**：顶部导入区不动，双栏占满余下高度、各自内部滚动，
+   页面不被长技能列表撑高。状态类由 `setAgentDetailTab()` 落在 `.agent-page` 上；整块写在
+   `min-width: 901px` 里，因此另外两个页签与 ≤900px 单栏仍是整页滚动。
+   高度链的全部机制就是把 `min-height: 0` 一路传下去（缺一层就因默认 `min-height: auto` 重新被撑高）。 */
 @media (min-width: 901px) {
-  /* 正常高度下不会出现滚动条（子层各自滚），但矮视口下导入区本身可能装不下：留 `auto` 而不是
-     `hidden`，那种情况下页面还能滚到它，不会被裁掉。 */
-  .agent-page.is-skills-fixed > .agent-page-scroll { overflow-y: auto; }
+  /* 外层滚动器不用改：子层各自滚之后它自己不再产生溢出；矮视口下基础规则的 `auto` 照样让整页能滚到导入区。 */
   .agent-page.is-skills-fixed .agent-page-inner { height: 100%; display: flex; flex-direction: column; min-height: 0; }
-  .agent-page.is-skills-fixed #adPanelSkills { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  /* 面板按既有的 `data-adpanel` 选，不引入 id 选择器（全表其余 0 处 id 选择器）。 */
+  .agent-page.is-skills-fixed [data-adpanel='skills'] { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .agent-page.is-skills-fixed .agent-skill-section { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-bottom: 0; }
-  /* 导入区不可压缩：矮视口下让位的是它下面的双栏，而不是把导入区挤成几像素。 */
+  /* 导入区不可压缩：「顶部导入区固定」的承重行——矮视口下让位的是它下面的双栏，
+     而不是把导入区挤成几像素。导入结果行累积到装不下时，由外层整页滚（见上方那条注释），
+     不在导入区块里再套一根滚动条（那会把它的下拉框自己滚出去）。 */
   .agent-page.is-skills-fixed .agent-skill-section > :not(.agent-skill-columns) { flex: none; }
-  /* 双栏拿余下高度；`min-height` 是极矮视口（如 1280x420）的兜底：再往下就由外层
-     `.agent-page-scroll` 整页滚，而不是把两栏压成一条缝、两边都看不见内容。 */
+  /* 右栏是一列 `flex`，表格行会被压缩成扁条、内容被截断，因此只有本档把它们钉住不缩。 */
+  .agent-page.is-skills-fixed .skill-detail > .kv { flex: none; }
+  /* 双栏拿余下高度；`min-height` 是极矮视口的兜底：再往下就由外层整页滚，
+     而不是把两栏压成一条缝、两边都看不见内容。 */
   .agent-page.is-skills-fixed .agent-skill-columns { flex: 1 1 auto; min-height: 180px; }
   .agent-page.is-skills-fixed .agent-skill-left,
   .agent-page.is-skills-fixed .agent-skill-right { min-height: 0; overflow-y: auto; }
-  /* 右栏的内部滚动**只有一处**：正文不再自带 `60vh` 滚动盒，否则长 `SKILL.md` 会在详情里
-     套出第二根滚动条（第一根跟进不到底，第二根又很短）。 */
+  /* 右栏只有一处滚动：正文不再自带 `60vh` 滚动盒，否则长 `SKILL.md` 会在详情里套出第二根条。 */
   .agent-page.is-skills-fixed .skill-detail-markdown { max-height: none; overflow: visible; }
 }
 /* 底部保存条：页面级固定条（不随 `#adBody` 的整块重铺消失，因此错误原文与焦点不会被换掉）。 */
