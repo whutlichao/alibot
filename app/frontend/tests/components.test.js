@@ -24,6 +24,7 @@ const RailSidebar = (await import('../src/components/RailSidebar.vue')).default;
 const ComposerBox = (await import('../src/components/ComposerBox.vue')).default;
 const MentionPicker = (await import('../src/components/MentionPicker.vue')).default;
 const AttachmentChip = (await import('../src/components/AttachmentChip.vue')).default;
+const DockPanel = (await import('../src/components/DockPanel.vue')).default;
 
 const OWNER = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 const ADA = { id: 'mem-1', kind: 'agent', display_name: 'Ada', avatar_slot: 1 };
@@ -701,5 +702,64 @@ describe('composer', () => {
   test('频道没有 Agent 成员时给另一条空态（与「读不到」区分开）', () => {
     const wrapper = mount(MentionPicker, { props: { items: [], empty: 'no-members' } });
     expect(wrapper.text()).toContain('该频道还没有 Agent 成员');
+  });
+});
+
+/* ─── dock 的三档形态 ────────────────────────────────────────────────────── */
+
+describe('dock 的形态', () => {
+  const store = () => ({
+    state: { open: true, targetId: 'ch-1', channelId: 'ch-1', taskId: null, loading: false, error: '', runs: [], plan: [], sops: [], sopDefs: {}, overlayMarker: null },
+    title: { value: 'design' },
+    autonomous: { value: false },
+    liveEvents: { value: [] },
+    overlay: { value: [] },
+    loadSnapshot: async () => null,
+  });
+
+  test('三档 `kind` 都能到达：根 `#dock` 在、class 含 dock', () => {
+    for (const kind of ['run', 'members', 'task']) {
+      const wrapper = mount(DockPanel, { props: { dockTarget: { kind }, panel: store(), pools: [] } });
+      const dock = wrapper.find('#dock');
+      expect(dock.exists(), kind).toBe(true);
+      expect(dock.classes(), kind).toContain('dock');
+      expect(dock.attributes('data-od-id'), kind).toBe('detail-dock');
+    }
+  });
+
+  test('`run` 档铺运行面板；`members` / `task` 两档放各自的插槽（内容归 T3 / T7）', () => {
+    const run = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [] } });
+    expect(run.find('[data-od-id="run-panel"]').exists()).toBe(true);
+
+    const members = mount(DockPanel, {
+      props: { dockTarget: { kind: 'members' } },
+      slots: { members: '<div class="members-probe">成员</div>' },
+    });
+    expect(members.find('[data-od-id="run-panel"]').exists()).toBe(false);
+    expect(members.find('.members-probe').text()).toBe('成员');
+
+    const task = mount(DockPanel, {
+      props: { dockTarget: { kind: 'task' } },
+      slots: { task: '<div class="task-probe">线程</div>' },
+    });
+    expect(task.find('.task-probe').text()).toBe('线程');
+  });
+
+  test('`dockTarget` 为 `null` 时整栏不渲染（不是渲染出来再 hidden）', () => {
+    const wrapper = mount(DockPanel, { props: { dockTarget: null, panel: store(), pools: [] } });
+    expect(wrapper.find('#dock').exists()).toBe(false);
+    expect(wrapper.find('.dock').exists()).toBe(false);
+  });
+
+  test('`run` 档没有 store 时按「没有形态」处理（不铺一个空壳运行面板）', () => {
+    const wrapper = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: null } });
+    expect(wrapper.find('#dock').exists()).toBe(false);
+  });
+
+  test('抽屉形态：`open` 只加 `.is-open`，不改「这一栏在不在」', () => {
+    const closed = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [], open: false } });
+    expect(closed.find('#dock').classes()).not.toContain('is-open');
+    const open = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [], open: true } });
+    expect(open.find('#dock').classes()).toContain('is-open');
   });
 });

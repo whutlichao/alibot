@@ -829,7 +829,7 @@ describe('运行面板 DOM', () => {
   test('经 DockPanel 挂上来也拿到成员名（pools 必须往下传，不能只在直挂时能看）', async () => {
     const { store } = await readyPanel();
     const wrapper = mount(DockPanel, {
-      props: { panel: store, pools: [[OWNER, ADA, BOB]], open: true },
+      props: { dockTarget: { kind: 'run' }, panel: store, pools: [[OWNER, ADA, BOB]], open: true },
     });
     // 真浏览器实测抓到过：pools 没往下传时运行卡会显示 `mem_xxx` 而不是 `Ada`。
     // 单测直接挂 RunPanel（自己传 pools）看不到这件事，因此这条用例从外壳进。
@@ -844,7 +844,7 @@ describe('运行面板 DOM', () => {
 
   test('面板关着时整个 dock 不渲染（不占位、也不会被 Tab 命中）', () => {
     const { store } = makePanel();
-    const wrapper = mount(DockPanel, { props: { panel: store, pools: [] } });
+    const wrapper = mount(DockPanel, { props: { dockTarget: null, panel: store, pools: [] } });
     expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(false);
     expect(wrapper.find('[data-od-id="run-panel"]').exists()).toBe(false);
   });
