@@ -758,14 +758,24 @@ test("skills 页签：左栏技能列表与技能行入口，请求固定带 age
   assert.ok(skillRow, "技能行应当在 skills 页签里渲染");
   assert.equal(skillRow.getAttribute("data-od-id"), "capability-skill-row");
   assert.match(skillRow.textContent, /review/);
-  assert.match(skillRow.textContent, /在提交前做一次结构化自审/);
+  // #288：描述不进列表（右栏 `skill-detail-description` 是它的唯一去处），hash 前缀仍在。
+  assert.doesNotMatch(skillRow.textContent, /在提交前做一次结构化自审/, "描述不再占列表一行");
   assert.match(skillRow.textContent, /0123456789ab/, "hash 前缀仍可见");
-  // 技能行的入口：启停 + 删除 + 安装（技能段）。复制入口已随弹层撤除（#281 / D6），
-  // 反向断言在下面的「复制入口与弹层撤除」用例里。
-  // 动作入口在**右栏**，作用于当前选中项（#283 / D5）；左栏行只负责选人（复制入口已随弹层
-  // 撤除，反向断言在下面的「复制入口与弹层撤除」用例里）。
-  assert.ok(byDataset(panel, "skillToggle", "sk_1"), "右栏的启停入口指向当前选中项");
+  // #288：启停的**唯一**写入口是行内开关，删除与安装各自仍只有一处。
+  const rowToggle = byDataset(panel, "skillToggle", "sk_1");
+  assert.ok(rowToggle, "技能行的启停开关指向该行");
+  assert.ok(skillRow.contains(rowToggle), "启停开关在行内（不是右栏那个已撤掉的按钮）");
+  assert.equal(rowToggle.getAttribute("role"), "switch", "开关声明成 switch，不是 checkbox");
+  assert.equal(rowToggle.getAttribute("aria-checked"), "true", "启用态的开关是打开的");
+  assert.ok(rowToggle.getAttribute("aria-label"), "开关的可访问名不靠视觉位置");
   assert.ok(byDataset(panel, "skillDelete", "sk_1"), "右栏的删除入口指向当前选中项");
+  // 反向：右栏不再有第二个启停入口（同一个可写字段不挂两个无差别的写入口）。
+  const detail = byOdId(panel, "agent-skill-detail");
+  assert.equal(
+    byDataset(detail, "skillToggle", "sk_1"),
+    null,
+    "右栏不再有启停按钮（#288 把它迁到行内开关）",
+  );
   // 安装入口只有一个：从本机导入的下拉框（#282 / D3）。
   assert.ok(byOdId(panel, "skill-import-picker"), "skills 页签的安装入口是「从本机导入」下拉框");
 
@@ -1249,10 +1259,13 @@ function detailCell(panel, key) {
   return byOdId(panel, "skill-detail-" + key);
 }
 
-/** 某一行的选中态读法：`is-active` 与 `aria-current` 是同一条事实的两处呈现。 */
+/** 某一行的选中态读法（#288）：`is-active` 在行容器上、`aria-current` 在行的文字区按钮上。
+    两处是同一条事实的两个呈现，因此这条判据同时看——只改一边就会红。 */
 function rowIsCurrent(panel, id) {
   const row = byDataset(panel, "skill", id);
-  return Boolean(row) && row.getAttribute("aria-current") === "true";
+  const pick = byDataset(panel, "skillPick", id);
+  if (!row || !pick) return false;
+  return pick.getAttribute("aria-current") === "true" && row.classList.contains("is-active");
 }
 
 test("skills 右栏：默认选中第一行，五项元数据 + 正文与磁盘 SKILL.md 逐字相等", async () => {
@@ -1316,7 +1329,7 @@ test("skills 右栏：点左栏另一行切换选中项，正文按需重读", a
   await harness.openSkillsTab();
   const panel = harness.panel("skills");
 
-  await harness.clickInBody(byDataset(panel, "skill", "sk_2"));
+  await harness.clickInBody(byDataset(panel, "skillPick", "sk_2"));
 
   assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "选中态跟着点中那一行");
   assert.equal(rowIsCurrent(harness.panel("skills"), "sk_2"), true);
@@ -1333,37 +1346,52 @@ test("skills 右栏：点左栏另一行切换选中项，正文按需重读", a
   assert.equal(detailCell(harness.panel("skills"), "name").textContent, "triage");
 });
 
-test("skills 右栏：启停与删除作用于当前选中项，启停成功后右栏启停态立刻跟着变", async () => {
+test("skills 行内开关：启停只打那一行，成功后开关与右栏读数一起跟着变（#288）", async () => {
   const harness = createHarness({
     skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
     skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
   });
   await harness.openAgent("mem-1");
   await harness.openSkillsTab();
+  const panel = harness.panel("skills");
 
-  // 选中第二行，然后按**右栏**的启停入口。
-  await harness.clickInBody(byDataset(harness.panel("skills"), "skill", "sk_2"));
-  const toggle = byDataset(harness.panel("skills"), "skillToggle", "sk_2");
-  assert.ok(toggle, "右栏的启停入口指向当前选中项");
-  assert.equal(toggle.textContent, catalogText(harness, "zh-CN", "skill.disable"));
+  // 先选中第二行，让「右栏读数」有一个可观察的对照面。
+  await harness.clickInBody(byDataset(panel, "skillPick", "sk_2"));
+  const toggle = byDataset(panel, "skillToggle", "sk_2");
+  assert.ok(toggle, "行内开关指向该行");
+  assert.equal(toggle.getAttribute("aria-checked"), "true", "初始是启用态");
+  // 开关不承载可见文案（可见文案会变成刚删掉的那种噪声）。
+  assert.equal(toggle.textContent, "", "开关上没有文字，只有图形与可访问名");
 
   await harness.clickInBody(toggle);
   const patched = harness.patches().filter((call) => call.url.startsWith("/api/skills/"));
-  assert.deepEqual(patched.map((call) => call.url), ["/api/skills/sk_2"], "只改当前选中项");
-  assert.deepEqual(patched[0].body, { enabled: false });
-  // 启停成功后右栏的启停态立刻跟着变（不用重开页签）。
+  assert.deepEqual(patched.map((call) => call.url), ["/api/skills/sk_2"], "只改点中的那一行");
+  assert.deepEqual(patched[0].body, { enabled: false }, "翻转的是那条技能自己的 enabled");
+  // 成功后开关与右栏状态格一起跟着变（同一次重读带来的重铺，不是前端猜测）。
+  assert.equal(
+    byDataset(harness.panel("skills"), "skillToggle", "sk_2").getAttribute("aria-checked"),
+    "false",
+    "开关随后端读数翻到关",
+  );
   assert.equal(
     detailCell(harness.panel("skills"), "state").textContent,
     catalogText(harness, "zh-CN", "skill.disabled"),
+    "右栏的陈述格跟着变",
   );
-  assert.equal(
-    byDataset(harness.panel("skills"), "skillToggle", "sk_2").textContent,
-    catalogText(harness, "zh-CN", "skill.enable"),
+  // 停用行有一个可用于扫视的第二信号（名称走 --muted），而开关位置不变。
+  assert.ok(
+    byDataset(panel, "skill", "sk_2").classList.contains("is-disabled"),
+    "停用行带 is-disabled 态",
   );
-  // 未选中那一行不动。
-  assert.match(byDataset(harness.panel("skills"), "skill", "sk_1").textContent, /已启用/);
+  // 未点的那一行不动。
+  assert.equal(byDataset(harness.panel("skills"), "skillToggle", "sk_1").getAttribute("aria-checked"), "true");
 
-  // 删除同样只作用于当前选中项。
+  // 点开关**不**换选中项（与原先右栏启停按钮同一口径）：否则批量关几个时右栏一路乱跳。
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "点开关不换选中项");
+  await harness.clickInBody(byDataset(harness.panel("skills"), "skillToggle", "sk_1"));
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "点未选中行的开关也不换选中项");
+
+  // 删除仍只作用于当前选中项。
   await harness.clickInBody(byDataset(harness.panel("skills"), "skillDelete", "sk_2"));
   assert.deepEqual(
     harness.calls.filter((call) => call.method === "DELETE").map((call) => call.url),
@@ -1375,7 +1403,7 @@ test("skills 右栏：启停与删除作用于当前选中项，启停成功后�
   assert.equal(detailCell(harness.panel("skills"), "name").textContent, "review");
 });
 
-test("skills 右栏：左栏行可键盘选中（Enter / Space），选中态带 aria-current", async () => {
+test("skills 行：文字区是原生 button（行切换选中项），开关是它的兄弟而不是嵌在里面（#288）", async () => {
   const harness = createHarness({
     skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
     skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
@@ -1383,21 +1411,92 @@ test("skills 右栏：左栏行可键盘选中（Enter / Space），选中态带
   await harness.openAgent("mem-1");
   await harness.openSkillsTab();
 
-  const row = byDataset(harness.panel("skills"), "skill", "sk_2");
-  assert.ok(row, "技能行要在左栏");
-  assert.equal(row.getAttribute("tabindex"), "0", "行可被 Tab 抵达");
-  await harness.agentBody.dispatchEvent({ type: "keydown", target: row, key: "Enter" });
+  const panel = harness.panel("skills");
+  const row = byDataset(panel, "skill", "sk_2");
+  const pick = byDataset(panel, "skillPick", "sk_2");
+  const toggle = byDataset(panel, "skillToggle", "sk_2");
+  assert.ok(row && pick && toggle, "一行里有文字区与开关两个控件");
+  assert.equal(pick.tagName, "button", "文字区是原生 button（Enter / Space / 读屏「按钮」免费）");
+  assert.equal(row.getAttribute("role"), null, "行容器不再合成 role=button（嵌套交互控件是非法 ARIA）");
+  assert.equal(toggle.parentNode, row, "开关是行的兄弟节点");
+  assert.equal(pick.contains(toggle), false, "开关不嵌在 button 里");
+
+  await harness.clickInBody(pick);
+  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "点文字区换选中项");
+  assert.equal(rowIsCurrent(harness.panel("skills"), "sk_2"), true);
+  assert.equal(rowIsCurrent(harness.panel("skills"), "sk_1"), false);
+});
+
+test("skills 行：切选中项后焦点落到新选中行的文字区（键盘不丢位）", async () => {
+  const harness = createHarness({
+    skills: [skillPayload(), skillPayload({ id: "sk_2", name: "triage", description: "分流" })],
+    skillMarkdown: { sk_1: markdownPayload(), sk_2: markdownPayload({ markdown: "# Triage" }) },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+
+  await harness.clickInBody(byDataset(harness.panel("skills"), "skillPick", "sk_2"));
+  const pick = byDataset(harness.panel("skills"), "skillPick", "sk_2");
+  assert.equal(pick.focused, true, "重铺后焦点落在新选中行的文字区");
+});
+
+test("skills 行内开关：请求在飞时禁用（不乐观），离线时整行开关都禁用", async () => {
+  let release = null;
+  let flipped = false;
+  const harness = createHarness({
+    skills: [skillPayload()],
+    skillMarkdown: { sk_1: markdownPayload() },
+    // 替身要同时答两件事：PATCH 挂着不回（观察「请求在飞」），重读列表回**翻转后**的行
+    // （观察「后端确认后才翻」）。只截 PATCH、不接列表的话，重读回来的还是旧行，断言就假红了。
+    fetch: (url, request) => {
+      const method = request.method || "GET";
+      if (url === "/api/skills/sk_1" && method === "PATCH") {
+        return new Promise((resolve) => {
+          release = () => {
+            flipped = true;
+            resolve(jsonResponse({ skill: skillPayload({ enabled: false }) }));
+          };
+        });
+      }
+      if (url === "/api/skills?scope_kind=agent&scope_id=mem-1" && flipped) {
+        return jsonResponse({ skills: [skillPayload({ enabled: false })] });
+      }
+      return null;
+    },
+  });
+  await harness.openAgent("mem-1");
+  await harness.openSkillsTab();
+  const panel = harness.panel("skills");
+
+  const before = byDataset(panel, "skillToggle", "sk_1");
+  assert.equal(before.disabled, false, "在线时开关可点");
+
+  // 点下去但请求还挂着：开关禁用，且 aria-checked **仍是旧值**（不乐观翻转）。
+  harness.agentBody.dispatchEvent({ type: "click", target: before });
+  await flush();
+  const inFlight = byDataset(harness.panel("skills"), "skillToggle", "sk_1");
+  assert.equal(inFlight.disabled, true, "请求在飞时开关禁用");
+  assert.equal(inFlight.getAttribute("aria-checked"), "true", "请求期间保持旧值（不乐观）");
+
+  release();
   await settle();
-  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "Enter 选中该行");
-  assert.ok(
-    descendants(harness.panel("skills")).some((node) => node.getAttribute("aria-current") === "true"),
-    "选中态有一条 aria 事实",
+  const after = byDataset(harness.panel("skills"), "skillToggle", "sk_1");
+  assert.equal(after.getAttribute("aria-checked"), "false", "后端确认后才翻");
+  // 终态开关必须是**可聚焦**的：真浏览器里对 `disabled` 控件调 `focus()` 会被默默忽略，
+  // 所以“焦点已还给开关”与“开关不再禁用”是同一条事实的两面；只断言 focused 会漏掉这个回归。
+  assert.equal(after.disabled, false, "请求结束后开关回到可点 / 可聚焦状态");
+  // 焦点还给同一技能的新开关（键盘用户不用重新 Tab 回列表）。
+  assert.equal(after.focused, true);
+
+  // 离线：整行开关禁用（与 `resourceButton()` 同一口径）。
+  harness.api.state.online = false;
+  harness.api.renderAgentDetail();
+  await settle();
+  assert.equal(
+    byDataset(harness.panel("skills"), "skillToggle", "sk_1").disabled,
+    true,
+    "离线时开关禁用",
   );
-  // 焦点停在动作按钮上时 Enter 不该顺带换选中项（否则键盘用户按启停会磒到别的技能）。
-  const toggle = byDataset(harness.panel("skills"), "skillToggle", "sk_2");
-  await harness.agentBody.dispatchEvent({ type: "keydown", target: toggle, key: "Enter" });
-  await settle();
-  assert.equal(harness.api.state.agentDetailSkillId, "sk_2", "动作按钮上的 Enter 不换选中项");
 });
 
 test("skills 右栏：左栏为空时给空态指引，不读正文", async () => {
@@ -1465,7 +1564,7 @@ test("skills 右栏：ok / missing / invalid / unreadable 各有自己的说明�
 
   const readings = {};
   for (const id of ["sk_1", "sk_2", "sk_3", "sk_4"]) {
-    await harness.clickInBody(byDataset(harness.panel("skills"), "skill", id));
+    await harness.clickInBody(byDataset(harness.panel("skills"), "skillPick", id));
     const panel = harness.panel("skills");
     const stateNode = byOdId(panel, "skill-detail-body-state");
     readings[id] = {

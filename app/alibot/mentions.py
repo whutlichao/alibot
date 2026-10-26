@@ -14,8 +14,14 @@
      （``user@example.com``）由此被排除。
      其余位置都可以开始提及，包括紧贴中文的 ``你好@小明``（人类已裁定：只排除邮箱式）。
 
-解析结果的**位置**（``start`` / ``end``，按 Python 字符下标）随消息一起落库：唤醒与前端高亮
-都消费这一份快照，不各自实现一遍、也不事后按当前成员名表重新解析（改名不让历史提及漂移）。
+解析结果的**位置**（``start`` / ``end``）随消息一起落库：唤醒与前端高亮都消费这一份快照，
+不各自实现一遍、也不事后按当前成员名表重新解析（改名不让历史提及漂移）。
+
+位置口径是 **UTF-16 code unit** 下标，不是 Python 的码点下标。唯一的消费方是浏览器的
+``String.slice``，它数的是 UTF-16；两种口径在纯 BMP 文本上完全一致，但 emoji 这类代理对
+在 Python 里是 1 个码点、在 JS 里是 2 个单元——按码点给出时，提及之前每有一个 emoji，
+前端就整体偏移一位。换算留在**唯一判定落点**（本模块），前端无需重算（#291）。搜索高亮
+（``db.py`` 的 ``_search_highlight_ranges``）用的是同一口径，两处对得上。
 """
 
 from __future__ import annotations
@@ -69,6 +75,7 @@ def parse_mentions(body: str, members: Iterable[Mapping[str, Any]]) -> list[dict
     Returns:
         ``[{"member_id", "display_name", "start", "end"}]``，按出现位置升序。
         ``start`` 是 ``@`` 的下标，``end`` 是最后一个被消费字符的下标 + 1（引号形式含闭引号）。
+        两者都是 **UTF-16 code unit** 下标（见模块 docstring）。
     """
     text = body or ""
     by_name: dict[str, str] = {}
@@ -96,9 +103,28 @@ def parse_mentions(body: str, members: Iterable[Mapping[str, Any]]) -> list[dict
             continue
 
         name, member_id, end = match
-        spans.append({"member_id": member_id, "display_name": name, "start": cursor, "end": end})
+        spans.append(
+            {
+                "member_id": member_id,
+                "display_name": name,
+                # 扫描用的是 Python 下标（好切字符串），出口才换算成 UTF-16。
+                "start": _utf16_offset(text, cursor),
+                "end": _utf16_offset(text, end),
+            }
+        )
         cursor = end
     return spans
+
+
+def _utf16_offset(text: str, index: int) -> int:
+    """把 Python 码点下标换成 UTF-16 code unit 下标（浏览器 ``String.slice`` 的口径）。
+
+    纯 BMP 文本上两者相等（``encode("utf-16-le")`` 每字符 2 字节，除以 2 即长度）；
+    代理对在 Python 里算 1 个码点、在 UTF-16 里算 2 个单元，因此必须按字节数换算。
+    """
+    if index <= 0:
+        return 0
+    return len(text[:index].encode("utf-16-le")) // 2
 
 
 def _match_quoted(text: str, at: int, by_name: Mapping[str, str]) -> tuple[str, str, int] | None:

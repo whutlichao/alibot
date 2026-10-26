@@ -305,6 +305,20 @@ MAX_MODEL_ID_LENGTH = 120
 #: Docker 镜像引用（name[:tag|@digest]）的长度上界；只挡明显误用，不做语法解析。
 MAX_DOCKER_IMAGE_LENGTH = 255
 
+
+def clean_message_body(body: str | None) -> str:
+    """消息正文的**唯一清洗落点**：去首尾空白。落库用它，提及解析也用它。
+
+    为什么必须是同一个函数：提及快照的位置是**相对正文**的坐标（`mentions.parse_mentions`）。
+    解析用原始串、落库用 strip 过的串，两边就差了首尾空白那一截——``"  你好 @小明"`` 的区间
+    按 8 字符算，前端拿到的却是 6 字符的存库串，于是切到 ``"明"``（#291）。
+
+    清洗与校验分开：本函数只做清洗，不抛错；空正文与超长的判定留在 ``append_message``
+    （那里才知道该用哪种错误文案）。
+    """
+    return (body or "").strip()
+
+
 # 附件的**人类面**闸门（ADR-0014）：大小与类型都在这里被拒绝并给可读原因。
 # 单文件上限取 10 MiB——它是「一眼看出传错了东西」的闸门，不是配额策略（多附件并发上限之外的
 # 配额策略是规格明写的 Out of Scope）。
@@ -5257,7 +5271,7 @@ class Database:
                 self._render_copy("error.unknown_message_kind", kind=kind),
                 fields={"kind": self._render_copy("error.field.message_kind_invalid")},
             )
-        clean_body = (body or "").strip()
+        clean_body = clean_message_body(body)
         if not clean_body:
             raise DomainError(
                 "validation_failed",
