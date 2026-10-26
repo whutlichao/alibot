@@ -35,7 +35,11 @@ jobs:
       - name: 安装 Node 20
         uses: actions/setup-node@v4
         with:
+          # 20 是 Vite 7 / Vitest 4 的下限（它们的 `engines.node` 是 `^20.19 || >=22.12`）。
           node-version: "20"
+          # 前端依赖按 `app/frontend/package-lock.json` 缓存（`npm ci` 的输入就是它）。
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
 
       # AgentScope 的 Grep/Glob 走真实 `rg`；runner 默认没有它，工具会返回 code 127。
       # 门禁测真实工具，所以在这里装，而不是在测试里 skip 或替换成替身。
@@ -55,6 +59,13 @@ jobs:
       # 依次找 pyright。runner 上既没有 `.venv` 也没有 pi-lens，所以把它装到 PATH 上。
       - name: 安装 pyright
         run: npm install --global pyright
+
+      # 前端依赖：`scripts/check.sh` 只在缺 `node_modules` 时自己 `npm ci`，这里显式装一次
+      # 是为了让依赖下载与「跑门禁」分成两步（下载失败时日志一眼看得出是哪一步）。
+      # `npm ci` 严格按 lock 文件装，`--include=dev` 防止 runner 上 NODE_ENV=production 时跳过 devDependencies。
+      - name: 安装前端依赖
+        run: npm ci --include=dev --no-audit --no-fund
+        working-directory: app/frontend
 
       - name: Gate（scripts/check.sh）
         # 与本地完全同一条命令。runner 上没有 `.venv`，脚本回退到 python3（上面已装好依赖）；

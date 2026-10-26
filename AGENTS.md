@@ -71,5 +71,7 @@ Standards sources and the judgement rules the reviewer enforces: see `docs/agent
 - `no_proxy` / `NO_PROXY` 含 `[::1]` ⇒ httpx 报 `InvalidURL: Invalid port: ':1]'`；`app/tests/conftest.py` 的 autouse fixture 已把这类条目摘掉（pytest 直接跑即可），只有绕开 pytest 的手工工具才需要 `env -u http_proxy -u https_proxy -u no_proxy -u NO_PROXY`。
 - `gh` 的 OAuth token 缺 `workflow` scope ⇒ 改动 `.github/workflows/**` 的分支用 HTTPS 推会被拒（`refusing to allow an OAuth App to create or update workflow`）；用 SSH 推同一分支即可（`git push git@github.com:whutlichao/alibot.git <branch>`），或先 `gh auth refresh -s workflow`。
 - 仓库 `.venv` 不含 `pyright` ⇒ `scripts/check.sh` 依次找 `PYRIGHT_BIN` → `node_modules/.bin/pyright` → PATH → `~/.pi-lens/tools/node_modules/pyright/index.js`；手工调用时用最后那条，或在别的 worktree 里加 `--pythonpath .venv/bin/python`。
+- 宿主 `NODE_ENV=production` ⇒ `npm install` **跳过 devDependencies**（vite / vitest 装不上，`node_modules/.bin` 里没有它们）。前端命令一律 `env -u NODE_ENV npm …` 或加 `--include=dev`；`scripts/check.sh` 与 CI 都已这么写。
+- 前端构建产物入库（`app/alibot/studio/v2/`）⇒ 改完 `app/frontend/src` 必须 `cd app/frontend && env -u NODE_ENV npm run build` 再提交；`app/frontend/tests/build-guard.test.js` 会比对源码指纹，忘了构建就是红（ADR-0038 §四）。
 - pi-lens 的 `unused-ignore` / `unchecked-throwing-call` 报告可能落在**不存在的行号**上（它自带隔离解释器的 mypy 看不到 `agentscope`，基类退化成 `Any`，于是必需的 `# type: ignore[override]` 被报成 unused；行号在多次编辑后还会错位到别的文件）。判据：`sed -n '<L>p' <file>` 看那一行是否真是该诊断，再用**权威**检查器复核 —— `.venv/bin/python -m mypy`（`mypy.ini` 已开 `warn_unused_ignores=True`）、`ruff check`、`pyright`。按 `mypy.ini` 首段的既有口径，环境差异不是代码问题，不要为了消警删掉必需的 ignore。
 

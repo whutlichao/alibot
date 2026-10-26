@@ -123,6 +123,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   background: var(--selected-graphic); border-radius: var(--r-pill);
 }
 .nav-row.is-active .hash { color: var(--selected-deep); }
+/* 只读行：Vue 版里 Agent 行是**读数**不是按钮（Agent 详情面还没迁过去，ADR-0038 §五）。
+   取消 hover 高亮与指针光标——一个点不动的东西不该因为鼠标悬停而看起来可点。
+   旧页面不使用这个类，因此它的行行为一个字不变。 */
+.nav-row.is-static { cursor: default; }
+.nav-row.is-static:hover { background: transparent; color: inherit; }
 
 /* 未读徽标：沿用 --unread 角色族 + mono/tabular-nums；不用 -fill 档、不新造色位。 */
 .badge {
