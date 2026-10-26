@@ -1513,7 +1513,7 @@ function declarationsOf(body) {
 
     与 `mobile_shell.test.cjs` 的那一份同源，但**刻意不是同一份**：那边判的是移动壳（需要
     `prefers-reduced-motion` 条件），本文件只需要宽度两个方向（`mediaMatches` 只认这两个），
-    于是那边把不认识的写成「不生效」。跨文件抽公用模块会让两份判据绑在一起，而 
+    于是那边把不认识的写成「不生效」。跨文件抽公用模块会让两份判据绑在一起，而
     `approval_dom_harness.cjs` 那种共享装置的正当理由是「需要假时钟 / 定时器」这类非它不可的能力，
     这里没有。两份的差异就只有这一条，已在 `mediaMatches` 的注释里写明。 */
 function flattenCss(css, conditions, out) {
