@@ -773,9 +773,8 @@ def create_app(
             # 全局层（#230 / ADR-0031 Seam A）：规则基座 / 项目补充的只读读路径。全局根固定为
             # ``~/.alibot``，只看 HOME，不随 ``--data-dir`` / ``ALIBOT_DATA_DIR`` 移动。
             global_home=global_home_root(),
-            # 全局远端 MCP 的确认状态（#233）：全局条目没有库行，按合成标识
-            # ``global:<member_id>:<name>`` 从既有 ``remote_consent_scope('mcp', …)`` 读取。
-            global_mcp_consent_of=lambda scope_id: database.has_remote_consent_scope("mcp", scope_id),
+            # #275 起不再注入「全局远端 MCP 的确认状态」：家目录 ``mcp.json`` 不参与装配，
+            # 它的条目确认与否不影响任何一轮；要参与装配必须先 `migrate-mcp` 导入成库行。
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(

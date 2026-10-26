@@ -24,7 +24,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -289,26 +289,73 @@ def load_global_mcp_declarations(
     return declarations
 
 
-def merge_mcp_layers(
-    layers: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
-) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
-    """按层优先级合并声明：每名恰好一条，返回 ``(胜出集合, 落选 [(名字, 胜出层)])``。
+def read_global_mcp_source(global_home: str | os.PathLike[str] | None, member_id: str) -> Path | None:
+    """该成员 ``mcp.json`` 的**真实路径**（全局只读守卫放行后的）；缺席 / 越界时 ``None``。
 
-    ``layers`` 按优先级从高到低给出（``agent`` → ``channel`` → ``global``）；同名先出现者胜出。
-    启停过滤在合并之后做，与项目层既有「先同名覆盖、再过滤 enabled」的语义逐字一致。
+    守卫的根是**全局根**（不是成员家目录）：成员家目录本身是指向根外的 symlink 时也拒绝。
+    它**只读**：不创建、不写入任何字节。
     """
-    winners: dict[str, dict[str, Any]] = {}
-    winning_layer: dict[str, str] = {}
-    losers: list[tuple[str, str]] = []
-    for layer, declarations in layers:
-        for declaration in declarations:
-            name = str(declaration.get("name") or "")
-            if name in winners:
-                losers.append((name, winning_layer[name]))
-                continue
-            winners[name] = dict(declaration)
-            winning_layer[name] = layer
-    return [item for item in winners.values() if item.get("enabled", True)], losers
+    if not global_home:
+        return None
+    from .workspace import AGENTS_DIR, resolve_global_read_path, safe_partition_id
+
+    resolved = resolve_global_read_path(
+        str(global_home), AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
+    )
+    return None if resolved is None else Path(resolved)
+
+
+def global_mcp_unimported_count(
+    global_home: str | os.PathLike[str] | None,
+    member_id: str,
+    *,
+    imported_names: Collection[str] = (),
+) -> int:
+    """成员家目录 ``mcp.json`` 里**尚未导入成库行**的条目数（#275 的提示面）。
+
+    #275 起这份文件**不再进入运行时装配**：它是导入源（``migrate-mcp``）与 Studio 的写面。
+    装配层因此只需要知道「文件里还有多少东西没进库」—— 有就发一条只进 ``RoundOutcome.reason``
+    的可读提示，让人去跑导入；没有就什么都不说。
+
+    ``imported_names`` 是该成员**库里已有的声明名**（装配层自己的读路径给）：只有名字不在这个
+    集合里的条目才算「未导入」。这条参数是必需的——少了它，按 README 推荐的「先导入、再删文件」
+    走完的人会每轮都看到「还有 N 条未导入」的**假提示**（那些条目恰恰已装配）。
+
+    口径刻意宽容：文件缺失 / 非法 JSON / 顶层形状不对 / 条目形状不合法 ⇒ **0**（那一格没有
+    可提示的东西）。它是**提示的触发条件**，不是导入判定——导入自己用
+    :func:`validate_mcp_document` 做整体拒绝。
+    """
+    path = read_global_mcp_source(global_home, member_id)
+    if path is None:
+        return 0
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
+        return 0
+    except (OSError, UnicodeDecodeError):
+        return 0
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return 0
+    if not isinstance(payload, Mapping):
+        return 0
+    servers = payload.get("servers")
+    if not isinstance(servers, list):
+        return 0
+    already = set(imported_names)
+    count = 0
+    for entry in servers:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            normalized = normalize_mcp_declaration(entry)
+        except InvalidMCPDeclaration:
+            continue
+        if str(normalized["name"]) in already:
+            continue
+        count += 1
+    return count
 
 
 #: 进程内的装配结果（按 server id）。它**不是**持久事实：重启即清空，库里没有对应列。

@@ -442,9 +442,11 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': '家目录 mcp.json',
-    // mcp 页签下块（#284 / D7）：文本域直接接家目录文件的**原文**，两块各标注数据来源。
+    // mcp 页签下块（#284 / D7，口径更新于 #275）：文本域直接接家目录文件的**原文**，两块各标注
+    // 数据来源。文件**不再是装配层**：它是导入源，运行期装配只看库行。
     'agentDetail.mcpFileSource':
-      '来自这个 Agent 家目录的 mcp.json（文件原文）；同名时库行胜出，落选条目会进轮次结果的可读提示。',
+      '来自这个 Agent 家目录的 mcp.json（文件原文）；它是导入源，**不参与运行时装配**——'
+      + '要让它生效，请把它导入库行（`python -m alibot migrate-mcp`）。',
     'agentDetail.mcpFileLoading': '正在读取家目录 mcp.json…',
     'agentDetail.mcpFileMissing':
       '这个 Agent 的家目录里还没有 mcp.json（不是空文件）：保存一次会按你写的内容新建它。',
@@ -1288,7 +1290,9 @@ const I18N_CATALOGS = {
     // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text, and each
     // block labels its data source.
     'agentDetail.mcpFileSource':
-      'From the mcp.json in this agent’s home directory (the file’s raw text); on a name clash the database row wins, and the entry that loses is reported in the round outcome.',
+      'From the mcp.json in this agent’s home directory (the file’s raw text); it is an import '
+      + 'source and is NOT assembled at runtime — import it into database rows to make it take '
+      + 'effect (`python -m alibot migrate-mcp`).',
     'agentDetail.mcpFileLoading': 'Reading the home-directory mcp.json…',
     'agentDetail.mcpFileMissing':
       'This agent’s home directory has no mcp.json yet (that is not an empty file): saving once creates it from what you write.',

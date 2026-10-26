@@ -370,9 +370,18 @@ def _tool_descriptions(body: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def test_two_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reason(
+def test_the_file_is_not_assembled_and_an_unimported_entry_is_reported_readably(
     declarations: Any, stub_script: Path, stub_provider: str, tmp_path: Path
 ) -> None:
+    """#275：``mcp.json` 不再是装配层——文件里有条目而库里没有 ⇒ 运行期**不连接**，只给可读提示。
+
+    这一条替换了本文件原先的「两层合并、同名落选者进 reason」用例（那正是被移除的层）。判据仍是
+    「这一轮真的发生了什么」：真 seam + stub provider 读工具清单与 reason，真实 stdio 子进程
+    取证「谁被连接了」。
+
+    文件里的 ``global-*`` 是**给过但没导入**的条目：它们必须在两处都不出现——工具清单里没有它们，
+    运行期读数里也没有它们（没连接 = 连尝试都没有）。
+    """
     database, channel_id, agent_id = declarations
     project = tmp_path / "project"
     project.mkdir()
@@ -397,14 +406,14 @@ def test_two_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reason
         args=[str(stub_script), "channel"],
     )
     # 频道级旧行指向不存在的命令：若被装配，运行期读数会留下失败痕迹。
-    loser = database.create_mcp_server(
+    channel_only = database.create_mcp_server(
         scope_kind="channel",
         scope_id=channel_id,
         name="broken",
         transport="stdio",
         command="/nonexistent/global-mcp-loser",
     )
-    # 成员级库行。
+    # 成员级库行：这是**唯一**的装配来源。
     database.create_mcp_server(
         scope_kind="agent",
         scope_id=agent_id,
@@ -421,6 +430,7 @@ def test_two_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reason
         command=sys.executable,
         args=[str(stub_script), "agent"],
     )
+    # 文件里有两条**未导入**的声明：它们不是装配来源。
     _write_global_mcp(
         tmp_path,
         agent_id,
@@ -445,35 +455,36 @@ def test_two_layers_keep_one_entry_per_name_and_report_losers_only_in_the_reason
         for name, description in _tool_descriptions(body).items()
         if name.startswith("mcp__")
     }
-    # 同名恰好一条，且来自胜出层；频道级独有的声明不装配。
-    assert sorted(descriptions) == ["mcp__broken__echo", "mcp__global__echo", "mcp__team__echo"]
+    # 只有库行装配：文件里的同名条目**没有**参与合并，文件独有的条目也没进来。
+    assert sorted(descriptions) == ["mcp__broken__echo", "mcp__team__echo"]
     assert "layer=agent" in descriptions["mcp__team__echo"]
-    assert "layer=global" in descriptions["mcp__global__echo"]
-    # 全局 stdio 的 cwd 仍是项目侧成员分区（不指向全局层）。
-    assert f"cwd={project / '.alibot' / 'agents' / agent_id}" in descriptions["mcp__global__echo"]
     assert "layer=agent" in descriptions["mcp__broken__echo"]
-    # env 值只在装配时从进程环境读。
-    assert SECRET_VALUE in descriptions["mcp__global__echo"]
+    # 文件里那两条都没被连接（连尝试都没有）。
+    assert runtime_status(f"global:{agent_id}:team") is None
+    assert runtime_status(f"global:{agent_id}:global") is None
+    # 频道级旧行没有被连接。
+    assert runtime_status(channel_only["id"]) is None
 
-    # 落选条目各一条可读提示（名字 + 胜出层）；胜出条目不产生提示。
-    assert "「team」" in outcome.reason and "成员级库行" in outcome.reason
-    assert outcome.reason.count("「team」") == 1
-    assert "「global」" not in outcome.reason
+    # 可读提示：说清「文件里还有未导入的条目」并给出去哪一条命令，且**不含**工具名。
+    assert "未导入" in outcome.reason
+    assert "migrate-mcp" in outcome.reason
+    assert "「team」" not in outcome.reason
     assert outcome.reason.count("mcp__") == 0
-
     # 提示不进 provider system prompt。
     system_prompt = _system_text(body)
-    assert "被更高优先级" not in system_prompt
+    assert "未导入" not in system_prompt
     assert "频道级" not in system_prompt
 
-    # 频道级旧行没有被连接（运行期读数里没有它们）。
-    assert runtime_status(loser["id"]) is None
-    assert runtime_status(f"global:{agent_id}:team") is None
 
-
-def test_unconfirmed_global_remote_is_not_connected_until_the_consent_row_exists(
+def test_an_unconfirmed_remote_is_not_connected_until_the_consent_row_exists(
     declarations: Any, stub_provider: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """#275 后的口径：远端的「未确认不建连」说的是**库行**，文件里的条目永远不建连。
+
+    原用例咬的是「文件里的远端条目在确认前不连接、确认后连接」。装配层移除后，文件条目没有
+    「确认后连接」这条路可走了（要连接必须先 `migrate-mcp` 导入成库行），因此这里拆成两半：
+    库行远端走既有的 `consent_required` 分支；文件里的同名/远端条目**一次尝试都没有**。
+    """
     from agentscope.mcp import MCPClient
 
     database, channel_id, agent_id = declarations
@@ -481,10 +492,21 @@ def test_unconfirmed_global_remote_is_not_connected_until_the_consent_row_exists
     project.mkdir()
     database.update_channel_config(channel_id, workspace_root=str(project))
     database.update_agent(agent_id, model_id="openai:stub-model")
+    row = database.create_mcp_server(
+        scope_kind="agent",
+        scope_id=agent_id,
+        name="remote",
+        transport="http",
+        url="http://127.0.0.1:9/mcp",
+    )
+    # 文件里另有两条远端：一条同名、一条独有。都不是装配来源。
     _write_global_mcp(
         tmp_path,
         agent_id,
-        [{"name": "remote", "transport": "http", "url": "http://127.0.0.1:9/mcp"}],
+        [
+            {"name": "remote", "transport": "http", "url": "http://127.0.0.1:9/mcp"},
+            {"name": "file-only", "transport": "http", "url": "http://127.0.0.1:9/mcp"},
+        ],
     )
     attempts: list[str] = []
 
@@ -493,33 +515,38 @@ def test_unconfirmed_global_remote_is_not_connected_until_the_consent_row_exists
         raise RuntimeError("stub remote refused")
 
     monkeypatch.setattr(MCPClient, "connect", fake_connect)
-    scope_id = f"global:{agent_id}:remote"
     seam = AgentScopeAgentSeam(
         timeout_seconds=10.0,
         workspace_of=database.workspace_settings_for_target,
+        mcp_of=database.mcp_layers_for_target,
         global_home=str(_global_root(tmp_path)),
-        global_mcp_consent_of=lambda probe: database.has_remote_consent_scope("mcp", probe),
     )
     agent = database.get_agent(agent_id)
 
-    # 未确认：一次连接尝试都没有；运行期读数给出可读的 `consent_required`。
+    # 库行远端未确认：一次连接尝试都没有；运行期读数给出可读的 `consent_required`。
     first = seam.run_round(agent, [_human()], mentioned=False, target_id=channel_id)
     assert first.status == "replied", first.reason
     assert attempts == []
-    unconfirmed = runtime_status(scope_id)
+    unconfirmed = runtime_status(row["id"])
     assert unconfirmed is not None
     assert unconfirmed["connected"] is False
     assert "确认" in (unconfirmed["error"] or "") or "acknowledg" in (unconfirmed["error"] or "")
     first_tools = _tool_descriptions(_CaptureHandler.request_bodies[0])
     assert "mcp__remote__echo" not in first_tools
+    # 文件里的条目从来没有被连接过（连运行期读数都没有）。
+    assert runtime_status(f"global:{agent_id}:remote") is None
+    assert runtime_status(f"global:{agent_id}:file-only") is None
+    # 有一条可读提示说清「文件里还有未导入的条目」。
+    assert "未导入" in first.reason
+    assert "migrate-mcp" in first.reason
 
     # 人类面确认入口属下一票：这里只写既有的确认行，证明装配层读的是它。
-    database.record_remote_consent_scope("mcp", scope_id)
+    database.record_remote_consent_scope("mcp", row["id"])
 
     second = seam.run_round(agent, [_human()], mentioned=False, target_id=channel_id)
     assert second.status == "replied", second.reason
     assert attempts == ["remote"]
-    confirmed = runtime_status(scope_id)
+    confirmed = runtime_status(row["id"])
     assert confirmed is not None
     assert confirmed["connected"] is False
     assert "stub remote refused" in (confirmed["error"] or "")
@@ -532,13 +559,19 @@ def _prepare_project(database: Any, channel_id: str, agent_id: str, project: Pat
     database.update_agent(agent_id, model_id="openai:stub-model")
 
 
-def test_invalid_global_json_leaves_the_project_layer_untouched(
+def test_a_broken_global_file_never_affects_the_database_rows(
     declarations: Any,
     stub_script: Path,
     stub_provider: str,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """#275：文件坏掉只影响「有没有未导入提示」，不影响装配（装配只看库行）。
+
+    原用例咬的是「坏全局文件不拖累项目层」。装配层移除后这条降级路径连同旧实现一起消失，
+    留下更强的判据：文件是非法 JSON 时，**库行照常装配**，且不产生任何「有未导入条目」的提示
+    （读不出可导入的条目 = 没有可提示的东西）。
+    """
     database, channel_id, agent_id = declarations
     project = tmp_path / "project"
     _prepare_project(database, channel_id, agent_id, project)
@@ -557,22 +590,23 @@ def test_invalid_global_json_leaves_the_project_layer_untouched(
         mcp_of=database.mcp_layers_for_target,
         global_home=str(_global_root(tmp_path)),
     )
-    with caplog.at_level("WARNING", logger="alibot.mcp"):
-        outcome = seam.run_round(
-            database.get_agent(agent_id), [_human()], mentioned=False, target_id=channel_id
-        )
+    outcome = seam.run_round(database.get_agent(agent_id), [_human()], mentioned=False, target_id=channel_id)
 
     assert outcome.status == "replied", outcome.reason
     descriptions = _tool_descriptions(_CaptureHandler.request_bodies[0])
     assert "layer=agent" in descriptions["mcp__project__echo"]
-    assert any("JSON" in record.getMessage() for record in caplog.records)
-    # 全局层零条：既没有工具，也没有落选提示（提示只针对同名落选）。
-    assert "被更高优先级" not in outcome.reason
+    # 文件不可解析 ⇒ 没有可导入的条目，也就不发「未导入」提示。
+    assert "未导入" not in outcome.reason
 
 
-def test_a_bad_global_entry_is_skipped_without_blocking_the_good_entry(
+def test_a_file_entry_is_not_assembled_even_when_other_entries_are_malformed(
     declarations: Any, stub_script: Path, stub_provider: str, tmp_path: Path
 ) -> None:
+    """#275：文件里的好坏条目都不进装配——「坏条目被跳过、好条目照装」那条旧路径已不存在。
+
+    原用例咬的是「坏条目只损失自己那一条」。现在文件不是装配来源，因此判据变成更强的形态：
+    文件里**一条都不装配**（无论好坏），运行期读数里也没有它们，只有一条「有未导入条目」提示。
+    """
     database, channel_id, agent_id = declarations
     project = tmp_path / "project"
     _prepare_project(database, channel_id, agent_id, project)
@@ -594,8 +628,49 @@ def test_a_bad_global_entry_is_skipped_without_blocking_the_good_entry(
 
     assert outcome.status == "replied", outcome.reason
     descriptions = _tool_descriptions(_CaptureHandler.request_bodies[0])
-    assert "mcp__good__echo" in descriptions
+    assert "mcp__good__echo" not in descriptions
     assert "mcp__bad__echo" not in descriptions
+    assert runtime_status(f"global:{agent_id}:good") is None
+    # 文件里有一条可读的声明（good）⇒ 发一条「有未导入条目」的提示。
+    assert "未导入" in outcome.reason
+    assert "migrate-mcp" in outcome.reason
+
+
+def test_an_imported_entry_stops_being_reported_as_not_imported(
+    declarations: Any, stub_script: Path, stub_provider: str, tmp_path: Path
+) -> None:
+    """#275 review P1：按 README 走完「导入后保留文件」的人，不该再看到「未导入」的假提示。
+
+    这条是那个假陈述的回归钉：文件里有一条**已导入成库行**的条目，本轮必须
+    ① 装配它（从库行来）、② **不**再报「文件里还有未导入的条目」。只按文件条目计数的实现会在这里红。
+    """
+    database, channel_id, agent_id = declarations
+    project = tmp_path / "project"
+    _prepare_project(database, channel_id, agent_id, project)
+    # 库里已有同名同形行（= `migrate-mcp --apply` 之后的状态），文件**保留**。
+    database.create_mcp_server(
+        scope_kind="agent",
+        scope_id=agent_id,
+        name="imported",
+        transport="stdio",
+        command=sys.executable,
+        args=[str(stub_script), "imported"],
+    )
+    _write_global_mcp(tmp_path, agent_id, [_global_stdio("imported", stub_script, label="global")])
+    seam = AgentScopeAgentSeam(
+        timeout_seconds=10.0,
+        workspace_of=database.workspace_settings_for_target,
+        mcp_of=database.mcp_layers_for_target,
+        global_home=str(_global_root(tmp_path)),
+    )
+    outcome = seam.run_round(database.get_agent(agent_id), [_human()], mentioned=False, target_id=channel_id)
+
+    assert outcome.status == "replied", outcome.reason
+    descriptions = _tool_descriptions(_CaptureHandler.request_bodies[0])
+    assert "mcp__imported__echo" in descriptions
+    # 装配的是库行那一份（label=imported），不是文件里那份（label=global）。
+    assert "layer=imported" in descriptions["mcp__imported__echo"]
+    assert "未导入" not in outcome.reason
 
 
 def test_a_round_does_not_create_global_mcp_layers_or_write_global_entries_to_the_database(
