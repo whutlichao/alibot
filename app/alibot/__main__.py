@@ -56,10 +56,14 @@ REPAIR_TARGETS_DEPRECATION_NOTICE = (
     "提示：--repair-targets 已弃用，请改用 --migrate（同一入口、同一条链、同一个退出码）。"
 )
 
-# ``migrate-skills`` 没能执行 / 没能完成的退出码（#274）：目标同名不同内容被拒、复制失败、写库失败、
-# 数据目录里没有库。它**不是** schema 迁移的答复（那三条是 3 / 4 / 5）：技能字节迁移不推进版本、
-# 不改 schema，因此单独给一个码，运维一眼能区分「库版本问题」与「技能搬迁问题」。
+# ``migrate-skills`` / ``migrate-mcp`` 没能执行 / 没能完成的退出码（#274 / #275）：目标同名不同内容被拒、
+# 复制 / 写库失败、数据目录里没有库。它**不是** schema 迁移的答复（那三条是 3 / 4 / 5）：这两条命令
+# 都不推进版本、不改 schema，因此单独给一个码，运维一眼能区分「库版本问题」与「素材搬迁/导入问题」。
 SKILL_MIGRATION_EXIT_CODE = 6
+
+#: 两个「素材迁移」子命令：都不推进 schema 版本、都不在启动路径上、都用同一套安全口径
+#: （默认 dry-run、`--apply --yes` 双开关、先整目录备份、不删源）。
+MIGRATION_SUBCOMMANDS: tuple[str, ...] = ("migrate-skills", "migrate-mcp")
 
 
 def _is_loopback(host: str) -> bool:
@@ -76,10 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["migrate-skills"],
+        choices=list(MIGRATION_SUBCOMMANDS),
         help=(
-            "子命令：migrate-skills —— 显式技能字节迁移（旧项目层 → 成员家目录）。"
-            "默认只读预演；写入必须同时给 --apply --yes。"
+            "子命令：migrate-skills —— 显式技能字节迁移（旧项目层 → 成员家目录）；"
+            "migrate-mcp —— 显式 MCP 声明导入（成员家目录 mcp.json → mcp_server 库行）。"
+            "两者默认都是只读预演；写入必须同时给 --apply --yes。"
         ),
     )
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1，只允许 loopback）")
@@ -120,14 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help=(
-            "【migrate-skills】真正执行技能字节迁移（先备份整数据目录 + 写迁移清单）。"
+            "【migrate-skills / migrate-mcp】真正执行迁移（先备份整数据目录 + 写迁移清单）。"
             "破坏性动作必须同时给 --yes，单给 --apply 是用法错误。"
         ),
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="【migrate-skills】确认执行 --apply；不能单独出现。",
+        help="【migrate-skills / migrate-mcp】确认执行 --apply；不能单独出现。",
     )
     return parser
 
@@ -411,22 +416,70 @@ def _run_skill_migration(data_dir: Path, *, apply: bool) -> int:
     return 0
 
 
+def _run_mcp_migration(data_dir: Path, *, apply: bool) -> int:
+    """``migrate-mcp`` 的编排：先只读计划 → 默认打印预演；``--apply`` 才写。
+
+    与 :func:`_run_skill_migration` **同一套安全口径**（默认 dry-run、双开关、先整目录备份、不删源）；
+    差异只在于源与目标：源是成员家目录 ``mcp.json``（只读），目标是 ``mcp_server`` 的 Agent 级库行。
+    它同样**先于**数据目录创建与 loopback 闸门收口：不监听端口、不组装应用、不碰 schema 版本。
+    任何拒绝 / 失败都返回 :data:`SKILL_MIGRATION_EXIT_CODE`（用法错误仍由 argparse 给 2）。
+    """
+    from .migrate import (
+        McpMigrationError,
+        apply_mcp_migration,
+        plan_mcp_migration,
+        render_mcp_migration_plan,
+        render_mcp_migration_result,
+    )
+    from .workspace import global_home_root
+
+    try:
+        plan = plan_mcp_migration(data_dir, global_home_root())
+    except McpMigrationError as error:
+        print(f"MCP 导入无法进行：{error}", file=sys.stderr)
+        return SKILL_MIGRATION_EXIT_CODE
+    print(render_mcp_migration_plan(plan))
+
+    if not apply:
+        print("预演结束：未写入任何文件、未改动数据库、未创建备份或迁移清单。")
+        return 0
+
+    if plan.has_refusals:
+        print(
+            "拒绝执行：存在需人工裁定的条目（同名不同形，或整份文件不可用）。"
+            "请先手动裁定（本命令不覆盖、不提供 --force）；本次未写入任何文件。",
+            file=sys.stderr,
+        )
+        return SKILL_MIGRATION_EXIT_CODE
+
+    try:
+        result = apply_mcp_migration(plan)
+    except McpMigrationError as error:
+        print(f"MCP 导入失败（已停止）：{error}", file=sys.stderr)
+        return SKILL_MIGRATION_EXIT_CODE
+    print(render_mcp_migration_result(result))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # ``migrate-skills`` 是**显式**的一次性技能字节迁移（#274）：默认只读预演；破坏性动作必须两个
-    # 开关同时给（--apply 缺 --yes、或单独 --yes 都是用法错误 ⇒ 2）。它不能与 schema 迁移旗标混用。
+    # ``migrate-skills`` / ``migrate-mcp`` 是**显式**的一次性素材迁移（#274 / #275）：默认只读预演；
+    # 破坏性动作必须两个开关同时给（--apply 缺 --yes、或单独 --yes 都是用法错误 ⇒ 2）。
+    # 两者都不能与 schema 迁移旗标混用。
     is_skill_migration = args.command == "migrate-skills"
+    is_mcp_migration = args.command == "migrate-mcp"
+    is_subcommand_migration = is_skill_migration or is_mcp_migration
     if args.apply or args.yes:
-        if not is_skill_migration:
-            parser.error("--apply / --yes 只能用于 migrate-skills 子命令。")
+        if not is_subcommand_migration:
+            parser.error("--apply / --yes 只能用于 migrate-skills / migrate-mcp 子命令。")
         if args.apply != args.yes:
             parser.error("--apply 必须与 --yes 同用：破坏性动作需要两个开关（缺一个都不执行）。")
         if args.dry_run:
-            parser.error("--dry-run 与 --apply 互斥：migrate-skills 的默认行为就是只读预演。")
-    if is_skill_migration and (args.migrate or args.repair_targets):
-        parser.error("migrate-skills 不能与 --migrate / --repair-targets 同用。")
+            parser.error("--dry-run 与 --apply 互斥：这两个子命令的默认行为就是只读预演。")
+    if is_subcommand_migration and (args.migrate or args.repair_targets):
+        parser.error(f"{args.command} 不能与 --migrate / --repair-targets 同用。")
 
     # 数据目录按固定优先级解析（规格 D2）：显式覆盖 → 新默认已存在 → 旧位置兼容 → 新建。
     # 解析本身只读；创建只发生在下面非迁移启动路径的「新建」分支。
@@ -434,8 +487,10 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = resolution.path
 
     if is_skill_migration:
-        # 先于「新建数据目录」与 loopback 闸门收口：技能迁移不监听端口，也不该为了跑一次预演去建目录。
+        # 先于「新建数据目录」与 loopback 闸门收口：这两个子命令不监听端口，也不该为了跑一次预演去建目录。
         return _run_skill_migration(data_dir, apply=args.apply)
+    if is_mcp_migration:
+        return _run_mcp_migration(data_dir, apply=args.apply)
 
     # ``--repair-targets`` 是 ``--migrate`` 的**弃用别名**（ADR-0015 §五 / 规格 D11）：两条旗标走
     # **同一个入口**（本分支）、同一条「形态步骤 + 逐版链」、同一个退出码集合 ``{0, 3, 4, 5}``。

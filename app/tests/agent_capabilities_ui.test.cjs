@@ -828,11 +828,16 @@ test("mcp 页签：上块库行、下块 mcp.json 文本域，两块各有一行
   assert.ok(byDataset(panel, "mcpToggle", "mcp_1"), "上块的库行启停还在");
   assert.ok(byDataset(panel, "mcpDelete", "mcp_1"), "上块的库行删除还在");
 
-  // 下块：一行数据来源说明（**必须写明「同名时库行胜出」**）+ 文本域。
+  // 下块：一行数据来源说明（#275 起必须写明「不参与运行时装配、是导入源」）+ 文本域。
   const fileSource = byOdId(panel, "agent-detail-mcp-file-source");
   assert.ok(fileSource, "下块要给一行数据来源说明");
   assert.equal(fileSource.textContent, catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"));
-  assert.match(fileSource.textContent, /同名时库行胜出/, "数据来源要写明同名时谁胜出");
+  assert.match(
+    fileSource.textContent,
+    /不参与运行时装配/,
+    "数据来源要写明文件不是装配层",
+  );
+  assert.match(fileSource.textContent, /migrate-mcp/, "数据来源要给出导入命令");
   const textarea = byOdId(panel, "agent-mcp-file-text");
   assert.ok(textarea, "下块是 mcp.json 文本域");
   assert.equal(textarea.tagName, "textarea", "下块是纯文本域，不做 JSON 格式化");
@@ -912,7 +917,7 @@ test("mcp 页签下块：保存失败时给出后端可读原因，且不清空�
   );
 });
 
-/** 下块的两行数据来源说明与「同名时库行胜出」的语义不需要屏上文本外的事实：
+/** 下块的数据来源说明与「文件是导入源、不参与装配」的语义不需要屏上文本外的事实：
     `agentDetail.mcpFileSource` 的词条值本身就写明了它（上一条用例咬的是渲染出的文本）。 */
 
 test("两个页签各读自己那一份：MCP 读数只在 mcp 页签、技能读数只在 skills 页签", async () => {
@@ -1945,8 +1950,8 @@ test("新增文案在两份词条里同键同参数位，随入口撤除的键�
     true,
     "scopeNote 的 {member} 参数位要能用",
   );
-  // #284：下块的数据来源标注**必须**写明「同名时库行胜出」——那是 D7 的优先级口径，
-  // 少了这句人就看不出同名时谁赢（装配行为本身一字不改）。
+  // #275：下块的数据来源标注**必须**写明「文件是导入源、不参与运行时装配」——装配层拿掉后，
+  // 再说「同名时库行胜出」就是不实陈述（已经没有落选这一档了）。
   for (const locale of ["zh-CN", "en"]) {
     const source = harness.catalogs[locale]["agentDetail.mcpFileSource"];
     assert.equal(typeof source, "string", `${locale} 缺少词条：agentDetail.mcpFileSource`);
@@ -1954,8 +1959,13 @@ test("新增文案在两份词条里同键同参数位，随入口撤除的键�
   }
   assert.match(
     catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"),
-    /同名时库行胜出/,
-    "中文的数据来源写明同名时库行胜出",
+    /不参与运行时装配/,
+    "中文的数据来源写明文件不参与装配",
+  );
+  assert.match(
+    catalogText(harness, "zh-CN", "agentDetail.mcpFileSource"),
+    /migrate-mcp/,
+    "中文的数据来源给出导入命令",
   );
   // 能力不再「两 kind 同屏」而是各在自己的页签里，因此那个跨两 kind 的总标题
   // `agentCapabilities.title` 失去全部消费点：两份词条一并移除，不留孤儿键。

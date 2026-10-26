@@ -689,7 +689,6 @@ class AgentScopeAgentSeam:
         skills_of: Callable[[str, str], Any] | None = None,
         web_of: Callable[[str, str], Any] | None = None,
         global_home: str | os.PathLike[str] | None = None,
-        global_mcp_consent_of: Callable[[str], bool] | None = None,
         approvals: Any | None = None,
         team_run_of: Callable[[str, str], str | None] | None = None,
         usage_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -722,10 +721,10 @@ class AgentScopeAgentSeam:
         # ``agent_config.system_prompt``，行为与 #230 之前逐字相同。全局层只读、不建目录、
         # 不进入文件工具根。
         self._global_home = str(global_home) if global_home is not None else None
-        # 全局远端 MCP 的确认状态读路径（#233 / ADR-0031 §三）：生产是
-        # ``Database.has_remote_consent_scope('mcp', 合成标识)``。**默认 None** = 远端全局条目
-        # 一律按未确认处理（不连接，运行期读数给出可读原因）；它只读既有确认行，不写库。
-        self._global_mcp_consent_of = global_mcp_consent_of
+        # 成员家目录 ``mcp.json`` 的**远端确认状态**读路径已在 #275 随装配层一起移除：文件条目根本
+        # 不参与装配，所以「它是否被确认」不再影响任何一轮。确认状态仍由 Studio 的
+        # ``POST /api/agents/{id}/global-mcp-servers/{name}/consent`` 写进既有确认行（那是它自己的
+        # 人类面动作），要参与装配必须先 ``migrate-mcp`` 导入成 ``mcp_server`` 库行。
         # 联网配置读路径（#186）：生产是 ``Database.web_settings_for_target``（``web_access`` /
         # 权限档 / 已确认的 web provider）。**不挂在 workspace 上面**——``web_access`` 是独立配
         # 置位，频道没配项目根时它也生效（ADR-0026 §二）。不注入时这一轮不挂联网工具。
@@ -904,12 +903,16 @@ class AgentScopeAgentSeam:
         }
 
     def _mcp_declarations(self, target_id: str, member_id: str, notes: list[str]) -> list[dict[str, Any]]:
-        """本轮胜出的 MCP 声明（成员级库行 → 全局成员家目录的 ``mcp.json``）。
+        """本轮装配的 MCP 声明：**只有**成员级库行（``scope_kind='agent'``）。
 
-        未注入读路径 / 读路径失败时库行层为空，不拖垮一轮。频道级旧行**不进入装配**
-        （ADR-0031 #270 修订；行仍留在库里）。全局层是**纯文件**、只读；同名落选条目各追加
-        一条只进 ``RoundOutcome.reason`` 的可读提示（名字 + 胜出层），**不进** provider system
-        prompt。
+        未注入读路径 / 读路径失败时为零条，不拖垮一轮。频道级旧行**不进入装配**
+        （ADR-0031 #270 修订；行仍留在库里）。
+
+        #275 起这里**不再合并成员家目录的 ``mcp.json``**：那份文件是**导入源**（`migrate-mcp`）
+        与 Studio 的写面，不是装配层。因此不再有「同名落选条目」——库里同名声明由
+        ``mcp_server`` 的 ``UNIQUE(scope_kind, scope_id, name)`` 直接挡住，跨层合并这件事已经不存在。
+        文件里还有未导入的条目时，运行期只发一条只进 ``RoundOutcome.reason`` 的可读提示
+        （「文件里有条目尚未导入」），不进 provider system prompt。
         """
         database_rows: list[dict[str, Any]] = []
         if self._mcp_of is not None:
@@ -918,27 +921,43 @@ class AgentScopeAgentSeam:
             except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
                 _log.debug("mcp declaration lookup failed", exc_info=True)
         agent_rows = [row for row in database_rows if str(row.get("scope_kind") or "agent") == "agent"]
-        global_rows: list[dict[str, Any]] = []
-        if self._global_home is not None:
-            from .mcp import load_global_mcp_declarations
+        # 「未导入」判据必须知道**库里已有的名字**：少了它，按 README 推荐的「先导入、再删文件」
+        # 走完的人会每轮都看到「还有 N 条未导入」的假提示（那些条目恰恰已装配）。
+        pending = self._unimported_global_mcp_count(
+            member_id, imported_names={str(row.get("name") or "") for row in database_rows}
+        )
+        if pending:
+            from .mcp import GLOBAL_MCP_FILENAME
 
-            global_rows = load_global_mcp_declarations(
-                self._global_home, member_id, consent_of=self._global_mcp_consent_of
-            )
-        from .mcp import merge_mcp_layers
-
-        winners, losers = merge_mcp_layers((("agent", agent_rows), ("global", global_rows)))
-        locale = self._locale()
-        for name, layer in losers:
             notes.append(
                 render(
-                    "mcp.assembly.shadowed",
-                    locale,
-                    name=name,
-                    layer=render(f"mcp.layer.{layer}", locale),
+                    "mcp.assembly.not_imported",
+                    self._locale(),
+                    count=pending,
+                    file=GLOBAL_MCP_FILENAME,
                 )
             )
-        return winners
+        # 启用过滤在合并之后（与项目层既有语义一致）；本层已无跨层合并，这里只滤 enabled。
+        return [dict(row) for row in agent_rows if row.get("enabled", True)]
+
+    def _unimported_global_mcp_count(self, member_id: str, *, imported_names: set[str]) -> int:
+        """成员家目录 ``mcp.json`` 里**尚未导入**成库行的条目数（未接线 / 读不到时为零）。
+
+        装配层**不看这份文件的内容**（它不再是装配来源），只回答「有没有人写下了尚未进库的东西」——
+        这决定了本轮要不要给一条可读提示。``imported_names`` 是库里已有的声明名（含停用行）：
+        停用行也算「已导入」（人看得见它、知道它被停用，不该再收到「未导入」提示）。
+
+        文件缺失 / 非法 JSON / 顶层形状不对 ⇒ 零条（那一格没有可提示的东西）。
+        """
+        if self._global_home is None:
+            return 0
+        from .mcp import global_mcp_unimported_count
+
+        try:
+            return global_mcp_unimported_count(self._global_home, member_id, imported_names=imported_names)
+        except Exception:  # 读文件失败不该拖垮一轮，也不该把「读不到」说成「有未导入条目」
+            _log.debug("global MCP pending-import probe failed", exc_info=True)
+            return 0
 
     async def _assemble_mcp(
         self,

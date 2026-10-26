@@ -3674,10 +3674,16 @@ class Database:
         return [server for server in servers if server["enabled"]]
 
     def mcp_layers_for_target(self, target_id: str, member_id: str) -> list[dict[str, Any]]:
-        """**未合并**的成员级声明行（含停用，供装配层生成落选提示）。
+        """成员级声明行（含停用），供装配层自己过 enabled。
 
-        与 :meth:`mcp_servers_for_target` 同一 target 门控（无频道上下文返回空），但保留停用行
-        ——装配层先按名字排出胜出者，再只连接启用的胜出者。频道级旧行不返回。
+        与 :meth:`mcp_servers_for_target` 同一 target 门控（无频道上下文返回空），差别只在
+        「保留停用行」：装配层要自己判断哪些行该连接（只有启用的），并把**全部**成员行当成
+        「已导入的名字集合」去算「文件里还有多少条没进库」——停用行也算已导入（人看得见它、
+        知道它被停用，不该再收到「未导入」提示）。频道级旧行不返回。
+
+        历史（#275 前）：它叫「**未合并**读路径」，供装配层跨「成员库行 / 家目录文件」两层出
+        落选提示；那一层已移除，现在返回的就是**全部**候选（库里同名由 UNIQUE 约束确保唯一），
+        不存在「落选」这一档。
         """
         with self._lock:
             if self._channel_id_for_target_locked(target_id) is None:

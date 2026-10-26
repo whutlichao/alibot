@@ -63,6 +63,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .db import (
     DATABASE_FILE_NAME,
@@ -76,6 +77,12 @@ from .db import (
     STAMP_SCHEMA_VERSION_SQL,
     new_id,
     utc_now,
+)
+from .mcp import (
+    GLOBAL_MCP_FILENAME,
+    REMOTE_MCP_TRANSPORTS,
+    InvalidMCPDocument,
+    validate_mcp_document,
 )
 from .repair import CHANNEL_SCOPE_MOVES, channel_scope_gaps
 from .skills import SKILLS_DIR, SkillValidationError, read_skill_tree, skills_partition
@@ -2032,7 +2039,6 @@ def _manifest_payload(plan: SkillMigrationPlan) -> dict[str, object]:
                 "file_count": entry.file_count,
                 "bytes": entry.byte_count,
                 "row_id": entry.row_id,
-                "row_changes": list(entry.row_changes),
             }
             for entry in plan.entries
         ],
@@ -2268,4 +2274,509 @@ def render_skill_migration_result(result: SkillApplyResult) -> str:
         lines.append("可手工删除的源路径（确认后；本命令不删除任何源文件）：")
         for source in result.removable_sources:
             lines.append(f"  {source}")
+    return "\n".join(lines)
+
+
+# ─── MCP 声明导入（#275 / ADR-0031 §二） ────────────────────────────────────
+# 这是**显式**的一次性导入：成员家目录 ``<全局根>/agents/<member>/mcp.json`` 的条目
+# → ``mcp_server`` 的 Agent 级库行。它不在启动路径上、不是 HTTP 端点、不改 schema、不删源文件：
+# 只读文件、只写库行、只落备份与清单。
+#
+# 三种处置（与 #274 的 ``create`` / ``skip`` / ``refuse`` 同一套安全口径）：
+# - ``create``：库里没有同名行 → 新建（``scope_kind='agent'`` / ``scope_id=<member>``）；
+# - ``skip``：库里已有同名**同形**行 → 不覆盖、不写 ``updated_at``；
+# - ``refuse``：库里已有同名行但**形状不同** → **拒绝整条命令**，要求人类先裁定。
+#   本命令不提供 ``--force``。
+#
+# 另有一档与条目无关的拒绝（:class:`McpFileRefusal`）：**文件本身不可用**（非法 JSON / 顶层形状不对 /
+# 某条形状不合法 / 文件里重名）。它与 Studio 写路径同一口径——静默丢掉人写的一条才是坏结果，所以
+# 整份文件都不导入，而不是跳过坏的那一条。
+#
+# **远端条目的确认不代做**（票面要求）：``remote_consent_scope('mcp', …)`` 一行都不写，
+# 只在报告里点出导入后仍需 ``POST /api/mcp-servers/{id}/consent``。理由与 ADR-0031 §三 同源：
+# 数据面扩大必须由人类逐条确认，迁移工具不是那条确认通道。
+MCP_MIGRATION_MANIFEST_PREFIX = "mcp-migration-"
+MCP_ACTION_CREATE = "create"
+MCP_ACTION_SKIP = "skip"
+MCP_ACTION_REFUSE = "refuse"
+_MCP_ACTION_LABELS = {
+    MCP_ACTION_CREATE: "新建",
+    MCP_ACTION_SKIP: "跳过",
+    MCP_ACTION_REFUSE: "拒绝",
+}
+# 导入报告里指向远端条目确认入口的那句（逐条带真实库行 id）。
+MCP_MIGRATION_CONSENT_NOTICE = (
+    "远端条目的数据面确认**未代做**：导入后仍需由人逐条调用 "
+    "`POST /api/mcp-servers/{id}/consent`（或在 Studio 里点「确认使用」）。"
+)
+# 「形状」里**不算**东西的键：库行的身份（``id`` / ``scope_*``）与时间戳不是声明形状的一部分。
+# 其余键一律算形状，且**由归一化内核的输出派生**（不手抄）——加一列时形状比较自动跟上，
+# 不会因为漏抄而把「不同形」误判成「同形」。
+_MCP_NON_SHAPE_KEYS: frozenset[str] = frozenset(
+    {"id", "scope_kind", "scope_id", "created_at", "updated_at", "is_remote", "consent_required", "consented"}
+)
+
+
+class McpMigrationError(MigrationError):
+    """MCP 导入**没能开始或没能完成**：库形态不对 / 文件不可用 / 同名不同形 / 写库失败。"""
+
+
+@dataclass(frozen=True)
+class McpMigrationEntry:
+    """一条逐条计划：一份 ``mcp.json`` 里的一条声明、它的动作、原因与（若有）既有行。"""
+
+    source: Path
+    member_id: str
+    declaration: dict[str, Any]
+    action: str
+    reason: str
+    row_id: str | None
+
+    @property
+    def name(self) -> str:
+        return str(self.declaration["name"])
+
+    @property
+    def is_remote(self) -> bool:
+        return str(self.declaration["transport"]) in REMOTE_MCP_TRANSPORTS
+
+    @property
+    def needs_write(self) -> bool:
+        """这一条是否需要动库行：本命令只「新建」，已同形的条目是 ``skip``（重复 apply 零写入）。
+
+        没有「更新既存行」这一档是**刻意的**：同形 → 跳过；不同形 → 拒绝并要求人裁定。两者都不写。
+        """
+        return self.action == MCP_ACTION_CREATE
+
+
+@dataclass(frozen=True)
+class McpFileRefusal:
+    """一份 ``mcp.json`` **整体**不可用：一条都不导入，原因指名到条目 / 字段。
+
+    它不是「一条声明的动作」，因为它没有可导入的声明可指；报告与拒绝理由都按「这份文件」讲。
+    """
+
+    source: Path
+    member_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class McpMigrationSkip:
+    """没能导入的成员分区（不是成员 / 家目录越界 / 不可读）与一句原因（不猜、不静默跳过）。"""
+
+    source: Path
+    reason: str
+
+
+@dataclass(frozen=True)
+class McpMigrationPlan:
+    """一次导入的**只读**计划：逐条动作、整体拒绝与跳过读数（dry-run 的全部产出）。"""
+
+    data_dir: Path
+    global_root: str
+    entries: tuple[McpMigrationEntry, ...]
+    skipped: tuple[McpMigrationSkip, ...]
+    refusals: tuple[McpFileRefusal, ...] = ()
+
+    @property
+    def refused(self) -> tuple[McpMigrationEntry, ...]:
+        return tuple(entry for entry in self.entries if entry.action == MCP_ACTION_REFUSE)
+
+    @property
+    def has_refusals(self) -> bool:
+        """是否有任何一档拒绝（同名不同形 / 整份文件不可用）——有则 apply 零写入。"""
+        return bool(self.refused) or bool(self.refusals)
+
+    @property
+    def pending(self) -> tuple[McpMigrationEntry, ...]:
+        """本次 apply 真的要写的条目（已就位 → 空）。"""
+        return tuple(entry for entry in self.entries if entry.needs_write)
+
+    @property
+    def remote_imports(self) -> tuple[McpMigrationEntry, ...]:
+        return tuple(entry for entry in self.pending if entry.is_remote)
+
+
+@dataclass(frozen=True)
+class McpApplyEntry:
+    """一条 apply 的完成读数：条目与最终行 id（远端确认入口要用它）。"""
+
+    entry: McpMigrationEntry
+    row_id: str
+
+
+@dataclass(frozen=True)
+class McpApplyResult:
+    """一次 apply 的完成读数（失败时也带着已完成的部分）。"""
+
+    backup_path: Path | None
+    manifest_path: Path | None
+    completed: tuple[McpApplyEntry, ...]
+
+    @property
+    def remote_rows(self) -> tuple[McpApplyEntry, ...]:
+        """已导入的**远端**行（报告据此逐条给出确认入口；本命令不代确认）。"""
+        return tuple(item for item in self.completed if item.entry.is_remote)
+
+
+def _mcp_declaration_shape(declaration: Mapping[str, Any]) -> dict[str, Any]:
+    """一条声明的**形状**（参与「同形 / 不同形」判定的一组值，不含身份与时间戳）。
+
+    键集从 :func:`mcp.normalize_mcp_declaration` 的输出派生（见 :data:`_MCP_NON_SHAPE_KEYS` 的
+    注释）：两侧（文件声明 / 库行）都含同一组形状键，因此比较键集仍是「归一化后的一致」。
+    """
+    return {key: value for key, value in declaration.items() if key not in _MCP_NON_SHAPE_KEYS}
+
+
+def _plan_member_entries(
+    *,
+    member_id: str,
+    source: Path,
+    declarations: list[dict[str, Any]],
+    rows: Mapping[str, Mapping[str, Any]],
+) -> list[McpMigrationEntry]:
+    """一个成员分区的逐条动作：库里没有 → 新建；有且同形 → 跳过；有但不同形 → 拒绝。"""
+    entries: list[McpMigrationEntry] = []
+    for declaration in declarations:
+        name = str(declaration["name"])
+        row = rows.get(name)
+        if row is None:
+            entries.append(
+                McpMigrationEntry(
+                    source=source,
+                    member_id=member_id,
+                    declaration=declaration,
+                    action=MCP_ACTION_CREATE,
+                    reason="库里没有同名声明，将按成员作用域新建",
+                    row_id=None,
+                )
+            )
+            continue
+        if _mcp_declaration_shape(row) == _mcp_declaration_shape(declaration):
+            entries.append(
+                McpMigrationEntry(
+                    source=source,
+                    member_id=member_id,
+                    declaration=declaration,
+                    action=MCP_ACTION_SKIP,
+                    reason="库里已有同名同形声明，不覆盖",
+                    row_id=str(row["id"]),
+                )
+            )
+            continue
+        entries.append(
+            McpMigrationEntry(
+                source=source,
+                member_id=member_id,
+                declaration=declaration,
+                action=MCP_ACTION_REFUSE,
+                reason=("库里已有同名但形状不同的声明，需人工裁定后再导入（本命令不覆盖、不提供 --force）"),
+                row_id=str(row["id"]),
+            )
+        )
+    return entries
+
+
+def _member_mcp_source(root: str, member_id: str) -> tuple[Path | None, str | None]:
+    """该成员 ``mcp.json`` 的路径与**不可读/越界**的原因（``None, None`` = 文件缺席）。
+
+    路径判定复用全局只读守卫：根外 symlink 祖先与根外目标一律拒绝——与装配层、Studio 读路径
+    **同一份**判据，不新写一套。
+    """
+    raw = Path(os.path.join(root, AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME))
+    resolved = resolve_global_read_path(root, AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME)
+    if resolved is None:
+        if os.path.lexists(raw):
+            return raw, "文件路径越出全局根（根外 symlink 祖先或根外目标），未导入"
+        return None, None
+    return Path(resolved), None
+
+
+def plan_mcp_migration(data_dir: Path | str, global_root: str | None = None) -> McpMigrationPlan:
+    """扫描全局层各成员家目录的 ``mcp.json``，产出**只读**的逐条计划（dry-run 的全部实现）。
+
+    遍历 ``<全局根>/agents/<partition>/mcp.json``（不是遍历库里的成员）：这样「家目录里有一份文件、
+    库里却没有对应成员」的情况会进 ``skipped`` 并给原因，而不是被静默漏掉。库里的成员行只用于
+    判定分区归属与读取既有声明行。
+    """
+    data_dir_path = Path(data_dir)
+    db_path = data_dir_path / DATABASE_FILE_NAME
+    if not db_path.is_file():
+        raise McpMigrationError(f"数据目录里没有 {DATABASE_FILE_NAME}：{data_dir_path}")
+    root = os.path.realpath(global_root if global_root is not None else global_home_root())
+
+    conn = connect(db_path)
+    try:
+        tables = _table_names(conn)
+        missing = {"member", "mcp_server"} - tables
+        if missing:
+            raise McpMigrationError(
+                "库里缺少 MCP 导入需要的表："
+                + "、".join(sorted(missing))
+                + "；请先用 `python -m alibot --migrate` 把库推进到本代码的 schema 版本。"
+            )
+        members = {
+            safe_partition_id(str(row["id"])): row
+            for row in conn.execute("SELECT id, kind, deleted_at FROM member")
+        }
+        rows_by_member: dict[str, dict[str, Mapping[str, Any]]] = {}
+        for row in conn.execute(
+            "SELECT * FROM mcp_server WHERE scope_kind = 'agent' ORDER BY created_at, id"
+        ):
+            payload = {
+                "id": str(row["id"]),
+                "name": str(row["name"]),
+                "transport": str(row["transport"]),
+                "command": str(row["command"]),
+                "args": json.loads(row["args"] or "[]"),
+                "url": str(row["url"]),
+                "env_names": json.loads(row["env_names"] or "[]"),
+                "enabled": bool(row["enabled"]),
+                "scope_kind": str(row["scope_kind"]),
+                "scope_id": str(row["scope_id"]),
+            }
+            rows_by_member.setdefault(str(row["scope_id"]), {})[str(row["name"])] = payload
+    finally:
+        conn.close()
+
+    entries: list[McpMigrationEntry] = []
+    skipped: list[McpMigrationSkip] = []
+    refusals: list[McpFileRefusal] = []
+    agents_dir = Path(root) / AGENTS_DIR
+    if not agents_dir.is_dir():
+        return McpMigrationPlan(data_dir=data_dir_path, global_root=root, entries=(), skipped=())
+
+    for partition in sorted(agents_dir.iterdir(), key=lambda item: item.name):
+        if partition.is_symlink() or not partition.is_dir():
+            continue
+        source, guard_reason = _member_mcp_source(root, partition.name)
+        if guard_reason is not None:
+            skipped.append(McpMigrationSkip(source or partition, guard_reason))
+            continue
+        if source is None or not source.is_file():
+            continue  # 该成员没有 mcp.json：这一层缺席，不是跳过项
+        member = members.get(partition.name)
+        if member is None:
+            skipped.append(McpMigrationSkip(source, "分区不是库里的成员（或成员 id 被收敛过），未导入"))
+            continue
+        if str(member["kind"]) != "agent" or member["deleted_at"] is not None:
+            skipped.append(McpMigrationSkip(source, "分区对应的成员不是未删除的 Agent，未导入"))
+            continue
+        member_id = str(member["id"])
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            skipped.append(McpMigrationSkip(source, f"文件不可读（{error}），未导入"))
+            continue
+        try:
+            declarations = validate_mcp_document(text)
+        except InvalidMCPDocument as error:
+            # 文件整体不可用 ⇒ 整体拒绝（与 Studio 写路径同一口径：静默丢掉人写的一条才是坏结果）。
+            refusals.append(
+                McpFileRefusal(
+                    source=source,
+                    member_id=member_id,
+                    reason=f"文件不可用，未导入（{error.message}；位置 {error.location}）",
+                )
+            )
+            continue
+        entries.extend(
+            _plan_member_entries(
+                member_id=member_id,
+                source=source,
+                declarations=declarations,
+                rows=rows_by_member.get(member_id, {}),
+            )
+        )
+    return McpMigrationPlan(
+        data_dir=data_dir_path,
+        global_root=root,
+        entries=tuple(entries),
+        skipped=tuple(skipped),
+        refusals=tuple(refusals),
+    )
+
+
+def _write_mcp_manifest(plan: McpMigrationPlan) -> Path:
+    """先落清单再写库：清单是本次导入的审计正本（数据目录内，UTC 时间戳）。"""
+    stamp = datetime.now(UTC).strftime(BACKUP_TIMESTAMP_FORMAT)
+    path = plan.data_dir / f"{MCP_MIGRATION_MANIFEST_PREFIX}{stamp}.json"
+    suffix = 1
+    while path.exists():
+        suffix += 1
+        path = plan.data_dir / f"{MCP_MIGRATION_MANIFEST_PREFIX}{stamp}-{suffix}.json"
+    payload = {
+        "kind": "mcp-migration",
+        "created_at": utc_now(),
+        "data_dir": str(plan.data_dir),
+        "global_root": plan.global_root,
+        "entries": [
+            {
+                "source": str(entry.source),
+                "member_id": entry.member_id,
+                "name": entry.name,
+                "transport": entry.declaration["transport"],
+                "action": entry.action,
+                "reason": entry.reason,
+                "row_id": entry.row_id,
+            }
+            for entry in plan.entries
+        ],
+        "skipped": [{"source": str(item.source), "reason": item.reason} for item in plan.skipped],
+        "refusals": [
+            {
+                "source": str(item.source),
+                "member_id": item.member_id,
+                "reason": item.reason,
+            }
+            for item in plan.refusals
+        ],
+        "consent_notice": MCP_MIGRATION_CONSENT_NOTICE,
+    }
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as error:
+        raise McpMigrationError(f"导入清单写入失败，已停止（库行一条都没写）：{error}") from error
+    return path
+
+
+def _insert_mcp_row(conn: sqlite3.Connection, entry: McpMigrationEntry) -> str:
+    """按成员作用域新建一条声明行；返回新行 id。
+
+    ``args`` / ``env_names`` 落成 JSON 数组（与库写路径同一存储形态）；``enabled`` 落 0/1。
+    ``env_names`` 只有变量**名**——文件里根本没有值的落点，因此导入不会带入任何密钥。
+    """
+    declaration = entry.declaration
+    now = utc_now()
+    server_id = new_id("mcp")
+    conn.execute(
+        "INSERT INTO mcp_server(id, name, transport, command, args, url, env_names, enabled, "
+        "scope_kind, scope_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?)",
+        (
+            server_id,
+            str(declaration["name"]),
+            str(declaration["transport"]),
+            str(declaration.get("command") or ""),
+            json.dumps(list(declaration.get("args") or []), ensure_ascii=False),
+            str(declaration.get("url") or ""),
+            json.dumps(list(declaration.get("env_names") or []), ensure_ascii=False),
+            1 if declaration.get("enabled", True) else 0,
+            entry.member_id,
+            now,
+            now,
+        ),
+    )
+    return server_id
+
+
+def apply_mcp_migration(plan: McpMigrationPlan) -> McpApplyResult:
+    """执行**已计划**的导入：备份 → 清单 → 逐条新建库行（单事务收口）。
+
+    有拒绝条目时**在动手之前**整体停下（零写入，退出码由调用方给 6）。远端条目的确认**不代做**：
+    ``remote_consent_scope`` 一行都不写（票面约束「不代确认」），报告里逐条给出确认入口。
+    """
+    # 两档拒绝都在**写任何字节之前**收口：同名不同形（要人裁定）与整份文件不可用。
+    # 后者若不拦住，同一批里别的好文件会被部分导入，于是「一次 apply」变成一份混合结果。
+    if plan.has_refusals:
+        parts: list[str] = [f"{entry.source} 的「{entry.name}」（{entry.reason}）" for entry in plan.refused]
+        parts.extend(f"{item.source}（{item.reason}）" for item in plan.refusals)
+        raise McpMigrationError("存在需人工裁定的条目，已拒绝执行（未写入任何库行）：" + "；".join(parts))
+
+    pending = plan.pending
+    if not pending:
+        return McpApplyResult(backup_path=None, manifest_path=None, completed=())
+
+    try:
+        backup_path = _backup_data_dir(plan.data_dir, SCHEMA_VERSION, SCHEMA_VERSION, label="mcp")
+    except BackupError as error:
+        raise McpMigrationError(f"MCP 导入前的整目录备份失败，已停止（未写入任何库行）：{error}") from error
+    try:
+        manifest_path = _write_mcp_manifest(plan)
+    except McpMigrationError as error:
+        raise McpMigrationError(f"{error}（备份已建：{backup_path}）") from error
+
+    completed: list[McpApplyEntry] = []
+    conn = connect(plan.data_dir / DATABASE_FILE_NAME)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for entry in pending:
+                completed.append(McpApplyEntry(entry=entry, row_id=_insert_mcp_row(conn, entry)))
+            conn.execute("COMMIT")
+        except Exception:
+            with suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
+    except Exception as error:
+        raise McpMigrationError(
+            f"MCP 导入失败并已回滚（库停在原状）：{error}；备份在 {backup_path}"
+        ) from error
+    finally:
+        conn.close()
+    return McpApplyResult(backup_path=backup_path, manifest_path=manifest_path, completed=tuple(completed))
+
+
+def render_mcp_migration_plan(plan: McpMigrationPlan) -> str:
+    """逐条计划的可读报告：源文件 → 动作与原因、名字与传输；远端条目提前点明确认入口。"""
+    counts = dict.fromkeys(_MCP_ACTION_LABELS, 0)
+    for entry in plan.entries:
+        counts[entry.action] = counts.get(entry.action, 0) + 1
+    lines = [
+        "MCP 导入计划（migrate-mcp，只读扫描）",
+        f"数据目录： {plan.data_dir}",
+        f"全局层根： {plan.global_root}",
+    ]
+    if plan.entries:
+        lines.append(
+            f"家目录声明： {len(plan.entries)} 条"
+            f"（新建 {counts[MCP_ACTION_CREATE]} / 跳过 {counts[MCP_ACTION_SKIP]}"
+            f" / 拒绝 {counts[MCP_ACTION_REFUSE]}）"
+        )
+        for entry in plan.entries:
+            label = _MCP_ACTION_LABELS.get(entry.action, entry.action)
+            kind = "远端" if entry.is_remote else "本机"
+            lines.append(
+                f"  {label} {entry.source} 的「{entry.name}」"
+                f"（{entry.declaration['transport']} / {kind}）→ 成员 {entry.member_id}"
+            )
+            lines.append(f"    原因：{entry.reason}")
+    else:
+        lines.append("家目录声明： 0 条（家目录里没有可导入的 mcp.json 条目）")
+    if plan.refusals:
+        # 整份文件不可用：它没有逐条声明可列，所以按「这份文件」讲，并指明出错位置。
+        lines.append(f"拒绝（文件不可用，整份都不导入）： {len(plan.refusals)} 份")
+        for item in plan.refusals:
+            lines.append(f"  {item.source}（成员 {item.member_id}）：{item.reason}")
+    if plan.skipped:
+        lines.append(f"未导入（无法判定或不可用）： {len(plan.skipped)} 处")
+        for skip in plan.skipped:
+            lines.append(f"  {skip.source}：{skip.reason}")
+    if plan.remote_imports:
+        lines.append(f"远端条目 {len(plan.remote_imports)} 条：{MCP_MIGRATION_CONSENT_NOTICE}")
+    return "\n".join(lines)
+
+
+def render_mcp_migration_result(result: McpApplyResult) -> str:
+    """apply 的完成读数：备份 / 清单落点、逐条新建的库行，以及**未代做**的远端确认。"""
+    lines: list[str] = []
+    if result.backup_path is None and result.manifest_path is None:
+        lines.append("MCP 导入：没有需要导入的条目（全部已同形在库里或没有家目录条目）；未写入任何文件。")
+    else:
+        lines.append("MCP 导入完成")
+        if result.backup_path is not None:
+            lines.append(f"  数据目录备份： {result.backup_path}")
+        if result.manifest_path is not None:
+            lines.append(f"  导入清单： {result.manifest_path}")
+    lines.append(f"处理条目： {len(result.completed)} 条（新建 {len(result.completed)} / 跳过 0）")
+    for item in result.completed:
+        entry = item.entry
+        kind = "远端" if entry.is_remote else "本机"
+        lines.append(f"  新建 {entry.source} 的「{entry.name}」（{entry.declaration['transport']} / {kind}）")
+        lines.append(f"    库行：新建 {item.row_id}（scope_kind=agent，scope_id={entry.member_id}）")
+    if result.remote_rows:
+        lines.append(MCP_MIGRATION_CONSENT_NOTICE)
+        for item in result.remote_rows:
+            lines.append(f"  POST /api/mcp-servers/{item.row_id}/consent  （成员 {item.entry.member_id}）")
     return "\n".join(lines)
