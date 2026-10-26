@@ -213,8 +213,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .msg-time { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--faint); }
 .msg-text {
   color: var(--fg); font-size: 14px; line-height: 1.65;
-  max-width: 68ch; overflow-wrap: anywhere; white-space: pre-wrap;
+  max-width: 68ch; overflow-wrap: anywhere;
 }
+/* 正文里的换行由渲染器显式产出（段落之间的 `<p>`、段内的 `<br>`），因此这里**不再**用
+   `white-space: pre-wrap`：留着它会让源码里的每个换行再加一次，形成双重行距（ADR-0037 §四）。
+   系统事件消息（`.msg.sys .msg-text`）不渲染，仍保留 `pre-wrap`——见下方那一处。 */
 .msg.pending .msg-text { color: var(--muted); }
 /* 两个标签的字面量来自**词条表**（`i18n.js` 的 `msg.pendingTag` / `msg.failedTag`），由
    `app.js` 写在 `.msg-head` 的 `data-state-label` 上——CSS 里不放任何语言文案，
@@ -228,6 +231,83 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   color: var(--error); border: 1px solid var(--error); border-radius: 4px; padding: 0 4px;
 }
 .msg.failed .msg-text { color: var(--error); text-decoration: line-through; }
+
+/* ─── 正文渲染（ADR-0037 / #290）───────────────────────────────────────────
+   渲染器把正文的 Markdown 记号解释成结构，产物挂在 `.msg-text > .markdown-body` 下——
+   与设计系统 kit 的选择器同形（`alibot-design-system/ui_kits/app/app.css:198`），
+   因此以后对齐两边只要 diff 一下 CSS，不用在脑子里做映射。
+
+   量例沿用 ADR-0016 的局部例外：14px / 68ch / 1.65（由 `.msg-text` 给），这里只补
+   **新出现的元素**的字形与间距，不改那条例外本身。 */
+.markdown-body > *:first-child { margin-top: 0; }
+.markdown-body > *:last-child { margin-bottom: 0; }
+.markdown-body p { margin: 0 0 var(--sp-4); }
+
+/* 标题映射到**正文档**：六级只差字号与字重，不做 32px 的大标题——
+   一条消息里出现大标题会压过作者名（`.msg-author` 是 13px 半粗），破坏消息行的层级。
+   但也不能小到看不出是标题：最大一档 17px 仍明显大于正文 14px，且六级逐级收窄。 */
+.markdown-body .md-heading {
+  margin: var(--sp-5) 0 var(--sp-3); font-weight: var(--fw-bold); letter-spacing: var(--ls-snug);
+}
+.markdown-body .md-h1 { font-size: 17px; }
+.markdown-body .md-h2 { font-size: 16px; }
+.markdown-body .md-h3 { font-size: 15px; }
+.markdown-body .md-h4 { font-size: 14px; }
+.markdown-body .md-h5,
+.markdown-body .md-h6 { font-size: 13px; color: var(--muted); }
+
+/* 列表：缩进与项间距都用既有 spacing token，不新造量例。 */
+.markdown-body ul,
+.markdown-body ol { margin: 0 0 var(--sp-4); padding-left: var(--sp-10); }
+.markdown-body li { margin: var(--sp-2) 0; }
+
+/* 引用：左侧一条 graphic 档竖线 + 正文降一档。 */
+.markdown-body .md-quote {
+  margin: 0 0 var(--sp-4); padding: var(--sp-2) 0 var(--sp-2) var(--sp-5);
+  border-left: 2px solid var(--border-strong); color: var(--muted);
+}
+
+.markdown-body hr {
+  margin: var(--sp-5) 0; border: 0; border-top: 1px solid var(--border);
+}
+
+/* 行内代码：12px + 等宽 + `--panel-2` 底（与设计系统 kit 同一档位）。 */
+.markdown-body code {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 围栏代码块：**深底浅字**，浅色主题下也深底——代码块本来就该跳出来（ADR-0037 §四）。
+   不做语法高亮：那需要词法分析器，而代码块在聊天里的主要价值是保住缩进与等宽。
+   `overflow-x: auto` 是它自己的滚动条：长行不能把整条消息流撑宽。 */
+.markdown-body pre.md-code {
+  margin: 0 0 var(--sp-4); padding: var(--sp-4) var(--sp-5);
+  background: var(--code-bg); color: var(--code-fg);
+  border-radius: var(--r-md); overflow-x: auto; line-height: var(--lh-code);
+}
+.markdown-body pre.md-code code {
+  background: none; border: 0; padding: 0; color: inherit; font-size: 11.5px;
+}
+
+/* 表格：**突破 68ch**，外面套横向滚动容器。
+   这是 `.msg-text` 那条 68ch 规矩的**唯一例外**：表格的可读性依赖列对齐，三列表格硬塞进
+   68ch 会挤成一团，等于让它不可读（ADR-0037 §四）。`width: max-content` 让表格按内容撑开，
+   容器负责滚动，因此不会把消息流撑宽。 */
+.markdown-body .md-table-wrap { margin: 0 0 var(--sp-4); overflow-x: auto; }
+.markdown-body .md-table {
+  width: max-content; max-width: none; border-collapse: collapse;
+  font-size: 13px; line-height: 1.5;
+}
+.markdown-body .md-table th,
+.markdown-body .md-table td {
+  border: 1px solid var(--border); padding: var(--sp-2) var(--sp-4); text-align: left;
+}
+.markdown-body .md-table th { background: var(--panel-2); font-weight: var(--fw-bold); }
+
+/* 链接：`--accent-deep` + 下划线。只放行 http / https / mailto，其余协议渲染器已降级为纯文本。 */
+.markdown-body a { color: var(--accent-deep); text-decoration: underline; }
+.markdown-body a:hover { text-decoration: none; }
 .msg-retry { margin-top: var(--sp-2); display: flex; gap: var(--sp-3); align-items: center; font-size: var(--fs-sm); color: var(--muted); }
 .day-sep { display: flex; align-items: center; gap: var(--sp-5); margin: var(--sp-8) 0 var(--sp-7); }
 .day-sep::before, .day-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }

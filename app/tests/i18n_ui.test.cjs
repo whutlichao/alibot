@@ -472,6 +472,8 @@ function createHarness(options) {
     clearTimeout,
   });
   vm.runInContext(readStudio("i18n.js"), context, { filename: "i18n.js" });
+  // markdown.js 与 i18n.js 同层加载：它是纯函数模块，由 app.js 的 messageText() 调用（ADR-0037）。
+  vm.runInContext(readStudio("markdown.js"), context, { filename: "markdown.js" });
   const appPath = path.join(STUDIO_DIR, "app.js");
   const source = fs.readFileSync(appPath, "utf8");
   const startup = /\napplyStaticI18n\(document\);\nbindEvents\(\);\nloadWorkspace\(\);\s*$/;
@@ -886,6 +888,8 @@ function createComposerHarness(options) {
     clearTimeout,
   });
   vm.runInContext(readStudio("i18n.js"), context, { filename: "i18n.js" });
+  // markdown.js 与 i18n.js 同层加载：它是纯函数模块，由 app.js 的 messageText() 调用（ADR-0037）。
+  vm.runInContext(readStudio("markdown.js"), context, { filename: "markdown.js" });
   const appPath = path.join(STUDIO_DIR, "app.js");
   const source = fs.readFileSync(appPath, "utf8");
   const startup = /\napplyStaticI18n\(document\);\nbindEvents\(\);\nloadWorkspace\(\);\s*$/;

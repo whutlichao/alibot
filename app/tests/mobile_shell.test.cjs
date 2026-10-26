@@ -531,6 +531,8 @@ function createHarness(options) {
     EventSource: undefined,
   });
   vm.runInContext(readStudio("i18n.js"), context, { filename: "i18n.js" });
+  // markdown.js 与 i18n.js 同层加载：它是纯函数模块，由 app.js 的 messageText() 调用（ADR-0037）。
+  vm.runInContext(readStudio("markdown.js"), context, { filename: "markdown.js" });
   const source = readStudio("app.js");
   const startup = /\napplyStaticI18n\(document\);\nbindEvents\(\);\nloadWorkspace\(\);\s*$/;
   assert.match(source, startup, "app startup calls should remain at the end of app.js");
