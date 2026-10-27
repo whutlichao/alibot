@@ -104,20 +104,24 @@ v2 页面只承诺**已迁完的那条链路**可用：
   **三个新建表单**（票 #301：新建频道 `ChannelFormModal.vue` / 新建 Agent `AgentFormModal.vue`
   套 #300 的 `ModalShell`，新建私信走 rail 的 Agent 行 ⇒ 幂等 `POST /api/dms`；提交进 `busy`、
   错误留在弹窗内、建完频道自动切过去；同时 `btn-new-channel` / `btn-new-agent` 从「可见但禁用」**翻正**，
-  rail 的 Agent 行由 `agentDetailAvailable` 一个开关裁决「详情 / 私信」）。
+  rail 的 Agent 行由 `agentDetailAvailable` 一个开关裁决「详情 / 私信」）、
+  **搜索视图与 ⌘K 命令面板**（票 #304：`mode: 'channel' | 'search'` 是 §五从未提过的**新状态维度**
+  ——搜索占住消息流那块位置，是主线视图不是弹层；`SearchView.vue` 铺旧页面 `#viewSearch` 的四档
+  facet / 三档空态 / 后端区间高亮，`stores/search.js` 管 120ms 防抖与请求版本守卫；`CommandPalette.vue`
+  是 `.overlay` + `.cmd`，**不套 `ModalShell`**，ESC 复用同一份 `App.vue` 的 `handleEscape()` 层序表）。
 - 未迁：任务看板与任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
-  审批卡、Agent 详情、搜索与命令面板、频道配置 / 预算 / 名册等弹窗、**附件上传**、
+  审批卡、Agent 详情、频道配置 / 预算 / 名册等弹窗、**附件上传**、
   **任务运行面板**（它挂在任务线程头，随线程那张票）。
 
 未迁入口**不做假按钮**，分两档处理：
 
 1. **不渲染**（`btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` /
-   任务页签 / 搜索 / 附件 / 作为任务发送 / 失败行的「看成员状态」）：
+   任务页签 / 附件 / 作为任务发送 / 失败行的「看成员状态」）：
    它们只是把人带到另一处，带不到就不该出现。频道头的四个入口由 `channelToolsAvailable`
    （名册 / 配置 / 预算，同涨同落）与 `runPanelAvailable`（运行面板，已迁 ⇒ 默认开）两个显式开关控制；
    任务页签由 `tasksAvailable` 控制。迁完那个面只需翻对应的开关，组件不用改。
    （`btn-reminders` / `btn-settings` 已随票 #302 迁完，`btn-new-channel` / `btn-new-agent`
-   已随票 #301 迁完，都不再在这个清单里。）
+   已随票 #301 迁完，rail 的 `btn-workspace-search` 已随票 #304 迁完，都不再在这个清单里。）
 2. **可见但禁用**：**这一档现在空了**（票 #301）。它原本只装「新建频道 / 新建 Agent」——
    空工作台的引导文案就是「新建一个频道」，把按钮一起藏掉等于让人无路可走，禁用比消失诚实。
    两张表单迁过来之后两个按钮正常工作，这条兜底规则仍然成立：**将来再出现「面还没迁、
@@ -127,10 +131,12 @@ v2 页面只承诺**已迁完的那条链路**可用：
 「看起来能点、点下去什么都不发生」比「这个功能还没过来」更难解释——这条在自查里抓到过一次：
 第一阶段曾把 13 个入口渲染成会弹一句无意义 toast 的死按钮。
 
-**按键层序现在有一份可复用的表**（票 #300）：`App.vue` 的 `onEscape()` 按「命令面板 > 模态栈最上层
-（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 > 搜索视图」裁决，依据是旧页面
-`app.js:10578-10620` 的逐行顺序；T4（#304）落地时**直接复用这个函数**，不另写第二份。
-命令面板与搜索视图不套 `ModalShell`（类名与关闭语义不同：前者是 `.cmd`、后者是主线视图）。
+**按键层序只有一份表，五格现在都有活**（票 #300 立表、票 #304 补齐首尾两格）：`App.vue` 的
+`handleEscape()` 按「命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 >
+搜索视图」裁决，依据是旧页面 `app.js:10578-10620` 的逐行顺序。`⌘K` / `Ctrl+K`、`ESC` 与 `M` / `T`
+两个单键跳转共用**同一条** document 监听（`onGlobalKeydown()`），没有第二份层序。
+命令面板与搜索视图不套 `ModalShell`（类名与关闭语义不同：前者是 `.cmd`、后者是主线视图）：
+命令面板自己在层序第①格关闭，搜索视图是最后一格（退回消息流）。
 
 **退路**：任何一阶段出问题，删掉 `app/alibot/studio/v2/` 与 `app/frontend/` 就回到重构前。
 迁移方式是**新增**（不是就地改写），旧页面的逻辑一行没被改；旧页面目录里只有两处**纯新增**：
@@ -150,7 +156,9 @@ v2 页面只承诺**已迁完的那条链路**可用：
 `.overlay` / `.modal` / `.modal-head` / `.modal-body` / `.modal-foot`（`app.css` 零改动），
 `open` 驱动根节点的 `hidden` 属性而**不卸载内容**，`busy` 时 ESC / 遮罩 / 关闭键都不动作；
 ESC 的层序由 `lib/modal-stack.js` 的模块级栈裁决（**只关最上面那一层**，是有意改进——旧页面
-`app.js:10578-10620` 是无栈、一次全关）。四张弹窗票（T1–T3 与 ⌘K）从此只写自己的内容。
+`app.js:10578-10620` 是无栈、一次全关）。三张弹窗票（T1–T3）从此只写自己的内容；
+**⌘K 命令面板不在这份清单里**（票 #304 的实际落点）：它是 `.overlay` + `.cmd`（不是 `.modal`），
+关闭语义与 z-index 档位都不同，因此不进模态栈，ESC 由 `App.vue` 层序表的第①格裁决。
 
 **`applySettings` 不再是死入口**（票 #302）：设置弹窗保存后调 `createAppContext().applySettings(响应.settings)`
 把 `<html lang>` / `data-theme` / `data-density` 铺上，它是**唯一写入口**；绝不给 `mutable.settings`
