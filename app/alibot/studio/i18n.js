@@ -38,6 +38,9 @@ const I18N_CATALOGS = {
     // 「这个入口还没迁到 Vue 版工作台」：Vue 版是**分阶段迁移**的入口（ADR-0038 §五），
     // 尚未迁过去的面在那一版里不渲染入口；仍保留可见的那些（新建频道 / 新建 Agent）用它作禁用说明，
     // 于是「按下去没反应」不会发生——按钮是禁用的，理由写在 title 里。
+    // 事实修正（阶段 A，票 #301）：新建频道 / 新建 Agent 已翻正，因此「仍保留可见的那些」现在
+    // 只剩**兜底**一类（空工作台的出路、命令面板里指向未迁面的 `disabled` 条目）。这条兜底规则仍然
+    // 成立，键保留；上面那两句描述的是建这个键时的情形，不改（旧页面与既有用例都在读它）。
     'app.notMigrated': '这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开',
     'identity.human': '人类 · 本机',
     'identity.me': '我',
@@ -60,6 +63,10 @@ const I18N_CATALOGS = {
     'rail.emptyChannels': '还没有频道。新建一个频道就能开始记录。',
     'rail.emptyDms': '还没有私信。在 Agent 详情里点「发送消息」后会在这里显示。',
     'rail.emptyAgents': '还没有 Agent。',
+    /* 左栏 Agent 行在「Agent 详情面还没迁过来」时的点击语义是「打开与它的私信」，
+       因此无障碍名说的是私信而不是详情（详情那张票把 `agentDetailAvailable` 翻正后换回
+       `agentDetail.openAria`）。 */
+    'rail.openDmAria': '打开与 {name} 的私信',
     'settings.open': '设置',
     'rail.reminders': '提醒',
 
@@ -202,6 +209,7 @@ const I18N_CATALOGS = {
     'composer.attachAction': '附件',
     'composer.attachRemove': '移除附件 {name}',
     'composer.attaching': '正在上传 {count} 个附件…',
+    'composer.attachTooLarge': '{name} 超过单文件上限（{limit}）',
     'composer.asTaskAction': '作为任务发送',
     'composer.hint': 'Enter 发送 · Shift+Enter 换行',
     'composer.archivedHint': '已归档 · 只读，不能发送消息',
@@ -403,6 +411,9 @@ const I18N_CATALOGS = {
     'agent.remoteBody':
       '启用后，以下数据会离开本机并发送给该模型提供商：{faces}。接收方是远端服务，不在你的机器上。',
     'agent.remoteHint': '本机存储不做应用层端到端加密，也不会声称端到端加密；后端默认只监听 loopback。',
+    /* 数据面读不到时的一句话说清「为什么这里没有列举」：告知正文不能缺了数据面还说成完整，
+       也不能把一个还没读到的空集合说成「没有数据会离开本机」。 */
+    'agent.remoteBodyUnavailable': '还没读到会离开本机的数据面清单，确认键暂时不可用（重新打开弹窗会再读一次）。',
     'agent.remoteConfirm': '我已了解，确认发送',
     'agent.create': '创建 Agent',
     'agent.providerLocalHint': '本机模型：不离开本机，不需要数据流确认。',
@@ -880,6 +891,7 @@ const I18N_CATALOGS = {
     'rail.emptyChannels': 'No channels yet. Create one to start recording.',
     'rail.emptyDms': 'No direct messages yet. Press “Send message” on an agent detail page to start one.',
     'rail.emptyAgents': 'No agents yet.',
+    'rail.openDmAria': 'Open the direct message with {name}',
     'settings.open': 'Settings',
     'rail.reminders': 'Reminders',
 
@@ -1031,6 +1043,7 @@ const I18N_CATALOGS = {
     'composer.attachAction': 'Attach a file',
     'composer.attachRemove': 'Remove attachment {name}',
     'composer.attaching': 'Uploading {count} attachment(s)…',
+    'composer.attachTooLarge': '{name} exceeds the per-file limit ({limit})',
     'composer.asTaskAction': 'Send as task',
     'composer.hint': 'Enter to send · Shift+Enter for a new line',
     'composer.archivedHint': 'Archived · read-only, sending is disabled',
@@ -1241,6 +1254,8 @@ const I18N_CATALOGS = {
       'Once enabled, this data leaves your machine and goes to that model provider: {faces}. The receiver is a remote service, not your machine.',
     'agent.remoteHint':
       'Local storage does no application-level end-to-end encryption, and none is claimed; the backend only listens on loopback by default.',
+    'agent.remoteBodyUnavailable':
+      'The list of data faces that leave this machine has not loaded yet, so the confirmation is unavailable for now (reopening the dialog will retry).',
     'agent.remoteConfirm': 'I understand — confirm sending',
     'agent.create': 'Create agent',
     'agent.providerLocalHint': 'Local model: it never leaves this machine and needs no data-flow consent.',

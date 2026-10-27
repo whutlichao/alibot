@@ -8,13 +8,14 @@
      成员名册 / 频道设置 / 回应预算 / 运行面板都只属于**频道**，私信下整组隐藏——
      不留一个按下去什么都不发生的按钮。
 
-     **本版还有第二层可见性**：四个入口背后的面不是同一批票，因此开关分成两个：
-     - `channelToolsAvailable`：名册 / 配置 / 预算（还没迁，默认**关**）；
+     **第二层可见性**：四个入口背后的面不是同一批票，因此开关分成两个：
+     - `channelToolsAvailable`：名册 / 配置 / 预算（票 #303 已迁 ⇒ 默认**开**）；
      - `runPanelAvailable`：运行面板（**已迁**，默认**开**；关掉它只为了用例能断言反面）。
      渲染一个点下去什么都不发生的入口，比不渲染更难解释；各自的票迁完那个面时把开关打开即可。 -->
 <script setup>
 import { computed } from 'vue';
 import { t } from '../i18n/index.js';
+import { targetDescription } from '../lib/target-view.js';
 
 const props = defineProps({
   target: { type: Object, default: null },
@@ -24,8 +25,8 @@ const props = defineProps({
   messageCount: { type: Number, default: 0 },
   taskCount: { type: Number, default: 0 },
   activeTab: { type: String, default: 'messages' },
-  // 名册 / 配置 / 预算三个入口背后的面是否已迁到本版（它们的票还没来）。
-  channelToolsAvailable: { type: Boolean, default: false },
+  // 名册 / 配置 / 预算三个入口背后的面是否已迁到本版（**已迁** ⇒ 默认开）。
+  channelToolsAvailable: { type: Boolean, default: true },
   // 运行面板是否已迁到本版（**已迁** ⇒ 默认开）。
   runPanelAvailable: { type: Boolean, default: true },
   // 「任务」页签背后的看板是否已迁到本版。
@@ -39,12 +40,7 @@ const name = computed(() => {
   return props.isDm ? props.target.peer.display_name : props.target.name;
 });
 
-const description = computed(() => {
-  if (!props.target) return '';
-  if (props.isArchivedDm) return t('header.dmArchivedDesc');
-  if (props.isDm) return t('header.dmDesc', { name: name.value });
-  return props.target.description || '';
-});
+const description = computed(() => targetDescription(props.target));
 </script>
 
 <template>

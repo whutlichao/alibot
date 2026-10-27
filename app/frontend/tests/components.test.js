@@ -24,6 +24,7 @@ const RailSidebar = (await import('../src/components/RailSidebar.vue')).default;
 const ComposerBox = (await import('../src/components/ComposerBox.vue')).default;
 const MentionPicker = (await import('../src/components/MentionPicker.vue')).default;
 const AttachmentChip = (await import('../src/components/AttachmentChip.vue')).default;
+const DockPanel = (await import('../src/components/DockPanel.vue')).default;
 
 const OWNER = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 const ADA = { id: 'mem-1', kind: 'agent', display_name: 'Ada', avatar_slot: 1 };
@@ -308,32 +309,62 @@ describe('未迁面的入口', () => {
     expect(wrapper.find('[data-open-task]').exists()).toBe(false);
   });
 
-  test('左栏：搜索 / 提醒 / 设置三个入口不渲染（它们只是导航到未迁的面）', () => {
+  test('左栏：工作台搜索已迁（#304）⇒ 入口在 `.search-shell` 里，点它只发一个事件', async () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
-    expect(wrapper.find('[data-od-id="btn-workspace-search"]').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-reminders"]').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-settings"]').exists()).toBe(false);
+    const entry = wrapper.find('#rail .search-shell [data-od-id="btn-workspace-search"]');
+    expect(entry.exists()).toBe(true);
+    expect(entry.attributes('title')).toBe('搜索工作台');
+    // 旧页面的 `.search-btn` 上那枚 `⌘K` 徽标**不搬**：`⌘K` 真绑定的是命令面板，不是搜索。
+    expect(entry.find('kbd').exists()).toBe(false);
+
+    await entry.trigger('click');
+    expect(wrapper.emitted('open-search')).toHaveLength(1);
   });
 
-  test('左栏：新建频道 / 新建 Agent 保留但**禁用**，理由写在 title 里（空库的唯一出路不能一起消失）', () => {
+  test('左栏：提醒 / 设置已迁（#302）⇒ 两枚入口出现在 `.rail-head`，圆点缺省不亮', () => {
+    const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
+    const head = wrapper.find('#rail .rail-head');
+    expect(head.find('[data-od-id="btn-reminders"]').exists()).toBe(true);
+    expect(head.find('[data-od-id="btn-settings"]').exists()).toBe(true);
+    // 圆点判据是「还有未到点的提醒」，不是「有提醒」：缺省（没有提醒）不亮。
+    expect(head.find('#reminderDot').exists()).toBe(false);
+  });
+
+  test('左栏：新建频道 / 新建 Agent 可用（票 #301 已把两张表单迁过来，不再置禁用理由）', () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
     for (const id of ['btn-new-channel', 'btn-new-agent']) {
       const button = wrapper.find(`[data-od-id="${id}"]`);
       expect(button.exists(), id).toBe(true);
-      expect(button.attributes('disabled'), id).toBeDefined();
-      expect(button.attributes('title'), id).toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
+      expect(button.attributes('disabled'), id).toBeUndefined();
+      expect(button.attributes('title'), id).not.toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
     }
   });
 
-  test('左栏：本机 Agent 行是**读数**不是按钮（详情面未迁，点了也没有去处）', () => {
+  test('左栏：点两个新建按钮各发一个事件（弹窗由父组件挂，rail 不自己开）', async () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
-    const row = wrapper.find('[data-od-id="agent-mem-1"]');
-    expect(row.exists()).toBe(true);
-    expect(row.element.tagName).toBe('DIV');
-    expect(row.attributes('type')).toBeUndefined();
-    // 只读行取消 hover 高亮：`app.css` 的 `.nav-row.is-static` 是它的样式落点。
-    expect(row.classes()).toContain('is-static');
-    expect(mount(RailSidebar, { props: { state: emptyState() } }).classes()).not.toContain('is-static');
+    await wrapper.find('[data-od-id="btn-new-channel"]').trigger('click');
+    await wrapper.find('[data-od-id="btn-new-agent"]').trigger('click');
+    expect(wrapper.emitted('new-channel')).toHaveLength(1);
+    expect(wrapper.emitted('new-agent')).toHaveLength(1);
+  });
+
+  test('左栏：本机 Agent 行可点，点击语义由一个开关裁决（`agentDetailAvailable`）', async () => {
+    const off = mount(RailSidebar, { props: { state: emptyState() } });
+    const row = off.find('[data-od-id="agent-mem-1"]');
+    expect(row.element.tagName).toBe('BUTTON');
+    expect(row.classes()).toContain('nav-row');
+    expect(row.attributes('type')).toBe('button');
+    expect(row.attributes('aria-label')).toBe('打开与 Ada 的私信');
+    await row.trigger('click');
+    expect(off.emitted('open-dm')).toEqual([['mem-1']]);
+    expect(off.emitted('open-agent')).toBeUndefined();
+
+    const on = mount(RailSidebar, { props: { state: emptyState(), agentDetailAvailable: true } });
+    const labelled = on.find('[data-od-id="agent-mem-1"]');
+    expect(labelled.attributes('aria-label')).toBe('查看 Ada 的详情');
+    await labelled.trigger('click');
+    expect(on.emitted('open-agent')).toEqual([['mem-1']]);
+    expect(on.emitted('open-dm')).toBeUndefined();
   });
 });
 
@@ -511,23 +542,32 @@ describe('频道头', () => {
     expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
   });
 
-  test('名册 / 配置 / 预算三个入口默认**不渲染**，运行面板入口默认**渲染**（它已迁）', () => {
+  test('四个工具入口默认都**渲染**（四条面都已迁），任务页签默认仍不渲染（#303 之后）', () => {
     const wrapper = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0 },
     });
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
-      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
+    // 名册 / 配置 / 预算随 T3（#303）迁完 ⇒ `channelToolsAvailable` 默认开；
+    // 运行面板第一阶段就迁了。四个入口的开关仍各自独立（回退时只翻那一个）。
+    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget', 'btn-run-panel']) {
+      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(true);
     }
-    // 运行面板是已迁面：它的开关默认开，入口就应当在场。
-    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
     expect(wrapper.find('#tabTasks').exists()).toBe(false);
   });
 
-  test('运行面板入口的开关能关掉它（迁完或回退时都靠这一个开关，不用改组件）', () => {
-    const wrapper = mount(ChannelHeader, {
+  test('两个开关都能单独关掉自己那组入口（回退时只翻一个，不用改组件）', () => {
+    const channelToolsOff = mount(ChannelHeader, {
+      props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0, channelToolsAvailable: false },
+    });
+    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
+      expect(channelToolsOff.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
+    }
+    expect(channelToolsOff.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
+
+    const runPanelOff = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0, runPanelAvailable: false },
     });
-    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
+    expect(runPanelOff.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
+    expect(runPanelOff.find('[data-od-id="btn-channel-members"]').exists()).toBe(true);
   });
 
   test('开关打开时四个工具入口与任务页签照常出现（迁完那个面只需翻开关）', () => {
@@ -671,10 +711,12 @@ describe('composer', () => {
     expect(wrapper.find('[data-od-id="composer-hint"]').text()).toBe('已归档 · 只读，不能发送消息');
   });
 
-  test('工具行只剩「@提及」：附件与「作为任务发送」不渲染（那两个面还没迁）', () => {
+  test('工具行两个键：附件（#305 已迁）与「@提及」；「作为任务发送」不渲染（任务面还没迁）', () => {
     const wrapper = mount(ComposerBox, { props: { placeholder: '发消息', online: true } });
     expect(wrapper.find('[data-od-id="btn-mention"]').exists()).toBe(true);
-    expect(wrapper.find('[data-od-id="btn-attach"]').exists()).toBe(false);
+    // 附件上传已随票 #305 迁过来：Paperclip 与它背后的隐藏文件选择器都在。
+    expect(wrapper.find('[data-od-id="btn-attach"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="attach-input"]').exists()).toBe(true);
     expect(wrapper.find('[data-od-id="btn-as-task"]').exists()).toBe(false);
   });
 
@@ -701,5 +743,64 @@ describe('composer', () => {
   test('频道没有 Agent 成员时给另一条空态（与「读不到」区分开）', () => {
     const wrapper = mount(MentionPicker, { props: { items: [], empty: 'no-members' } });
     expect(wrapper.text()).toContain('该频道还没有 Agent 成员');
+  });
+});
+
+/* ─── dock 的三档形态 ────────────────────────────────────────────────────── */
+
+describe('dock 的形态', () => {
+  const store = () => ({
+    state: { open: true, targetId: 'ch-1', channelId: 'ch-1', taskId: null, loading: false, error: '', runs: [], plan: [], sops: [], sopDefs: {}, overlayMarker: null },
+    title: { value: 'design' },
+    autonomous: { value: false },
+    liveEvents: { value: [] },
+    overlay: { value: [] },
+    loadSnapshot: async () => null,
+  });
+
+  test('三档 `kind` 都能到达：根 `#dock` 在、class 含 dock', () => {
+    for (const kind of ['run', 'members', 'task']) {
+      const wrapper = mount(DockPanel, { props: { dockTarget: { kind }, panel: store(), pools: [] } });
+      const dock = wrapper.find('#dock');
+      expect(dock.exists(), kind).toBe(true);
+      expect(dock.classes(), kind).toContain('dock');
+      expect(dock.attributes('data-od-id'), kind).toBe('detail-dock');
+    }
+  });
+
+  test('`run` 档铺运行面板；`members` / `task` 两档放各自的插槽（内容归 T3 / T7）', () => {
+    const run = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [] } });
+    expect(run.find('[data-od-id="run-panel"]').exists()).toBe(true);
+
+    const members = mount(DockPanel, {
+      props: { dockTarget: { kind: 'members' } },
+      slots: { members: '<div class="members-probe">成员</div>' },
+    });
+    expect(members.find('[data-od-id="run-panel"]').exists()).toBe(false);
+    expect(members.find('.members-probe').text()).toBe('成员');
+
+    const task = mount(DockPanel, {
+      props: { dockTarget: { kind: 'task' } },
+      slots: { task: '<div class="task-probe">线程</div>' },
+    });
+    expect(task.find('.task-probe').text()).toBe('线程');
+  });
+
+  test('`dockTarget` 为 `null` 时整栏不渲染（不是渲染出来再 hidden）', () => {
+    const wrapper = mount(DockPanel, { props: { dockTarget: null, panel: store(), pools: [] } });
+    expect(wrapper.find('#dock').exists()).toBe(false);
+    expect(wrapper.find('.dock').exists()).toBe(false);
+  });
+
+  test('`run` 档没有 store 时按「没有形态」处理（不铺一个空壳运行面板）', () => {
+    const wrapper = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: null } });
+    expect(wrapper.find('#dock').exists()).toBe(false);
+  });
+
+  test('抽屉形态：`open` 只加 `.is-open`，不改「这一栏在不在」', () => {
+    const closed = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [], open: false } });
+    expect(closed.find('#dock').classes()).not.toContain('is-open');
+    const open = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [], open: true } });
+    expect(open.find('#dock').classes()).toContain('is-open');
   });
 });

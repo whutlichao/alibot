@@ -13,6 +13,8 @@
    重渲染——于是「谁顺带重渲了谁」这类耦合不存在，也不需要在每次写后手动重铺。 */
 import { computed, reactive, readonly } from 'vue';
 import { api, channelPath, dmPath, targetPath } from '../lib/api.js';
+import { agentMembers } from '../lib/member-view.js';
+import { uploadAttachment } from '../lib/attachments.js';
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 
@@ -56,6 +58,8 @@ export function createWorkspaceStore(options) {
     providers: [],
     localProviders: [],
     consents: [],
+    // 远端数据面（`GET /api/remote-data-flow` 的 `data_faces`）：只有「会离开本机的数据面」
+    // 这一个读数，用来拼新建 Agent 弹窗的告知正文。空数组 = 没读到（读不到就保留上一次已知值）。
     dataFaces: [],
     statuses: {},
     settings: { locale: 'zh-CN', message_density: 'comfortable', theme: 'system' },
@@ -69,6 +73,11 @@ export function createWorkspaceStore(options) {
     activeRounds: {},
     channelMembers: {},
     channelMembersFailed: [],
+    // composer 已上传成草稿、等着随下一条消息提交的附件（`lib/attachments.js`）。
+    // 正本在后端：这里只是“手上这批”的镜像，发送成功就清空，失败留着可重试。
+    composerAttachments: [],
+    // 还在飞的上传个数：> 0 时不能发送（否则这条消息会漏掉还没拿到标识的文件）。
+    attachingCount: 0,
     // 频道配置的**只读缓存**（`GET /api/channels/{id}/config`）。正本在后端；运行面板的
     // 「自主模式」空态解释只读它，读不到就是未缓存 ⇒ 铺通用空态，**不**推算模式。
     channelConfigs: {},
@@ -206,6 +215,23 @@ export function createWorkspaceStore(options) {
     }
   }
 
+  /**
+   * 远端数据面（新建 Agent 弹窗的告知正文要用它拼一句话）。
+   *
+   * **读不到就保留上一次已知值**：告知正文里列举的是「哪些数据会离开本机」，编不出来也不该编，
+   * 于是调用方拿到空数组时必须如实说「读不到」，而不是渲染一句少了数据面的半真文案
+   * （与 `refreshStatuses` / `refreshOutcomes` 同一条纪律）。
+   */
+  async function loadRemoteFlow() {
+    try {
+      const payload = await api('/api/remote-data-flow');
+      if (Array.isArray(payload.data_faces)) state.dataFaces = payload.data_faces;
+      return payload;
+    } catch {
+      return null;
+    }
+  }
+
   /** 当前频道的成员表（`@` 补全与成员面板共用同一个来源）。 */
   async function refreshChannelMembers(channelId) {
     const id = channelId || state.activeTargetId;
@@ -226,7 +252,49 @@ export function createWorkspaceStore(options) {
   /** 当前频道的 Agent 成员（`null` = 还没读到；空数组才是真的没有成员）。 */
   function channelAgentMembers(channelId) {
     const members = state.channelMembers[channelId || state.activeTargetId];
-    return members ? members.filter((member) => member.kind === 'agent') : null;
+    return members ? agentMembers(members) : null;
+  }
+
+  /**
+   * 把一个 Agent 加入频道（名册弹窗里那个**唯一**的写动作）。
+   *
+   * **用响应里的最新成员表覆盖缓存**，不是「先加再读」：后者中间存在一个「读回旧表」的窗口，
+   * 而那正是名册刚把人挪过去、`@` 补全却还选不到它的那一帧。加入成功也清掉该频道的
+   * `channelMembersFailed` 标记（一次成功的写就证明成员表现已可读）。
+   *
+   * 幂等由后端保证（`joined` 区分新增与本来就在）；这里只负责把响应里的两份读数落地。
+   */
+  async function addChannelMember(channelId, memberId) {
+    const payload = await api(channelPath(channelId, '/members'), {
+      method: 'POST',
+      body: { member_id: memberId },
+    });
+    if (Array.isArray(payload.members)) state.channelMembers[channelId] = payload.members;
+    state.channelMembersFailed = state.channelMembersFailed.filter((item) => item !== channelId);
+    if (payload.channel) replaceChannel(payload.channel);
+    return payload;
+  }
+
+  /**
+   * 一个成员的能力计数（名册行右侧的摘要）：两条 agent scope 清单并行读。
+   *
+   * 任一读不到只让**这一行**标成不可用（`failed`），不外溢：名册的价值是「有谁」，
+   * 一行读不到不该把整份名单变成读不到。
+   */
+  async function readMemberCapabilityCounts(memberId) {
+    try {
+      const [mcp, skills] = await Promise.all([
+        api('/api/mcp-servers?scope_kind=agent&scope_id=' + encodeURIComponent(memberId)),
+        api('/api/skills?scope_kind=agent&scope_id=' + encodeURIComponent(memberId)),
+      ]);
+      return {
+        mcp: (mcp && Array.isArray(mcp.mcp_servers) ? mcp.mcp_servers : []).length,
+        skills: (skills && Array.isArray(skills.skills) ? skills.skills : []).length,
+        failed: false,
+      };
+    } catch {
+      return { mcp: 0, skills: 0, failed: true };
+    }
   }
 
   /**
@@ -238,8 +306,42 @@ export function createWorkspaceStore(options) {
    */
   const channelConfigInFlight = new Map();
 
+  /**
+   * 读一次频道配置并**覆盖缓存**（频道设置弹窗每次打开都要读最新的那一份）。
+   *
+   * 与 `loadChannelConfig` 的分工：那个是「有缓存就复用」的只读快照（运行面板的解释用它），
+   * 这个是**显式动作**的读数——打开设置面必须看到后端现在那一份，不能拿缓存当结论。
+   * 读回后同样写进 `state.channelConfigs`，运行面板的协作模式解释因此跟着更新。
+   */
+  async function refreshChannelConfig(channelId) {
+    const payload = await api(channelPath(channelId, '/config'));
+    state.channelConfigs[channelId] = payload.config;
+    return payload.config;
+  }
+
+  /** 保存频道配置（部分更新；后端任一字段不合法就整体拒绝），按响应里的新配置覆盖缓存。 */
+  async function saveChannelConfig(channelId, changes) {
+    const payload = await api(channelPath(channelId, '/config'), { method: 'PATCH', body: changes });
+    state.channelConfigs[channelId] = payload.config;
+    return payload.config;
+  }
+
+  /** 读一次该频道的预算读数（**不缓存**：用量随人类世代变化，缓存下来的只能是过期事实）。 */
+  async function readChannelBudget(channelId) {
+    const payload = await api(channelPath(channelId, '/budget'));
+    return payload.budget;
+  }
+
+  /** 保存预算上界（只提交 `budget_limit`；用量是后端的正本，前端既不算也不提交）。 */
+  async function saveChannelBudgetLimit(channelId, budgetLimit) {
+    const payload = await api(channelPath(channelId, '/budget'), {
+      method: 'PATCH',
+      body: { budget_limit: budgetLimit },
+    });
+    return payload.budget;
+  }
+
   async function loadChannelConfig(channelId) {
-    if (!channelId) return null;
     if (state.channelConfigs[channelId]) return state.channelConfigs[channelId];
     const inFlight = channelConfigInFlight.get(channelId);
     if (inFlight) return inFlight;
@@ -309,6 +411,9 @@ export function createWorkspaceStore(options) {
           setActiveTargetId(target ? target.id : null);
         }
       }
+      // 远端数据面不阻塞主线（与旧实现 `loadRemoteFlow()` 同一条）：读不到只影响新建 Agent
+      // 弹窗里那一句告知，不影响工作台本身；弹窗打开时还会再试一次。
+      loadRemoteFlow();
       await refreshMessages();
       await refreshOutcomes();
       await refreshChannelMembers();
@@ -430,13 +535,22 @@ export function createWorkspaceStore(options) {
   }
 
   /** 发送一条消息。返回 `{ok, message}`；失败时 pending 项留在流里（带失败原因与重试入口）。 */
-  async function sendMessage(body, attachmentIds) {
+  async function sendMessage(body, attachmentIds, composerAttachments) {
     const target = activeTarget.value;
     const text = String(body == null ? '' : body).trim();
     if (!text || !target) return { ok: false };
     if (isArchivedDm.value) return { ok: false, archived: true };
     if (!state.online) return { ok: false, offline: true };
 
+    // 附件随这条 pending 一起走：
+    // - 请求里的 `attachment_ids` 是**既有 JSON 字段**（`MessageCreate.attachment_ids`），
+    //   后端在同一事务里完成绑定（ADR-0014）；
+    // - pending 带上完整元数据，于是乐观帧里显示的仍是**草稿**（不是可点的链接）——
+    //   未绑定的上传取内容端点回 404，渲染成链接是骗人的；
+    // - 失败时同一批标识留在 composer（重试会带上它）。
+    const drafts = Array.isArray(composerAttachments)
+      ? composerAttachments
+      : state.composerAttachments;
     const pending = {
       clientId: 'pending-' + now() + '-' + Math.random().toString(36).slice(2, 7),
       target_id: target.id,
@@ -444,11 +558,85 @@ export function createWorkspaceStore(options) {
       status: 'pending',
       created_at: new Date(now()).toISOString(),
       author: state.member,
-      attachments: [],
+      attachments: drafts,
       attachment_ids: attachmentIds || [],
     };
     state.pending.push(pending);
     return deliver(pending);
+  }
+
+  // ─── 写路径：新建对象（频道 / Agent / 私信） ──────────────────────────────
+
+  /**
+   * 新建频道。`POST /api/channels` 回带**整份**频道名单，因此这里不手工拼接列表——
+   * 列表的正本在后端，前端只把它落到镜像里（旧实现 `state.channels = payload.channels` 同一条）。
+   *
+   * 校验交给后端：任一字段不合法就整体不创建，这里把错误抛给调用方（弹窗内呈现），
+   * 不建半成品、也不在本层猜哪一条规则拦住了它。
+   */
+  async function createChannel(fields) {
+    const input = fields || {};
+    const payload = await api('/api/channels', {
+      method: 'POST',
+      body: {
+        name: String(input.name || '').trim(),
+        description: String(input.description || '').trim(),
+        member_ids: input.memberIds || [],
+      },
+    });
+    if (Array.isArray(payload.channels)) state.channels = payload.channels;
+    state.online = true;
+    return payload;
+  }
+
+  /**
+   * 新建 Agent。响应回带整份 `agents` 与 `members`，因此 rail 的「本机 Agent」段不需要额外读取。
+   * 同样把校验错误抛给调用方（弹窗内呈现），不建半成品成员行。
+   */
+  async function createAgent(fields) {
+    const input = fields || {};
+    const payload = await api('/api/agents', {
+      method: 'POST',
+      body: {
+        name: String(input.name || '').trim(),
+        role: String(input.role || '').trim(),
+        model_id: String(input.modelId || '').trim(),
+        system_prompt: String(input.systemPrompt || '').trim(),
+      },
+    });
+    if (Array.isArray(payload.agents)) state.agents = payload.agents;
+    if (Array.isArray(payload.members)) state.members = payload.members;
+    state.online = true;
+    return payload;
+  }
+
+  /**
+   * 打开与某个 Agent 的私信（`POST /api/dms {agent_id}`）。
+   *
+   * 后端幂等：已有私信就复用（`created: false`），没有就新建。因此「选中一个成员」与
+   * 「创建私信」是同一次动作，前端不需要先查一遍再决定发什么。
+   */
+  async function openDm(agentId) {
+    const payload = await api('/api/dms', { method: 'POST', body: { agent_id: agentId } });
+    replaceDm(payload.dm);
+    state.online = true;
+    return payload;
+  }
+
+  /**
+   * 确认一次远端数据流告知（`POST /api/remote-data-flow/ack`，按 provider，幂等）。
+   *
+   * 成功后 `consents` 与 `agents` 都按响应换新：确认会改变成员的启用态，"未启用"这个读数
+   * 必须跟着后端走（本层不推断「确认过了所以现在能跑了」）。
+   */
+  async function acknowledgeRemoteFlow(provider) {
+    const payload = await api('/api/remote-data-flow/ack', {
+      method: 'POST',
+      body: { provider },
+    });
+    if (Array.isArray(payload.consents)) state.consents = payload.consents;
+    if (Array.isArray(payload.agents)) state.agents = payload.agents;
+    return payload;
   }
 
   /** 重试一条失败项：**同一个 pending 项**回到 `pending` 再投递一次。
@@ -461,6 +649,39 @@ export function createWorkspaceStore(options) {
     pending.status = 'pending';
     pending.reason = null;
     return deliver(pending);
+  }
+
+  // ─── 写路径：附件草稿（两步上传的第一步） ──────────────────────────────
+
+  /** 把一批已选中的文件逐个上传成草稿：单个失败只影响它自己，已成功的留在手上。 */
+  async function attachFiles(files) {
+    const list = Array.from(files || []);
+    if (!list.length) return { uploaded: [], failed: [] };
+    state.attachingCount += list.length;
+    const uploaded = [];
+    const failed = [];
+    for (const file of list) {
+      try {
+        const attachment = await uploadAttachment(file);
+        state.composerAttachments = state.composerAttachments.concat([attachment]);
+        uploaded.push(attachment);
+      } catch (err) {
+        failed.push({ file, error: err });
+      } finally {
+        state.attachingCount -= 1;
+      }
+    }
+    return { uploaded, failed };
+  }
+
+  /** 移除一个还没发出去的草稿：只从手上移走（库里那一行与字节仍在——没有删除端点）。 */
+  function removeComposerAttachment(attachmentId) {
+    state.composerAttachments = state.composerAttachments.filter((item) => item.id !== attachmentId);
+  }
+
+  /** 草稿交给某条消息之后清空手上的清单（**只在发送成功时**调；失败要留着可重试）。 */
+  function clearComposerAttachments() {
+    state.composerAttachments = [];
   }
 
   return {
@@ -486,15 +707,29 @@ export function createWorkspaceStore(options) {
     refreshOutcomes,
     refreshStatuses,
     refreshChannelMembers,
+    addChannelMember,
+    readMemberCapabilityCounts,
+    loadRemoteFlow,
     loadChannelConfig,
+    refreshChannelConfig,
+    saveChannelConfig,
+    readChannelBudget,
+    saveChannelBudgetLimit,
     channelAgentMembers,
     applyOutcomes,
     absorbMessage,
     markCurrentRead,
     markRead,
     sendMessage,
+    createChannel,
+    createAgent,
+    openDm,
+    acknowledgeRemoteFlow,
     retryPending,
     discardPending,
     removePending,
+    attachFiles,
+    removeComposerAttachment,
+    clearComposerAttachments,
   };
 }
