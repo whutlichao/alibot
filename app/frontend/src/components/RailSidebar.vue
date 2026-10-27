@@ -12,10 +12,12 @@
 
      **这一版里 rail 上的入口分三类**（ADR-0038 §五：不放按下去什么都不发生的按钮）：
      1. 背后是**已迁面**的：频道 / 私信行的切换，正常工作；
-     2. 背后是**未迁面的导航入口**（工作台搜索、提醒、设置、Agent 详情）：整块**不渲染**——
-        它们的价值就是把人带到另一处，带不到就不该出现；
-     3. **空工作台的出路**（新建频道 / 新建 Agent）：保留可见但**禁用**，理由写在 `title` 里。
-        它们不能一起消失：空库里唯一的引导文案就是「新建一个频道」，把按钮也藏掉等于让人无路可走。 -->
+     2. 背后是**未迁面的导航入口**（工作台搜索、提醒、设置）：整块**不渲染**——
+        它们的价值就是把人带到另一处，带不到就不该出现（归 T2 / T4）；
+     3. **空工作台的出路**（新建频道 / 新建 Agent）：本票（#301）已把两张表单迁过来，因此
+        两个按钮**可用**，点击打开 `ChannelFormModal` / `AgentFormModal`（外壳是 #300 的 `ModalShell`）。
+        Agent 行同理：`agentDetailAvailable` 开着 ⇒ 打开详情（归 T10）；关着 ⇒ **打开与它的私信**。
+        这一行永远不是「按下去什么都不发生」的死行。 -->
 <script setup>
 import { computed, ref } from 'vue';
 import MemberAvatar from './MemberAvatar.vue';
@@ -26,9 +28,13 @@ const props = defineProps({
   state: { type: Object, required: true },
   // 抽屉形态（≤900px）：由父组件决定 `.is-open` 与遮罩。
   open: { type: Boolean, default: false },
+  // Agent 详情面是否已迁到本版：T10 的那个开关。
+  // **关着（默认）⇒ 点 Agent 行打开与它的私信**；开着 ⇒ 打开详情。T10 只翻这个开关，不改本文件里
+  // 那一段的点击语义（票 #301 与 #310 的仲裁规则）。
+  agentDetailAvailable: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['select-target']);
+const emit = defineEmits(['select-target', 'new-channel', 'new-agent', 'open-agent', 'open-dm']);
 
 /** 「已归档」段的展开态：会话内的呈现状态（不是业务正本，不写任何浏览器存储）。 */
 const archiveOpen = ref(false);
@@ -53,6 +59,18 @@ function statusOf(member) {
 /** 当前行：Agent 详情开着时整份 rail 没有当前行（详情是主线视图，不是某个 target）。 */
 function isCurrent(targetId) {
   return targetId === props.state.activeTargetId;
+}
+
+/** Agent 行的无障碍名随点击语义换：开详情说「查看详情」，开私信说「打开私信」。 */
+function agentRowAria(member) {
+  return props.agentDetailAvailable
+    ? t('agentDetail.openAria', { name: member.display_name })
+    : t('rail.openDmAria', { name: member.display_name });
+}
+
+function openAgentRow(member) {
+  if (props.agentDetailAvailable) emit('open-agent', member.id);
+  else emit('open-dm', member.id);
 }
 
 const me = computed(() => props.state.member || { display_name: 'owner', avatar_slot: 4, kind: 'owner' });
@@ -84,9 +102,8 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
       <button
         class="btn btn-primary"
         type="button"
-        disabled
         data-od-id="btn-new-channel"
-        :title="t('app.notMigrated')"
+        @click="emit('new-channel')"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M5 12h14" /><path d="M12 5v14" />
@@ -96,10 +113,10 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
       <button
         class="btn"
         type="button"
-        disabled
         data-od-id="btn-new-agent"
-        :title="t('app.notMigrated')"
+        :title="t('rail.newAgentTitle')"
         :aria-label="t('rail.newAgentTitle')"
+        @click="emit('new-agent')"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M5 12h14" /><path d="M12 5v14" />
@@ -193,19 +210,26 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
       <div class="group">
         <div class="group-label">{{ t('rail.groupAgents') }}</div>
         <div id="memberList">
-          <!-- Agent 详情是主线视图，还没迁到本版 ⇒ 这一行只是**读数**（名字 + 状态点），
-               不是一个点下去什么都不发生的按钮。它随详情那张票变回可点。 -->
-          <div
+          <!-- Agent 行的点击语义**由一个开关裁决**（票 #301 与 T10 的仲裁规则）：
+               `agentDetailAvailable` 开 ⇒ 进详情（那面归 T10）；关（默认）⇒ 打开与它的私信。
+               两种都不是死行——旧页面同一件事的入口就是「选中一个成员 = 表达和谁私信」
+               （`app.js:5184-5215`，幂等的 `POST /api/dms`）。
+               类名沿用旧页面 rail 的 Agent 行（`button.nav-row`）；`.nav-row.is-static`
+               那条只读样式由 #296 加在 `app.css` 里，本票不删它（旧页面与历史都不受影响）。 -->
+          <button
             v-for="member in localAgents"
             :key="member.id"
-            class="nav-row is-static"
+            class="nav-row"
+            type="button"
             :data-member="member.id"
             :data-od-id="'agent-' + member.id"
+            :aria-label="agentRowAria(member)"
+            @click="openAgentRow(member)"
           >
             <MemberAvatar :name="member.display_name" :slot="member.avatar_slot" size="sm" />
             <span class="grow">{{ member.display_name }}</span>
             <PresenceDot :status="statusOf(member)" />
-          </div>
+          </button>
         </div>
         <div v-if="!localAgents.length" class="rail-empty">{{ t('rail.emptyAgents') }}</div>
       </div>

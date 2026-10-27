@@ -1,13 +1,15 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "9daa5ab9b3a26b5dce5c289a94a84cc9ed2dc5a66392482ccb59ec59a0e1d1bc",
+  "sourceDigest": "e2cc1c65fc8a8074546edfee492aaecd45ecc39e9f114a088a947d72b89ccb75",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
     "package.json",
     "src/App.vue",
     "src/app-context.js",
+    "src/components/AgentFormModal.vue",
     "src/components/AttachmentChip.vue",
+    "src/components/ChannelFormModal.vue",
     "src/components/ChannelHeader.vue",
     "src/components/ComposerBox.vue",
     "src/components/DockPanel.vue",
