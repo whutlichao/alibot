@@ -16,13 +16,25 @@
      4. **team 模式的两条停用事实**（ADR-0018 / ADR-0019）跟着**草稿里**的 mode 走而不是已保存值：
         人刚点「队长制」还没保存，就该看到这两句提示所描述的那套纪律。
 
-     联网档（`web_access`）与 provider 凭据是**另一张票的面**（同属频道设置弹窗的旧页面内容），
-     本票只把它作为可写字段提交；凭据读取与保存的界面还没迁，因此这里不渲染那一段。 -->
+     联网档（`web_access`）由本弹窗作为可写字段提交；**provider 凭据**（票 #320）是同一个弹窗里
+     档位卡之后的独立一段，读数与写路径在 `stores/web-providers.js`（端点 #199 早已存在，本票只补
+     界面入口）。那一段自有三条纪律（ADR-0026 §四 / §十二）：
+
+     - **未确认数据面的 provider 不呈现成「可用」**：每行都报确认态并解释「未确认不会装配带凭据
+       工具」，确认入口就在行内。
+     - **明文只在写入方向出现**：输入框的字符只进 store 的草稿，保存成功即删；读回永远是掩码。
+     - **「设为默认」不带 `api_key`**：带 `api_key` 的 `PUT` 是一次换 key（后端 `WebProviderCredentialUpdate`
+       的字段语义），人会因此丢掉原 key。
+
+     「清空」的二次确认走**行内的确认条**（`.danger-confirm-text` + `.btn-danger`，与 Agent 删除确认
+     同一套词与样式），不叠第二层 `ModalShell`：`.overlay` 带了 `backdrop-filter`，它会成为
+     `position: fixed` 后代的包含块，嵌一层遮罩的位置就跟视口脱钩了。 -->
 <script setup>
 import { computed, reactive, ref, watch } from 'vue';
 import ModalShell from './ModalShell.vue';
-import { t } from '../i18n/index.js';
+import { hasKey, t } from '../i18n/index.js';
 import { agentMembers } from '../lib/member-view.js';
+import { createWebProviderStore } from '../stores/web-providers.js';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -51,6 +63,50 @@ const draft = reactive({
   backend: 'local',
   permission: 'ask-writes',
   webAccess: 'search',
+});
+
+/** 联网 provider 凭据段（票 #320）：读数与写路径全在 store 里，组件只负责呈现与接线。
+    离线判据与弹窗其余部分同一个来源（`store.state.online`）。 */
+const webProviders = createWebProviderStore({ online: () => props.store.state.online });
+const providerRows = computed(() => webProviders.state.providers);
+const providerConsentsKnown = computed(() => webProviders.state.consentsKnown);
+
+/** provider 的显示名：**字面键**逐家写（动态取值不拼词条键，词条守卫才看得见全部键）。 */
+function webProviderLabel(provider) {
+  if (provider === 'brave') return t('webProviders.provider.brave');
+  if (provider === 'tavily') return t('webProviders.provider.tavily');
+  if (provider === 'perplexity') return t('webProviders.provider.perplexity');
+  if (provider === 'jina') return t('webProviders.provider.jina');
+  if (provider === 'exa') return t('webProviders.provider.exa');
+  return t('webProviders.provider.fallback');
+}
+
+function webProviderSourceLabel(source) {
+  const key = 'webProviders.source.' + source;
+  return hasKey(key) ? t(key) : t('webProviders.source.fallback');
+}
+
+/** 一家的掩码读数：已配置 ⇒ 只回掩码；否则说明环境变量能否兜底，最后才是「未配置」。 */
+function webProviderStatus(item) {
+  if (item.configured) return t('webProviders.configuredWithMask', { masked: item.masked });
+  if (item.env_configured) return t('webProviders.configuredFromEnv');
+  return t('webProviders.notConfigured');
+}
+
+/** 数据面确认态：读不到确认态时说「读不到」，不冒充「未确认」（那会把抖动说成一道闸门）。 */
+function webProviderConsent(item) {
+  if (!providerConsentsKnown.value) return t('webProviders.consentUnknown');
+  if (webProviders.isConfirmed(item.provider)) return t('webProviders.consented');
+  return t('webProviders.consentPending');
+}
+
+const webActive = computed(() => webProviders.state.active);
+
+const webActiveText = computed(() => {
+  const active = webActive.value;
+  if (!active) return t('webProviders.none');
+  const provider = active.provider ? webProviderLabel(active.provider) : t('webProviders.none');
+  return t('webProviders.activeValue', { provider, source: webProviderSourceLabel(active.source) });
 });
 
 const channelId = computed(() => (props.channel ? props.channel.id : null));
@@ -116,9 +172,12 @@ watch(
       error.value = '';
       formError.value = '';
       saving.value = false;
+      // 凭据段的草稿（含明文）与错误只活在一次打开会话里：关掉就丢。
+      webProviders.reset();
       return;
     }
     void load();
+    void webProviders.load();
   },
   { immediate: true },
 );
@@ -354,6 +413,180 @@ async function save() {
           <div class="field">
             <div class="hint" data-od-id="channel-config-web-access-hint">{{ t('channelConfig.webAccessHint') }}</div>
           </div>
+        </section>
+
+        <!-- ⑦′ 联网 provider 凭据（票 #320）：位置固定在档位卡之后，与旧页面的 `webAccessSection()` 同序。
+             五行都来自 `GET /api/web-providers`（掩码）+ `GET /api/remote-data-flow` 的 `web_consents`（确认态）。 -->
+        <section class="d-sec" data-od-id="channel-config-section-web-providers">
+          <div class="d-sec-title" data-od-id="channel-config-web-providers-title">
+            {{ t('webProviders.section') }}
+          </div>
+          <div class="field">
+            <div class="hint" data-od-id="channel-config-web-providers-hint">{{ t('webProviders.sectionHint') }}</div>
+          </div>
+
+          <div v-if="webProviders.state.error" class="form-error" role="alert" data-od-id="channel-config-web-providers-error">
+            {{ webProviders.state.error }}
+          </div>
+          <div v-else-if="webProviders.state.loading && !providerRows.length" class="resource-empty" data-od-id="channel-config-web-providers-loading">
+            {{ t('webProviders.loading') }}
+          </div>
+          <template v-else>
+            <!-- 当前生效 provider 与来源：后端 `active` 读数，界面不推算。`source = invalid` 时
+                 后端给的可读原因原样放在下一行（与旧页面同一处理）。 -->
+            <div v-if="webActive" class="kv">
+              <span class="k">{{ t('webProviders.active') }}</span>
+              <span class="v" data-od-id="channel-config-web-active">{{ webActiveText }}</span>
+            </div>
+            <div v-if="webActive && webActive.reason" class="dock-member-reason" data-od-id="channel-config-web-active-reason">
+              {{ webActive.reason }}
+            </div>
+
+            <div class="web-provider-list" data-od-id="channel-config-web-providers">
+              <div
+                v-for="item in providerRows"
+                :key="item.provider"
+                class="web-provider-row"
+                :data-od-id="'web-provider-' + item.provider"
+              >
+                <div class="web-provider-head">
+                  <b>{{ webProviderLabel(item.provider) }}</b>
+                  <span
+                    class="resource-meta"
+                    :class="{ 'is-faint': !item.configured }"
+                    :data-od-id="'web-provider-status-' + item.provider"
+                  >{{ webProviderStatus(item) }}</span>
+                  <span
+                    v-if="item.is_default"
+                    class="web-provider-badge"
+                    :data-od-id="'web-provider-default-' + item.provider"
+                  >{{ t('webProviders.defaultBadge') }}</span>
+                </div>
+
+                <!-- 数据面确认态（ADR-0026 §四）：未确认 ⇒ 说清「不会装配」并就地给确认入口。 -->
+                <div
+                  class="resource-meta"
+                  :class="{ 'is-error': providerConsentsKnown && !webProviders.isConfirmed(item.provider) }"
+                  :data-od-id="'web-provider-consent-status-' + item.provider"
+                >{{ t('webProviders.consentLabel') }}{{ t('common.colonSep') }}{{ webProviderConsent(item) }}</div>
+                <div
+                  v-if="!providerConsentsKnown || !webProviders.isConfirmed(item.provider)"
+                  class="field"
+                >
+                  <div class="hint" :data-od-id="'web-provider-consent-hint-' + item.provider">
+                    {{ t('webProviders.consentHint') }}
+                  </div>
+                </div>
+
+                <div class="resource-form-row">
+                  <div class="field">
+                    <label :for="'web-provider-key-' + item.provider">
+                      {{ t('webProviders.keyLabel', { provider: webProviderLabel(item.provider) }) }}
+                    </label>
+                    <!-- `password` + `new-password`：明文只出现在写入方向，且不被浏览器回填。
+                         `placeholder` 显示的是**掩码**读数（旧页面同一条），不是 key 本身。 -->
+                    <input
+                      :id="'web-provider-key-' + item.provider"
+                      class="input"
+                      type="password"
+                      autocomplete="new-password"
+                      :data-web-key="item.provider"
+                      :data-od-id="'web-provider-key-' + item.provider"
+                      :placeholder="item.masked || t('webProviders.keyPlaceholder')"
+                      :value="webProviders.state.draftKeys[item.provider] || ''"
+                      @input="webProviders.setDraftKey(item.provider, $event.target.value)"
+                    />
+                  </div>
+                  <div class="agent-actions">
+                    <button
+                      class="btn btn-primary"
+                      type="button"
+                      :data-web-save="item.provider"
+                      :data-od-id="'web-provider-save-' + item.provider"
+                      :disabled="!store.state.online || Boolean(webProviders.state.busy[item.provider])"
+                      @click="webProviders.saveKey(item.provider)"
+                    >{{ t('webProviders.save') }}</button>
+                    <!-- 「设为默认」＝**不带** `api_key` 的一次 PUT（只切默认，不换 key）。 -->
+                    <button
+                      class="btn"
+                      type="button"
+                      :data-web-default="item.provider"
+                      :data-od-id="'web-provider-make-default-' + item.provider"
+                      :disabled="
+                        !store.state.online
+                        || Boolean(webProviders.state.busy[item.provider])
+                        || !item.configured
+                        || item.is_default
+                      "
+                      @click="webProviders.makeDefault(item.provider)"
+                    >{{ t('webProviders.makeDefault') }}</button>
+                    <button
+                      class="btn"
+                      type="button"
+                      :data-web-clear="item.provider"
+                      :data-od-id="'web-provider-clear-' + item.provider"
+                      :disabled="
+                        !store.state.online
+                        || Boolean(webProviders.state.busy[item.provider])
+                        || !item.configured
+                      "
+                      @click="webProviders.requestClear(item.provider)"
+                    >{{ t('webProviders.clear') }}</button>
+                    <button
+                      v-if="!webProviders.isConfirmed(item.provider)"
+                      class="btn"
+                      type="button"
+                      :data-web-consent="item.provider"
+                      :data-od-id="'web-provider-consent-' + item.provider"
+                      :disabled="!store.state.online || Boolean(webProviders.state.busy[item.provider])"
+                      @click="webProviders.consent(item.provider)"
+                    >{{ t('webProviders.consentAction') }}</button>
+                  </div>
+                </div>
+
+                <div class="resource-meta is-faint" :data-od-id="'web-provider-notice-' + item.provider">
+                  {{ t('webProviders.dataNotice') }}
+                </div>
+                <div
+                  v-if="item.env_configured && !item.configured"
+                  class="resource-meta is-faint"
+                  :data-od-id="'web-provider-env-' + item.provider"
+                >{{ t('webProviders.envFallback') }}</div>
+
+                <!-- 清空的第二步（复用 Agent 删除确认的样式与词）：行内确认条，不叠第二层遮罩。 -->
+                <div v-if="webProviders.state.pendingClear === item.provider" :data-od-id="'web-provider-clear-confirm-' + item.provider">
+                  <p class="danger-confirm-text">
+                    {{ t('webProviders.clearConfirm', { provider: webProviderLabel(item.provider) }) }}
+                  </p>
+                  <div class="field">
+                    <div class="hint">{{ t('webProviders.clearConfirmHint') }}</div>
+                  </div>
+                  <div class="agent-actions">
+                    <button
+                      class="btn"
+                      type="button"
+                      :data-od-id="'web-provider-clear-cancel-' + item.provider"
+                      @click="webProviders.cancelClear()"
+                    >{{ t('webProviders.clearCancel') }}</button>
+                    <button
+                      class="btn btn-danger"
+                      type="button"
+                      :data-od-id="'web-provider-clear-confirm-action-' + item.provider"
+                      :disabled="!store.state.online || Boolean(webProviders.state.busy[item.provider])"
+                      @click="webProviders.confirmClear(item.provider)"
+                    >{{ t('webProviders.clear') }}</button>
+                  </div>
+                </div>
+
+                <div
+                  v-if="webProviders.state.errors[item.provider]"
+                  class="form-error"
+                  role="alert"
+                  :data-od-id="'web-provider-error-' + item.provider"
+                >{{ webProviders.state.errors[item.provider] }}</div>
+              </div>
+            </div>
+          </template>
         </section>
 
         <div class="agent-actions">
