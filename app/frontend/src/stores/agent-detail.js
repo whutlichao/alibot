@@ -505,8 +505,8 @@ export function createAgentDetailStore(options) {
    * 在同一个入口里读它，两处分开就会出现「文本域有原文、条目视图却空着」。 */
   async function open(memberId) {
     setMember(memberId);
-    if (!memberId) return;
-    await Promise.all([
+    if (!memberId) return null;
+    const [loaded] = await Promise.all([
       loadAgent(memberId),
       loadMcp(memberId),
       loadSkills(memberId),
@@ -514,6 +514,9 @@ export function createAgentDetailStore(options) {
       loadMcpFile(memberId),
       loadGlobalMcpServers(memberId),
     ]);
+    // 主读数是这面其余读数的前提：读不到就把原因交给调用方（旧 `refreshAgentDetail()`
+    // 的 toast 同一条），不让空白名称与全 0 统计冒充事实。
+    return loaded || null;
   }
 
   // ─── 写路径（配置动作：只重读各自的清单，不碰消息面） ────────────────────

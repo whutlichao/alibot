@@ -394,7 +394,13 @@ async function openAgentDetail(memberId) {
   if (dockTarget.value) closeDock();
   mode.value = 'agent';
   railOpen.value = false;
-  await agentDetail.open(memberId);
+  const loaded = await agentDetail.open(memberId);
+  // 主读数读不到：详情里的名称、统计与草稿都没有可展示的正本。与旧 `refreshAgentDetail()`
+  // 同一条——说明原因，不把空白名称与全 0 统计当成这个 Agent 的事实。
+  if (!loaded) {
+    const reason = agentDetail.view.value ? agentDetail.view.value.agentError : '';
+    toasts.push(t('toast.agentDetailFailed', { reason: reason || '' }), 'err');
+  }
 }
 
 /** 关闭详情：回到进入前的那一档（进入前是详情以外的一档，因此总是有落点）。 */

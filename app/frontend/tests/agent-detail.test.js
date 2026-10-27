@@ -266,6 +266,19 @@ describe('入口与页签骨架', () => {
     expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(true);
   });
 
+  test('主读数读不到：说明原因，不用空白名称与全 0 统计冒充事实', async () => {
+    const { wrapper } = await mountApp({
+      '/api/agents/mem-1': () => jsonResponse({ error: { message: '详情暂时不可用' } }, 500),
+    });
+    await wrapper.find('[data-od-id="agent-mem-1"]').trigger('click');
+    await flush();
+    await flush();
+    await flush();
+
+    expect(wrapper.find('[data-od-id="toast-wrap"]').text()).toContain('详情暂时不可用');
+    expect(wrapper.find('#adName').text()).toBe('');
+  });
+
   test('任务线程的运行面板打开时进入详情，dock 与任务事件流都关闭', async () => {
     const task = {
       id: 'task-1', target_id: 'target-1', channel_id: 'ch-1', channel_name: 'design',
