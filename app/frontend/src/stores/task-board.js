@@ -33,6 +33,8 @@ import {
   isMyTask,
   taskStatusLabel,
   taskTransitionLabel,
+  transitionGuard,
+  transitionInvalidMessage,
 } from '../lib/task-board.js';
 
 /**
@@ -205,15 +207,13 @@ export function createTaskBoardStore(options) {
    */
   async function changeStatus(taskId, target) {
     const task = taskOf(taskId);
-    if (!task || !target || target === task.status) return false;
-    if (!online()) return false;
-    if (!canTransition(task, target)) {
-      toast(t('toast.transitionInvalid', {
-        from: taskStatusLabel(task.status),
-        to: taskStatusLabel(target),
-      }), 'err');
+    const guard = transitionGuard(task, target);
+    if (!guard.ok) {
+      // 非法目标要把事实说出来（其余两种早退——没有任务 / 同一列——静默是对的）。
+      if (guard.reason === 'illegal') toast(transitionInvalidMessage(task, target), 'err');
       return false;
     }
+    if (!online()) return false;
     // 同一张任务至多一个在飞迁移：叠加的第二个请求只会得到一次注定被拒的写。
     if (isMoving(taskId)) return false;
     state.moving.push(taskId);

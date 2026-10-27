@@ -39,6 +39,32 @@ export function canTransition(task, target) {
   return allowedTransitions(task).includes(target);
 }
 
+/**
+ * 迁移请求被允许之前的那道守卫（**唯一**一份，看板与任务线程共用）。
+ *
+ * 三条早退的顺序是判据本身：目标就是当前态 ⇒ 无动作（不是「非法」）；不在载荷
+ * `allowed_transitions` 里 ⇒ **零请求** + 一句事实（静默什么都不发生，人只会以为界面坏了）；
+ * 其余放行。返回 `{ ok, target }`：`ok === false` 且 `target` 非空时调用方照着它发请求。
+ *
+ * 为什么放在这里而不是各 store 一份：票面要求「卡片动作与拖拽触发同一后端判定（同一
+ * `allowed_transitions`，不出现两套规则）」——看板（拖拽 / 菜单）与线程（推进 chips）
+ * 是三条入口，守卫若各写一遍，就会在某一次改动里悄悄分叉。
+ */
+export function transitionGuard(task, target) {
+  if (!task || !target) return { ok: false, target: null, reason: 'noop' };
+  if (target === task.status) return { ok: false, target: null, reason: 'same' };
+  if (!canTransition(task, target)) return { ok: false, target, reason: 'illegal' };
+  return { ok: true, target, reason: null };
+}
+
+/** 一句「不是合法迁移」的事实文案（两条入口共用同一对词条与同一份措辞）。 */
+export function transitionInvalidMessage(task, target) {
+  return t('toast.transitionInvalid', {
+    from: taskStatusLabel(task && task.status),
+    to: taskStatusLabel(target),
+  });
+}
+
 /** 「我的任务」= 指派给我（`assignee_member_id === owner`）或还没人认领。
     它**不是**「我创建的任务」——任务行不记录创建者归属。 */
 export function isMyTask(task, ownerId) {

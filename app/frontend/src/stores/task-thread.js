@@ -20,7 +20,12 @@
 import { reactive } from 'vue';
 import { api, taskPath } from '../lib/api.js';
 import { t } from '../i18n/index.js';
-import { canTransition, taskStatusLabel, taskTransitionLabel } from '../lib/task-board.js';
+import {
+  taskStatusLabel,
+  taskTransitionLabel,
+  transitionGuard,
+  transitionInvalidMessage,
+} from '../lib/task-board.js';
 
 /**
  * @param {object} options
@@ -231,15 +236,12 @@ export function createTaskThreadStore(options) {
    */
   async function changeStatus(target) {
     const task = state.task;
-    if (!task || !target || target === task.status) return false;
-    if (!online()) return false;
-    if (!canTransition(task, target)) {
-      toast(t('toast.transitionInvalid', {
-        from: taskStatusLabel(task.status),
-        to: taskStatusLabel(target),
-      }), 'err');
+    const guard = transitionGuard(task, target);
+    if (!guard.ok) {
+      if (guard.reason === 'illegal') toast(transitionInvalidMessage(task, target), 'err');
       return false;
     }
+    if (!online()) return false;
     try {
       const payload = await api(taskPath(task.id, '/status'), { method: 'PATCH', body: { status: target } });
       applyTask(payload.task, payload.message);
