@@ -140,7 +140,7 @@ describe('dock 的三档判据', () => {
     expect(wrapper.find('#rpTitle').text()).toBe('design');
   });
 
-  test('切到私信 ⇒ `#dock` 整栏消失（私信下三档一档都不出现）', async () => {
+  test('切到私信 ⇒ 运行面板收起（`resetRunPanelState()` 清掉 `dockTarget`，不是 `isDm` 一刀切）', async () => {
     const { wrapper } = await mountApp();
     await wrapper.find('[data-od-id="btn-run-panel"]').trigger('click');
     await flush();
@@ -151,6 +151,10 @@ describe('dock 的三档判据', () => {
     await flush();
     expect(wrapper.find('#chanTitle').text()).toBe('@Ada');
     expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
+    // 为什么 `#dock` 现在不存在：`selectTarget()` / `resetRunPanelState()` 把 dock **形态整个作废**了
+    // （`dockTarget` 置 `null`），**不是**因为「私信下 dock 恒不渲染」。这两件事必须分清：
+    // 票 #322 之后 `visibleDockTarget` 按**形态**裁决——`task` / `run` 两档在私信下照常可见，
+    // 只有 `members` 被屏蔽（与旧页面 `dockFallbackMode()` 同一条判据）。
     expect(wrapper.find('#dock').exists()).toBe(false);
   });
 });

@@ -11,8 +11,12 @@
      2. **空态三档各不相同**：未输入 / 零命中 / 出错。出错时结果面**不铺**「没有找到」——
         那会把一次失败说成一次零命中（旧页面 `renderSearchResults()` 的第一条分支就是错误）；
      3. **高亮只按后端区间切**：`lib/search.js` 的 `hitSegments()`，本组件只把段映射成文本与 `<mark>`；
-     4. **命中行是只读行**：旧页面只有任务命中可点（打开右侧任务线程），而本版任务线程随 T6 未迁，
-        因此一行都不做 `button` —— 渲染一个点下去什么都不发生的按钮比不做更糟（ADR-0038 §五）。
+     4. **命中行的可交互性看载荷，不看 `kind`**：判据是「载荷里有没有可打开的任务标识」
+        （`hit.task.id`，旧页面 `searchResultNode()` 的判据逐字沿用）。有 ⇒ 原生 `<button>` +
+        `data-opentask`，点了由父组件开右侧任务线程；没有 ⇒ 普通 `div`，**不是**禁用的 `button`
+        ——禁用按钮仍然可聚焦，会让人以为它能用。消息命中与 Agent 命中因此保持非交互：前者的
+        滚动定位与后者的详情面不是本视图的动作（Agent 详情走 rail 的 Agent 行）。
+        键盘可达靠原生 `<button>`（Tab 进、Enter / Space 由浏览器翻成 click），不自造 keydown。
 
      类名与 `data-od-id` 逐字沿用旧页面：`.search-view` / `.search-scroll` / `.search-inner` /
      `.search-field` / `.facet-row` / `.filter-chip.is-on` / `.form-error` / `.search-results` /
@@ -29,6 +33,9 @@ const props = defineProps({
   active: { type: Boolean, default: false },
 });
 
+/** 点一条可交互的命中行（任务命中）：只抛意图，开线程的落点由父组件裁决（同 `#307` 的 chip）。 */
+const emit = defineEmits(['open-task']);
+
 const input = ref(null);
 const state = computed(() => props.search.state);
 
@@ -44,10 +51,14 @@ const emptyState = computed(() => {
   return null;
 });
 
-/** 有命中时的一行：呈现用的四个读数一次算好（模板里不再二次加工）。 */
+/** 有命中时的一行：呈现用的四个读数一次算好（模板里不再二次加工）。
+
+    `taskId` 是**唯一的可交互判据**（旧 `const taskId = hit.task && hit.task.id ? hit.task.id : null`）：
+    有它就是「这一行能打开一条线程」，没有就不是——不按 `kind` 再分派一次。 */
 const rows = computed(() => {
   if (state.value.error) return [];
   return state.value.hits.map((hit) => ({
+    taskId: (hit && hit.task && hit.task.id) || null,
     source: hitSourceLabel(hit),
     type: hitTypeLabel(hit),
     segments: hitSegments(hit),
@@ -75,6 +86,13 @@ function onEnter() {
 
 function selectFacet(facet) {
   props.search.setFacet(facet);
+}
+
+/** 点一行：只有带任务标识的行会真的抛出去（`div` 行也挂着同一个监听器，但这里早退——
+    不靠「没挂监听器」来表达不可交互，那样模板里就得多一个 `v-if` 分支）。 */
+function openRow(row) {
+  if (!row.taskId) return;
+  emit('open-task', row.taskId);
 }
 </script>
 
@@ -135,7 +153,16 @@ function selectFacet(facet) {
             <b>{{ emptyState.title }}</b>
             <p v-if="emptyState.body">{{ emptyState.body }}</p>
           </div>
-          <div v-for="(row, index) in rows" :key="index" class="result">
+          <component
+            :is="row.taskId ? 'button' : 'div'"
+            v-for="(row, index) in rows"
+            :key="index"
+            class="result"
+            :type="row.taskId ? 'button' : undefined"
+            :data-opentask="row.taskId || undefined"
+            :data-od-id="row.taskId ? 'search-task' : undefined"
+            @click="openRow(row)"
+          >
             <div class="r-top">
               <span class="hash">{{ row.source }}</span>
               <span class="card-tag">{{ row.type }}</span>
@@ -150,7 +177,7 @@ function selectFacet(facet) {
               <span>{{ row.snip.text }}</span>
               <span v-if="row.snip.authorDeleted" class="search-author-deleted">{{ t('search.authorDeleted') }}</span>
             </div>
-          </div>
+          </component>
         </div>
       </div>
     </div>
