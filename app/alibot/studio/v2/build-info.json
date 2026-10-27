@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "78b8cf2831d2dd9d0d6c81fae4c28ae66c7608ac33750b74f05d4ead4a6e7d10",
+  "sourceDigest": "ca3bd3a425b179abbcd3a5c7f1e071fbb644bd4158e521d366acfdbc4effc723",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
@@ -9,6 +9,8 @@
     "src/app-context.js",
     "src/components/AgentFormModal.vue",
     "src/components/AttachmentChip.vue",
+    "src/components/ChannelBudgetModal.vue",
+    "src/components/ChannelConfigModal.vue",
     "src/components/ChannelFormModal.vue",
     "src/components/ChannelHeader.vue",
     "src/components/ComposerBox.vue",
@@ -23,6 +25,7 @@
     "src/components/PresenceDot.vue",
     "src/components/RailSidebar.vue",
     "src/components/RemindersModal.vue",
+    "src/components/RosterModal.vue",
     "src/components/RunPanel.vue",
     "src/components/SettingsModal.vue",
     "src/i18n/index.js",

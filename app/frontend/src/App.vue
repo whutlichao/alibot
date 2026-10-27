@@ -11,6 +11,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AgentFormModal from './components/AgentFormModal.vue';
+import ChannelBudgetModal from './components/ChannelBudgetModal.vue';
+import ChannelConfigModal from './components/ChannelConfigModal.vue';
 import ChannelFormModal from './components/ChannelFormModal.vue';
 import ChannelHeader from './components/ChannelHeader.vue';
 import ComposerBox from './components/ComposerBox.vue';
@@ -18,6 +20,7 @@ import DockPanel from './components/DockPanel.vue';
 import MessageStream from './components/MessageStream.vue';
 import RailSidebar from './components/RailSidebar.vue';
 import RemindersModal from './components/RemindersModal.vue';
+import RosterModal from './components/RosterModal.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
@@ -45,6 +48,11 @@ const dockDrawerOpen = ref(false);
 // 本票只有运行面板这一档会写它（`members` / `task` 归 T3 与 T7）。
 const dockTarget = ref(null);
 const activeTab = ref('messages');
+// 频道头的三张弹窗（名册 / 配置 / 预算）：同一时刻只开一张，`toolChannel` 是**打开那一刻的频道**
+// （旧页面 `state.rosterChannelId` / `state.channelConfig.channelId` 同一条：打开期间锁定频道，
+// 人在弹窗里把别处切走也不影响它列的那份名单）。
+const openTool = ref(null);
+const toolChannel = ref(null);
 // rail 头两个弹窗的显隐（内容仍挂载、只用 `hidden` 隐去，见 `ModalShell.vue` 文件头）。
 const remindersOpen = ref(false);
 const settingsOpen = ref(false);
@@ -206,6 +214,19 @@ function unsupportedMention(name) {
   toasts.push(t('mention.quoteUnsupported', { name }), 'err');
 }
 
+/** 频道头三个工具入口的**唯一**落点：锁定当前频道，再决定开哪一张弹窗。
+    私信下三个入口都不渲染（`!isDm`），因此这里不必再判 target 类型。 */
+function openChannelTool(kind) {
+  if (!target.value || isDm.value) return;
+  toolChannel.value = target.value;
+  openTool.value = kind;
+}
+
+function closeChannelTool() {
+  openTool.value = null;
+  toolChannel.value = null;
+}
+
 /** 频道头的运行面板入口：打开 dock 的第三种形态（读完快照前先铺加载态）。 */
 async function openRunPanel() {
   dockTarget.value = { kind: 'run' };
@@ -334,7 +355,11 @@ function onEscape(event) {
         :message-count="messageTabCount(target)"
         :task-count="0"
         :active-tab="activeTab"
+        :channel-tools-available="true"
         @select-tab="activeTab = $event"
+        @open-roster="openChannelTool('roster')"
+        @open-config="openChannelTool('config')"
+        @open-budget="openChannelTool('budget')"
         @open-run-panel="openRunPanel"
       />
 
@@ -391,5 +416,28 @@ function onEscape(event) {
         <span class="dot"></span>{{ item.message }}
       </div>
     </div>
+
+    <!-- 名册是**弹窗形态**（旧 `openRosterModal()` 就是弹窗）：dock 的 `members` 档是另一张票的面，
+         两者不互换。 -->
+    <RosterModal
+      :open="openTool === 'roster'"
+      :channel="toolChannel"
+      :store="store"
+      :toast="toasts.push"
+      @close="closeChannelTool"
+    />
+    <ChannelConfigModal
+      :open="openTool === 'config'"
+      :channel="toolChannel"
+      :store="store"
+      @close="closeChannelTool"
+    />
+    <ChannelBudgetModal
+      :open="openTool === 'budget'"
+      :channel="toolChannel"
+      :store="store"
+      :toast="toasts.push"
+      @close="closeChannelTool"
+    />
   </div>
 </template>

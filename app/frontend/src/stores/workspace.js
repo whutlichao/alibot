@@ -249,6 +249,48 @@ export function createWorkspaceStore(options) {
   }
 
   /**
+   * 把一个 Agent 加入频道（名册弹窗里那个**唯一**的写动作）。
+   *
+   * **用响应里的最新成员表覆盖缓存**，不是「先加再读」：后者中间存在一个「读回旧表」的窗口，
+   * 而那正是名册刚把人挪过去、`@` 补全却还选不到它的那一帧。加入成功也清掉该频道的
+   * `channelMembersFailed` 标记（一次成功的写就证明成员表现已可读）。
+   *
+   * 幂等由后端保证（`joined` 区分新增与本来就在）；这里只负责把响应里的两份读数落地。
+   */
+  async function addChannelMember(channelId, memberId) {
+    const payload = await api(channelPath(channelId, '/members'), {
+      method: 'POST',
+      body: { member_id: memberId },
+    });
+    if (Array.isArray(payload.members)) state.channelMembers[channelId] = payload.members;
+    state.channelMembersFailed = state.channelMembersFailed.filter((item) => item !== channelId);
+    if (payload.channel) replaceChannel(payload.channel);
+    return payload;
+  }
+
+  /**
+   * 一个成员的能力计数（名册行右侧的摘要）：两条 agent scope 清单并行读。
+   *
+   * 任一读不到只让**这一行**标成不可用（`failed`），不外溢：名册的价值是「有谁」，
+   * 一行读不到不该把整份名单变成读不到。
+   */
+  async function readMemberCapabilityCounts(memberId) {
+    try {
+      const [mcp, skills] = await Promise.all([
+        api('/api/mcp-servers?scope_kind=agent&scope_id=' + encodeURIComponent(memberId)),
+        api('/api/skills?scope_kind=agent&scope_id=' + encodeURIComponent(memberId)),
+      ]);
+      return {
+        mcp: (mcp && Array.isArray(mcp.mcp_servers) ? mcp.mcp_servers : []).length,
+        skills: (skills && Array.isArray(skills.skills) ? skills.skills : []).length,
+        failed: false,
+      };
+    } catch {
+      return { mcp: 0, skills: 0, failed: true };
+    }
+  }
+
+  /**
    * 读一次频道配置并缓存（正本在后端）。
    *
    * **读不到就保持未缓存**，返回 `null`：运行面板的「自主模式」空态解释据此决定铺哪一句，
@@ -257,8 +299,42 @@ export function createWorkspaceStore(options) {
    */
   const channelConfigInFlight = new Map();
 
+  /**
+   * 读一次频道配置并**覆盖缓存**（频道设置弹窗每次打开都要读最新的那一份）。
+   *
+   * 与 `loadChannelConfig` 的分工：那个是「有缓存就复用」的只读快照（运行面板的解释用它），
+   * 这个是**显式动作**的读数——打开设置面必须看到后端现在那一份，不能拿缓存当结论。
+   * 读回后同样写进 `state.channelConfigs`，运行面板的协作模式解释因此跟着更新。
+   */
+  async function refreshChannelConfig(channelId) {
+    const payload = await api(channelPath(channelId, '/config'));
+    state.channelConfigs[channelId] = payload.config;
+    return payload.config;
+  }
+
+  /** 保存频道配置（部分更新；后端任一字段不合法就整体拒绝），按响应里的新配置覆盖缓存。 */
+  async function saveChannelConfig(channelId, changes) {
+    const payload = await api(channelPath(channelId, '/config'), { method: 'PATCH', body: changes });
+    state.channelConfigs[channelId] = payload.config;
+    return payload.config;
+  }
+
+  /** 读一次该频道的预算读数（**不缓存**：用量随人类世代变化，缓存下来的只能是过期事实）。 */
+  async function readChannelBudget(channelId) {
+    const payload = await api(channelPath(channelId, '/budget'));
+    return payload.budget;
+  }
+
+  /** 保存预算上界（只提交 `budget_limit`；用量是后端的正本，前端既不算也不提交）。 */
+  async function saveChannelBudgetLimit(channelId, budgetLimit) {
+    const payload = await api(channelPath(channelId, '/budget'), {
+      method: 'PATCH',
+      body: { budget_limit: budgetLimit },
+    });
+    return payload.budget;
+  }
+
   async function loadChannelConfig(channelId) {
-    if (!channelId) return null;
     if (state.channelConfigs[channelId]) return state.channelConfigs[channelId];
     const inFlight = channelConfigInFlight.get(channelId);
     if (inFlight) return inFlight;
@@ -582,8 +658,14 @@ export function createWorkspaceStore(options) {
     refreshOutcomes,
     refreshStatuses,
     refreshChannelMembers,
+    addChannelMember,
+    readMemberCapabilityCounts,
     loadRemoteFlow,
     loadChannelConfig,
+    refreshChannelConfig,
+    saveChannelConfig,
+    readChannelBudget,
+    saveChannelBudgetLimit,
     channelAgentMembers,
     applyOutcomes,
     absorbMessage,

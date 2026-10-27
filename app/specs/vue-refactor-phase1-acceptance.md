@@ -548,3 +548,133 @@ scripts/check.sh --fast            exit 0（ruff / ruff format --check / mypy / 
   详情本身一行没写。T10 落地时**只翻这个 prop 的默认值**，不改 `RailSidebar.vue` 里那段点击逻辑。
 - **私信的去重口径**：`POST /api/dms` 幂等（后端 `created` 区分），因此重复点同一个 Agent 行不会
   建出第二条私信——这一点由后端的幂等保证，前端不另加去重表。
+
+### 阶段 A · 票 #303：频道头三工具——名册 / 频道配置 / 回应预算（读数）
+
+本票把频道头的三个入口背后的面一起迁到 v2，然后把 `channelToolsAvailable` 翻成 `true`。
+三面都用 P0 的 `ModalShell.vue`（名册 `wide` 档，配置 / 预算常规档），**不改外壳**，`app.css` 零改动。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 开关翻正 | `ChannelHeader.vue` 的 prop 默认值 + `App.vue` 显式传值 | `channelToolsAvailable` 默认 `true`；频道下 `btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` 三个入口都渲染；**私信下三个都不存在**（`!isDm` 判据不变）。两个开关仍各自独立（`channelToolsAvailable` 关掉只收三个、`runPanelAvailable` 关掉只收运行面板） |
+| 名册：「已加入 / 未加入」两段 | `components/RosterModal.vue` | 已加入 = `GET /api/channels/{id}/members` 的成员表（含 owner，owner 那行右侧是「我」）；未加入 = 本工作区里还没进来的 Agent，行上带「加入」控件。读不到时两段各说自己的「读不到」，未加入段**不列任何行**（否则会把已加入的 Agent 误报成未加入） |
+| 名册：加入不整页刷新 | 同上 + `stores/workspace.js` 的 `addChannelMember()` | `POST .../members` 的响应自带最新成员表，直接**覆盖** `state.channelMembers[id]`（不是「先加再读」，那个窗口里名册刚挪段、`@` 补全还选不到它）。用例按请求数断言：只多一次 POST，`/api/workspace` 与 `.../messages` 的请求数不变；加入后 `@` 立刻能选到它 |
+| 名册：能力摘要 | 同上 + `readMemberCapabilityCounts()` | MCP n / 技能 n 来自两条 agent scope 清单；任一条读不到只让**那一行**显示「能力摘要暂不可用」，不外溢 |
+| 频道配置：字段与读数 | `components/ChannelConfigModal.vue` | mode（autonomous / team）、队长、项目根、默认后端、默认权限档、联网档；`team_scope` **只显示后端的 `channel+task`**、不提交；`leader_available` / `leader_reason` 直接读后端（与频道静默裁决同一份事实） |
+| 频道配置：team 的两条提示 | 同上 | 跟着**草稿**里的 mode 走（人刚点「队长制」还没保存就该看到）：`成员 auto_claim 已停用` / `任务线程只唤醒队长` |
+| 频道配置：非法保存 | 同上 | `PATCH .../config` 提交整份可写字段；后端整体拒绝时**只显示后端可读原因**、弹窗不关、草稿保留。错误行放在正文**之外**（正文按后端读数重铺不会把它清掉） |
+| 回应预算：四项读数 | `components/ChannelBudgetModal.vue` | 已用 / 剩余 / **有效上界** / **来源**全部来自 `GET .../budget`；来源是机器可读取值（`channel-override` / `built-in-default`）的界面说法 |
+| 回应预算：待生效分开 | 同上 | 「当前世代」与「下一个人类世代」是两个 `section`；`pending_limit` 为 `null` 时写「与当前上界相同，没有待生效改动。」，非 `null` 时写「从下一个人类世代生效」 |
+| 回应预算：固定档位 | 同上 | 写控件只有 `3 / 5 / 10` 三张卡（没有可输入任意数字的控件），提交体只有 `{budget_limit}`；用量既不算也不提交 |
+| 回应预算：耗尽不是错误 | 同上 | `remaining === 0` 时在当前世代段里多一行「预算耗尽」+ 一句说明；**错误行这一帧不存在**（用例断言 DOM 位置，不断言文案实现） |
+| 至少一条用例从真实父组件进 | `tests/channel-tools.test.js` | 全部 19 条从 `App.vue` 真实父组件进（外加 1 条直挂 `ChannelHeader` 的叶子用例断言默认开）——三张弹窗、请求数、「加入后 `@` 补全立刻可选」都只能在接上真实父组件之后断言 |
+| 词条纯新增 | `app/alibot/studio/i18n.js` | **零新增**：三面的词条与类名旧页面早就定义好了（`roster.*` / `budget.*` / `channelConfig.*` / `dock.joined` / `dock.notJoined` / `dock.join` / `dock.joining` / `dock.allJoined` / `dock.noAgents` / `dock.membersUnavailable`），v2 只是把它们用在同一个落点上 |
+| 旧页面一行未改 | — | `git diff vue-phase2-a...HEAD -- app/alibot/studio/app.js app/alibot/studio/index.html app/alibot/studio/i18n.js app/alibot/studio/app.css` 为空 |
+
+**红 → 绿（原文摘录）**
+
+```
+# 第一片（名册）：四条用例先红
+ FAIL  tests/channel-tools.test.js > 成员名册（弹窗） > 打开即分「已加入 / 未加入」两段，行与能力摘要都是后端读数
+Error: Cannot call isVisible on an empty DOMWrapper.
+ FAIL  tests/channel-tools.test.js > 成员名册（弹窗） > 点「加入」：成员挪到已加入段，且没有整页刷新（只多一次 POST）
+Error: Cannot call trigger on an empty DOMWrapper.
+ Test Files  1 failed (1)
+      Tests  6 failed | 1 passed (7)
+
+# 名册绿之后追加配置段：五条先红
+ ❯ tests/channel-tools.test.js (12 tests | 5 failed)
+     × 打开即铺后端读数：mode / team_scope / 队长可用性 / 项目根 / 后端 / 权限档
+     × team 模式下两条停用提示出现；切回 autonomous 后消失（还没保存）
+     × 保存提交整份配置字段；成功后按响应重铺
+     × 后端拒绝非法字段：只显示后端可读原因，弹窗不关、界面不改口
+     × 配置读不到：只给一行「读不到」，不铺半份表单
+
+# 追加预算段：七条先红
+ ❯ tests/channel-tools.test.js (19 tests | 7 failed)
+     × 四项读数分开呈现，全部来自后端载荷（已用 / 剩余 / 有效上界 / 来源）
+     × 下一世代待生效值与当前有效上界**分开**呈现，并写明从下一个人类世代生效
+     × 写控件只有 3 / 5 / 10 三档，提交的只有 {budget_limit}
+     × 保存成功后按响应里的新读数重铺，并提示从下一个人类世代生效
+     × 后端拒绝非法档位：错误行给后端可读原因，读数保持后端说的那一份
+     × 预算耗尽是可读事实，不在错误区（断言 DOM 位置，不断言文案实现）
+     × 预算读数读不到：只给一行「读不到」，不铺半份读数
+
+# 全绿
+ ✓ tests/channel-tools.test.js (19 tests)
+ Test Files  12 passed (12)
+      Tests  215 passed (215)
+```
+
+**门禁读数**（`./scripts/check.sh --fast`，`--fast` 里 pytest 段按设计跳过）
+
+```
+ruff check              All checks passed!
+ruff format --check     （无差异）
+mypy                    Success: no issues found in 132 source files
+pyright                 0 errors, 0 warnings, 0 informations
+node --test             389 passed / 0 failed（旧页面用例族未削弱）
+Vitest                  12 files / 215 passed（新增 tests/channel-tools.test.js 19 条）
+```
+
+产物：`cd app/frontend && env -u NODE_ENV npm run build` 已跑，`app/alibot/studio/v2/`（`assets/index-Dc4HEkR5.js`
+161.34 kB、`index.html`、`build-info.json`）一并入库；`tests/build-guard.test.js` 的源码指纹用例绿。
+
+**真浏览器实测**（ego-browser，`python -m alibot --port 8806 --data-dir /tmp/alibot-p2a-303`，
+打开 `http://localhost:8806/studio/v2/`；用 API 预置了一个频道 `#design` + 5 个 Agent）
+
+| 判据 | 读数 |
+| --- | --- |
+| 频道下三个入口 | `btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` / `btn-run-panel` 全部存在 |
+| 名册打开 | `.overlay` `hidden=false` / `display=grid`；`.modal` 的 class 是 **`modal wide`**；标题 `#design 成员`、副标题 `2 位成员` |
+| 名册两段 | `已加入（2）`（`owner` + `Ada`，owner 那行右侧「我」）、`未加入本频道（1）`（`Bob`，带「加入」键）；`roster-capabilities-mem_…` 显示 `MCP 0 / 技能 0` |
+| 加入 | 点「加入」后 `已加入（3）` / `未加入本频道（0）`，Bob 挪进已加入段且「加入」键消失；toast「已把 Bob 加入 #design，现在可以在 composer 里用 @ 提到它。」 |
+| 加入不整页刷新 | 这一次点击的全部请求 = `POST /api/channels/{id}/members` + 该成员的 `mcp-servers` / `skills` 两条读数；**没有** `/api/workspace`、**没有** `.../messages` 重取 |
+| 加入后 `@` 补全 | composer 输入 `@` 弹出候选 `AAda` / `BBob` / `CCarol` / `DDave` / `EEve`（刚加入的成员立刻可选） |
+| 频道配置打开 | `.overlay` `hidden=false` / `display=grid`；`.modal` 宽 **440**（常规档）；标题「频道设置」、副标题 `#design · 协作模式、队长与工作区默认值` |
+| 频道配置读数 | `TEAM_SCOPE channel+task`（后端只读事实）；队长下拉 `Ada` 已选中、候选 = 该频道 5 个 Agent；`队长可用性 队长可用`；项目根空串；默认后端 `local` 选中；权限档 `ask-writes` 选中；联网档 `只搜索` 选中 |
+| team 两条提示 | 切到「队长制」（草稿态、未保存）后 `channel-config-team-notices` 出现，文本 `成员 auto_claim 已停用 \| 任务线程只唤醒队长`；切回「自主」即消失 |
+| 配置保存成功 | `PATCH .../config` 200，响应重铺后仍是 team 且两条提示仍在 |
+| 配置非法保存 | 项目根填 `relative/path` → `PATCH .../config` **400**；弹窗 `hidden=false` / `display=grid`（**没关**）；错误行 `.form-error` 文本「配置未保存：频道配置校验未通过，未改动任何字段：项目根必须是绝对路径：relative/path」；输入框仍保留 `relative/path`；错误行**在正文之外**（`document.querySelector('[data-od-id="channel-config-body"]').contains(err) === false`） |
+| 预算打开 | `.overlay` `hidden=false` / `display=grid`；标题「回应预算」、副标题 `#design · 上界由你设置；已用跳数由后端维护` |
+| 预算四项读数 | 已用 `0` / 剩余 `3` / 有效上界 `3` / 来源 `内置默认` |
+| 待生效分开 | `budget-section-current` 与 `budget-section-next` 是两个 section（`current.contains(pending) === false`）；待生效段「已保存上界 3」+「与当前上界相同，没有待生效改动。」 |
+| 固定档位 | 三张卡 `3=true / 5=false / 10=false`，提示「只有这三档；其它取值后端会整体拒绝，不会留下半成品。」 |
+| 保存 5 | 选 5 后 `3=false / 5=true`、保存键可用 → 保存后 `PATCH .../budget` **200**（后端日志确认只有这一条 PATCH）；读数重铺：有效上界仍 `3`、剩余仍 `3`、已用 `0`、来源仍 `内置默认`，待生效段变成「已保存上界 **5**」+「这是已保存的档位，从下一个人类世代生效；当前世代仍按上面的有效上界算。」；toast「已保存 5 跳的上界；从下一个人类世代生效。」；保存键随之禁用（与已保存档位相同）；无错误行 |
+| 预算耗尽不进错误区 | 用例断言（`budget-exhausted` 在 `budget-section-current` 里、`budget-form-error` 这一帧不存在）。**真浏览器未单独造耗尽态**：`used` 是后端正本，要造出 `remaining=0` 必须真的投递过 3 次 agent→agent 跳，本票不伪造该读数 |
+
+截图（`.scratch/v2-p2a/`，已 gitignore）：`issue-303-01-roster-open.png`（两段 + owner「我」+ 能力摘要）、
+`issue-303-02-roster-joined.png`（加入后 Bob 挪段，toast）、`issue-303-03-mention-after-join.png`（`@` 候选含新成员）、
+`issue-303-04-config-autonomous.png`（配置弹窗首开）、`issue-303-05-config-team.png`（team 两条提示）、
+`issue-303-06-config-rejected.png`（后端 400 + 弹窗未关 + 错误行）、`issue-303-07-budget.png`（四项读数 + 待生效 5 + toast）。
+
+**合并集成分支后的复验读数**（`./scripts/check.sh --fast`，HEAD = 合并提交）：
+
+```
+ruff check              All checks passed!
+ruff format --check     （无差异）
+mypy                    Success: no issues found in 132 source files
+pyright                 0 errors, 0 warnings, 0 informations
+node --test             389 passed / 0 failed
+Vitest                  14 files / 250 passed
+```
+
+比本票单独时多出的 2 个文件 / 35 条是 #301 与 #302 的用例（`create-forms.test.js` /
+`rail-modals.test.js` 与它们补进 `components.test.js` 的用例），本票新增的 19 条一条没少。
+
+**合并集成分支时解掉的一处用例冲突**：#301 把两张新建表单（`ChannelFormModal` / `AgentFormModal`）
+也挂到了 `App.vue` 上，它们各带一个 `textarea`（`#channelDescInput` / `#agentPromptInput`）。本票那条
+「加入后 `@` 补全立刻能选到它」原来用 `wrapper.find('textarea')` 取 composer 输入框，合并后它会先命中
+新建频道表单里那个（同在 `document.body` 上），于是 `@` 敲进了一个不相关的输入框、清单不弹。
+修法是把选择器收窄成 composer 自己的 `[data-od-id="composer-input"]`——**产品行为没有变**，
+变的是用例选取哪个 `textarea`。这条也说明「从真实父组件进」的用例要按**自己的落点**选取元素，
+不要依赖「页面上只有一个 `textarea`」这种全局假设。
+
+**本轮的已知边界**
+
+- **联网 provider 凭据那一段没有迁**：`channelConfig` 旧页面在同一个弹窗里还有「当前 provider / 来源 + 五家掩码 +
+  保存 key」，它依赖 `GET/PUT/DELETE /api/web-providers*`。本票只把 `web_access` 档位作为可写字段提交，
+  凭据段留空（不渲染、不留假按钮）。它是 #299 票图里没有单列的一块，归后续票。
+- **名册的能力摘要是 N+1**：每个 Agent 成员两条请求（与旧页面同一条读法、同一个上限 5 个并发）。成员很多的频道里
+  名册首开会多几次往返；旧实现也是这么读的，本票不另造批量读面。
+- **`channel-config-section-web` 只出现档位卡**：provider 凭据段未迁，因此这一段比旧页面短。
