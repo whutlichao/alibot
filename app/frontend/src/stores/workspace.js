@@ -56,6 +56,8 @@ export function createWorkspaceStore(options) {
     providers: [],
     localProviders: [],
     consents: [],
+    // 远端数据面（`GET /api/remote-data-flow` 的 `data_faces`）：只有「会离开本机的数据面」
+    // 这一个读数，用来拼新建 Agent 弹窗的告知正文。空数组 = 没读到（读不到就保留上一次已知值）。
     dataFaces: [],
     statuses: {},
     settings: { locale: 'zh-CN', message_density: 'comfortable', theme: 'system' },
@@ -203,6 +205,23 @@ export function createWorkspaceStore(options) {
       }));
     } catch {
       // 同上：宁可略陈旧，也不编造。
+    }
+  }
+
+  /**
+   * 远端数据面（新建 Agent 弹窗的告知正文要用它拼一句话）。
+   *
+   * **读不到就保留上一次已知值**：告知正文里列举的是「哪些数据会离开本机」，编不出来也不该编，
+   * 于是调用方拿到空数组时必须如实说「读不到」，而不是渲染一句少了数据面的半真文案
+   * （与 `refreshStatuses` / `refreshOutcomes` 同一条纪律）。
+   */
+  async function loadRemoteFlow() {
+    try {
+      const payload = await api('/api/remote-data-flow');
+      if (Array.isArray(payload.data_faces)) state.dataFaces = payload.data_faces;
+      return payload;
+    } catch {
+      return null;
     }
   }
 
@@ -385,6 +404,9 @@ export function createWorkspaceStore(options) {
           setActiveTargetId(target ? target.id : null);
         }
       }
+      // 远端数据面不阻塞主线（与旧实现 `loadRemoteFlow()` 同一条）：读不到只影响新建 Agent
+      // 弹窗里那一句告知，不影响工作台本身；弹窗打开时还会再试一次。
+      loadRemoteFlow();
       await refreshMessages();
       await refreshOutcomes();
       await refreshChannelMembers();
@@ -527,6 +549,80 @@ export function createWorkspaceStore(options) {
     return deliver(pending);
   }
 
+  // ─── 写路径：新建对象（频道 / Agent / 私信） ──────────────────────────────
+
+  /**
+   * 新建频道。`POST /api/channels` 回带**整份**频道名单，因此这里不手工拼接列表——
+   * 列表的正本在后端，前端只把它落到镜像里（旧实现 `state.channels = payload.channels` 同一条）。
+   *
+   * 校验交给后端：任一字段不合法就整体不创建，这里把错误抛给调用方（弹窗内呈现），
+   * 不建半成品、也不在本层猜哪一条规则拦住了它。
+   */
+  async function createChannel(fields) {
+    const input = fields || {};
+    const payload = await api('/api/channels', {
+      method: 'POST',
+      body: {
+        name: String(input.name || '').trim(),
+        description: String(input.description || '').trim(),
+        member_ids: input.memberIds || [],
+      },
+    });
+    if (Array.isArray(payload.channels)) state.channels = payload.channels;
+    state.online = true;
+    return payload;
+  }
+
+  /**
+   * 新建 Agent。响应回带整份 `agents` 与 `members`，因此 rail 的「本机 Agent」段不需要额外读取。
+   * 同样把校验错误抛给调用方（弹窗内呈现），不建半成品成员行。
+   */
+  async function createAgent(fields) {
+    const input = fields || {};
+    const payload = await api('/api/agents', {
+      method: 'POST',
+      body: {
+        name: String(input.name || '').trim(),
+        role: String(input.role || '').trim(),
+        model_id: String(input.modelId || '').trim(),
+        system_prompt: String(input.systemPrompt || '').trim(),
+      },
+    });
+    if (Array.isArray(payload.agents)) state.agents = payload.agents;
+    if (Array.isArray(payload.members)) state.members = payload.members;
+    state.online = true;
+    return payload;
+  }
+
+  /**
+   * 打开与某个 Agent 的私信（`POST /api/dms {agent_id}`）。
+   *
+   * 后端幂等：已有私信就复用（`created: false`），没有就新建。因此「选中一个成员」与
+   * 「创建私信」是同一次动作，前端不需要先查一遍再决定发什么。
+   */
+  async function openDm(agentId) {
+    const payload = await api('/api/dms', { method: 'POST', body: { agent_id: agentId } });
+    replaceDm(payload.dm);
+    state.online = true;
+    return payload;
+  }
+
+  /**
+   * 确认一次远端数据流告知（`POST /api/remote-data-flow/ack`，按 provider，幂等）。
+   *
+   * 成功后 `consents` 与 `agents` 都按响应换新：确认会改变成员的启用态，"未启用"这个读数
+   * 必须跟着后端走（本层不推断「确认过了所以现在能跑了」）。
+   */
+  async function acknowledgeRemoteFlow(provider) {
+    const payload = await api('/api/remote-data-flow/ack', {
+      method: 'POST',
+      body: { provider },
+    });
+    if (Array.isArray(payload.consents)) state.consents = payload.consents;
+    if (Array.isArray(payload.agents)) state.agents = payload.agents;
+    return payload;
+  }
+
   /** 重试一条失败项：**同一个 pending 项**回到 `pending` 再投递一次。
 
       它刻意**不**过 `state.online` 那道闸门（与旧实现同一条）：重试是人明确按下的一次动作，
@@ -564,6 +660,7 @@ export function createWorkspaceStore(options) {
     refreshChannelMembers,
     addChannelMember,
     readMemberCapabilityCounts,
+    loadRemoteFlow,
     loadChannelConfig,
     refreshChannelConfig,
     saveChannelConfig,
@@ -575,6 +672,10 @@ export function createWorkspaceStore(options) {
     markCurrentRead,
     markRead,
     sendMessage,
+    createChannel,
+    createAgent,
+    openDm,
+    acknowledgeRemoteFlow,
     retryPending,
     discardPending,
     removePending,

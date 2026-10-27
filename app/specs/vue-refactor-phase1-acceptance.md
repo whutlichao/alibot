@@ -157,15 +157,16 @@ members + member-statuses），SSE 连接数 1。
 
 v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` 承载：
 
-任务看板与任务线程、审批卡、Agent 详情、搜索与 ⌘K 命令面板、提醒 / 设置 / 频道配置 /
-回应预算 / 成员名册等弹窗、附件**上传**、新建频道 / 新建私信 / 新建 Agent 的表单、
+任务看板与任务线程、审批卡、Agent 详情、搜索与 ⌘K 命令面板、频道配置 / 回应预算 /
+成员名册等弹窗、附件**上传**、新建频道 / 新建私信 / 新建 Agent 的表单、
 **任务运行面板**（它挂在任务线程头，随线程那张票进来；频道运行面板已迁）。
+（提醒与设置两张弹窗已随阶段 A 的票 #302 迁完，不再在这个清单里。）
 
 **这些面在 v2 上不留假入口**（ADR-0038 §五），分两种处理：
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | 工作台搜索、提醒、设置（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；附件上传与「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
+| **不渲染** | 工作台搜索（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；附件上传与「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
 | **可见但禁用**（`title` 说明理由） | 新建频道 / 新建 Agent | 空库里唯一的引导文案就是「新建一个频道」——把按钮也藏掉等于让人无路可走 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
@@ -316,6 +317,238 @@ node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
 取证后已删除、未入库）。dock 的 `members` / `task` 两档同理没有调用点，只在用例里按 `dockTarget`
 直接驱动——那是「形态与几何先立起来」的代价，也是那两张票不必再改外壳的前提。
 
+### 阶段 A · 票 #302：rail 弹窗族——提醒 + 设置（接活 applySettings）（读数）
+
+rail 头的两枚入口（`btn-reminders` / `btn-settings`）在 v2 上原本整块不渲染（ADR-0038 §五的
+「不渲染」档）。本票把两张弹窗搬过来，入口从「不渲染」翻成「正常工作」。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| rail 头两枚入口 | `components/RailSidebar.vue` 的 `.rail-head` | `btn-reminders` / `btn-settings` 逐字沿用旧页面（`studio/index.html:69` / `:83`）的 `data-od-id` 与无障碍名；铃铛与齿轮用旧页面的 lucide 几何（`stroke-width` 同为 1.9） |
+| 圆点角标的判据是「还有**未到点**的提醒」 | `stores/reminders.js` 的 `hasPending` | `state.reminders.some((r) => !r.fired_at)`；`fired` / `missed` 一律不算等待。判据住在数据层而不是模板里，于是「列表有行」与「圆点亮」不会被写成同一个条件 |
+| 列表行 | `components/RemindersModal.vue` | 文本 · ` · #归属频道`（不归属时不出现）· 状态后缀 · 删除（`×` + `aria-label`）。`state` 只读后端原词：`pending` 的后缀是到期时刻本身、`fired` / `missed` 走词条；认不出的取值落回时刻那一档，不猜第三种语义 |
+| 新增 = 文本 + 日期 + 钟点 | 同上 | 两个原生输入（`type="date"` 默认今天 / `type="time"` 默认 `09:00`），提交拼成 `YYYY-MM-DD HH:MM` 一个串（ADR-0017 §二）；合法形状由后端裁决。只清正文，日期回今天、钟点保留 |
+| 写路径以响应的最新表覆盖镜像 | `stores/reminders.js` 的 `applyPayload` | 读（`GET`）与写（`POST` / `DELETE`）共用一个落点，不本地拼「看起来成功了」的行；失败时不改镜像、把后端的话留在弹窗里（`#reminderFormError`），弹窗不关 |
+| 提醒的读取不阻塞主线 | `app-context.js` 的 `start()` / `onOpen({reconnected})` | 首开读一次、重连后随全量重取再读一次；读不到保持未亮，打开弹窗时再试并把失败话留在弹窗里（旧实现同一条） |
+| 设置三个档位 | `components/SettingsModal.vue` | 语言 `<select>` + 密度两个 `.radio-card` + 主题三个 `.radio-card`；类名与 `data-od-id` 逐字沿用（`settings-locale` / `settings-density` / `settings-theme` / `density-*` / `theme-*` / `settings-done`），选中态是 `is-on` + `aria-pressed` |
+| **`applySettings` 接活** | `App.vue` 把 `ctx.applySettings` 传进弹窗 | 保存成功 ⇒ `applySettings(响应.settings)` 铺 `<html lang>` / `data-theme` / `data-density`；失败 ⇒ 根元素与选中态都不动（不声称一个没落库的档位），错误话留在弹窗里、弹窗不关 |
+| **绝不挂 watcher**（防回归） | 同上 | 用例「保存一次只铺一次根元素」数的是**根元素被写了几次**（不是函数被调了几次）；把 `watch(() => mutable.settings, applySettings, {deep:true})` 加回去，这条当场红（`Maximum recursive updates exceeded in component <App>`） |
+
+**一条从真实父组件进的用例**：`tests/rail-modals.test.js` 全部 14 条都从 `App.vue` 进（真实
+`createAppContext` + `fetch` 替身 + `attachTo: document.body`）。理由与阶段一那次
+`DockPanel` 漏传 `pools` 相同：rail 的圆点要「后端读数 → store → prop」整条链、设置要真的
+`applySettings`，直挂叶子组件两件事都测不出来。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     12 files / 211 passed（新增 tests/rail-modals.test.js 14 条；
+                                   components.test.js 的「rail 入口」一条改成「已迁 ⇒ 渲染」）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+```
+
+红→绿（原样读数）：
+
+```
+# 第一条切片（rail 入口 + 圆点）
+FAIL  tests/rail-modals.test.js > rail 头的弹窗入口 > 圆点：全部已提醒 / 已错过时**不出现**
+AssertionError: expected false to be true // Object.is equality
+ Test Files  1 failed (1)   Tests  3 failed (3)
+
+# 第二条切片（提醒弹窗）
+FAIL  tests/rail-modals.test.js > 提醒弹窗 > 新增：文本 + 日期 + 钟点拼成 `YYYY-MM-DD HH:MM`…
+Error: Cannot call setValue on an empty DOMWrapper.
+ Test Files  1 failed (1)   Tests  6 failed | 3 passed (9)
+
+# 第三条切片（设置弹窗）
+FAIL  tests/rail-modals.test.js > 设置弹窗 > 点「深色」⇒ PATCH 一档 + 根元素 data-theme 变 dark…
+ Test Files  1 failed (1)   Tests  5 failed | 9 passed (14)
+
+# 全绿
+ Test Files  12 passed (12)   Tests  211 passed (211)
+```
+
+真浏览器实测（ego-browser，`python -m alibot --port 8805 --data-dir /tmp/alibot-p2a-302`，
+`http://127.0.0.1:8805/studio/v2/`）：
+
+| 判据 | 读数 |
+| --- | --- |
+| rail 头入口 | `#rail .rail-head` 两枚 `.icon-btn`：`btn-reminders`（`aria-label=提醒`）/ `btn-settings`（`aria-label=设置`）；无提醒时 `#reminderDot` 不存在 |
+| 提醒弹窗骨架 | 点铃铛 ⇒ `#remindersOverlay.hidden=false`、`display: grid`、`.modal.wide` 宽 **560**；焦点落在 `reminder-text`（正文第一个可聚焦件，不是标题行关闭键） |
+| 空态 | `还没有提醒` + `提醒保存在后端，不依赖这台浏览器。`；日期格默认今天 `2026-10-27`、钟点 `09:00` |
+| 新增（无归属） | 填 `喝水` / `2030-03-04` / `07:05` → 点「添加提醒」⇒ 行出现：`喝水` + `state=2030-03-04 07:05`（`data-state=pending`）；正文清空、日期回今天、钟点保留 `07:05`；圆点出现（6px） |
+| 新增**不产生消息** | 页面内包一层 `fetch` 计数 `/messages`：整段新增流程后 `messageRequests = 0`（也没有新的 target / 未读） |
+| 归属频道 | 打开 `#design` 后再新增 ⇒ 行显示 `带频道归属的 · #design`；后端 `channel_id` 落在 `ch_0528efdbdb57` |
+| 删除 + 圆点熄灭 | 两条 → 删一条 `rows=1  dot=true` → 删净 `rows=0  dot=false`，空态回来 |
+| 已错过不亮圆点 | 后端投递器把一条过点提醒标成 `state=missed, fired_at=2026-10-26T23:44:23.236Z`；刷新页面后 `dot=false`，弹窗里那一行后缀是 `已错过`（`data-state=missed`） |
+| 设置弹窗骨架 | 点齿轮 ⇒ `#settingsOverlay.hidden=false`、`display: grid`、宽 **440**（非 wide）；语言下拉 `zh-CN`；五个 `.radio-card` 的 `is-on` / `aria-pressed` 与当前档位一致（舒适 + 跟随系统） |
+| 改主题 | 点「深色」⇒ `document.documentElement.dataset.theme = 'dark'`、`theme-dark` 带 `is-on`/`aria-pressed=true`、`theme-system` 摘掉 `is-on`；弹窗**不关** |
+| 改密度 | 点「紧凑」⇒ `data-density='compact'`；`.msg` 的 `padding` 由 `5px 8px` 变 **`2px 8px`**（切回舒适又是 `5px 8px`），CSS 立即生效 |
+| 切语言 | 选 `English` ⇒ `<html lang='en'>`、`settings-done` 文案变 `Done`、主题组标题变 `Theme`、rail 的铃铛 `title` 变 `Reminders` |
+| 收尾 | 切回 `zh-CN` + 跟随系统 ⇒ `{lang: 'zh-CN', theme: 'system', density: 'comfortable'}` |
+
+截图（`.scratch/v2-p2a/`，已 gitignore）：`issue-302-01-rail-head.png`（rail 头两枚入口、无圆点）、
+`issue-302-02-reminders-empty.png`（`.modal.wide` 560 + 空态 + 日期默认今天）、
+`issue-302-03-reminders-added.png`（新增一行 + 圆点出现）、
+`issue-302-04-reminders-two-rows.png`（第二行带 `· #design` 归属）、
+`issue-302-05-settings-open.png`（设置弹窗 440，选中态）、
+`issue-302-06-settings-dark.png`（改为深色后根元素与选中态同步，弹窗不关）、
+`issue-302-07-settings-en.png`（切英文后整页文案与 `<html lang>`）、
+`issue-302-08-reminders-emptied.png`（删净后圆点熄灭）、
+`issue-302-09-reminder-missed.png`（`state=missed` 的行 + 圆点不亮）。
+
+**本轮的已知边界**：
+
+- **旧页面目录一个字没动**：`app/alibot/studio/app.js` / `index.html` 零改动；`i18n.js` 与 `app.css` 也没动——
+  提醒与设置的词条（`reminder.*` / `settings.*`）与类名（`.reminder-row` / `.icon-btn .dot` /
+  `.radio-card` / `.modal.wide`）早就为这个面定义好了，v2 只是把它们用在同一个落点上。
+- **频道配置 / 预算 / 名册三张弹窗仍归它们自己的票**：`ModalShell` 已经是共享外壳，那三张只需写内容。
+- **提醒的到点投递仍由后端负责**：前端不比对时钟、不轮询；`state` 与 `fired_at` 都是后端派生的只读值。
+### 阶段 A · 票 #301：新建频道 / 新建 Agent / 新建私信表单（读数）
+
+本票让 v2 的**空工作台有出路**：`btn-new-channel` / `btn-new-agent` 从「可见但禁用」翻正，
+三个新建对象（频道 / Agent / 私信）都接到后端既有写面上。外壳**没有**新造：两张表单的内容
+套在 #300 的 `ModalShell` 里（ADR-0038 §五「弹窗的外壳与关闭语义只有一份」）。
+
+| 判据 | 落点 | 说明 |
+| --- | --- | --- |
+| 新建频道表单 | `components/ChannelFormModal.vue` | 字段与旧页面逐字一致（名称 / 描述 / 初始成员胶囊）；类名与 `data-od-id` 沿用 `#channelOverlay` / `.member-pick` / `#channelFormError` / `btn-create-channel`；提交 `POST /api/channels` |
+| 新建 Agent 表单 | `components/AgentFormModal.vue` | 名称 / 角色 / 提供商选择器 / 模型名 / 系统提示；`model_id = provider + ':' + model`；提交 `POST /api/agents`；提供商清单仍取 `/api/workspace` 的 `model_providers`（不留第二份常量表） |
+| 远端数据流告知块 | 同一个 `AgentFormModal.vue` | **票面没写但必须做**（见下面「关键设计决定」）：当前 provider 是远端且未确认时显示，正文用 `GET /api/remote-data-flow` 的 `data_faces` 拼，确认走幂等的 `POST /api/remote-data-flow/ack` |
+| 新建私信 | `RailSidebar.vue` 的 Agent 行 + `App.vue` 的 `openAgentRow()` | 幂等 `POST /api/dms {agent_id}`；`created` 决定「已创建」还是「已打开」的说法 |
+| rail 的 Agent 行换回可点 | `RailSidebar.vue` 的 `#memberList` | 由**一个** switch 裁决：prop `agentDetailAvailable`（默认 `false`）关 ⇒ 打开私信，开 ⇒ 打开详情（详情面归 T10，本票只留判据） |
+| 在途重复提交不产生两个对象 | 两张表单各自的 `busy` + `ModalShell` 的 `busy` | 提交键禁用 + `ModalShell` 挡掉 ESC / 遮罩 / 关闭键；用例断言「连点三次只发一次 POST」 |
+| 错误留在弹窗内 | 两处 `#channelFormError` / `#agentFormError` | 不关弹窗、不吞错、人填的内容不丢；按钮退出 busy 可重试 |
+| 建完自动切过去 | `App.vue` 的 `submitChannel()` → `selectTarget()` | `selectTarget` 是进入一个 target 的**唯一**入口，因此这条接线只能在 App 里（旧页面 `submitChannel` 同一条） |
+| 建完 Agent 出现在 rail | `stores/workspace.js` 的 `createAgent()` | 响应回带整份 `agents` 与 `members`，落到镜像即可（列表正本在后端，前端不拼） |
+
+**「至少一条从真实父组件进」是哪一条**：本票的接线判据几乎全部从 `App.vue` 进
+（`tests/create-forms.test.js` 里 19 条用例中 15 条经 `mount(App, { attachTo: document.body })`），
+只有「Agent 行点击语义由开关裁决」那一条直挂 `RailSidebar`（因为那段判据的输入正是 rail 的 prop，
+不需要 App 的 store）。理由：`selectTarget`、`busy`、「建完谁出现在 rail 里」这三件事都由 App 裁决，
+直挂叶子组件只能证明「表单自己长对了」，证明不了接线——阶段一实测漏过 `DockPanel` 的 `pools` 传递，
+就是只看叶子组件的代价。**「建频道后当前选中切过去」这一条明确从 `App.vue` 进**
+（`新建频道：建完就在 rail 里、并自动切过去 › 提交成功后：rail 名单出现新频道且它成了当前行`），
+它断言的是 `#chanTitle` 变成新频道名 + 新行带 `is-active`，而不是表单自己发了什么事件。
+
+#### 关键设计决定：为什么新建 Agent 弹窗里保留了「远端数据流告知块」
+
+票面只写「字段与旧页面一致；提交 `POST /api/agents`」，没提告知块。**做它，是因为不做会打破票面
+自己的验收项**：后端 `model_providers` 的首项是 `dashscope`（远端），而 `orchestration.availability()`
+对「远端 provider 且 `remote_consent` 里没有这一行」的 Agent 一律判「未启用」。也就是说
+**默认选择下建出来的 Agent 恒为「未启用」，而界面上没有任何一句解释为什么**——「建 Agent 后 rail 的
+成员名单出现新 Agent」这条验收项表面上成立了（行出现了），实际是「出现了但永远哑掉」。
+
+这不是「顺手多做一块 UI」，而是「写了却发不出去的对象」这条纪律的另一面（ADR-0038 §五
+「不放按下去什么都不发生的入口」）。落点的三条边界：
+
+- **只做创建弹窗里那一块**。Agent 详情页的同一确认面（`agentDetail.*`）归 T10，本票不搬。
+- **复用既有词条与既有端点**：`agent.remoteTitle` / `remoteBody` / `remoteHint` / `remoteConfirm`、
+  `GET /api/remote-data-flow`、`POST /api/remote-data-flow/ack`；不改后端，不新增 schema。
+- **读不到就不编**：`data_faces` 读不到时正文换成新词条 `agent.remoteBodyUnavailable`，
+  确认键不可点——不能把一个还没读到的空集合说成「没有数据会离开本机」，也不能渲染成空确认框。
+
+#### 红 → 绿（原文）
+
+**红 #1**（第一刀：rail 两个按钮翻正 + 新建频道表单从 `App.vue` 进；实现尚未落地）
+```
+ FAIL  tests/create-forms.test.js > 空库的出路：两个新建入口可用 > 点「新建频道」⇒ 弹窗打开，焦点落在名称输入框（正文第一个可聚焦件）
+AssertionError: expected false to be true // Object.is equality
+- Expected
++ Received
+- true
++ false
+ ❯ tests/create-forms.test.js:142:30
+    142|     expect(overlay.exists()).toBe(true);
+
+ FAIL  tests/create-forms.test.js > 空库的出路：两个新建入口可用 > 关掉再打开：上一次填的内容不残留（旧页面 openChannelModal 同一条）
+Error: Cannot call setValue on an empty DOMWrapper.
+ ❯ tests/create-forms.test.js:153:44
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+```
+
+**红 #2**（第二刀：远端告知块的确认在重复点击下发了两次；以及我自己写错的一条测试夹具）
+```
+ FAIL  tests/create-forms.test.js > 远端数据流告知块（建完不可用的挡板） > 点确认 ⇒ 只发一次 ack、弹窗不关、告知块消失
+AssertionError: expected [ { …(3) }, { …(3) } ] to have a length of 1 but got 2
+- Expected
++ Received
+- 1
++ 2
+ ❯ tests/create-forms.test.js:493:8
+
+ FAIL  tests/create-forms.test.js > rail 的 Agent 行：关着详情开关时打开私信 > 已有私信时用「已打开」而不是「已创建」的说法（后端 `created` 决定）
+AssertionError: expected '已打开与 Bob 的现有私信。' to contain '已打开与 Ada 的现有私信'
+ ❯ tests/create-forms.test.js:555:62
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 17 passed (19)
+```
+（第一条是真缺陷：`emit('acknowledge', …)` **没有返回值**，组件 `await` 不到后端往返，于是
+`ackBusy` 在同一个微任务里就被复位，连点两次发两次。修法是把确认改成与 `submit` 同形的
+**prop 回调**（`props.acknowledge(provider)` 返回 promise），复用 `busy` 那一套。
+第二条是我的夹具把 `dm.peer` 写成了 Bob 却断言 Ada——夹具修正，不是产品缺陷。）
+
+**红 #3**（构建产物新鲜度守卫，改了 `src/` 还没构建）
+```
+ FAIL  tests/build-guard.test.js > 构建产物 > 源码没变时指纹一致（改了 src/ 就要重新构建并提交产物）
+AssertionError: expected [ 'index.html', …(35) ] to deeply equal [ 'index.html', …(33) ]
+    "src/app-context.js",
++   "src/components/AgentFormModal.vue",
+    "src/components/AttachmentChip.vue",
++   "src/components/ChannelFormModal.vue",
+    "src/components/ChannelHeader.vue",
+```
+
+**绿**
+```
+ ✓ tests/create-forms.test.js (19 tests)
+ Test Files  12 passed (12)
+      Tests  216 passed (216)
+```
+（构建后 `build-guard.test.js` 由红转绿；`tests/components.test.js` 里两条守「禁用 + `is-static`」的
+旧断言同步改写成新契约——不改就没有意义地红，而那条契约本来就是本票要翻的。）
+
+#### 门禁读数
+
+```
+npx vitest run（app/frontend）     12 files / 216 passed（新增 tests/create-forms.test.js 19 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+scripts/check.sh --fast            exit 0（ruff / ruff format --check / mypy / pyright 干净）
+```
+
+#### 真浏览器实测（ego-browser，`python -m alibot --port 8804 --data-dir /tmp/alibot-p2a-301`，空库启动）
+
+| 票面验收项 | 读数 | 截图 |
+| --- | --- | --- |
+| `btn-new-channel` / `btn-new-agent` 都可点 | 两个按钮 `disabled: false`；`title` 分别是 `null` / `"新建 Agent"`（`app.notMigrated` 已不在任何一个上，页面 `innerText` 里也搜不到） | `issue-301-01-new-channel-empty.png` |
+| 建频道后 rail 出现新频道且**当前选中**已切过去 | `#channelList` → `[{id: ch_3a6d21b41a0a, text: "#design", active: true, ariaCurrent: "true"}]`；`#chanTitle` = `design`、`#chanDesc` = `设计频道`；placeholder 换成 `发消息到 #design —— 输入 @ 提及 Agent`；toast「已创建频道 #design，可以直接发送第一条消息。」 | `issue-301-02-channel-created-active.png` |
+| 建 Agent 后 rail 成员名单出现新 Agent | ack 后 `overlayStillOpen: true`（弹窗不关）+ `noticeGone: true` + toast「已记录数据流告知确认：dashscope。」；建完 `#memberList` → `[{id: mem_ce4d8e354187, tag: BUTTON, text: "AAda", label: "打开与 Ada 的私信", presence: "offline"}]`，弹窗 `hidden: true` | `issue-301-04-agent-created-in-rail.png` |
+| 远端告知块（票面没要求、本票的补充裁定） | 打开弹窗即 `noticeVisible: true`；标题「启用 DashScope（远端） 前需要你确认一次」、正文「…消息正文、发送者显示名、频道名称与描述、被点名成员的显示名…」、`ackDisabled: false`；provider 选项 11 个且默认 `dashscope` | `issue-301-03-new-agent-remote-notice.png` |
+| 点 rail 的 Agent 行（`agentDetailAvailable` 关）⇒ 出现/切到私信 | **部分取到**：行本身 `tag: BUTTON`、`is-static: false`、`aria-label: "打开与 Ada 的私信"`（只读行确实换回了可点按钮）；点击后后端 `GET /api/workspace` 的 `dms` 里确实多了 `('dm_1731dc07edbe', 'Ada')`（写路径落地），但**那一帧的界面切换没读到**——截图里 `#chanTitle` 仍是 `design`、`#dmList` 仍为空 | `issue-301-05-dm-opened-from-rail.png`（**反面证据**，见下） |
+| 提交失败：弹窗不关、错误可见、按钮可重试 / 在途重复提交只发一次 | 只有 Vitest 读数（`#channelFormError` / `#agentFormError` 断言 + 连点三次只 1 次 POST），**未取到浏览器读数** | — |
+
+截图（`.scratch/v2-p2a/`，已 gitignore）：`issue-301-01-new-channel-empty.png`、
+`issue-301-02-channel-created-active.png`、`issue-301-03-new-agent-remote-notice.png`、
+`issue-301-04-agent-created-in-rail.png`、`issue-301-05-dm-opened-from-rail.png`。
+
+#### 本轮的已知边界
+
+- **浏览器那轮被环境打断，不是实现问题**：验收进行到「点 Agent 行开私信」时，此前反复 `goto`
+  留下的十几条 SSE 长连接把 Chrome 每主机 6 连接的上限占满，`page.goto` 开始 `document.readyState`
+  永远停在 `loading`（静态与接口用 `curl` 单独探都正常：`/studio/v2/` 200、`/api/workspace` 200）。
+  重启后端仍未清干净，随后撞上 30 分钟硬超时。因此**「私信出现/切到」与「提交失败留在弹窗内」
+  两条只有用例读数**，其中前者另有「后端确实建出了 `dm_1731dc07edbe`」这条旁证。
+  复验办法：干净起一台后端、只开一个页面，点 Agent 行后读 `#chanTitle` 应为 `@Ada`、`#dmList`
+  出现该行且带 `is-active`（用例 `点 Agent 行 ⇒ 发一次幂等的 POST /api/dms {agent_id} 并切到该私信`
+  断言的就是这一组 DOM）。
+- **Agent 详情面仍归 T10**：`agentDetailAvailable` 只是把开关与两段语义摆好（开 ⇒ 详情、关 ⇒ 私信），
+  详情本身一行没写。T10 落地时**只翻这个 prop 的默认值**，不改 `RailSidebar.vue` 里那段点击逻辑。
+- **私信的去重口径**：`POST /api/dms` 幂等（后端 `created` 区分），因此重复点同一个 Agent 行不会
+  建出第二条私信——这一点由后端的幂等保证，前端不另加去重表。
+
 ### 阶段 A · 票 #303：频道头三工具——名册 / 频道配置 / 回应预算（读数）
 
 本票把频道头的三个入口背后的面一起迁到 v2，然后把 `channelToolsAvailable` 翻成 `true`。
@@ -414,6 +647,14 @@ Vitest                  12 files / 215 passed（新增 tests/channel-tools.test.
 `issue-303-02-roster-joined.png`（加入后 Bob 挪段，toast）、`issue-303-03-mention-after-join.png`（`@` 候选含新成员）、
 `issue-303-04-config-autonomous.png`（配置弹窗首开）、`issue-303-05-config-team.png`（team 两条提示）、
 `issue-303-06-config-rejected.png`（后端 400 + 弹窗未关 + 错误行）、`issue-303-07-budget.png`（四项读数 + 待生效 5 + toast）。
+
+**合并集成分支时解掉的一处用例冲突**：#301 把两张新建表单（`ChannelFormModal` / `AgentFormModal`）
+也挂到了 `App.vue` 上，它们各带一个 `textarea`（`#channelDescInput` / `#agentPromptInput`）。本票那条
+「加入后 `@` 补全立刻能选到它」原来用 `wrapper.find('textarea')` 取 composer 输入框，合并后它会先命中
+新建频道表单里那个（同在 `document.body` 上），于是 `@` 敲进了一个不相关的输入框、清单不弹。
+修法是把选择器收窄成 composer 自己的 `[data-od-id="composer-input"]`——**产品行为没有变**，
+变的是用例选取哪个 `textarea`。这条也说明「从真实父组件进」的用例要按**自己的落点**选取元素，
+不要依赖「页面上只有一个 `textarea`」这种全局假设。
 
 **本轮的已知边界**
 

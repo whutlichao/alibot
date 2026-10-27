@@ -268,7 +268,9 @@ describe('成员名册（弹窗）', () => {
     await flush();
     expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(false);
 
-    const textarea = wrapper.find('textarea');
+    // 合并 #301 之后页面里还有两张表单的 `textarea`（`#channelDescInput` / `#agentPromptInput`）：
+    // 这里要的是 composer 那个，按它自己的 `data-od-id` 取（`unshift` 到选择器最前的一条）。
+    const textarea = wrapper.find('[data-od-id="composer-input"]');
     await textarea.setValue('@');
     await textarea.trigger('input');
     expect(wrapper.find('[data-od-id="mention-option-mem-2"]').exists()).toBe(true);
