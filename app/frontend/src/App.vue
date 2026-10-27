@@ -10,6 +10,8 @@
      四态状态点都按名字消费，因此视觉上两版页面是同一个产品，不是一个新皮肤。 -->
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import AgentFormModal from './components/AgentFormModal.vue';
+import ChannelFormModal from './components/ChannelFormModal.vue';
 import ChannelHeader from './components/ChannelHeader.vue';
 import ComposerBox from './components/ComposerBox.vue';
 import DockPanel from './components/DockPanel.vue';
@@ -46,6 +48,9 @@ const activeTab = ref('messages');
 // rail 头两个弹窗的显隐（内容仍挂载、只用 `hidden` 隐去，见 `ModalShell.vue` 文件头）。
 const remindersOpen = ref(false);
 const settingsOpen = ref(false);
+// 两张新建表单的显隐（#301）。关掉时值仍留着上一次的"关"，表单自己负责开时清空。
+const channelFormOpen = ref(false);
+const agentFormOpen = ref(false);
 // 折叠态（摘要行 / 旁白行）按 **seq** 认，跨 target 不通用：切 target 时必须整体清掉，
 // 否则「在 A 频道展开过的第 3 条」到了 B 频道会莫名展开。这个状态住在模块级（见 ui-state.js），
 // 因此清理的落点只有这一处。
@@ -105,6 +110,72 @@ async function send(text) {
     return;
   }
   if (stream.value) stream.value.scrollToBottom();
+}
+
+/** Agent 详情面是否已迁到本版：T10 的开关（默认关 ⇒ rail 的 Agent 行是"打开私信"）。 */
+const agentDetailAvailable = ref(false);
+
+/** 新建频道弹窗的候选人：本机全名单里的 Agent（新频道里本来就没有成员，不按频道过滤）。 */
+const agentRoster = computed(() => state.members.filter((member) => member.kind === 'agent'));
+
+/** 新建表单的提交动作都留在这里：它们需要 `selectTarget` 与 toast，而那是 App 的职责。 */
+async function submitChannel(fields) {
+  const payload = await store.createChannel(fields);
+  // 与旧页面同一条：新频道立刻成为当前 target（`selectTarget` 是进入一个 target 的唯一入口）。
+  await selectTarget(payload.channel.id);
+  toasts.push(t('toast.channelCreated', { name: payload.channel.name }));
+  // 弹窗自己关闭（`created` 之后）；这里只负责"切过去"与告知。
+  return payload;
+}
+
+async function submitAgent(fields) {
+  const payload = await store.createAgent(fields);
+  toasts.push(t('toast.agentCreated', { name: payload.agent.display_name }));
+  return payload;
+}
+
+/**
+ * 确认远端数据流告知（弹窗里那一块）。
+ *
+ * 确认会改变成员的启用态，因此成功后要按后端重读：`consents` 与 `agents` 两件都变了，
+ * 而 agent 行的状态点只读后端事实（不在前端推导"确认过了所以现在能跑了"）。
+ * 弹窗**不关**：人还要继续填表单。
+ */
+async function acknowledgeRemote(provider) {
+  try {
+    await store.acknowledgeRemoteFlow(provider);
+    await store.refreshStatuses();
+    toasts.push(t('toast.remoteAck', { provider }));
+  } catch (err) {
+    // 失败不吞也不叠两层提示：弹窗里那一块自己就地显示原因（这正是人在看的地方）。
+    throw err;
+  }
+}
+
+/**
+ * rail 的 Agent 行：`agentDetailAvailable` 开 ⇒ 进详情（归 T10），关 ⇒ 打开与它的私信。
+ *
+ * 关着的那一支走幂等的 `POST /api/dms {agent_id}`（旧页面同一条，`app.js:5184-5215`）：
+ * 选中一个成员就同时表达了"和谁私信"，不需要先选目标再点创建的两步弹窗。
+ */
+async function openAgentRow(memberId) {
+  if (agentDetailAvailable.value) {
+    // Agent 详情整面归 T10：本票不摆一个"开了也没处去"的入口。
+    return;
+  }
+  try {
+    const payload = await store.openDm(memberId);
+    // `selectTarget` 会按新 target 重读消息 / 轮次结果 / 成员；私信下 dock 一档都不出现。
+    await selectTarget(payload.dm.id);
+    if (!state.online) return;
+    toasts.push(
+      payload.created
+        ? t('toast.dmCreated', { name: payload.dm.peer.display_name })
+        : t('toast.dmOpened', { name: payload.dm.peer.display_name }),
+    );
+  } catch (err) {
+    toasts.push(t('toast.dmOpenFailed', { reason: err.message }), 'err');
+  }
 }
 
 async function ensureMentionCandidates() {
@@ -220,9 +291,30 @@ function onEscape(event) {
       :state="state"
       :open="railOpen"
       :reminder-pending="reminderPending"
+      :agent-detail-available="agentDetailAvailable"
       @select-target="selectTarget"
       @open-reminders="remindersOpen = true"
       @open-settings="settingsOpen = true"
+      @new-channel="channelFormOpen = true"
+      @new-agent="agentFormOpen = true"
+      @open-agent="openAgentRow"
+      @open-dm="openAgentRow"
+    />
+
+    <ChannelFormModal
+      v-model:open="channelFormOpen"
+      :agents="agentRoster"
+      :submit="submitChannel"
+    />
+    <AgentFormModal
+      v-model:open="agentFormOpen"
+      :providers="state.providers"
+      :local-providers="state.localProviders"
+      :consents="state.consents"
+      :data-faces="state.dataFaces"
+      :submit="submitAgent"
+      :acknowledge="acknowledgeRemote"
+      @reload-remote-flow="store.loadRemoteFlow()"
     />
 
     <main class="main" id="mainColumn" data-od-id="main-column">

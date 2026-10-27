@@ -323,25 +323,41 @@ describe('未迁面的入口', () => {
     expect(head.find('#reminderDot').exists()).toBe(false);
   });
 
-  test('左栏：新建频道 / 新建 Agent 保留但**禁用**，理由写在 title 里（空库的唯一出路不能一起消失）', () => {
+  test('左栏：新建频道 / 新建 Agent 可用（票 #301 已把两张表单迁过来，不再置禁用理由）', () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
     for (const id of ['btn-new-channel', 'btn-new-agent']) {
       const button = wrapper.find(`[data-od-id="${id}"]`);
       expect(button.exists(), id).toBe(true);
-      expect(button.attributes('disabled'), id).toBeDefined();
-      expect(button.attributes('title'), id).toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
+      expect(button.attributes('disabled'), id).toBeUndefined();
+      expect(button.attributes('title'), id).not.toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
     }
   });
 
-  test('左栏：本机 Agent 行是**读数**不是按钮（详情面未迁，点了也没有去处）', () => {
+  test('左栏：点两个新建按钮各发一个事件（弹窗由父组件挂，rail 不自己开）', async () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
-    const row = wrapper.find('[data-od-id="agent-mem-1"]');
-    expect(row.exists()).toBe(true);
-    expect(row.element.tagName).toBe('DIV');
-    expect(row.attributes('type')).toBeUndefined();
-    // 只读行取消 hover 高亮：`app.css` 的 `.nav-row.is-static` 是它的样式落点。
-    expect(row.classes()).toContain('is-static');
-    expect(mount(RailSidebar, { props: { state: emptyState() } }).classes()).not.toContain('is-static');
+    await wrapper.find('[data-od-id="btn-new-channel"]').trigger('click');
+    await wrapper.find('[data-od-id="btn-new-agent"]').trigger('click');
+    expect(wrapper.emitted('new-channel')).toHaveLength(1);
+    expect(wrapper.emitted('new-agent')).toHaveLength(1);
+  });
+
+  test('左栏：本机 Agent 行可点，点击语义由一个开关裁决（`agentDetailAvailable`）', async () => {
+    const off = mount(RailSidebar, { props: { state: emptyState() } });
+    const row = off.find('[data-od-id="agent-mem-1"]');
+    expect(row.element.tagName).toBe('BUTTON');
+    expect(row.classes()).toContain('nav-row');
+    expect(row.attributes('type')).toBe('button');
+    expect(row.attributes('aria-label')).toBe('打开与 Ada 的私信');
+    await row.trigger('click');
+    expect(off.emitted('open-dm')).toEqual([['mem-1']]);
+    expect(off.emitted('open-agent')).toBeUndefined();
+
+    const on = mount(RailSidebar, { props: { state: emptyState(), agentDetailAvailable: true } });
+    const labelled = on.find('[data-od-id="agent-mem-1"]');
+    expect(labelled.attributes('aria-label')).toBe('查看 Ada 的详情');
+    await labelled.trigger('click');
+    expect(on.emitted('open-agent')).toEqual([['mem-1']]);
+    expect(on.emitted('open-dm')).toBeUndefined();
   });
 });
 
