@@ -523,7 +523,7 @@ describe('⌘K 命令面板', () => {
     expect(wrapper.find('[data-od-id="cmd-list"]').exists()).toBe(true);
   });
 
-  test('命令集：跳转 + 动作 + 动态频道组；未迁面的两条是禁用条目（不是假入口）', async () => {
+  test('命令集：跳转 + 动作 + 动态频道组；未迁面的那条是禁用条目（不是假入口）', async () => {
     const server = createServer({ channels: [channel(), channel({ id: 'ch-2', name: 'ops' })] });
     const { wrapper } = await mountApp(server);
     await press('k', { metaKey: true });
@@ -543,12 +543,14 @@ describe('⌘K 命令面板', () => {
     const groups = wrapper.findAll('[data-od-id="cmd-list"] .cmd-group').map((node) => node.text());
     expect(groups).toEqual(['跳转', '动作', '频道']);
 
-    // 任务看板（T6）与新建任务（T7）还没迁 ⇒ 禁用 + `app.notMigrated` 的 title。
-    for (const id of ['view-board', 'new-task']) {
-      const item = wrapper.find(`[data-cmd="${id}"]`);
-      expect(item.attributes('disabled'), id).toBeDefined();
-      expect(item.attributes('title'), id).toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
-    }
+    // 任务看板随票 #306 迁完 ⇒ `view-board` 是**真入口**（`T` 键同一条落点），
+    // 不再是禁用条目。新建任务（T7）还没迁 ⇒ 仍然禁用 + `app.notMigrated` 的 title。
+    const board = wrapper.find('[data-cmd="view-board"]');
+    expect(board.attributes('disabled')).toBeUndefined();
+    expect(board.attributes('title')).toBeUndefined();
+    const newTask = wrapper.find('[data-cmd="new-task"]');
+    expect(newTask.attributes('disabled')).toBeDefined();
+    expect(newTask.attributes('title')).toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
     for (const id of ['view-messages', 'new-channel', 'toggle-dock']) {
       expect(wrapper.find(`[data-cmd="${id}"]`).attributes('disabled'), id).toBeUndefined();
     }
@@ -615,8 +617,8 @@ describe('⌘K 命令面板', () => {
   test('Enter 跑第一条**可执行的**命令：禁用条目占着头位时不吞掉一次回车', async () => {
     const { wrapper } = await mountApp();
     await press('k', { metaKey: true });
-    // 筛到只剩「任务看板」（禁用）：回车什么都不发生，面板留着。
-    await wrapper.find('[data-od-id="cmd-input"]').setValue('任务看板');
+    // 筛到只剩「新建任务」（T7 前仍是禁用）：回车什么都不发生，面板留着。
+    await wrapper.find('[data-od-id="cmd-input"]').setValue('新建任务');
     await flush();
     await wrapper.find('[data-od-id="cmd-input"]').trigger('keydown', { key: 'Enter' });
     await flush();

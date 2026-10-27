@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "1aec300f1ecf4348a95760e8a1faf564866b8f9885aaaa97684c235bd9e925f9",
+  "sourceDigest": "5cdf93a54e7a54577fc8d3be20c074ea8a8ddd9c93c522b1c7b89d77bf924107",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
@@ -30,6 +30,8 @@
     "src/components/RunPanel.vue",
     "src/components/SearchView.vue",
     "src/components/SettingsModal.vue",
+    "src/components/TaskBoard.vue",
+    "src/components/TaskCard.vue",
     "src/i18n/index.js",
     "src/lib/api.js",
     "src/lib/attachments.js",
@@ -43,10 +45,12 @@
     "src/lib/run-panel.js",
     "src/lib/search.js",
     "src/lib/target-view.js",
+    "src/lib/task-board.js",
     "src/main.js",
     "src/stores/reminders.js",
     "src/stores/run-panel.js",
     "src/stores/search.js",
+    "src/stores/task-board.js",
     "src/stores/ui-state.js",
     "src/stores/workspace.js",
     "vite.config.js"
