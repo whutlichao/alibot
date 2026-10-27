@@ -6,11 +6,12 @@
      形态是**推导**出来的，不另存一份状态：`dockTarget` 由父组件给（`{ kind: 'run' | 'members' |
      'task' }`），`null` ⇒ 整栏不渲染。于是「关掉了但 dock 还停在旧形态」这类漂移在构造上不存在。
 
-     本票只把**第三档**（运行面板）接到真内容上：成员面板与任务线程的子树分别归 T3 与 T7，
-     这里先留 `<slot name="members">` / `<slot name="task">` 两个空占位——形态判据与几何
-     （宽 380 / `.dock.is-open` / ≤900px 右抽屉）本票就要立起来，否则那两张票各自还得再改一遍
-     这个外壳。空占位**不会**出现在产品里：`App.vue` 目前只会把 `kind` 写成 `'run'`
-     （另外两档没有任何调用点），私信下 `dockTarget` 恒为 `null`。
+     两档已接到真内容上：`run` ⇒ `RunPanel.vue`（票 #300 + 阶段一），`task` ⇒ `TaskThread.vue`
+     （票 #307）。`members` 档仍是具名插槽——成员面在 v2 走的是弹窗（`RosterModal.vue`），
+     这一档至今没有调用点，保留插槽只是为了让形态判据完整。
+
+     线程的读数与写路径都在 `stores/task-thread.js`：外壳只把 props 往下递、把两个动作往上抛
+     （关面板 / 开任务运行面板），不自己判「能不能推进」「能不能指派」。
 
      ≤900px 下它是右抽屉（`app.css` 的 `.dock.is-open` / `.dock[hidden]` 两条规则）：`hidden` 的语义
      被改写成「离屏 + 不可见」，`.is-open` 决定滑入。`.dock-close` 是这个抽屉**自己的**出口
@@ -18,6 +19,7 @@
 <script setup>
 import { computed } from 'vue';
 import RunPanel from './RunPanel.vue';
+import TaskThread from './TaskThread.vue';
 import { t } from '../i18n/index.js';
 
 const props = defineProps({
@@ -32,15 +34,28 @@ const props = defineProps({
   pools: { type: Array, default: () => [] },
   // 抽屉形态（≤900px）：由 App.vue 决定开合，与 `hidden` 同进同出。
   open: { type: Boolean, default: false },
+  // ─── 任务线程（`kind === 'task'`）的读数与写路径 ───────────────────────────
+  thread: { type: Object, default: null },
+  threadMembers: { type: Array, default: () => [] },
+  threadAssignees: { type: Array, default: null },
+  threadAssigneesFailed: { type: Boolean, default: false },
+  threadChannelMode: { type: String, default: null },
+  online: { type: Boolean, default: true },
 });
 
-const emit = defineEmits(['close']);
+const emit = defineEmits(['close', 'open-run-panel']);
 
-/** 当前形态：由 `dockTarget` 推导。`run` 那一档没有 store 就没有内容可铺，按「没有形态」处理。 */
+/**
+ * 当前形态：由 `dockTarget` 推导。
+ *
+ * 两种「有形态但没有内容」要按没有形态处理：`run` 缺 store、`task` 缺 thread——否则人会看到
+ * 一个空壳 dock，而它既不是运行面板也不是任务线程。
+ */
 const mode = computed(() => {
   const target = props.dockTarget;
   if (!target || !target.kind) return null;
   if (target.kind === 'run' && !props.panel) return null;
+  if (target.kind === 'task' && !props.thread) return null;
   return target.kind;
 });
 </script>
@@ -60,8 +75,18 @@ const mode = computed(() => {
       :pools="pools"
       @close="emit('close')"
     />
-    <!-- 频道成员面板（T3）与任务线程（T7）的落点：内容归那两张票，形态与几何归本票。 -->
+    <TaskThread
+      v-else-if="mode === 'task'"
+      :thread="thread"
+      :members="threadMembers"
+      :assignees="threadAssignees"
+      :assignees-failed="threadAssigneesFailed"
+      :channel-mode="threadChannelMode"
+      :online="online"
+      @close="emit('close')"
+      @open-run-panel="emit('open-run-panel')"
+    />
+    <!-- 频道成员面板（T3）的落点：成员面在 v2 走弹窗，这一档至今没有调用点。 -->
     <slot v-else-if="mode === 'members'" name="members" />
-    <slot v-else-if="mode === 'task'" name="task" />
   </aside>
 </template>

@@ -590,6 +590,23 @@ export function createWorkspaceStore(options) {
   }
 
   /**
+   * 新建任务（`POST /api/channels/{id}/tasks`）。
+   *
+   * 响应回带任务行**与**频道流里那条 `system` 指针消息（#198，同一事务）：后者按「到达的消息」
+   * 吸收，于是当前频道的消息流立刻出现该行（system 不计未读，页签读数不变）。任务行本身由调用方
+   * 补进它自己的快照（看板 / 线程各一份）。
+   */
+  async function createTask(channelId, title) {
+    const payload = await api(channelPath(channelId, '/tasks'), {
+      method: 'POST',
+      body: { title: String(title == null ? '' : title).trim() },
+    });
+    state.online = true;
+    if (payload && payload.message) absorbMessage(channelId, payload.message);
+    return payload;
+  }
+
+  /**
    * 新建 Agent。响应回带整份 `agents` 与 `members`，因此 rail 的「本机 Agent」段不需要额外读取。
    * 同样把校验错误抛给调用方（弹窗内呈现），不建半成品成员行。
    */
@@ -723,6 +740,7 @@ export function createWorkspaceStore(options) {
     sendMessage,
     createChannel,
     createAgent,
+    createTask,
     openDm,
     acknowledgeRemoteFlow,
     retryPending,

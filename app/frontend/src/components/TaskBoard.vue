@@ -34,7 +34,7 @@ const props = defineProps({
   state: { type: Object, required: true },
 });
 
-const emit = defineEmits(['open-task']);
+const emit = defineEmits(['open-task', 'new-task']);
 
 const statusOrder = props.board.statusOrder;
 const online = computed(() => Boolean(props.state.online));
@@ -262,14 +262,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
           @click="board.setFilterChannel(channel.id)"
         >#{{ channel.name }}</button>
       </div>
-      <!-- 新建任务表单归 T7（`task` 档与线程一起进来）：这里可见但禁用 + `title` 说明，
-           不摆一个按下去什么都不发生的假入口（ADR-0038 §五）。 -->
+      <!-- 新建任务表单（票 #307）：与命令面板的 `new-task` 打开的是同一张 `TaskFormModal`，
+           因此两个入口一套字段与一条写路径。 -->
       <button
         class="btn btn-sm"
         type="button"
         data-od-id="btn-new-task"
-        disabled
-        :title="t('app.notMigrated')"
+        :disabled="!online"
+        @click="emit('new-task')"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /><path d="M12 5v14" /></svg>
         <span>{{ t('board.newTask') }}</span>

@@ -704,15 +704,16 @@ describe('呈现状态：视图档与筛选', () => {
     expect(wrapper.find('[data-od-id="filter-channel-all"]').classes()).toContain('is-on');
   });
 
-  test('新建任务按钮可见但禁用（表单归 T7，不摆按下去什么都不发生的入口）', async () => {
+  test('新建任务按钮可见且可用（表单随票 #307 迁完，`new-task` 两个入口共用一张表）', async () => {
     const server = createServer();
     const { wrapper } = await mountApp(server);
     await openBoard(wrapper);
     const button = wrapper.find('[data-od-id="btn-new-task"]');
     expect(button.exists()).toBe(true);
     expect(button.classes()).toEqual(expect.arrayContaining(['btn', 'btn-sm']));
-    expect(button.attributes('disabled')).toBeDefined();
-    expect(button.attributes('title')).toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
+    // 在线且已迁完 ⇒ 不再是禁用条目；`title` 也不再是「没迁」的说明。
+    expect(button.attributes('disabled')).toBeUndefined();
+    expect(button.attributes('title')).toBeUndefined();
   });
 });
 
