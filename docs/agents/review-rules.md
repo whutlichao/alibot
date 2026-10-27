@@ -24,7 +24,7 @@
 | 测试不许把 `SCHEMA_VERSION` 钉成历史号 | `app/tests/test_schema_version_pins_guard.py` |
 | 迁移链连续、覆盖到 `SCHEMA_VERSION` | `app/tests/test_migration_chain_guard.py` |
 | 读路径不碰旧表名 | `app/tests/test_read_path_legacy_tables_guard.py` |
-| 两份词条表同键集、无裸中文 | `app/tests/test_backend_copy.py` / `app/tests/i18n_ui.test.cjs` |
+| 两份词条表同键集、无裸中文 | 后端：`app/tests/test_backend_copy.py`；前端正本：`app/frontend/tests/i18n-catalog.test.js` |
 | AgentScope pin / import 白名单 / 1.x 符号 / 文档链接版本 / 快照完整性 | `app/tests/test_agentscope_usage_guard.py` |
 
 ## 判断题规则（reviewer 要逐条对照 diff）

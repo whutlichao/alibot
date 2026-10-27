@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/* 构建产物的**新鲜度指纹**（ADR-0038 §四）
+/* 构建产物的**新鲜度指纹**（ADR-0038 §四 → ADR-0039 §三）
 
-   产物入库（`app/alibot/studio/v2/`）的代价是它会与源码脱节：改了 `src/` 却忘了 `npm run build`，
-   浏览器拿到的仍是旧代码，而所有测试都是绿的（它们测源码）。这条守卫把「脱节」变成可判定的：
+   产物**不再入库**（ADR-0039）：`app/alibot/studio/v2/` 由构建时生成，`scripts/check.sh` 头部、
+   CI 的构建步与 `app/hatch_build.py` 的 hatch hook 三处各自兜住自己那条路径。于是
+
+   产物与源码仍可能脱节（改了 `src/` 却忘了 `npm run build`，浏览器拿到的是旧代码，而源码用例
+   全是绿的——它们测源码）。这条指纹把「脱节」变成可判定的：
 
    - 构建时把「决定产物的那些文件」的内容摘要写进 `v2/build-info.json`；
    - `app/tests/test_studio_v2_build_guard.py` 用**同一套算法**复算，不一致就红。

@@ -264,6 +264,22 @@ npx vitest run（app/frontend）          9 files / 171 passed（新增 tests/ru
 | pytest 只断言外部可观察行为 | **不变**。产物新鲜度判据没有塞进 pytest（曾写过 `test_studio_v2_build_guard.py`，被 `test_test_layering_guard.py` 判红后移到前端用例族） | ADR-0038 §六 |
 | 「DOM 一律 createElement / textContent」 | **不变**，且扩到 Vue：组件里不出现 `v-html`，正文仍由渲染器产出节点树后 `appendChild` | ADR-0038 §二 |
 
+### 迁移期收尾（票 #318 / ADR-0039，2026-10-27）
+
+上表的四条修订**全部仍然有效**（运行时零依赖、不新开第二套前端框架、pytest 只断言外部行为、
+不用 innerHTML）。收尾时被推翻的是 ADR-0038 的**另外两条保险**，它们写在上表之外：
+
+| 被推翻的保险 | 收尾后的状态 | 依据 |
+| --- | --- | --- |
+| 产物**入库**（ADR-0038 §一） | 产物不入库，由 `scripts/check.sh` 头部 / CI 构建步 / `app/hatch_build.py` 三处构建时生成 | ADR-0039 §二 |
+| 旧用例族**保留**（ADR-0038 §四） | 24 个 `*.test.cjs` 与旧页面一起退役，覆盖点逐条映射到 Vitest 族；词条表键集守卫**迁移**成 `app/frontend/tests/i18n-catalog.test.js` | ADR-0039 §四 |
+| 两条入口**并存**（ADR-0038 §五） | 只剩 `/studio/v2/`；`/` 与 `/studio` / `/studio/` 都 redirect，`/studio/app.js` 回 404 | ADR-0039 §一 |
+
+**已迁 / 未迁表的收尾**：迁移期那张表里的「未迁」两项（频道配置里的联网 provider 凭据段、
+频道级审批板）**仍未迁**，但它们不再是「入口并存」的问题——`/studio/v2/` 现在是唯一入口，
+旧页面不存在了，因此这两项从「未迁」变成「v2 尚未提供」，且按既有纪律**不渲染假按钮**
+（不是可见但禁用：它们不是空工作台的出路）。除此之外，原表里的每一条都已迁完。
+
 ### 阶段 A · 票 #300：共享弹窗壳 ModalShell + dock 形态扩到三档（读数）
 
 本票是阶段 A 的 **P0**：先把「弹窗外壳」与「dock 三档形态」抽出来，让 T1–T5 与 ⌘K 只写自己的内容。

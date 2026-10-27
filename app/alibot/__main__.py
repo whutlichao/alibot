@@ -548,7 +548,9 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return DATA_NOT_ACCEPTED_EXIT_CODE
 
-    print(f"alibot 工作台： http://{args.host}:{args.port}/studio/")
+    # 入口是 v2 工作台（`/studio/v2/`，ADR-0039）；`/` 与 `/studio/` 都 redirect 到这里，
+    # 因此把人指向 `/` 也是对的，这里给的是**最直接的那个地址**。
+    print(f"alibot 工作台： http://{args.host}:{args.port}/studio/v2/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
