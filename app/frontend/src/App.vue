@@ -745,6 +745,11 @@ const taskApprovalCount = (taskId) => {
   return task && task.target_id ? approvalCountFor(task.target_id) : 0;
 };
 
+/** 消息流审批块的归属 target（票 #321）：频道 id；私信下为空——旧页面的判据就是
+    `approvalTargetId = state.activeChannelId`，私信下它是 `null`，于是审批块不出现。
+    它不是新开关：仍是同一个 `state.activeTargetId`，只是私信下没有频道归属。 */
+const approvalStreamTarget = computed(() => (isDm.value ? '' : state.activeTargetId || ''));
+
 /** 任务看板已迁到本版（票 #306）：`tab-tasks` 与看板入口因此翻正（ADR-0038 §五的开关）。 */
 const tasksAvailable = ref(true);
 
@@ -958,6 +963,9 @@ function mobileShell() {
         :typing-names="ctx.typingNames.value"
         :task-of="board.taskOf"
         :pending-count-for="approvalCountFor"
+        :approvals="approvals"
+        :approval-target-id="approvalStreamTarget"
+        :online="state.online"
         @retry="retryPending"
         @discard="discardPending"
         @open-task="openTask"
