@@ -951,8 +951,11 @@ toast 的状态点在深色档改用 `--bg`（深色档 toast 反相成浅片）
 `/` 与 `/studio` / `/studio/` 都 redirect 到它；旧页面 `/studio/` 已退役，`/studio/app.js` 回 404。
 v2 页面加载**同一批** `app.css` / `product-tokens.css` / 设计系统 token，并共用同一份 `i18n.js`
 （词条表）与 `markdown.js`（正文渲染器）——因此上面这些 token 名、尺寸与色位只有一处定义。
-未提供面**不做假按钮**：纯导航类的（频道配置里的联网 provider 凭据段、频道级审批板）**整块不渲染**；
+未提供面**不做假按钮**：纯导航类的（频道级审批板）**整块不渲染**；
 空工作台的出路（新建频道 / 新建 Agent）**可见但禁用**，理由写在 `title` 里（词条 `app.notMigrated`）。
+频道设置里的**联网 provider 凭据段**（#320）已补：位置在联网档位卡之后，五行各报掩码 / 是否默认 /
+数据面确认态，写路径是保存 key（`PUT` 带 `api_key`）/ 设为默认（`PUT` **不带** `api_key`）/ 清空
+（`DELETE`，行内二次确认）/ 数据面确认（`POST .../consent`）。
 产物新鲜度是机械判据：`app/frontend/build-info.js` 写源码指纹，`app/frontend/tests/build-guard.test.js`
 复算比对——改了 `app/frontend/src` 没重新 `npm run build`，门禁就红。产物**不入库**（ADR-0039），
 由 `scripts/check.sh` 头部 / CI 构建步 / `app/hatch_build.py` 的 hatch hook 各自在构建时生成。

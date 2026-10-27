@@ -689,6 +689,23 @@ const I18N_CATALOGS = {
     'webProviders.saveFailed': '凭据未保存：{reason}',
     'webProviders.defaultFailed': '默认 provider 未切换：{reason}',
     'webProviders.clearFailed': '凭据未清除：{reason}',
+    /* ─── 凭据段本体（#320）：片段标题 / 掩码行的确认态 / 清空的二次确认 ─────────
+       旧页面把这一段整块放在「联网」区块里（`webAccessSection()`）；v2 沿用同一位置，
+       但把「数据面确认」独立成每行的一格读数 + 一个入口（ADR-0026 §四：未确认就不装配）。 */
+    'webProviders.section': '联网 provider 凭据',
+    'webProviders.sectionHint': '五家各一把 key；读回只有掩码，完整 key 不回到界面。',
+    'webProviders.loading': '正在读取 provider 状态…',
+    'webProviders.consentLabel': '数据面确认',
+    'webProviders.consentPending': '未确认',
+    'webProviders.consented': '已确认',
+    'webProviders.consentUnknown': '暂时读不到确认状态',
+    'webProviders.consentHint': '未确认不会装配带凭据的工具：这家 provider 的工具在确认前不会挂载，也不发任何请求。',
+    'webProviders.consentAction': '确认数据面',
+    'webProviders.consentFailed': '数据面未确认：{reason}',
+    'webProviders.envFallback': '环境变量可兜底',
+    'webProviders.clearConfirm': '清空 {provider} 的凭据？',
+    'webProviders.clearConfirmHint': '清空后这把 key 与默认标记一起消失；数据面确认行保留。',
+    'webProviders.clearCancel': '不清空',
 
     /* ─── 资源管理（#156 / 规格 §4.6）：Workspace 状态 / MCP / Skill ───────────
        MCP 只出现**变量名**（`mcp.envNames*`）；变量值没有词条，也没有输入口。 */
@@ -1557,6 +1574,22 @@ const I18N_CATALOGS = {
     'webProviders.saveFailed': 'Credential not saved: {reason}',
     'webProviders.defaultFailed': 'Default provider not switched: {reason}',
     'webProviders.clearFailed': 'Credential not cleared: {reason}',
+    'webProviders.section': 'Web provider credentials',
+    'webProviders.sectionHint': 'One key per provider; reads come back masked, and the full key never returns to the UI.',
+    'webProviders.loading': 'Reading provider status…',
+    'webProviders.consentLabel': 'Data-plane acknowledgement',
+    'webProviders.consentPending': 'Not acknowledged',
+    'webProviders.consented': 'Acknowledged',
+    'webProviders.consentUnknown': 'Could not read the acknowledgement state',
+    'webProviders.consentHint':
+      'Without the acknowledgement the credentialed tools are not mounted: nothing is mounted and no request is made before you acknowledge.',
+    'webProviders.consentAction': 'Acknowledge data plane',
+    'webProviders.consentFailed': 'Data plane not acknowledged: {reason}',
+    'webProviders.envFallback': 'An environment variable can stand in',
+    'webProviders.clearConfirm': 'Clear the credential for {provider}?',
+    'webProviders.clearConfirmHint':
+      'Clearing drops the key and the default flag together; the acknowledgement row stays.',
+    'webProviders.clearCancel': 'Keep it',
 
     /* ─── Resource management (#156 / spec §4.6): workspace status / MCP / Skill ──
        MCP shows **variable names only** (`mcp.envNames*`); there is no catalog entry
