@@ -32,6 +32,9 @@ const props = defineProps({
   board: { type: Object, required: true },
   // 工作台镜像里看板要读的三样：在线读数、成员（owner 名）、频道（筛选 chip）。
   state: { type: Object, required: true },
+  // 待审批条数的读法（票 #308）：`(taskId) => number`。由 `App.vue` 从 `stores/approvals.js`
+  // 那一份镜像派生后往下传——卡片与列表行不自己读、不自己算（与审批卡 / 页签圆点同一个读数）。
+  approvalCount: { type: Function, default: () => () => 0 },
 });
 
 const emit = defineEmits(['open-task', 'new-task']);
@@ -309,6 +312,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
               :members="state.members || []"
               :online="online"
               :menu-open="menuTaskId === task.id"
+              :approval-count="approvalCount(task.id)"
               @open="openTask"
               @open-menu="openMenu"
               @drag-start="board.beginDrag($event)"
@@ -333,7 +337,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
           :data-task="task.id"
           :data-status="task.status"
           :data-od-id="'task-row-' + task.id"
-          :aria-label="t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) })"
+          :aria-label="approvalCount(task.id)
+            ? t('board.cardApprovalAria', { title: task.title, status: taskStatusLabel(task.status), count: approvalCount(task.id) })
+            : t('board.cardAria', { title: task.title, status: taskStatusLabel(task.status) })"
           @click="openFromRow(task.id)"
         >
           <div class="r-top">
@@ -350,6 +356,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick));
               <span>{{ assigneeName(task) }}</span>
             </template>
             <span v-else class="card-owner unassigned">{{ t('task.unassigned') }}</span>
+            <!-- 列表行与卡片同一个角标（归属只看 `task.target_id`）。 -->
+            <span
+              v-if="approvalCount(task.id) > 0"
+              class="card-approval"
+              :data-od-id="'task-approval-badge-' + task.id"
+              :aria-label="t('board.approvalBadgeAria', { title: task.title, count: approvalCount(task.id) })"
+            >{{ t('board.approvalBadge', { count: approvalCount(task.id) }) }}</span>
             <span
               v-if="task.unread_count > 0"
               class="card-unread"

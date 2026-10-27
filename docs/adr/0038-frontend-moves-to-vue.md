@@ -131,10 +131,23 @@ v2 页面只承诺**已迁完的那条链路**可用：
   从此是**真组件**而非插槽，三档仍由 `dockTarget` 一个 `ref` 推导；线程头的 `btn-thread-run-panel`
   把 dock 切 `run` 档并带 `task_id` 过滤，标题取**任务标题**（`createRunPanelStore({ activeTask })`
   这个原本恒 `null` 的缝在这里接上），从任务上下文关面板**回线程**；`new-task` 同时翻正
-  （`TaskFormModal.vue` 两个入口共用一张表单 ⇒ `POST /api/channels/{id}/tasks`））。
-- 未迁：审批卡、Agent 详情、**任务引用 chip / 频道指针 chip**（它们归 T8 / T9）。
+  （`TaskFormModal.vue` 两个入口共用一张表单 ⇒ `POST /api/channels/{id}/tasks`））、
+  **审批卡与待审批外显徽标**（票 #308，阶段 B 第三票：`ApprovalCard.vue` 铺旧页面 `approvalCardNode` 的
+  `.approval-card[data-approval-id][data-approval-target][data-state]` / `.approval-head` / `.approval-tools` /
+  `.approval-actions` / `.approval-note` / `.approval-error`，挂进任务线程的 `thread-approvals` 段；
+  呈现派生（倒计时、呈现态、敏感键掩码）全在 `lib/approvals.js` 的纯函数里，读写路径在
+  `stores/approvals.js`；倒计时只由 `requested_at + 600s`（后端 `approval.py` 的同一上界）推导，
+  越过上界只改呈现（`.approval-actions` **整块不渲染**）；幂等靠单条在途闸门（双击只发一个
+  `POST /api/approvals/{id}`）；`decisions` 只带未决策的 `tool_call_id`（#215）。**审批卡、任务页签的
+  `task-approval-dot`、卡片 / 列表行的 `card-approval` 角标共读 `ctx.approvals` 这一份镜像**，
+  `approval_*` live 帧只写它（不写游标、不进消息流）。**一处刻意差异**：不做 12s 周期刷新与 1s tick，
+  替代是事件驱动（首载 / 打开线程 / live 帧 / 提交回执各读一次）——真实收口由后端在同一上界发
+  `approval_resolved` 帧）。
+- 未迁：Agent 详情、**任务引用 chip / 频道指针 chip**（归 T9）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
+  **频道级的审批板**（旧页面 `#approvalBoard`）同样未迁：票 #308 的审批卡只出现在任务线程里，
+  频道 target 的审批读数还没有呈现面。
 
 未迁入口**不做假按钮**，分两档处理：
 

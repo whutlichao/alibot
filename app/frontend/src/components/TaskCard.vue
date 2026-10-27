@@ -25,6 +25,9 @@ const props = defineProps({
   online: { type: Boolean, default: true },
   // 这张卡的「流转」菜单现在开着吗（菜单本体由 `TaskBoard.vue` 铺，触发器只陈述自己的状态）。
   menuOpen: { type: Boolean, default: false },
+  // 这张卡所属任务 target 的待审批条数（票 #308）：读的是 `stores/approvals.js` 那一份镜像，
+  // 与审批卡、页签圆点同一份读数。`0` ⇒ 不渲染角标（不摆空元素）。
+  approvalCount: { type: Number, default: 0 },
 });
 
 const emit = defineEmits(['open', 'open-menu', 'drag-start', 'drag-end']);
@@ -41,7 +44,13 @@ const owner = computed(() => {
 });
 
 const ariaLabel = computed(() =>
-  t('board.cardAria', { title: props.task.title, status: taskStatusLabel(props.task.status) }),
+  props.approvalCount
+    ? t('board.cardApprovalAria', {
+      title: props.task.title,
+      status: taskStatusLabel(props.task.status),
+      count: props.approvalCount,
+    })
+    : t('board.cardAria', { title: props.task.title, status: taskStatusLabel(props.task.status) }),
 );
 
 const menuExpanded = computed(() => props.menuOpen);
@@ -71,6 +80,13 @@ const menuExpanded = computed(() => props.menuOpen);
     <div class="card-meta">
       <span class="card-num">{{ taskNumber(task.id) }}</span>
       <span v-if="task.channel_name" class="card-tag">#{{ task.channel_name }}</span>
+      <!-- 「待审批 N」角标（票 #308 / `#209`）：有 pending 才渲染，读的是同一份审批镜像。 -->
+      <span
+        v-if="approvalCount > 0"
+        class="card-approval"
+        :data-od-id="'task-approval-badge-' + task.id"
+        :aria-label="t('board.approvalBadgeAria', { title: task.title, count: approvalCount })"
+      >{{ t('board.approvalBadge', { count: approvalCount }) }}</span>
       <span v-if="owner" class="card-owner">
         <MemberAvatar :name="owner.display_name" :slot="owner.avatar_slot || 0" size="sm" />
         {{ owner.display_name }}
