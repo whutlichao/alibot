@@ -155,20 +155,21 @@ members + member-statuses），SSE 连接数 1。
 
 ## 四、已知边界（**不是**缺陷，是分阶段迁移的边界）
 
-v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` 承载：
+v2 页面**只承诺已迁完的链路**。三个阶段迁完之后，这份清单只剩两处**已知未迁**（都不是本阶段任何
+一张票的范围）：频道配置弹窗里的**联网 provider 凭据段**，与频道级的**审批板**（旧 `#approvalBoard`）。
 
-任务线程、审批卡、Agent 详情。**任务看板**随阶段 B 的票 #306 迁完（见「阶段 B · 票 #306」），
-**任务线程与任务运行面板**随票 #307 迁完（见「阶段 B · 票 #307」；频道运行面板在阶段一就已迁完）。
-
-阶段 A 已把这份清单里的六面迁完，逐票读数见下面各节：共享弹窗壳与 dock 三档 = 票 #300、
+阶段 A 已把六面迁完，逐票读数见下面各节：共享弹窗壳与 dock 三档 = 票 #300、
 三个新建表单 = 票 #301、提醒与设置两张弹窗 = 票 #302、频道头三工具（名册 / 配置 / 预算）= 票 #303、
 搜索与 ⌘K 命令面板 = 票 #304、**附件上传** = 票 #305。
+阶段 B 三面 = 票 #306（任务看板）、#307（任务线程 + 任务运行面板）、#308（审批卡 + 待审批徽标）、
+#309（任务引用 chip / 频道指针 chip）。
+阶段 C **最后一面 = 票 #310（Agent 详情三分页签）**，见文末「十、阶段 C · 票 #310」。
 
 **这些面在 v2 上不留假入口**（ADR-0038 §五），分两种处理：
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | Agent 详情（详情面归 T10，但 rail 的 Agent 行**不再是死行**：点它开与该 Agent 的私信）；「作为任务发送」（composer）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现（任务页签随票 #306 迁完、任务引用 chip 与频道指针 chip 随票 #309 迁完，都已不在这一档） |
+| **不渲染** | 「作为任务发送」（composer）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现。**这一档现在只剩这两条**：任务页签随票 #306 迁完、任务引用 chip 与频道指针 chip 随票 #309 迁完、**Agent 详情随票 #310 迁完**（`agentDetailAvailable` 已翻 `true`，rail 的 Agent 行进详情） |
 | **可见但禁用** | **这一档现在空了**（票 #301 把新建频道 / 新建 Agent 翻正） | 兜底规则仍成立：将来再出现「面还没迁、但入口是空工作台唯一出路」的情况，按可见 + 禁用 + `title` 用词条 `app.notMigrated` 处理，而不是渲染一个按下去什么都不发生的按钮 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
@@ -1192,3 +1193,88 @@ npm run build                      ✓ 59 modules transformed；产物 index-CMU
 
 截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-309-01-pointer-chip.png`（频道流里的指针 chip）、
 `issue-309-02-thread-with-ref-chip.png`（点开后线程里的引用 chip）。
+
+## 十、阶段 C · 票 #310：Agent 详情三分页签（Vue 重构的**最后一块**）
+
+旧落点 `studio/app.js` 的 `renderAgentDetail()` / `renderAgentTabPanels()` 一族（约 2700 行）。新落点
+`components/AgentDetailView.vue`（呈现）+ `stores/agent-detail.js`（读数与七条写路径）。行为契约正本
+`app/specs/agent-detail-tabs-spec.md`（D1–D9），术语正本 `CONTEXT.md` 的 **Agent 详情页签**。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 主线视图的第四档 | `App.vue` 的 `mode` | `'channel' \| 'board' \| 'search' \| 'agent'`；进详情时 `closeDock()`（旧 `setViewMode('agent')` 的 `setDockOpen(false)`），`messagesViewAvailable` 与 `chromeHidden` 各多一档 |
+| rail 入口 | `agentDetailAvailable = true` | **只翻开关、不改那段逻辑**：`RailSidebar` 里 `agentDetailAvailable ? open-agent : open-dm` 一个字没动；行 aria 因此变成「查看 {name} 的详情」 |
+| 三页签顺序固定 | `AGENT_DETAIL_TABS = ['base','skills','mcp']` | `data-adtab` 三个值、容器 `.ad-tabs`（**不复用** `.dock-tabs`，用例断言后者 0 命中）、`role=tablist` / `role=tab` / `aria-selected` / `aria-controls` |
+| 基础页区块顺序 | `[data-adpanel="base"]` 子树 | `agent-detail-section-facts → -prompt → -config → -danger`（危险操作恒为最后一块） |
+| 上下文三项**不可见** | `agentUpdatePayload()` | 草稿不产出那三项、载荷只有 **7** 个键；`data-agent-field` 里查不到 `context_window_messages` / `context_trigger_ratio` / `react_max_iters`。**库内 40 / 0.7 / 30 与 `PATCH` 字段面一字未动**（部分更新：不提交 ⇒ 保持原值） |
+| 草稿与保存条 | `draftDirty` / `#adSaveBar` | 切页签**不丢草稿**；保存条是页面级（不在任何 `[data-adpanel]` 子树里），因此跨页签可见 |
+| skills 双栏 | `.agent-skill-left` / `.agent-skill-right` | 左栏列表 + 顶部「从本机导入」下拉框；右栏元数据五项 + 删除 + **SKILL.md 正文** |
+| 启停唯一写入口 | 左栏行内 `role=switch` | 行文字区是原生 `<button>`（`[data-skill-pick]`），开关是它的**兄弟节点**（同 parent、互不包含）；右栏只有一格启停态**读数** |
+| 正文按纯文本 | `<pre data-od-id="skill-detail-markdown">` | 只经 `textContent`，不解析 Markdown ⇒ 不新增转义 / XSS 面；用例断言与后端返回**逐字相等** |
+| 导入只留一条入口 | `skillImportPicker` | 三组（可选 / 已安装 / 不可导入）、后两组禁用且不可导入的把原因写进选项文本、**默认不预选**、选中即发**一次** `POST /api/skills`；`skill-source` / `skill-install-dir` / `skill-zip` 三处 0 命中 |
+| mcp 两块面 | `[data-adpanel="mcp"]` | 上块库行（`mcp.sourceDb` 标注「装配正本」）+ 表单；下块家目录 `mcp.json` 原文文本域 + 条目视图（`agentDetail.mcpFileSource` 标注）。`mcp.json` 保存 = **整份原文一次 PUT**，不重排、不重新序列化 |
+| 删除确认 | `ModalShell` + `#agentDeleteOverlay` | 点删除**零请求**只开弹窗；确认才发一次 `DELETE`；`busy` 时 ESC / 遮罩 / 关闭键都不收；焦点落在「取消」（旧 `openAgentDeleteModal()` 的 `cancel.focus()`，`app.js:4993-4994`） |
+| ESC 层序**没变** | `App.vue` 的 `handleEscape()` | 五格原样。**依据**：旧页面 document keydown（`app.js:10577-10614`）里 `state.mode === 'agent'` **一次都没出现**，最后一格是 `if (state.mode === 'search') showMessagesView()` ⇒ 详情与看板同档：ESC 什么都不做（浏览器实测确认）。因此**没有第二份 ESC 裁决** |
+
+**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 29 条全部从 `App.vue` 挂载（`fetch` 替身 +
+`attachTo: document.body`），走 rail 的 Agent 行进入详情——页签骨架、区块顺序、载荷 7 字段、跨页签保存条、
+skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确认与 ESC 都在这一层断言。
+
+**TDD 红证据**（两条，都是规格 N3 点名的「最容易做错的三格」）：
+
+| 故意改坏的地方 | 红的那一条 |
+| --- | --- |
+| `agentUpdatePayload()` 里补回 `context_window_messages / context_trigger_ratio / react_max_iters` 三个 `null` | 「保存载荷是 7 个字段，且**不含**上下文三项」→ FAIL（正是「一次保存清空 40 / 0.7 / 30」那个后果） |
+| 把启停开关挪进行文字区 `<button>` 内部 | 「启停的唯一写入口是左栏行内的 `role=switch`；开关是文字区的**兄弟节点**」→ FAIL |
+
+两处改坏都验完即还原（`shasum` 与改动前一致：`agent-detail.js` `2d52464c…`、`AgentDetailView.vue` `52d796c2…`）。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     21 files / 408 passed（新增 tests/agent-detail.test.js 29 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          最终源码：exit 0 / 门禁全绿；日志 .scratch/v2-p2c/issue-310-fast-final.log
+./scripts/check.sh                 修复前源码：pytest 1264 passed / 11 skipped；ruff check 全绿；ruff format --check 362 files；mypy 133 files；Pyright 0 errors；Node 389 passed；Vitest 21 files / 402 passed；exit 0
+npm run build（app/frontend）       ✓ 64 modules transformed；产物 index-CA6orsAR.js；build-info 指纹一致
+```
+
+全量门禁运行后，父组件回归用例发现并修复了删除后视图未恢复、私信归档未刷新、失败原因未显示、
+表单草稿残留、保存后左栏和 MCP 条目视图未刷新等问题；因此上述全量读数是**修复前版本**的证据。
+修复后已完成构建与 `--fast`，最终提交的全量结果以 CI 为准。
+
+真浏览器实测（ego-browser，`--port 8814` + `/tmp/alibot-p2c-310` 独立 data-dir，**`PYTHONPATH` 指向本 worktree 的 `app`**）：
+
+| 判据 | 读数 |
+| --- | --- |
+| 进详情 | 点 rail 的 Agent 行 ⇒ `#viewAgent` 在、`#adName` = `Ada`；`#dock` **不存在**（让位）、频道头 / composer / 消息流**都不在**、rail 无当前行 |
+| 三页签 | `data-adtab` = `["base","skills","mcp"]`；`aria-selected` = `["true","false","false"]`；容器 `class="ad-tabs"`，`.dock-tabs` 0 命中 |
+| 基础页 | 区块顺序 = facts → prompt → config → danger；`contextFields` = `[false,false,false]`；`configFields` = `["system_prompt","display_name","role","provider","model"]`（**没有**那三项） |
+| skills 页 | 双栏在；行 `DIV` 内 `pick=BUTTON` / `toggle[role=switch][aria-checked=true]`，`sameParent=true` / `nested=false`；正文 `PRE` 且文本 = `# pdf-tools\n\n1. 先读 front matter 之后的那段\n2. 保留换行与缩进`；下拉框 `SELECT` 值 `''`（不预选）、三组 `["可选","已安装","不可导入"]`；`skill-source` / `skill-install-dir` / `skill-zip` = `[false,false,false]` |
+| mcp 页 | 上块 `dbSource` = 「来自库行 mcp_server（scope_kind=agent）：装配正本，改这里会改变装配结果。」；下块文本域原文逐字含缩进、`文件里的条目数：1`；条目视图 `fs-homestdio · 本机 · 本机条目：不需要确认 · 尚无运行期读数` |
+| 保存条跨页签 | 改系统提示 ⇒ `#adSaveBar` 出现；切到 skills 页签后仍在，且 `saveBarInPageNotInPanel=true`；切回基础页签草稿仍在（`你是助手（改了一笔）`）；放弃后回到 `你是助手` |
+| 删除确认 | 点删除 ⇒ 弹窗 `role=dialog` / `aria-modal=true`，正文含「确认删除「Ada」…操作不可撤销」，`deletesSoFar=0`（**零请求**）；焦点 `activeId=agentDeleteCancel`（落在「取消」上） |
+| ESC 只收弹窗 | 弹窗开着按 ESC ⇒ `overlayHidden=true` 且 `detailPresent=true`（详情还在）——层序第②格先收弹窗，详情本身不在任何一层 |
+
+截图（`.scratch/v2-p2c/`，已 gitignore）：最终构建的 `issue-310-final-base.png`、
+`issue-310-final-skills.png`、`issue-310-final-mcp.png`、`issue-310-final-delete-confirm.png`；
+复验使用 `round-07.mjs`，断言通过后显式 `page.close()` 并 `task.finish()`。
+此前截图：`issue-310-01-base.png`（基础页四区块，配置区无上下文三项）、
+`issue-310-02-skills.png`（双栏 + 行内开关 + SKILL.md 正文）、`issue-310-03-mcp.png`（两块面与各自来源标注）、
+`issue-310-04-delete-confirm.png`（删除确认弹窗，焦点在「取消」）、`issue-310-05-after-esc.png`（ESC 后详情仍在）、
+`issue-310-06-savebar-across-tabs.png`（skills 页签底部仍见保存条）。
+
+**实测中发现并修掉的两件事**
+
+1. **下块条目视图一直空着**：`loadGlobalMcpServers()` 定义了却没人调用（文本域读的是另一条路径），于是
+   「文件有原文、条目视图却零行」。修法：`open()` 的并行读里补上它——旧 `refreshAgentDetail()` 也是在
+   同一个入口里读的。
+2. **删除确认的焦点落在关闭图标上**：`ModalShell` 的通用落点是「`.modal-body` 里第一个可聚焦件」，
+   而这张弹窗的正文是纯文本（没有可聚焦件），于是退回整个弹窗的第一个可聚焦件 = 标题行关闭键。
+   危险操作里那一格不能是「关掉它」。修法：调用方用**两层 `nextTick`** 覆盖成「取消」
+   （单层会被壳自己的 `nextTick(focusFirst)` 覆盖——实测抓到的就是这个顺序问题），
+   与旧页面 `app.js:4993-4994` 的 `cancel.focus()` 同一个落点。
+
+**契约核对与现行事实**：#310 原验收文字要求下块标注「同名时库行胜出」。该文字形成时 `mcp.json` 仍参与过渡期装配；随后 #275 已关闭并移除这条装配层，PR #294 与 ADR-0031（2026-10-26 修订）将现行契约改为：`mcp.json` 是导入源和 Studio 写面、**不参与运行时装配**，运行期只看 Agent 级 `mcp_server` 库行。因此本实现与本验收报告按已合并的运行时事实陈述来源，不把已失效的「同名优先级」写成当前行为；未改写 #310 issue 正文或 ADR-0031 历史决策。
+
+`mcp.json` 的三道校验（JSON 可解析 / 顶层形状 / 每条声明归一化）**全在后端**（`validate_mcp_document`），前端只把原文原样送上去——前端不复制一份校验内核（复制必然漂成两套口径）。远端数据流告知块复用既有 `POST /api/remote-data-flow/ack`：确认时禁用按钮防重复提交；后端确认返回后按响应更新 consent / agent 镜像，详情上的告知块随确认读数收起；数据面清单不可用时禁用确认并如实显示未读到清单。

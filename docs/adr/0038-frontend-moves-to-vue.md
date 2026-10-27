@@ -154,8 +154,20 @@ v2 页面只承诺**已迁完的那条链路**可用：
   点击只抛 `open-task`，落点是 `App.vue` 的 `openTask()`（两个 chip 一条路径）。阶段一那条
   「带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」的反向断言**已翻正**。
   「待审批 N」角标读 T8 的那份审批镜像（同一份读数，不造第二份）。
-- 未迁：Agent 详情（归 T10，阶段 C）。
-  频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
+  **Agent 详情**（票 #310，阶段 C 也是整个重构的最后一块：`AgentDetailView.vue` 铺旧页面
+  `#viewAgent` 的三页签——基础信息和配置 / skills / mcp，`stores/agent-detail.js` 管读数与七条
+  写路径。`mode` 因此从三档扩到四档 `channel | board | search | agent`：详情是**主线视图**，
+  进它时 `closeDock()`、频道头与 composer 一起让位（旧 `setViewMode('agent')` 同一条），
+  而 `handleEscape()` 的五格**一格都没动**——旧页面 `app.js:10577-10614` 的 document keydown 里
+  `state.mode === 'agent'` 一次都没出现，最后一格只有 `search`，所以详情与看板同档：ESC 什么都不做。
+  上下文三项（条数 / 压缩阈值 / 迭代上限）的**界面入口整体撤掉**，保存载荷因此是 7 个字段；
+  `PATCH` 是部分更新，不提交 ⇒ 库内既有的 40 / 0.7 / 30 保持原值，三列与 `PATCH` 字段面一字未动。
+  skills 页签双栏、启停唯一写入口是左栏行内 `role=switch`（行的文字区是原生 `<button>`、开关是它的
+  兄弟节点），右栏显示 SKILL.md 正文（纯文本 `<pre>`，不解析 Markdown）；安装入口只留「从本机导入」
+  下拉框。mcp 页签两块面：上块库行（装配正本）、下块家目录 `mcp.json` 原文（导入源，保存原样写盘）。
+  `agentDetailAvailable` 因此翻 `true`——rail 的 Agent 行从打开私信切为打开详情，**那段点击语义一个字没改**
+  （票 #301 立的「开关裁决详情 / 私信」，本票只翻开关）。
+- 未迁：频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
   **频道级的审批板**（旧页面 `#approvalBoard`）同样未迁：票 #308 的审批卡只出现在任务线程里，
   频道 target 的审批读数还没有呈现面。

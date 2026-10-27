@@ -296,6 +296,8 @@ export function createAppContext(options) {
     runPanel,
     reminders,
     approvals,
+    // 删除 Agent 后重读私信，归档段与当前输入区共用后端读数。
+    refreshDmList,
     // 任务线程事件流复用同一个落点（票 #307 补做）：`typing` / `member_status` / `round_outcome`。
     handleTargetFrame,
     t,

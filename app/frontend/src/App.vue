@@ -10,6 +10,7 @@
      四态状态点都按名字消费，因此视觉上两版页面是同一个产品，不是一个新皮肤。 -->
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import AgentDetailView from './components/AgentDetailView.vue';
 import AgentFormModal from './components/AgentFormModal.vue';
 import ChannelBudgetModal from './components/ChannelBudgetModal.vue';
 import ChannelConfigModal from './components/ChannelConfigModal.vue';
@@ -33,6 +34,7 @@ import { MAX_ATTACHMENT_BYTES, partitionBySize } from './lib/attachments.js';
 import { formatBytes } from './lib/format.js';
 import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
 import { agentMembers } from './lib/member-view.js';
+import { createAgentDetailStore } from './stores/agent-detail.js';
 import { createSearchStore } from './stores/search.js';
 import { createTaskBoardStore } from './stores/task-board.js';
 import { createTaskThreadStore } from './stores/task-thread.js';
@@ -74,9 +76,9 @@ const dockDrawerOpen = ref(false);
 // `run`，关掉 ⇒ `null`（不占位）。不另存第二份形态状态——那必然出现「关掉了但 dock 还停在旧形态」。
 const dockTarget = ref(null);
 // 主线视图（票 #304 新增的状态维度，ADR-0038 §五里没有它）：`'channel'`（消息流）、
-// `'board'`（任务看板，票 #306）或 `'search'`（搜索占住消息流那块位置）。三者是**主线视图**
-// 而不是弹层（旧页面 `showSearchView()` / `showTaskBoard()` 的注释与人定 2026-10-17 的 D14），
-// 因此都不进 `modal-stack`、也不盖住界面。
+// `'board'`（任务看板，票 #306）、`'search'`（搜索占住消息流那块位置）或 `'agent'`（Agent 详情，
+// 票 #310）。四者是**主线视图**而不是弹层（旧页面 `showSearchView()` / `showTaskBoard()` /
+// `setViewMode('agent')` 的注释与人定 2026-10-17 的 D14），因此都不进 `modal-stack`、也不盖住界面。
 // 它住在 App 的 `ref` 里而不是 `stores/workspace.js` 的 `state`：后者是**后端镜像**（每个字段
 // 都能在后端载荷里找到同名出点），`mode` 是纯呈现状态，混进去会让「哪些字段是后端说的」失守。
 const mode = ref('channel');
@@ -162,9 +164,14 @@ const activeTab = computed(() => (mode.value === 'board' ? 'tasks' : 'messages')
 /** 搜索视图是否正占着主线：`mode` 的唯一读法（模板与键盘层都读它）。 */
 const searchActive = computed(() => mode.value === 'search');
 
-/** 消息流与 composer 在这一档里**存在**：看板是另一个主线视图（旧 `setViewMode()` 收起两者），
-    搜索只是把它们藏起来（`hidden`，滚动位置与没发出去的草稿都得留着）。 */
-const messagesViewAvailable = computed(() => mode.value !== 'board');
+/** 消息流与 composer 在这一档里**存在**：看板与 Agent 详情是另两个主线视图（旧 `setViewMode()`
+    收起两者），搜索只是把它们藏起来（`hidden`，滚动位置与没发出去的草稿都得留着）。 */
+const messagesViewAvailable = computed(() => mode.value !== 'board' && mode.value !== 'agent');
+
+/** 频道头（标题 + 消息 / 任务页签）是否让位。
+    搜索与 Agent 详情都不是「某个频道 / DM 的内容」：前者自己铺满、后者占整条右侧，
+    因此频道头在这两档一起让位（旧 `syncChromeVisibility()` 同一条判据）。 */
+const chromeHidden = computed(() => searchActive.value || mode.value === 'agent');
 
 /** 运行面板的成员名来源：工作区成员 → Agent → 当前频道成员（找不到就用 id，不编名字）。 */
 const dockPools = computed(() => [
@@ -202,6 +209,7 @@ async function selectTarget(targetId) {
   // 选一个 target = 回到消息流（旧 `selectTarget()` 的 `state.mode = 'channel'`）。这一句必须在
   // 「同 target 早退」**之前**：旧页面没有那道早退，点当前那一条同样是回消息流；v2 的同 target
   // 早退只为了避免重取一次消息，与「视图退回哪一档」是两件事。
+  // showMessagesView() 也会关闭 Agent 详情并丢弃草稿。
   showMessagesView();
   if (targetId === state.activeTargetId) return;
   // 先清旧 target 的折叠态，再换 target：顺序反了就会清掉新 target 刚铺上的状态。
@@ -278,8 +286,11 @@ function attachPending(count) {
   toasts.push(t('toast.attachPending', { count }), 'err');
 }
 
-/** Agent 详情面是否已迁到本版：T10 的开关（默认关 ⇒ rail 的 Agent 行是"打开私信"）。 */
-const agentDetailAvailable = ref(false);
+/** Agent 详情面是否已迁到本版：T10 的开关（票 #310 翻 `true`）。
+ *
+ * 它只裁决 rail 的 Agent 行点下去干什么（开 ⇒ 进详情，关 ⇒ 打开私信）；那一段的点击语义归票 #301
+ * 落地时定下，本票**只翻开关、不改那段逻辑**。 */
+const agentDetailAvailable = ref(true);
 
 /** 新建频道弹窗的候选人：本机全名单里的 Agent（新频道里本来就没有成员，不按频道过滤）。 */
 const agentRoster = computed(() => agentMembers(state.members));
@@ -316,11 +327,11 @@ async function submitTask(fields) {
 }
 
 /**
- * 确认远端数据流告知（弹窗里那一块）。
+ * 确认远端数据流告知（新建弹窗与 Agent 详情共用）。
  *
  * 确认会改变成员的启用态，因此成功后要按后端重读：`consents` 与 `agents` 两件都变了，
  * 而 agent 行的状态点只读后端事实（不在前端推导"确认过了所以现在能跑了"）。
- * 弹窗**不关**：人还要继续填表单。
+ * 新建弹窗**不关**：人还要继续填表单；Agent 详情按响应里的确认读数收起告知块。
  */
 async function acknowledgeRemote(provider) {
   try {
@@ -334,14 +345,96 @@ async function acknowledgeRemote(provider) {
 }
 
 /**
- * rail 的 Agent 行：`agentDetailAvailable` 开 ⇒ 进详情（归 T10），关 ⇒ 打开与它的私信。
+ * Agent 详情（主线视图的第四档，票 #310）。
+ *
+ * 旧落点 `app.js` 的 `openAgentDetail()` / `closeAgentDetail()` / `leaveAgentView()`：进详情时
+ * **先收掉 dock**（旧 `closeRunPanel()` + `closeTaskStream()`：运行面板与任务线程都是「占右侧」
+ * 的呈现，而详情是主线视图、dock 让位），再切 `mode`。关闭时回到进入前的视图（`agentReturn`）。
+ *
+ * 读数与写路径全在 `stores/agent-detail.js`：这里只负责“切到哪一档”与“关闭时回到哪一档”。
+ */
+const agentDetail = createAgentDetailStore({
+  online: () => state.online,
+  toast: toasts.push,
+  onAgentUpdated: (payload) => {
+    if (payload && Array.isArray(payload.agents)) store.mutable.agents = payload.agents;
+    if (payload && Array.isArray(payload.members)) store.mutable.members = payload.members;
+    if (payload && payload.agent && payload.agent.id && payload.agent.status) {
+      store.mutable.statuses[payload.agent.id] = payload.agent.status;
+    }
+  },
+  // 删除成功后同步名单与频道成员缓存，重读私信的归档状态。
+  onAgentsChanged: (payload, memberId, name) => {
+    if (payload && Array.isArray(payload.agents)) store.mutable.agents = payload.agents;
+    if (payload && Array.isArray(payload.members)) store.mutable.members = payload.members;
+    store.mutable.agents = store.mutable.agents.filter((item) => item.id !== memberId);
+    store.mutable.members = store.mutable.members.filter((item) => item.id !== memberId);
+    Object.keys(store.mutable.channelMembers).forEach((channelId) => {
+      const members = store.mutable.channelMembers[channelId];
+      if (Array.isArray(members)) {
+        store.mutable.channelMembers[channelId] = members.filter((item) => item.id !== memberId);
+      }
+    });
+    delete store.mutable.statuses[memberId];
+    if (mode.value === 'agent' && agentDetail.state.memberId === memberId) closeAgentDetail();
+    ctx.refreshDmList();
+    toasts.push(t('toast.agentDeleted', { name: name || t('toast.memberFallback') }));
+  },
+});
+
+/** 进详情前的落点（旧 `state.agentReturn`）：只在**第一次**进入时记录，切成员不覆盖它。 */
+let agentReturn = null;
+
+/** 打开 Agent 详情（rail 的 Agent 行是唯一入口）。 */
+async function openAgentDetail(memberId) {
+  if (!memberId) return;
+  if (mode.value !== 'agent') agentReturn = mode.value;
+  // 运行面板若来自任务线程，第一次关闭会退回该线程；详情需要连线程一起收掉。
+  closeDock();
+  if (dockTarget.value) closeDock();
+  mode.value = 'agent';
+  railOpen.value = false;
+  await agentDetail.open(memberId);
+}
+
+/** 关闭详情：回到进入前的那一档（进入前是详情以外的一档，因此总是有落点）。 */
+function closeAgentDetail() {
+  agentDetail.close();
+  mode.value = agentReturn && agentReturn !== 'agent' ? agentReturn : 'channel';
+  agentReturn = null;
+}
+
+/** 详情头部的「发送消息」：走幂等的 `POST /api/dms {agent_id}`（旧 `messageActiveAgent()`）。 */
+async function messageActiveAgent() {
+  const memberId = agentDetail.state.memberId;
+  if (!memberId) return;
+  try {
+    const payload = await store.openDm(memberId);
+    // 离开详情再切 target：`selectTarget()` 自己会把 `mode` 收回消息流。
+    closeAgentDetail();
+    await selectTarget(payload.dm.id);
+    if (!state.online) return;
+    toasts.push(
+      payload.created
+        ? t('toast.dmCreated', { name: payload.dm.peer.display_name })
+        : t('toast.dmOpened', { name: payload.dm.peer.display_name }),
+    );
+  } catch (err) {
+    toasts.push(t('toast.dmOpenFailed', { reason: err.message }), 'err');
+  }
+}
+
+/**
+ * rail 的 Agent 行：`agentDetailAvailable` 开 ⇒ 进详情，关 ⇒ 打开与它的私信。
  *
  * 关着的那一支走幂等的 `POST /api/dms {agent_id}`（旧页面同一条，`app.js:5184-5215`）：
  * 选中一个成员就同时表达了"和谁私信"，不需要先选目标再点创建的两步弹窗。
+ *
+ * 这一段语义归票 #301 落地时定下（`agentDetailAvailable` 一个开关裁决两档），票 #310 **只翻开关**。
  */
 async function openAgentRow(memberId) {
   if (agentDetailAvailable.value) {
-    // Agent 详情整面归 T10：本票不摆一个"开了也没处去"的入口。
+    await openAgentDetail(memberId);
     return;
   }
   try {
@@ -436,7 +529,7 @@ function handleEscape() {
     closeDock();
     return;
   }
-  // ⑥ 搜索视图是最后一层：ESC 退回消息流。看板**不**在这一层（旧页面同一条：
+  // ⑥ 搜索视图是最后一层：ESC 退回消息流。看板与 Agent 详情**不**在这一层（旧页面同一条：
   // 它在看板里 ESC 什么都不做，于是卡片「流转」菜单的 ESC 不会被主线视图抢走）。
   if (mode.value === 'search') showMessagesView();
 }
@@ -527,8 +620,15 @@ function closeDock() {
    （旧 `syncChromeVisibility()`：`mode === 'search'` 时三者同进同出）。dock 不受影响——
    它是右侧常驻列，与主线视图是两个维度（旧 `setViewMode()` 从不碰 dock）。 */
 
+function leaveAgentView() {
+  if (mode.value !== 'agent') return;
+  agentDetail.close();
+  agentReturn = null;
+}
+
 /** 进搜索视图（rail 的 `btn-workspace-search`）。不清查询词：回到搜索时上一次的词还在。 */
 function showSearchView() {
+  leaveAgentView();
   mode.value = 'search';
   railOpen.value = false;
 }
@@ -537,6 +637,7 @@ function showSearchView() {
 function showMessagesView() {
   // 离开搜索时把挂起的那一拍与在途响应一起作废：晚到的命中不该在人已经离开后改界面。
   if (mode.value === 'search') search.leave();
+  leaveAgentView();
   mode.value = 'channel';
 }
 
@@ -550,6 +651,7 @@ function showMessagesView() {
  */
 async function showTaskBoard() {
   if (!target.value || isDm.value) return;
+  leaveAgentView();
   closeDock();
   mode.value = 'board';
   const channelId = state.activeTargetId;
@@ -762,7 +864,7 @@ function mobileShell() {
            （滚动位置、未发送的草稿），撕毁重建会让它们凭空丢。 -->
       <ChannelHeader
         v-if="target"
-        :hidden="searchActive || undefined"
+        :hidden="chromeHidden || undefined"
         :target="target"
         :is-dm="isDm"
         :is-archived-dm="archived"
@@ -805,6 +907,20 @@ function mobileShell() {
 
       <!-- 搜索视图（主线视图的第三档）：同一块内容区，是「三选一」而不是叠层。 -->
       <SearchView :search="search" :active="searchActive" :hidden="!searchActive || undefined" />
+
+      <!-- Agent 详情（主线视图的第四档，票 #310）：与消息流 / 看板 / 搜索共用同一块内容区，
+           占住它时 dock 让位（`mode === 'agent'` 时 `closeDock()` 已经收掉形态）。 -->
+      <AgentDetailView
+        v-if="mode === 'agent'"
+        :detail="agentDetail"
+        :providers="state.providers"
+        :local-providers="state.localProviders"
+        :consents="state.consents"
+        :data-faces="state.dataFaces"
+        :acknowledge="acknowledgeRemote"
+        :online="state.online"
+        @send-message="messageActiveAgent"
+      />
 
       <ComposerBox
         v-if="messagesViewAvailable"
