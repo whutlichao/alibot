@@ -1216,7 +1216,7 @@ npm run build                      ✓ 59 modules transformed；产物 index-CMU
 | 删除确认 | `ModalShell` + `#agentDeleteOverlay` | 点删除**零请求**只开弹窗；确认才发一次 `DELETE`；`busy` 时 ESC / 遮罩 / 关闭键都不收；焦点落在「取消」（旧 `openAgentDeleteModal()` 的 `cancel.focus()`，`app.js:4993-4994`） |
 | ESC 层序**没变** | `App.vue` 的 `handleEscape()` | 五格原样。**依据**：旧页面 document keydown（`app.js:10577-10614`）里 `state.mode === 'agent'` **一次都没出现**，最后一格是 `if (state.mode === 'search') showMessagesView()` ⇒ 详情与看板同档：ESC 什么都不做（浏览器实测确认）。因此**没有第二份 ESC 裁决** |
 
-**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 29 条全部从 `App.vue` 挂载（`fetch` 替身 +
+**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 30 条全部从 `App.vue` 挂载（`fetch` 替身 +
 `attachTo: document.body`），走 rail 的 Agent 行进入详情——页签骨架、区块顺序、载荷 7 字段、跨页签保存条、
 skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确认与 ESC 都在这一层断言。
 
@@ -1232,11 +1232,11 @@ skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确
 门禁读数：
 
 ```
-npx vitest run（app/frontend）     21 files / 408 passed（新增 tests/agent-detail.test.js 29 条）
+npx vitest run（app/frontend）     21 files / 409 passed（新增 tests/agent-detail.test.js 30 条）
 node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
-./scripts/check.sh --fast          最终源码：exit 0 / 门禁全绿；日志 .scratch/v2-p2c/issue-310-fast-final.log
+./scripts/check.sh --fast          最终源码：exit 0 / 门禁全绿；日志 .scratch/v2-p2c/issue-310-fast-final2.log
 ./scripts/check.sh                 修复前源码：pytest 1264 passed / 11 skipped；ruff check 全绿；ruff format --check 362 files；mypy 133 files；Pyright 0 errors；Node 389 passed；Vitest 21 files / 402 passed；exit 0
-npm run build（app/frontend）       ✓ 64 modules transformed；产物 index-CA6orsAR.js；build-info 指纹一致
+npm run build（app/frontend）       ✓ 64 modules transformed；产物 index-CdwcEYf9.js；build-info 指纹一致
 ```
 
 全量门禁运行后，父组件回归用例发现并修复了删除后视图未恢复、私信归档未刷新、失败原因未显示、
