@@ -13,6 +13,7 @@
    重渲染——于是「谁顺带重渲了谁」这类耦合不存在，也不需要在每次写后手动重铺。 */
 import { computed, reactive, readonly } from 'vue';
 import { api, channelPath, dmPath, targetPath } from '../lib/api.js';
+import { uploadAttachment } from '../lib/attachments.js';
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
 
@@ -71,6 +72,11 @@ export function createWorkspaceStore(options) {
     activeRounds: {},
     channelMembers: {},
     channelMembersFailed: [],
+    // composer 已上传成草稿、等着随下一条消息提交的附件（`lib/attachments.js`）。
+    // 正本在后端：这里只是“手上这批”的镜像，发送成功就清空，失败留着可重试。
+    composerAttachments: [],
+    // 还在飞的上传个数：> 0 时不能发送（否则这条消息会漏掉还没拿到标识的文件）。
+    attachingCount: 0,
     // 频道配置的**只读缓存**（`GET /api/channels/{id}/config`）。正本在后端；运行面板的
     // 「自主模式」空态解释只读它，读不到就是未缓存 ⇒ 铺通用空态，**不**推算模式。
     channelConfigs: {},
@@ -452,13 +458,22 @@ export function createWorkspaceStore(options) {
   }
 
   /** 发送一条消息。返回 `{ok, message}`；失败时 pending 项留在流里（带失败原因与重试入口）。 */
-  async function sendMessage(body, attachmentIds) {
+  async function sendMessage(body, attachmentIds, composerAttachments) {
     const target = activeTarget.value;
     const text = String(body == null ? '' : body).trim();
     if (!text || !target) return { ok: false };
     if (isArchivedDm.value) return { ok: false, archived: true };
     if (!state.online) return { ok: false, offline: true };
 
+    // 附件随这条 pending 一起走：
+    // - 请求里的 `attachment_ids` 是**既有 JSON 字段**（`MessageCreate.attachment_ids`），
+    //   后端在同一事务里完成绑定（ADR-0014）；
+    // - pending 带上完整元数据，于是乐观帧里显示的仍是**草稿**（不是可点的链接）——
+    //   未绑定的上传取内容端点回 404，渲染成链接是骗人的；
+    // - 失败时同一批标识留在 composer（重试会带上它）。
+    const drafts = Array.isArray(composerAttachments)
+      ? composerAttachments
+      : state.composerAttachments;
     const pending = {
       clientId: 'pending-' + now() + '-' + Math.random().toString(36).slice(2, 7),
       target_id: target.id,
@@ -466,7 +481,7 @@ export function createWorkspaceStore(options) {
       status: 'pending',
       created_at: new Date(now()).toISOString(),
       author: state.member,
-      attachments: [],
+      attachments: drafts,
       attachment_ids: attachmentIds || [],
     };
     state.pending.push(pending);
@@ -559,6 +574,39 @@ export function createWorkspaceStore(options) {
     return deliver(pending);
   }
 
+  // ─── 写路径：附件草稿（两步上传的第一步） ──────────────────────────────
+
+  /** 把一批已选中的文件逐个上传成草稿：单个失败只影响它自己，已成功的留在手上。 */
+  async function attachFiles(files) {
+    const list = Array.from(files || []);
+    if (!list.length) return { uploaded: [], failed: [] };
+    state.attachingCount += list.length;
+    const uploaded = [];
+    const failed = [];
+    for (const file of list) {
+      try {
+        const attachment = await uploadAttachment(file);
+        state.composerAttachments = state.composerAttachments.concat([attachment]);
+        uploaded.push(attachment);
+      } catch (err) {
+        failed.push({ file, error: err });
+      } finally {
+        state.attachingCount -= 1;
+      }
+    }
+    return { uploaded, failed };
+  }
+
+  /** 移除一个还没发出去的草稿：只从手上移走（库里那一行与字节仍在——没有删除端点）。 */
+  function removeComposerAttachment(attachmentId) {
+    state.composerAttachments = state.composerAttachments.filter((item) => item.id !== attachmentId);
+  }
+
+  /** 草稿交给某条消息之后清空手上的清单（**只在发送成功时**调；失败要留着可重试）。 */
+  function clearComposerAttachments() {
+    state.composerAttachments = [];
+  }
+
   return {
     state: readonly(state),
     // 写路径要能改镜像：`mutable` 只给本模块与事件流用，组件一律读 `state`。
@@ -597,5 +645,8 @@ export function createWorkspaceStore(options) {
     retryPending,
     discardPending,
     removePending,
+    attachFiles,
+    removeComposerAttachment,
+    clearComposerAttachments,
   };
 }

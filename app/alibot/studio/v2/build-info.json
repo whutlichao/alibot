@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "78b8cf2831d2dd9d0d6c81fae4c28ae66c7608ac33750b74f05d4ead4a6e7d10",
+  "sourceDigest": "003438ad1ec6cb56f6d515853a692403eed45d0e47fbf9025204265299bcd1f3",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
@@ -27,6 +27,7 @@
     "src/components/SettingsModal.vue",
     "src/i18n/index.js",
     "src/lib/api.js",
+    "src/lib/attachments.js",
     "src/lib/event-stream.js",
     "src/lib/format.js",
     "src/lib/live-events.js",
