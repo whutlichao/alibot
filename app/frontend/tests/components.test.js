@@ -542,23 +542,32 @@ describe('频道头', () => {
     expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
   });
 
-  test('名册 / 配置 / 预算三个入口默认**不渲染**，运行面板入口默认**渲染**（它已迁）', () => {
+  test('四个工具入口默认都**渲染**（四条面都已迁），任务页签默认仍不渲染（#303 之后）', () => {
     const wrapper = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0 },
     });
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
-      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
+    // 名册 / 配置 / 预算随 T3（#303）迁完 ⇒ `channelToolsAvailable` 默认开；
+    // 运行面板第一阶段就迁了。四个入口的开关仍各自独立（回退时只翻那一个）。
+    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget', 'btn-run-panel']) {
+      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(true);
     }
-    // 运行面板是已迁面：它的开关默认开，入口就应当在场。
-    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
     expect(wrapper.find('#tabTasks').exists()).toBe(false);
   });
 
-  test('运行面板入口的开关能关掉它（迁完或回退时都靠这一个开关，不用改组件）', () => {
-    const wrapper = mount(ChannelHeader, {
+  test('两个开关都能单独关掉自己那组入口（回退时只翻一个，不用改组件）', () => {
+    const channelToolsOff = mount(ChannelHeader, {
+      props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0, channelToolsAvailable: false },
+    });
+    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
+      expect(channelToolsOff.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
+    }
+    expect(channelToolsOff.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
+
+    const runPanelOff = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0, runPanelAvailable: false },
     });
-    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
+    expect(runPanelOff.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
+    expect(runPanelOff.find('[data-od-id="btn-channel-members"]').exists()).toBe(true);
   });
 
   test('开关打开时四个工具入口与任务页签照常出现（迁完那个面只需翻开关）', () => {
