@@ -60,14 +60,26 @@ function messageHit(overrides) {
   );
 }
 
-function taskHit() {
-  return {
-    kind: 'task',
-    text: '设计任务',
-    highlight_ranges: [{ start: 0, end: 2 }],
-    target: { id: 'ch-1', kind: 'channel', display_name: 'design' },
-    task: { id: 'tsk-abcdef', status: 'todo', title: '设计任务', channel_id: 'ch-1' },
-  };
+/** 任务命中：可呈现文本是任务标题，`target` 是**所属频道**（不是当前 target，也不是任务 target）。
+    `task` 里的 `id` / `target_id` / `channel_id` 逐字照后端 `db.py::_task_hit_payload()` 的形状给。 */
+function taskHit(overrides) {
+  return Object.assign(
+    {
+      kind: 'task',
+      text: '设计任务',
+      highlight_ranges: [{ start: 0, end: 2 }],
+      target: { id: 'ch-1', kind: 'channel', display_name: 'design' },
+      task: {
+        id: 'tsk-abcdef',
+        target_id: 'tgt-abcdef',
+        channel_id: 'ch-1',
+        channel_name: 'design',
+        title: '设计任务',
+        status: 'todo',
+      },
+    },
+    overrides || {},
+  );
 }
 
 function agentHit() {
@@ -118,6 +130,12 @@ function createServer(seed) {
     '/api/channels/ch-1/read': () => jsonResponse({ channel: channel(), channels: [channel()] }),
     '/api/targets/ch-1/team-runs?limit=20': () => jsonResponse({ runs: [] }),
     '/api/targets/ch-1/plan': () => jsonResponse({ plan: { members: [] } }),
+    // 任务线程的三条读数（点任务命中之后才走）：线程正文、标读、待审批快照。
+    '/api/tasks/tsk-abcdef/messages': () =>
+      jsonResponse({ task: { ...taskHit().task, allowed_transitions: [] }, messages: [] }),
+    '/api/tasks/tsk-abcdef/read': () =>
+      jsonResponse({ task: { ...taskHit().task, allowed_transitions: [] } }),
+    '/api/approvals?target_id=tgt-abcdef&state=pending': () => jsonResponse({ approvals: [] }),
   };
   return server;
 }
@@ -400,19 +418,129 @@ describe('命中行', () => {
     expect(result.findAll('.r-title mark').map((node) => node.text())).toEqual(['d']);
   });
 
-  test('命中行不是按钮：任务线程与 Agent 详情都没迁，不做「点了没反应」的行', async () => {
-    const server = createServer({ responder: () => jsonResponse({ hits: [taskHit(), agentHit()] }) });
+  test('任务命中行是 `<button>`（载荷里有可打开的任务 id），消息 / Agent 命中仍是 `div`', async () => {
+    const server = createServer({
+      responder: () => jsonResponse({ hits: [messageHit(), taskHit(), agentHit()] }),
+    });
     const { wrapper } = await mountApp(server);
     await openSearch(wrapper);
     await searchInput(wrapper).setValue('设计');
     await searchInput(wrapper).trigger('keydown', { key: 'Enter' });
     await flush();
+
     const results = wrapper.findAll('[data-od-id="search-results"] .result');
-    expect(results).toHaveLength(2);
-    results.forEach((row) => {
-      expect(row.element.tagName).toBe('DIV');
+    expect(results).toHaveLength(3);
+    // 任务命中：原生 `button`（键盘可达靠它，不自造 keydown）+ `data-opentask` 带任务 id。
+    expect(results[1].element.tagName).toBe('BUTTON');
+    expect(results[1].attributes('type')).toBe('button');
+    expect(results[1].attributes('data-opentask')).toBe('tsk-abcdef');
+    expect(results[1].attributes('data-od-id')).toBe('search-task');
+    // 消息 / Agent 命中**非交互**：是 `div`，不是禁用 `button`（禁用按钮仍可聚焦，会让人以为能用）。
+    [results[0], results[2]].forEach((row, index) => {
+      expect(row.element.tagName, `row ${index}`).toBe('DIV');
       expect(row.attributes('data-opentask')).toBeUndefined();
+      expect(row.attributes('disabled')).toBeUndefined();
+      expect(row.attributes('tabindex')).toBeUndefined();
     });
+  });
+
+  test('判据只看载荷里有没有 `task.id`：kind 是任务但载荷缺 id ⇒ 仍是 `div`', async () => {
+    // 旧页面 `searchResultNode()` 的判据是「载荷里有没有可打开的任务标识」，**不按 kind 再分派一次**。
+    // 这条用例把两件事分开：`kind === 'task'` 本身不构成可点。
+    const noId = taskHit({ task: { title: '无 id 的任务' } });
+    const server = createServer({ responder: () => jsonResponse({ hits: [noId] }) });
+    const { wrapper } = await mountApp(server);
+    await openSearch(wrapper);
+    await searchInput(wrapper).setValue('设计');
+    await searchInput(wrapper).trigger('keydown', { key: 'Enter' });
+    await flush();
+    const row = wrapper.find('[data-od-id="search-results"] .result');
+    expect(row.element.tagName).toBe('DIV');
+    expect(row.attributes('data-opentask')).toBeUndefined();
+  });
+});
+
+/* ─── 四、点任务命中 ⇒ 右侧线程打开（从 App.vue 进） ────────────────── */
+
+describe('点任务命中开线程', () => {
+  test('点命中 ⇒ dock 开 `task` 档，线程里是**这条**任务（不是当前频道）', async () => {
+    const server = createServer({ responder: () => jsonResponse({ hits: [taskHit()] }) });
+    const { wrapper, fetchStub } = await mountApp(server);
+    await openSearch(wrapper);
+    await searchInput(wrapper).setValue('设计');
+    await searchInput(wrapper).trigger('keydown', { key: 'Enter' });
+    await flush();
+
+    // 点命中前没有 dock（看板 / 线程都没开过）。
+    expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(false);
+    await wrapper.find('[data-od-id="search-task"]').trigger('click');
+    await flush();
+    await flush();
+
+    const dock = wrapper.find('[data-od-id="detail-dock"]');
+    expect(dock.exists()).toBe(true);
+    expect(dock.find('[data-od-id="task-thread"]').exists()).toBe(true);
+    // 线程里是**这一条**任务：标题与请求的 target 都指向它。
+    expect(wrapper.find('[data-od-id="thread-title-input"]').element.value).toBe('设计任务');
+    expect(fetchStub.to('/api/tasks/tsk-abcdef/messages').length).toBeGreaterThan(0);
+    // 待审批快照读的是**这条任务的 target**，不是当前频道的 target（`ch-1`）。
+    expect(fetchStub.to('/api/approvals?target_id=tgt-abcdef').length).toBeGreaterThan(0);
+    expect(fetchStub.to('/api/approvals?target_id=ch-1').length).toBe(0);
+  });
+
+  test('点命中**不**退出搜索视图（旧 `openTask()` 不写 `state.mode`）', async () => {
+    const server = createServer({ responder: () => jsonResponse({ hits: [taskHit()] }) });
+    const { wrapper } = await mountApp(server);
+    await openSearch(wrapper);
+    await searchInput(wrapper).setValue('设计');
+    await searchInput(wrapper).trigger('keydown', { key: 'Enter' });
+    await flush();
+    await wrapper.find('[data-od-id="search-task"]').trigger('click');
+    await flush();
+    await flush();
+
+    // 搜索占着主线，dock 在右侧常驻——两者并存（两个维度，不是二选一）。
+    expect(wrapper.find('[data-od-id="search-view"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(true);
+  });
+
+  test('键盘可达：Enter 从原生 `button` 的点击语义进（不自造 keydown）', async () => {
+    const server = createServer({ responder: () => jsonResponse({ hits: [taskHit()] }) });
+    const { wrapper } = await mountApp(server);
+    await openSearch(wrapper);
+    await searchInput(wrapper).setValue('设计');
+    await searchInput(wrapper).trigger('keydown', { key: 'Enter' });
+    await flush();
+
+    const row = wrapper.find('[data-od-id="search-task"]');
+    // 原生 `<button>` 默认在 Tab 序列里（无 `tabindex="-1"`），Enter / Space 由浏览器翻译成 click。
+    expect(row.attributes('tabindex')).toBeUndefined();
+    expect(row.attributes('disabled')).toBeUndefined();
+    // 键盘触发走同一条 click 路径：直接派发原生 click（浏览器就是这么翻译 Enter 的）。
+    row.element.click();
+    await flush();
+    await flush();
+    expect(wrapper.find('[data-od-id="detail-dock"] [data-od-id="task-thread"]').exists()).toBe(true);
+  });
+
+  test('私信下也能开线程（旧 `dockFallbackMode()`：task 是独立形态，不被 isDm 一刀切）', async () => {
+    const server = createServer({ dms: [dm()], responder: () => jsonResponse({ hits: [taskHit()] }) });
+    const { wrapper } = await mountApp(server);
+    // 先进私信，再进搜索：此时当前 target 是 dm-1，命中挂的是它所属频道 ch-1。
+    await wrapper.find('[data-od-id="dm-dm-1"]').trigger('click');
+    await flush();
+    await flush();
+    await openSearch(wrapper);
+    await searchInput(wrapper).setValue('设计');
+    await searchInput(wrapper).trigger('keydown', { key: 'Enter' });
+    await flush();
+
+    await wrapper.find('[data-od-id="search-task"]').trigger('click');
+    await flush();
+    await flush();
+    // 形态是 task ⇒ 私信下也渲染（「成员」形态才只属于频道）。
+    expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="task-thread"]').exists()).toBe(true);
   });
 });
 

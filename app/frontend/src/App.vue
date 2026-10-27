@@ -832,9 +832,23 @@ function runCommand(commandId) {
   command.run();
 }
 
-/** 私信下三档一档都不出现：`dockAvailable()` 的判据（私信既没有 team 运行，也没有频道成员）。
-    运行面板不是私信的东西，因此私信下 `dockTarget` 恒为 `null`，整栏消失。 */
-const visibleDockTarget = computed(() => (isDm.value ? null : dockTarget.value));
+/** 私信下不出现的那几档：判据是**形态**，不是 `isDm` 一刀切。
+
+    正本是旧 `dockFallbackMode()` / `dockAvailable()` 的注释：「成员」形态只属于频道；任务线程与
+    运行面板是**独立形态**，私信下仍算可用。于是：
+    - `task` / `run` ⇒ 一律可见（在私信里从搜索命中开的那条线程，同样要能看）；
+    - `members` ⇒ 只在非私信里可见（v2 它至今没有调用点，保留以免形态判据不完整）；
+    - `null` ⇒ 整栏不渲染（不占位，不是渲染出来再 `hidden`）。
+
+    为什么不再写 `isDm ? null : dockTarget`：搜索入口在私信下是**可用**的（rail 的搜索键不按
+    target 类型分身），而任务命中会开线程——私信里整栏隐去就变成一个点下去什么都不发生的按钮，
+    那正是本票要除掉的东西。 */
+const visibleDockTarget = computed(() => {
+  const target = dockTarget.value;
+  if (!target || !target.kind) return null;
+  if (target.kind === 'members') return isDm.value ? null : target;
+  return target;
+});
 
 /** ≤900px（单列壳）判据：右抽屉只在那一档是「盖在内容上的一层」。 */
 const MOBILE_SHELL_QUERY = '(max-width: 900px)';
@@ -959,8 +973,16 @@ function mobileShell() {
         @new-task="taskFormOpen = true"
       />
 
-      <!-- 搜索视图（主线视图的第三档）：同一块内容区，是「三选一」而不是叠层。 -->
-      <SearchView :search="search" :active="searchActive" :hidden="!searchActive || undefined" />
+      <!-- 搜索视图（主线视图的第三档）：同一块内容区，是「三选一」而不是叠层。
+           任务命中行会抛 `open-task`：`SearchView` 只发意图，开线程的落点是 App 的 `openTask()`
+           （与看板卡片、消息流里的 chip 同一条路径）。搜索留在主线视图，线程开在右侧 dock——
+           两者是两个维度，不是二选一（旧 `openTask()` 不写 `state.mode`）。 -->
+      <SearchView
+        :search="search"
+        :active="searchActive"
+        :hidden="!searchActive || undefined"
+        @open-task="openTask"
+      />
 
       <!-- Agent 详情（主线视图的第四档，票 #310）：与消息流 / 看板 / 搜索共用同一块内容区，
            占住它时 dock 让位（`mode === 'agent'` 时 `closeDock()` 已经收掉形态）。 -->
