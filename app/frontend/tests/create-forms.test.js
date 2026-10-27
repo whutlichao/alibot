@@ -504,7 +504,37 @@ describe('远端数据流告知块（建完不可用的挡板）', () => {
   });
 });
 
-describe('rail 的 Agent 行：关着详情开关时打开私信', () => {
+/* rail 的 Agent 行由**一个开关**裁决两档（票 #301 立语义，票 #310 翻开关）：
+   开 ⇒ 进 Agent 详情，关 ⇒ 打开与它的私信。下面这组守的是**关着**那一档（私信）——
+   它仍然存在（旧页面同一件事的入口就是「选中一个成员 = 表达和谁私信」，`app.js:5184-5215`），
+   因此用一个桩替身把 `agentDetailAvailable` 拨回去，逐条守住私信分支的语义没有随开关翻正而丢掉。
+   开关翻正之后 rail 上的无障碍名是「查看 {name} 的详情」——那一条在 `agent-detail.test.js` 里断言。 */
+async function mountAppWithDetailOff(extra) {
+  const { default: RailSidebar } = await import('../src/components/RailSidebar.vue');
+  const { reactive } = await import('vue');
+  const state = reactive({
+    member: OWNER,
+    members: [OWNER, ADA],
+    channels: [channel()],
+    dms: [],
+    agents: [ADA],
+    statuses: {},
+    activeTargetId: 'ch-1',
+  });
+  const opened = [];
+  const wrapper = mount(RailSidebar, {
+    props: {
+      state,
+      agentDetailAvailable: false,
+      onOpenDm: (id) => opened.push(id),
+    },
+    attachTo: document.body,
+  });
+  mounted.push(wrapper);
+  return { wrapper, opened };
+}
+
+describe('rail 的 Agent 行：一个开关裁决两档（票 #301 立语义，票 #310 翻开关）', () => {
   function dmRoutes(created) {
     const opened = dm({ id: 'dm-9' });
     return {
@@ -526,46 +556,44 @@ describe('rail 的 Agent 行：关着详情开关时打开私信', () => {
     };
   }
 
-  test('点 Agent 行 ⇒ 发一次幂等的 `POST /api/dms {agent_id}` 并切到该私信', async () => {
-    const { wrapper, stub } = await mountApp(dmRoutes(true));
-    await wrapper.find('[data-od-id="agent-mem-1"]').trigger('click');
-    await flush();
-    await flush();
-    await flush();
-
-    const post = stub.calls.find((call) => call.url === '/api/dms' && call.method === 'POST');
-    expect(post.body).toEqual({ agent_id: 'mem-1' });
-    expect(wrapper.find('#chanTitle').text()).toBe('@Ada');
-    expect(wrapper.find('[data-od-id="dm-dm-9"]').classes()).toContain('is-active');
-  });
-
-  test('已有私信时用「已打开」而不是「已创建」的说法（后端 `created` 决定）', async () => {
-    const { wrapper } = await mountApp(dmRoutes(false));
-    await wrapper.find('[data-od-id="agent-mem-1"]').trigger('click');
-    await flush();
-    await flush();
-    await flush();
-    expect(wrapper.find('[data-od-id="toast-wrap"]').text()).toContain('已打开与 Ada 的现有私信');
-  });
-
-  test('打开私信失败：错误说清原因（不静默）', async () => {
-    const { wrapper } = await mountApp({
-      '/api/dms': () => jsonResponse({ error: { code: 'boom', message: '后端拒绝' } }, 400),
-    });
-    await wrapper.find('[data-od-id="agent-mem-1"]').trigger('click');
-    await flush();
-    await flush();
-    expect(wrapper.find('[data-od-id="toast-wrap"]').text()).toContain('打开私信失败');
-    expect(wrapper.find('[data-od-id="toast-wrap"]').text()).toContain('后端拒绝');
-  });
-
-  test('Agent 行是可点的按钮，无障碍名说的是「打开私信」（详情面未迁）', async () => {
-    const { wrapper } = await mountApp();
+  test('点 Agent 行 ⇒ 只抛 `open-dm`（私信分支）；开关翻正后 App 侧走的是详情分支', async () => {
+    const { wrapper, opened } = await mountAppWithDetailOff();
     const row = wrapper.find('[data-od-id="agent-mem-1"]');
     expect(row.element.tagName).toBe('BUTTON');
     expect(row.classes()).toContain('nav-row');
-    expect(row.classes()).not.toContain('is-static');
+    // 关着时无障碍名说的是「打开私信」；点下去抛的是 `open-dm`（不是 `open-agent`）。
     expect(row.attributes('aria-label')).toBe('打开与 Ada 的私信');
     expect(row.find('.presence').exists()).toBe(true);
+    await row.trigger('click');
+    expect(opened).toEqual(['mem-1']);
+  });
+
+  test('开关开着时同一个行抛的是 `open-agent`，无障碍名改成「查看详情」', async () => {
+    const { default: RailSidebar } = await import('../src/components/RailSidebar.vue');
+    const { reactive } = await import('vue');
+    const state = reactive({
+      member: OWNER,
+      members: [OWNER, ADA],
+      channels: [channel()],
+      dms: [],
+      agents: [ADA],
+      statuses: {},
+      activeTargetId: 'ch-1',
+    });
+    const picked = [];
+    const wrapper = mount(RailSidebar, {
+      props: {
+        state,
+        agentDetailAvailable: true,
+        onOpenAgent: (id) => picked.push(id),
+      },
+      attachTo: document.body,
+    });
+    mounted.push(wrapper);
+
+    const row = wrapper.find('[data-od-id="agent-mem-1"]');
+    expect(row.attributes('aria-label')).toBe('查看 Ada 的详情');
+    await row.trigger('click');
+    expect(picked).toEqual(['mem-1']);
   });
 });
