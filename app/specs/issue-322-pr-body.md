@@ -117,10 +117,15 @@ $ ./scripts/check.sh
 - `App.vue` 的一处接线 + `visibleDockTarget` 的判据。后者是 dock 形态的唯一读点——但 `dockTarget`
   的写点（`openTask` / `openRunPanel` / `closeDock` / `selectTarget`）全都不读 `isDm`，所以形态判据
   仍然只在这一个读点上收口。
-- 既有行为不受影响：`app-shell.test.js` 的「切到私信 ⇒ `#dock` 整栏消失」照旧通过（它先开运行面板
-  再切私信，`selectTarget()` 会把 `dockTarget` 置 `null`）。
+- 既有行为不受影响：`app-shell.test.js` 那条用例（原题「切到私信 ⇒ `#dock` 整栏消失」）照旧通过——
+  它先开运行面板再切私信，`selectTarget()` 会把 `dockTarget` 置 `null`。收口时把它的**标题与注释**
+  改成如实的说法（现题「切到私信 ⇒ 运行面板收起（`resetRunPanelState()` 清掉 `dockTarget`，不是
+  `isDm` 一刀切）」），**断言一条未动**。
 
-已知遗留（建议另开 docs 票，不在本 PR 里改历史决策）：ADR-0038 里「私信下 `dockTarget` 恒为 `null`
-（整栏消失）」这句话现在过时了。
+**文档改动（决策未动）**：本 PR 同时修正了 ADR-0038 §237 的一处过时事实描述——原文「私信下
+`dockTarget` 恒为 `null`（整栏消失）」改成按**形态**裁决（`members` 屏蔽，`task` / `run` 照常可见），
+并以「**事实修正（#322）**」标记指回旧页面 `dockFallbackMode()` 的注释。按 `review-rules` 判断题 4
+（ADR 只做最小事实修正），模块划分、三档形态、「`dockTarget` 是 dock 形态唯一判据」这些决策内容
+**一字未动**。
 
 Closes #322

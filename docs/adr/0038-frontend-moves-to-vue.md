@@ -233,8 +233,13 @@ v2 页面只承诺**已迁完的那条链路**可用：
 从任务上下文关运行面板 ⇒ 回 `{ kind: 'task' }`（旧 `closeRunPanel()` 的 `fromTask` 分支）。
 换 target 时 `selectTarget()` 把线程与面板一起作废（`thread.resetForTarget()` /
 `dockPanel.resetForTarget(true)`），于是「关掉了但 dock 还停在旧形态」与「换 target 后旧线程读数
-残留」两类漂移在构造上都没有落脚点。`members` 档至今没有调用点（成员面走的是弹窗，见下），
-私信下 `dockTarget` 恒为 `null`（整栏消失）。
+残留」两类漂移在构造上都没有落脚点。`members` 档至今没有调用点（成员面走的是弹窗，见下）；
+私信下 dock 的可见性仍由**形态**裁决——`members` 形态被屏蔽，`task` / `run` 两类独立形态照常可见
+（`visibleDockTarget`，与旧页面 `dockFallbackMode()` 同一条判据）。
+**事实修正（#322）**：本段末句原文是「私信下 `dockTarget` 恒为 `null`（整栏消失）」，与实现不符。
+改成按形态裁决是为了对齐旧页面 `dockFallbackMode()` 的注释「任务线程 / 运行面板是独立形态，私信下
+仍算可用」——搜索入口在私信下可用、任务命中会开线程，一刀切隐去整栏就等于一个点下去什么都不发生
+的按钮（票 #322）。决策本身不变：`dockTarget` 仍是 dock 形态的唯一判据。
 
 **弹窗的外壳与关闭语义只有一份**（票 #300）：`components/ModalShell.vue` 铺旧页面的
 `.overlay` / `.modal` / `.modal-head` / `.modal-body` / `.modal-foot`（`app.css` 零改动），
