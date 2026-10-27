@@ -97,8 +97,8 @@ v2 页面只承诺**已迁完的那条链路**可用：
   全局 SSE（一条流、断线重连、**重连后全量重取**、`rotate` 帧）、标读、首次成功载入的贴底判据、
   **运行面板**（dock 的第三种形态：运行与分派 / 成员事件 / Plan / SOP 四段；快照兜底 + live 合并；
   重连后按快照刷新）、**共享弹窗壳**（`ModalShell.vue`：遮罩 / ESC 只关最上层 / 焦点回收 / `busy`
-  不收；但**四张弹窗的内容**仍归 T1–T3 与 ⌘K）、**dock 的三档形态判据**（`run` 有内容，
-  `members` / `task` 是留给 T3 / T7 的具名插槽）、**整页的 ESC 层序表**（`App.vue` 的 `onEscape()`）、
+  不收；**三张弹窗的内容**归 T1–T3；⌘K 命令面板**不套它**）、**dock 的三档形态判据**（`run` 有内容，
+  `members` / `task` 是留给 T3 / T7 的具名插槽）、**整页的 ESC 层序表**（`App.vue` 的 `handleEscape()`）、
   **提醒与设置两张弹窗**（rail 头的两枚 `.icon-btn`；提醒的圆点角标 / 列表 / 新增 / 删除，
   设置的三个档位与 `applySettings` 写回——后者原本是死入口，票 #302 接活）、
   **三个新建表单**（票 #301：新建频道 `ChannelFormModal.vue` / 新建 Agent `AgentFormModal.vue`
@@ -108,26 +108,31 @@ v2 页面只承诺**已迁完的那条链路**可用：
   **频道头的三面**（票 #303：成员名册 `RosterModal.vue` 用 `ModalShell` 的 `wide` 档 /
   频道配置 `ChannelConfigModal.vue` / 回应预算 `ChannelBudgetModal.vue`；三张的读数都只来自后端、
   写失败只显示后端可读原因且错误行放在正文之外；名册的「加入」用响应里的最新成员表覆盖缓存）、
+  **搜索视图与 ⌘K 命令面板**（票 #304：`mode: 'channel' | 'search'` 是 §五从未提过的**新状态维度**
+  ——搜索占住消息流那块位置，是主线视图不是弹层；`SearchView.vue` 铺旧页面 `#viewSearch` 的四档
+  facet / 三档空态 / 后端区间高亮，`stores/search.js` 管 120ms 防抖与请求版本守卫；`CommandPalette.vue`
+  是 `.overlay` + `.cmd`，**不套 `ModalShell`**，ESC 复用同一份 `App.vue` 的 `handleEscape()` 层序表）、
   **附件上传**（票 #305：composer 的 `Paperclip` ⇒ 两步上传的第一步（`lib/attachments.js` 的
   `uploadAttachment`，原始字节 + query 里的文件名）⇒ composer 里的文件 chips（名字 + 体积，可逐个移除）⇒
   随消息**一次提交** `attachment_ids`（`MessageCreate` 的既有 JSON 字段，后端在同一事务里绑定）；
   单文件上限在前端预检（`lib/attachments.js` 的 `MAX_ATTACHMENT_BYTES`，正本是 `db.py` 的同一个常量，
   用例读那份正本比较），超限的文件**不发请求**；发送失败时草稿留在手上、可重试，归档私信里入口不渲染）。
 - 未迁：任务看板与任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
-  审批卡、Agent 详情、搜索与命令面板、
+  审批卡、Agent 详情、
   **任务运行面板**（它挂在任务线程头，随线程那张票）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
 
 未迁入口**不做假按钮**，分两档处理：
 
-1. **不渲染**（任务页签 / 搜索 / 作为任务发送 / 失败行的「看成员状态」）：
+1. **不渲染**（任务页签 / 作为任务发送 / 失败行的「看成员状态」）：
    它们只是把人带到另一处，带不到就不该出现。频道头的四个入口由 `channelToolsAvailable`
    （名册 / 配置 / 预算，同涨同落；票 #303 已迁 ⇒ 默认开）与 `runPanelAvailable`（运行面板，
    已迁 ⇒ 默认开）两个显式开关控制；任务页签由 `tasksAvailable` 控制。迁完那个面只需翻对应的开关，
    组件不用改。（`btn-reminders` / `btn-settings` 随票 #302 迁完、`btn-new-channel` / `btn-new-agent`
    随票 #301 迁完、`btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` 随票 #303
-   迁完、`btn-attach` 随票 #305 迁完，都不在这个清单里。）
+   迁完、rail 的 `btn-workspace-search` 随票 #304 迁完、`btn-attach` 随票 #305 迁完，
+   都不在这个清单里。）
 2. **可见但禁用**：**这一档现在空了**（票 #301）。它原本只装「新建频道 / 新建 Agent」——
    空工作台的引导文案就是「新建一个频道」，把按钮一起藏掉等于让人无路可走，禁用比消失诚实。
    两张表单迁过来之后两个按钮正常工作，这条兜底规则仍然成立：**将来再出现「面还没迁、
@@ -138,10 +143,12 @@ v2 页面只承诺**已迁完的那条链路**可用：
 「看起来能点、点下去什么都不发生」比「这个功能还没过来」更难解释——这条在自查里抓到过一次：
 第一阶段曾把 13 个入口渲染成会弹一句无意义 toast 的死按钮。
 
-**按键层序现在有一份可复用的表**（票 #300）：`App.vue` 的 `onEscape()` 按「命令面板 > 模态栈最上层
-（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 > 搜索视图」裁决，依据是旧页面
-`app.js:10578-10620` 的逐行顺序；T4（#304）落地时**直接复用这个函数**，不另写第二份。
-命令面板与搜索视图不套 `ModalShell`（类名与关闭语义不同：前者是 `.cmd`、后者是主线视图）。
+**按键层序只有一份表，五格现在都有活**（票 #300 立表、票 #304 补齐首尾两格）：`App.vue` 的
+`handleEscape()` 按「命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 >
+搜索视图」裁决，依据是旧页面 `app.js:10578-10620` 的逐行顺序。`⌘K` / `Ctrl+K`、`ESC` 与 `M` / `T`
+两个单键跳转共用**同一条** document 监听（`onGlobalKeydown()`），没有第二份层序。
+命令面板与搜索视图不套 `ModalShell`（类名与关闭语义不同：前者是 `.cmd`、后者是主线视图）：
+命令面板自己在层序第①格关闭，搜索视图是最后一格（退回消息流）。
 
 **退路**：任何一阶段出问题，删掉 `app/alibot/studio/v2/` 与 `app/frontend/` 就回到重构前。
 迁移方式是**新增**（不是就地改写），旧页面的逻辑一行没被改；旧页面目录里只有两处**纯新增**：
@@ -161,7 +168,7 @@ v2 页面只承诺**已迁完的那条链路**可用：
 `.overlay` / `.modal` / `.modal-head` / `.modal-body` / `.modal-foot`（`app.css` 零改动），
 `open` 驱动根节点的 `hidden` 属性而**不卸载内容**，`busy` 时 ESC / 遮罩 / 关闭键都不动作；
 ESC 的层序由 `lib/modal-stack.js` 的模块级栈裁决（**只关最上面那一层**，是有意改进——旧页面
-`app.js:10578-10620` 是无栈、一次全关）。四张弹窗票（T1–T3 与 ⌘K）从此只写自己的内容——
+`app.js:10578-10620` 是无栈、一次全关）。三张弹窗票（T1–T3）从此只写自己的内容——
 票 #303 的三张（`RosterModal.vue` 用 `wide` 档、`ChannelConfigModal.vue`、`ChannelBudgetModal.vue`）
 就是这么落的，`app.css` 仍零改动。
 
@@ -170,6 +177,9 @@ ESC 的层序由 `lib/modal-stack.js` 的模块级栈裁决（**只关最上面�
 写路径失败**只显示后端可读原因**、弹窗不关、草稿不被冲掉；错误行放在正文**之外**（正文按后端读数
 重铺不会把它清掉）。名册的「加入」用响应里的最新成员表**覆盖**缓存，于是「人不挪段」与
 「`@` 补全还选不到它」这两个半成品态在构造上不存在。
+
+**⌘K 命令面板不在这份清单里**（票 #304 的实际落点）：它是 `.overlay` + `.cmd`（不是 `.modal`），
+关闭语义与 z-index 档位都不同，因此**不进**模态栈，ESC 由 `App.vue` 层序表的第①格裁决。
 
 **`applySettings` 不再是死入口**（票 #302）：设置弹窗保存后调 `createAppContext().applySettings(响应.settings)`
 把 `<html lang>` / `data-theme` / `data-density` 铺上，它是**唯一写入口**；绝不给 `mutable.settings`

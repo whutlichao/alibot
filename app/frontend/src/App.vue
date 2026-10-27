@@ -15,12 +15,14 @@ import ChannelBudgetModal from './components/ChannelBudgetModal.vue';
 import ChannelConfigModal from './components/ChannelConfigModal.vue';
 import ChannelFormModal from './components/ChannelFormModal.vue';
 import ChannelHeader from './components/ChannelHeader.vue';
+import CommandPalette from './components/CommandPalette.vue';
 import ComposerBox from './components/ComposerBox.vue';
 import DockPanel from './components/DockPanel.vue';
 import MessageStream from './components/MessageStream.vue';
 import RailSidebar from './components/RailSidebar.vue';
 import RemindersModal from './components/RemindersModal.vue';
 import RosterModal from './components/RosterModal.vue';
+import SearchView from './components/SearchView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
@@ -28,6 +30,7 @@ import { hasOpenModal } from './lib/modal-stack.js';
 import { MAX_ATTACHMENT_BYTES, partitionBySize } from './lib/attachments.js';
 import { formatBytes } from './lib/format.js';
 import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
+import { createSearchStore } from './stores/search.js';
 import { useUiState } from './stores/ui-state.js';
 
 const props = defineProps({
@@ -50,6 +53,14 @@ const dockDrawerOpen = ref(false);
 // 本票只有运行面板这一档会写它（`members` / `task` 归 T3 与 T7）。
 const dockTarget = ref(null);
 const activeTab = ref('messages');
+// 主线视图（票 #304 新增的状态维度，ADR-0038 §五里没有它）：`'channel'`（消息流）或
+// `'search'`（搜索占住消息流那块位置）。搜索是**主线视图**而不是弹层（旧页面 `showSearchView()`
+// 的注释与人定 2026-10-17 的 D14），因此它不进 `modal-stack`、也不盖住界面。
+// 它住在 App 的 `ref` 里而不是 `stores/workspace.js` 的 `state`：后者是**后端镜像**（每个字段
+// 都能在后端载荷里找到同名出点），`mode` 是纯呈现状态，混进去会让「哪些字段是后端说的」失守。
+const mode = ref('channel');
+// ⌘K 命令面板的显隐（`overlay` 不是 `modal`：关闭语义与 z-index 都不同，见 `CommandPalette.vue`）。
+const cmdOpen = ref(false);
 // 频道头的三张弹窗（名册 / 配置 / 预算）：同一时刻只开一张，`toolChannel` 是**打开那一刻的频道**
 // （旧页面 `state.rosterChannelId` / `state.channelConfig.channelId` 同一条：打开期间锁定频道，
 // 人在弹窗里把别处切走也不影响它列的那份名单）。
@@ -75,6 +86,12 @@ const messages = computed(() => store.renderedMessages());
 /** 提醒圆点：判据在 store 里（存在 `fired_at == null` 的提醒），App 只负责往下传。 */
 const reminderPending = computed(() => ctx.reminders.hasPending.value);
 
+/** 搜索的读数与请求（版本守卫 / 防抖 / facet 换请求都在 store 里，见 `stores/search.js`）。 */
+const search = createSearchStore({ isOnline: () => state.online });
+
+/** 搜索视图是否正占着主线：`mode` 的唯一读法（模板与键盘层都读它）。 */
+const searchActive = computed(() => mode.value === 'search');
+
 /** 运行面板的成员名来源：工作区成员 → Agent → 当前频道成员（找不到就用 id，不编名字）。 */
 const dockPools = computed(() => [
   state.members,
@@ -89,6 +106,10 @@ const dockPanel = ctx.runPanel;
 const mentionCandidates = computed(() => store.channelAgentMembers(state.activeTargetId));
 
 async function selectTarget(targetId) {
+  // 选一个 target = 回到消息流（旧 `selectTarget()` 的 `state.mode = 'channel'`）。这一句必须在
+  // 「同 target 早退」**之前**：旧页面没有那道早退，点当前那一条同样是回消息流；v2 的同 target
+  // 早退只为了避免重取一次消息，与「视图退回哪一档」是两件事。
+  showMessagesView();
   if (targetId === state.activeTargetId) return;
   // 先清旧 target 的折叠态，再换 target：顺序反了就会清掉新 target 刚铺上的状态。
   ui.resetForTarget();
@@ -240,9 +261,71 @@ onMounted(async () => {
   if (firstSuccessfulLoad && stream.value) stream.value.scrollToBottom();
 });
 
-// 整页只有这一个键盘监听：ESC 的层序表在 `onEscape()` 里（T4 复用它，不另写一份）。
-document.addEventListener('keydown', onEscape);
-onBeforeUnmount(() => document.removeEventListener('keydown', onEscape));
+/**
+ * 全局键盘的唯一入口（旧 `bindEvents()` 末尾那一段 document keydown）。
+ *
+ * 三件事，顺序与旧页面逐行对齐：
+ * 1. `⌘K` / `Ctrl+K` 打开命令面板（**它真绑定的是打开面板本身**，不是搜索视图；
+ *    因此 rail 的搜索按钮上不印 `⌘K` 徽标——界面不承诺一个按键做不到的事）；
+ * 2. `ESC` 走层序表 `handleEscape()`；
+ * 3. `M` / `T` 两个单键跳转，**只在人不在输入框里时**生效（旧页面 `target.matches('input,textarea')`）。
+ */
+function onGlobalKeydown(event) {
+  if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'k') {
+    event.preventDefault();
+    cmdOpen.value = true;
+    return;
+  }
+  if (event.key === 'Escape') {
+    handleEscape();
+    return;
+  }
+  // 单键跳转不穿透弹窗与命令面板：那两层有自己的输入框与快捷键语义。
+  if (hasOpenModal() || cmdOpen.value) return;
+  const target = event.target;
+  if (target && typeof target.matches === 'function' && target.matches('input,textarea')) return;
+  const key = String(event.key).toLowerCase();
+  if (key === 'm') showMessagesView();
+  if (key === 't') showTaskBoard();
+}
+
+/**
+ * ESC 的层序（唯一一份）：
+ * **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 rail > ≤900px 右抽屉 dock > 搜索视图**。
+ *
+ * 依据是旧页面 `app/alibot/studio/app.js:10578-10620` 的 document keydown 逐行顺序：
+ * ① `#cmdOverlay` 未隐藏 ⇒ closeCmd；② `#agentDeleteOverlay` 未隐藏 ⇒ `busy` 时不收，否则关闭；
+ * ③ 其余弹窗（settings / reminders / roster / budget / channel / agent / task）；④ 移动左抽屉；
+ * ⑤ ≤900px 的右抽屉（桌面 dock 是常驻列，ESC 不管它）；⑥ `state.mode === 'search'` **最后**一层。
+ * 有一处是**有意差异**：③ 在旧页面是无栈、一次全关，本版改成「只关最上面那一层」
+ * （栈在 `lib/modal-stack.js`）。
+ */
+function handleEscape() {
+  // ① 命令面板是 `.overlay` + `.cmd`（不是 `.modal`）：不进模态栈，层序第①格自己裁决。
+  if (cmdOpen.value) {
+    cmdOpen.value = false;
+    return;
+  }
+  // ②+③：模态栈由 `ModalShell` 裁决（它在 document 的**捕获**阶段吃掉 ESC 并判 `busy`），
+  // 因此这里只需要早退——两边都在，ESC 的唯一性就不依赖监听注册顺序。
+  if (hasOpenModal()) return;
+  // ④ 移动左抽屉盖在内容上，先收它。
+  if (railOpen.value) {
+    railOpen.value = false;
+    return;
+  }
+  // ⑤ ≤900px 的右抽屉同样盖在内容上（它没有遮罩，ESC 是它的键盘出口）。
+  if (mobileShell() && dockDrawerOpen.value) {
+    closeRunPanel();
+    return;
+  }
+  // ⑥ 搜索视图是最后一层：ESC 退回消息流。
+  if (mode.value === 'search') showMessagesView();
+}
+
+// 整页只有这一个键盘监听（ESC 的层序与 ⌘K / M / T 共用一个入口，不各挂一份）。
+document.addEventListener('keydown', onGlobalKeydown);
+onBeforeUnmount(() => document.removeEventListener('keydown', onGlobalKeydown));
 
 async function retryPending(clientId) {
   const pending = state.pending.find((item) => item.clientId === clientId);
@@ -288,6 +371,94 @@ function closeRunPanel() {
   dockDrawerOpen.value = false;
 }
 
+/* ─── 主线视图：消息流 ⇄ 搜索（`mode`） ──────────────────────────────
+   旧落点 `app.js` 的 `showSearchView()` / `showMessagesView()` / `setViewMode()`。
+
+   搜索是**主线视图**：它占住消息流那块位置，于是频道头（含页签）与 composer 一起让位
+   （旧 `syncChromeVisibility()`：`mode === 'search'` 时三者同进同出）。dock 不受影响——
+   它是右侧常驻列，与主线视图是两个维度（旧 `setViewMode()` 从不碰 dock）。 */
+
+/** 进搜索视图（rail 的 `btn-workspace-search`）。不清查询词：回到搜索时上一次的词还在。 */
+function showSearchView() {
+  mode.value = 'search';
+  railOpen.value = false;
+}
+
+/** 回消息流：搜索视图的退出口（ESC 最后一层、`M` 键、命令面板的「消息视图」都落这里）。 */
+function showMessagesView() {
+  // 离开搜索时把挂起的那一拍与在途响应一起作废：晚到的命中不该在人已经离开后改界面。
+  if (mode.value === 'search') search.leave();
+  mode.value = 'channel';
+}
+
+/**
+ * 任务看板还没迁到本版（T6）。
+ *
+ * `T` 是**真绑定**的键（票面：面板里保留 `M` / `T` 两枚 kbd 标签），但它的落点（看板）还没迁过来，
+ * 因此按下它什么都不发生——这比撤销绑定更诚实：命令面板里那一条是 `disabled` 条目并带
+ * `app.notMigrated` 的 `title`，两者口径一致。T6 落地时只删这个开关。
+ */
+const tasksAvailable = ref(false);
+
+function showTaskBoard() {
+  if (!tasksAvailable.value) return;
+}
+
+/** dock 现在有没有可切换的形态：与频道头的运行面板入口同一份判据（私信下没有）。
+    旧页面的是 `dockAvailable()`（含任务线程与成员形态）；本版只有运行面板这一档有内容。 */
+const dockToggleAvailable = computed(() => !isDm.value && Boolean(target.value));
+
+/** 命令面板里的「切换详情面板」（旧 `toggleDock()`）：开着就关，关着就开运行面板。 */
+function toggleDock() {
+  if (!dockToggleAvailable.value) return;
+  if (dockTarget.value && dockTarget.value.kind === 'run') closeRunPanel();
+  else openRunPanel();
+}
+
+/**
+ * 命令表（旧 `commandList()`）
+ *
+ * 三组，顺序即呈现顺序：跳转（消息视图 / 任务看板）→ 动作（新建频道 / 新建任务 / 切换详情面板）
+ * → **动态**频道组（当前工作台的频道，不是写死的种子名）。
+ *
+ * 三条纪律：
+ * - 命令归属用**稳定 id**（`view-messages` / `new-channel` / `channel:<id>`…），不用标签：
+ *   频道名可能与某条命令同名，标签不是键；
+ * - **只有真绑定的快捷键**才印 `kbd`：`M` 消息视图、`T` 任务看板（原型里的 `N` / `⇧N` / `D` 没有
+ *   绑定任何按键，因此不出现）；
+ * - 指向**未迁面**的命令是禁用条目（`view-board` 等 T6、`new-task` 等 T7），
+ *   不渲染成按下去什么都不发生的假入口。
+ */
+const commands = computed(() => {
+  const list = [
+    { id: 'view-messages', group: 'cmd.groupJump', label: t('cmd.messages'), kbd: 'M', run: showMessagesView },
+    { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', disabled: true, run: showTaskBoard },
+    { id: 'new-channel', group: 'cmd.groupAction', label: t('rail.newChannel'), run: () => { channelFormOpen.value = true; } },
+    { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), disabled: true, run: () => {} },
+  ];
+  // 私信下 dock 没有可显示的形态：这条命令**不列**（与频道头入口同一份判据）。
+  if (dockToggleAvailable.value) {
+    list.push({ id: 'toggle-dock', group: 'cmd.groupAction', label: t('dock.toggle'), run: toggleDock });
+  }
+  state.channels.forEach((channel) => {
+    list.push({
+      id: 'channel:' + channel.id,
+      group: 'cmd.groupChannels',
+      label: `#${channel.name}`,
+      run: () => selectTarget(channel.id),
+    });
+  });
+  return list;
+});
+
+/** 跑一条命令：先关面板再动作（旧 `runCmd()` 同一条；面板不该留在下一步的界面上）。 */
+function runCommand(commandId) {
+  const command = commands.value.find((item) => item.id === commandId);
+  if (!command || command.disabled) return;
+  cmdOpen.value = false;
+  command.run();
+}
+
 /** 私信下三档一档都不出现：`dockAvailable()` 的判据（私信既没有 team 运行，也没有频道成员）。
     运行面板不是私信的东西，因此私信下 `dockTarget` 恒为 `null`，整栏消失。 */
 const visibleDockTarget = computed(() => (isDm.value ? null : dockTarget.value));
@@ -300,37 +471,9 @@ function mobileShell() {
   return Boolean(window.matchMedia(MOBILE_SHELL_QUERY).matches);
 }
 
-/**
- * ESC 的层序（唯一一份，T4 落地时直接复用本函数，不另写第二份）：
- * **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 rail > ≤900px 右抽屉 dock > 搜索视图**。
- *
- * 依据是旧页面 `app/alibot/studio/app.js:10578-10620` 的 document keydown 逐行顺序：
- * ① `#cmdOverlay` 未隐藏 ⇒ closeCmd；② `#agentDeleteOverlay` 未隐藏 ⇒ `busy` 时不收，否则关闭；
- * ③ 其余弹窗（settings / reminders / roster / budget / channel / agent / task）；④ 移动左抽屉；
- * ⑤ ≤900px 的右抽屉（桌面 dock 是常驻列，ESC 不管它）；⑥ `state.mode === 'search'` **最后**一层。
- * 有两处是**有意差异**：③ 在旧页面是无栈、一次全关，本版改成「只关最上面那一层」
- * （栈在 `lib/modal-stack.js`）；① 与 ⑥ 的面（命令面板 / 搜索视图）还没迁到本版，归 T4。
- */
-function onEscape(event) {
-  if (event.key !== 'Escape') return;
-  // ①+②+③：命令面板与模态栈由 `ModalShell` 的模块级栈裁决（它在 document 的捕获阶段吃掉
-  // ESC 并判 `busy`），因此这里只需要早退——两边都在，ESC 的唯一性就不依赖监听注册顺序。
-  if (hasOpenModal()) return;
-  // ④ 移动左抽屉盖在内容上，先收它。
-  if (railOpen.value) {
-    railOpen.value = false;
-    return;
-  }
-  // ⑤ ≤900px 的右抽屉同样盖在内容上（它没有遮罩，ESC 是它的键盘出口）。
-  if (mobileShell() && dockDrawerOpen.value) {
-    closeRunPanel();
-    return;
-  }
-  // ⑥ 搜索视图（`state.mode === 'search'`）是最后一层：随 T4 在这里补。
-}
-
-// 提醒 / 设置 / Agent 详情 / 名册 / 配置 / 预算都还没迁到本版：
-// 对应的入口由各组件自己的「是否可用」开关关着（不渲染），而不是渲染一个只弹 toast 的假按钮。
+// 提醒 / 设置由 rail 头两枚入口打开（`RemindersModal` / `SettingsModal`）；Agent 详情 / 名册 /
+// 配置 / 预算都还没迁到本版：对应的入口由各组件自己的「是否可用」开关关着（不渲染），
+// 而不是渲染一个只弹 toast 的假按钮。
 </script>
 
 <template>
@@ -361,6 +504,7 @@ function onEscape(event) {
       :reminder-pending="reminderPending"
       :agent-detail-available="agentDetailAvailable"
       @select-target="selectTarget"
+      @open-search="showSearchView"
       @open-reminders="remindersOpen = true"
       @open-settings="settingsOpen = true"
       @new-channel="channelFormOpen = true"
@@ -394,8 +538,12 @@ function onEscape(event) {
         {{ t('conn.reconnecting') }}
       </div>
 
+      <!-- 搜索占住消息流那块位置（旧 `syncChromeVisibility()`）：频道头（含页签）与 composer
+           在 `mode === 'search'` 时与消息流一起让位。用 `hidden` 属性而不是 `v-if`：这三块对
+           「在这一帧之前填到一半的东西」有意义（滚动位置、未发送的草稿），撕毁重建会让它们凭空丢。 -->
       <ChannelHeader
         v-if="target"
+        :hidden="searchActive || undefined"
         :target="target"
         :is-dm="isDm"
         :is-archived-dm="archived"
@@ -413,6 +561,7 @@ function onEscape(event) {
       <MessageStream
         v-if="activeTab === 'messages'"
         ref="stream"
+        :hidden="searchActive || undefined"
         :state="state"
         :messages="messages"
         :typing-names="ctx.typingNames.value"
@@ -420,8 +569,12 @@ function onEscape(event) {
         @discard="discardPending"
       />
 
+      <!-- 搜索视图（主线视图的第二档）：与消息流共用同一块内容区，是「二选一」而不是叠层。 -->
+      <SearchView :search="search" :active="searchActive" :hidden="!searchActive || undefined" />
+
       <ComposerBox
         v-if="activeTab === 'messages'"
+        :hidden="searchActive || undefined"
         :placeholder="placeholder"
         :disabled="archived"
         :online="state.online"
@@ -461,6 +614,15 @@ function onEscape(event) {
       v-model:open="settingsOpen"
       :settings="state.settings"
       :apply-settings="ctx.applySettings"
+    />
+
+    <!-- ⌘K 命令面板：`.overlay` + `.cmd`（**不是** `ModalShell` 的 `.modal`），因此不进模态栈；
+         ESC 归 `handleEscape()` 的第①层。 -->
+    <CommandPalette
+      v-model:open="cmdOpen"
+      :commands="commands"
+      :disabled-reason="t('app.notMigrated')"
+      @run="runCommand"
     />
 
     <div class="toast-wrap" data-od-id="toast-wrap">

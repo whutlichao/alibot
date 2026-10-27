@@ -309,9 +309,16 @@ describe('未迁面的入口', () => {
     expect(wrapper.find('[data-open-task]').exists()).toBe(false);
   });
 
-  test('左栏：工作台搜索还不渲染（它背后是未迁的主线搜索视图）', () => {
+  test('左栏：工作台搜索已迁（#304）⇒ 入口在 `.search-shell` 里，点它只发一个事件', async () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
-    expect(wrapper.find('[data-od-id="btn-workspace-search"]').exists()).toBe(false);
+    const entry = wrapper.find('#rail .search-shell [data-od-id="btn-workspace-search"]');
+    expect(entry.exists()).toBe(true);
+    expect(entry.attributes('title')).toBe('搜索工作台');
+    // 旧页面的 `.search-btn` 上那枚 `⌘K` 徽标**不搬**：`⌘K` 真绑定的是命令面板，不是搜索。
+    expect(entry.find('kbd').exists()).toBe(false);
+
+    await entry.trigger('click');
+    expect(wrapper.emitted('open-search')).toHaveLength(1);
   });
 
   test('左栏：提醒 / 设置已迁（#302）⇒ 两枚入口出现在 `.rail-head`，圆点缺省不亮', () => {

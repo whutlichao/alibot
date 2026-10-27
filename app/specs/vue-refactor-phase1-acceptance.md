@@ -157,16 +157,19 @@ members + member-statuses），SSE 连接数 1。
 
 v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` 承载：
 
-任务看板与任务线程、审批卡、Agent 详情、搜索与 ⌘K 命令面板、频道配置 / 回应预算 /
-成员名册等弹窗、新建频道 / 新建私信 / 新建 Agent 的表单、**任务运行面板**（它挂在任务线程头，随线程那张票进来；频道运行面板已迁）。
-（提醒与设置两张弹窗已随阶段 A 的票 #302 迁完，**附件上传**已随票 #305 迁完，都不再在这个清单里。）
+任务看板与任务线程、审批卡、Agent 详情、**任务运行面板**（它挂在任务线程头，随线程那张票进来；
+频道运行面板已迁）。
+
+阶段 A 已把这份清单里的六面迁完，逐票读数见下面各节：共享弹窗壳与 dock 三档 = 票 #300、
+三个新建表单 = 票 #301、提醒与设置两张弹窗 = 票 #302、频道头三工具（名册 / 配置 / 预算）= 票 #303、
+搜索与 ⌘K 命令面板 = 票 #304、**附件上传** = 票 #305。
 
 **这些面在 v2 上不留假入口**（ADR-0038 §五），分两种处理：
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | 工作台搜索（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
-| **可见但禁用**（`title` 说明理由） | 新建频道 / 新建 Agent | 空库里唯一的引导文案就是「新建一个频道」——把按钮也藏掉等于让人无路可走 |
+| **不渲染** | Agent 详情（详情面归 T10，但 rail 的 Agent 行**不再是死行**：点它开与该 Agent 的私信）；任务页签；「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
+| **可见但禁用** | **这一档现在空了**（票 #301 把新建频道 / 新建 Agent 翻正） | 兜底规则仍成立：将来再出现「面还没迁、但入口是空工作台唯一出路」的情况，按可见 + 禁用 + `title` 用词条 `app.notMigrated` 处理，而不是渲染一个按下去什么都不发生的按钮 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
 默认关）与 `runPanelAvailable`（运行面板，**已迁 ⇒ 默认开**）。迁完一个面翻一个开关，组件不用改。
@@ -275,7 +278,7 @@ npx vitest run（app/frontend）          9 files / 171 passed（新增 tests/ru
 | 焦点进入与回收 | 同上的 `firstFocusable()` / `restoreFocus()` | 打开 ⇒ `.modal-body` 里第一个可聚焦元素（跳过 `disabled` 与 `hidden` 子树；正文没有可聚焦件时才落到标题行的关闭键）；关闭 ⇒ 打开那一刻的 `document.activeElement`（不是 `body`） |
 | dock 三档由 `dockTarget` 推导 | `components/DockPanel.vue` | `dockTarget = { kind: 'run' \| 'members' \| 'task' }`；`null` ⇒ 整栏不渲染；`run` 档没有 `panel` 也按「没有形态」处理（不铺空壳）。`run` 接 `RunPanel`（`pools` 照旧往下传），另两档是 `<slot name="members">` / `<slot name="task">`，内容归 T3 / T7 |
 | 私信下一档都不出现 | `App.vue` 的 `visibleDockTarget` | 私信下 `dockTarget` 恒 `null`（`dockAvailable()` 判据：私信既没有 team 运行也没有频道成员），整栏消失 |
-| ESC 层序表 | `App.vue` 的 `onEscape()` | **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 > 搜索视图**，依据 `app.js:10578-10620` 的逐行顺序；T4（#304）直接复用这个函数 |
+| ESC 层序表 | `App.vue` 的 `onEscape()`（票 #304 起改名 `handleEscape()`，同一个函数） | **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 > 搜索视图**，依据 `app.js:10578-10620` 的逐行顺序；T4（#304）直接复用这个函数 |
 
 **测试装置上的一处取舍**：`App.vue` 没有新增 props / `defineExpose`——`mount(App, { props: { sourceFactory }, attachTo: document.body })`
 配上 `fetch` 替身就足以驱动 dock 的三档判据与 ESC 层序（挂到 body 之后 `document.dispatchEvent` 与
@@ -763,3 +766,145 @@ AssertionError: expected 1 to be +0 // Object.is equality
   `attachment_ids`」——后端把绑定与消息落库放在同一个事务里。消息失败时前端**不调用**绑定，
   附件留作草稿；草稿的内容端点回 404，因此屏幕上不会出现「看起来能下载其实是孤儿」的链接。
 - **多附件同时发送没有并发上限**：票面把配额策略列为 Out of Scope，本票逐条上传、逐条报错。
+### 阶段 A · 票 #304：搜索主线视图 + ⌘K 命令面板（读数）
+
+本票把 v2 从「只有 `channel` 一态」推到**两个主线视图**：搜索视图（占消息流那块位置）与
+消息流；同时把 rail 的 `btn-workspace-search` 从「不渲染」翻正，并把 ⌘K 命令面板接上。
+旧落点是 `studio/app.js:613-750`（`renderSearchResults` / `renderSearchFacets` / `showSearchView` /
+`setSearchFacet` / `runSearch`）与 `:755-800`（`commandList` / `renderCmd` / `openCmd` / `closeCmd` /
+`runCmd`）；旧页面文件**一行未改**。
+
+#### 一、`mode: 'channel' | 'search'` —— 一个**新的状态维度**
+
+票面明写「这是 ADR-0038 §五 里没提的新状态维度」，因此把它记在这里：v2 的呈现状态除了
+「当前 target」「activeTab（消息 / 任务）」「dockTarget（dock 的形态）」之外，还多出
+**主线视图**这一维。
+
+| 判据 | 落点 | 说明 |
+| --- | --- | --- |
+| 主线视图是 `'channel' \| 'search'` 二选一 | `App.vue` 的 `const mode = ref('channel')` | 搜索**占住消息流那块位置**，不是盖住界面的弹层（旧页面 `showSearchView()` 的注释与人定 2026-10-17 的 D14）。因此没有遮罩、不进 `modal-stack`，显隐由 `mode` 驱动 |
+| 为什么用 `App.vue` 的 `ref` 而不是新 store | 同上 | `stores/workspace.js` 的 `state` 是**后端镜像**（每个字段都能在 `/api/workspace` 等载荷里找到同名出点）；`mode` 是纯呈现状态，混进去会让「哪些字段是后端说的」这条边界失守。它又与 `activeTab` / `dockTarget` 同级（都由 App 裁决、都只影响呈现），放同一个 `ref` 层级最省事；不新建 `stores/view-mode.js` 是因为本票只有这一个字段，多一个模块只多一处要读的文件 |
+| 搜索让位哪些面 | `App.vue` 模板的 `:hidden="searchActive"` | 频道头（含页签）与 composer 与消息流一起让位——旧 `syncChromeVisibility()` 的 `mode === 'search'` 分支同一条。用 `hidden` 而不是 `v-if`：这三块有「在这一帧之前填到一半的东西」（滚动位置、未发送的草稿） |
+| dock 不受影响 | `visibleDockTarget` | dock 是右侧常驻列，与主线视图是**两个维度**（旧 `setViewMode()` 从不碰 dock） |
+| 换 target 时退出搜索 | `selectTarget()` 的第一句 `showMessagesView()` | 旧 `selectTarget()` 的 `state.mode = 'channel'` 同一条。这句话放在「同 target 早退」**之前**：点当前那一条同样回消息流（旧页面没有那道早退） |
+| 搜索的读数与请求 | `stores/search.js`（`createSearchStore()`） | 只做三件事：发请求、把命中落进响应式镜像、守版本 |
+
+#### 二、搜索的五条行为判据
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| **120ms 防抖** | `stores/search.js` 的 `SEARCH_DEBOUNCE_MS` + `setQuery()` | 落笔后延后一拍发请求；连打 5 个字符只发 **1** 次。facet 切换与 Enter **立即执行**（Enter 先取消防抖那一拍，因此仍然只 1 次请求） |
+| **facet 是后端的过滤参数** | `setFacet()` | 切档位 = **换一次请求**（`?q=&facet=`），前端**不对已取回的命中集再筛一遍**。用例断言请求次数 1→2 且第二发带新 facet，同时后端仍回三条 ⇒ 界面仍显示三条（前端没按 `kind` 过滤） |
+| **四档 facet** | `lib/search.js` 的 `SEARCH_FACETS` + `facetLabel()` | `all` / `message` / `task` / `agent`，取值与顺序照原型 `:631-635`（也是后端 `SearchFacet` 的枚举）；选中态是 `.filter-chip.is-on` + `aria-pressed` |
+| **空态三档各不相同** | `components/SearchView.vue` 的 `emptyState` | 未输入 ⇒ `search.idleTitle` / `idleBody`；零命中 ⇒ `search.emptyTitle`（带查询词）/ `emptyBody`；出错 ⇒ 结果面**不铺**「没有找到」，错误话自己占 `#searchError`。`searching` 是第四档（加载中）。**出错 ≠ 零命中**是旧 `renderSearchResults()` 的第一条分支，被本票原样搬过来 |
+| **`search.offline`** | `stores/search.js` 的 `run()` | 断线（`isOnline()` 为假）时**不打请求**，直接 `state.error = t('search.offline')` |
+| **版本守卫** | `stores/search.js` 的模块内 `let version` | 每发一次请求 +1；晚到的响应（成功**与**失败两条路径）在 `requestVersion !== version` 时整份丢弃。与 `stores/run-panel.js` 的版本守卫同形（照它写，不发明第二种） |
+| 高亮只按后端区间切 | `lib/search.js` 的 `hitSegments()` | 只按 `highlight_ranges` 切文本段，越界 / 倒序 / 重叠 / 非整数的区间一律**跳过**（不修正、不重排——修一次就等于在猜后端想高亮哪里）；UTF-16 下标（与后端 `db.py` 的 `_search_highlight_ranges` 同口径），因此可直接 `slice` |
+| 命中行是只读行 | `lib/search.js` 的 `hitIsInteractive()` / `SearchView.vue` | 旧页面只有任务命中可点（打开右侧任务线程），而任务线程随 T6 未迁 ⇒ 本版三类命中一行都不做 `button`。T6/T7 落地时只改 `hitIsInteractive()` |
+| 查询词未输入时不发请求 | `setQuery()` 空串分支 + `setFacet()` 无查询词分支 | 空串 ⇒ 回到「未输入」空态并作废挂起的那一拍；无查询词时切档位只换选中态 |
+| 离开搜索视图 | `search.leave()` | 只取消防抖那一拍（人已经在看消息流了，不该多发一次搜索）；**在途那一发照旧落地**（旧 `showMessagesView()` 不碰 `state.search`），于是再进来看到的是上一次的结果而不是空镜 |
+
+#### 三、⌘K 命令面板
+
+| 判据 | 落点 | 说明 |
+| --- | --- | --- |
+| **不套 `ModalShell`** | `components/CommandPalette.vue` | 协调者裁定（ADR-0038 §五）：根是 `.overlay` + `.cmd`，不是 `.overlay` + `.modal`；关闭语义与 z-index 档位都不同。因此它**不进** `lib/modal-stack.js` |
+| **复用同一份 ESC 层序** | `App.vue` 的 `handleEscape()` | 第①格（命令面板）由本票补齐，剩余四格（模态栈 / 移动左抽屉 / ≤900px 右抽屉 / 搜索视图）**原样保留**（#300 立起来的那张表）。`⌘K`、`ESC`、`M`/`T` 共用**一个** document 监听（`onGlobalKeydown`），没有第二份层序 |
+| `⌘K` / `Ctrl+K` 打开 | 同上 | `(metaKey \|\| ctrlKey) && key.toLowerCase() === 'k'` ⇒ `cmdOpen = true`（旧 `openCmd()`）。它真绑定的是**打开面板本身**，不是搜索视图——因此 rail 的搜索按钮上不印 `⌘K` 徽标 |
+| 命令集 | `App.vue` 的 `commands` computed | 跳转（`view-messages` / `view-board`）+ 动作（`new-channel` / `new-task` / `toggle-dock`）+ **动态**频道组（`state.channels` 现读，不是写死的种子名） |
+| **只呈现真绑定的快捷键** | 同上 | 只有 `M`（消息视图）与 `T`（任务看板）带 `kbd`；原型 `CMDS` 的 `N` / `⇧N` / `D` 没有绑定任何按键 ⇒ 不出现。用例断言面板里 `.cmd-item .kbd` 恰为 `['M','T']` |
+| **稳定 id 做归属** | `data-cmd` | `view-messages` / `new-channel` / `channel:<后端 id>`；不用标签文本（频道名可能与某条命令同名，标签不是键） |
+| 指向未迁面的命令是**禁用条目** | `disabled` + `title`（`app.notMigrated`） | 任务看板（T6）与新建任务（T7）还没迁 ⇒ `view-board` / `new-task` 是 `disabled` 条目，不渲染成按下去什么都不发生的假入口（ADR-0038 §五）。Enter 跑**第一条可执行的**，禁用条目占着头位时不吞掉一次回车 |
+| 私信下 `toggle-dock` **不列** | `dockToggleAvailable` | 与频道头运行面板入口**同一份判据**（私信既没有 team 运行也没有频道成员）；是「这一条不列」，不是整块消失 |
+| `M` / `T` 只在人不在输入框里时生效 | `onGlobalKeydown()` | `target.matches('input,textarea')` 就 return（旧页面同一条）；弹窗与命令面板开着时也不穿透 |
+| 焦点 | `CommandPalette.vue` 的 `watch(open)` | 打开把焦点送进 `#cmdInput`（旧 `openCmd()` 最后一行）；每次打开清空筛选词 |
+| 关闭的三条路径 | 同上 + `handleEscape()` | ESC（层序第①格）、点遮罩**自身**（`event.target === event.currentTarget`）、跑完一条命令后先关再动作（旧 `runCmd()`） |
+
+#### 四、红 → 绿（原样读数）
+
+**红 #1**（第一刀：rail 入口 + `mode` + 搜索视图三档空态；实现尚未落地）
+```
+ FAIL  tests/search-commands.test.js > 搜索视图是主线视图 > rail 有 btn-workspace-search；点击后主线进入搜索视图，消息流 / composer / 频道头让位
+AssertionError: expected false to be true // Object.is equality
+ ❯ tests/search-commands.test.js:184:28
+    184|     expect(entry.exists()).toBe(true);
+
+ FAIL  tests/search-commands.test.js > 搜索视图是主线视图 > 未输入：`搜索整个工作区` 空态，且不发请求
+Error: Cannot call trigger on an empty DOMWrapper.
+ ❯ openSearch tests/search-commands.test.js:159:60
+
+ Test Files  1 failed (1)
+      Tests  4 failed (4)
+```
+
+**红 #2**（第二刀：命令面板接线摘掉后单独复跑，证明那 9 条真的依赖它）
+```
+ FAIL  tests/search-commands.test.js > ⌘K 命令面板 > ⌘K 打开面板、ESC 关闭；面板里只有 M / T 两枚 kbd（N / ⇧N / D 不出现）
+AssertionError: expected false to be true // Object.is equality
+ FAIL  tests/search-commands.test.js > ⌘K 命令面板 > 命令集：跳转 + 动作 + 动态频道组；未迁面的两条是禁用条目（不是假入口）
+AssertionError: expected [] to deeply equal [ 'view-messages', 'view-board', …(5) ]
+ FAIL  tests/search-commands.test.js > ⌘K 命令面板 > 私信下 `toggle-dock` 那条命令不列（与频道头运行面板入口同一份判据）
+AssertionError: expected [] to include 'view-messages'
+ ...
+      Tests  9 failed | 1 passed | 17 skipped (27)
+```
+
+**绿**
+```
+ Test Files  14 passed (14)
+      Tests  262 passed (262)
+```
+（其中 `tests/search-commands.test.js` 31 条；`components.test.js` 里「工作台搜索还不渲染」那一条同步
+改写成新契约「已迁 ⇒ 入口在 `.search-shell` 里、点它只发一个事件、按钮上没有 `kbd`」——不改就会
+无意义地红，而那条契约本来就是本票要翻的。）
+
+#### 五、门禁读数
+
+```
+npx vitest run（app/frontend）     14 files / 262 passed（新增 tests/search-commands.test.js 31 条）
+node --test app/tests/*.test.cjs   389 passed / 0 failed（旧页面用例族未削弱）
+scripts/check.sh --fast            exit 0（ruff check / ruff format --check / mypy / pyright 干净）
+```
+全量 `scripts/check.sh`（含 pytest）由协调者在集成分支统一跑一次，本票不重复跑。
+
+#### 六、真浏览器实测（ego-browser，`python -m alibot --port 8807 --data-dir /tmp/alibot-p2a-304`）
+
+造数：`POST /api/channels`（design / 设计频道）+ 两条 `POST /api/channels/{id}/messages`
+（正文含「设计」）+ 一条 `POST /api/channels/{id}/tasks`（「设计系统 token 补齐」）+
+`POST /api/agents`（Ada / 设计师 / `ollama:qwen-max`），于是四档 facet 都有真命中。
+
+| 票面验收项 | 读数 | 截图 |
+| --- | --- | --- |
+| rail 出现 `btn-workspace-search`，点击进搜索视图 | 入口存在、`title` = 「搜索工作台」、文案「搜索消息、任务…」、按钮内**没有** `kbd`；点开后面板读数为 `searchView {hidden:false, display:flex, visible:true}` / `messagesView {hidden:true, display:none}` / `composer {hidden:true}` / `#chanHead.hidden = true`，焦点落在 `searchInput` | `issue-304-01-rail-search-entry.png`、`issue-304-02-search-idle.png` |
+| 未输入空态 | `搜索整个工作区` + `消息不可编辑、不可删除；搜索覆盖消息、任务与 Agent。`，四档 chip 全部 `is-on/aria-pressed` 一致（`all` 选中），**不打请求** | `issue-304-02-search-idle.png` |
+| 真查询（防抖） | 逐字输入「设计」后请求日志只有 **1** 条 `{q:'设计', facet:'all'}`；四行命中：两条消息（`频道 · #design` / `消息` / `.r-title mark` = `['设计']` / 片段「来自 Owner」）、一条任务（`#59f762 · 待认领`）、一条 Agent（`成员` / `空闲 · ollama:qwen-max`） | `issue-304-03-search-results.png` |
+| 切 facet 发一次新请求 | 依次切 `message` → `task` → `agent` → `all`：请求数 **2 / 3 / 4 / 5**，每一发的 `facet` 与落点档位一致；命中行数随后端结果变（2 / 1 / 1 / 4），**不是前端筛出来的**；chip 的 `is-on:aria-pressed` 每档都对 | `issue-304-04-search-facet-task.png`、`issue-304-05-search-facet-agent-empty.png` |
+| 零命中空态 | 输入 `zzz不存在` ⇒ `没有找到“zzz不存在”` + `换个关键词，或检查拼写。`，`#searchError.hidden = true` | `issue-304-06-search-zero-results.png` |
+| 出错 ≠ 零命中 | `/api/search` 换成 reject（等价后端这条不可达）⇒ `#searchError` `hidden=false, display=block`，文案「搜索失败：后端不可达或请求未完成（模拟后端不可达）。」，结果面 `innerText` 为**空**且**没有** `.empty` 节点 | `issue-304-07-search-error.png` |
+| `⌘K` 打开面板 | `#cmdOverlay` `hidden=false, display=grid`，焦点 `cmdInput`，分组 `['跳转','动作','频道']`，条目 6 条（`view-messages`/`view-board`/`new-channel`/`new-task`/`toggle-dock`/`channel:ch_71298c7f13be`），**`kbd` 恰为 `['M','T']`**；`view-board` 与 `new-task` 是 `disabled` 且 `title` = 「这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开」 | `issue-304-08-cmd-palette.png` |
+| ESC 关闭面板 | ESC 后 `#cmdOverlay` 整个消失 | — |
+| 私信下 `toggle-dock` 不出现 | 点 rail 的 Agent 行 ⇒ `#chanTitle = '@Ada'`、`#dock` 不存在；`⌘K` 后命令 id 为 `['view-messages','view-board','new-channel','new-task','channel:ch_71298c7f13be']`，`hasToggleDock = false` | `issue-304-09-cmd-dm-no-toggle-dock.png` |
+| `M` 只在人不在输入框里时生效 | 搜索视图里焦点在 `#searchInput` 时按 `m` ⇒ 只是打字（`inputValue = 'm'`、搜索视图仍在）；`blur()` 之后按 `m` ⇒ `searchVisible=false`、`messagesVisible=true`、`#chanHead` 可见 | `issue-304-10-m-back-to-messages.png` |
+| `toggle-dock` 命令真的开 dock | 面板里点 `toggle-dock` ⇒ `#dock` 出现、`class='dock is-open'`、宽 **380**、`#rpTitle = 'design'` | `issue-304-11-cmd-toggle-dock.png` |
+| 断线时 `search.offline`，不打请求 | 杀后端（`kill -9`）后 5 秒内 `#connBanner` 出现（「后端不可达：…」）；此时进搜索、输入「设计」⇒ `searchCalls = 0`、`#searchError` 文案「后端不可达：无法执行搜索。」、结果面为空 | `issue-304-12-search-offline.png` |
+| `T` 在输入框内不生效 | 焦点在 composer 的 textarea 里按 `t` ⇒ `composerValue = 't'`、搜索视图未打开（`T` 也不切看板） | — |
+
+截图（`.scratch/v2-p2a/`，已 gitignore）：`issue-304-01-rail-search-entry.png`、
+`issue-304-01-channel-before-search.png`（进搜索前的消息流，3 条消息）、
+`issue-304-02-search-idle.png`、`issue-304-03-search-results.png`、
+`issue-304-04-search-facet-task.png`、`issue-304-05-search-facet-agent-empty.png`、
+`issue-304-06-search-zero-results.png`、`issue-304-07-search-error.png`、
+`issue-304-08-cmd-palette.png`、`issue-304-09-cmd-dm-no-toggle-dock.png`、
+`issue-304-10-m-back-to-messages.png`、`issue-304-11-cmd-toggle-dock.png`、
+`issue-304-12-search-offline.png`。
+
+#### 七、本轮的已知边界
+
+- **旧页面目录一个字没动**：`git diff` 对 `studio/app.js` / `index.html` / `i18n.js` / `app.css` 全为空
+  ——`search.*`（24 条）与 `cmd.*`（8 条）词条早就在 `studio/i18n.js` 里，本票**一条词条都没新增**，
+  `app.css` 也一分没改（`.search-view` / `.result` / `.cmd` 那一整套类名早就为这个面定义好了）。
+- **任务看板与任务线程仍归 T6 / T7**：`view-board` / `new-task` 是禁用条目，`T` 按下去什么都不发生
+  （落点还没迁）。任务命中行因此也是只读行（旧页面那条可点是打开右侧任务线程）。
+- **Agent 详情仍归 T10**：搜索里的 Agent 命中同样是只读行。
+- **搜索结果不随 `target_id` 收窄**：旧页面 `runSearch()` 只传 `q` + `facet`，`target_id` 是后端
+  支持的参数但前端没用过；本票原样沿用（搜索是**全工作区**的，不是当前频道的）。

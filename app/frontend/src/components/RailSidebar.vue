@@ -12,8 +12,9 @@
 
      **这一版里 rail 上的入口分三类**（ADR-0038 §五：不放按下去什么都不发生的按钮）：
      1. 背后是**已迁面**的：频道 / 私信行的切换，提醒与设置两个弹窗（`.rail-head` 的两枚
-        `.icon-btn`），新建频道 / 新建 Agent 两张表单，Agent 行的「打开私信」，正常工作；
-     2. 背后是**未迁面的导航入口**（工作台搜索、Agent 详情）：整块**不渲染**——
+        `.icon-btn`），工作台搜索（搜索视图，票 #304），新建频道 / 新建 Agent 两张表单，
+        Agent 行的「打开私信」，正常工作；
+     2. 背后是**未迁面的导航入口**（Agent 详情）：整块**不渲染**——
         它们的价值就是把人带到另一处，带不到就不该出现；
      3. **空工作台的出路**（新建频道 / 新建 Agent）：#301 已把两张表单迁过来，因此两个按钮
         **可用**，点击打开 `ChannelFormModal` / `AgentFormModal`（外壳是 #300 的 `ModalShell`）。
@@ -42,6 +43,7 @@ const emit = defineEmits([
   'select-target',
   'open-reminders',
   'open-settings',
+  'open-search',
   'new-channel',
   'new-agent',
   'open-agent',
@@ -137,6 +139,25 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" /><circle cx="12" cy="12" r="3" />
         </svg>
+      </button>
+    </div>
+
+    <!-- 工作台搜索入口（旧 `studio/index.html:93-99` 的 `.search-shell` / `.search-btn`）。
+         它是**按钮**不是输入框：真正落笔的地方是主线搜索视图里的 `#searchInput`（票 #304）。
+         旧页面明确**不印** `⌘K` 徽标（人定 2026-10-17）：`⌘K` 真绑定的是打开命令面板，
+         印在搜索按钮上会让人以为它能开搜索——界面不承诺一个按键做不到的事。 -->
+    <div class="search-shell">
+      <button
+        class="search-btn"
+        type="button"
+        data-od-id="btn-workspace-search"
+        :title="t('rail.searchTitle')"
+        @click="emit('open-search')"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m21 21-4.34-4.34" /><circle cx="11" cy="11" r="8" />
+        </svg>
+        <span>{{ t('rail.searchPlaceholder') }}</span>
       </button>
     </div>
 
