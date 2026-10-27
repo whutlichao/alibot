@@ -583,21 +583,25 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 /* skills 右栏的详情（#283 / D5）：元数据 → 动作 → 正文。左栏当前行的选中态与左栏导航行同一
    档位语义（`--selected` 族）：竖条 = graphic 档、字色 = deep 档，零新增色位。 */
-/* 一行 = 文字区（真 `<button>`）+ 启停开关（兄弟节点，物理不重叠，见 `app.js:skillRow()`）。
-   上下 10px 把热区撑到 48px（`--fs-body` 行高 + hash 行约 28px + 20px）：40px 上下时名称与
-   开关贴得太近，触控板上点开关容易漤到行上换了选中项。左右用 `--sp-3`，与原先的竖条缩进同节奇。 */
-.skill-row { padding: 10px var(--sp-3); gap: var(--sp-5); border-bottom: 1px solid var(--border); border-left: 2px solid transparent; }
+/* 一行 = 文字区（真 `<button>`）+ 启停开关（兄弟节点，物理不重叠，见
+   `AgentDetailView.vue` 的 skills 列表）。行自身不留内边距、不设 gap，把 10px 上下间距与
+   12px 右侧间隙下沉到 `.skill-pick` 的 padding：文字区的点击热区因此等于整行内容盒——
+   除开关本身与行边框（左 2px、下 1px）外，行内容盒任意点都命中 `.skill-pick`。
+   选择器用 `.resource-row.skill-row`（0,2,0）覆盖文件后部 `.resource-row`（0,1,0）的
+   `padding: 10px 0` / `gap`：两者同为单类时只能靠书写顺序，不可靠。 */
+.resource-row.skill-row { padding: 0; gap: 0; border-left: 2px solid transparent; }
 .skill-row:last-child { border-bottom: 0; }
 /* 文字区：铺满剩下的宽度、左对齐（`<button>` 默认居中），视觉上仍是一条行。
-   `min-height: 48px` 是**点击靶**而不是排版值：实测删除描述后文字区只有 38px，名称与开关
-   贴得太近，触控板上点开关容易漥到行上换了选中项。撑到 48px 且不靠加 padding 撑
-   （padding 会把 hash 行推得更远、行看起来更空），实际占据仍是两行文字的高度、内容居中。 */
+   `min-height: 68px` 是**点击靶**而不是排版值：它覆盖整行内容盒（48px 文字区 + 上下各
+   10px），点行上下边缘也能选中而不是落空。10px 上下 / 12px 右侧由自身 padding 提供，
+   盒内文字与开关的几何与改动前逐像素一致（内容居中，行高不变）。 */
 .skill-pick {
-  flex: 1; min-width: 0; min-height: 48px; display: flex; flex-direction: column;
+  flex: 1; min-width: 0; min-height: 68px; display: flex; flex-direction: column;
   justify-content: center; gap: 2px;
-  padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  padding: 10px var(--sp-5) 10px 0;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.skill-row.is-active { border-left-color: var(--selected-graphic); background: var(--selected-soft); }
+.resource-row.skill-row.is-active { border-left-color: var(--selected-graphic); background: var(--selected-soft); }
 .skill-row.is-active .skill-pick b { color: var(--selected-deep); }
 /* 停用态：名称走 `--muted`（不是 `--faint`——那会把可点目标读成不可用），不删除线、不染红。
    开关自己会在左侧位置表达「关」，这里是给扫视时的第二眼确认。 */
