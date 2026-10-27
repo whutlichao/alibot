@@ -131,8 +131,19 @@ v2 页面只承诺**已迁完的那条链路**可用：
   从此是**真组件**而非插槽，三档仍由 `dockTarget` 一个 `ref` 推导；线程头的 `btn-thread-run-panel`
   把 dock 切 `run` 档并带 `task_id` 过滤，标题取**任务标题**（`createRunPanelStore({ activeTask })`
   这个原本恒 `null` 的缝在这里接上），从任务上下文关面板**回线程**；`new-task` 同时翻正
-  （`TaskFormModal.vue` 两个入口共用一张表单 ⇒ `POST /api/channels/{id}/tasks`））。
-- 未迁：审批卡、Agent 详情、**任务引用 chip / 频道指针 chip**（它们归 T8 / T9）。
+  （`TaskFormModal.vue` 两个入口共用一张表单 ⇒ `POST /api/channels/{id}/tasks`））、
+  **任务引用 chip 与频道指针 chip**（票 #309，阶段 B 第三票：`TaskRefChip.vue` 是这两个 chip 的
+  **唯一判据**，`MessageItem` 的两个分支（`kind='system'` 与对话）与 `TaskThread` 的讨论行
+  **三处复用**——旧 `appendTaskRefChip()` 同样在这三处各调一次。类名与属性逐字沿用旧页面
+  （`.task-ref-chip` / `data-open-task` / `data-task-pointer`，`app.css` 零改动）；`task_ref` 与
+  `task_pointer` 是**两条语义两个数据列、视觉同一个 chip**（`CONTEXT.md` **指针消息**）：前者文案
+  `msg.taskRef`，后者按任务载荷的 `unread_count` 在 `msg.taskThreadEntry` 与
+  `…Unread` 之间切，任务不在快照里就用 id 当名字、未读按 0（不编读数）。文案是 `computed`，
+  于是标读后已渲染的 chip 自己跟着变——旧页面那条 `syncTaskPointerChips()` 的定点改写不需要了。
+  点击只抛 `open-task`，落点是 `App.vue` 的 `openTask()`（两个 chip 一条路径）。阶段一那条
+  「带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」的反向断言**已翻正**。
+  「待审批 N」角标仍归 T8 的审批读数（那份读数还没在 v2 落地），本票不造第二份）。
+- 未迁：审批卡、Agent 详情。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
 

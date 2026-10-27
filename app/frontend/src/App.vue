@@ -740,8 +740,10 @@ function mobileShell() {
         :state="state"
         :messages="messages"
         :typing-names="ctx.typingNames.value"
+        :task-of="board.taskOf"
         @retry="retryPending"
         @discard="discardPending"
+        @open-task="openTask"
       />
 
       <!-- 任务看板（主线视图的第二档，票 #306）：与消息流共用同一块内容区。 -->
@@ -795,8 +797,10 @@ function mobileShell() {
       :thread-assignees-failed="threadAssigneesFailed"
       :thread-channel-mode="threadChannelMode"
       :online="state.online"
+      :thread-task-of="board.taskOf"
       @close="closeDock"
       @open-run-panel="openTaskRunPanel"
+      @open-task="openTask"
     />
 
     <!-- rail 头的两个弹窗（T2）：外壳是共享的 `ModalShell`，这里只给显隐与数据源。

@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "5a89669e9e61cf456d8c862e2b35aad8241ec0f3480234a91d0fe640ad5df198",
+  "sourceDigest": "02c660c98f5c8221d258c2fb0ec61cfdb8b865a4037a7e987f527157ee17d835",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
@@ -33,6 +33,7 @@
     "src/components/TaskBoard.vue",
     "src/components/TaskCard.vue",
     "src/components/TaskFormModal.vue",
+    "src/components/TaskRefChip.vue",
     "src/components/TaskThread.vue",
     "src/i18n/index.js",
     "src/lib/api.js",

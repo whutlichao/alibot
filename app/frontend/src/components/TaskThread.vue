@@ -22,6 +22,7 @@ import { computed, ref, watch } from 'vue';
 import AttachmentChip from './AttachmentChip.vue';
 import MarkdownBody from './MarkdownBody.vue';
 import MemberAvatar from './MemberAvatar.vue';
+import TaskRefChip from './TaskRefChip.vue';
 import { t } from '../i18n/index.js';
 import { timeLabel } from '../lib/format.js';
 import { allowedTransitions, taskNumber } from '../lib/task-board.js';
@@ -38,9 +39,13 @@ const props = defineProps({
   // 所属频道的协作模式（`'team'` 才铺那句「任务线程只唤醒队长」；配置读不到 ⇒ `null`，什么都不说）。
   channelMode: { type: String, default: null },
   online: { type: Boolean, default: true },
+  // 任务快照查名（`stores/task-board.js` 的 `taskOf(taskId)`）：讨论行上的任务 chip 读它
+  // 取标题与未读数（票 #309；旧 `renderTaskThread()` 的讨论行调的就是同一个
+  // `appendTaskRefChip()`）。
+  taskOf: { type: Function, default: null },
 });
 
-const emit = defineEmits(['close', 'open-run-panel']);
+const emit = defineEmits(['close', 'open-run-panel', 'open-task']);
 
 const state = computed(() => props.thread.state);
 const task = computed(() => state.value.task);
@@ -310,6 +315,8 @@ function focusReply() {
                 <div v-if="item.attachments && item.attachments.length" class="msg-attachments">
                   <AttachmentChip v-for="file in item.attachments" :key="file.id" :attachment="file" />
                 </div>
+                <!-- 任务 chip：与频道消息流是**同一份判据**（一个组件），不在这里再判一次。 -->
+                <TaskRefChip :message="item" :task-of="taskOf" @open-task="emit('open-task', $event)" />
               </div>
             </div>
             <div v-if="!replies.length" class="tt-empty">{{ t('task.repliesEmpty') }}</div>

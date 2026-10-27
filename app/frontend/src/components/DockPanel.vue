@@ -41,9 +41,11 @@ const props = defineProps({
   threadAssigneesFailed: { type: Boolean, default: false },
   threadChannelMode: { type: String, default: null },
   online: { type: Boolean, default: true },
+  // 任务快照查名（`stores/task-board.js` 的 `taskOf`）：线程讨论行上的任务 chip 读它（票 #309）。
+  threadTaskOf: { type: Function, default: null },
 });
 
-const emit = defineEmits(['close', 'open-run-panel']);
+const emit = defineEmits(['close', 'open-run-panel', 'open-task']);
 
 /**
  * 当前形态：由 `dockTarget` 推导。
@@ -83,8 +85,10 @@ const mode = computed(() => {
       :assignees-failed="threadAssigneesFailed"
       :channel-mode="threadChannelMode"
       :online="online"
+      :task-of="threadTaskOf"
       @close="emit('close')"
       @open-run-panel="emit('open-run-panel')"
+      @open-task="emit('open-task', $event)"
     />
     <!-- 频道成员面板（T3）的落点：成员面在 v2 走弹窗，这一档至今没有调用点。 -->
     <slot v-else-if="mode === 'members'" name="members" />
