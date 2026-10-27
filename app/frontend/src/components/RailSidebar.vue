@@ -25,6 +25,7 @@ import { computed, ref } from 'vue';
 import MemberAvatar from './MemberAvatar.vue';
 import PresenceDot from './PresenceDot.vue';
 import { t } from '../i18n/index.js';
+import { agentMembers, memberStatus } from '../lib/member-view.js';
 
 const props = defineProps({
   state: { type: Object, required: true },
@@ -61,13 +62,12 @@ function isArchived(dm) {
 const archivedDms = computed(() => props.state.dms.filter(isArchived));
 const liveDms = computed(() => props.state.dms.filter((dm) => !isArchived(dm)));
 
-/** 本机 Agent（全工作区名单，不按频道过滤——那是「频道成员」的事）。 */
-const localAgents = computed(() => props.state.members.filter((member) => member.kind === 'agent'));
+/** 本机 Agent（全工作区名单，不按频道过滤——那是「频道成员」的事）。判据与名册共用一处
+    （`lib/member-view.js`）：两份 `kind === 'agent'` 的过滤迟早会漂。 */
+const localAgents = computed(() => agentMembers(props.state.members));
 
 function statusOf(member) {
-  const agent = props.state.agents.find((item) => item.id === member.id);
-  if (agent && typeof agent.status === 'string') return agent.status;
-  return props.state.statuses[member.id] || 'offline';
+  return memberStatus(props.state, member);
 }
 
 /** 当前行：Agent 详情开着时整份 rail 没有当前行（详情是主线视图，不是某个 target）。 */

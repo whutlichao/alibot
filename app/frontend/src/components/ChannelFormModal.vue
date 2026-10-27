@@ -88,6 +88,7 @@ async function onSubmit() {
     :busy="busy"
     :title="t('channel.modalTitle')"
     :sub="t('channel.modalSub')"
+    close-id="channelModalClose"
     @update:open="emit('update:open', $event)"
   >
     <div class="field">

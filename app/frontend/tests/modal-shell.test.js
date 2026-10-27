@@ -266,4 +266,22 @@ describe('模块级栈与监听', () => {
     expect(later.emitted('update:open')).toEqual([[false]]);
     expect(later.emitted('close')).toHaveLength(1);
   });
+
+  test('关闭键的落点可以透传（旧页面十个 `#*Overlay` 各自有 id 与 data-od-id）', () => {
+    // 自动化取证与旧用例族按 `data-od-id` 定位关闭键（旧页面 `index.html:684/712/740` 的
+    // `roster-close` / `budget-close` / `channel-config-close`）。壳不透这个落点，那三张弹窗
+    // 在 v2 上就没有可定位的关闭键——真浏览器验收时抓到过这一次。
+    const wrapper = mountShell({
+      props: { open: true, title: '成员名册', closeId: 'rosterClose', closeOdId: 'roster-close' },
+    });
+    const button = wrapper.find('.modal-head button');
+    expect(button.attributes('id')).toBe('rosterClose');
+    expect(button.attributes('data-od-id')).toBe('roster-close');
+
+    // 不传时不渲染空属性（不留 `id=""` 这种悬空落点）。
+    const bare = mountShell({ props: { open: true, title: 'x' } });
+    const plain = bare.find('.modal-head button');
+    expect(plain.attributes('id')).toBeUndefined();
+    expect(plain.attributes('data-od-id')).toBeUndefined();
+  });
 });

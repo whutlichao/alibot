@@ -118,15 +118,3 @@ export function hitSnip(hit) {
   }
   return { text: '', authorDeleted: false };
 }
-
-/**
- * 结果行要不要做成可点。
- *
- * 旧页面**只有任务命中**可点（打开右侧任务线程），判据是载荷里有没有可打开的任务标识；消息命中
- * 的滚动定位与 Agent 详情面都还没有交付，因此那两类是非交互行。本版任务线程也**还没迁**，于是
- * 三类命中一律是 `div`：渲染一个点下去什么都不发生的按钮，比不渲染更难解释（ADR-0038 §五）。
- * 任务线程那张票落地时，把这里改成 `hit.task && hit.task.id` 即可，组件不用动。
- */
-export function hitIsInteractive() {
-  return false;
-}

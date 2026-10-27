@@ -17,7 +17,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import ModalShell from './ModalShell.vue';
-import { t } from '../i18n/index.js';
+import { hasKey, t } from '../i18n/index.js';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -49,7 +49,7 @@ const sub = computed(() => t('budget.sub', { name: channelName.value }));
 const sourceLabel = computed(() => {
   const source = budget.value ? budget.value.source : '';
   const key = 'budget.source.' + source;
-  return globalThis.AlibotI18n && globalThis.AlibotI18n.hasKey(key) ? t(key) : source;
+  return hasKey(key) ? t(key) : source;
 });
 
 /** 「已保存的档位」：待生效值优先；否则「当前有效上界就是频道覆盖」那一份；再否则内置默认。 */
@@ -139,10 +139,13 @@ async function save() {
 
 <template>
   <ModalShell
+    id="budgetOverlay"
     :open="open"
     :title="title"
     :sub="sub"
     :close-label="t('budget.closeAria')"
+    close-id="budgetClose"
+    close-od-id="budget-close"
     @close="emit('close')"
   >
     <div id="budgetBody" data-od-id="budget-body">
