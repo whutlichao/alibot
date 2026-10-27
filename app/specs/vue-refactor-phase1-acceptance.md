@@ -1216,7 +1216,7 @@ npm run build                      ✓ 59 modules transformed；产物 index-CMU
 | 删除确认 | `ModalShell` + `#agentDeleteOverlay` | 点删除**零请求**只开弹窗；确认才发一次 `DELETE`；`busy` 时 ESC / 遮罩 / 关闭键都不收；焦点落在「取消」（旧 `openAgentDeleteModal()` 的 `cancel.focus()`，`app.js:4993-4994`） |
 | ESC 层序**没变** | `App.vue` 的 `handleEscape()` | 五格原样。**依据**：旧页面 document keydown（`app.js:10577-10614`）里 `state.mode === 'agent'` **一次都没出现**，最后一格是 `if (state.mode === 'search') showMessagesView()` ⇒ 详情与看板同档：ESC 什么都不做（浏览器实测确认）。因此**没有第二份 ESC 裁决** |
 
-**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 30 条全部从 `App.vue` 挂载（`fetch` 替身 +
+**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 33 条全部从 `App.vue` 挂载（`fetch` 替身 +
 `attachTo: document.body`），走 rail 的 Agent 行进入详情——页签骨架、区块顺序、载荷 7 字段、跨页签保存条、
 skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确认与 ESC 都在这一层断言。
 
@@ -1229,19 +1229,26 @@ skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确
 
 两处改坏都验完即还原（`shasum` 与改动前一致：`agent-detail.js` `2d52464c…`、`AgentDetailView.vue` `52d796c2…`）。
 
-门禁读数：
+门禁读数（全部属于最终提交 `bd853a0`，三条命令可直接复跑）：
 
-```
-npx vitest run（app/frontend）     21 files / 409 passed（新增 tests/agent-detail.test.js 30 条）
-node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
-./scripts/check.sh --fast          最终源码：exit 0 / 门禁全绿；日志 .scratch/v2-p2c/issue-310-fast-final3.log
-./scripts/check.sh                 修复前源码：pytest 1264 passed / 11 skipped；ruff check 全绿；ruff format --check 362 files；mypy 133 files；Pyright 0 errors；Node 389 passed；Vitest 21 files / 402 passed；exit 0
-npm run build（app/frontend）       ✓ 64 modules transformed；产物 index-D30483uE.js；build-info 指纹一致
+```sh
+cd app/frontend && env -u NODE_ENV npm run build      # ✓ 64 modules transformed；产物 index-CKMHx--s.js
+./scripts/check.sh --fast                            # exit 0
+./scripts/check.sh                                   # exit 0（全量，含 pytest）
 ```
 
-全量门禁运行后，父组件回归用例发现并修复了删除后视图未恢复、私信归档未刷新、失败原因未显示、
-表单草稿残留、保存后左栏和 MCP 条目视图未刷新等问题；因此上述全量读数是**修复前版本**的证据。
-修复后已完成构建与 `--fast`，最终提交的全量结果以 CI 为准。
+```text
+./scripts/check.sh                  pytest 1264 passed / 11 skipped in 736.24s；ruff check 全绿；
+                                   ruff format --check 363 files；mypy 133 files 无问题；
+                                   Pyright 0 errors；Node 389 passed；Vitest 21 files / 412 passed；exit 0
+npx vitest run（app/frontend）     21 files / 412 passed（tests/agent-detail.test.js 33 条）
+```
+
+全量日志：`.scratch/v2-p2c/issue-310-full-final.log`（已 gitignore；按上面命令可复跑）。
+
+开发过程中父组件回归用例确实发现并修复了删除后视图未恢复、私信归档未刷新、失败原因未显示、
+表单草稿残留、保存后左栏和 MCP 条目视图未刷新等问题；上面的读数是修复完成后的最终代码，
+不是中间版本。
 
 真浏览器实测（ego-browser，`--port 8814` + `/tmp/alibot-p2c-310` 独立 data-dir，**`PYTHONPATH` 指向本 worktree 的 `app`**）：
 
