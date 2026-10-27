@@ -943,7 +943,6 @@ export function createAgentDetailStore(options) {
     loadMcpFile,
     loadSkills,
     loadSkillMarkdown,
-    loadImportCandidates,
     loadGlobalMcpServers,
     open,
     saveAgent,

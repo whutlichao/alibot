@@ -638,18 +638,6 @@ watch(
               <div class="resource-meta is-faint" data-od-id="skill-import-command-hint">
                 {{ t('skill.importCommandHint') }}
               </div>
-              <div class="agent-actions resource-import-actions">
-                <button
-                  class="btn btn-sm"
-                  type="button"
-                  data-od-id="skill-import-scan"
-                  :disabled="!online || (view && (view.skillImportLoading || view.skillImportBusy))"
-                  @click="detail.loadImportCandidates(state.memberId)"
-                >
-                  {{ t('skill.importScanButton') }}
-                </button>
-              </div>
-
               <div v-if="view && view.skillImportLoading" class="resource-empty">
                 {{ t('skill.importLoading') }}
               </div>

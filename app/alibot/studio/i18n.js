@@ -791,8 +791,7 @@ const I18N_CATALOGS = {
        这里只说它做什么。三组标题只用于下拉框的 `<optgroup>`，状态后缀用于选项文本。 */
     'skill.importTitle': '从本机导入',
     'skill.importCommandHint':
-      '先在本机终端运行上面的命令：-g 装到全局，-a codex 指向 ~/.agents/skills（codex / cline / pi 共用的全局技能目录）。应用只读这个目录，不代为执行；装好之后在下面的下拉框里选它。',
-    'skill.importScanButton': '刷新候选',
+      '先在本机终端运行上面的命令：-g 装到全局，-a codex 指向 ~/.agents/skills（codex / cline / pi 共用的全局技能目录）。应用只读这个目录，不代为执行；装好之后重新打开这个 Agent 的详情，再在下面的下拉框里选它。',
     'skill.importPickLabel': '从本机导入',
     'skill.importPickPlaceholder': '选择一个技能导入…',
     'skill.importGroupReady': '可选',
@@ -800,8 +799,8 @@ const I18N_CATALOGS = {
     'skill.importGroupBlocked': '不可导入',
     'skill.importLoading': '正在扫描 ~/.agents/skills…',
     'skill.importScanFailed': '候选扫描失败：{reason}',
-    'skill.importUnavailable': '没有找到 {source}：先运行上面的命令装一个技能，再回来刷新候选。',
-    'skill.importEmpty': '这个目录里还没有技能：先运行上面的命令，再回来刷新候选。',
+    'skill.importUnavailable': '没有找到 {source}：先运行上面的命令装一个技能，然后重新打开这个 Agent 的详情，就能看到新装的技能。',
+    'skill.importEmpty': '这个目录里还没有技能：先运行上面的命令装一个，再重新打开这个 Agent 的详情，就能看到它。',
     'skill.importStatusInstalled': '已安装',
     'skill.importStatusBlocked': '不可导入：{reason}',
     'skill.importBusy': '正在导入…',
@@ -1684,8 +1683,7 @@ const I18N_CATALOGS = {
     'skill.deleteFailed': 'Not deleted: {reason}',
     'skill.importTitle': 'Import from this machine',
     'skill.importCommandHint':
-      'Run the command above in a local terminal first: -g installs globally, -a codex targets ~/.agents/skills (the global skill directory shared by codex / cline / pi). The app only reads that directory and never runs it for you; once it is installed, pick it in the dropdown below.',
-    'skill.importScanButton': 'Refresh candidates',
+      'Run the command above in a local terminal first: -g installs globally, -a codex targets ~/.agents/skills (the global skill directory shared by codex / cline / pi). The app only reads that directory and never runs it for you; once it is installed, reopen this agent’s details and pick it in the dropdown below.',
     'skill.importPickLabel': 'Import from this machine',
     'skill.importPickPlaceholder': 'Pick one skill to import…',
     'skill.importGroupReady': 'Available',
@@ -1694,8 +1692,9 @@ const I18N_CATALOGS = {
     'skill.importLoading': 'Scanning ~/.agents/skills…',
     'skill.importScanFailed': 'Could not scan the candidates: {reason}',
     'skill.importUnavailable':
-      'No {source} found: run the command above to install a skill, then refresh the candidates.',
-    'skill.importEmpty': 'That directory holds no skills yet: run the command above, then refresh the candidates.',
+      'No {source} found: run the command above to install a skill, then reopen this agent’s details to see it.',
+    'skill.importEmpty':
+      'That directory holds no skills yet: run the command above, then reopen this agent’s details to see the new one.',
     'skill.importStatusInstalled': 'Already installed',
     'skill.importStatusBlocked': 'Cannot import: {reason}',
     'skill.importBusy': 'Importing…',
