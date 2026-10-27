@@ -13,6 +13,7 @@
    重渲染——于是「谁顺带重渲了谁」这类耦合不存在，也不需要在每次写后手动重铺。 */
 import { computed, reactive, readonly } from 'vue';
 import { api, channelPath, dmPath, targetPath } from '../lib/api.js';
+import { agentMembers } from '../lib/member-view.js';
 import { uploadAttachment } from '../lib/attachments.js';
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
@@ -251,7 +252,7 @@ export function createWorkspaceStore(options) {
   /** 当前频道的 Agent 成员（`null` = 还没读到；空数组才是真的没有成员）。 */
   function channelAgentMembers(channelId) {
     const members = state.channelMembers[channelId || state.activeTargetId];
-    return members ? members.filter((member) => member.kind === 'agent') : null;
+    return members ? agentMembers(members) : null;
   }
 
   /**

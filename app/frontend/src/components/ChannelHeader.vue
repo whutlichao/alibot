@@ -15,6 +15,7 @@
 <script setup>
 import { computed } from 'vue';
 import { t } from '../i18n/index.js';
+import { targetDescription } from '../lib/target-view.js';
 
 const props = defineProps({
   target: { type: Object, default: null },
@@ -39,12 +40,7 @@ const name = computed(() => {
   return props.isDm ? props.target.peer.display_name : props.target.name;
 });
 
-const description = computed(() => {
-  if (!props.target) return '';
-  if (props.isArchivedDm) return t('header.dmArchivedDesc');
-  if (props.isDm) return t('header.dmDesc', { name: name.value });
-  return props.target.description || '';
-});
+const description = computed(() => targetDescription(props.target));
 </script>
 
 <template>

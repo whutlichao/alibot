@@ -22,6 +22,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import ModalShell from './ModalShell.vue';
 import { t } from '../i18n/index.js';
+import { agentMembers } from '../lib/member-view.js';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -61,7 +62,7 @@ const sub = computed(() => t('channelConfig.sub', { name: channelName.value }));
     以免下拉框看起来「选中的是别人」。可用性始终由后端读数说明。 */
 const leaderOptions = computed(() => {
   const members = props.store.state.channelMembers[channelId.value] || [];
-  const options = members.filter((member) => member.kind === 'agent');
+  const options = agentMembers(members);
   const leader = draft.leader;
   if (leader && !options.some((member) => member.id === leader)) {
     const agent = props.store.state.agents.find((item) => item.id === leader);
@@ -177,10 +178,13 @@ async function save() {
 
 <template>
   <ModalShell
+    id="channelConfigOverlay"
     :open="open"
     :title="title"
     :sub="sub"
     :close-label="t('channelConfig.closeAria')"
+    close-id="channelConfigClose"
+    close-od-id="channel-config-close"
     @close="emit('close')"
   >
     <div id="channelConfigBody" data-od-id="channel-config-body">

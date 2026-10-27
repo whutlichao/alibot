@@ -162,6 +162,7 @@ watch(
     :busy="busy"
     :title="t('agent.modalTitle')"
     :sub="t('agent.modalSub')"
+    close-id="agentModalClose"
     @update:open="emit('update:open', $event)"
   >
     <div class="field">

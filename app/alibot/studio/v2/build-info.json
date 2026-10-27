@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "6bba3b649b65dc2a2cdf71a0cecf5ca624abca4c39dd9f06400ab425859c4d82",
+  "sourceDigest": "1aec300f1ecf4348a95760e8a1faf564866b8f9885aaaa97684c235bd9e925f9",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
@@ -37,6 +37,7 @@
     "src/lib/format.js",
     "src/lib/live-events.js",
     "src/lib/markdown.js",
+    "src/lib/member-view.js",
     "src/lib/mentions.js",
     "src/lib/modal-stack.js",
     "src/lib/run-panel.js",

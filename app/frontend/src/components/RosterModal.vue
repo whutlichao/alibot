@@ -21,6 +21,7 @@ import MemberAvatar from './MemberAvatar.vue';
 import ModalShell from './ModalShell.vue';
 import PresenceDot from './PresenceDot.vue';
 import { t } from '../i18n/index.js';
+import { agentMembers, memberStatus } from '../lib/member-view.js';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -57,7 +58,7 @@ const joined = computed(() => members.value || []);
 const outsiders = computed(() => {
   if (!loaded.value) return [];
   const known = new Set(joined.value.map((member) => member.id));
-  return props.store.state.members.filter((member) => member.kind === 'agent' && !known.has(member.id));
+  return agentMembers(props.store.state.members).filter((member) => !known.has(member.id));
 });
 
 /** Agent 配置快照（角色显示用它；成员表本身不带 role）。 */
@@ -67,13 +68,10 @@ const agentsById = computed(() => {
   return map;
 });
 
-const statuses = computed(() => props.store.state.statuses);
-
-/** 一个成员的四态读数：配置快照里的 `status` 优先，否则查状态表（不凭缺失下一个结论）。 */
+/** 一个成员的四态读数：与 rail 的 Agent 行同一份判据（`lib/member-view.js`，
+    配置快照里的 `status` 优先、否则查状态表、都没有才是 `offline`）。 */
 function statusOf(member) {
-  const agent = agentsById.value.get(member.id);
-  if (agent && typeof agent.status === 'string') return agent.status;
-  return statuses.value[member.id] || 'offline';
+  return memberStatus(props.store.state, member);
 }
 
 function roleOf(member) {
@@ -105,7 +103,7 @@ async function load() {
   loading.value = false;
   if (membersFailed.value) return;
   Object.keys(capabilities).forEach((key) => delete capabilities[key]);
-  const pending = (rows || []).filter((member) => member.kind === 'agent');
+  const pending = agentMembers(rows);
   const counts = await Promise.all(
     pending.map((member) => props.store.readMemberCapabilityCounts(member.id)),
   );
@@ -163,11 +161,14 @@ async function join(member) {
 
 <template>
   <ModalShell
+    id="rosterOverlay"
     :open="open"
     wide
     :title="title"
     :sub="sub"
     :close-label="t('roster.closeAria')"
+    close-id="rosterClose"
+    close-od-id="roster-close"
     @close="emit('close')"
   >
     <div id="rosterBody" class="roster-body" data-od-id="roster-body">
@@ -211,7 +212,7 @@ async function join(member) {
         <div v-if="membersFailed" class="rail-empty">{{ t('dock.notJoinedUnavailable') }}</div>
         <div v-else-if="loading && !members" class="rail-empty">{{ t('roster.loading') }}</div>
         <div v-else-if="!outsiders.length" class="rail-empty">
-          {{ store.state.members.some((member) => member.kind === 'agent') ? t('dock.allJoined') : t('dock.noAgents') }}
+          {{ agentMembers(store.state.members).length ? t('dock.allJoined') : t('dock.noAgents') }}
         </div>
         <div
           v-for="member in outsiders"

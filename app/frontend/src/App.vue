@@ -30,6 +30,7 @@ import { hasOpenModal } from './lib/modal-stack.js';
 import { MAX_ATTACHMENT_BYTES, partitionBySize } from './lib/attachments.js';
 import { formatBytes } from './lib/format.js';
 import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
+import { agentMembers } from './lib/member-view.js';
 import { createSearchStore } from './stores/search.js';
 import { useUiState } from './stores/ui-state.js';
 
@@ -187,7 +188,7 @@ function attachPending(count) {
 const agentDetailAvailable = ref(false);
 
 /** 新建频道弹窗的候选人：本机全名单里的 Agent（新频道里本来就没有成员，不按频道过滤）。 */
-const agentRoster = computed(() => state.members.filter((member) => member.kind === 'agent'));
+const agentRoster = computed(() => agentMembers(state.members));
 
 /** 新建表单的提交动作都留在这里：它们需要 `selectTarget` 与 toast，而那是 App 的职责。 */
 async function submitChannel(fields) {
@@ -551,6 +552,7 @@ function mobileShell() {
         :task-count="0"
         :active-tab="activeTab"
         :channel-tools-available="true"
+        :tasks-available="tasksAvailable"
         @select-tab="activeTab = $event"
         @open-roster="openChannelTool('roster')"
         @open-config="openChannelTool('config')"

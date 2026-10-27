@@ -37,6 +37,12 @@ const props = defineProps({
   // `role="dialog"` 的 `aria-labelledby` 指向的 id。默认标题走内部生成的 id；
   // 用 `head` 插槽自绘标题时由调用方传它自己的 id（不传则整个属性缺席，不留悬空引用）。
   labelledBy: { type: String, default: '' },
+  // 关闭键的落点（类名与 `data-od-id` 逐字沿用旧页面）：旧页面的十个 `#*Overlay` 各自给关闭键
+  // 一个 `id` + `data-od-id`（`roster-close` / `budget-close` / `channel-config-close` …），
+  // 自动化取证与旧用例族按 `data-od-id` 定位关闭键。所以壳必须能把它们透出去——
+  // 不透的话名册 / 配置 / 预算三张的关闭键在 v2 上就没有落点（真浏览器验收时抓到过）。
+  closeId: { type: String, default: '' },
+  closeOdId: { type: String, default: '' },
 });
 
 const emit = defineEmits(['update:open', 'close']);
@@ -137,7 +143,14 @@ onBeforeUnmount(() => popModal(entry));
             <div v-if="sub" class="sub">{{ sub }}</div>
           </div>
         </slot>
-        <button class="icon-btn" type="button" :aria-label="closeLabelText" @click="requestClose">
+        <button
+          class="icon-btn"
+          type="button"
+          :id="closeId || undefined"
+          :data-od-id="closeOdId || undefined"
+          :aria-label="closeLabelText"
+          @click="requestClose"
+        >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6 6 18" /><path d="m6 6 12 12" />
           </svg>

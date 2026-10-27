@@ -132,6 +132,7 @@ function close() {
     :title="t('reminder.modalTitle')"
     :sub="t('reminder.modalSub')"
     :close-label="t('reminder.closeAria')"
+    close-id="remindersModalClose"
     @update:open="emit('update:open', $event)"
   >
     <div id="reminderList" data-od-id="reminder-list">

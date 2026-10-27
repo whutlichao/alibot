@@ -678,7 +678,7 @@ Vitest                  14 files / 250 passed
 - **联网 provider 凭据那一段没有迁**：`channelConfig` 旧页面在同一个弹窗里还有「当前 provider / 来源 + 五家掩码 +
   保存 key」，它依赖 `GET/PUT/DELETE /api/web-providers*`。本票只把 `web_access` 档位作为可写字段提交，
   凭据段留空（不渲染、不留假按钮）。它是 #299 票图里没有单列的一块，归后续票。
-- **名册的能力摘要是 N+1**：每个 Agent 成员两条请求（与旧页面同一条读法、同一个上限 5 个并发）。成员很多的频道里
+- **名册的能力摘要是 N+1**：每个 Agent 成员两条请求（与旧页面同一条读法：`Promise.all` 一次性发出、**没有并发上限**）。成员很多的频道里
   名册首开会多几次往返；旧实现也是这么读的，本票不另造批量读面。
 - **`channel-config-section-web` 只出现档位卡**：provider 凭据段未迁，因此这一段比旧页面短。
 ### 阶段 A · 票 #305：附件上传（composer Paperclip + 两步上传 + 随消息一次提交）（读数）

@@ -92,6 +92,7 @@ function close() {
     :title="t('settings.title')"
     :sub="t('settings.sub')"
     :close-label="t('settings.closeAria')"
+    close-id="settingsModalClose"
     @update:open="emit('update:open', $event)"
   >
     <div class="field">

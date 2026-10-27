@@ -27,11 +27,12 @@ export function composerPlaceholder(target) {
   return t('header.channelPlaceholder', { name });
 }
 
-/** 频道头那句描述：归档私信说「只读归档」，私信说「与谁的两方私信」，频道用后端给的描述。 */
+/** 频道头那句描述：归档私信说「只读归档」，私信说「与谁的两方私信」，频道用后端给的描述。
+    `ChannelHeader.vue` 曾经在这里手写了一份同判据的第二份实现（review 抓到），现在两边都调它。 */
 export function targetDescription(target) {
   if (!target) return '';
   if (isArchivedDm(target)) return t('header.dmArchivedDesc');
-  if (target.kind === 'dm') return t('header.dmDesc', { name: target.peer.display_name });
+  if (target.kind === 'dm') return t('header.dmDesc', { name: targetName(target) });
   return target.description || '';
 }
 
