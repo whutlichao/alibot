@@ -25,6 +25,8 @@ import SettingsModal from './components/SettingsModal.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
 import { hasOpenModal } from './lib/modal-stack.js';
+import { MAX_ATTACHMENT_BYTES, partitionBySize } from './lib/attachments.js';
+import { formatBytes } from './lib/format.js';
 import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
 import { useUiState } from './stores/ui-state.js';
 
@@ -111,13 +113,53 @@ async function selectTarget(targetId) {
 }
 
 async function send(text) {
-  const result = await store.sendMessage(text, []);
+  // 手上的这批草稿随这条消息一起走：`attachment_ids` 与正文在**同一个请求**里（ADR-0014），
+  // 后端在同一事务里绑定，因此不存在「附件落地了但消息没落地」的中间态。
+  const drafts = state.composerAttachments.slice();
+  const result = await store.sendMessage(
+    text,
+    drafts.map((item) => item.id),
+    drafts,
+  );
   if (!result.ok) {
+    // 失败时**不清**手上的文件：同一批标识留在 composer，“重试”会带上它。
     if (result.offline) toasts.push(t('toast.sendBlockedOffline'), 'err');
     else if (result.error) toasts.push(t('toast.sendRejected', { reason: result.error.message }), 'err');
     return;
   }
+  // 消息已经带着这批附件落地，草稿不再属于“手上”。
+  store.clearComposerAttachments();
   if (stream.value) stream.value.scrollToBottom();
+}
+
+/**
+ * 选中文件后的上传（两步上传的第一步）。
+ *
+ * 单文件上限在**发请求之前**判（`partitionBySize`，与后端的同一个数字）：超限的文件直接报错、
+ * 不发请求——用一个 10 MB 的往返换一条本地就能得出的结论不值得。上传仍可能被后端拒（类型 /
+ * 空内容 / 文件名），原因由后端按语言偏好渲染，这里只把它读出来。
+ */
+async function attachFiles(files) {
+  const { accepted, rejected } = partitionBySize(files);
+  rejected.forEach((file) => {
+    toasts.push(
+      t('composer.attachTooLarge', {
+        name: file.name || t('attach.fallbackName'),
+        limit: formatBytes(MAX_ATTACHMENT_BYTES),
+      }),
+      'err',
+    );
+  });
+  if (!accepted.length) return;
+  const { failed } = await store.attachFiles(accepted);
+  failed.forEach(({ error }) => {
+    toasts.push(t('toast.attachFailed', { reason: error.message }), 'err');
+  });
+}
+
+/** 上传还没落地时按 Enter / 发送键：不发，并说清为什么（静默吞掉是最难解释的一种）。 */
+function attachPending(count) {
+  toasts.push(t('toast.attachPending', { count }), 'err');
 }
 
 /** Agent 详情面是否已迁到本版：T10 的开关（默认关 ⇒ rail 的 Agent 行是"打开私信"）。 */
@@ -202,8 +244,13 @@ onMounted(async () => {
 document.addEventListener('keydown', onEscape);
 onBeforeUnmount(() => document.removeEventListener('keydown', onEscape));
 
-function retryPending(clientId) {
-  store.retryPending(clientId);
+async function retryPending(clientId) {
+  const pending = state.pending.find((item) => item.clientId === clientId);
+  const attachmentIds = (pending && pending.attachment_ids) || [];
+  const result = await store.retryPending(clientId);
+  // 重试成功 ⇒ 那批草稿已经绑到这条消息上了，不能再留在手上：下一条消息会带上一批**已绑定**的
+  // 标识，而后端对重复绑定回 `error.attachment_already_bound`，整条消息会被拒掉。
+  if (result && result.ok) attachmentIds.forEach((id) => store.removeComposerAttachment(id));
 }
 
 function discardPending(clientId) {
@@ -381,7 +428,12 @@ function onEscape(event) {
         :archived="archived"
         :candidates="mentionCandidates"
         :candidates-unavailable="state.channelMembersFailed.includes(state.activeTargetId)"
+        :attachments="state.composerAttachments"
+        :attaching="state.attachingCount"
         @send="send"
+        @attach-files="attachFiles"
+        @remove-attachment="store.removeComposerAttachment"
+        @attach-pending="attachPending"
         @mention-request="ensureMentionCandidates"
         @mention-unsupported="unsupportedMention"
       />

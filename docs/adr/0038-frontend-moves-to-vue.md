@@ -107,22 +107,27 @@ v2 页面只承诺**已迁完的那条链路**可用：
   rail 的 Agent 行由 `agentDetailAvailable` 一个开关裁决「详情 / 私信」）、
   **频道头的三面**（票 #303：成员名册 `RosterModal.vue` 用 `ModalShell` 的 `wide` 档 /
   频道配置 `ChannelConfigModal.vue` / 回应预算 `ChannelBudgetModal.vue`；三张的读数都只来自后端、
-  写失败只显示后端可读原因且错误行放在正文之外；名册的「加入」用响应里的最新成员表覆盖缓存）。
+  写失败只显示后端可读原因且错误行放在正文之外；名册的「加入」用响应里的最新成员表覆盖缓存）、
+  **附件上传**（票 #305：composer 的 `Paperclip` ⇒ 两步上传的第一步（`lib/attachments.js` 的
+  `uploadAttachment`，原始字节 + query 里的文件名）⇒ composer 里的文件 chips（名字 + 体积，可逐个移除）⇒
+  随消息**一次提交** `attachment_ids`（`MessageCreate` 的既有 JSON 字段，后端在同一事务里绑定）；
+  单文件上限在前端预检（`lib/attachments.js` 的 `MAX_ATTACHMENT_BYTES`，正本是 `db.py` 的同一个常量，
+  用例读那份正本比较），超限的文件**不发请求**；发送失败时草稿留在手上、可重试，归档私信里入口不渲染）。
 - 未迁：任务看板与任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
-  审批卡、Agent 详情、搜索与命令面板、**附件上传**、
+  审批卡、Agent 详情、搜索与命令面板、
   **任务运行面板**（它挂在任务线程头，随线程那张票）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
 
 未迁入口**不做假按钮**，分两档处理：
 
-1. **不渲染**（任务页签 / 搜索 / 附件 / 作为任务发送 / 失败行的「看成员状态」）：
+1. **不渲染**（任务页签 / 搜索 / 作为任务发送 / 失败行的「看成员状态」）：
    它们只是把人带到另一处，带不到就不该出现。频道头的四个入口由 `channelToolsAvailable`
    （名册 / 配置 / 预算，同涨同落；票 #303 已迁 ⇒ 默认开）与 `runPanelAvailable`（运行面板，
    已迁 ⇒ 默认开）两个显式开关控制；任务页签由 `tasksAvailable` 控制。迁完那个面只需翻对应的开关，
    组件不用改。（`btn-reminders` / `btn-settings` 随票 #302 迁完、`btn-new-channel` / `btn-new-agent`
    随票 #301 迁完、`btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` 随票 #303
-   迁完，都不在这个清单里。）
+   迁完、`btn-attach` 随票 #305 迁完，都不在这个清单里。）
 2. **可见但禁用**：**这一档现在空了**（票 #301）。它原本只装「新建频道 / 新建 Agent」——
    空工作台的引导文案就是「新建一个频道」，把按钮一起藏掉等于让人无路可走，禁用比消失诚实。
    两张表单迁过来之后两个按钮正常工作，这条兜底规则仍然成立：**将来再出现「面还没迁、

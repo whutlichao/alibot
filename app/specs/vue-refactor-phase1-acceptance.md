@@ -158,23 +158,23 @@ members + member-statuses），SSE 连接数 1。
 v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` 承载：
 
 任务看板与任务线程、审批卡、Agent 详情、搜索与 ⌘K 命令面板、频道配置 / 回应预算 /
-成员名册等弹窗、附件**上传**、新建频道 / 新建私信 / 新建 Agent 的表单、
-**任务运行面板**（它挂在任务线程头，随线程那张票进来；频道运行面板已迁）。
-（提醒与设置两张弹窗已随阶段 A 的票 #302 迁完，不再在这个清单里。）
+成员名册等弹窗、新建频道 / 新建私信 / 新建 Agent 的表单、**任务运行面板**（它挂在任务线程头，随线程那张票进来；频道运行面板已迁）。
+（提醒与设置两张弹窗已随阶段 A 的票 #302 迁完，**附件上传**已随票 #305 迁完，都不再在这个清单里。）
 
 **这些面在 v2 上不留假入口**（ADR-0038 §五），分两种处理：
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | 工作台搜索（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；附件上传与「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
+| **不渲染** | 工作台搜索（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
 | **可见但禁用**（`title` 说明理由） | 新建频道 / 新建 Agent | 空库里唯一的引导文案就是「新建一个频道」——把按钮也藏掉等于让人无路可走 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
 默认关）与 `runPanelAvailable`（运行面板，**已迁 ⇒ 默认开**）。迁完一个面翻一个开关，组件不用改。
 运行面板入口与成员名册同理，在**私信下不存在**（私信没有 team 运行）。
 
-**附件的读与写分开了**：消息里**收到**的附件照常渲染成可下载的原生 `<a download>`（绑定与否决定
-是不是链接）；**上传**入口等到那张票再回来。
+**附件的读写都已迁**（票 #305）：消息里**收到**的附件照常渲染成可下载的原生 `<a download>`
+（绑定与否决定是不是链接）；composer 的 `Paperclip` 已接活——选中文件先上传成草稿、随后随消息
+**一次提交** `attachment_ids`，见下面「阶段 A · 票 #305」。
 
 ## 四·补、第一阶段自查修掉的 6 处欠账
 
@@ -678,3 +678,88 @@ Vitest                  14 files / 250 passed
 - **名册的能力摘要是 N+1**：每个 Agent 成员两条请求（与旧页面同一条读法、同一个上限 5 个并发）。成员很多的频道里
   名册首开会多几次往返；旧实现也是这么读的，本票不另造批量读面。
 - **`channel-config-section-web` 只出现档位卡**：provider 凭据段未迁，因此这一段比旧页面短。
+### 阶段 A · 票 #305：附件上传（composer Paperclip + 两步上传 + 随消息一次提交）（读数）
+
+阶段一把附件的**读**迁了（收到的附件渲染成 `<a download>`），写没迁；本票把写补上：
+`ComposerBox` 的 `Paperclip` 从「不渲染」翻成真按钮，上传走**后端既有端点**，不改后端。
+
+| 判据 | 落点 | 说明 |
+| --- | --- | --- |
+| Paperclip 与隐藏的文件选择器 | `components/ComposerBox.vue` | `btn-attach`（`aria-label` / `title` 走 `composer.attachAction`）+ `input[type=file][multiple]`（`sr-only`，`data-od-id="attach-input"`），`data-od-id` 逐字沿用旧页面 `studio/index.html:304-309` |
+| 文件 chips（名字 + 体积，可逐个移除） | 同上（`#composerAttachments .attach`） | 草稿是 `<span>` 不是链接：内容端点对未绑定的上传回 404；移除键带 `data-remove-attachment` 与词条化的 `aria-label`（`composer.attachRemove`） |
+| 单文件上限的前端预检 | `lib/attachments.js` 的 `MAX_ATTACHMENT_BYTES` / `partitionBySize` | 数字的正本是 `app/alibot/db.py` 的 `MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024`（**10 MiB，不是 50 MB**：票面 T5 行那句是笔误）；超限的文件**不发请求**，理由进 toast（新词条 `composer.attachTooLarge`，zh-CN 与 en 各一条） |
+| 两步上传的第一步 | `lib/attachments.js` 的 `uploadAttachment` | 请求形状就是既有端点：body 是文件**原始字节**、MIME 在 `Content-Type`、文件名在 query 的 `name`（`api.py:908-932`，**不是 multipart**） |
+| 第二步：随消息一次提交 | `stores/workspace.js` 的 `attachFiles` / `sendMessage` + `App.vue` 的 `send()` | `attachment_ids` 是**既有 JSON 字段**（`MessageCreate.attachment_ids`），与正文在同一个请求里；后端在同一事务里绑定，因此没有「附件落地了但消息没落地」的中间态 |
+| 成功后立刻带可下载附件 | 复用 `AttachmentChip.vue` | 后端的消息载荷本来就带 `attachments`，`MessageItem` 那条读取路径一行没改 |
+| 失败时保留已选文件、可重试 | `App.vue` 的 `send()`（失败不清草稿）+ `retryPending()` | 失败只把 pending 标成 failed；同一批标识留在 composer，重试带上它。**重试成功**才把草稿从手上移走（否则下一句会重复绑定已绑定的附件，后端整条拒绝） |
+| 上传在飞时不能发送 | `ComposerBox.vue` 的 `canSend` / `submit()` + `stores/workspace.js` 的 `attachingCount` | 发送键禁用 + Enter 同一条闸门（键盘用户不能绕过），并按 `toast.attachPending` 说明原因 |
+| 归档频道只读 | 同一处 `v-if="!archived"` | 归档私信里 `btn-attach` / `attach-input` 都不渲染（不留一个按下去没反应的入口）；`@提及` 仍在但禁用，与 composer 其余控件同一条判据 |
+
+**测试装置上的一处取舍**：`attachments.test.js` 自带一个按前缀分派的 `fetch` 替身（`createStub`），
+因为 `createFetchStub` 会把 `body` 当 JSON 解析，而上传的 body 是 `File` 本身——那不是可 JSON 化的东西。
+其余装置照 `app-shell.test.js`：`sourceFactory` 注入 `FakeEventSource`、`attachTo: document.body`。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     14 files / 245 passed（新增 tests/attachments.test.js 14 条；
+                                   components.test.js 的「工具行只剩 @提及」一条改成「附件已迁」）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+scripts/check.sh --fast            exit 0（ruff / ruff format --check / mypy / pyright 干净）
+```
+
+红 → 绿（原样读数）：
+
+```
+# 红 #1：前置实现文件还不存在
+FAIL  tests/attachments.test.js [ tests/attachments.test.js ]
+Error: Failed to resolve import "../src/lib/attachments.js" from "tests/attachments.test.js". Does the file exist?
+ Test Files  1 failed (1)   Tests  no tests
+
+# 红 #2：Paperclip 尚未渲染
+FAIL  tests/attachments.test.js > composer 的附件入口 > 频道下出现 Paperclip…
+AssertionError: expected false to be true // Object.is equality
+ Test Files  1 failed (1)   Tests  1 failed | 3 passed (4)
+
+# 红 #3：chips / 预检 / 随消息提交 / 上传在飞
+Error: Cannot call element on an empty DOMWrapper.  （chooseFiles 找不到 attach-input）
+ Test Files  1 failed (1)   Tests  6 failed | 3 passed (9)
+
+# 红 #4：重试成功后草稿没被移走（这条我先把实现改坏验过一遍，确认用例真的守着它）
+AssertionError: expected 1 to be +0 // Object.is equality
+ ❯ tests/attachments.test.js:555:68
+ Test Files  1 failed (1)   Tests  1 failed | 13 passed (14)
+
+# 绿
+ Test Files  14 passed (14)   Tests  245 passed (245)
+```
+
+真浏览器实测（ego-browser，`python -m alibot --port 8808 --data-dir /tmp/alibot-p2a-305`，
+`http://127.0.0.1:8808/studio/v2/`；上传文件是 `/tmp/note-a.txt` 1200 B、`/tmp/note-b.txt` 3000 B、
+超限件是 `truncate -s 11M /tmp/big.bin`）：
+
+| 票面验收项 | 读数 | 截图 |
+| --- | --- | --- |
+| 频道下 composer 出现 `Paperclip`；归档频道不出现 | 频道：`btn-attach` 存在、`aria-label=附件`、`title=附件`、`input[type=file]` 带 `multiple`、`class="sr-only"`；`btn-as-task` 仍不存在。归档私信（`@Ada`，Agent 已删）：`btn-attach=false`、`attach-input=false`、`btn-mention=true`（禁用）、`composer.is-disabled=true`、提示行「已归档 · 只读，不能发送消息」 | `issue-305-01-composer-paperclip.png` / `issue-305-06-archived-no-upload.png` |
+| 选两个文件 → 两个 chip；移除一个 → 剩一个 | `POST /api/attachments` **正好 2 次**；chips `[{note-a.txt, 1.2 KB, remove=移除附件 note-a.txt, isLink=false}, {note-b.txt, 2.9 KB, …}]`；文件控件 `value` 已清空（同一文件再选一次仍触发 `change`）；点 `note-a.txt` 的移除键后剩 `['note-b.txt']` | `issue-305-02-two-chips.png` / `issue-305-03-one-chip-left.png` |
+| 超过 10 MB 的文件被拒，且**不发请求**，错误文案取词条 | 选 `/tmp/big.bin`（11 MB）⇒ `window.fetch` 包装计数的 `/api/attachments` 请求 **`[]`（0 次）**、chips **0**、toast「big.bin 超过单文件上限（10.0 MB）」 | `issue-305-05-oversize-rejected.png` |
+| 前端预检阈值与后端 `MAX_ATTACHMENT_BYTES` 一致 | 只有用例读数：`lib/attachments.js` 的常量 === `10*1024*1024`，且用例用正则读 `app/alibot/db.py` 的赋值求值比较（防两份数字各自漂） | — |
+| 发送成功后消息渲染出两个可下载附件（`<a download>`） | 一条消息（`data-seq=1`），两个 `a.attach`：`/api/attachments/att_23febb2d4b21`（`download=note-b.txt`、aria「note-b.txt（2.9 KB），下载」）/ `/api/attachments/att_e0511fed25f2`（`note-a.txt`）；composer 的草稿清空、输入框清空；页面内 `fetch` 该 href ⇒ **200**、`content-disposition: attachment; filename="note-b.txt"`、**3000 B** | `issue-305-04-sent-two-links.png` |
+| 发送失败：文件 chips 仍在、错误可见、可重试 | 把发送请求的 `attachment_ids` 追加一个不存在的 id（页面内包一层 `fetch`）⇒ 后端 400：toast + 失败行「未送达：附件不存在：att_missing_305：附件不存在或已被绑定」、`重试发送` / `移除` 两个键、失败帧里 `a.attach` **0 个**（不带「点下去 404」的链接）、composer 两条 chip 仍在 | `issue-305-07-send-failed-chips-kept.png` |
+| 附件与消息原子性：后端拒绝时不留孤儿文件 | 同一次被拒之后直接读数据目录：`attachments/` 5 个字节文件与库里 5 行**一一对应**（`orphan bytes: []`、`rows without bytes: []`），被拒那条消息**不在**库里（`message` 表只有 seq=1 成功那条），两条被拒的附件仍是 `message_id=None` 的草稿 | —（文件系统读数，见本节正文） |
+| 至少一条用例从 `ComposerBox` 真实父组件进 | `tests/attachments.test.js` 的 13 条经 `mount(App, { attachTo: document.body })`（composer 的真实父组件就是 `App.vue`）；只有「上限常量 === 10 MiB」那条不挂组件 | — |
+| 构建产物入库 | `env -u NODE_ENV npm run build` 已跑，`app/alibot/studio/v2/` 换名产物一并提交（`build-guard.test.js` 绿） | — |
+
+**本轮的已知边界**：
+
+- **不动旧页面**：`app/alibot/studio/app.js` / `index.html` 零改动；`i18n.js` 只多一条
+  `composer.attachTooLarge`（zh-CN 与 en 各一条，键集对齐）——`composer.attachAction` /
+  `attachRemove` / `attaching` / `toast.attachFailed` / `toast.attachPending` 早就为这个面定义好了。
+- **不改后端**：端点形状与上限都是既有的；`attachment_ids` 本来就是 `MessageCreate` 的字段。
+- **草稿没有删除端点**：移除一个 chip 只是「从手上移走」，库里那一行与字节仍在（
+  `error.attachments_immutable` 说的就是这件事）。这会在数据目录里留下未绑定的草稿行，
+  与旧页面同一条行为。
+- **「原子提交」在本仓的含义**：不是 multipart，而是「先上传拿标识、再随消息一次提交
+  `attachment_ids`」——后端把绑定与消息落库放在同一个事务里。消息失败时前端**不调用**绑定，
+  附件留作草稿；草稿的内容端点回 404，因此屏幕上不会出现「看起来能下载其实是孤儿」的链接。
+- **多附件同时发送没有并发上限**：票面把配额策略列为 Out of Scope，本票逐条上传、逐条报错。

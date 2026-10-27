@@ -704,10 +704,12 @@ describe('composer', () => {
     expect(wrapper.find('[data-od-id="composer-hint"]').text()).toBe('已归档 · 只读，不能发送消息');
   });
 
-  test('工具行只剩「@提及」：附件与「作为任务发送」不渲染（那两个面还没迁）', () => {
+  test('工具行两个键：附件（#305 已迁）与「@提及」；「作为任务发送」不渲染（任务面还没迁）', () => {
     const wrapper = mount(ComposerBox, { props: { placeholder: '发消息', online: true } });
     expect(wrapper.find('[data-od-id="btn-mention"]').exists()).toBe(true);
-    expect(wrapper.find('[data-od-id="btn-attach"]').exists()).toBe(false);
+    // 附件上传已随票 #305 迁过来：Paperclip 与它背后的隐藏文件选择器都在。
+    expect(wrapper.find('[data-od-id="btn-attach"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="attach-input"]').exists()).toBe(true);
     expect(wrapper.find('[data-od-id="btn-as-task"]').exists()).toBe(false);
   });
 
