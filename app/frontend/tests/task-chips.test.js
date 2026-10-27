@@ -235,6 +235,69 @@ describe('频道指针 chip（task_pointer）', () => {
     expect(wrapper.find('.task-ref-chip').text()).toBe('进入任务线程');
     expect(wrapper.find('.task-ref-chip').attributes('aria-label')).toBe('打开任务 整理发布清单 的任务线程');
   });
+
+  /* 「待审批 N」角标（#217 / 票 #308 的读数）：与审批卡**同一份镜像**，本组件不另算一遍。 */
+  test('指针任务有 pending ⇒ 角标出现在 chip 后面（同一对词条、同一个 `.card-approval` 类名）', () => {
+    const tasks = [task({ target_id: 'tgt-aaa' })];
+    const wrapper = mount(MessageStream, {
+      props: {
+        state: emptyState(),
+        messages: [message(7, { kind: 'system', body: 'owner 创建了任务', task_pointer: 'tsk-aaa001' })],
+        typingNames: [],
+        taskOf: lookupOf(tasks),
+        // 读数由票 #308 的 store 给：这里只断言「组件读的是那一个函数、按指针任务的 target 查」。
+        pendingCountFor: (targetId) => (targetId === 'tgt-aaa' ? 1 : 0),
+      },
+    });
+    const badge = wrapper.find('[data-od-id="message-approval-badge-msg-7"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.classes()).toContain('card-approval');
+    expect(badge.text()).toBe('待审批 1');
+    expect(badge.attributes('aria-label')).toBe('「整理发布清单」有 1 条待审批');
+    // 纯呈现：不是第二个入口（旧 `approvalBadgeNode()` 同样只有 `<span>`）。
+    expect(badge.element.tagName).toBe('SPAN');
+    expect(badge.attributes('data-open-task')).toBeUndefined();
+    expect(badge.attributes('role')).toBeUndefined();
+    expect(badge.attributes('tabindex')).toBeUndefined();
+  });
+
+  test('归属只按指针任务自己的 target：频道 target 的 pending 不出现在这一行', () => {
+    const tasks = [task({ target_id: 'tgt-aaa' })];
+    const wrapper = mount(MessageStream, {
+      props: {
+        state: emptyState(),
+        messages: [message(7, { kind: 'system', body: 'owner 创建了任务', task_pointer: 'tsk-aaa001' })],
+        typingNames: [],
+        taskOf: lookupOf(tasks),
+        // 频道 target 上有 pending，任务 target 上没有。
+        pendingCountFor: (targetId) => (targetId === 'ch-1' ? 3 : 0),
+      },
+    });
+    expect(wrapper.find('[data-od-id^="message-approval-badge-"]').exists()).toBe(false);
+  });
+
+  test('没有读数（没接 store）/ 任务不在快照里 ⇒ 不渲染角标（不摆一个「待审批 0」）', () => {
+    const withoutStore = mount(MessageStream, {
+      props: {
+        state: emptyState(),
+        messages: [message(7, { kind: 'system', body: 'owner 创建了任务', task_pointer: 'tsk-aaa001' })],
+        typingNames: [],
+        taskOf: lookupOf([task()]),
+      },
+    });
+    expect(withoutStore.find('[data-od-id^="message-approval-badge-"]').exists()).toBe(false);
+
+    const goneTask = mount(MessageStream, {
+      props: {
+        state: emptyState(),
+        messages: [message(7, { kind: 'system', body: 'owner 创建了任务', task_pointer: 'tsk-gone' })],
+        typingNames: [],
+        taskOf: lookupOf([]),
+        pendingCountFor: () => 2,
+      },
+    });
+    expect(goneTask.find('[data-od-id^="message-approval-badge-"]').exists()).toBe(false);
+  });
 });
 
 /* ─── 三、点击后果（从 `App.vue` 进）───────────────────────────────────── */

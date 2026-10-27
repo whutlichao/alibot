@@ -17,8 +17,11 @@
      3. 点击 = 打开该任务的线程（`App.vue` 的 `openTask()` 是唯一落点），组件只往上抛一个事件。
 
      **「待审批 N」角标**（旧 `approvalBadgeNode()`，`data-od-id="message-approval-badge-<id>"`）
-     跟在指针 chip 后面，读数归 T8 的审批 store——v2 至今没有那份读数（`app/frontend/src/stores/`
-     里没有 approvals），因此这里**不造第二份**：TODO 等 T8 的读数接口落地后按同一个节点挂上来。 -->
+     跟在指针 chip 后面，读数是 T8 的审批 store（票 #308 落地后接上）：**同一份镜像**，
+     本组件不另读一次、不另算一遍（`pendingCountFor(pointedTask.target_id)`）。
+     归属只按**指针任务自己的** `target_id`——频道 target 的 pending、别的任务的 pending 都不出现在
+     这一行；任务不在快照里就没有读数，不画（旧页面同一条）。角标是**纯呈现**的 `<span>`
+     （没有 `data-open-task` / `role="button"` / `tabindex`），点击继续冒泡到 chip 自己的路径。 -->
 <script setup>
 import { computed } from 'vue';
 import { t } from '../i18n/index.js';
@@ -28,6 +31,9 @@ const props = defineProps({
   // 任务快照查名（`stores/task-board.js` 的 `taskOf(taskId)`，等价于旧 `taskById()`）。
   // 读不到 ⇒ 返回 `null`（本组件据此用 id 代替标题、未读按 0）。
   taskOf: { type: Function, default: null },
+  // 待审批读数（`stores/approvals.js` 的 `pendingCountFor(targetId)`）：`null` = 那份读数还没接
+  // （例如只挂叶子组件的用例），此时角标不画——不编一个 0 出来。
+  pendingCountFor: { type: Function, default: null },
 });
 
 const emit = defineEmits(['open-task']);
@@ -77,6 +83,27 @@ const pointerChip = computed(() => {
 
 /** 两条字段可以同时在一条消息上（旧页面也是各挂一个），顺序是引用在前、指针在后。 */
 const chips = computed(() => [refChip.value, pointerChip.value].filter(Boolean));
+
+/**
+ * 指针 chip 后面那个「待审批 N」角标（#217 / 票 #308）。
+ *
+ * 只读**指针任务自己的** target 的 pending 条数：频道 target 的 pending 与别的任务的 pending
+ * 都不属于这一行。条数为 0 / 没有读数 / 任务不在快照里 ⇒ 不渲染（不摆一个「待审批 0」）。
+ */
+const approvalBadge = computed(() => {
+  const pointer = pointerChip.value;
+  if (!pointer || !props.pendingCountFor) return null;
+  const task = taskOfId(pointer.taskId);
+  const targetId = task ? task.target_id : null;
+  if (!targetId) return null;
+  const count = props.pendingCountFor(targetId);
+  if (!count) return null;
+  const title = task ? task.title || pointer.taskId : pointer.taskId;
+  return {
+    text: t('board.approvalBadge', { count }),
+    aria: t('board.approvalBadgeAria', { title, count }),
+  };
+});
 </script>
 
 <template>
@@ -90,4 +117,11 @@ const chips = computed(() => [refChip.value, pointerChip.value].filter(Boolean))
     :aria-label="chip.aria"
     @click="emit('open-task', chip.taskId)"
   >{{ chip.text }}</button>
+  <!-- 纯呈现的角标：不是第二个入口（旧 `approvalBadgeNode()` 同样只有 `<span>`）。 -->
+  <span
+    v-if="approvalBadge"
+    class="card-approval"
+    :data-od-id="'message-approval-badge-' + message.id"
+    :aria-label="approvalBadge.aria"
+  >{{ approvalBadge.text }}</span>
 </template>

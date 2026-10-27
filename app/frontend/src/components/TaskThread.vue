@@ -49,6 +49,8 @@ const props = defineProps({
   // 取标题与未读数（票 #309；旧 `renderTaskThread()` 的讨论行调的就是同一个
   // `appendTaskRefChip()`）。
   taskOf: { type: Function, default: null },
+  // 待审批读数（`stores/approvals.js` 的 `pendingCountFor`）：讨论行指针 chip 后面的角标读它。
+  pendingCountFor: { type: Function, default: null },
 });
 
 const emit = defineEmits(['close', 'open-run-panel', 'open-task']);
@@ -360,7 +362,12 @@ function focusReply() {
                   <AttachmentChip v-for="file in item.attachments" :key="file.id" :attachment="file" />
                 </div>
                 <!-- 任务 chip：与频道消息流是**同一份判据**（一个组件），不在这里再判一次。 -->
-                <TaskRefChip :message="item" :task-of="taskOf" @open-task="emit('open-task', $event)" />
+                <TaskRefChip
+                  :message="item"
+                  :task-of="taskOf"
+                  :pending-count-for="pendingCountFor"
+                  @open-task="emit('open-task', $event)"
+                />
               </div>
             </div>
             <div v-if="!replies.length" class="tt-empty">{{ t('task.repliesEmpty') }}</div>

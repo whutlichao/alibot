@@ -1131,10 +1131,10 @@ v2 的替代是**事件驱动**：进入工作区（首载 `loadAll()`）/ 打�
 阶段一自查记的「假按钮」是「消息里本该有 open-task 入口却没有」，落点就是这两个 chip。⇒ 本票
 **不新造**一个旧页面没有、票图也没定义的面；`grep -n "msg-more\|msg-menu\|message-actions\|msg-actions" app/alibot/studio/app.js app/alibot/studio/index.html app/frontend/src/components/MessageItem.vue` 零命中。
 
-**「待审批 N」角标仍未挂**（`data-od-id="message-approval-badge-<messageId>"`）：它的读数归 T8 的
-审批 store，而 v2 至今没有那份读数（`app/frontend/src/stores/` 里没有 approvals，`/api/approvals`
-无调用点）。按票面「不要自己造第二份」，`TaskRefChip.vue` 的文件头留了 TODO 说明挂点，
-T8（#308）落地后按同一个 `.card-approval` 节点挂在该 chip 后面。
+**「待审批 N」角标**（`data-od-id="message-approval-badge-<messageId>"`）：`TaskRefChip.vue` 落地时
+v2 还没有审批读数，组件头留了 TODO。票 #308 合入后那份读数已经存在
+（`stores/approvals.js` 的 `pendingCountFor`），因此在本次合并里**补上**了挂点，见本节末尾的
+「review 收口补充」。
 
 门禁读数：
 
@@ -1173,6 +1173,9 @@ tool_calls=[write_file{path,password}, run_shell{cmd}])`，只写临时 data-dir
 - 频道 target 的审批板（旧 `#approvalBoard`）**不在本票范围**：v2 的审批卡只出现在任务线程里
   （票面「审批卡出现在任务线程内」）。频道级审批板归后续票。
 
+门禁读数：
+
+```
 npx vitest run（app/frontend）     19 files / 347 passed（新增 tests/task-chips.test.js 9 条）
 node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
 ./scripts/check.sh --fast          exit 0 / 门禁全绿

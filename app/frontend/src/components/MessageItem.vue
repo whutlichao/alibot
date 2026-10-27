@@ -30,6 +30,8 @@ const props = defineProps({
   member: { type: Object, default: null },
   // 任务快照查名（`taskOf(taskId)`）：两个 chip 的标题与未读数都从那里读，读不到就用 id。
   taskOf: { type: Function, default: null },
+  // 待审批读数（`pendingCountFor(targetId)`）：指针 chip 后面的角标读它，不用本组件再算一遍。
+  pendingCountFor: { type: Function, default: null },
 });
 
 const emit = defineEmits(['retry', 'discard', 'open-task']);
@@ -124,7 +126,12 @@ const attachments = computed(() =>
       </div>
       <!-- 任务 chip（旧 `appendTaskRefChip()` 在 system 分支同样会挂）：频道指针消息就是一条
            system 记录，不挂这里它就一个入口都没有。 -->
-      <TaskRefChip :message="message" :task-of="taskOf" @open-task="emit('open-task', $event)" />
+      <TaskRefChip
+        :message="message"
+        :task-of="taskOf"
+        :pending-count-for="pendingCountFor"
+        @open-task="emit('open-task', $event)"
+      />
     </div>
 
     <!-- human / agent 的对话正文。 -->
@@ -138,7 +145,12 @@ const attachments = computed(() =>
       <div v-if="attachments.length" class="msg-attachments">
         <AttachmentChip v-for="item in attachments" :key="item.id" :attachment="item" />
       </div>
-      <TaskRefChip :message="message" :task-of="taskOf" @open-task="emit('open-task', $event)" />
+      <TaskRefChip
+        :message="message"
+        :task-of="taskOf"
+        :pending-count-for="pendingCountFor"
+        @open-task="emit('open-task', $event)"
+      />
       <div v-if="failed" class="msg-retry">
         <span>{{ t('msg.notDelivered', { reason: message.reason || t('msg.sendFailed') }) }}</span>
         <button class="btn btn-sm" type="button" @click="emit('retry', message.clientId)">{{ t('msg.retry') }}</button>

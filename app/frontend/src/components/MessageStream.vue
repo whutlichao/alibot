@@ -23,6 +23,9 @@ const props = defineProps({
   // 任务快照查名（`stores/task-board.js` 的 `taskOf(taskId)`）：消息上的两个任务 chip 读它取
   // 标题与未读数（票 #309）。查不到就用 id / 未读 0，不编读数。
   taskOf: { type: Function, default: null },
+  // 待审批读数（`stores/approvals.js` 的 `pendingCountFor`）：指针 chip 后面的「待审批 N」角标
+  // 读它（票 #308 的同一份镜像，本层不另算）。
+  pendingCountFor: { type: Function, default: null },
 });
 
 const emit = defineEmits(['retry', 'discard', 'open-task']);
@@ -95,6 +98,7 @@ defineExpose({ scrollToBottom });
               :message="row.message"
               :member="state.member"
               :task-of="taskOf"
+              :pending-count-for="pendingCountFor"
               @retry="emit('retry', $event)"
               @discard="emit('discard', $event)"
               @open-task="emit('open-task', $event)"

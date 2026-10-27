@@ -58,7 +58,8 @@ export function createAppContext(options) {
     liveLog,
     channelConfigs: mutable.channelConfigs,
     loadChannelConfig: store.loadChannelConfig,
-    // 任务线程与频道名单都还没迁（/ 或只在 store 里）：标题取不到时面板退到 id 尾段，不编名字。
+    // 任务线程的标题：`activeTask` 这个缝由 App.vue 接到当前打开的线程上（票 #307），
+    // 因此任务上下文下的运行面板标题取**任务标题**；频道面板用频道名，取不到就退到 id 尾段。
     activeTask: config.activeTask || (() => null),
     channels: () => mutable.channels,
     activeChannel: () => store.activeChannel.value,
@@ -217,6 +218,10 @@ export function createAppContext(options) {
       // 运行面板的 live 帧同样不补（ADR-0020）：重连成功后按快照兜底，把断线期间的分派 / Plan /
       // SOP 变化读回来。面板没开时是空操作（`refreshFor()` 自己判）。
       if (info && info.reconnected) runPanel.refreshFor();
+      // 审批也随重连后的这次全量重取重读：断线期间 Agent 可能已经发起新的待审批（那些
+      // `approval_required` 帧一并丢了，live 不补），不重读就会「圆点不亮、线程里没有卡」。
+      // 读不到保留旧镜像，不伪造（与 reminders 同一条）。
+      if (info && info.reconnected) approvals.loadAll().catch(() => {});
     },
     onError() {
       mutable.online = false;
