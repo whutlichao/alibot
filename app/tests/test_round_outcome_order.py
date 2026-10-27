@@ -43,14 +43,21 @@ def _seed_channel(db: Database, *, members: int = 1) -> tuple[str, list[str]]:
     return str(channel["id"]), agent_ids
 
 
-def _insert_same_millisecond(db: Database, target_id: str, member_id: str, base_seqs: list[int]) -> list[str]:
+def _insert_same_millisecond(
+    db: Database, target_id: str, member_id: str, base_seqs: list[int], ids: list[str] | None = None
+) -> list[str]:
     """直接写行：``append_round_outcome`` 会用真实时钟，拿不到「同一毫秒」这个前提。
 
     插入顺序就是 ``base_seqs`` 的顺序——这**是**「这一轮先收口」的事实，读取顺序必须尊重它。
+
+    ``ids`` 可选：传了就按它的顺序逐条注入，用来把「插入序 ≠ 字典序」这类前提**确定性**地
+    构造出来，而不是靠随机 uuid 碰运气（#314）。不传时仍用 ``new_id("round")`` 逐条生成。
     """
+    if ids is not None and len(ids) != len(base_seqs):
+        raise ValueError(f"ids 与 base_seqs 长度不一致：{len(ids)} != {len(base_seqs)}")
     inserted = []
-    for base_seq in base_seqs:
-        outcome_id = new_id("round")
+    for index, base_seq in enumerate(base_seqs):
+        outcome_id = ids[index] if ids is not None else new_id("round")
         with db._lock:
             db._conn.execute(
                 "INSERT INTO round_outcome(id, member_id, target_id, base_seq, status, reason, "
@@ -130,16 +137,19 @@ def test_round_outcome_table_has_a_monotonic_tiebreaker(db: Database) -> None:
     而 ``uuid4`` 不单调。
     """
     target_id, (member_id,) = _seed_channel(db)
-    inserted = _insert_same_millisecond(db, target_id, member_id, [1, 2, 3])
+    # id 固定成「插入序 ≠ 字典序」的一批（格式同 ``new_id("round")``：``round_`` + 12 位 hex）。
+    # 用随机 uuid 做这件事是 1/6 概率撞上有序、断言假红（#314），这里改成确定性地构造。
+    unordered_ids = ["round_cccccccccccc", "round_aaaaaaaaaaaa", "round_bbbbbbbbbbbb"]
+    inserted = _insert_same_millisecond(db, target_id, member_id, [1, 2, 3], ids=unordered_ids)
 
     with db._lock:
         rows = db._conn.execute(
             "SELECT id FROM round_outcome WHERE target_id = ? ORDER BY rowid", (target_id,)
         ).fetchall()
     assert [str(row["id"]) for row in rows] == inserted
-    # 随机 id 的字典序**不**等于插入序：这正是原来那条 ORDER BY 不可靠的原因。
-    assert inserted != sorted(inserted) or len(inserted) < 3, (
-        "uuid 恰好有序是小概率事件；若这里撞上了，说明该用例失去区分力，换一批 id"
+    # id 的字典序**不**等于插入序：这正是原来那条 ORDER BY id 不可靠的原因。
+    assert inserted != sorted(inserted), (
+        f"这批 id 的字典序恰好等于插入序（{inserted}），用例失去区分力——换一组固定的 id"
     )
 
 
