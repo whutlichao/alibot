@@ -626,6 +626,9 @@ describe('skills 页签', () => {
     const picker = wrapper.find('[data-od-id="skill-import-picker"]');
     expect(picker.element.tagName).toBe('SELECT');
     expect(picker.element.value).toBe(''); // 默认不预选
+    // 候选只在打开详情时读一次：没有「手动重扫」按钮，也没有第二个入口。
+    expect(wrapper.find('[data-od-id="skill-import-scan"]').exists()).toBe(false);
+    expect(picker.findAll('optgroup')).toHaveLength(3);
     expect(picker.find('optgroup[label="可选"]').exists()).toBe(true);
     expect(picker.find('optgroup[label="已安装"]').exists()).toBe(true);
     expect(picker.find('optgroup[label="不可导入"]').exists()).toBe(true);
