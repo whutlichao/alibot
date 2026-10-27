@@ -36,6 +36,7 @@ import { agentMembers } from './lib/member-view.js';
 import { createSearchStore } from './stores/search.js';
 import { createTaskBoardStore } from './stores/task-board.js';
 import { createTaskThreadStore } from './stores/task-thread.js';
+import { channelPendingTaskCount } from './stores/approvals.js';
 import { useUiState } from './stores/ui-state.js';
 
 const props = defineProps({
@@ -356,6 +357,10 @@ onMounted(async () => {
   // 任务快照也随首载读一次：`tab-tasks` 的计数是**当前频道**的任务数，页签在消息页也要显示它。
   // 读失败保留空快照（任务面读不到不影响频道消息与发送，旧 `loadWorkspace()` 同一条）。
   board.refresh();
+  // 全工作区的待审批读数（旧 `loadPendingApprovals`）：页签圆点与卡片角标的读数来源。
+  // 本票**不做 12s 周期刷新**（理由在 `stores/approvals.js` 文件头）：替代是这条首读 + 重连后的
+  // 一次全量重读 + 每条 `approval_*` live 帧 + 提交回执。因此圆点不会因缺定时器而永远不亮。
+  approvals.loadAll().catch(() => {});
 });
 
 /**
@@ -548,6 +553,27 @@ function selectTab(tab) {
 /** 任务页签计数：**当前频道**的任务数（与看板的频道筛选无关，读的是全量快照）。 */
 const taskCount = computed(() => (isDm.value ? 0 : board.channelTaskCount(state.activeTargetId)));
 
+/**
+ * 待审批的读数（票 #308）：审批卡、页签圆点、卡片角标都从**这一份**镜像派生。
+ *
+ * `ctx.approvals` 是唯一写入口（快照 + live 帧）；这里只给三个读法：
+ * - `approvalCountFor(targetId)`：某任务 target 的 pending 条数（卡片 / 列表行角标）；
+ * - `channelApprovalTasks`：当前频道下「有任务在等审批」的**任务数**（页签圆点的 aria 名）；
+ * - `taskApprovalCount(taskId)`：上面两档的桥接（看板卡片只持有任务行）。
+ * 一份读数、三处呈现——不是三处各读一次。
+ */
+const approvals = ctx.approvals;
+const approvalCountFor = (targetId) => approvals.pendingCountFor(targetId);
+const channelApprovalTasks = computed(() =>
+  isDm.value
+    ? 0
+    : channelPendingTaskCount(board.state.tasks, state.activeTargetId, approvalCountFor),
+);
+const taskApprovalCount = (taskId) => {
+  const task = board.taskOf(taskId);
+  return task && task.target_id ? approvalCountFor(task.target_id) : 0;
+};
+
 /** 任务看板已迁到本版（票 #306）：`tab-tasks` 与看板入口因此翻正（ADR-0038 §五的开关）。 */
 const tasksAvailable = ref(true);
 
@@ -567,7 +593,11 @@ async function openTask(taskId) {
   dockTarget.value = { kind: 'task', taskId };
   dockDrawerOpen.value = true;
   const opened = await thread.open(taskId);
-  if (opened) return;
+  if (opened) {
+    // 打开线程即读一次**这个 target** 的待审批快照（旧 `loadApprovalsFor`）；失败不阻塞线程。
+    approvals.loadFor(opened.task ? opened.task.target_id : null).catch(() => {});
+    return;
+  }
   // 打开期间人可能已经切走了：那时不动 dock（不要把别人的这一帧收掉）。
   if (!dockTarget.value || dockTarget.value.kind !== 'task' || dockTarget.value.taskId !== taskId) return;
   const reason = thread.state.error;
@@ -723,6 +753,7 @@ function mobileShell() {
         :is-archived-dm="archived"
         :message-count="messageTabCount(target)"
         :task-count="taskCount"
+        :task-approval-count="channelApprovalTasks"
         :active-tab="activeTab"
         :channel-tools-available="true"
         :tasks-available="tasksAvailable"
@@ -749,6 +780,7 @@ function mobileShell() {
         v-else-if="mode === 'board'"
         :board="board"
         :state="state"
+        :approval-count="taskApprovalCount"
         @open-task="openTask"
         @new-task="taskFormOpen = true"
       />
@@ -794,6 +826,7 @@ function mobileShell() {
       :thread-assignees="threadAssignees"
       :thread-assignees-failed="threadAssigneesFailed"
       :thread-channel-mode="threadChannelMode"
+      :approvals="approvals"
       :online="state.online"
       @close="closeDock"
       @open-run-panel="openTaskRunPanel"

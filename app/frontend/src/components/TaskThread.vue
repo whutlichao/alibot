@@ -16,9 +16,13 @@
         不是对话，ADR-0037：只渲染「说话」）。
 
      写路径一律在 `stores/task-thread.js`：组件只读 state 与调用动作，失败原因由 store 交给它铺。
-     审批段归 T8，本票**不渲染假节点**。 -->
+
+     审批段（票 #308，`thread-approvals`）读的是**任务自己的 target**（`task.target_id`）：那份记录
+     镜像在 `stores/approvals.js`，与任务页签的待审批圆点、卡片角标是**同一份读数**。段只在有记录时
+     出现（空时不摆一个空容器）；单条记录的倒计时 / 在途 / 失败全在 `ApprovalCard.vue`。 -->
 <script setup>
 import { computed, ref, watch } from 'vue';
+import ApprovalCard from './ApprovalCard.vue';
 import AttachmentChip from './AttachmentChip.vue';
 import MarkdownBody from './MarkdownBody.vue';
 import MemberAvatar from './MemberAvatar.vue';
@@ -38,6 +42,8 @@ const props = defineProps({
   // 所属频道的协作模式（`'team'` 才铺那句「任务线程只唤醒队长」；配置读不到 ⇒ `null`，什么都不说）。
   channelMode: { type: String, default: null },
   online: { type: Boolean, default: true },
+  // 审批记录镜像（`createApprovalStore()` 的返回值）：本段与页签圆点 / 卡片角标共读这一份。
+  approvals: { type: Object, default: null },
 });
 
 const emit = defineEmits(['close', 'open-run-panel']);
@@ -61,6 +67,26 @@ const headSub = computed(() => {
 });
 
 const transitions = computed(() => allowedTransitions(task.value));
+
+/** 本任务自己的审批记录（pending 在前；终态是历史，仍如实铺出来，只是没有动作）。 */
+const approvalRecords = computed(() => {
+  const current = task.value;
+  if (!current || !current.target_id || !props.approvals) return [];
+  return props.approvals.recordsFor(current.target_id);
+});
+
+/** 发起审批的成员：成员表里查一行；查不到（成员已删除）时退回 id，不编名字。 */
+function approvalMember(record) {
+  const id = record && record.member_id;
+  if (!id) return null;
+  return props.members.find((item) => item.id === id) || null;
+}
+
+function submitApproval(record, payload) {
+  const current = task.value;
+  if (!current || !props.approvals || !record) return;
+  props.approvals.submit(current.target_id, record.reply_id, payload.confirmed);
+}
 
 const canSend = computed(() => Boolean(draft.value.trim()) && props.online && !state.value.sending);
 
@@ -288,6 +314,24 @@ function focusReply() {
         {{ state.error ? t('toast.openTaskFailed', { reason: state.error }) : t('runPanel.loading') }}
       </div>
       <template v-else>
+        <!-- 审批段（票 #308）：只在有记录时出现，空时不摆一个空容器。 -->
+        <div v-if="approvalRecords.length" class="d-sec" data-od-id="thread-approvals">
+          <div class="d-sec-title">{{ t('approval.section') }}</div>
+          <div class="approval-board">
+            <ApprovalCard
+              v-for="item in approvalRecords"
+              :key="item.reply_id"
+              :record="item"
+              :target-id="task.target_id"
+              :member="approvalMember(item)"
+              :now="approvals.now()"
+              :online="online"
+              :in-flight="approvals.isInFlight(item.reply_id)"
+              :error="approvals.errorFor(item.reply_id)"
+              @submit="submitApproval(item, $event)"
+            />
+          </div>
+        </div>
         <div class="d-sec">
           <div class="d-sec-title">{{ t('task.discussionCount', { count: replies.length }) }}</div>
           <div id="ttReplies">

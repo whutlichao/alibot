@@ -1064,3 +1064,82 @@ node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
   SSE 会推翻「一条流、按 `target_id` 分流」的既有决定（ADR-0038 §五），归一张单独的票。
 - **运行面板的「成员事件」段只读 live**：任务面板首开时该段通常为空（SOP / 事件的 live-only
   性质是既有事实，同阶段一那次读数）。
+
+## 八、阶段 B · 票 #308：审批卡 + 待审批外显徽标
+
+阶段 B 的第三票（阻塞于 #307，已合入）。旧页面 `renderTaskApprovals` `:3360` /
+`renderTaskApprovalDot` `:3420` / `approvalCardNode` `:3286` 那一族迁到 v2：任务线程的审批段
+（`thread-approvals`）从「不渲染假节点」换成真卡片，任务页签上补 `task-approval-dot`，
+任务卡片 / 列表行补 `card-approval` 角标。**这一面是安全相关的**（倒计时 / 幂等 / 掩码），
+所以四组判据先在 `tests/approvals.test.js` 钉成红、再写组件转绿。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| **倒计时基准** | `lib/approvals.js` 的 `APPROVAL_TIMEOUT_SECONDS = 600` | 与后端 `approval.py` 的 `DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600.0` 同值；剩余 = `max(0, ceil((requested_at + 600s − now) / 1000))`，`now` 由调用方注入（用例不 `sleep`） |
+| `requested_at` 不可解析 | 同上，返回 `null` | 显示 `剩余 --:--`、仍 `pending`、**不挂** `data-urgent`——不伪造倒计时 |
+| 呈现态 | `approvalDisplayState()` | 后端终态优先（`state !== 'pending'` ⇒ 用它）；仍 pending 但剩余 `<= 0` ⇒ `expired`。**只改呈现，不写回记录**（后端在同一上界自己标 expired，`approval.py` 的 `_expire()`） |
+| 到期后的可点性 | `ApprovalCard.vue` 的 `v-if="displayState === 'pending'"` | `.approval-actions` **整块不渲染**（不是 disabled）；`.approval-remaining` 在终态为空串 |
+| 快到期信号 | `approvalUrgentFlag()` | 剩余 `<= 60s` ⇒ `[data-urgent="1"]`，否则 `"0"`，不可解析时不渲染该属性 |
+| 文案 | `approvalRemainingText()` / `approvalClockText()` | `剩余 mm:ss`（词条 `approval.remaining`）；状态说法走 `APPROVAL_STATE_KEYS` 那套词条 |
+| **幂等** | `stores/approvals.js` 的 `submit()` | `state.inFlight` 闸门 + 提交前再判一次呈现态 ⇒ 双击 / 慢网重试的 `POST /api/approvals/{id}` 请求数 = **1**（请求层断言，不测内部实现）；在途时两按钮 `disabled` + `.approval-note` = `approval.submitting` |
+| **动作只出在 pending** | `ApprovalCard.vue` + `approvalDecisions()` | 终态记录只读；谁能审批这条规则**不在前端**——判据就是后端载荷的 `state` / `decisions` |
+| **只提交未决策的调用** | `approvalPendingToolCalls()` / `approvalDecisions()`（#215） | `decisions` 从 `record.tool_calls` 里滤掉已在 `record.decisions` 的 `tool_call_id`；用例断言 body 的数组内容（否则相反结论会整批 409） |
+| **失败不改写状态** | `submit()` 的 catch + `reconcile()` | 错误留在 `errors[reply_id]`、记录原样（仍 pending、按钮还在）、`.approval-error` = `approval.submitFailed` + 后端原因；随后按 target 重读**全部状态**，**读不到就保留本地状态**（不静默清空、不伪造成 expired）；可重试（再点再发一次） |
+| **敏感键掩码**（安全判据） | `APPROVAL_SENSITIVE_KEY` + `approvalSanitizeValue()` + `approvalInputSummary()` | `password` / `api_key` / `authorization` / `secret` / `token` / `cookie` 等一律 `••••`；对象最多三层；字符串 > 120 截断加 `…`；摘要总长 238 字符封顶。用例同时断言**原值不出现在卡片 DOM 里** |
+| `task-approval-dot` | `ChannelHeader.vue` 的 `#tabTasks` | 有未处理审批时出现、处理完消失；`aria-label` = `tabs.tasksApprovalDot`，N 是**任务数**（`channelPendingTaskCount()`）不是记录数 |
+| 卡片 / 列表行角标 | `TaskCard.vue` + `TaskBoard.vue` | `card-approval` + `data-od-id="task-approval-badge-<id>"`，文案 `board.approvalBadge` / `board.approvalBadgeAria`；卡片根 `aria-label` 换成 `board.cardApprovalAria`（`role="button"` 的可访问名会覆盖子树） |
+| **同一份读数** | `ctx.approvals`（`createApprovalStore()`） | 审批卡、页签圆点、卡片角标全部从这一份镜像派生（`pendingCountFor()` / `recordsFor()`），不各读一次、不各算一遍；live 帧一写，三处一起变 |
+| 数据来源 | `loadFor(targetId)` / `loadAll()` | 打开线程读 `GET /api/approvals?target_id=&state=pending`；首载（`onMounted`）读 `GET /api/approvals?state=pending`（圆点的读数来源） |
+| live 帧 | `app-context.js` 的 frame 分流 | `approval_required` / `approval_resolved` **只写 approvals 镜像**——不写 `seenSeqs`、不进消息流 / 未读 / 搜索（与 live-events 同一条纪律） |
+| 快照对账 | `applySnapshot()` + `pendingIndex()` | 快照里消失的 pending 标 `expired`（不伪造记录、不删行）；「已知」集合在请求发出**之前**抓取，在途期间到达的 live 帧不会被误标过期 |
+
+**一处刻意的差异：不做 12s 周期刷新，也不做 1s 倒计时 tick。** 旧页面靠
+`APPROVAL_REFRESH_MS = 12000` 的全量轮询 + 秒级 tick 兜底「线程关着时的角标」与「本地 600s 过期」。
+v2 的替代是**事件驱动**：进入工作区（首载 `loadAll()`）/ 打开线程（`loadFor()`）/ 任一条
+`approval_*` live 帧 / 提交回执之后各读一次。真实收口本来就不靠前端猜——后端在同一个 600s 上界把记录
+标 `expired` 并发 `approval_resolved`（`approval.py` 的 `_expire()`），那条帧会落进这份镜像。
+因此**圆点不会因为缺定时器而永远不亮**（首读 + live 帧两条入口），而「本地 600s 过期」仍由
+`requested_at + 600s` 的呈现态推导，只是重算时机是上面那些事件。
+
+**一条从真实父组件进的用例**：`tests/approvals.test.js` 的 21 条里有 5 条从 `App.vue` 进
+（真实 `createAppContext` + `fetch` 替身 + `attachTo: document.body`）：圆点出现 → 点卡片开线程 →
+审批 → 圆点消失；live 帧收口；卡片角标；两条失败路径（含双击只发一次）。理由同 #307——
+这些判据分散在 `App.vue` 的 `openTask()` / `channelApprovalTasks` 与 `app-context.js` 的 frame 分流里，
+直挂 `ApprovalCard.vue` 一条都测不到（`DockPanel` 漏传 `approvals` 就是这么被抓到的）。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     19 files / 359 passed（新增 tests/approvals.test.js 21 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          exit 0 / 门禁全绿
+npm run build（app/frontend）       产物入库，build-info 指纹一致
+```
+
+真浏览器实测（ego-browser，`--port 8812` + `/tmp/alibot-p2b-308` 独立 data-dir，
+**`PYTHONPATH` 指向本 worktree 的 `app`**）。造数走库层真实写方法
+`Database.create_approval_request(reply_id='rpl_demo1', target_id=<任务自己的 target>, member_id=<Ada>,
+tool_calls=[write_file{path,password}, run_shell{cmd}])`，只写临时 data-dir：
+
+| 判据 | 读数 |
+| --- | --- |
+| 圆点出现 | `[data-od-id=task-approval-dot]` 在，`aria-label` = `该频道有 1 个任务在等待审批`，`#taskCount` = 1 |
+| 卡片角标 | `task-approval-badge-task_1d78147e4542` = `待审批 1`，aria = `「整理发布清单」有 1 条待审批`；卡片根 aria = `整理发布清单，待认领，1 条待审批，打开任务线程` |
+| 审批段 | `#ttApprovalSection` 段标题 `审批`；卡片 `data-state=pending`、`data-approval-id=rpl_demo1`、`data-approval-target=tgt_6621d0fca41f`、aria = `待审批工具：write_file, run_shell`；`剩余 09:16`、`data-urgent=0`；两个按钮 `allow` / `deny` |
+| **掩码（真 DOM）** | `.approval-tool-input` 分别是 `path=/etc/x · password=••••` 与 `cmd=ls -la`；卡片 `textContent` 里**没有** `p@ss-not-for-dom` |
+| 双击「允许」 | 页内 fetch 探针只记到 **1** 条 `POST /api/approvals/rpl_demo1`，body = `{"decisions":[{"tool_call_id":"tc_1","confirmed":true},{"tool_call_id":"tc_2","confirmed":true}]}` |
+| 审批后 | 卡片 `data-state=approved`（`已批准`）、`[data-approval-action]` 数 0（整块不渲染）；**圆点消失**（`aria-label` 置空） |
+| 回到看板 | 角标消失、卡片根 aria 回到 `整理发布清单，待认领，打开任务线程` |
+
+截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-308-dot.png`（页签圆点）、`issue-308-badge.png`
+（看板卡片角标）、`issue-308-card.png`（线程审批段 + 掩码后的参数）、`issue-308-approved.png`
+（审批后终态、按钮与圆点都消失）、`issue-308-board-after.png`（看板角标消失）。
+
+**本轮的已知边界**
+
+- **不做周期刷新**（理由见上）：只有事件驱动的读，没有 12s 轮询。若将来出现「后端没有发帧、前端
+  也没打开线程」的读数缺口，那是补一条刷新入口的票，不是本票的偏差。
+- **`approval_resolved` 只更新本会话见过的卡**（与旧 `absorbApprovalResolved` 同一条）：没见过的
+  记录不伪造一条出来——它的读数由下一次 `loadFor()` / `loadAll()` 的快照给。
+- 频道 target 的审批板（旧 `#approvalBoard`）**不在本票范围**：v2 的审批卡只出现在任务线程里
+  （票面「审批卡出现在任务线程内」）。频道级审批板归后续票。

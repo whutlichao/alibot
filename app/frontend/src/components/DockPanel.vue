@@ -40,6 +40,8 @@ const props = defineProps({
   threadAssignees: { type: Array, default: null },
   threadAssigneesFailed: { type: Boolean, default: false },
   threadChannelMode: { type: String, default: null },
+  // 审批记录镜像（票 #308）：往下递给任务线程的审批段（与页签圆点 / 卡片角标同一份读数）。
+  approvals: { type: Object, default: null },
   online: { type: Boolean, default: true },
 });
 
@@ -82,6 +84,7 @@ const mode = computed(() => {
       :assignees="threadAssignees"
       :assignees-failed="threadAssigneesFailed"
       :channel-mode="threadChannelMode"
+      :approvals="approvals"
       :online="online"
       @close="emit('close')"
       @open-run-panel="emit('open-run-panel')"
