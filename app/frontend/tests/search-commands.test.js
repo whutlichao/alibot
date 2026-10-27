@@ -523,7 +523,7 @@ describe('⌘K 命令面板', () => {
     expect(wrapper.find('[data-od-id="cmd-list"]').exists()).toBe(true);
   });
 
-  test('命令集：跳转 + 动作 + 动态频道组；未迁面的两条是禁用条目（不是假入口）', async () => {
+  test('命令集：跳转 + 动作 + 动态频道组（全部指向已迁面）', async () => {
     const server = createServer({ channels: [channel(), channel({ id: 'ch-2', name: 'ops' })] });
     const { wrapper } = await mountApp(server);
     await press('k', { metaKey: true });
@@ -543,12 +543,14 @@ describe('⌘K 命令面板', () => {
     const groups = wrapper.findAll('[data-od-id="cmd-list"] .cmd-group').map((node) => node.text());
     expect(groups).toEqual(['跳转', '动作', '频道']);
 
-    // 任务看板（T6）与新建任务（T7）还没迁 ⇒ 禁用 + `app.notMigrated` 的 title。
-    for (const id of ['view-board', 'new-task']) {
-      const item = wrapper.find(`[data-cmd="${id}"]`);
-      expect(item.attributes('disabled'), id).toBeDefined();
-      expect(item.attributes('title'), id).toBe('这个入口还没迁到 Vue 版工作台，请用 /studio/ 打开');
-    }
+    // 任务看板随票 #306 迁完、新建任务随票 #307 迁完 ⇒ 两条都是**真入口**，
+    // 命令表里现在没有禁用条目（`runFirst()` 「跳过禁用」的兜底仍在，暂无活例）。
+    const board = wrapper.find('[data-cmd="view-board"]');
+    expect(board.attributes('disabled')).toBeUndefined();
+    expect(board.attributes('title')).toBeUndefined();
+    const newTask = wrapper.find('[data-cmd="new-task"]');
+    expect(newTask.attributes('disabled')).toBeUndefined();
+    expect(newTask.attributes('title')).toBeUndefined();
     for (const id of ['view-messages', 'new-channel', 'toggle-dock']) {
       expect(wrapper.find(`[data-cmd="${id}"]`).attributes('disabled'), id).toBeUndefined();
     }
@@ -612,17 +614,22 @@ describe('⌘K 命令面板', () => {
     expect(wrapper.find('[data-od-id="messages-view"]').isVisible()).toBe(true);
   });
 
-  test('Enter 跑第一条**可执行的**命令：禁用条目占着头位时不吞掉一次回车', async () => {
+  test('Enter 跑筛选后的第一条命令，跑完面板关掉', async () => {
     const { wrapper } = await mountApp();
     await press('k', { metaKey: true });
-    // 筛到只剩「任务看板」（禁用）：回车什么都不发生，面板留着。
-    await wrapper.find('[data-od-id="cmd-input"]').setValue('任务看板');
+    // 筛到只剩「新建任务」（票 #307 已迁完 ⇒ 它是**可执行**的条目）：回车要真跑它，
+    // 而不是留在一个「按了没反应」的面板上。
+    await wrapper.find('[data-od-id="cmd-input"]').setValue('新建任务');
     await flush();
     await wrapper.find('[data-od-id="cmd-input"]').trigger('keydown', { key: 'Enter' });
     await flush();
-    expect(wrapper.find('[data-od-id="cmd-list"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="cmd-list"]').exists()).toBe(false);
+    expect(wrapper.find('#taskOverlay').element.hidden).toBe(false);
 
-    // 筛到「消息视图」（可执行）：回车跑它并关面板。
+    // 关掉弹窗，再看跳转那一组：回车同样跑第一条匹配项并关面板。
+    await wrapper.find('#taskModalClose').trigger('click');
+    await flush();
+    await press('k', { metaKey: true });
     await wrapper.find('[data-od-id="cmd-input"]').setValue('消息视图');
     await flush();
     await wrapper.find('[data-od-id="cmd-input"]').trigger('keydown', { key: 'Enter' });

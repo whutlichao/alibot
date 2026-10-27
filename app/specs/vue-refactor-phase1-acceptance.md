@@ -157,8 +157,8 @@ members + member-statuses），SSE 连接数 1。
 
 v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` 承载：
 
-任务看板与任务线程、审批卡、Agent 详情、**任务运行面板**（它挂在任务线程头，随线程那张票进来；
-频道运行面板已迁）。
+任务线程、审批卡、Agent 详情。**任务看板**随阶段 B 的票 #306 迁完（见「阶段 B · 票 #306」），
+**任务线程与任务运行面板**随票 #307 迁完（见「阶段 B · 票 #307」；频道运行面板在阶段一就已迁完）。
 
 阶段 A 已把这份清单里的六面迁完，逐票读数见下面各节：共享弹窗壳与 dock 三档 = 票 #300、
 三个新建表单 = 票 #301、提醒与设置两张弹窗 = 票 #302、频道头三工具（名册 / 配置 / 预算）= 票 #303、
@@ -168,7 +168,7 @@ v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` �
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | Agent 详情（详情面归 T10，但 rail 的 Agent 行**不再是死行**：点它开与该 Agent 的私信）；任务页签；「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
+| **不渲染** | Agent 详情（详情面归 T10，但 rail 的 Agent 行**不再是死行**：点它开与该 Agent 的私信）；「作为任务发送」（composer）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现（任务页签随票 #306 迁完、任务引用 chip 与频道指针 chip 随票 #309 迁完，都已不在这一档） |
 | **可见但禁用** | **这一档现在空了**（票 #301 把新建频道 / 新建 Agent 翻正） | 兜底规则仍成立：将来再出现「面还没迁、但入口是空工作台唯一出路」的情况，按可见 + 禁用 + `title` 用词条 `app.notMigrated` 处理，而不是渲染一个按下去什么都不发生的按钮 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
@@ -187,7 +187,7 @@ v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` �
 | # | 问题 | 修法 | 判据 |
 | --- | --- | --- | --- |
 | 1 | 消息里的**附件不渲染**（旧页面有下载入口，v2 上文件凭空消失） | 新增 `AttachmentChip.vue`；`MessageItem` 在系统消息与对话消息两个分支都挂 `.msg-attachments` | 「已绑定 ⇒ `<a download>`；草稿 ⇒ `<span>`；无附件 ⇒ 整块不占版面」 |
-| 2 | 频道流的**指针 chip / 引用 chip 不渲染** | 随任务面整票不动；这两个 chip 属于任务面，现在**显式不渲染**并在文件头记明 | 「消息带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」 |
+| 2 | 频道流的**指针 chip / 引用 chip 不渲染** | ~~随任务面整票不动；这两个 chip 属于任务面，现在**显式不渲染**并在文件头记明~~ **票 #309 已还清**：两个 chip 恢复（`TaskRefChip.vue` 一份判据、`MessageItem` 两个分支 + `TaskThread` 讨论行三处复用），见下面「阶段 B · 票 #309」 | ~~「消息带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」~~ **已翻正**：「带 `task_ref` ⇒ 产出 `.task-ref-chip`；带 `task_pointer` ⇒ 产出 `.task-ref-chip` + `[data-task-pointer]`」 |
 | 3 | 4 个**假按钮**（composer 的附件 / 作为任务发送、消息里的 open-task、失败行的 inspect）**外加**自查才发现的 9 个（rail 的搜索 / 提醒 / 设置 / Agent 行，频道头的四个工具，任务页签） | 未迁面的**导航入口**整块不渲染；空工作台的出路（新建）改为**禁用 + `title` 说明** | 「默认不渲染」与「开关打开时照常出现」正反两条都断言 |
 | 4 | 切 target 时**没清折叠态**（`resetForTarget()` 定义了却没人调用） | `App.vue` 的 `selectTarget()` 在换 target **之前**清（顺序反了会清掉新 target 刚铺的状态） | 折叠态按 seq 认，跨 target 不通用——`ui-state.test.js` 四条 |
 | 5 | `firstSuccessfulLoad` 是**死返回值**（声明后从未置真） | store 拿到模块级 `workspaceLoaded`：整轮读数全部落地才置真；返回值区分「这一次尝试成功」与「第一次成功」 | 「首次为真、静默刷新为假、首载失败后重连成功仍为真」三条 |
@@ -249,11 +249,9 @@ npx vitest run（app/frontend）          9 files / 171 passed（新增 tests/ru
 
 ### 本轮的已知边界
 
-- **任务运行面板**（`btnThreadRunPanel`）没迁：它挂在任务线程头，随线程那张票进来。
-  `stores/run-panel.js` 的 `open({taskId, targetId})` 已经能接这条路径（`task_id` 过滤与标题取值都在），
-  缺的只是任务线程那个入口本身。
-- **dock 的另两棵子树**（频道成员 / 任务线程）在本版**根本不渲染**，不是 `hidden`：占着位置、
-  看不见又可能被 Tab 命中的空容器比不渲染更难解释。
+- **任务运行面板已随票 #307 迁完**：入口在线程头（`btn-thread-run-panel`），标题取任务标题。
+- **dock 的另两棵子树**：`task` 档已接 `TaskThread.vue`（票 #307），`members` 档仍是具名插槽
+  （成员面在 v2 走弹窗，这一档至今没有调用点）。
 - **SOP 段在「首开且本次会话没见过 sop_event」时是空态**，这是后端的读面形状决定的，不是前端的漏。
 
 ## 五、被修订的既有纪律（逐条记账）
@@ -276,7 +274,7 @@ npx vitest run（app/frontend）          9 files / 171 passed（新增 tests/ru
 | ESC 只关最上面那一层 | `lib/modal-stack.js` | 模块级栈 + **一个** `document` 捕获阶段监听；叠两层时第一次 ESC 只关上层、下层仍 `hidden:false`，第二次才关下层。旧页面 `app.js:10578-10620` 是无栈、一次全关——这里是**有意改进** |
 | `busy` 时整层不收 | `ModalShell.vue` 的 `requestClose()` 与栈的 `isBusy()` | ESC、遮罩点击、关闭键三处同一条判据（等价于旧页面对删除确认弹窗的 `state.agentDelete.busy`，`app.js:10075-10086`） |
 | 焦点进入与回收 | 同上的 `firstFocusable()` / `restoreFocus()` | 打开 ⇒ `.modal-body` 里第一个可聚焦元素（跳过 `disabled` 与 `hidden` 子树；正文没有可聚焦件时才落到标题行的关闭键）；关闭 ⇒ 打开那一刻的 `document.activeElement`（不是 `body`） |
-| dock 三档由 `dockTarget` 推导 | `components/DockPanel.vue` | `dockTarget = { kind: 'run' \| 'members' \| 'task' }`；`null` ⇒ 整栏不渲染；`run` 档没有 `panel` 也按「没有形态」处理（不铺空壳）。`run` 接 `RunPanel`（`pools` 照旧往下传），另两档是 `<slot name="members">` / `<slot name="task">`，内容归 T3 / T7 |
+| dock 三档由 `dockTarget` 推导 | `components/DockPanel.vue` | `dockTarget = { kind: 'run' \| 'members' \| 'task' }`；`null` ⇒ 整栏不渲染；`run` 缺 `panel` / `task` 缺 `thread` 都按「没有形态」处理（不铺空壳）。`run` 接 `RunPanel`（`pools` 照旧往下传）、`task` 接 `TaskThread`（票 #307），`members` 是 `<slot name="members">`（成员面在 v2 走弹窗，无调用点） |
 | 私信下一档都不出现 | `App.vue` 的 `visibleDockTarget` | 私信下 `dockTarget` 恒 `null`（`dockAvailable()` 判据：私信既没有 team 运行也没有频道成员），整栏消失 |
 | ESC 层序表 | `App.vue` 的 `onEscape()`（票 #304 起改名 `handleEscape()`，同一个函数） | **命令面板 > 模态栈最上层（`busy` 时不收）> 移动左抽屉 > ≤900px 右抽屉 > 搜索视图**，依据 `app.js:10578-10620` 的逐行顺序；T4（#304）直接复用这个函数 |
 
@@ -800,7 +798,7 @@ AssertionError: expected 1 to be +0 // Object.is equality
 | **`search.offline`** | `stores/search.js` 的 `run()` | 断线（`isOnline()` 为假）时**不打请求**，直接 `state.error = t('search.offline')` |
 | **版本守卫** | `stores/search.js` 的模块内 `let version` | 每发一次请求 +1；晚到的响应（成功**与**失败两条路径）在 `requestVersion !== version` 时整份丢弃。与 `stores/run-panel.js` 的版本守卫同形（照它写，不发明第二种） |
 | 高亮只按后端区间切 | `lib/search.js` 的 `hitSegments()` | 只按 `highlight_ranges` 切文本段，越界 / 倒序 / 重叠 / 非整数的区间一律**跳过**（不修正、不重排——修一次就等于在猜后端想高亮哪里）；UTF-16 下标（与后端 `db.py` 的 `_search_highlight_ranges` 同口径），因此可直接 `slice` |
-| 命中行是只读行 | `lib/search.js` 的 `hitIsInteractive()` / `SearchView.vue` | 旧页面只有任务命中可点（打开右侧任务线程），而任务线程随 T6 未迁 ⇒ 本版三类命中一行都不做 `button`。T6/T7 落地时只改 `hitIsInteractive()` |
+| 命中行是只读行 | `lib/search.js` 的 `hitIsInteractive()` / `SearchView.vue` | 旧页面只有任务命中可点（打开右侧任务线程）。本版三类命中一行都不做 `button`：任务线程随票 #307 已迁，但搜索命中行要先把 `target_id` 带到线程入口才能开对线程，本票没扩这条（T7 落地时**没**改 `hitIsInteractive()`，留待一条单独的票） |
 | 查询词未输入时不发请求 | `setQuery()` 空串分支 + `setFacet()` 无查询词分支 | 空串 ⇒ 回到「未输入」空态并作废挂起的那一拍；无查询词时切档位只换选中态 |
 | 离开搜索视图 | `search.leave()` | 只取消防抖那一拍（人已经在看消息流了，不该多发一次搜索）；**在途那一发照旧落地**（旧 `showMessagesView()` 不碰 `state.search`），于是再进来看到的是上一次的结果而不是空镜 |
 
@@ -814,7 +812,7 @@ AssertionError: expected 1 to be +0 // Object.is equality
 | 命令集 | `App.vue` 的 `commands` computed | 跳转（`view-messages` / `view-board`）+ 动作（`new-channel` / `new-task` / `toggle-dock`）+ **动态**频道组（`state.channels` 现读，不是写死的种子名） |
 | **只呈现真绑定的快捷键** | 同上 | 只有 `M`（消息视图）与 `T`（任务看板）带 `kbd`；原型 `CMDS` 的 `N` / `⇧N` / `D` 没有绑定任何按键 ⇒ 不出现。用例断言面板里 `.cmd-item .kbd` 恰为 `['M','T']` |
 | **稳定 id 做归属** | `data-cmd` | `view-messages` / `new-channel` / `channel:<后端 id>`；不用标签文本（频道名可能与某条命令同名，标签不是键） |
-| 指向未迁面的命令是**禁用条目** | `disabled` + `title`（`app.notMigrated`） | 任务看板（T6）与新建任务（T7）还没迁 ⇒ `view-board` / `new-task` 是 `disabled` 条目，不渲染成按下去什么都不发生的假入口（ADR-0038 §五）。Enter 跑**第一条可执行的**，禁用条目占着头位时不吞掉一次回车 |
+| 指向未迁面的命令是**禁用条目** | `disabled` + `title`（`app.notMigrated`） | 兜底规则：还没迁的面不渲染成按下去什么都不发生的假入口。票 #306 / #307 之后命令表里**暂无禁用条目**（`view-board` 与 `new-task` 都是真入口），Enter 仍跑**第一条可执行的** |
 | 私信下 `toggle-dock` **不列** | `dockToggleAvailable` | 与频道头运行面板入口**同一份判据**（私信既没有 team 运行也没有频道成员）；是「这一条不列」，不是整块消失 |
 | `M` / `T` 只在人不在输入框里时生效 | `onGlobalKeydown()` | `target.matches('input,textarea')` 就 return（旧页面同一条）；弹窗与命令面板开着时也不穿透 |
 | 焦点 | `CommandPalette.vue` 的 `watch(open)` | 打开把焦点送进 `#cmdInput`（旧 `openCmd()` 最后一行）；每次打开清空筛选词 |
@@ -903,8 +901,294 @@ scripts/check.sh --fast            exit 0（ruff check / ruff format --check / m
 - **旧页面目录一个字没动**：`git diff` 对 `studio/app.js` / `index.html` / `i18n.js` / `app.css` 全为空
   ——`search.*`（24 条）与 `cmd.*`（8 条）词条早就在 `studio/i18n.js` 里，本票**一条词条都没新增**，
   `app.css` 也一分没改（`.search-view` / `.result` / `.cmd` 那一整套类名早就为这个面定义好了）。
-- **任务看板与任务线程仍归 T6 / T7**：`view-board` / `new-task` 是禁用条目，`T` 按下去什么都不发生
-  （落点还没迁）。任务命中行因此也是只读行（旧页面那条可点是打开右侧任务线程）。
+- **任务看板已随票 #306 迁完**（`view-board` 与 `T` 键现在是真入口，`tab-tasks` 也出现）；
+  任务线程随票 #307 迁完（点卡片即开线程，任务命中行仍只读——旧页面那条可点是打开右侧任务线程，
+  而搜索命中行要带 `target_id` 才能开对线程，本票没扩这条）。
 - **Agent 详情仍归 T10**：搜索里的 Agent 命中同样是只读行。
 - **搜索结果不随 `target_id` 收窄**：旧页面 `runSearch()` 只传 `q` + `facet`，`target_id` 是后端
   支持的参数但前端没用过；本票原样沿用（搜索是**全工作区**的，不是当前频道的）。
+
+## 六、阶段 B · 票 #306：任务看板（列表/看板 + 声明式跨列拖拽）
+
+阶段 B 的第一票。旧页面 `#taskBoard` 本体（两种视图、toolbar、五列、卡片、「流转」菜单、跨列拖拽）
+迁到 v2，`tasksAvailable` 翻正 ⇒ `tab-tasks` 出现、`T` 键与命令面板的「任务看板」落到真视图。
+任务**线程**归 T7，审批卡归 T8，两个 chip 归 T9——本票不碰。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 两种视图，**默认档是 `board`** | `components/TaskBoard.vue` + `stores/task-board.js` 的 `state.view` | 核过旧页面：`studio/index.html:229-230` 的 `.seg` 第一个按钮是 `data-taskview="board"` 且带 `is-active`，`app.js` 读 `state.taskView` 决定哪块 `hidden`——两处都指向 `board`，不是列表 |
+| 视图选择是**呈现状态**（内存） | 同上 | 不进 `localStorage`、不进 `stores/workspace.js` 的后端镜像；用例断言「切完重挂一个全新 `App` 仍是 `board`」且 `localStorage` 里只有唯一允许的那条「上次打开的 target」 |
+| 五列固定顺序 + 空列提示 | `lib/task-board.js` 的 `TASK_STATUS_ORDER` | `todo → in_progress → in_review → done → closed`；`data-od-id="task-column-<status>"`、`.col-head`（`.st-dot` + 状态词 + `.col-count`）、空列 `.drop-hint` = `board.emptyColumn` |
+| 卡片字段 | `components/TaskCard.vue` | `.card-num`（`#` + id 尾 6 位）/ `.card-title` / `.card-tag`（`#<channel_name>`）/ `.card-owner`（未指派 ⇒ `.unassigned` + `task.unassigned`）/ `.card-unread`（>99 ⇒ `99+`）/ 根 `aria-label` = `board.cardAria` |
+| 列表视图同一份数据 | 同上（`.board-list` 分支） | `button.result` + `data-od-id="task-row-<id>"`；`.r-top`（状态 + `.hash` + `.card-tag` + `.r-open`）/ `.r-title` / `.r-snip`；切视图**不重读后端**（用例断言 `/api/tasks` 请求数不变） |
+| 筛选是本地判据 | `stores/task-board.js` 的 `visibleTasks` | 「我的任务」= 未认领 **或** `assignee_member_id === ownerId`（不是「我建的」）；频道 chip + 「全部频道」；从页签进来默认筛到**当前频道**（旧 `showTaskBoard()` 同一条） |
+| 页签计数与看板筛选**无关** | `channelTaskCount()` | 读全量快照里该频道的任务数（不拿筛选后的清单冒充全量——旧 `refreshTasks()` 的注释记着这次教训） |
+| **跨列拖拽重写成声明式** | `stores/task-board.js` 的 `state.drag` + `TaskBoard.vue` 的 `dropClass()` / `TaskCard.vue` 的 `isDragging()` | 五个拖拽事件只写 `{ from, over }` 一个 reactive 状态；列的 `drag-over` / `invalid-over` 与卡片的 `.dragging` 都由它**推导**。**不搬**旧 `boardDrag` 命令式状态机：不 `querySelectorAll` 扫列、不 `classList.add` |
+| 松手 = **一次**状态迁移 | `changeStatus()` / `drop()` | `PATCH /api/tasks/{id}/status` body `{status}`；用例与真浏览器都断言**请求数 1** 与 body |
+| **非法落点零请求** | `changeStatus()` 的载荷守卫 | 目标不在 `allowed_transitions` 里 ⇒ 不发请求 + `toast.transitionInvalid`（`不能从「待认领」移到「待审」——不是合法迁移`）；卡片留在原列 |
+| 拖回同一列：无动作 | `drop()` 的 `over === task.status` 早退 | 既不是迁移，也不给一句「非法」的指责（`.drag-over` / `.invalid-over` 都不挂） |
+| **没有乐观移动** | 同上 | 在途时 DOM 仍按旧读数铺（用例断言「请求已在飞，卡片仍在 todo 列」）；换列由「响应 + 重读」驱动 |
+| 同一张任务至多一个在飞迁移 | `state.moving` | 在途时再拖一次不叠加第二个请求 |
+| 前端**不持有**迁移表副本 | `lib/task-board.js` 的 `allowedTransitions()` / `canTransition()` | 只读载荷字段；字段缺失 = 空集合，不回退到本地表 |
+| 卡片动作与拖拽**同一判定** | 菜单项集合 = `allowedTransitions(task)` | 「流转」菜单（`.card-menu` / `role="menu"` / `div[role=menuitem]`）与拖拽都走 `changeStatus()`；终态（`closed`）卡片**没有** `draggable`、**没有** `.card-menu-btn` |
+| 触屏 / 键盘的等价路径 | `TaskBoard.vue` 的 `onMenuKeydown()` | ↑/↓ 环绕、Enter / Space 激活、Esc 关闭并**还焦点给触发器**；菜单项是 `div[role=menuitem][tabindex=-1]`（只有一条激活路径，不会「键盘一次、原生 click 再一次」） |
+| 拖拽不污染点击 | `state.suppressClickUntil` + `clickSuppressed()` | 拖拽结束后 250ms 内的 `click` 不打开线程（旧 `suppressClickUntil` 同值）；用只伪造 `Date` 的假时钟测，不 `await sleep` |
+| 点卡片 = 打开任务线程 | `App.vue` 的 `openTask()` | `dockTarget = { kind: 'task', taskId }`（`dockTarget` 仍是形态的**唯一**判据）；线程内容归 T7，本票只保证「点得开」 |
+| `tasksAvailable` 翻正 | `App.vue`（一处持有、下传给 `ChannelHeader`） | `tab-tasks` 出现；私信下**不**出现（任务恰好属于一个频道） |
+| 新建任务仍是可见 + 禁用 | `TaskBoard.vue` 的 `btn-new-task` | 表单与写路径归 T7：`disabled` + `title` = 词条 `app.notMigrated`（**票 #307 已翻正**，见下一节） |
+
+**一条从真实父组件进的用例**：`tests/task-board.test.js` 的 29 条里有 22 条从 `App.vue` 进
+（真实 `createAppContext` + `fetch` 替身 + `attachTo: document.body`）。理由与阶段一那次
+`DockPanel` 漏传 `pools` 相同：`tab-tasks` 的可见性在 `ChannelHeader` 与 `App.vue` 两处判、
+看板开关在 `App` 的 `mainView` 里、计数读的是 App 下传的 `task-count`——直挂叶子组件三头都测不到。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     17 files / 325 passed（新增 tests/task-board.test.js 29 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          exit 0 / 门禁全绿
+```
+
+两条阶段一遗留断言随本票**翻转**（`tests/search-commands.test.js`）：`view-board` 从
+「禁用条目」改成「真入口」，以及「回车不吞掉禁用条目」的装置从「任务看板」换成仍禁用的「新建任务」。
+
+真浏览器实测（ego-browser，真 uvicorn `--port 8810` + 独立 data-dir，**`PYTHONPATH` 指向本 worktree 的 `app`**
+——`.venv` 里的 editable 安装指向主工作区，不这么做会静默服务旧产物）：
+
+| 判据 | 读数 |
+| --- | --- |
+| 页签与计数 | 频道 `design` 下 `tab-tasks` 存在、`#taskCount` = **3**（该频道三张任务）；私信下不存在 |
+| 进入看板 | 消息流与 composer **同时让位**（`messages-view` / `composer` 都不在 DOM）、频道头与页签仍在、`tab-tasks` 是选中态 |
+| 五列 | `['todo','in_progress','in_review','done','closed']`；计数 `['1','1','0','0','1']`；空列 `['in_review','done']` 有 `.drop-hint` |
+| 卡片 | `#1678a0` / `巡检部署` / `#design` / `未认领`；有出边的卡 `draggable="true"` 且 `.card-menu-btn` 在；`closed` 那张 `draggable=null`、无菜单按钮 |
+| 默认筛选 | 进看板后 `is-on` 落在 `filter-channel-ch_ca2ce53a724d`（当前频道） |
+| 落点类 | 拖 `in_progress` 的卡到 `todo`（载荷允许）⇒ 该列 `col drag-over`；再移到 `done`（不允许）⇒ `col invalid-over`；卡片同时 `card has-menu dragging` |
+| **非法落点** | 拖 `todo` 的卡到 `in_review`：页内 `fetch` 探针数到的 `PATCH /api/tasks/*/status` = **0**，卡片仍在 `todo`，提示可见「不能从「待认领」移到「待审」——不是合法迁移」 |
+| **合法落点** | 拖 `todo` 的卡到 `in_progress`：`PATCH` 恰好 **1** 次，URL `/api/tasks/task_474d6f1678a0/status`、body `{"status":"in_progress"}`；随后 `todo` 计数 1→0、`in_progress` 1→2，卡片出现在新列（后端事实驱动） |
+| 「流转」菜单 | 打开 ⇒ `aria-expanded=true`、焦点在**第一项**；项集合 `['todo','in_review','closed']`（正是当时载荷的 `allowed_transitions`），文案 `['退回待认领','提交待审','关闭任务']`；↓ 到第二项；Esc 关闭且焦点**还给触发器** |
+| 列表视图 | 切过去后 `task-columns` 不在 DOM、三行 `task-row-*` 各带 `data-status` / `.hash` / `.r-title` / `打开线程 →` |
+
+截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-306-01-board.png`（五列 + 卡片 + 工具栏）、
+`issue-306-02-illegal.png`（非法落点提示）、`issue-306-03-legal.png`（合法迁移后换列）、
+`issue-306-04-list.png`（列表视图）。
+
+**本轮的已知边界**
+
+- **任务线程 / 审批卡 / 两个 chip 仍归 T7–T9**：点卡片只把 `dockTarget` 切成 `task`，dock 里
+  还是 T7 的具名插槽（空档）——**票 #307 已把 `task` 档接上真组件**（见下一节）。
+- **新建任务**（`btn-new-task`）可见但禁用：表单与 `POST /api/channels/{id}/tasks` 的写路径归 T7
+  ——**票 #307 已翻正**（见下一节）。
+- **任务卡片上的「待审批 N」角标**归 T8（`#209` 那套读数与审批卡同一份），本票的卡片先不渲染它。
+- **拖拽的落点类是声明式的推导**：`dragover` 之后 Vue 在下一拍才更新 DOM，因此真浏览器里要等
+  两帧 `requestAnimationFrame` 才读得到 `drag-over` / `invalid-over`（用例里 `await` 组件事件即可）。
+
+## 七、阶段 B · 票 #307：任务线程（dock 第二形态）+ 任务运行面板入口
+
+阶段 B 的第二票。旧页面的 `#dockTask` 本体（摘要 / 推进 chips / 指派 chips / 讨论 / 变更记录 /
+线程 composer）迁到 v2，dock 的 `task` 档从「具名插槽」换成真组件；线程头的
+`btn-thread-run-panel` 把 dock 切到 `run` 档**并带 `task_id` 过滤**。审批卡归 T8、两个 chip 归 T9。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 点卡片 = 打开该任务的线程 | `App.vue` 的 `openTask()` + `stores/task-thread.js` 的 `open()` | `dockTarget = { kind: 'task', taskId }`（**仍是形态的唯一判据**，没有第二份形态状态）；内容读 `GET /api/tasks/{id}/messages`（响应含 `task` + `messages`） |
+| 再点另一个任务 ⇒ **换成新的** | `openTask()` 先 `thread.resetForTarget()` + `dockPanel.resetForTarget(true)` | 用例断言「只有一个 `[data-od-id=task-thread]`」且旧线程的讨论文字不在新线程里 |
+| 线程头字段 | `TaskThread.vue` | `.dock-tag` = `task.threadTag` + `#` + id 尾 6 位；`#ttHeadSub` = `task.threadHeadSub` + 有未读时 `task.threadUnread`；`btn-thread-run-panel`（title/aria = `runPanel.taskEntryTitle`）/ `btn-thread-close`（`dock.threadClose`） |
+| 摘要吸顶：标题就地可编辑 | `thread-title-input` | Enter 保存 / Esc 取消 / 失焦保存；`!title \|\| title === task.title` ⇒ **不发请求**；写路径 `PATCH /api/tasks/{id}/title` |
+| 状态 pill / 指派 pill | `thread-status[data-status]` / `thread-assignee` | 色位由 CSS 的 `.tt-status[data-status=…]` 表驱动（不内联）；无指派 ⇒ `.assignee.unassigned` + `task.unassignedPill`；有 ⇒ 头像 + 名 + `task.reassignHint` |
+| team 提示 | `thread-team-notice` | 仅 `state.channelConfigs[channel_id].mode === 'team'` 时出现（`task.teamNotice`）；配置读不到 ⇒ **不铺任何结论** |
+| 推进 chips 只出载荷里的目标 | `thread-transitions` + `task.noTransitions` | `data-od-id="thread-move-<target>"`，文案 `task.transition.<target>`；`closed` 任务 ⇒ 一句 `task.noTransitions`（**不是空容器**）；前端仍不持迁移表副本 |
+| 指派候选 = **所属频道**的 Agent 成员 | `store.refreshChannelMembers(task.channel_id)` | 不读 task target 成员表（那里只有 {owner} ∪ {当前指派者}，拿它当候选永远换不了人——旧 `renderAssignChips()` 的理由）；读不到 ⇒ `task.assignUnavailable`，未读到 ⇒ `task.assignLoading`，空 ⇒ `task.assignNoAgents`；未指派时多一枚 `thread-unassign`（`task.clearAssign`） |
+| 回复落进该线程 | `send()` → `POST /api/tasks/{id}/messages` body `{ body, task_ref: task.id }` | **必须带 `task_ref`**（票面「断言请求 target」）；用例与真浏览器都断言路径与 body |
+| 正文复用主线渲染 | `MarkdownBody.vue` + `AttachmentChip.vue` | 不用 `innerHTML` / `v-html`；`kind === 'system'` 的行进 `.tt-log`（`author.display_name + ' ' + body` + `.ts`，最后一条 `.is-now`），不渲染 Markdown |
+| 两段空态 | `task.repliesEmpty` / `task.historyEmpty` | `.tt-empty` |
+| 打开即标读 | `markRead()` → `POST /api/tasks/{id}/read` body `{ seq }` | 失败只 toast（未读角标不是主链路） |
+| **三态互斥** | `dockTarget` 一个 `ref` | `task` / `run` / `members` 由「当前打开着哪一个对象」推导；用例断言 `#dock` 的直接子节点恰好 **1** 个且 class 是 `task-thread` |
+| 从线程开运行面板 | `App.vue` 的 `openTaskRunPanel()` | `dockTarget = { kind: 'run' }` + `dockPanel.open({ targetId: task.target_id, channelId: task.channel_id, taskId: task.id })`；**不重写** `stores/run-panel.js`（秩守卫 / overlay / 终态不回退是阶段一成果） |
+| 请求带 `task_id` 过滤 | 同上（`stores/run-panel.js` 的 `loadSnapshot()`） | 真浏览器读到 `/api/targets/<target_id>/team-runs?limit=20&task_id=<task_id>` |
+| 面板标题 = **任务标题** | `app-context.js` 的 `createRunPanelStore({ activeTask })` | 这个缝原本恒 `null`；`App.vue` 传 `() => thread.state.task`，于是 `title` computed 在 `state.taskId` 有值时取任务标题。用例与真浏览器都断言标题不是频道名 |
+| 从任务上下文关面板 ⇒ **回线程** | `closeDock()` 的 `fromTask` 分支 | 判据 = 面板有 `taskId` ∧ 线程仍开着；频道上下文关掉后落 `null`（既有行为不变） |
+| 换 target ⇒ 整个作废 | `selectTarget()` 里 `thread.resetForTarget()`（与 `dockPanel.resetForTarget(true)` 并排） | 用例断言 `#dock` 不在，且 store 的 `task === null` / `messages === []` |
+| 新建任务表单 | `components/TaskFormModal.vue`（`ModalShell`） | 标题 + 所属频道；`POST /api/channels/{id}/tasks` body `{ title }`；错误留在弹窗内（`role="alert"`）；空工作台禁用 + `task.createChannelFirst` |
+| `new-task` 两个入口翻正 | `App.vue` 的命令表 + `TaskBoard.vue` 的 `btn-new-task` | 命令面板不再是禁用条目，看板按钮从「可见但禁用」翻正；两个入口打开**同一张**表单 |
+
+**一条从真实父组件进的用例**：`tests/task-thread.test.js` 的 12 条里有 10 条从 `App.vue` 进
+（真实 `createAppContext` + `fetch` 替身 + `attachTo: document.body`）。三条判据分散在 App 的
+`dockTarget` / `closeDock()` / `selectTarget()` 里，直挂 `TaskThread.vue` 一条都测不到——理由与
+阶段一 `DockPanel` 漏传 `pools`、票 #306 的 `tab-tasks` 相同。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     18 files / 338 passed（新增 tests/task-thread.test.js 12 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          exit 0 / 门禁全绿
+```
+
+三条阶段 B 的遗留断言随本票**翻转**：`new-task` 从「禁用条目」改成真入口（`search-commands.test.js`
+两条）、`btn-new-task` 从「可见但禁用」改成可用（`task-board.test.js` 一条）、`DockPanel` 的 `task`
+档从「插槽」改成真组件（`components.test.js` 两条新增 / 改写）。
+
+真浏览器实测（ego-browser，`--port 8811` + 独立 data-dir，**`PYTHONPATH` 指向本 worktree 的 `app`**
+——`.venv` 的 editable 安装指向主工作区，不这么做会静默服务旧产物）：
+
+| 判据 | 读数 |
+| --- | --- |
+| 点卡片开线程 | `[data-od-id=detail-dock]` 出现，`task-thread` 在，`dock` 的直接子节点只有 `['task-thread']` |
+| 线程读数 | 标题 `整理发布清单`、副行 `#design · 讨论 0 条`、状态 `待认领`、指派 `未认领 · 点击指派`、推进 chips `['thread-move-in_progress','thread-move-closed']`（正是载荷的 `allowed_transitions`）、历史 `Owner 任务已创建：整理发布清单 14:30` |
+| 线程内发消息 | 请求 `POST /api/tasks/task_2666cd43bad6/messages`；落库后 `seq=2`、`task_ref=task_2666cd43bad6`；讨论段出现该行、`**加粗**` 渲染成 `<strong>`、输入框清空、副行变 `#design · 讨论 1 条` |
+| 运行面板入口 | `btn-thread-run-panel` 点击后 `run-panel` 在、`task-thread` 不在；页内 `fetch` 探针读到 `/api/targets/tgt_5d3341af9cba/team-runs?limit=20&task_id=task_2666cd43bad6` |
+| 面板标题 | `#rpTitle` = **任务标题**（改标题后是 `整理发布清单（改）`），不是频道名 `design` |
+| 关面板回线程 | 点 `run-panel-close` ⇒ `task-thread` 回来、`run-panel` 消失 |
+| 指派 / 推进 / 改标题 | 各自恰好一次 `PATCH`：`/assignee {"member_id":"mem_…"}`、`/status {"status":"in_progress"}`、`/title {"title":"整理发布清单（改）"}`；变更记录逐条出现（`Owner 已指派给 Ada` / `Owner 状态推进至 进行中`）；推进 chips 换成新载荷的 `['todo','in_review','closed']` |
+| team 提示 | 把频道切到 `mode=team` 并指定队长后，`thread-team-notice` = `任务线程只唤醒队长`，指派 chip 出现 `Ada` |
+| 换 task / 换 target | 关线程后 `#dock` 不在；点另一张卡 ⇒ 仍只有一个 `task-thread` 且标题换成 `巡检部署`；切到 `#ops` ⇒ `#dock` 与 `task-thread` 都不在 |
+| 新建任务 | 看板 `btn-new-task` 点击 ⇒ `#taskOverlay` 出现（标题 `新建任务`，字段 `task-create-title` / `task-create-channel` / `btn-create-task`）；提交 ⇒ `POST /api/channels/ch_d8ba41fd97be/tasks {"title":"浏览器里新建的任务"}`，弹窗关闭，看板多出该卡 |
+
+截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-307-board.png`（看板 + `新建任务` 可用）、
+`issue-307-thread.png`（线程首开）、`issue-307-thread-reply.png`（发消息后）、
+`issue-307-thread-team.png`（team 提示 + 指派 + 变更记录）、`issue-307-run-panel-team.png`
+（任务运行面板，标题是任务标题）、`issue-307-run-panel.png`、`issue-307-thread-swapped.png`、
+`issue-307-target-switch.png`、`issue-307-new-task-modal.png`。
+
+**本轮的已知边界**
+
+- **审批段**（`thread-approvals`）归 T8：本票**不渲染假节点**，线程的 `.tt-scroll` 里只有讨论与
+  变更记录两段。
+- **`task_ref` / `task_pointer` 两个 chip** 归 T9：本票时线程里的消息即便带 `task_ref` 也不渲染 chip
+  （渲染一个点下去打不开的入口比不渲染更难解释）。**票 #309 已还清**：两个 chip 已恢复，
+  线程讨论行与频道消息流共用 `TaskRefChip.vue`。
+- **线程的 live 帧**（`/api/tasks/{id}/events`）没有单独接：v2 用全局流 `GET /api/events`，
+  任务 target 的消息帧照常落进 `liveLog`，但线程面板**不订阅**自己的 target 流（旧页面
+  `connectTaskStream()` 那条）。本票的写路径都会把回带的消息就地吸收，因此「自己发的消息」立刻可见；
+  Agent 在线程里的新回复要等一次重开线程或重连后的全量重取。这条差异是**有意的**：接第二条
+  SSE 会推翻「一条流、按 `target_id` 分流」的既有决定（ADR-0038 §五），归一张单独的票。
+- **运行面板的「成员事件」段只读 live**：任务面板首开时该段通常为空（SOP / 事件的 live-only
+  性质是既有事实，同阶段一那次读数）。
+
+## 八、阶段 B · 票 #308：审批卡 + 待审批外显徽标
+
+阶段 B 的第三票（阻塞于 #307，已合入）。旧页面 `renderTaskApprovals` `:3360` /
+`renderTaskApprovalDot` `:3420` / `approvalCardNode` `:3286` 那一族迁到 v2：任务线程的审批段
+（`thread-approvals`）从「不渲染假节点」换成真卡片，任务页签上补 `task-approval-dot`，
+任务卡片 / 列表行补 `card-approval` 角标。**这一面是安全相关的**（倒计时 / 幂等 / 掩码），
+所以四组判据先在 `tests/approvals.test.js` 钉成红、再写组件转绿。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| **倒计时基准** | `lib/approvals.js` 的 `APPROVAL_TIMEOUT_SECONDS = 600` | 与后端 `approval.py` 的 `DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600.0` 同值；剩余 = `max(0, ceil((requested_at + 600s − now) / 1000))`，`now` 由调用方注入（用例不 `sleep`） |
+| `requested_at` 不可解析 | 同上，返回 `null` | 显示 `剩余 --:--`、仍 `pending`、**不挂** `data-urgent`——不伪造倒计时 |
+| 呈现态 | `approvalDisplayState()` | 后端终态优先（`state !== 'pending'` ⇒ 用它）；仍 pending 但剩余 `<= 0` ⇒ `expired`。**只改呈现，不写回记录**（后端在同一上界自己标 expired，`approval.py` 的 `_expire()`） |
+| 到期后的可点性 | `ApprovalCard.vue` 的 `v-if="displayState === 'pending'"` | `.approval-actions` **整块不渲染**（不是 disabled）；`.approval-remaining` 在终态为空串 |
+| 快到期信号 | `approvalUrgentFlag()` | 剩余 `<= 60s` ⇒ `[data-urgent="1"]`，否则 `"0"`，不可解析时不渲染该属性 |
+| 文案 | `approvalRemainingText()` / `approvalClockText()` | `剩余 mm:ss`（词条 `approval.remaining`）；状态说法走 `APPROVAL_STATE_KEYS` 那套词条 |
+| **幂等** | `stores/approvals.js` 的 `submit()` | `state.inFlight` 闸门 + 提交前再判一次呈现态 ⇒ 双击 / 慢网重试的 `POST /api/approvals/{id}` 请求数 = **1**（请求层断言，不测内部实现）；在途时两按钮 `disabled` + `.approval-note` = `approval.submitting` |
+| **动作只出在 pending** | `ApprovalCard.vue` + `approvalDecisions()` | 终态记录只读；谁能审批这条规则**不在前端**——判据就是后端载荷的 `state` / `decisions` |
+| **只提交未决策的调用** | `approvalPendingToolCalls()` / `approvalDecisions()`（#215） | `decisions` 从 `record.tool_calls` 里滤掉已在 `record.decisions` 的 `tool_call_id`；用例断言 body 的数组内容（否则相反结论会整批 409） |
+| **失败不改写状态** | `submit()` 的 catch + `reconcile()` | 错误留在 `errors[reply_id]`、记录原样（仍 pending、按钮还在）、`.approval-error` = `approval.submitFailed` + 后端原因；随后按 target 重读**全部状态**，**读不到就保留本地状态**（不静默清空、不伪造成 expired）；可重试（再点再发一次） |
+| **敏感键掩码**（安全判据） | `APPROVAL_SENSITIVE_KEY` + `approvalSanitizeValue()` + `approvalInputSummary()` | `password` / `api_key` / `authorization` / `secret` / `token` / `cookie` 等一律 `••••`；对象最多三层；字符串 > 120 截断加 `…`；摘要总长 238 字符封顶。用例同时断言**原值不出现在卡片 DOM 里** |
+| `task-approval-dot` | `ChannelHeader.vue` 的 `#tabTasks` | 有未处理审批时出现、处理完消失；`aria-label` = `tabs.tasksApprovalDot`，N 是**任务数**（`channelPendingTaskCount()`）不是记录数 |
+| 卡片 / 列表行角标 | `TaskCard.vue` + `TaskBoard.vue` | `card-approval` + `data-od-id="task-approval-badge-<id>"`，文案 `board.approvalBadge` / `board.approvalBadgeAria`；卡片根 `aria-label` 换成 `board.cardApprovalAria`（`role="button"` 的可访问名会覆盖子树） |
+| **同一份读数** | `ctx.approvals`（`createApprovalStore()`） | 审批卡、页签圆点、卡片角标全部从这一份镜像派生（`pendingCountFor()` / `recordsFor()`），不各读一次、不各算一遍；live 帧一写，三处一起变 |
+| 数据来源 | `loadFor(targetId)` / `loadAll()` | 打开线程读 `GET /api/approvals?target_id=&state=pending`；首载（`onMounted`）读 `GET /api/approvals?state=pending`（圆点的读数来源） |
+| live 帧 | `app-context.js` 的 frame 分流 | `approval_required` / `approval_resolved` **只写 approvals 镜像**——不写 `seenSeqs`、不进消息流 / 未读 / 搜索（与 live-events 同一条纪律） |
+| 快照对账 | `applySnapshot()` + `pendingIndex()` | 快照里消失的 pending 标 `expired`（不伪造记录、不删行）；「已知」集合在请求发出**之前**抓取，在途期间到达的 live 帧不会被误标过期 |
+
+**一处刻意的差异：不做 12s 周期刷新，也不做 1s 倒计时 tick。** 旧页面靠
+`APPROVAL_REFRESH_MS = 12000` 的全量轮询 + 秒级 tick 兜底「线程关着时的角标」与「本地 600s 过期」。
+v2 的替代是**事件驱动**：进入工作区（首载 `loadAll()`）/ 打开线程（`loadFor()`）/ 任一条
+`approval_*` live 帧 / 提交回执之后各读一次。真实收口本来就不靠前端猜——后端在同一个 600s 上界把记录
+标 `expired` 并发 `approval_resolved`（`approval.py` 的 `_expire()`），那条帧会落进这份镜像。
+因此**圆点不会因为缺定时器而永远不亮**（首读 + live 帧两条入口），而「本地 600s 过期」仍由
+`requested_at + 600s` 的呈现态推导，只是重算时机是上面那些事件。
+
+**一条从真实父组件进的用例**：`tests/approvals.test.js` 的 21 条里有 5 条从 `App.vue` 进
+（真实 `createAppContext` + `fetch` 替身 + `attachTo: document.body`）：圆点出现 → 点卡片开线程 →
+审批 → 圆点消失；live 帧收口；卡片角标；两条失败路径（含双击只发一次）。理由同 #307——
+这些判据分散在 `App.vue` 的 `openTask()` / `channelApprovalTasks` 与 `app-context.js` 的 frame 分流里，
+直挂 `ApprovalCard.vue` 一条都测不到（`DockPanel` 漏传 `approvals` 就是这么被抓到的）。
+
+## 九、阶段 B · 票 #309：任务引用 chip / 频道指针 chip（翻转阶段一反向断言）
+
+阶段一自查第 2 条欠账（「频道流的指针 chip / 引用 chip 不渲染」）的还清票。两个 chip 恢复，
+**一份实现、三处复用**：`components/TaskRefChip.vue` 是唯一判据，`MessageItem` 的两个分支
+（system / 对话）与 `TaskThread` 的讨论行都挂它——旧 `appendTaskRefChip()` 也是在这三处各调一次。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 引用 chip（`task_ref`） | `TaskRefChip.vue` | `<button type="button" class="task-ref-chip">`，文案 `msg.taskRef`（任务 · {title}）、aria `msg.taskRefAria`、`data-open-task="<taskId>"`；任务不在快照里 ⇒ **用 id 当标题**（不编名字） |
+| 频道指针 chip（`task_pointer`） | 同上（同一类名、**两条语义**，与旧页面同一事实） | 文案 `msg.taskThreadEntry` / 未读 >0 时 `msg.taskThreadEntryUnread`；aria `msg.taskThreadEntryAria` / `…AriaUnread`；`data-open-task` + **`data-task-pointer`**（后者只挂在指针 chip 上，是旧 `syncTaskPointerChips()` 的选择子） |
+| 未读读哪一位 | 任务载荷的 `unread_count`（`board.taskOf(taskId)`） | **不读 `message_count`**（#223）；任务不在快照里 ⇒ 按未读 0 处理，**不编造读数** |
+| 标读后已渲染的 chip 跟着变 | 文案是 `computed` | 旧页面要 `syncTaskPointerChips()` 定点改写；Vue 里任务载荷一变即重渲染。用例：`unread_count` 3 → 0，已挂载的 chip 文案与 aria 同时变 |
+| 点击 = 打开该任务线程 | 组件只抛 `open-task`，落点是 `App.vue` 的 `openTask()` | 两个 chip **一条路径**；用例从 `App.vue` 进（频道流指针 chip 与对话消息引用 chip 各一条），断言 dock 切 `task` 档且标题是该任务的 |
+| 线程讨论行也挂 | `TaskThread.vue` + `DockPanel`（`threadTaskOf`）| 与消息流同一份判据，不复制 |
+| 阶段一的反向断言**已翻转** | `tests/components.test.js` 的 `describe('未迁面的入口')` 第一条 | 改成「两个 chip 都渲染」：引用 chip 在前（无 `data-task-pointer`）、指针 chip 在后（有）；`grep -rn "都不渲染\|不产出" app/frontend/tests/` 已无命中 |
+| 词条零新增 | `studio/i18n.js` | `msg.taskRef` / `msg.taskRefAria` / `msg.taskThreadEntry*` 均已存在，`grep` 确认；**本票没改 i18n.js 一个字节** |
+
+**「消息 `···` 二级菜单的 open-task」的核对结论**：票面第四节写的那个菜单**不存在**——旧页面
+`app.js` / `index.html` 与 v2 的 `MessageItem.vue` 里都没有消息级动作栏，`data-open-task` 在旧页面
+只出现在 `appendTaskRefChip()` 的两枚 chip（写）与两处点击委派（`#messageList`、`#ttReplies`，读）上。
+阶段一自查记的「假按钮」是「消息里本该有 open-task 入口却没有」，落点就是这两个 chip。⇒ 本票
+**不新造**一个旧页面没有、票图也没定义的面；`grep -n "msg-more\|msg-menu\|message-actions\|msg-actions" app/alibot/studio/app.js app/alibot/studio/index.html app/frontend/src/components/MessageItem.vue` 零命中。
+
+**「待审批 N」角标**（`data-od-id="message-approval-badge-<messageId>"`）：`TaskRefChip.vue` 落地时
+v2 还没有审批读数，组件头留了 TODO。票 #308 合入后那份读数已经存在
+（`stores/approvals.js` 的 `pendingCountFor`），因此在本次合并里**补上**了挂点，见本节末尾的
+「review 收口补充」。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     19 files / 359 passed（新增 tests/approvals.test.js 21 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          exit 0 / 门禁全绿
+npm run build（app/frontend）       产物入库，build-info 指纹一致
+```
+
+真浏览器实测（ego-browser，`--port 8812` + `/tmp/alibot-p2b-308` 独立 data-dir，
+**`PYTHONPATH` 指向本 worktree 的 `app`**）。造数走库层真实写方法
+`Database.create_approval_request(reply_id='rpl_demo1', target_id=<任务自己的 target>, member_id=<Ada>,
+tool_calls=[write_file{path,password}, run_shell{cmd}])`，只写临时 data-dir：
+
+| 判据 | 读数 |
+| --- | --- |
+| 圆点出现 | `[data-od-id=task-approval-dot]` 在，`aria-label` = `该频道有 1 个任务在等待审批`，`#taskCount` = 1 |
+| 卡片角标 | `task-approval-badge-task_1d78147e4542` = `待审批 1`，aria = `「整理发布清单」有 1 条待审批`；卡片根 aria = `整理发布清单，待认领，1 条待审批，打开任务线程` |
+| 审批段 | `#ttApprovalSection` 段标题 `审批`；卡片 `data-state=pending`、`data-approval-id=rpl_demo1`、`data-approval-target=tgt_6621d0fca41f`、aria = `待审批工具：write_file, run_shell`；`剩余 09:16`、`data-urgent=0`；两个按钮 `allow` / `deny` |
+| **掩码（真 DOM）** | `.approval-tool-input` 分别是 `path=/etc/x · password=••••` 与 `cmd=ls -la`；卡片 `textContent` 里**没有** `p@ss-not-for-dom` |
+| 双击「允许」 | 页内 fetch 探针只记到 **1** 条 `POST /api/approvals/rpl_demo1`，body = `{"decisions":[{"tool_call_id":"tc_1","confirmed":true},{"tool_call_id":"tc_2","confirmed":true}]}` |
+| 审批后 | 卡片 `data-state=approved`（`已批准`）、`[data-approval-action]` 数 0（整块不渲染）；**圆点消失**（`aria-label` 置空） |
+| 回到看板 | 角标消失、卡片根 aria 回到 `整理发布清单，待认领，打开任务线程` |
+
+截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-308-dot.png`（页签圆点）、`issue-308-badge.png`
+（看板卡片角标）、`issue-308-card.png`（线程审批段 + 掩码后的参数）、`issue-308-approved.png`
+（审批后终态、按钮与圆点都消失）、`issue-308-board-after.png`（看板角标消失）。
+
+**本轮的已知边界**
+
+- **不做周期刷新**（理由见上）：只有事件驱动的读，没有 12s 轮询。若将来出现「后端没有发帧、前端
+  也没打开线程」的读数缺口，那是补一条刷新入口的票，不是本票的偏差。
+- **`approval_resolved` 只更新本会话见过的卡**（与旧 `absorbApprovalResolved` 同一条）：没见过的
+  记录不伪造一条出来——它的读数由下一次 `loadFor()` / `loadAll()` 的快照给。
+- 频道 target 的审批板（旧 `#approvalBoard`）**不在本票范围**：v2 的审批卡只出现在任务线程里
+  （票面「审批卡出现在任务线程内」）。频道级审批板归后续票。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     19 files / 347 passed（新增 tests/task-chips.test.js 9 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          exit 0 / 门禁全绿
+npm run build                      ✓ 59 modules transformed；产物 index-CMUet8HI.js
+```
+
+真浏览器实测（ego-browser，`--port 8813` + 独立 data-dir，**`PYTHONPATH` 指向本 worktree 的 `app`**）：
+
+| 判据 | 读数 |
+| --- | --- |
+| 频道指针 chip 可见 | 建频道 + `POST /api/channels/<id>/tasks` 后，频道流里 `#messageList .task-ref-chip` 一枚：`BUTTON`、文案 `进入任务线程`、`data-open-task` 与 `data-task-pointer` 同为 `task_0947e46af319`、aria `打开任务 整理发布清单的任务线程`（未读 0 ⇒ 不显示计数段） |
+| 点 chip ⇒ 开线程 | `#dock.dock.is-open` 出现、`.task-thread` 在、`thread-title-input` 的值是 `整理发布清单` |
+| 线程里的引用 chip | 讨论行（`#ttReplies .tt-reply-row`）里的消息带 `task_ref` ⇒ 一枚 `.task-ref-chip`：文案 `任务 · 整理发布清单`、aria `打开任务 整理发布清单`、**没有** `data-task-pointer`（引用 chip 与指针 chip 由此可区分） |
+
+截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-309-01-pointer-chip.png`（频道流里的指针 chip）、
+`issue-309-02-thread-with-ref-chip.png`（点开后线程里的引用 chip）。

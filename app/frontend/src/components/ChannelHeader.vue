@@ -31,6 +31,9 @@ const props = defineProps({
   runPanelAvailable: { type: Boolean, default: true },
   // 「任务」页签背后的看板是否已迁到本版。
   tasksAvailable: { type: Boolean, default: false },
+  // **本频道**里有任务在等审批的任务数（票 #308 的 `task-approval-dot`；`0` ⇒ 圆点不出现）。
+  // 它是 `stores/approvals.js` 那一份镜像的派生值，与审批卡同一份读数（不在组件里另算一遍）。
+  taskApprovalCount: { type: Number, default: 0 },
 });
 
 const emit = defineEmits(['select-tab', 'open-roster', 'open-config', 'open-budget', 'open-run-panel']);
@@ -137,6 +140,15 @@ const description = computed(() => targetDescription(props.target));
         @click="emit('select-tab', 'tasks')"
       >
         <span>{{ t('tabs.tasks') }}</span> <span class="count" id="taskCount">{{ taskCount }}</span>
+        <!-- 待审批外显徽标（票 #308，旧 `#taskApprovalDot`）：有未处理审批时出现、处理完消失。
+             `aria-label` 的 N 是**任务数**（不是记录数）——一个任务等三条审批也只算一个任务。 -->
+        <span
+          v-if="!isDm && tasksAvailable && taskApprovalCount > 0"
+          id="taskApprovalDot"
+          class="tab-approval-dot"
+          data-od-id="task-approval-dot"
+          :aria-label="t('tabs.tasksApprovalDot', { count: taskApprovalCount })"
+        ></span>
       </button>
     </div>
   </header>

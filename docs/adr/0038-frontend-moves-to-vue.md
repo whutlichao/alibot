@@ -98,7 +98,7 @@ v2 页面只承诺**已迁完的那条链路**可用：
   **运行面板**（dock 的第三种形态：运行与分派 / 成员事件 / Plan / SOP 四段；快照兜底 + live 合并；
   重连后按快照刷新）、**共享弹窗壳**（`ModalShell.vue`：遮罩 / ESC 只关最上层 / 焦点回收 / `busy`
   不收；**三张弹窗的内容**归 T1–T3；⌘K 命令面板**不套它**）、**dock 的三档形态判据**（`run` 有内容，
-  `members` / `task` 是留给 T3 / T7 的具名插槽）、**整页的 ESC 层序表**（`App.vue` 的 `handleEscape()`）、
+  `task` 由票 #307 接上真组件，`members` 是留给 T3 的具名插槽）、**整页的 ESC 层序表**（`App.vue` 的 `handleEscape()`）、
   **提醒与设置两张弹窗**（rail 头的两枚 `.icon-btn`；提醒的圆点角标 / 列表 / 新增 / 删除，
   设置的三个档位与 `applySettings` 写回——后者原本是死入口，票 #302 接活）、
   **三个新建表单**（票 #301：新建频道 `ChannelFormModal.vue` / 新建 Agent `AgentFormModal.vue`
@@ -116,23 +116,61 @@ v2 页面只承诺**已迁完的那条链路**可用：
   `uploadAttachment`，原始字节 + query 里的文件名）⇒ composer 里的文件 chips（名字 + 体积，可逐个移除）⇒
   随消息**一次提交** `attachment_ids`（`MessageCreate` 的既有 JSON 字段，后端在同一事务里绑定）；
   单文件上限在前端预检（`lib/attachments.js` 的 `MAX_ATTACHMENT_BYTES`，正本是 `db.py` 的同一个常量，
-  用例读那份正本比较），超限的文件**不发请求**；发送失败时草稿留在手上、可重试，归档私信里入口不渲染）。
-- 未迁：任务看板与任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
-  审批卡、Agent 详情、
-  **任务运行面板**（它挂在任务线程头，随线程那张票）。
+  用例读那份正本比较），超限的文件**不发请求**；发送失败时草稿留在手上、可重试，归档私信里入口不渲染）、
+  **任务看板**（票 #306，阶段 B 第一票：`TaskBoard.vue` 铺旧页面 `#taskBoard` 的 `.board-wrap` /
+  `.seg` 两档 / `board-filters` / 五列 / `.card` / `.result` 列表 / 共享 `.card-menu`「流转」菜单；
+  `tasksAvailable` 因此翻正，`tab-tasks`、`T` 键与命令面板的「任务看板」一起接活。**跨列拖拽是重写的
+  声明式版**：`stores/task-board.js` 只存 `{ from, over }` 一个拖拽态，`drag-over` / `invalid-over` /
+  `.dragging` 全由它推导，不搬旧 `boardDrag` 命令式状态机；松手 = `PATCH /api/tasks/{id}/status` 一次，
+  **没有乐观移动**，非法落点零请求只说明事实，前端仍不持迁移表副本（一切读载荷 `allowed_transitions`））、
+  **任务线程与任务运行面板**（票 #307，阶段 B 第二票：`TaskThread.vue` 铺旧页面 `#dockTask` 的
+  `.tt-summary`（标题就地可编辑）/ `.tt-status[data-status]` / 指派 pill / `thread-team-notice` /
+  `.tt-actions` 两行 chips / `.tt-scroll` 的讨论与变更记录 / `.tt-reply` composer；读数与四条写路径
+  全在 `stores/task-thread.js`（回复带 `task_ref`、标题、状态、指派），迁移合法性仍只读
+  `allowed_transitions`；正文复用 `MarkdownBody.vue`，`system` 行只进 `.tt-log`；dock 的 `task` 档
+  从此是**真组件**而非插槽，三档仍由 `dockTarget` 一个 `ref` 推导；线程头的 `btn-thread-run-panel`
+  把 dock 切 `run` 档并带 `task_id` 过滤，标题取**任务标题**（`createRunPanelStore({ activeTask })`
+  这个原本恒 `null` 的缝在这里接上），从任务上下文关面板**回线程**；`new-task` 同时翻正
+  （`TaskFormModal.vue` 两个入口共用一张表单 ⇒ `POST /api/channels/{id}/tasks`））、
+  **审批卡与待审批外显徽标**（票 #308，阶段 B 第三票：`ApprovalCard.vue` 铺旧页面 `approvalCardNode` 的
+  `.approval-card[data-approval-id][data-approval-target][data-state]` / `.approval-head` / `.approval-tools` /
+  `.approval-actions` / `.approval-note` / `.approval-error`，挂进任务线程的 `thread-approvals` 段；
+  呈现派生（倒计时、呈现态、敏感键掩码）全在 `lib/approvals.js` 的纯函数里，读写路径在
+  `stores/approvals.js`；倒计时只由 `requested_at + 600s`（后端 `approval.py` 的同一上界）推导，
+  越过上界只改呈现（`.approval-actions` **整块不渲染**）；幂等靠单条在途闸门（双击只发一个
+  `POST /api/approvals/{id}`）；`decisions` 只带未决策的 `tool_call_id`（#215）。**审批卡、任务页签的
+  `task-approval-dot`、卡片 / 列表行的 `card-approval` 角标共读 `ctx.approvals` 这一份镜像**，
+  `approval_*` live 帧只写它（不写游标、不进消息流）。**一处刻意差异**：不做 12s 周期刷新与 1s tick，
+  替代是事件驱动（首载 / 打开线程 / live 帧 / 提交回执各读一次）——真实收口由后端在同一上界发
+  `approval_resolved` 帧；**频道级的审批板**（旧 `#approvalBoard`）不在本票，仍未迁）。
+  **任务引用 chip 与频道指针 chip**（票 #309，阶段 B 第三票：`TaskRefChip.vue` 是这两个 chip 的
+  **唯一判据**，`MessageItem` 的两个分支（`kind='system'` 与对话）与 `TaskThread` 的讨论行
+  **三处复用**——旧 `appendTaskRefChip()` 同样在这三处各调一次。类名与属性逐字沿用旧页面
+  （`.task-ref-chip` / `data-open-task` / `data-task-pointer`，`app.css` 零改动）；`task_ref` 与
+  `task_pointer` 是**两条语义两个数据列、视觉同一个 chip**（`CONTEXT.md` **指针消息**）：前者文案
+  `msg.taskRef`，后者按任务载荷的 `unread_count` 在 `msg.taskThreadEntry` 与
+  `…Unread` 之间切，任务不在快照里就用 id 当名字、未读按 0（不编读数）。文案是 `computed`，
+  于是标读后已渲染的 chip 自己跟着变——旧页面那条 `syncTaskPointerChips()` 的定点改写不需要了。
+  点击只抛 `open-task`，落点是 `App.vue` 的 `openTask()`（两个 chip 一条路径）。阶段一那条
+  「带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」的反向断言**已翻正**。
+  「待审批 N」角标读 T8 的那份审批镜像（同一份读数，不造第二份）。
+- 未迁：Agent 详情（归 T10，阶段 C）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
+  **频道级的审批板**（旧页面 `#approvalBoard`）同样未迁：票 #308 的审批卡只出现在任务线程里，
+  频道 target 的审批读数还没有呈现面。
 
 未迁入口**不做假按钮**，分两档处理：
 
-1. **不渲染**（任务页签 / 作为任务发送 / 失败行的「看成员状态」）：
+1. **不渲染**（作为任务发送 / 失败行的「看成员状态」）：
    它们只是把人带到另一处，带不到就不该出现。频道头的四个入口由 `channelToolsAvailable`
    （名册 / 配置 / 预算，同涨同落；票 #303 已迁 ⇒ 默认开）与 `runPanelAvailable`（运行面板，
-   已迁 ⇒ 默认开）两个显式开关控制；任务页签由 `tasksAvailable` 控制。迁完那个面只需翻对应的开关，
+   已迁 ⇒ 默认开）两个显式开关控制；任务页签由 `tasksAvailable` 控制（票 #306 已迁 ⇒ 默认开）。
+   迁完那个面只需翻对应的开关，
    组件不用改。（`btn-reminders` / `btn-settings` 随票 #302 迁完、`btn-new-channel` / `btn-new-agent`
    随票 #301 迁完、`btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` 随票 #303
    迁完、rail 的 `btn-workspace-search` 随票 #304 迁完、`btn-attach` 随票 #305 迁完，
-   都不在这个清单里。）
+   看板的 `btn-new-task` 与命令面板的 `new-task` 随票 #307 迁完，都不在这个清单里。）
 2. **可见但禁用**：**这一档现在空了**（票 #301）。它原本只装「新建频道 / 新建 Agent」——
    空工作台的引导文案就是「新建一个频道」，把按钮一起藏掉等于让人无路可走，禁用比消失诚实。
    两张表单迁过来之后两个按钮正常工作，这条兜底规则仍然成立：**将来再出现「面还没迁、
@@ -157,12 +195,19 @@ v2 页面只承诺**已迁完的那条链路**可用：
 （只读行的样式落点，旧页面不使用这个类）。运行面板那一票**没有再碰**旧页面目录：它的词条与类名
 早就为这个面定义好了，v2 只是把它们用在同一个落点上。
 
-**dock 的三档形态判据已立起来，只有一档有内容**（票 #300）：`DockPanel.vue` 的 `mode` 由父组件
+**dock 的三档形态判据已立起来，三档都有内容（`members` 那档没有调用点）**（票 #300 立表、票 #306
+接了`task` 档的调用点、票 #307 把它换成真组件）：`DockPanel.vue` 的 `mode` 由父组件
 传的 `dockTarget`（`{ kind: 'run' | 'members' | 'task' }`）**推导**，`null` ⇒ 整栏不渲染。
-`run` 档接 `RunPanel.vue`；`members` / `task` 两档是本票留的具名插槽（`<slot name="members">` /
-`<slot name="task">`），内容分别归 T3 与 T7——形态判据与几何（380 宽 / `.dock.is-open` /
-≤900px 右抽屉）不必让那两张票各改一遍外壳。空插槽**不会出现在产品里**：`App.vue` 目前只写
-`kind: 'run'`，私信下 `dockTarget` 恒为 `null`（整栏消失）。
+`run` ⇒ `RunPanel.vue`，`task` ⇒ `TaskThread.vue`（票 #307），`members` ⇒ `<slot name="members">`
+（成员面在 v2 走弹窗，这一档至今没有调用点）——形态判据与几何（380 宽 / `.dock.is-open` /
+≤900px 右抽屉）只在外壳里写一遍。
+三档是**互斥的推导**，不是三份开关：开线程 ⇒ `{ kind: 'task' }`；从线程开运行面板 ⇒ `{ kind: 'run' }`
+（面板的 `taskId` 置上）；关掉 ⇒ `null`（**不占位**：整栏不渲染，不是渲染出来再 `hidden`）；
+从任务上下文关运行面板 ⇒ 回 `{ kind: 'task' }`（旧 `closeRunPanel()` 的 `fromTask` 分支）。
+换 target 时 `selectTarget()` 把线程与面板一起作废（`thread.resetForTarget()` /
+`dockPanel.resetForTarget(true)`），于是「关掉了但 dock 还停在旧形态」与「换 target 后旧线程读数
+残留」两类漂移在构造上都没有落脚点。`members` 档至今没有调用点（成员面走的是弹窗，见下），
+私信下 `dockTarget` 恒为 `null`（整栏消失）。
 
 **弹窗的外壳与关闭语义只有一份**（票 #300）：`components/ModalShell.vue` 铺旧页面的
 `.overlay` / `.modal` / `.modal-head` / `.modal-body` / `.modal-foot`（`app.css` 零改动），

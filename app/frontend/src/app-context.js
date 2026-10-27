@@ -9,6 +9,7 @@ import { computed, getCurrentInstance, onBeforeUnmount, reactive } from 'vue';
 import { createWorkspaceStore } from './stores/workspace.js';
 import { createRunPanelStore } from './stores/run-panel.js';
 import { createReminderStore } from './stores/reminders.js';
+import { createApprovalStore } from './stores/approvals.js';
 import { createEventStream, isLiveEventType } from './lib/event-stream.js';
 import { createLiveEventLog } from './lib/live-events.js';
 import { setLocale, sourceLocale, locales as i18nLocales, t } from './i18n/index.js';
@@ -49,12 +50,16 @@ export function createAppContext(options) {
   /** live-only 事件的会话内日志（按 target 有界保留）：过程面（运行面板 / 后续的审批卡）的数据源。 */
   const liveLog = createLiveEventLog();
 
+  /** 审批记录镜像（票 #308）：审批卡、任务页签圆点、任务卡片角标**共读**这一份。 */
+  const approvals = createApprovalStore({ now: config.now });
+
   /** 运行面板（dock 的第三种形态）：读数 + 呈现状态，合并判据全在 `lib/run-panel.js`。 */
   const runPanel = createRunPanelStore({
     liveLog,
     channelConfigs: mutable.channelConfigs,
     loadChannelConfig: store.loadChannelConfig,
-    // 任务线程与频道名单都还没迁（/ 或只在 store 里）：标题取不到时面板退到 id 尾段，不编名字。
+    // 任务线程的标题：`activeTask` 这个缝由 App.vue 接到当前打开的线程上（票 #307），
+    // 因此任务上下文下的运行面板标题取**任务标题**；频道面板用频道名，取不到就退到 id 尾段。
     activeTask: config.activeTask || (() => null),
     channels: () => mutable.channels,
     activeChannel: () => store.activeChannel.value,
@@ -97,6 +102,9 @@ export function createAppContext(options) {
       // 它们**绝不**进消息流 / 未读 / 搜索，也不写游标（`seenSeqs` 是标读与重连补拉的判据，
       // live 帧没有 seq，错记一次就会让全量重取的兜底少一条）。
       liveLog.record(targetId, payload);
+      // 审批的两条 live 帧只写 approvals 镜像（与上面同一条纪律：不写游标、不进消息流 / 未读 / 搜索）。
+      // 审批卡与页签圆点都读这份镜像，于是这里一写、两处一起变。
+      if (type === 'approval_required' || type === 'approval_resolved') approvals.applyFrame({ ...payload, type });
       if (type === 'sop_event') runPanel.noteSopFrame(payload);
       // 本票只记录 typing 与轮次起止；审批卡那一层随它自己的票迁过来。
       if (type === 'agent_event' && payload.reply_id) {
@@ -142,6 +150,19 @@ export function createAppContext(options) {
       }
       return;
     }
+    handleTargetFrame(payload, type);
+  }
+
+  /**
+   * 非消息类可补拉帧的落点（`member_status` / `typing` / `round_outcome`）。
+   *
+   * 抽出来的理由：任务线程有自己的事件流（票 #307 补做），它的这些帧与全局流**同一套语义**
+   * （旧页面 `handleTaskStreamEvent()` 就是各调一次同名处理）。因此落点只写一份，
+   * 两条流都调它——不在线程那一侧复制第二套。
+   */
+  function handleTargetFrame(payload, type) {
+    const targetId = payload && payload.target_id;
+    if (!targetId) return;
     const seq = Number(payload.seq) || 0;
     if (seq) store.seenSeqsFor(targetId).add(seq);
     if (type === 'member_status') {
@@ -210,6 +231,10 @@ export function createAppContext(options) {
       // 运行面板的 live 帧同样不补（ADR-0020）：重连成功后按快照兜底，把断线期间的分派 / Plan /
       // SOP 变化读回来。面板没开时是空操作（`refreshFor()` 自己判）。
       if (info && info.reconnected) runPanel.refreshFor();
+      // 审批也随重连后的这次全量重取重读：断线期间 Agent 可能已经发起新的待审批（那些
+      // `approval_required` 帧一并丢了，live 不补），不重读就会「圆点不亮、线程里没有卡」。
+      // 读不到保留旧镜像，不伪造（与 reminders 同一条）。
+      if (info && info.reconnected) approvals.loadAll().catch(() => {});
     },
     onError() {
       mutable.online = false;
@@ -270,6 +295,9 @@ export function createAppContext(options) {
     liveLog,
     runPanel,
     reminders,
+    approvals,
+    // 任务线程事件流复用同一个落点（票 #307 补做）：`typing` / `member_status` / `round_outcome`。
+    handleTargetFrame,
     t,
   };
 }

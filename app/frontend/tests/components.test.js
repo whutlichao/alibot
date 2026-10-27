@@ -297,16 +297,31 @@ describe('附件', () => {
 /* ─── 未迁面：不留假入口（ADR-0038 §五）───────────────────────────────── */
 
 describe('未迁面的入口', () => {
-  test('任务的引用 chip 与指针 chip 都不渲染（任务面整体未迁）', () => {
+  // 票 #309 把这条断言**翻正**：任务面（看板 #306 / 线程 #307）已迁，两个 chip 因此不再是
+  // 「显式不渲染」的欠账——带 `task_ref` 产出引用 chip，带 `task_pointer` 产出指针 chip。
+  // 判据的完整用例族在 `tests/task-chips.test.js`（含点击后果与「一份实现、两处复用」）。
+  test('任务的引用 chip 与指针 chip 都渲染（任务面已迁，票 #309）', () => {
+    const tasks = [
+      { id: 't-1', title: '整理发布清单', unread_count: 0 },
+      { id: 't-2', title: '巡检部署', unread_count: 2 },
+    ];
     const wrapper = mount(MessageItem, {
       props: {
         message: message(6, { task_ref: 't-1', task_pointer: 't-2' }),
         member: OWNER,
+        taskOf: (taskId) => tasks.find((item) => item.id === taskId) || null,
       },
     });
-    expect(wrapper.find('.task-ref-chip').exists()).toBe(false);
-    expect(wrapper.find('[data-task-pointer]').exists()).toBe(false);
-    expect(wrapper.find('[data-open-task]').exists()).toBe(false);
+    const chips = wrapper.findAll('.task-ref-chip');
+    expect(chips.length).toBe(2);
+    expect(chips[0].text()).toBe('任务 · 整理发布清单');
+    expect(chips[0].attributes('data-open-task')).toBe('t-1');
+    expect(chips[0].attributes('data-task-pointer')).toBeUndefined();
+    expect(chips[1].text()).toBe('进入任务线程 · 2 条未读');
+    expect(chips[1].attributes('data-open-task')).toBe('t-2');
+    expect(chips[1].attributes('data-task-pointer')).toBe('t-2');
+    // 两个都是真按钮（点得动才有意义）。
+    chips.forEach((chip) => expect(chip.element.tagName).toBe('BUTTON'));
   });
 
   test('左栏：工作台搜索已迁（#304）⇒ 入口在 `.search-shell` 里，点它只发一个事件', async () => {
@@ -758,9 +773,29 @@ describe('dock 的形态', () => {
     loadSnapshot: async () => null,
   });
 
+  // 任务线程的读数与写路径（票 #307）：外壳只往下递，因此这里给一个空的最小替身。
+  const thread = () => ({
+    state: { taskId: 'tsk-aaa001', task: { id: 'tsk-aaa001', title: '整理发布清单', status: 'todo', allowed_transitions: [] }, messages: [], loading: false, error: '', sending: false, sendError: '' },
+    open: async () => null,
+    refresh: async () => null,
+    resetForTarget: () => {},
+    isOpenFor: () => false,
+    maxSeq: () => 0,
+    absorb: () => false,
+    markRead: async () => null,
+    send: async () => ({ ok: false }),
+    saveTitle: async () => false,
+    changeStatus: async () => false,
+    changeAssignee: async () => false,
+    statusLabel: (status) => status,
+    transitionLabel: (target) => target,
+  });
+
   test('三档 `kind` 都能到达：根 `#dock` 在、class 含 dock', () => {
     for (const kind of ['run', 'members', 'task']) {
-      const wrapper = mount(DockPanel, { props: { dockTarget: { kind }, panel: store(), pools: [] } });
+      const wrapper = mount(DockPanel, {
+        props: { dockTarget: { kind }, panel: store(), pools: [], thread: thread(), threadMembers: [] },
+      });
       const dock = wrapper.find('#dock');
       expect(dock.exists(), kind).toBe(true);
       expect(dock.classes(), kind).toContain('dock');
@@ -768,7 +803,7 @@ describe('dock 的形态', () => {
     }
   });
 
-  test('`run` 档铺运行面板；`members` / `task` 两档放各自的插槽（内容归 T3 / T7）', () => {
+  test('`run` 档铺运行面板；`members` 是插槽（内容归 T3，v2 走弹窗）；`task` 档铺真组件（票 #307）', () => {
     const run = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: store(), pools: [] } });
     expect(run.find('[data-od-id="run-panel"]').exists()).toBe(true);
 
@@ -779,11 +814,11 @@ describe('dock 的形态', () => {
     expect(members.find('[data-od-id="run-panel"]').exists()).toBe(false);
     expect(members.find('.members-probe').text()).toBe('成员');
 
+    // 任务线程不再是插槽：它已经是 `TaskThread.vue`（票 #307）。
     const task = mount(DockPanel, {
-      props: { dockTarget: { kind: 'task' } },
-      slots: { task: '<div class="task-probe">线程</div>' },
+      props: { dockTarget: { kind: 'task' }, thread: thread(), threadMembers: [] },
     });
-    expect(task.find('.task-probe').text()).toBe('线程');
+    expect(task.find('[data-od-id="task-thread"]').exists()).toBe(true);
   });
 
   test('`dockTarget` 为 `null` 时整栏不渲染（不是渲染出来再 hidden）', () => {
@@ -794,6 +829,11 @@ describe('dock 的形态', () => {
 
   test('`run` 档没有 store 时按「没有形态」处理（不铺一个空壳运行面板）', () => {
     const wrapper = mount(DockPanel, { props: { dockTarget: { kind: 'run' }, panel: null } });
+    expect(wrapper.find('#dock').exists()).toBe(false);
+  });
+
+  test('`task` 档没有线程读数时按「没有形态」处理（不铺一个空壳线程）', () => {
+    const wrapper = mount(DockPanel, { props: { dockTarget: { kind: 'task' }, thread: null } });
     expect(wrapper.find('#dock').exists()).toBe(false);
   });
 

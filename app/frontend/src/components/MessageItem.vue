@@ -7,9 +7,10 @@
      - 乐观发送项（还没 seq）与发送失败项各有自己的状态 capsule（字面量来自词条表，
        写在 `data-state-label` 上，CSS 用 `content: attr()` 取——CSS 里不放语言文案）。
 
-     **任务面整体未迁**（看板 / 任务线程还没迁到 Vue 版）：消息上的 `task_ref` 引用 chip 与
-     频道指针 chip 属于那个面，因此这一版**不渲染**它们——渲染一个点下去打不开线程的入口
-     比不渲染更难解释。它们随看板那张票一起回来（ADR-0038 §五）。
+     **任务 chip 归 `TaskRefChip.vue`**（票 #309）：`task_ref` 的引用 chip 与 `task_pointer` 的频道
+     指针 chip 是同一个类名、两条语义，判据只在那个组件里有一处——系统消息与对话两条分支都挂它
+     （旧 `appendTaskRefChip()` 同样在这两处各调一次）。点击往上抛 `open-task`，落点是 `App.vue`
+     的 `openTask()`。
 
      **单根节点**是刻意：`article.msg` 是 `#messageList` 的直接子节点（旧 DOM 形状），
      三种呈现只是同一个节点上的三种内容，不是三个并列的根——否则父组件无法把属性
@@ -19,6 +20,7 @@ import { computed } from 'vue';
 import AttachmentChip from './AttachmentChip.vue';
 import MarkdownBody from './MarkdownBody.vue';
 import MemberAvatar from './MemberAvatar.vue';
+import TaskRefChip from './TaskRefChip.vue';
 import { t } from '../i18n/index.js';
 import { timeLabel } from '../lib/format.js';
 
@@ -26,9 +28,13 @@ const props = defineProps({
   message: { type: Object, required: true },
   // 成员表（作者缺失时退回它；也用于旁白行的作者名与色位）。
   member: { type: Object, default: null },
+  // 任务快照查名（`taskOf(taskId)`）：两个 chip 的标题与未读数都从那里读，读不到就用 id。
+  taskOf: { type: Function, default: null },
+  // 待审批读数（`pendingCountFor(targetId)`）：指针 chip 后面的角标读它，不用本组件再算一遍。
+  pendingCountFor: { type: Function, default: null },
 });
 
-const emit = defineEmits(['retry', 'discard']);
+const emit = defineEmits(['retry', 'discard', 'open-task']);
 
 /** 旁白式交代的判据是**形态**，不是措辞表（换措辞、换语言都不会让判据失效）。 */
 const NARRATION_MAX_LENGTH = 24;
@@ -118,6 +124,14 @@ const attachments = computed(() =>
       <div v-if="attachments.length" class="msg-attachments">
         <AttachmentChip v-for="item in attachments" :key="item.id" :attachment="item" />
       </div>
+      <!-- 任务 chip（旧 `appendTaskRefChip()` 在 system 分支同样会挂）：频道指针消息就是一条
+           system 记录，不挂这里它就一个入口都没有。 -->
+      <TaskRefChip
+        :message="message"
+        :task-of="taskOf"
+        :pending-count-for="pendingCountFor"
+        @open-task="emit('open-task', $event)"
+      />
     </div>
 
     <!-- human / agent 的对话正文。 -->
@@ -131,6 +145,12 @@ const attachments = computed(() =>
       <div v-if="attachments.length" class="msg-attachments">
         <AttachmentChip v-for="item in attachments" :key="item.id" :attachment="item" />
       </div>
+      <TaskRefChip
+        :message="message"
+        :task-of="taskOf"
+        :pending-count-for="pendingCountFor"
+        @open-task="emit('open-task', $event)"
+      />
       <div v-if="failed" class="msg-retry">
         <span>{{ t('msg.notDelivered', { reason: message.reason || t('msg.sendFailed') }) }}</span>
         <button class="btn btn-sm" type="button" @click="emit('retry', message.clientId)">{{ t('msg.retry') }}</button>
