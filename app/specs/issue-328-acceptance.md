@@ -379,4 +379,14 @@ cd app && ../.venv/bin/python -m pytest -p no:cacheprovider \
 
 ## 6. PR
 
-<!-- PR -->
+| 项 | 值 |
+| --- | --- |
+| PR | [#329](https://github.com/whutlichao/alibot/pull/329)（head `issue-328-impl` → base `main`） |
+| PR body | `app/specs/issue-328-pr-body.md`（用 `--body-file` 提交，正文以 `Closes #328` 结尾） |
+| commit | `ba479ab`（本票唯一代码提交） |
+| 推送 | `git push -u origin issue-328-impl`（SSH；分支已建立 upstream） |
+
+body 分三段（`## Summary` / `## Evidence` / `## Merge Danger`），Evidence 段贴的是 §1–§4 的实测
+读数（7 条慢用例前后并列、全量门禁读数、`-n 4` 与 `-n auto` 两档、守卫用例与手工读数）。
+Merge Danger 如实写明：本票改的是**门禁入口**与**全局测试装置**，属「门禁自身的改动」——一旦有偏差，
+后续每张票的门禁读数都不可信，并点名请人重点看第 2 条（未放宽判据）与第 6 条（守卫）。
