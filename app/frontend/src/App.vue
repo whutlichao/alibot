@@ -25,6 +25,7 @@ import RosterModal from './components/RosterModal.vue';
 import SearchView from './components/SearchView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import TaskBoard from './components/TaskBoard.vue';
+import TaskFormModal from './components/TaskFormModal.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
 import { hasOpenModal } from './lib/modal-stack.js';
@@ -34,6 +35,7 @@ import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target
 import { agentMembers } from './lib/member-view.js';
 import { createSearchStore } from './stores/search.js';
 import { createTaskBoardStore } from './stores/task-board.js';
+import { createTaskThreadStore } from './stores/task-thread.js';
 import { useUiState } from './stores/ui-state.js';
 
 const props = defineProps({
@@ -42,8 +44,22 @@ const props = defineProps({
   sourceFactory: { type: Function, default: null },
 });
 
+/**
+ * 当前打开着的任务（运行面板的标题与 `task_id` 过滤读它）。
+ *
+ * `app-context.js` 的 `createRunPanelStore({ activeTask })` 这个缝就是给任务线程留的：面板的
+ * `title` computed 在 `state.taskId` 有值时取**任务标题**、没有时才回退频道名。因此这一位必须
+ * 指向「线程现在开着的那条任务」，而不是另存一份 id（那会出现「线程换了、面板标题没换」）。
+ * 线程 store 在本函数稍后创建，所以这里用闭包取它——创建那一刻还没有它。
+ */
+let threadStore = null;
+
 const toasts = useToasts();
-const ctx = createAppContext({ toast: toasts.push, sourceFactory: props.sourceFactory || undefined });
+const ctx = createAppContext({
+  toast: toasts.push,
+  sourceFactory: props.sourceFactory || undefined,
+  activeTask: () => (threadStore ? threadStore.state.task : null),
+});
 const { state, store } = ctx;
 
 const stream = ref(null);
@@ -53,7 +69,8 @@ const railOpen = ref(false);
 // 桌面它是常驻列，`dockDrawerOpen` 这一位不生效。
 const dockDrawerOpen = ref(false);
 // 当前打开着哪一个对象：`{ kind: 'run' | 'members' | 'task' }`，`null` ⇒ 整栏不渲染。
-// 本票只有运行面板这一档会写它（`members` / `task` 归 T3 与 T7）。
+// 它是 dock 形态的**唯一**判据（票 #300 立表）：任务线程 ⇒ `task`（票 #307），从线程开运行面板 ⇒
+// `run`，关掉 ⇒ `null`（不占位）。不另存第二份形态状态——那必然出现「关掉了但 dock 还停在旧形态」。
 const dockTarget = ref(null);
 // 主线视图（票 #304 新增的状态维度，ADR-0038 §五里没有它）：`'channel'`（消息流）、
 // `'board'`（任务看板，票 #306）或 `'search'`（搜索占住消息流那块位置）。三者是**主线视图**
@@ -72,9 +89,11 @@ const toolChannel = ref(null);
 // rail 头两个弹窗的显隐（内容仍挂载、只用 `hidden` 隐去，见 `ModalShell.vue` 文件头）。
 const remindersOpen = ref(false);
 const settingsOpen = ref(false);
-// 两张新建表单的显隐（#301）。关掉时值仍留着上一次的"关"，表单自己负责开时清空。
+// 三张新建表单的显隐（#301 的频道 / Agent，#307 的任务）。关掉时值仍留着上一次的"关"，
+// 表单自己负责开时清空。
 const channelFormOpen = ref(false);
 const agentFormOpen = ref(false);
+const taskFormOpen = ref(false);
 // 折叠态（摘要行 / 旁白行）按 **seq** 认，跨 target 不通用：切 target 时必须整体清掉，
 // 否则「在 A 频道展开过的第 3 条」到了 B 频道会莫名展开。这个状态住在模块级（见 ui-state.js），
 // 因此清理的落点只有这一处。
@@ -104,6 +123,23 @@ const board = createTaskBoardStore({
   toast: toasts.push,
 });
 
+/**
+ * 任务线程的读数与写路径（票 #307，见 `stores/task-thread.js`）。
+ *
+ * `onTaskChanged` 把线程里回带的最新任务行同步回看板快照：状态 / 标题 / 指派一改，页签计数与卡片
+ * 立刻跟着变（旧页面 `renderTaskCount()` 的那条理由——看板还停在主线，不重铺就只能靠这一笔同步）。
+ */
+threadStore = createTaskThreadStore({
+  online: () => state.online,
+  toast: toasts.push,
+  onTaskChanged: (task) => {
+    if (task) board.replaceTask(task);
+  },
+  refreshChannelMembers: (channelId) => store.refreshChannelMembers(channelId),
+  loadChannelConfig: (channelId) => store.loadChannelConfig(channelId),
+});
+const thread = threadStore;
+
 /** 频道页签的选中态由 `mode` 推导（一份状态，两处呈现：页签与主线视图）。 */
 const activeTab = computed(() => (mode.value === 'board' ? 'tasks' : 'messages'));
 
@@ -121,8 +157,27 @@ const dockPools = computed(() => [
   state.channelMembers[state.activeTargetId] || [],
 ]);
 
-/** 运行面板的标题只拿频道名单：任务面板的入口随任务线程那张票进来。 */
+/** 运行面板 store（任务面板的标题 / `task_id` 过滤读 `ctx.runPanel`，判据全在 store 里）。 */
 const dockPanel = ctx.runPanel;
+
+/** 线程的指派候选 = **所属频道**的 Agent 成员（`null` = 还没读到；空数组 = 真的没有）。 */
+const threadAssignees = computed(() => {
+  const task = thread.state.task;
+  return task ? store.channelAgentMembers(task.channel_id) : null;
+});
+
+/** 成员表读失败要说事实（「暂时读不到」而不是摆一个空清单）。 */
+const threadAssigneesFailed = computed(() => {
+  const task = thread.state.task;
+  return Boolean(task) && state.channelMembersFailed.includes(task.channel_id);
+});
+
+/** 所属频道的协作模式（只有读回过配置且有值时才铺 team 提示；读不到 ⇒ `null`，什么都不说）。 */
+const threadChannelMode = computed(() => {
+  const task = thread.state.task;
+  const config = task ? state.channelConfigs[task.channel_id] : null;
+  return config && config.mode ? config.mode : null;
+});
 
 /** 候选来源：`null` = 还没读到（去读一次），空数组才是真的没有 Agent 成员。 */
 const mentionCandidates = computed(() => store.channelAgentMembers(state.activeTargetId));
@@ -138,6 +193,9 @@ async function selectTarget(targetId) {
   // 运行面板读的是**上一个 target** 的快照与 live 归属：换 target 时整个作废，
   // 不把旧频道的分派留在新频道旁边（旧实现同一条：`resetRunPanelState()`）。
   dockPanel.resetForTarget(true);
+  // 任务线程读的也是**上一个 target** 的东西：换 target 时整个作废（旧 `closeTaskDock()` 的
+  // `taskMessages = []`）。与上面那条并排，不另存一份「线程开着吗」。
+  thread.resetForTarget();
   dockTarget.value = null;
   dockDrawerOpen.value = false;
   store.setActiveTargetId(targetId);
@@ -223,6 +281,21 @@ async function submitChannel(fields) {
 async function submitAgent(fields) {
   const payload = await store.createAgent(fields);
   toasts.push(t('toast.agentCreated', { name: payload.agent.display_name }));
+  return payload;
+}
+
+/**
+ * 新建任务：后端建行 + 在频道流里落一条 `system` 指针消息（同一事务）。
+ *
+ * 成功后的两笔善后与旧 `submitTask()` 同一条：把新任务补进看板快照（页签计数立刻跟着变）并重读
+ * 一次（筛选 / 其它频道的任务都可能变了）。指针消息由 store 按「到达的消息」吸收，因此当前频道
+ * 的消息流立刻出现那一行（system 不计未读，页签读数不变）。
+ */
+async function submitTask(fields) {
+  const payload = await store.createTask(fields.channelId, fields.title);
+  if (payload && payload.task) board.replaceTask(payload.task);
+  await board.refresh();
+  toasts.push(t('toast.taskCreated', { title: payload.task.title }));
   return payload;
 }
 
@@ -389,10 +462,40 @@ async function openRunPanel() {
   await dockPanel.openForChannel();
 }
 
-/** 收掉 dock：把形态整个作废（下次打开是干净的一帧），并收起移动端抽屉。
-    `kind === 'run'` 时顺带作废运行面板的读数；别的形态（线程面板）没有自己的 store 要关。 */
+/**
+ * 任务线程头的运行面板入口（旧 `openRunPanelForTask()`）：同一个 dock 换到 `run` 档，但带
+ * `task_id` 过滤——面板的读数因此只属于这一条任务（`stores/run-panel.js` 的 `open()` 已经能接，
+ * 本票只补入口与接线，不动它的合并判据）。
+ */
+async function openTaskRunPanel() {
+  const task = thread.state.task;
+  if (!task) return;
+  dockTarget.value = { kind: 'run' };
+  dockDrawerOpen.value = true;
+  await dockPanel.open({ targetId: task.target_id, channelId: task.channel_id, taskId: task.id });
+}
+
+/**
+ * 收掉 dock：把形态整个作废（下次打开是干净的一帧），并收起移动端抽屉。
+ *
+ * 一处落点判据（旧 `closeRunPanel()` 的 `fromTask` 分支）：**从任务上下文打开的**运行面板关掉后
+ * 回任务线程，其余（频道面板 / 线程自己的关闭键）落回「没有形态」。判据读的是面板的 `taskId`
+ * 与线程现在开着的那条任务，两者都缺一不可——不然「上一条任务的线程已经不在了」还会被拉回来。
+ */
 function closeDock() {
-  if (dockTarget.value && dockTarget.value.kind === 'run') dockPanel.close();
+  const target = dockTarget.value;
+  if (target && target.kind === 'run') {
+    const backToTask = Boolean(dockPanel.state.taskId) && Boolean(thread.state.taskId);
+    dockPanel.close();
+    if (backToTask) {
+      // 线程还开着：dock 不停在「没有形态」，抽屉也不收（人是在线程里开的这块面板）。
+      dockTarget.value = { kind: 'task', taskId: thread.state.taskId };
+      return;
+    }
+  } else if (target && target.kind === 'task') {
+    // 关线程：把它的读数整个作废（不残留旧线程的消息与任务行）。
+    thread.resetForTarget();
+  }
   dockTarget.value = null;
   dockDrawerOpen.value = false;
 }
@@ -448,16 +551,33 @@ const taskCount = computed(() => (isDm.value ? 0 : board.channelTaskCount(state.
 /** 任务看板已迁到本版（票 #306）：`tab-tasks` 与看板入口因此翻正（ADR-0038 §五的开关）。 */
 const tasksAvailable = ref(true);
 
-/** 点卡片 = 打开它的任务线程。线程本体归 T7，本票先把 dock 的 `task` 形态立起来
-     （`dockTarget` 是打开哪个对象的**唯一**判据，于是「线程还没内容」与「没打开线程」是两件事）。 */
-function openTask(taskId) {
+/**
+ * 点卡片 / 命令面板的入口 = 打开它的任务线程。
+ *
+ * 形态仍只由 `dockTarget` 决定（`{ kind: 'task', taskId }`），内容在 `stores/task-thread.js`。
+ * 打开一条新线程会作废两样旧读数（旧 `openTask()` 同一条）：上一条线程的消息与**另一条任务**的
+ * 运行面板——面板的 `task_id` 过滤属于上一条线程，留着它就会在新区里显示旧分派。
+ *
+ * 读失败**不留空壳**：dock 回落到「没有形态」并说清原因（旧 `openTask()` 的 catch 分支）。
+ */
+async function openTask(taskId) {
   if (!taskId) return;
+  thread.resetForTarget();
+  dockPanel.resetForTarget(true);
   dockTarget.value = { kind: 'task', taskId };
   dockDrawerOpen.value = true;
+  const opened = await thread.open(taskId);
+  if (opened) return;
+  // 打开期间人可能已经切走了：那时不动 dock（不要把别人的这一帧收掉）。
+  if (!dockTarget.value || dockTarget.value.kind !== 'task' || dockTarget.value.taskId !== taskId) return;
+  const reason = thread.state.error;
+  closeDock();
+  toasts.push(t('toast.openTaskFailed', { reason }), 'err');
 }
 
 /** dock 现在有没有可切换的形态：与频道头的运行面板入口同一份判据（私信下没有）。
-    旧页面的是 `dockAvailable()`（含任务线程与成员形态）；本版只有运行面板这一档有内容。 */
+    旧页面的是 `dockAvailable()`（含任务线程与成员形态）；本版的成员面走弹窗，因此这一位只决定
+    「频道头的运行面板开关与命令面板里那条『切换详情面板』在不在」。 */
 const dockToggleAvailable = computed(() => !isDm.value && Boolean(target.value));
 
 /** 命令面板里的「切换详情面板」（旧 `toggleDock()`）：开着就关，关着就开运行面板。 */
@@ -478,15 +598,15 @@ function toggleDock() {
  *   频道名可能与某条命令同名，标签不是键；
  * - **只有真绑定的快捷键**才印 `kbd`：`M` 消息视图、`T` 任务看板（原型里的 `N` / `⇧N` / `D` 没有
  *   绑定任何按键，因此不出现）；
- * - 指向**未迁面**的命令是禁用条目（`new-task` 等 T7），不渲染成按下去什么都不发生的假入口。
- *   任务看板随票 #306 迁完 ⇒ `view-board` 与 `T` 键现在是真入口。
+ * - 指向**未迁面**的命令是禁用条目，不渲染成按下去什么都不发生的假入口。任务看板随票 #306 迁完、
+ *   新建任务随票 #307 迁完 ⇒ `view-board` / `T` 键与 `new-task` 都是真入口。
  */
 const commands = computed(() => {
   const list = [
     { id: 'view-messages', group: 'cmd.groupJump', label: t('cmd.messages'), kbd: 'M', run: showMessagesView },
     { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', run: showTaskBoard },
     { id: 'new-channel', group: 'cmd.groupAction', label: t('rail.newChannel'), run: () => { channelFormOpen.value = true; } },
-    { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), disabled: true, run: () => {} },
+    { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), run: () => { taskFormOpen.value = true; } },
   ];
   // 私信下 dock 没有可显示的形态：这条命令**不列**（与频道头入口同一份判据）。
   if (dockToggleAvailable.value) {
@@ -630,6 +750,7 @@ function mobileShell() {
         :board="board"
         :state="state"
         @open-task="openTask"
+        @new-task="taskFormOpen = true"
       />
 
       <!-- 搜索视图（主线视图的第三档）：同一块内容区，是「三选一」而不是叠层。 -->
@@ -655,12 +776,27 @@ function mobileShell() {
       />
     </main>
 
+    <TaskFormModal
+      v-model:open="taskFormOpen"
+      :channels="state.channels"
+      :default-channel-id="isDm ? '' : state.activeTargetId"
+      :online="state.online"
+      :submit="submitTask"
+    />
+
     <DockPanel
       :dock-target="visibleDockTarget"
       :panel="dockPanel"
       :pools="dockPools"
       :open="dockDrawerOpen"
+      :thread="thread"
+      :thread-members="state.members"
+      :thread-assignees="threadAssignees"
+      :thread-assignees-failed="threadAssigneesFailed"
+      :thread-channel-mode="threadChannelMode"
+      :online="state.online"
       @close="closeDock"
+      @open-run-panel="openTaskRunPanel"
     />
 
     <!-- rail 头的两个弹窗（T2）：外壳是共享的 `ModalShell`，这里只给显隐与数据源。

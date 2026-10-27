@@ -98,7 +98,7 @@ v2 页面只承诺**已迁完的那条链路**可用：
   **运行面板**（dock 的第三种形态：运行与分派 / 成员事件 / Plan / SOP 四段；快照兜底 + live 合并；
   重连后按快照刷新）、**共享弹窗壳**（`ModalShell.vue`：遮罩 / ESC 只关最上层 / 焦点回收 / `busy`
   不收；**三张弹窗的内容**归 T1–T3；⌘K 命令面板**不套它**）、**dock 的三档形态判据**（`run` 有内容，
-  `members` / `task` 是留给 T3 / T7 的具名插槽）、**整页的 ESC 层序表**（`App.vue` 的 `handleEscape()`）、
+  `task` 由票 #307 接上真组件，`members` 是留给 T3 的具名插槽）、**整页的 ESC 层序表**（`App.vue` 的 `handleEscape()`）、
   **提醒与设置两张弹窗**（rail 头的两枚 `.icon-btn`；提醒的圆点角标 / 列表 / 新增 / 删除，
   设置的三个档位与 `applySettings` 写回——后者原本是死入口，票 #302 接活）、
   **三个新建表单**（票 #301：新建频道 `ChannelFormModal.vue` / 新建 Agent `AgentFormModal.vue`
@@ -122,10 +122,17 @@ v2 页面只承诺**已迁完的那条链路**可用：
   `tasksAvailable` 因此翻正，`tab-tasks`、`T` 键与命令面板的「任务看板」一起接活。**跨列拖拽是重写的
   声明式版**：`stores/task-board.js` 只存 `{ from, over }` 一个拖拽态，`drag-over` / `invalid-over` /
   `.dragging` 全由它推导，不搬旧 `boardDrag` 命令式状态机；松手 = `PATCH /api/tasks/{id}/status` 一次，
-  **没有乐观移动**，非法落点零请求只说明事实，前端仍不持迁移表副本（一切读载荷 `allowed_transitions`））。
-- 未迁：任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
-  审批卡、Agent 详情、
-  **任务运行面板**（它挂在任务线程头，随线程那张票）。
+  **没有乐观移动**，非法落点零请求只说明事实，前端仍不持迁移表副本（一切读载荷 `allowed_transitions`））、
+  **任务线程与任务运行面板**（票 #307，阶段 B 第二票：`TaskThread.vue` 铺旧页面 `#dockTask` 的
+  `.tt-summary`（标题就地可编辑）/ `.tt-status[data-status]` / 指派 pill / `thread-team-notice` /
+  `.tt-actions` 两行 chips / `.tt-scroll` 的讨论与变更记录 / `.tt-reply` composer；读数与四条写路径
+  全在 `stores/task-thread.js`（回复带 `task_ref`、标题、状态、指派），迁移合法性仍只读
+  `allowed_transitions`；正文复用 `MarkdownBody.vue`，`system` 行只进 `.tt-log`；dock 的 `task` 档
+  从此是**真组件**而非插槽，三档仍由 `dockTarget` 一个 `ref` 推导；线程头的 `btn-thread-run-panel`
+  把 dock 切 `run` 档并带 `task_id` 过滤，标题取**任务标题**（`createRunPanelStore({ activeTask })`
+  这个原本恒 `null` 的缝在这里接上），从任务上下文关面板**回线程**；`new-task` 同时翻正
+  （`TaskFormModal.vue` 两个入口共用一张表单 ⇒ `POST /api/channels/{id}/tasks`））。
+- 未迁：审批卡、Agent 详情、**任务引用 chip / 频道指针 chip**（它们归 T8 / T9）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
 
@@ -139,7 +146,7 @@ v2 页面只承诺**已迁完的那条链路**可用：
    组件不用改。（`btn-reminders` / `btn-settings` 随票 #302 迁完、`btn-new-channel` / `btn-new-agent`
    随票 #301 迁完、`btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` 随票 #303
    迁完、rail 的 `btn-workspace-search` 随票 #304 迁完、`btn-attach` 随票 #305 迁完，
-   都不在这个清单里。）
+   看板的 `btn-new-task` 与命令面板的 `new-task` 随票 #307 迁完，都不在这个清单里。）
 2. **可见但禁用**：**这一档现在空了**（票 #301）。它原本只装「新建频道 / 新建 Agent」——
    空工作台的引导文案就是「新建一个频道」，把按钮一起藏掉等于让人无路可走，禁用比消失诚实。
    两张表单迁过来之后两个按钮正常工作，这条兜底规则仍然成立：**将来再出现「面还没迁、
@@ -164,13 +171,19 @@ v2 页面只承诺**已迁完的那条链路**可用：
 （只读行的样式落点，旧页面不使用这个类）。运行面板那一票**没有再碰**旧页面目录：它的词条与类名
 早就为这个面定义好了，v2 只是把它们用在同一个落点上。
 
-**dock 的三档形态判据已立起来，两档有内容**（票 #300 立表、票 #306 接了第二档的调用点）：`DockPanel.vue` 的 `mode` 由父组件
+**dock 的三档形态判据已立起来，三档都有内容（`members` 那档没有调用点）**（票 #300 立表、票 #306
+接了`task` 档的调用点、票 #307 把它换成真组件）：`DockPanel.vue` 的 `mode` 由父组件
 传的 `dockTarget`（`{ kind: 'run' | 'members' | 'task' }`）**推导**，`null` ⇒ 整栏不渲染。
-`run` 档接 `RunPanel.vue`；`members` / `task` 两档是具名插槽（`<slot name="members">` /
-`<slot name="task">`），内容分别归 T3 与 T7——形态判据与几何（380 宽 / `.dock.is-open` /
-≤900px 右抽屉）不必让那两张票各改一遍外壳。票 #306 给 `task` 档接上了**第一个调用点**
-（点看板卡片 ⇒ `dockTarget = { kind: 'task' }`），插槽内容仍归 T7，因此这一档现在**可见但还没有正文**；
-`members` 档至今没有调用点（成员面走的是弹窗，见下），私信下 `dockTarget` 恒为 `null`（整栏消失）。
+`run` ⇒ `RunPanel.vue`，`task` ⇒ `TaskThread.vue`（票 #307），`members` ⇒ `<slot name="members">`
+（成员面在 v2 走弹窗，这一档至今没有调用点）——形态判据与几何（380 宽 / `.dock.is-open` /
+≤900px 右抽屉）只在外壳里写一遍。
+三档是**互斥的推导**，不是三份开关：开线程 ⇒ `{ kind: 'task' }`；从线程开运行面板 ⇒ `{ kind: 'run' }`
+（面板的 `taskId` 置上）；关掉 ⇒ `null`（**不占位**：整栏不渲染，不是渲染出来再 `hidden`）；
+从任务上下文关运行面板 ⇒ 回 `{ kind: 'task' }`（旧 `closeRunPanel()` 的 `fromTask` 分支）。
+换 target 时 `selectTarget()` 把线程与面板一起作废（`thread.resetForTarget()` /
+`dockPanel.resetForTarget(true)`），于是「关掉了但 dock 还停在旧形态」与「换 target 后旧线程读数
+残留」两类漂移在构造上都没有落脚点。`members` 档至今没有调用点（成员面走的是弹窗，见下），
+私信下 `dockTarget` 恒为 `null`（整栏消失）。
 
 **弹窗的外壳与关闭语义只有一份**（票 #300）：`components/ModalShell.vue` 铺旧页面的
 `.overlay` / `.modal` / `.modal-head` / `.modal-body` / `.modal-foot`（`app.css` 零改动），
