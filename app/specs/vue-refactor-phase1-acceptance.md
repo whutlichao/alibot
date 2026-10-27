@@ -157,15 +157,16 @@ members + member-statuses），SSE 连接数 1。
 
 v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` 承载：
 
-任务看板与任务线程、审批卡、Agent 详情、搜索与 ⌘K 命令面板、提醒 / 设置 / 频道配置 /
-回应预算 / 成员名册等弹窗、附件**上传**、新建频道 / 新建私信 / 新建 Agent 的表单、
+任务看板与任务线程、审批卡、Agent 详情、搜索与 ⌘K 命令面板、频道配置 / 回应预算 /
+成员名册等弹窗、附件**上传**、新建频道 / 新建私信 / 新建 Agent 的表单、
 **任务运行面板**（它挂在任务线程头，随线程那张票进来；频道运行面板已迁）。
+（提醒与设置两张弹窗已随阶段 A 的票 #302 迁完，不再在这个清单里。）
 
 **这些面在 v2 上不留假入口**（ADR-0038 §五），分两种处理：
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | 工作台搜索、提醒、设置（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；附件上传与「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
+| **不渲染** | 工作台搜索（rail）；Agent 详情（rail 的 Agent 行因此是只读行）；成员名册 / 频道设置 / 回应预算（频道头）；任务页签；附件上传与「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现 |
 | **可见但禁用**（`title` 说明理由） | 新建频道 / 新建 Agent | 空库里唯一的引导文案就是「新建一个频道」——把按钮也藏掉等于让人无路可走 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
@@ -315,3 +316,91 @@ node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
 真浏览器读数取自一个临时的 Vite harness 页（复用同一份 `app.css` 与同一个 `ModalShell.vue`，
 取证后已删除、未入库）。dock 的 `members` / `task` 两档同理没有调用点，只在用例里按 `dockTarget`
 直接驱动——那是「形态与几何先立起来」的代价，也是那两张票不必再改外壳的前提。
+
+### 阶段 A · 票 #302：rail 弹窗族——提醒 + 设置（接活 applySettings）（读数）
+
+rail 头的两枚入口（`btn-reminders` / `btn-settings`）在 v2 上原本整块不渲染（ADR-0038 §五的
+「不渲染」档）。本票把两张弹窗搬过来，入口从「不渲染」翻成「正常工作」。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| rail 头两枚入口 | `components/RailSidebar.vue` 的 `.rail-head` | `btn-reminders` / `btn-settings` 逐字沿用旧页面（`studio/index.html:69` / `:83`）的 `data-od-id` 与无障碍名；铃铛与齿轮用旧页面的 lucide 几何（`stroke-width` 同为 1.9） |
+| 圆点角标的判据是「还有**未到点**的提醒」 | `stores/reminders.js` 的 `hasPending` | `state.reminders.some((r) => !r.fired_at)`；`fired` / `missed` 一律不算等待。判据住在数据层而不是模板里，于是「列表有行」与「圆点亮」不会被写成同一个条件 |
+| 列表行 | `components/RemindersModal.vue` | 文本 · ` · #归属频道`（不归属时不出现）· 状态后缀 · 删除（`×` + `aria-label`）。`state` 只读后端原词：`pending` 的后缀是到期时刻本身、`fired` / `missed` 走词条；认不出的取值落回时刻那一档，不猜第三种语义 |
+| 新增 = 文本 + 日期 + 钟点 | 同上 | 两个原生输入（`type="date"` 默认今天 / `type="time"` 默认 `09:00`），提交拼成 `YYYY-MM-DD HH:MM` 一个串（ADR-0017 §二）；合法形状由后端裁决。只清正文，日期回今天、钟点保留 |
+| 写路径以响应的最新表覆盖镜像 | `stores/reminders.js` 的 `applyPayload` | 读（`GET`）与写（`POST` / `DELETE`）共用一个落点，不本地拼「看起来成功了」的行；失败时不改镜像、把后端的话留在弹窗里（`#reminderFormError`），弹窗不关 |
+| 提醒的读取不阻塞主线 | `app-context.js` 的 `start()` / `onOpen({reconnected})` | 首开读一次、重连后随全量重取再读一次；读不到保持未亮，打开弹窗时再试并把失败话留在弹窗里（旧实现同一条） |
+| 设置三个档位 | `components/SettingsModal.vue` | 语言 `<select>` + 密度两个 `.radio-card` + 主题三个 `.radio-card`；类名与 `data-od-id` 逐字沿用（`settings-locale` / `settings-density` / `settings-theme` / `density-*` / `theme-*` / `settings-done`），选中态是 `is-on` + `aria-pressed` |
+| **`applySettings` 接活** | `App.vue` 把 `ctx.applySettings` 传进弹窗 | 保存成功 ⇒ `applySettings(响应.settings)` 铺 `<html lang>` / `data-theme` / `data-density`；失败 ⇒ 根元素与选中态都不动（不声称一个没落库的档位），错误话留在弹窗里、弹窗不关 |
+| **绝不挂 watcher**（防回归） | 同上 | 用例「保存一次只铺一次根元素」数的是**根元素被写了几次**（不是函数被调了几次）；把 `watch(() => mutable.settings, applySettings, {deep:true})` 加回去，这条当场红（`Maximum recursive updates exceeded in component <App>`） |
+
+**一条从真实父组件进的用例**：`tests/rail-modals.test.js` 全部 14 条都从 `App.vue` 进（真实
+`createAppContext` + `fetch` 替身 + `attachTo: document.body`）。理由与阶段一那次
+`DockPanel` 漏传 `pools` 相同：rail 的圆点要「后端读数 → store → prop」整条链、设置要真的
+`applySettings`，直挂叶子组件两件事都测不出来。
+
+门禁读数：
+
+```
+npx vitest run（app/frontend）     12 files / 211 passed（新增 tests/rail-modals.test.js 14 条；
+                                   components.test.js 的「rail 入口」一条改成「已迁 ⇒ 渲染」）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+```
+
+红→绿（原样读数）：
+
+```
+# 第一条切片（rail 入口 + 圆点）
+FAIL  tests/rail-modals.test.js > rail 头的弹窗入口 > 圆点：全部已提醒 / 已错过时**不出现**
+AssertionError: expected false to be true // Object.is equality
+ Test Files  1 failed (1)   Tests  3 failed (3)
+
+# 第二条切片（提醒弹窗）
+FAIL  tests/rail-modals.test.js > 提醒弹窗 > 新增：文本 + 日期 + 钟点拼成 `YYYY-MM-DD HH:MM`…
+Error: Cannot call setValue on an empty DOMWrapper.
+ Test Files  1 failed (1)   Tests  6 failed | 3 passed (9)
+
+# 第三条切片（设置弹窗）
+FAIL  tests/rail-modals.test.js > 设置弹窗 > 点「深色」⇒ PATCH 一档 + 根元素 data-theme 变 dark…
+ Test Files  1 failed (1)   Tests  5 failed | 9 passed (14)
+
+# 全绿
+ Test Files  12 passed (12)   Tests  211 passed (211)
+```
+
+真浏览器实测（ego-browser，`python -m alibot --port 8805 --data-dir /tmp/alibot-p2a-302`，
+`http://127.0.0.1:8805/studio/v2/`）：
+
+| 判据 | 读数 |
+| --- | --- |
+| rail 头入口 | `#rail .rail-head` 两枚 `.icon-btn`：`btn-reminders`（`aria-label=提醒`）/ `btn-settings`（`aria-label=设置`）；无提醒时 `#reminderDot` 不存在 |
+| 提醒弹窗骨架 | 点铃铛 ⇒ `#remindersOverlay.hidden=false`、`display: grid`、`.modal.wide` 宽 **560**；焦点落在 `reminder-text`（正文第一个可聚焦件，不是标题行关闭键） |
+| 空态 | `还没有提醒` + `提醒保存在后端，不依赖这台浏览器。`；日期格默认今天 `2026-10-27`、钟点 `09:00` |
+| 新增（无归属） | 填 `喝水` / `2030-03-04` / `07:05` → 点「添加提醒」⇒ 行出现：`喝水` + `state=2030-03-04 07:05`（`data-state=pending`）；正文清空、日期回今天、钟点保留 `07:05`；圆点出现（6px） |
+| 新增**不产生消息** | 页面内包一层 `fetch` 计数 `/messages`：整段新增流程后 `messageRequests = 0`（也没有新的 target / 未读） |
+| 归属频道 | 打开 `#design` 后再新增 ⇒ 行显示 `带频道归属的 · #design`；后端 `channel_id` 落在 `ch_0528efdbdb57` |
+| 删除 + 圆点熄灭 | 两条 → 删一条 `rows=1  dot=true` → 删净 `rows=0  dot=false`，空态回来 |
+| 已错过不亮圆点 | 后端投递器把一条过点提醒标成 `state=missed, fired_at=2026-10-26T23:44:23.236Z`；刷新页面后 `dot=false`，弹窗里那一行后缀是 `已错过`（`data-state=missed`） |
+| 设置弹窗骨架 | 点齿轮 ⇒ `#settingsOverlay.hidden=false`、`display: grid`、宽 **440**（非 wide）；语言下拉 `zh-CN`；五个 `.radio-card` 的 `is-on` / `aria-pressed` 与当前档位一致（舒适 + 跟随系统） |
+| 改主题 | 点「深色」⇒ `document.documentElement.dataset.theme = 'dark'`、`theme-dark` 带 `is-on`/`aria-pressed=true`、`theme-system` 摘掉 `is-on`；弹窗**不关** |
+| 改密度 | 点「紧凑」⇒ `data-density='compact'`；`.msg` 的 `padding` 由 `5px 8px` 变 **`2px 8px`**（切回舒适又是 `5px 8px`），CSS 立即生效 |
+| 切语言 | 选 `English` ⇒ `<html lang='en'>`、`settings-done` 文案变 `Done`、主题组标题变 `Theme`、rail 的铃铛 `title` 变 `Reminders` |
+| 收尾 | 切回 `zh-CN` + 跟随系统 ⇒ `{lang: 'zh-CN', theme: 'system', density: 'comfortable'}` |
+
+截图（`.scratch/v2-p2a/`，已 gitignore）：`issue-302-01-rail-head.png`（rail 头两枚入口、无圆点）、
+`issue-302-02-reminders-empty.png`（`.modal.wide` 560 + 空态 + 日期默认今天）、
+`issue-302-03-reminders-added.png`（新增一行 + 圆点出现）、
+`issue-302-04-reminders-two-rows.png`（第二行带 `· #design` 归属）、
+`issue-302-05-settings-open.png`（设置弹窗 440，选中态）、
+`issue-302-06-settings-dark.png`（改为深色后根元素与选中态同步，弹窗不关）、
+`issue-302-07-settings-en.png`（切英文后整页文案与 `<html lang>`）、
+`issue-302-08-reminders-emptied.png`（删净后圆点熄灭）、
+`issue-302-09-reminder-missed.png`（`state=missed` 的行 + 圆点不亮）。
+
+**本轮的已知边界**：
+
+- **旧页面目录一个字没动**：`app/alibot/studio/app.js` / `index.html` 零改动；`i18n.js` 与 `app.css` 也没动——
+  提醒与设置的词条（`reminder.*` / `settings.*`）与类名（`.reminder-row` / `.icon-btn .dot` /
+  `.radio-card` / `.modal.wide`）早就为这个面定义好了，v2 只是把它们用在同一个落点上。
+- **频道配置 / 预算 / 名册三张弹窗仍归它们自己的票**：`ModalShell` 已经是共享外壳，那三张只需写内容。
+- **提醒的到点投递仍由后端负责**：前端不比对时钟、不轮询；`state` 与 `fired_at` 都是后端派生的只读值。

@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "9daa5ab9b3a26b5dce5c289a94a84cc9ed2dc5a66392482ccb59ec59a0e1d1bc",
+  "sourceDigest": "a08162b1d3f0959a3ebea43a80c31725f3e25174f12a6170b75b9e29d7f31937",
   "sourceFiles": [
     "index.html",
     "package-lock.json",
@@ -20,7 +20,9 @@
     "src/components/OutcomeRows.vue",
     "src/components/PresenceDot.vue",
     "src/components/RailSidebar.vue",
+    "src/components/RemindersModal.vue",
     "src/components/RunPanel.vue",
+    "src/components/SettingsModal.vue",
     "src/i18n/index.js",
     "src/lib/api.js",
     "src/lib/event-stream.js",
@@ -32,6 +34,7 @@
     "src/lib/run-panel.js",
     "src/lib/target-view.js",
     "src/main.js",
+    "src/stores/reminders.js",
     "src/stores/run-panel.js",
     "src/stores/ui-state.js",
     "src/stores/workspace.js",
