@@ -8,12 +8,17 @@
 # 这里只写一次：Node 用例族一律走 glob，新增文件自动纳入。
 #
 # 用法：
-#   scripts/check.sh                      # 全量门禁（合并 / 开 PR 前）
+#   scripts/check.sh                      # 全量门禁（合并 / 开 PR 前；pytest 并行分发）
 #   scripts/check.sh --fast               # 除全量 pytest 外的一切（秒级；开发循环）
 #   scripts/check.sh --fast tests/test_send_message.py tests/test_budget.py
-#                                         # 加跑指定 pytest（路径**相对 app/**）
+#                                         # 加跑指定 pytest（路径**相对 app/**，串行）
 #   scripts/check.sh --studio             # Studio 窄档：--fast + 审批 HTTP 契约 + 静态守卫
 #                                         # （仅限 diff 只落在 app/alibot/studio/**；CI 仍跑全量）
+#
+# 并行只在**全量**分支：`-n auto --dist loadfile`。`--dist loadfile` 是刻意的——同文件落在同一个
+# worker，本仓用例按文件共享装置与顺序假设（本机 `-n 4` 实测与默认 `load` 同速：120s vs 117s，
+# 所以选它是因为**语义**不对称，不是因为更快）。
+# `--studio` 窄档与 `--fast` 指定文件**保持串行**：单文件并行只会更慢，窄档读数也要能与历史对比。
 #
 # 前端用例族**只有一套**（Vitest，Vue 版工作台）：`npx vitest run`（app/frontend），Glob 收集。
 # 旧页面的 `node --test app/tests/*.test.cjs` 族已随页面一起退役（票 #318 / ADR-0039）。
@@ -121,8 +126,15 @@ elif (( FAST )); then
     step "pytest（--fast 且未指定文件：跳过；需要时把路径跟在 --fast 后面）"
   fi
 else
+  # 全量才并行。`--dist loadfile` 把同一文件的所有用例派给同一个 worker：本仓用例按文件共享装置
+  # 与顺序假设，跨文件打散（默认 `load`）会破坏这个前提——速度上两者在本机实测同档
+  # （`-n 4`：loadfile 120.1s / load 117.4s），所以选它是**语义**理由，不是提速。
+  # `-n auto` 随机器核数走：本机 8 核、CI runner 4 核，两端都拿到等价形态，不必写死数字。
+  #
+  # 步骤名**保持** `pytest（全量）`：`app/frontend/tests/build-guard.test.js` 用它定位「构建在
+  # pytest 之前」这条接线（`script.indexOf('step "pytest（全量）"')`），改名会让那条守卫假红。
   step "pytest（全量）"
-  ( cd app && "$PY" -m pytest )
+  ( cd app && "$PY" -m pytest -n auto --dist loadfile )
 fi
 
 # ─── 静态检查 ──────────────────────────────────────────────────────────────

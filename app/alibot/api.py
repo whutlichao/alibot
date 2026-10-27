@@ -149,6 +149,11 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 # 等到超时**（表现为「进程还在、监听套接字已没、新请求全拒」）；不少反代也会默默切掉长连接。
 #
 # 环境变量可调（反代空闲超时短的部署需要它；本地验收也用它来实跑重连路径）。
+#
+# 默认值只有一处来源：下面的常量。读取时机是**每次建立事件流时**，见 `sse_stream_max_seconds()`。
+
+# 生产默认寿命（秒）。**不许为了测试变小**——测试用 `app/tests/conftest.py` 的 session 装置改环境变量。
+SSE_STREAM_DEFAULT_MAX_SECONDS = 55.0
 
 
 def _env_seconds(name: str, default: float) -> float:
@@ -163,7 +168,14 @@ def _env_seconds(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
-SSE_STREAM_MAX_SECONDS = _env_seconds("ALIBOT_SSE_ROTATE_SECONDS", 55.0)
+def sse_stream_max_seconds() -> float:
+    """本次连接的事件流最长寿命（秒）：**调用时**读 ``ALIBOT_SSE_ROTATE_SECONDS``。
+
+    空 / 非法 / ``<= 0`` 一律退回 :data:`SSE_STREAM_DEFAULT_MAX_SECONDS`（与 ``_env_seconds`` 同口径）。
+    四条 SSE 路由都必须在建立流时调它一次，而不是复用导入期的值。
+    """
+    return _env_seconds("ALIBOT_SSE_ROTATE_SECONDS", SSE_STREAM_DEFAULT_MAX_SECONDS)
+
 
 # 事件流的推送轮询间隔：队列在此间无事件时发一个 keep-alive 注释帧，
 # 顺带让事件流能感知关停信号（见 `channel_events` 的循环）。
@@ -1994,7 +2006,7 @@ def create_app(
                         "rounds": orchestrator.active_rounds(channel_id),
                     }
                 )
-                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                deadline = asyncio.get_running_loop().time() + sse_stream_max_seconds()
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
                         return
@@ -2061,7 +2073,7 @@ def create_app(
                         "rounds": orchestrator.active_rounds(task["target_id"]),
                     }
                 )
-                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                deadline = asyncio.get_running_loop().time() + sse_stream_max_seconds()
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
                         return
@@ -2137,7 +2149,7 @@ def create_app(
                         "rounds": orchestrator.active_rounds(dm_id),
                     }
                 )
-                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                deadline = asyncio.get_running_loop().time() + sse_stream_max_seconds()
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
                         return
@@ -2206,7 +2218,7 @@ def create_app(
 
         async def stream() -> AsyncIterator[str]:
             try:
-                deadline = asyncio.get_running_loop().time() + SSE_STREAM_MAX_SECONDS
+                deadline = asyncio.get_running_loop().time() + sse_stream_max_seconds()
                 while not shutting_down.is_set():
                     if await request.is_disconnected():
                         return

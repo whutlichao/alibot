@@ -180,7 +180,10 @@ def test_failed_round_outcome_reaches_the_event_stream(live: dict, monkeypatch) 
                     return
                 text = line.decode() if isinstance(line, bytes) else line
                 if text.startswith("data: "):
-                    events.append(json.loads(text[len("data: ") :]))
+                    event = json.loads(text[len("data: ") :])
+                    if not event:
+                        continue  # 轮换控制帧（``data: {}``）：不是事件，断言里不该出现它
+                    events.append(event)
 
     reader_thread = threading.Thread(target=reader)
     reader_thread.start()

@@ -432,18 +432,22 @@ def test_in_flight_round_is_not_replayed_after_restart(launched: dict) -> None:
 
     client = launched["client"]
     agent = create_agent(client, name="小明").json()["agent"]
-    launched["seam"].behaviors[agent["id"]] = DELAY
+    # 先抓住**旧** seam：`restart()` 会重建 `state["seam"]`（新实例、新闸门），而被阻塞的线程
+    # 持的是旧实例的 `threading.Event`。结尾必须释放旧的那个，否则只能等 `_gate.wait(timeout=10)`
+    # 超时——用例会白等 10 秒（票 #328）。
+    blocked_seam = launched["seam"]
+    blocked_seam.behaviors[agent["id"]] = DELAY
     channel = channel_with_agent(client, agent["id"])
 
     send(client, channel["id"], "第一轮开始")
-    launched["seam"].block()
+    blocked_seam.block()
     runner = threading.Thread(target=launched["scheduler"].drain)
     runner.start()
     for _ in range(200):
-        if launched["seam"].calls_for(agent["id"]):
+        if blocked_seam.calls_for(agent["id"]):
             break
         time.sleep(0.01)
-    assert launched["seam"].calls_for(agent["id"]), "第一轮没有进入 in-flight"
+    assert blocked_seam.calls_for(agent["id"]), "第一轮没有进入 in-flight"
 
     after = launched["restart"]()
 
@@ -453,7 +457,7 @@ def test_in_flight_round_is_not_replayed_after_restart(launched: dict) -> None:
     assert after.get(f"/api/agents/{agent['id']}/status").json()["status"] == "online"
     assert outcomes(after, channel["id"]) == []
 
-    launched["seam"].release()
+    blocked_seam.release()
     runner.join(timeout=10)
 
 
