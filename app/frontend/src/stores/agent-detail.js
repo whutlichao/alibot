@@ -1,4 +1,9 @@
-/* Agent 详情（主线视图 `mode === 'agent'`）：读数、草稿与四条写路径
+/* Agent 详情（主线视图 `mode === 'agent'`）：读数、草稿与写路径
+
+   写路径包括：`saveAgent` / `toggleEnabled` / `confirmDelete`（配置与删除）、`toggleSkill` /
+   `deleteSkill` / `importPickedSkill`（技能）、`submitMcpDraft` / `toggleMcpServer` /
+   `deleteMcpServer` / `consentMcpServer` / `consentGlobalMcp` / `saveMcpFile`（MCP）。
+   不在这里写死总数——上次写「四条」与实际十一条不符，加一条还得回来改注释。
 
    旧落点 `studio/app.js` 的 `renderAgentDetail()` / `renderAgentTabPanels()` 一族（约 2700 行）。
    本模块只保留**状态与读写**，呈现交给 `components/AgentDetailView.vue`——旧实现把两者搅在
@@ -24,6 +29,7 @@
      顶层形状 / 每条声明归一化），前端只把原文原样送上去——不做隐式格式化（规格 N3 第三格）。 */
 import { computed, reactive, readonly } from 'vue';
 import { api } from '../lib/api.js';
+import { t } from '../i18n/index.js';
 
 /** 页签的取值与顺序（`CONTEXT.md` **Agent 详情页签**：顺序固定，不开第四个）。 */
 export const AGENT_DETAIL_TABS = ['base', 'skills', 'mcp'];
@@ -39,6 +45,11 @@ export const MCP_REMOTE_TRANSPORTS = ['http', 'sse'];
 
 /** 技能候选的「从本机导入」命令：ASCII 常量，不进词条值（旧 `SKILL_INSTALL_COMMAND` 同一条）。 */
 export const SKILL_INSTALL_COMMAND = 'npx skills add <owner/repo> -g -a codex -y';
+
+/** 后端可读原因的统一取值（`Error.message` 优先；非 Error 原样转字符串）。 */
+function reasonOf(err) {
+  return err && err.message ? err.message : String(err);
+}
 
 /** 草稿的**空白**形状：`null` 表示「还没有打开任何成员」。 */
 function emptyDraft() {
@@ -422,7 +433,8 @@ export function createAgentDetailStore(options) {
       current.skills = payload.skills || [];
     } catch (err) {
       if (state.memberId !== memberId) return;
-      current.skillError = err && err.message ? err.message : String(err);
+      // 列表读取失败按「读取」归因；启停 / 删除在各自的写路径里覆写这一格为对应文案。
+      current.skillError = t('skill.loadFailed', { reason: reasonOf(err) });
     } finally {
       if (state.memberId === memberId) current.skillLoading = false;
     }
@@ -634,7 +646,9 @@ export function createAgentDetailStore(options) {
     } catch (err) {
       current.skillTogglingId = null;
       if (state.memberId !== memberId) return;
-      current.skillError = err && err.message ? err.message : String(err);
+      // 归因到启停：这一行与列表读取失败共用 `skillError`，文案必须按操作来源取
+      // （旧 `toggleSkill()` 同一条：`skill.toggleFailed`）。
+      current.skillError = t('skill.toggleFailed', { reason: reasonOf(err) });
     }
   }
 
@@ -647,11 +661,13 @@ export function createAgentDetailStore(options) {
     try {
       await api('/api/skills/' + encodeURIComponent(skillId), { method: 'DELETE' });
       if (state.memberId !== memberId) return;
-      toast('skill.deleted');
+      // `toast` 只做 `String()`、不查词条（`app-context.js:25`），因此这里必须自己取文案——
+      // 直接传键名会把字面字符串 `skill.deleted` 显到界面上（旧页 `app.js:8407` 是 `t(...)`）。
+      toast(t('skill.deleted'));
       await loadSkills(memberId);
     } catch (err) {
       if (state.memberId !== memberId) return;
-      current.skillError = err && err.message ? err.message : String(err);
+      current.skillError = t('skill.deleteFailed', { reason: reasonOf(err) });
     }
   }
 

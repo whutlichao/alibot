@@ -74,6 +74,13 @@ function tabId(name) {
 
 const draft = computed(() => state.edit.draft);
 const agentName = computed(() => (agent.value ? agent.value.display_name : ''));
+/** 主读数失败原因（持久错误行的唯一判据）；写动作的可用性也读它。 */
+const agentError = computed(() => {
+  const current = view.value;
+  return current ? current.agentError : '';
+});
+/** 读不到正本时不许写：这一面上的保存 / 暂停恢复 / 删除都以此为准。 */
+const canWrite = computed(() => Boolean(props.online) && !agentError.value);
 
 /** 统计四个数字：全部来自后端 `stats`（`round_outcome` 聚合 + 任务行 + 频道成员表）。 */
 const statCells = computed(() => {
@@ -353,6 +360,18 @@ watch(
       </div>
     </div>
 
+    <!-- 主读数（`GET /api/agents/{id}`）读不到时的**持久**错误行：toast 3.2s 就消失，
+         而「读不到」不能被读成「读到了且全是默认值」。此时下面的名称 / 统计 / 草稿都可能
+         是残留镜像，因此同一面上所有写动作一起禁用。 -->
+    <div
+      v-if="agentError"
+      class="form-error agent-error-row"
+      role="alert"
+      data-od-id="agent-detail-error"
+    >
+      {{ t('toast.agentDetailFailed', { reason: agentError }) }}
+    </div>
+
     <!-- 三个页签：原生 `<button>` + `role="tab"`，键盘靠浏览器自身的 Tab / Enter
          （不自造方向键漫游）；`aria-controls` 指向下面对应的面板。 -->
     <div
@@ -576,7 +595,7 @@ watch(
                 class="btn btn-sm"
                 type="button"
                 data-od-id="agent-toggle-enabled"
-                :disabled="!online"
+                :disabled="!canWrite"
                 @click="detail.toggleEnabled()"
               >
                 {{ t(draft && draft.enabled ? 'agentDetail.pause' : 'agentDetail.resume') }}
@@ -585,7 +604,7 @@ watch(
                 class="btn btn-sm btn-danger"
                 type="button"
                 data-od-id="agent-delete"
-                :disabled="!online"
+                :disabled="!canWrite"
                 @click="detail.openDelete()"
               >
                 {{ t('agentDetail.delete') }}
@@ -704,7 +723,7 @@ watch(
                   role="alert"
                   data-od-id="skill-error"
                 >
-                  {{ t('skill.loadFailed', { reason: view.skillError }) }}
+                  {{ view.skillError }}
                 </div>
                 <div v-if="view && view.skillLoading" class="resource-empty">{{ t('skill.loading') }}</div>
                 <div v-else-if="!skills.length" class="resource-empty">{{ t('skill.empty') }}</div>
@@ -1169,7 +1188,7 @@ watch(
         type="button"
         id="adSave"
         data-od-id="agent-detail-save"
-        :disabled="!online || state.editSaving"
+        :disabled="!online || state.editSaving || Boolean(agentError)"
         @click="detail.saveAgent()"
       >
         {{ t('agentDetail.save') }}

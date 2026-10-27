@@ -155,8 +155,9 @@ v2 页面只承诺**已迁完的那条链路**可用：
   「带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」的反向断言**已翻正**。
   「待审批 N」角标读 T8 的那份审批镜像（同一份读数，不造第二份）。
   **Agent 详情**（票 #310，阶段 C 也是整个重构的最后一块：`AgentDetailView.vue` 铺旧页面
-  `#viewAgent` 的三页签——基础信息和配置 / skills / mcp，`stores/agent-detail.js` 管读数与七条
-  写路径。`mode` 因此从三档扩到四档 `channel | board | search | agent`：详情是**主线视图**，
+  `#viewAgent` 的三页签——基础信息和配置 / skills / mcp，`stores/agent-detail.js` 管读数与写路径
+  （配置保存 / 暂停恢复 / 删除、技能启停 / 删除 / 导入、MCP 库行增删改 / 启停 / 远端确认、`mcp.json` 原文保存）。
+  `mode` 因此从三档扩到四档 `channel | board | search | agent`：详情是**主线视图**，
   进它时 `closeDock()`、频道头与 composer 一起让位（旧 `setViewMode('agent')` 同一条），
   而 `handleEscape()` 的五格**一格都没动**——旧页面 `app.js:10577-10614` 的 document keydown 里
   `state.mode === 'agent'` 一次都没出现，最后一格只有 `search`，所以详情与看板同档：ESC 什么都不做。

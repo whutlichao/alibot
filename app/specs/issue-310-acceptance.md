@@ -15,21 +15,25 @@
 ## 可复跑命令与读数（均属最终提交 `bd853a0`）
 
 ```sh
-cd app/frontend && env -u NODE_ENV npm run build      # ✓ 64 modules transformed；产物 index-CKMHx--s.js
+cd app/frontend && env -u NODE_ENV npm run build      # ✓ 64 modules transformed；产物 index-DtB21X7m.js
 ./scripts/check.sh --fast                            # exit 0
 ./scripts/check.sh                                   # exit 0（全量，含 pytest）
 ```
 
 | 门禁 | 读数 |
 | --- | --- |
-| pytest（全量） | `1264 passed, 11 skipped in 736.24s (0:12:16)` |
+| pytest（全量） | `1264 passed, 11 skipped in 753.25s (0:12:33)` |
 | ruff check / ruff format --check | `All checks passed!` / `363 files already formatted` |
 | mypy | `Success: no issues found in 133 source files` |
 | pyright | `0 errors, 0 warnings, 0 informations`（逐字引用工具输出，故保留其 `informations` 拼法） |
 | node --test（旧页面族） | `tests 389 / pass 389 / fail 0` |
-| Vitest（v2 工作台） | `Test Files 21 passed (21)` / `Tests 412 passed (412)` |
+| Vitest（v2 工作台） | `Test Files 21 passed (21)` / `Tests 416 passed (416)` |
 
-全量门禁日志：`.scratch/v2-p2c/issue-310-full-final.log`（已 gitignore，按上面三条命令可复跑）。
+全量门禁日志：`.scratch/v2-p2c/issue-310-full-final2.log`（已 gitignore，按上面三条命令可复跑）。
+
+双轴评审的回归用例均在 `tests/agent-detail.test.js` 内（共 37 条）：dock 形态与开合恢复、
+发送消息连点只发一条、删除技能 toast 取词条、启停失败按启停归因、主读数失败持久错误行且写动作禁用、
+主读数在途切走不误报、打字时后台刷新不丢输入与焦点。
 
 浏览器复验使用 `http://127.0.0.1:8814/studio/v2/` 与独立数据目录 `/tmp/alibot-p2c-310`；
 截图位于已忽略的 `.scratch/v2-p2c/`，脚本在 `/Users/apple/ego/t10-agent-detail-20261027/round-07.mjs`，

@@ -1,6 +1,6 @@
 {
   "generator": "app/frontend/vite.config.js",
-  "sourceDigest": "fdee061da179c8692e3b30bb5aff3a863b081de6d3afb80a7f1b141d682f55cd",
+  "sourceDigest": "d0b14d3c3f8edca362d4b63eb7ca2984ef1858580d0923a90f6182fbe47bdaf9",
   "sourceFiles": [
     "index.html",
     "package-lock.json",

@@ -1216,7 +1216,7 @@ npm run build                      ✓ 59 modules transformed；产物 index-CMU
 | 删除确认 | `ModalShell` + `#agentDeleteOverlay` | 点删除**零请求**只开弹窗；确认才发一次 `DELETE`；`busy` 时 ESC / 遮罩 / 关闭键都不收；焦点落在「取消」（旧 `openAgentDeleteModal()` 的 `cancel.focus()`，`app.js:4993-4994`） |
 | ESC 层序**没变** | `App.vue` 的 `handleEscape()` | 五格原样。**依据**：旧页面 document keydown（`app.js:10577-10614`）里 `state.mode === 'agent'` **一次都没出现**，最后一格是 `if (state.mode === 'search') showMessagesView()` ⇒ 详情与看板同档：ESC 什么都不做（浏览器实测确认）。因此**没有第二份 ESC 裁决** |
 
-**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 33 条全部从 `App.vue` 挂载（`fetch` 替身 +
+**「从真实父组件进」的用例**：`tests/agent-detail.test.js` 的 37 条全部从 `App.vue` 挂载（`fetch` 替身 +
 `attachTo: document.body`），走 rail 的 Agent 行进入详情——页签骨架、区块顺序、载荷 7 字段、跨页签保存条、
 skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确认与 ESC 都在这一层断言。
 
@@ -1232,19 +1232,19 @@ skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确
 门禁读数（全部属于最终提交 `bd853a0`，三条命令可直接复跑）：
 
 ```sh
-cd app/frontend && env -u NODE_ENV npm run build      # ✓ 64 modules transformed；产物 index-CKMHx--s.js
+cd app/frontend && env -u NODE_ENV npm run build      # ✓ 64 modules transformed；产物 index-DtB21X7m.js
 ./scripts/check.sh --fast                            # exit 0
 ./scripts/check.sh                                   # exit 0（全量，含 pytest）
 ```
 
 ```text
-./scripts/check.sh                  pytest 1264 passed / 11 skipped in 736.24s；ruff check 全绿；
+./scripts/check.sh                  pytest 1264 passed / 11 skipped in 753.25s；ruff check 全绿；
                                    ruff format --check 363 files；mypy 133 files 无问题；
-                                   Pyright 0 errors；Node 389 passed；Vitest 21 files / 412 passed；exit 0
-npx vitest run（app/frontend）     21 files / 412 passed（tests/agent-detail.test.js 33 条）
+                                   Pyright 0 errors；Node 389 passed；Vitest 21 files / 416 passed；exit 0
+npx vitest run（app/frontend）     21 files / 416 passed（tests/agent-detail.test.js 37 条）
 ```
 
-全量日志：`.scratch/v2-p2c/issue-310-full-final.log`（已 gitignore；按上面命令可复跑）。
+全量日志：`.scratch/v2-p2c/issue-310-full-final2.log`（已 gitignore；按上面命令可复跑）。
 
 开发过程中父组件回归用例确实发现并修复了删除后视图未恢复、私信归档未刷新、失败原因未显示、
 表单草稿残留、保存后左栏和 MCP 条目视图未刷新等问题；上面的读数是修复完成后的最终代码，

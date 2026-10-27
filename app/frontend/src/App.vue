@@ -66,6 +66,17 @@ const ctx = createAppContext({
 const { state, store } = ctx;
 
 const stream = ref(null);
+
+/** 删除详情里那个 Agent 后，把焦点交给主线容器这个确定落点。
+ *
+ * 详情整面卸载后，`ModalShell` 的 opener（删除键）已经 `isConnected === false`，它的
+ * `restoreFocus()` 因此不动作；不补这一格，键盘用户的焦点就落回 `body`（旧页面的详情从不整面
+ * 卸载到 body——它关的是面板、人还停在左栏）。`#mainColumn` 带 `tabindex="-1"`，可编程聚焦。 */
+function focusMainColumn() {
+  if (typeof document === 'undefined') return;
+  const node = document.getElementById('mainColumn');
+  if (node && typeof node.focus === 'function') node.focus();
+}
 const railOpen = ref(false);
 // 右侧 dock 在 ≤900px 是抽屉：`.is-open` 与「这一栏在不在」是两件事——
 // `dockDrawerOpen` 管抽屉的滑入，`dockTarget` 管**形态**（推导，不另存一份）。
@@ -381,6 +392,9 @@ const agentDetail = createAgentDetailStore({
     if (mode.value === 'agent' && agentDetail.state.memberId === memberId) closeAgentDetail();
     ctx.refreshDmList();
     toasts.push(t('toast.agentDeleted', { name: name || t('toast.memberFallback') }));
+    // 删除后整面详情卸载，`ModalShell` 的 opener（删除键）已 isConnected=false，焦点会落回 body。
+    // 键盘用户从详情删除后必须能继续操作：把焦点交给主线容器这个确定落点。
+    focusMainColumn();
   },
 });
 
@@ -411,8 +425,11 @@ async function openAgentDetail(memberId) {
   mode.value = 'agent';
   railOpen.value = false;
   const loaded = await agentDetail.open(memberId);
-  // 主读数读不到：详情里的名称、统计与草稿都没有可展示的正本。与旧 `refreshAgentDetail()`
-  // 同一条——说明原因，不把空白名称与全 0 统计当成这个 Agent 的事实。
+  // 切走了（点频道行 / `M`）就不弹任何话：各读数已被 `state.memberId` 守卫作废，`open()` 也
+  // 会返回 null，但那是「目标已换」而不是「读失败」——给新成员弹一条空原因的失败是误报。
+  if (agentDetail.state.memberId !== memberId) return;
+  // 主读数读不到：名称、统计与草稿都没有可展示的正本。与旧 `refreshAgentDetail()` 同一条
+  // ——说明原因，不把空白名称与全 0 统计当成这个 Agent 的事实（页面上另有持久错误行）。
   if (!loaded) {
     const reason = agentDetail.view.value ? agentDetail.view.value.agentError : '';
     toasts.push(t('toast.agentDetailFailed', { reason: reason || '' }), 'err');
@@ -885,7 +902,7 @@ function mobileShell() {
       @reload-remote-flow="store.loadRemoteFlow()"
     />
 
-    <main class="main" id="mainColumn" data-od-id="main-column">
+    <main class="main" id="mainColumn" data-od-id="main-column" tabindex="-1">
       <div v-if="!state.online" class="conn-banner" id="connBanner" role="alert">
         <span>{{ t('conn.banner') }}</span>
         <button class="btn btn-sm" data-od-id="btn-reconnect" @click="ctx.start()">{{ t('conn.retry') }}</button>

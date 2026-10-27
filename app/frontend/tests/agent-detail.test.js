@@ -796,6 +796,97 @@ describe('mcp 页签', () => {
   });
 });
 
+describe('评审回归（双轴 findings）', () => {
+  test('删除技能后的 toast 显示文案，不是词条键名', async () => {
+    const { wrapper } = await mountApp({
+      '/api/skills/skl-1': (_url, request) =>
+        request.method === 'DELETE'
+          ? jsonResponse({ deleted: 'skl-1' })
+          : jsonResponse({ skill: SKILL }),
+      '/api/skills/skl-1/markdown': () => jsonResponse({ skill: SKILL, markdown: SKILL_BODY, state: 'ok' }),
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+    await wrapper.find('[data-od-id="skill-delete"]').trigger('click');
+    await flush();
+    await flush();
+
+    const toast = wrapper.find('[data-od-id="toast-wrap"]').text();
+    expect(toast).toBe(i18n.t('skill.deleted'));
+    expect(toast).not.toContain('skill.deleted');
+  });
+
+  test('启停失败按启停归因（不是「技能列表读取失败」）', async () => {
+    const { wrapper } = await mountApp({
+      '/api/skills/skl-1': (_url, request) =>
+        request.method === 'PATCH'
+          ? jsonResponse({ error: { message: '后端拒绝启停' } }, 400)
+          : jsonResponse({ skill: SKILL }),
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+    await wrapper.find('[data-skill-toggle]').trigger('click');
+    await flush();
+    await flush();
+
+    const text = wrapper.find('[data-od-id="skill-error"]').text();
+    expect(text).toContain(i18n.t('skill.toggleFailed', { reason: '后端拒绝启停' }));
+    expect(text).not.toContain(i18n.t('skill.loadFailed', { reason: '' }).slice(0, 6));
+  });
+
+  test('主读数 500 且快照里没有该行 ⇒ 持久错误行可见，且保存 / 暂停 / 删除都禁用', async () => {
+    const { wrapper } = await mountApp({
+      '/api/workspace': () =>
+        jsonResponse({
+          member: OWNER,
+          members: [OWNER, ADA_ROW],
+          channels: [channel()],
+          dms: [],
+          agents: [],
+          model_providers: ['ollama'],
+          local_providers: ['ollama'],
+          remote_consents: [],
+        }),
+      // 快照里没有这行，主读数也读不到：没有任何可展示的正本。
+      '/api/agents/mem-1': () => jsonResponse({ error: { message: '详情暂时不可用' } }, 500),
+    });
+    await openDetail(wrapper);
+
+    const errorRow = wrapper.find('[data-od-id="agent-detail-error"]');
+    expect(errorRow.exists()).toBe(true);
+    expect(errorRow.text()).toContain('读取 Agent 详情失败');
+    expect(errorRow.text()).toContain('详情暂时不可用');
+    expect(wrapper.find('[data-od-id="agent-toggle-enabled"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-od-id="agent-delete"]').attributes('disabled')).toBeDefined();
+  });
+
+  test('主读数在途时切走：不弹「读取 Agent 详情失败」的误报 toast', async () => {
+    const gate = deferred();
+    const { wrapper } = await mountApp({
+      '/api/agents/mem-1': async () => {
+        await gate.promise;
+        return jsonResponse({ error: { message: '慢请求才失败' } }, 500);
+      },
+    });
+    // 不 await：进详情后立即切回频道行，此时主读数还在飞。
+    wrapper.find('[data-od-id="agent-mem-1"]').trigger('click');
+    await flush();
+    expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(true);
+    await wrapper.find('[data-od-id="channel-ch-1"]').trigger('click');
+    await flush();
+
+    gate.release();
+    await flush();
+    await flush();
+    await flush();
+
+    // 目标已切走：读数被作废，不应该给「读失败」或给别的成员弹任何 toast。
+    expect(wrapper.find('[data-od-id="toast-wrap"]').text()).not.toContain('读取 Agent 详情失败');
+  });
+});
+
 describe('危险操作：删除确认弹窗', () => {
   test('点「删除」只开弹窗（零请求）；确认后才发一次 DELETE，并关闭详情回到消息流', async () => {
     const { wrapper, stub } = await mountApp({
