@@ -204,3 +204,40 @@
 - **再评估条件**：当 `ReMeMiddleware` 公开启动生命周期（构造参数 / 公开 `start()` /
   `async with`）**或**升级到 2.0.11+ 时 `_ensure_started` 改名/变签名（升级票必须重核对本行）；
   上游修好「取消时关闭已打开句柄」后，可回退到懒启动并删掉 `shield` 包装。
+
+---
+
+## D14 gateway venv 在 `extra_pip` 接缝上自钉 agentscope 版本 + 补 `httpx2`
+
+- **偏离点**：`alibot.workspace.docker_gateway_extra_pip()` 往上游 `DockerWorkspace(extra_pip=[…])`
+  里塞两项：`agentscope==<本进程安装版本>` 与 `httpx2>=2.0`。上游自己没有这一步——它的镜像 install
+  块是 `RUN uv pip install --no-deps "agentscope"`（`_make_dockerfile.py:165`），**不带任何版本约束**。
+- **依据**：`app/alibot/workspace.py` 的 `docker_gateway_extra_pip`
+  （装配点在 `assemble_docker_workspace` 的 `options`）；判据是
+  `app/tests/test_docker_gateway_requirements.py`（三条，全部走上游真实构建接缝
+  `prepare_build_context` 读它生成的 `requirements.txt`）；issue #312。
+- **文档原话**：「Extra Python packages installed into the gateway venv at image-build time」—
+  2.0.10 wheel 的 `DockerWorkspace.__init__` 对 `extra_pip` 的 docstring；同 wheel 的
+  `_utils._GATEWAY_BASE_REQUIREMENTS` 注释承认这个漏洞：*"``agentscope`` goes in with ``--no-deps``,
+  so anything it imports has to be named here"*——它只列了四项
+  （`mcp<2.0.0` / `uvicorn` / `fastapi` / `httpx`），是**打包那一版**的快照。
+- **理由**：两个上游事实叠起来会让「本仓 pin 住 AgentScope」这件事在容器里失效：
+  ① install 块不锁版本 ⇒ 镜像装的是**构建当时 PyPI 的最新版**；② 基础清单只是上游打包那一版的快照。
+  2026-10-27 那轮 CI 就是这么坏的：2.0.11 于 02:54Z 发布，03:10Z 那轮 PR 的容器装到 2.0.11，它的
+  `agentscope/mcp/_mcp_client.py:12` 是 `import httpx2`，而基础清单四行里没有 ⇒ gateway 启动即
+  `ModuleNotFoundError: No module named 'httpx2'`（8 条 docker 用例红）。同一镜像在 02:31Z 那轮是绿的
+  （2.0.11 还没发）——**不是 flake，是版本脱钩**，只是被镜像 tag 缓存藏起来了。
+  实测（删镜像后真实 build + 容器内 `from agentscope.mcp import MCPClient`）：
+  无 `extra_pip` ⇒ 红（缺 `httpx2`）；只加 `httpx2` ⇒ **仍红**（装到 2.0.11，换报
+  `ImportError: cannot import name 'Client' from 'mcp'`）；加 `agentscope==2.0.10` ⇒ 绿。
+  所以「只补缺包」治不了根——上游每发一版，缺的包就会换一个。
+  版本从**已安装的分发元数据**取而不写字面量：写字面量等于在代码里放第二份 pin，下次升 pin 忘改这里
+  就是本仓自己脱钩。
+- **再评估条件（升级时的复核动作）**：每次升 AgentScope 时，按顺序核对三件事——
+  ① 新 wheel 的 `agentscope/workspace/_docker/_make_dockerfile.py` 的 install 块是否已带版本约束；
+  ② 新 wheel 的 `_utils._GATEWAY_BASE_REQUIREMENTS` 是否已含 `httpx2`；
+  ③ `app/tests/test_docker_gateway_requirements.py` 三条是否仍绿。
+  ①② **都补齐** ⇒ 删掉 `docker_gateway_extra_pip()` 里的版本项（约束由上游承担）与 `httpx2` 项
+  （清单已覆盖），本条目随之删除；只有一项补齐 ⇒ 只删对应那一项，并在本条里改注。
+  反向：若上游把 `extra_pip` 参数改名或移除，本票的接缝就没了，必须按 §1.3 开票重新选位
+  （`workspace.py` 里 `#187` 覆写私有 `_create_and_start_container` 是同类先例）。

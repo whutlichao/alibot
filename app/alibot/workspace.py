@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import importlib.metadata
 import logging
 import os
 import posixpath
@@ -79,6 +80,10 @@ DOCKER_FAILURE_TTL_SECONDS = 30.0
 #: 初始化超时：镜像已存在时一条容器启动路径；需要构建/拉取时给足网络与 apt/PyPI 时间。
 DOCKER_INIT_TIMEOUT_SECONDS = 30.0
 DOCKER_BUILD_TIMEOUT_SECONDS = 180.0
+
+#: gateway venv 的防御性补齐项（下界与 ``app/pyproject.toml`` 同源）。理由见
+#: :func:`docker_gateway_extra_pip`：上游 install 块不锁版本，基础清单可能又落后一版。
+DOCKER_GATEWAY_HTTPX2_REQUIREMENT = "httpx2>=2.0"
 
 #: 容器 env 白名单（ADR-0021 §五：库不存密钥，也不把整个进程环境倒进容器）。
 DOCKER_ENV_ALLOWLIST = ("LANG", "LC_ALL", "TZ")
@@ -783,6 +788,43 @@ def docker_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     return {name: source[name] for name in DOCKER_ENV_ALLOWLIST if source.get(name)}
 
 
+def docker_gateway_extra_pip() -> list[str]:
+    """gateway venv 额外安装的包（上游 ``DockerWorkspace(extra_pip=…)``，**镜像构建期**生效）。
+
+    为什么必须动这个接缝（#312）：上游生成镜像时是
+    ``RUN uv pip install --no-deps "agentscope"``（``_make_dockerfile.py:165``）——**不带版本约束**，
+    于是容器里装的是构建当时 PyPI 的最新版，与本仓 ``app/pyproject.toml`` 的精确 pin 无关；而 venv 的
+    基础清单 ``_GATEWAY_BASE_REQUIREMENTS`` 只是上游打包那一版的快照。两者合起来把「本仓 pin 住」
+    这件事漏掉了：2026-10-27 那轮 CI 就是这样坏的——2.0.11 于 02:54Z 发布，03:10Z 那轮 PR 的容器里
+    装到 2.0.11，它的 ``agentscope/mcp/_mcp_client.py:12`` 是 ``import httpx2``，而基础清单只有四行
+    （``mcp<2.0.0`` / ``uvicorn`` / ``fastapi`` / ``httpx``）⇒ 容器内 gateway 启动即
+    ``ModuleNotFoundError: httpx2``。同一镜像在上一轮（02:31Z）是绿的：不是 flake，是**版本脱钩**。
+
+    两项各挡一半：
+
+    - ``agentscope==<本进程版本>``：把容器里的框架钉回本仓实际在跑的那一版。版本从**已安装的分发元数据**
+      取，不写字面量——写字面量等于在代码里放第二份 pin，下次升 pin 忘改这里就是「自己脱钩」，
+      只是把上游漂移换成了本仓漂移。``app/pyproject.toml`` 是精确 pin（规约 §1.1），所以
+      「本进程装的版本」≡「本仓 pin 的版本」，两边不必各存一份。
+    - ``httpx2>=2.0``：防御性补齐，下界与 ``app/pyproject.toml`` 同源。它同时是**升级路径的保险**：
+      基础清单会不会补 ``httpx2`` 取决于装进镜像的那一版，把这一项留着，即便上游基础清单又落后一版，
+      容器也不会因为一个缺包而启动即崩。
+
+    上游修好之后怎么复核：每次升 AgentScope 先看它 wheel 里 ``_utils._GATEWAY_BASE_REQUIREMENTS``
+    是否已含 ``httpx2``，且 ``_make_dockerfile.py`` 的 install 块是否已带版本约束。两项都补齐后，
+    本函数随之收敛（版本项由上游约束承担时删掉它，``httpx2`` 项在上游清单已覆盖时删掉）——记账在
+    ``docs/agents/agentscope-2-deviations.md`` 的 D14。改这里必须同时让
+    ``app/tests/test_docker_gateway_requirements.py`` 保持绿：那两条判据走的正是上游真实构建接缝
+    :func:`prepare_build_context`，读它**真实生成**的 ``requirements.txt``。
+    """
+    return [f"agentscope=={_installed_agentscope_version()}", DOCKER_GATEWAY_HTTPX2_REQUIREMENT]
+
+
+def _installed_agentscope_version() -> str:
+    """本进程装的 agentscope 版本（``app/pyproject.toml`` 精确 pin 的运行时投影）。"""
+    return importlib.metadata.version("agentscope")
+
+
 def resolve_in_container_root(raw: Any, root: str) -> str:
     """把工具输入锚到容器 ``/workspace``，并用**主机侧** realpath 做根检查。
 
@@ -1132,6 +1174,9 @@ async def assemble_docker_workspace(
         "workspace_id": workspace_id,
         "host_workdir": root,
         "env": docker_env(),
+        # gateway venv 的构建期依赖（#312）：上游 install 块不锁 agentscope 版本，必须在这里钉住，
+        # 理由与升级复核动作见 :func:`docker_gateway_extra_pip` 与 deviations 的 D14。
+        "extra_pip": docker_gateway_extra_pip(),
     }
     if image:
         options["base_image"] = image
