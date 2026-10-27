@@ -648,6 +648,20 @@ Vitest                  12 files / 215 passed（新增 tests/channel-tools.test.
 `issue-303-04-config-autonomous.png`（配置弹窗首开）、`issue-303-05-config-team.png`（team 两条提示）、
 `issue-303-06-config-rejected.png`（后端 400 + 弹窗未关 + 错误行）、`issue-303-07-budget.png`（四项读数 + 待生效 5 + toast）。
 
+**合并集成分支后的复验读数**（`./scripts/check.sh --fast`，HEAD = 合并提交）：
+
+```
+ruff check              All checks passed!
+ruff format --check     （无差异）
+mypy                    Success: no issues found in 132 source files
+pyright                 0 errors, 0 warnings, 0 informations
+node --test             389 passed / 0 failed
+Vitest                  14 files / 250 passed
+```
+
+比本票单独时多出的 2 个文件 / 35 条是 #301 与 #302 的用例（`create-forms.test.js` /
+`rail-modals.test.js` 与它们补进 `components.test.js` 的用例），本票新增的 19 条一条没少。
+
 **合并集成分支时解掉的一处用例冲突**：#301 把两张新建表单（`ChannelFormModal` / `AgentFormModal`）
 也挂到了 `App.vue` 上，它们各带一个 `textarea`（`#channelDescInput` / `#agentPromptInput`）。本票那条
 「加入后 `@` 补全立刻能选到它」原来用 `wrapper.find('textarea')` 取 composer 输入框，合并后它会先命中
