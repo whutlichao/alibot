@@ -24,6 +24,7 @@ import RemindersModal from './components/RemindersModal.vue';
 import RosterModal from './components/RosterModal.vue';
 import SearchView from './components/SearchView.vue';
 import SettingsModal from './components/SettingsModal.vue';
+import TaskBoard from './components/TaskBoard.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
 import { hasOpenModal } from './lib/modal-stack.js';
@@ -32,6 +33,7 @@ import { formatBytes } from './lib/format.js';
 import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
 import { agentMembers } from './lib/member-view.js';
 import { createSearchStore } from './stores/search.js';
+import { createTaskBoardStore } from './stores/task-board.js';
 import { useUiState } from './stores/ui-state.js';
 
 const props = defineProps({
@@ -53,10 +55,10 @@ const dockDrawerOpen = ref(false);
 // 当前打开着哪一个对象：`{ kind: 'run' | 'members' | 'task' }`，`null` ⇒ 整栏不渲染。
 // 本票只有运行面板这一档会写它（`members` / `task` 归 T3 与 T7）。
 const dockTarget = ref(null);
-const activeTab = ref('messages');
-// 主线视图（票 #304 新增的状态维度，ADR-0038 §五里没有它）：`'channel'`（消息流）或
-// `'search'`（搜索占住消息流那块位置）。搜索是**主线视图**而不是弹层（旧页面 `showSearchView()`
-// 的注释与人定 2026-10-17 的 D14），因此它不进 `modal-stack`、也不盖住界面。
+// 主线视图（票 #304 新增的状态维度，ADR-0038 §五里没有它）：`'channel'`（消息流）、
+// `'board'`（任务看板，票 #306）或 `'search'`（搜索占住消息流那块位置）。三者是**主线视图**
+// 而不是弹层（旧页面 `showSearchView()` / `showTaskBoard()` 的注释与人定 2026-10-17 的 D14），
+// 因此都不进 `modal-stack`、也不盖住界面。
 // 它住在 App 的 `ref` 里而不是 `stores/workspace.js` 的 `state`：后者是**后端镜像**（每个字段
 // 都能在后端载荷里找到同名出点），`mode` 是纯呈现状态，混进去会让「哪些字段是后端说的」失守。
 const mode = ref('channel');
@@ -90,8 +92,27 @@ const reminderPending = computed(() => ctx.reminders.hasPending.value);
 /** 搜索的读数与请求（版本守卫 / 防抖 / facet 换请求都在 store 里，见 `stores/search.js`）。 */
 const search = createSearchStore({ isOnline: () => state.online });
 
+/**
+ * 任务看板的读数与呈现状态（票 #306，见 `stores/task-board.js`）。
+ *
+ * 「我的任务」的判据左半边是 `state.member.id`（本机人类成员，`OWNER_FALLBACK`），右半边是任务
+ * 载荷自己的 `assignee_member_id`；离线读数与 toast 从这里往下传，组件不各自判一次。
+ */
+const board = createTaskBoardStore({
+  ownerId: () => state.member.id,
+  online: () => state.online,
+  toast: toasts.push,
+});
+
+/** 频道页签的选中态由 `mode` 推导（一份状态，两处呈现：页签与主线视图）。 */
+const activeTab = computed(() => (mode.value === 'board' ? 'tasks' : 'messages'));
+
 /** 搜索视图是否正占着主线：`mode` 的唯一读法（模板与键盘层都读它）。 */
 const searchActive = computed(() => mode.value === 'search');
+
+/** 消息流与 composer 在这一档里**存在**：看板是另一个主线视图（旧 `setViewMode()` 收起两者），
+    搜索只是把它们藏起来（`hidden`，滚动位置与没发出去的草稿都得留着）。 */
+const messagesViewAvailable = computed(() => mode.value !== 'board');
 
 /** 运行面板的成员名来源：工作区成员 → Agent → 当前频道成员（找不到就用 id，不编名字）。 */
 const dockPools = computed(() => [
@@ -121,7 +142,6 @@ async function selectTarget(targetId) {
   dockDrawerOpen.value = false;
   store.setActiveTargetId(targetId);
   railOpen.value = false;
-  activeTab.value = 'messages';
   try {
     await store.refreshMessages();
     await store.refreshOutcomes();
@@ -260,6 +280,9 @@ onMounted(async () => {
   // 只有**首次成功载入**才贴底：断线重连与静默刷新不得把正在回看历史的人拉回底部
   // （这条判据的正本在 `store.loadWorkspace()` 的返回值里，不在这里另判一次）。
   if (firstSuccessfulLoad && stream.value) stream.value.scrollToBottom();
+  // 任务快照也随首载读一次：`tab-tasks` 的计数是**当前频道**的任务数，页签在消息页也要显示它。
+  // 读失败保留空快照（任务面读不到不影响频道消息与发送，旧 `loadWorkspace()` 同一条）。
+  board.refresh();
 });
 
 /**
@@ -317,10 +340,11 @@ function handleEscape() {
   }
   // ⑤ ≤900px 的右抽屉同样盖在内容上（它没有遮罩，ESC 是它的键盘出口）。
   if (mobileShell() && dockDrawerOpen.value) {
-    closeRunPanel();
+    closeDock();
     return;
   }
-  // ⑥ 搜索视图是最后一层：ESC 退回消息流。
+  // ⑥ 搜索视图是最后一层：ESC 退回消息流。看板**不**在这一层（旧页面同一条：
+  // 它在看板里 ESC 什么都不做，于是卡片「流转」菜单的 ESC 不会被主线视图抢走）。
   if (mode.value === 'search') showMessagesView();
 }
 
@@ -365,9 +389,10 @@ async function openRunPanel() {
   await dockPanel.openForChannel();
 }
 
-/** 关闭运行面板：把形态整个作废（下次打开是干净的一帧），并收起移动端抽屉。 */
-function closeRunPanel() {
-  dockPanel.close();
+/** 收掉 dock：把形态整个作废（下次打开是干净的一帧），并收起移动端抽屉。
+    `kind === 'run'` 时顺带作废运行面板的读数；别的形态（线程面板）没有自己的 store 要关。 */
+function closeDock() {
+  if (dockTarget.value && dockTarget.value.kind === 'run') dockPanel.close();
   dockTarget.value = null;
   dockDrawerOpen.value = false;
 }
@@ -385,7 +410,7 @@ function showSearchView() {
   railOpen.value = false;
 }
 
-/** 回消息流：搜索视图的退出口（ESC 最后一层、`M` 键、命令面板的「消息视图」都落这里）。 */
+/** 回消息流：搜索 / 看板两个主线视图的退出口（`M` 键、页签、命令面板的「消息视图」都落这里）。 */
 function showMessagesView() {
   // 离开搜索时把挂起的那一拍与在途响应一起作废：晚到的命中不该在人已经离开后改界面。
   if (mode.value === 'search') search.leave();
@@ -393,16 +418,42 @@ function showMessagesView() {
 }
 
 /**
- * 任务看板还没迁到本版（T6）。
+ * 进任务看板（频道页签 / `T` 键 / 命令面板的「任务看板」三个入口的唯一落点）。
  *
- * `T` 是**真绑定**的键（票面：面板里保留 `M` / `T` 两枚 kbd 标签），但它的落点（看板）还没迁过来，
- * 因此按下它什么都不发生——这比撤销绑定更诚实：命令面板里那一条是 `disabled` 条目并带
- * `app.notMigrated` 的 `title`，两者口径一致。T6 落地时只删这个开关。
+ * 三件事，顺序与旧 `showTaskBoard()` 对齐：收掉 dock 的旧形态 → 切主线视图 → 读一次任务快照。
+ * 进看板时默认筛到**当前频道**（人在 #甲 的任务里，就该先看 #甲 的任务）——看板本身仍是
+ * 全工作区视图，「全部频道」chip 回到全部任务，不靠入口区分。私信下没有任务面（`tab-tasks`
+ * 不渲染），因此这里也不必再判 target 类型。
  */
-const tasksAvailable = ref(false);
+async function showTaskBoard() {
+  if (!target.value || isDm.value) return;
+  closeDock();
+  mode.value = 'board';
+  const channelId = state.activeTargetId;
+  await board.openForChannel(channelId);
+}
 
-function showTaskBoard() {
-  if (!tasksAvailable.value) return;
+/** 页签的唯一落点（旧 `#tabMessages` / `#tabTasks` 两个监听器）：消息 ⇄ 任务。 */
+function selectTab(tab) {
+  if (tab === 'tasks') {
+    showTaskBoard();
+    return;
+  }
+  showMessagesView();
+}
+
+/** 任务页签计数：**当前频道**的任务数（与看板的频道筛选无关，读的是全量快照）。 */
+const taskCount = computed(() => (isDm.value ? 0 : board.channelTaskCount(state.activeTargetId)));
+
+/** 任务看板已迁到本版（票 #306）：`tab-tasks` 与看板入口因此翻正（ADR-0038 §五的开关）。 */
+const tasksAvailable = ref(true);
+
+/** 点卡片 = 打开它的任务线程。线程本体归 T7，本票先把 dock 的 `task` 形态立起来
+     （`dockTarget` 是打开哪个对象的**唯一**判据，于是「线程还没内容」与「没打开线程」是两件事）。 */
+function openTask(taskId) {
+  if (!taskId) return;
+  dockTarget.value = { kind: 'task', taskId };
+  dockDrawerOpen.value = true;
 }
 
 /** dock 现在有没有可切换的形态：与频道头的运行面板入口同一份判据（私信下没有）。
@@ -412,7 +463,7 @@ const dockToggleAvailable = computed(() => !isDm.value && Boolean(target.value))
 /** 命令面板里的「切换详情面板」（旧 `toggleDock()`）：开着就关，关着就开运行面板。 */
 function toggleDock() {
   if (!dockToggleAvailable.value) return;
-  if (dockTarget.value && dockTarget.value.kind === 'run') closeRunPanel();
+  if (dockTarget.value && dockTarget.value.kind === 'run') closeDock();
   else openRunPanel();
 }
 
@@ -427,13 +478,13 @@ function toggleDock() {
  *   频道名可能与某条命令同名，标签不是键；
  * - **只有真绑定的快捷键**才印 `kbd`：`M` 消息视图、`T` 任务看板（原型里的 `N` / `⇧N` / `D` 没有
  *   绑定任何按键，因此不出现）；
- * - 指向**未迁面**的命令是禁用条目（`view-board` 等 T6、`new-task` 等 T7），
- *   不渲染成按下去什么都不发生的假入口。
+ * - 指向**未迁面**的命令是禁用条目（`new-task` 等 T7），不渲染成按下去什么都不发生的假入口。
+ *   任务看板随票 #306 迁完 ⇒ `view-board` 与 `T` 键现在是真入口。
  */
 const commands = computed(() => {
   const list = [
     { id: 'view-messages', group: 'cmd.groupJump', label: t('cmd.messages'), kbd: 'M', run: showMessagesView },
-    { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', disabled: true, run: showTaskBoard },
+    { id: 'view-board', group: 'cmd.groupJump', label: t('cmd.board'), kbd: 'T', run: showTaskBoard },
     { id: 'new-channel', group: 'cmd.groupAction', label: t('rail.newChannel'), run: () => { channelFormOpen.value = true; } },
     { id: 'new-task', group: 'cmd.groupAction', label: t('board.newTask'), disabled: true, run: () => {} },
   ];
@@ -539,9 +590,11 @@ function mobileShell() {
         {{ t('conn.reconnecting') }}
       </div>
 
-      <!-- 搜索占住消息流那块位置（旧 `syncChromeVisibility()`）：频道头（含页签）与 composer
-           在 `mode === 'search'` 时与消息流一起让位。用 `hidden` 属性而不是 `v-if`：这三块对
-           「在这一帧之前填到一半的东西」有意义（滚动位置、未发送的草稿），撕毁重建会让它们凭空丢。 -->
+      <!-- 频道头在三档主线视图里都在，只有搜索让位（旧 `syncChromeVisibility()`：
+           任务视图下 header 与页签本身就可见，收起它就是收起页签）。composer 只属于消息页
+           （搜索 / 看板都不带输入框）。
+           用 `hidden` 属性而不是 `v-if`：这几块对「在这一帧之前填到一半的东西」有意义
+           （滚动位置、未发送的草稿），撕毁重建会让它们凭空丢。 -->
       <ChannelHeader
         v-if="target"
         :hidden="searchActive || undefined"
@@ -549,11 +602,11 @@ function mobileShell() {
         :is-dm="isDm"
         :is-archived-dm="archived"
         :message-count="messageTabCount(target)"
-        :task-count="0"
+        :task-count="taskCount"
         :active-tab="activeTab"
         :channel-tools-available="true"
         :tasks-available="tasksAvailable"
-        @select-tab="activeTab = $event"
+        @select-tab="selectTab"
         @open-roster="openChannelTool('roster')"
         @open-config="openChannelTool('config')"
         @open-budget="openChannelTool('budget')"
@@ -561,7 +614,7 @@ function mobileShell() {
       />
 
       <MessageStream
-        v-if="activeTab === 'messages'"
+        v-if="messagesViewAvailable"
         ref="stream"
         :hidden="searchActive || undefined"
         :state="state"
@@ -571,11 +624,19 @@ function mobileShell() {
         @discard="discardPending"
       />
 
-      <!-- 搜索视图（主线视图的第二档）：与消息流共用同一块内容区，是「二选一」而不是叠层。 -->
+      <!-- 任务看板（主线视图的第二档，票 #306）：与消息流共用同一块内容区。 -->
+      <TaskBoard
+        v-else-if="mode === 'board'"
+        :board="board"
+        :state="state"
+        @open-task="openTask"
+      />
+
+      <!-- 搜索视图（主线视图的第三档）：同一块内容区，是「三选一」而不是叠层。 -->
       <SearchView :search="search" :active="searchActive" :hidden="!searchActive || undefined" />
 
       <ComposerBox
-        v-if="activeTab === 'messages'"
+        v-if="messagesViewAvailable"
         :hidden="searchActive || undefined"
         :placeholder="placeholder"
         :disabled="archived"
@@ -599,7 +660,7 @@ function mobileShell() {
       :panel="dockPanel"
       :pools="dockPools"
       :open="dockDrawerOpen"
-      @close="closeRunPanel"
+      @close="closeDock"
     />
 
     <!-- rail 头的两个弹窗（T2）：外壳是共享的 `ModalShell`，这里只给显隐与数据源。

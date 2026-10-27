@@ -116,8 +116,14 @@ v2 页面只承诺**已迁完的那条链路**可用：
   `uploadAttachment`，原始字节 + query 里的文件名）⇒ composer 里的文件 chips（名字 + 体积，可逐个移除）⇒
   随消息**一次提交** `attachment_ids`（`MessageCreate` 的既有 JSON 字段，后端在同一事务里绑定）；
   单文件上限在前端预检（`lib/attachments.js` 的 `MAX_ATTACHMENT_BYTES`，正本是 `db.py` 的同一个常量，
-  用例读那份正本比较），超限的文件**不发请求**；发送失败时草稿留在手上、可重试，归档私信里入口不渲染）。
-- 未迁：任务看板与任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
+  用例读那份正本比较），超限的文件**不发请求**；发送失败时草稿留在手上、可重试，归档私信里入口不渲染）、
+  **任务看板**（票 #306，阶段 B 第一票：`TaskBoard.vue` 铺旧页面 `#taskBoard` 的 `.board-wrap` /
+  `.seg` 两档 / `board-filters` / 五列 / `.card` / `.result` 列表 / 共享 `.card-menu`「流转」菜单；
+  `tasksAvailable` 因此翻正，`tab-tasks`、`T` 键与命令面板的「任务看板」一起接活。**跨列拖拽是重写的
+  声明式版**：`stores/task-board.js` 只存 `{ from, over }` 一个拖拽态，`drag-over` / `invalid-over` /
+  `.dragging` 全由它推导，不搬旧 `boardDrag` 命令式状态机；松手 = `PATCH /api/tasks/{id}/status` 一次，
+  **没有乐观移动**，非法落点零请求只说明事实，前端仍不持迁移表副本（一切读载荷 `allowed_transitions`））。
+- 未迁：任务线程（含**任务引用 chip / 频道指针 chip**——它们属于那个面）、
   审批卡、Agent 详情、
   **任务运行面板**（它挂在任务线程头，随线程那张票）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
@@ -125,10 +131,11 @@ v2 页面只承诺**已迁完的那条链路**可用：
 
 未迁入口**不做假按钮**，分两档处理：
 
-1. **不渲染**（任务页签 / 作为任务发送 / 失败行的「看成员状态」）：
+1. **不渲染**（作为任务发送 / 失败行的「看成员状态」）：
    它们只是把人带到另一处，带不到就不该出现。频道头的四个入口由 `channelToolsAvailable`
    （名册 / 配置 / 预算，同涨同落；票 #303 已迁 ⇒ 默认开）与 `runPanelAvailable`（运行面板，
-   已迁 ⇒ 默认开）两个显式开关控制；任务页签由 `tasksAvailable` 控制。迁完那个面只需翻对应的开关，
+   已迁 ⇒ 默认开）两个显式开关控制；任务页签由 `tasksAvailable` 控制（票 #306 已迁 ⇒ 默认开）。
+   迁完那个面只需翻对应的开关，
    组件不用改。（`btn-reminders` / `btn-settings` 随票 #302 迁完、`btn-new-channel` / `btn-new-agent`
    随票 #301 迁完、`btn-channel-members` / `btn-channel-settings` / `btn-channel-budget` 随票 #303
    迁完、rail 的 `btn-workspace-search` 随票 #304 迁完、`btn-attach` 随票 #305 迁完，
@@ -157,12 +164,13 @@ v2 页面只承诺**已迁完的那条链路**可用：
 （只读行的样式落点，旧页面不使用这个类）。运行面板那一票**没有再碰**旧页面目录：它的词条与类名
 早就为这个面定义好了，v2 只是把它们用在同一个落点上。
 
-**dock 的三档形态判据已立起来，只有一档有内容**（票 #300）：`DockPanel.vue` 的 `mode` 由父组件
+**dock 的三档形态判据已立起来，两档有内容**（票 #300 立表、票 #306 接了第二档的调用点）：`DockPanel.vue` 的 `mode` 由父组件
 传的 `dockTarget`（`{ kind: 'run' | 'members' | 'task' }`）**推导**，`null` ⇒ 整栏不渲染。
-`run` 档接 `RunPanel.vue`；`members` / `task` 两档是本票留的具名插槽（`<slot name="members">` /
+`run` 档接 `RunPanel.vue`；`members` / `task` 两档是具名插槽（`<slot name="members">` /
 `<slot name="task">`），内容分别归 T3 与 T7——形态判据与几何（380 宽 / `.dock.is-open` /
-≤900px 右抽屉）不必让那两张票各改一遍外壳。空插槽**不会出现在产品里**：`App.vue` 目前只写
-`kind: 'run'`，私信下 `dockTarget` 恒为 `null`（整栏消失）。
+≤900px 右抽屉）不必让那两张票各改一遍外壳。票 #306 给 `task` 档接上了**第一个调用点**
+（点看板卡片 ⇒ `dockTarget = { kind: 'task' }`），插槽内容仍归 T7，因此这一档现在**可见但还没有正文**；
+`members` 档至今没有调用点（成员面走的是弹窗，见下），私信下 `dockTarget` 恒为 `null`（整栏消失）。
 
 **弹窗的外壳与关闭语义只有一份**（票 #300）：`components/ModalShell.vue` 铺旧页面的
 `.overlay` / `.modal` / `.modal-head` / `.modal-body` / `.modal-foot`（`app.css` 零改动），
