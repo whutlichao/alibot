@@ -15,6 +15,8 @@ import ComposerBox from './components/ComposerBox.vue';
 import DockPanel from './components/DockPanel.vue';
 import MessageStream from './components/MessageStream.vue';
 import RailSidebar from './components/RailSidebar.vue';
+import RemindersModal from './components/RemindersModal.vue';
+import SettingsModal from './components/SettingsModal.vue';
 import { createAppContext, useToasts } from './app-context.js';
 import { t } from './i18n/index.js';
 import { hasOpenModal } from './lib/modal-stack.js';
@@ -41,6 +43,9 @@ const dockDrawerOpen = ref(false);
 // 本票只有运行面板这一档会写它（`members` / `task` 归 T3 与 T7）。
 const dockTarget = ref(null);
 const activeTab = ref('messages');
+// rail 头两个弹窗的显隐（内容仍挂载、只用 `hidden` 隐去，见 `ModalShell.vue` 文件头）。
+const remindersOpen = ref(false);
+const settingsOpen = ref(false);
 // 折叠态（摘要行 / 旁白行）按 **seq** 认，跨 target 不通用：切 target 时必须整体清掉，
 // 否则「在 A 频道展开过的第 3 条」到了 B 频道会莫名展开。这个状态住在模块级（见 ui-state.js），
 // 因此清理的落点只有这一处。
@@ -51,6 +56,9 @@ const isDm = computed(() => store.isDm.value);
 const archived = computed(() => store.isArchivedDm.value);
 const placeholder = computed(() => composerPlaceholder(target.value));
 const messages = computed(() => store.renderedMessages());
+
+/** 提醒圆点：判据在 store 里（存在 `fired_at == null` 的提醒），App 只负责往下传。 */
+const reminderPending = computed(() => ctx.reminders.hasPending.value);
 
 /** 运行面板的成员名来源：工作区成员 → Agent → 当前频道成员（找不到就用 id，不编名字）。 */
 const dockPools = computed(() => [
@@ -211,7 +219,10 @@ function onEscape(event) {
     <RailSidebar
       :state="state"
       :open="railOpen"
+      :reminder-pending="reminderPending"
       @select-target="selectTarget"
+      @open-reminders="remindersOpen = true"
+      @open-settings="settingsOpen = true"
     />
 
     <main class="main" id="mainColumn" data-od-id="main-column">
@@ -265,6 +276,22 @@ function onEscape(event) {
       :pools="dockPools"
       :open="dockDrawerOpen"
       @close="closeRunPanel"
+    />
+
+    <!-- rail 头的两个弹窗（T2）：外壳是共享的 `ModalShell`，这里只给显隐与数据源。
+         归属频道 = 当前 target 是频道时它的 id；私信 / 空工作台 ⇒ `null`（后端读作「不归属」）。 -->
+    <RemindersModal
+      v-model:open="remindersOpen"
+      :reminders="ctx.reminders"
+      :channel-id="isDm ? null : state.activeTargetId"
+    />
+
+    <!-- 设置：三个档位的选中态读 `state.settings`（后端正本的前端镜像），写回一律经
+         `ctx.applySettings`（它是铺根元素的**唯一**写入口，不挂 watcher）。 -->
+    <SettingsModal
+      v-model:open="settingsOpen"
+      :settings="state.settings"
+      :apply-settings="ctx.applySettings"
     />
 
     <div class="toast-wrap" data-od-id="toast-wrap">

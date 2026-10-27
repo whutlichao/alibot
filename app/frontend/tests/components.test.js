@@ -309,11 +309,18 @@ describe('未迁面的入口', () => {
     expect(wrapper.find('[data-open-task]').exists()).toBe(false);
   });
 
-  test('左栏：搜索 / 提醒 / 设置三个入口不渲染（它们只是导航到未迁的面）', () => {
+  test('左栏：工作台搜索还不渲染（它背后是未迁的主线搜索视图）', () => {
     const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
     expect(wrapper.find('[data-od-id="btn-workspace-search"]').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-reminders"]').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-settings"]').exists()).toBe(false);
+  });
+
+  test('左栏：提醒 / 设置已迁（#302）⇒ 两枚入口出现在 `.rail-head`，圆点缺省不亮', () => {
+    const wrapper = mount(RailSidebar, { props: { state: emptyState() } });
+    const head = wrapper.find('#rail .rail-head');
+    expect(head.find('[data-od-id="btn-reminders"]').exists()).toBe(true);
+    expect(head.find('[data-od-id="btn-settings"]').exists()).toBe(true);
+    // 圆点判据是「还有未到点的提醒」，不是「有提醒」：缺省（没有提醒）不亮。
+    expect(head.find('#reminderDot').exists()).toBe(false);
   });
 
   test('左栏：新建频道 / 新建 Agent 保留但**禁用**，理由写在 title 里（空库的唯一出路不能一起消失）', () => {

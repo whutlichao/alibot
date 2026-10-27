@@ -8,6 +8,7 @@
 import { computed, getCurrentInstance, onBeforeUnmount, reactive } from 'vue';
 import { createWorkspaceStore } from './stores/workspace.js';
 import { createRunPanelStore } from './stores/run-panel.js';
+import { createReminderStore } from './stores/reminders.js';
 import { createEventStream, isLiveEventType } from './lib/event-stream.js';
 import { createLiveEventLog } from './lib/live-events.js';
 import { setLocale, sourceLocale, locales as i18nLocales, t } from './i18n/index.js';
@@ -58,6 +59,12 @@ export function createAppContext(options) {
     channels: () => mutable.channels,
     activeChannel: () => store.activeChannel.value,
   });
+
+  /** 提醒的本地镜像（正本在后端 `/api/reminders`）：圆点角标与提醒弹窗都读它。
+
+      读取**不阻塞主链路**：读不到不影响工作台（旧 `loadWorkspace()` 里的
+      `loadReminders().catch(() => {})` 同一条），打开弹窗时会再试一次并在弹窗里说明理由。 */
+  const reminders = createReminderStore();
 
   /** 设置落到根元素：三个档位各一个落点，与旧 `applySettings()` 同一份判据。
 
@@ -195,6 +202,10 @@ export function createAppContext(options) {
         store.loadWorkspace({ silent: true, keepActive: true }).then(() => {
           store.markCurrentRead();
         });
+        // 提醒也随重连后的这次全量重取刷新：断线期间别的浏览器或投递器改了提醒表，
+        // 圆点是它的投影，不刷新就会一直亮着一个已经不成立的点（旧页面同一处也在
+        // `loadWorkspace()` 里重读一次）。读不到保留旧镜像，不伪造。
+        reminders.load().catch(() => {});
       }
       // 运行面板的 live 帧同样不补（ADR-0020）：重连成功后按快照兜底，把断线期间的分派 / Plan /
       // SOP 变化读回来。面板没开时是空操作（`refreshFor()` 自己判）。
@@ -221,6 +232,9 @@ export function createAppContext(options) {
     const result = await store.loadWorkspace();
     // 读回后按同一份判据铺一次：于是「设置读到了、但界面没铺」这个中间态不存在。
     applySettings(mutable.settings);
+    // 提醒的读取不阻塞主线（旧页面同一条）：读不到不影响工作台，圆点保持未亮，
+    // 打开弹窗时会再试一次并把失败话留在弹窗里。
+    reminders.load().catch(() => {});
     stream.start();
     store.markCurrentRead();
     return { ok: result.ok, firstSuccessfulLoad: result.firstSuccessfulLoad };
@@ -245,7 +259,19 @@ export function createAppContext(options) {
     });
   });
 
-  return { store, state, mutable, stream, start, applySettings, typingNames, liveLog, runPanel, t };
+  return {
+    store,
+    state,
+    mutable,
+    stream,
+    start,
+    applySettings,
+    typingNames,
+    liveLog,
+    runPanel,
+    reminders,
+    t,
+  };
 }
 
 /** 小工具：两个列表刷新用的 GET（不走 store 的读路径，因为它们只改列表镜像）。 */
