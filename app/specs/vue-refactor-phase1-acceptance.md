@@ -1234,9 +1234,9 @@ skills 双栏与开关兄弟关系、导入下拉框、mcp 两块面、删除确
 ```
 npx vitest run（app/frontend）     21 files / 409 passed（新增 tests/agent-detail.test.js 30 条）
 node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
-./scripts/check.sh --fast          最终源码：exit 0 / 门禁全绿；日志 .scratch/v2-p2c/issue-310-fast-final2.log
+./scripts/check.sh --fast          最终源码：exit 0 / 门禁全绿；日志 .scratch/v2-p2c/issue-310-fast-final3.log
 ./scripts/check.sh                 修复前源码：pytest 1264 passed / 11 skipped；ruff check 全绿；ruff format --check 362 files；mypy 133 files；Pyright 0 errors；Node 389 passed；Vitest 21 files / 402 passed；exit 0
-npm run build（app/frontend）       ✓ 64 modules transformed；产物 index-CdwcEYf9.js；build-info 指纹一致
+npm run build（app/frontend）       ✓ 64 modules transformed；产物 index-D30483uE.js；build-info 指纹一致
 ```
 
 全量门禁运行后，父组件回归用例发现并修复了删除后视图未恢复、私信归档未刷新、失败原因未显示、
