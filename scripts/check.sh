@@ -13,11 +13,11 @@
 #   scripts/check.sh --fast tests/test_send_message.py tests/test_budget.py
 #                                         # 加跑指定 pytest（路径**相对 app/**）
 #   scripts/check.sh --studio             # Studio 窄档：--fast + 审批 HTTP 契约 + 静态守卫
-#                                         # （仅限 diff 只落在 app/alibot/studio/** + *.test.cjs；CI 仍跑全量）
+#                                         # （仅限 diff 只落在 app/alibot/studio/**；CI 仍跑全量）
 #
-# 前端有**两套**用例，都在本脚本里跑，都走 glob：
-#   - `node --test app/tests/*.test.cjs`      旧页面（classic script + vm 替身）
-#   - `npx vitest run`（app/frontend）        Vue 版工作台（组件 + store + 事件流）
+# 前端用例族**只有一套**（Vitest，Vue 版工作台）：`npx vitest run`（app/frontend），Glob 收集。
+# 旧页面的 `node --test app/tests/*.test.cjs` 族已随页面一起退役（票 #318 / ADR-0039）。
+# 前端产物由本脚本**头部**先 `npm run build` 生成（不再入库）。
 #
 # 环境变量：
 #   CHECK_PYTHON  覆盖解释器（默认 `仓库根/.venv/bin/python`，没有则 `python3`——CI 走这条）
@@ -91,13 +91,28 @@ fi
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
+# ─── 前端产物：门禁之前先建 ─────────────────────────────────────────────
+# `app/alibot/studio/v2/` **不再入库**（ADR-0039 推翻 ADR-0038 §一），由 `npm run build` 生成。
+# 它必须在任何门禁之前就绪，因为有三处要读它：
+#   - `app/frontend/tests/build-guard.test.js`（产物存在 + 源码指纹一致）
+#   - `app/tests/test_studio_static_cache.py`（/studio/v2/ 的缓存契约）
+#   - `app/tests/test_studio_v2_serving.py`（`/` 与 `/studio` 都进 v2）
+# 忘了构建时这三处全红，而红的原因与改了什么无关——把构建放在最前面，红就只会是真正的问题。
+#
+# `env -u NODE_ENV`：宿主 `NODE_ENV=production` 会让 npm 跳过 devDependencies，vite 就装不上。
+step "构建工作室产物（app/frontend → app/alibot/studio/v2）"
+if [[ ! -d app/frontend/node_modules ]] || [[ "${CHECK_FRONTEND_REINSTALL:-0}" == "1" ]]; then
+  ( cd app/frontend && env -u NODE_ENV npm ci --include=dev --no-audit --no-fund )
+fi
+( cd app/frontend && env -u NODE_ENV npm run build )
+
 # ─── pytest ────────────────────────────────────────────────────────────────
 # 必须从 `app/` 跑：`app/pyproject.toml` 的 `testpaths = ["tests"]` 与 `[tool.ruff].src`
 # 都按它解析。**不要**在命令行再补 `-q`：配置里已经有 `addopts = "-q"`，再补一次会变成
 # `-qq`，pytest 会连结果行一起吞掉（「跑了 5 分钟却看不见 passed 数」就是这么来的）。
 if (( STUDIO )); then
   step "pytest（Studio 窄档：审批 HTTP 契约 + 前端相关静态守卫）"
-  ( cd app && "$PY" -m pytest "$@" tests/test_approvals_http.py tests/test_docs_vocabulary_guard.py tests/test_test_layering_guard.py )
+  ( cd app && "$PY" -m pytest "$@" tests/test_approvals_http.py tests/test_docs_vocabulary_guard.py tests/test_test_layering_guard.py tests/test_studio_static_cache.py tests/test_studio_v2_serving.py )
 elif (( FAST )); then
   if (( $# )); then
     step "pytest（指定文件）: $*"
@@ -125,18 +140,12 @@ step "mypy（仓库根）"
 step "pyright"
 "${PYRIGHT_CMD[@]}" app/alibot app/tests
 
-# ─── 前端（Studio DOM 用例族，glob）──
-step "node --test（Studio DOM 用例族：glob，新增文件自动纳入）"
-node --test app/tests/*.test.cjs
-
 # ─── 前端（Vue 版工作台：Vitest）──
 # 用例在 `app/frontend/tests/*.test.js`，由 `app/frontend/vite.config.js` 的 `test.include`
 # 收集（同样是 glob：新增文件自动纳入，不需要改清单）。
 #
-# 为什么这里要 `npm ci` 而不是假设 `node_modules` 存在：本仓的 CI 是一个干净 runner，
-# 而本地开发常常只装过一次。`npm ci` 严格按 `package-lock.json` 装（可复现）；
-# 已经装好时它也会重装一遍，但这是几十秒的事，比「本地绿、CI 红」便宜得多。
-# `NODE_ENV=production` 会让 npm 跳过 devDependencies（本机常见），因此显式 unset。
+# 依赖与产物已在文件头部那段建好（`npm ci` 只在缺 node_modules 时跑；`npm run build` 每次都跑），
+# 这里不再重装——`build-guard.test.js` 读的就是上面那份产物。
 step "Vitest（Vue 版工作台：app/frontend）"
 (
   cd app/frontend

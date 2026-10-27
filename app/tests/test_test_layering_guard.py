@@ -40,6 +40,29 @@ STUDIO_READ_EXEMPTIONS = frozenset({"test_reminder_delivery.py"})
 # 前端源码在仓库里的那一段路径（本文件按 ``_test_sources`` 排除，所以直接写字面量）。
 STUDIO_SEGMENT = "studio"
 
+# **HTTP 路径**不是「读源码」。票 #318 把工作台入口改成 `/studio/v2/` 之后，一组只做 HTTP 请求的
+# 用例（静态缓存契约 / 入口 redirect）里出现了 `"/studio/v2/"`、`"/studio/i18n.js"` 这类字面量——
+# 它们是 URL，不是文件路径，不读任何文件。判据的原意是「pytest 不许**打开** Studio 源码来断言
+# 呈现细节」，因此只看「这个字符串会不会被当成**文件**路径用」，不看它长得像不像 `studio`。
+#
+# **`/` 开头**只说明「是绝对路径」——它既可能是 HTTP 路径（FastAPI 路由、`TestClient.get()` 的入参），
+# 也可能是绝对**文件**路径（`/Users/.../app/alibot/studio/i18n.js`，那才真是在读源码）。区分的判据是
+# **首段是不是 `studio`**：`/studio/v2/` 的首段就是那一段 URL 前缀，而文件路径的首段是 `/Users` /
+# `/home` / `/tmp` 这类根目录，`studio` 只会出现在中间。
+#
+# 仍然被抓的两种真读法（反向验证写在 ``test_the_http_path_exemption_is_narrow`` 里）：
+#   - `"studio/i18n.js"`（相对 cwd 的文件）——首段就是 `studio`，但**不带**前导 `/`；
+#   - `"/Users/… /studio/i18n.js"`——绝对文件路径，`studio` 不在首段。
+
+
+def _is_http_path(value: str) -> bool:
+    """``/studio/...``（首段是 ``studio``）是 URL，不是文件路径。"""
+    if not value.startswith("/"):
+        return False
+    head = value.lstrip("/").split("/", 1)[0]
+    return head == STUDIO_SEGMENT
+
+
 VOCABULARY_NAMES = frozenset({"SEAM_STATUSES", "ROUND_STATUSES", "MESSAGE_KINDS", "SUMMARY_STATUSES"})
 
 
@@ -72,6 +95,11 @@ def _docstring_node_ids(tree: ast.Module) -> set[int]:
 
 
 def _studio_reads(tree: ast.Module) -> list[int]:
+    """代码里出现 ``studio`` 的字符串常量（文档串不算；HTTP 路径也不算）。
+
+    这个判据守的是「pytest 不许读 Studio 源码来断言呈现」，因此它要区分**文件路径**与**URL**：
+    票 #318 之后 ``/studio/v2/`` 是最常被断言的 HTTP 入口，它不打开任何文件。
+    """
     docstrings = _docstring_node_ids(tree)
     return sorted(
         node.lineno
@@ -79,6 +107,7 @@ def _studio_reads(tree: ast.Module) -> list[int]:
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and STUDIO_SEGMENT in node.value
+        and not _is_http_path(node.value)
         and id(node) not in docstrings
     )
 
@@ -148,3 +177,25 @@ def test_pytest_does_not_assert_the_shape_of_vocabulary_constants() -> None:
 def test_pytest_does_not_import_private_alibot_names() -> None:
     offenders = _offenders(_private_alibot_imports)
     assert not offenders, f"pytest 导入了实现私有名（测试接缝应是外部行为）：{offenders}"
+
+
+def test_the_http_path_exemption_is_narrow() -> None:
+    """``/studio/...`` 的豁免必须只放行**URL**，不能顺手把「真读源码」也放掉。
+
+    这条是豁免的反向判据（与 ``test_the_studio_read_exemption_is_real`` 同一个体例）：一个**过宽**的
+    豁免会让整条规则静默失效，因此正面与反面各钉一遍——
+    """
+    import ast as _ast
+
+    http = ['"/studio/v2/"', '"/studio/i18n.js"', '"/studio"', '"/studio/"']
+    for literal in http:
+        assert _studio_reads(_ast.parse(f"x = {literal}")) == [], f"HTTP 路径不该被当成读源码：{literal}"
+
+    # 真读源码的两种写法，无论相对还是绝对，都必须被抓到。
+    file_paths = [
+        '"studio/i18n.js"',  # 相对 cwd
+        '"/Users/apple/orca/alibot/app/alibot/studio/i18n.js"',  # 绝对文件路径
+        '"./studio/app.css"',
+    ]
+    for literal in file_paths:
+        assert _studio_reads(_ast.parse(f"x = {literal}")) == [1], f"读源码必须被抓到：{literal}"

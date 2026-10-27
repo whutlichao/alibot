@@ -2,7 +2,7 @@
   "name": "alibot-studio-vue",
   "version": "0.1.0",
   "private": true,
-  "description": "alibot 工作台的 Vue 3 前端（Vite 构建，产物入库到 app/alibot/studio/v2）",
+  "description": "alibot 工作台的 Vue 3 前端（Vite 构建到 app/alibot/studio/v2，产物不入库，ADR-0039）",
   "type": "module",
   "scripts": {
     "dev": "vite",

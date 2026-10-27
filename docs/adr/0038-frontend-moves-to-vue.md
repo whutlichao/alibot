@@ -41,9 +41,16 @@ ADR-0037 §二 写着「仓库没有构建步骤」，那是当时的**事实陈
 - 因此 `app/alibot/studio/v2/` **入库**（`assets/*.js`、`*.js.map`、`index.html`、`build-info.json`）。
   代价是仓库多一份产物，收益是「克隆 + `pip install -e app` + 起服务」这条路径一个字都不变。
 
+  > **已被推翻（2026-10-27）**：产物现在**不入库**，改由 `scripts/check.sh` 头部、CI 的构建步与
+  > `app/hatch_build.py` 的 hatch hook 三处各自在构建时生成。理由与新的守卫判据见
+  > [ADR-0039](0039-retire-the-legacy-studio-page.md) §二 / §三。
+
 **产物新鲜度是机械判据，不是自觉**：`app/frontend/build-info.js` 把「决定产物的那些文件」的
 内容摘要写进 `build-info.json`（不含时间戳，因此构建可复现），`app/frontend/tests/build-guard.test.js`
 用**同一个函数**复算并比对。改了 `src/` 没重新构建 ⇒ 门禁红。
+
+> **判据已扩充（2026-10-27）**：指纹算法不变，但产物不再入库，于是守卫多了「产物存在」与
+> 「四条构建接线」两组断言。见 [ADR-0039](0039-retire-the-legacy-studio-page.md) §三。
 
 ## 二、被修订的纪律：「不用 innerHTML」不变，但它换了守法的落点
 
@@ -79,6 +86,10 @@ ADR-0037 §二 写着「仓库没有构建步骤」，那是当时的**事实陈
 
 - **旧用例族保留**：`app/tests/*.test.cjs`（389 个用例）守旧页面。旧页面在迁完之前仍是可用入口，
   删掉它们等于让那个入口失去保护。
+
+  > **已被推翻（2026-10-27）**：旧页面与这 24 个用例文件已随票 #318 退役，覆盖点逐条映射到
+  > Vitest 用例族；词条表的键集守卫**迁移**成 `app/frontend/tests/i18n-catalog.test.js` 而非删除。
+  > 见 [ADR-0039](0039-retire-the-legacy-studio-page.md) §一 / §四。
 - **新用例族**：`app/frontend/tests/*.test.js`（Vitest + jsdom + `@vue/test-utils`），守 v2 页面。
 - 两族都**走 glob**，都在 `scripts/check.sh` 里跑。这条沿用 `docs/agents/implementation.md` 的
   「命令清单是缓存，缓存会漂移」——新增一个用例文件不需要改任何清单。
@@ -90,6 +101,9 @@ ADR-0037 §二 写着「仓库没有构建步骤」，那是当时的**事实陈
 ## 五、迁移期间的两条入口与「不假装」
 
 `/studio/`（旧）与 `/studio/v2/`（新）**并存**，后端静态挂载不需要改（v2 是 studio 的子目录）。
+
+> **迁移期已结束（2026-10-27）**：旧页面已删除，`/` 与 `/studio` / `/studio/` 都 redirect 到
+> `/studio/v2/`，`/studio/app.js` 回 404。见 [ADR-0039](0039-retire-the-legacy-studio-page.md)。
 v2 页面只承诺**已迁完的那条链路**可用：
 
 - 已迁：外壳、左栏三段名单、频道头与页签、消息流（Markdown / 提及 / 旁白降档 / 轮次结果 /

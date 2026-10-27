@@ -39,11 +39,20 @@ dev = [
   "httpx2>=2.0",
   "ruff>=0.6",
   "mypy>=1.11",
+  # 打包钩子（`app/hatch_build.py`）继承 hatchling 的 `BuildHookInterface`，因此显式声明而不是
+  # 吃 `[build-system].requires` 的临时环境：CI 的 `pip install -e "app[dev]"` 里就能解析到它，
+  # 类型检查不会把一条必需 import 报成找不到（ADR-0039）。
+  "hatchling>=1.25",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# 产物（`alibot/studio/v2/`）不再入库，因此 wheel 构建必须先把它建出来（ADR-0039）。
+# 钩子住在 `app/hatch_build.py`：缺 node / npm / `node_modules` 时它会**报错退出**，
+# 而不是静默打一个 `/studio` 是空的坏包。sdist 不受影响（源码分发由安装者自己构建）。
+[tool.hatch.build.hooks.custom]
 
 [tool.hatch.build.targets.wheel]
 packages = ["alibot"]

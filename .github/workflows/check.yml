@@ -67,6 +67,15 @@ jobs:
         run: npm ci --include=dev --no-audit --no-fund
         working-directory: app/frontend
 
+      # 产物**不再入库**（ADR-0039 推翻 ADR-0038 §一）：`app/alibot/studio/v2/` 由 vite 生成。
+      # 这一条必须在门禁之前，否则三处要读产物的地方全红且红的原因与改动无关：
+      # `app/frontend/tests/build-guard.test.js`、`tests/test_studio_static_cache.py`、
+      # `tests/test_studio_v2_serving.py`。`scripts/check.sh` 里也有一遍（本地跑不用记得先构建），
+      # 这里显式再来一遍是为了让「构建失败」在日志里单独成步，一眼看得出是哪一步红的。
+      - name: 构建工作室产物
+        run: npm run build
+        working-directory: app/frontend
+
       - name: Gate（scripts/check.sh）
         # 与本地完全同一条命令。runner 上没有 `.venv`，脚本回退到 python3（上面已装好依赖）；
         # 本机 `no_proxy` 的 `[::1]` 噪声由 `app/tests/conftest.py` 的 autouse fixture 摘掉，

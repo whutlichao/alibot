@@ -195,6 +195,21 @@ def studio_dir() -> Path:
     return PACKAGE_DIR / "studio"
 
 
+# 工作台入口（v2 产物目录，ADR-0039）。写成常量而不是在几处重复拼串：
+# `__main__.py` 的启动文案与 `api.py` 的两条 redirect 读的是同一个值。
+STUDIO_V2_URL = "/studio/v2/"
+
+
+def studio_v2_dir() -> Path:
+    """工作台 v2 的构建产物目录（`app/alibot/studio/v2/`）。
+
+    它**不入库**（ADR-0039）：由 `scripts/check.sh` 头部、CI 的构建步与 `app/hatch_build.py`
+    的 hatch hook 在构建时生成。目录不存在 ⇒ 静态挂载与生命周期会各抛一条**能定位**的错
+    （见 `create_app`），而不是把人带到一张 404 白屏上却不知道要跑什么。
+    """
+    return studio_dir() / "v2"
+
+
 def design_system_dir() -> Path | None:
     """只读参照的设计系统目录（视觉契约的正本），不存在时返回 None。"""
     candidate = repo_root() / "alibot-design-system"
@@ -2279,15 +2294,34 @@ def create_app(
         """
         return _not_found(_render_copy("error.agent_replace_unsupported"))
 
-    # ─── 静态资源：工作台 + 只读设计系统 ─────────────────────────────────
+    # ─── 静态资源：工作台（v2）+ 只读设计系统 ───────────────────────────
+    # `/studio` 挂在**正本资产目录**上：`i18n.js` / `markdown.js` / `app.css` / `product-tokens.css`
+    # 与构建产物子目录 `v2/` 都在里面。旧页面的 `app.js` / `index.html` 已删（票 #318）。
+    #
+    # **顺序是判据**：三条 redirect 必须**先于**静态挂载注册。Starlette 按注册顺序匹配，
+    # 而 `/studio` 这个 mount 带 `html=True` 会接住 `/studio/`（找 index.html）。旧首页删掉后
+    # 那条路径会变成 404——但 `/studio/` 是**被记住过的旧地址**，它必须落到 v2，不是报错。
+    if not studio_v2_dir().is_dir():
+        raise RuntimeError(
+            "工作台产物缺失："
+            f"{studio_v2_dir()} 不存在。产物不入库（ADR-0039），先跑："
+            "cd app/frontend && env -u NODE_ENV npm run build（或直接用 scripts/check.sh）"
+        )
+
+    @app.get("/", include_in_schema=False)
+    def index() -> RedirectResponse:
+        return RedirectResponse(url=STUDIO_V2_URL)
+
+    @app.get("/studio", include_in_schema=False)
+    @app.get("/studio/", include_in_schema=False)
+    def legacy_studio_entry() -> RedirectResponse:
+        """`/studio` 与 `/studio/` 都是**被记住过的旧地址**：它们曾是最作台入口，不能变成 404。"""
+        return RedirectResponse(url=STUDIO_V2_URL)
+
     app.mount("/studio", NoCacheStaticFiles(directory=str(studio_dir()), html=True), name="studio")
 
     design = design_system_dir()
     if design is not None:
         app.mount("/design", StaticFiles(directory=str(design)), name="design")
-
-    @app.get("/", include_in_schema=False)
-    def index() -> RedirectResponse:
-        return RedirectResponse(url="/studio/")
 
     return app
