@@ -138,6 +138,21 @@ threadStore = createTaskThreadStore({
   },
   refreshChannelMembers: (channelId) => store.refreshChannelMembers(channelId),
   loadChannelConfig: (channelId) => store.loadChannelConfig(channelId),
+  // 任务线程自己的事件流（票 #307 补做）：构造器与全局流同一条注入路径。
+  sourceFactory: props.sourceFactory || null,
+  // live-only 运行事件与全局流**同一份落点**（`ctx` 在下面创建；用闭包取，创建这一刻还没有它）。
+  onLiveFrame: (payload, type) => {
+    const targetId = payload.target_id;
+    ctx.liveLog.record(targetId, payload);
+    if (type === 'sop_event') ctx.runPanel.noteSopFrame(payload);
+    if (type === 'approval_required' || type === 'approval_resolved') {
+      ctx.approvals.applyFrame({ ...payload, type });
+    }
+  },
+  // 其余可补拉帧与全局流同一套语义（`typing` / `member_status` / `round_outcome`）。
+  onTaskFrame: (payload, type) => ctx.handleTargetFrame(payload, type),
+  // 重连成功后按运行面板快照兜底（旧 `source.onopen` 的 `refreshRunPanelFor()`）。
+  onStreamOpen: (targetId) => ctx.runPanel.refreshFor(targetId),
 });
 const thread = threadStore;
 

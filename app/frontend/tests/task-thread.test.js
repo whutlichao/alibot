@@ -217,6 +217,9 @@ beforeEach(() => {
 
 afterEach(() => {
   while (mounted.length) mounted.pop().unmount();
+  // 计时器必须先回到真实：`flush()` 自己就是 `setTimeout(0)`，被 fake 掉之后
+  // 后面的用例会全部卡在「等一个永不 resolve 的 promise」上（表现为 5s 超时）。
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -448,5 +451,220 @@ describe('命令面板与看板的新建任务入口', () => {
     await button.trigger('click');
     await flush();
     expect(wrapper.find('#taskOverlay').element.hidden).toBe(false);
+  });
+});
+
+/* ─── 补做：任务线程自己的事件流（票 #307） ─────────────────────────────
+   判据正本是旧 `studio/app.js:2386-2421` 的 `connectTaskStream()` / `closeTaskStream()`。
+   断言落在「建了几条流、URL 是什么、close 有没有被调、重连有没有定时」上——不测内部字段。
+
+   注意 `FakeEventSource.instances` 里**同时**有全局流（`/api/events`）与任务流：所有断言都先按
+   URL 过滤，否则会把全局流那条数进来。 */
+function taskStreams(taskId) {
+  return FakeEventSource.instances.filter((source) => source.url.includes(`/api/tasks/${taskId}/events`));
+}
+
+function globalStreams() {
+  return FakeEventSource.instances.filter((source) => source.url === '/api/events');
+}
+
+describe('任务线程的事件流', () => {
+  test('打开线程 ⇒ 建 1 条流，URL 带 `?after_seq=<当前最大 seq>`', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    // 打开之前只有全局流。
+    expect(taskStreams('tsk-aaa001')).toHaveLength(0);
+    expect(globalStreams().length).toBe(1);
+
+    await openTask(wrapper, 'tsk-aaa001');
+
+    const streams = taskStreams('tsk-aaa001');
+    expect(streams).toHaveLength(1);
+    // 快照里的消息 seq 是 1 与 2 ⇒ 游标从 2 起（不从头重放）。
+    expect(streams[0].url).toBe('/api/tasks/tsk-aaa001/events?after_seq=2');
+    expect(streams[0].closed).toBe(false);
+    // 全局流仍是同一条（没有被任务流顶掉）。
+    expect(globalStreams()).toHaveLength(1);
+  });
+
+  test('关闭线程 ⇒ close() 被调，且没有在途重连（timer 已清）', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    // fake timers 必须在 mountApp / openTask 之后开：那两步自己用 `flush()`（真 setTimeout），
+    // 提前开会让它们卡在「等一个永不 resolve 的 promise」上。
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const source = taskStreams('tsk-aaa001')[0];
+
+    await wrapper.find('[data-od-id="btn-thread-close"]').trigger('click');
+    // 这里**不能**用 `flush()`：它就是 `setTimeout(0)`，fake 掉之后永不 resolve。
+    // 关闭动作本身是同步的（`clear()` → `closeStream()` → `stop()`），Vue 的下一拍用 nextTick 即可。
+    await wrapper.vm.$nextTick();
+
+    expect(source.closed).toBe(true);
+    // 关闭之后把时间推过两个重连窗口：不许再建出第二条流（在途 timer 没清就会）。
+    const before = taskStreams('tsk-aaa001').length;
+    vi.advanceTimersByTime(3000);
+    expect(taskStreams('tsk-aaa001').length).toBe(before);
+  });
+
+  test('切线程 ⇒ 先 close A 的流，再建 B 的流（不许两条并存）', async () => {
+    const server = createServer();
+    const second = task({ id: 'tsk-bbb002', target_id: 'tgt-bbb', title: '巡检部署', unread_count: 0 });
+    server.routes['/api/tasks'] = () => jsonResponse({ tasks: [task(), second] });
+    server.routes['/api/tasks/tsk-bbb002/messages'] = () =>
+      jsonResponse({ task: { ...second }, messages: [] });
+    server.routes['/api/tasks/tsk-bbb002/read'] = () => jsonResponse({ task: { ...second } });
+    const { wrapper } = await mountApp(server);
+
+    await openTask(wrapper, 'tsk-aaa001');
+    const first = taskStreams('tsk-aaa001')[0];
+    await openBoard(wrapper);
+    await wrapper.find('[data-od-id="task-card-tsk-bbb002"]').trigger('click');
+    await flush();
+    await flush();
+
+    expect(first.closed).toBe(true);
+    const next = taskStreams('tsk-bbb002');
+    expect(next).toHaveLength(1);
+    expect(next[0].closed).toBe(false);
+    // 同一时刻只有一条活着的任务流。
+    const alive = FakeEventSource.instances.filter(
+      (source) => source.url.includes('/events') && source.url !== '/api/events' && !source.closed,
+    );
+    expect(alive).toHaveLength(1);
+  });
+
+  test('`rotate` 帧 ⇒ 关旧连接，250ms 后按新游标重连', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const old = taskStreams('tsk-aaa001')[0];
+
+    old.emit('rotate', {});
+    expect(old.closed).toBe(true);
+    // 250ms 之前不重连。
+    vi.advanceTimersByTime(200);
+    expect(taskStreams('tsk-aaa001')).toHaveLength(1);
+    vi.advanceTimersByTime(100);
+    const streams = taskStreams('tsk-aaa001');
+    expect(streams).toHaveLength(2);
+    expect(streams[1].closed).toBe(false);
+    expect(streams[1].url).toBe('/api/tasks/tsk-aaa001/events?after_seq=2');
+  });
+
+  test('`onerror` ⇒ 1.5s 后按当前最大 seq 重连', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const old = taskStreams('tsk-aaa001')[0];
+
+    old.onerror();
+    expect(old.closed).toBe(true);
+    vi.advanceTimersByTime(1400);
+    expect(taskStreams('tsk-aaa001')).toHaveLength(1);
+    vi.advanceTimersByTime(200);
+    expect(taskStreams('tsk-aaa001')).toHaveLength(2);
+  });
+
+  test('`message` 帧到达 ⇒ 线程消息 +1；重复 seq 不重复追加', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    const source = taskStreams('tsk-aaa001')[0];
+    const rowsBefore = wrapper.findAll('#ttReplies .tt-reply-row').length;
+
+    source.emit('message', {
+      type: 'message',
+      seq: 9,
+      message: message({ id: 'msg-live', seq: 9, body: 'Agent 实时回复' }),
+    });
+    await flush();
+    await flush();
+    expect(wrapper.findAll('#ttReplies .tt-reply-row').length).toBe(rowsBefore + 1);
+    expect(wrapper.find('#ttReplies').text()).toContain('Agent 实时回复');
+
+    // 同一条再来一次（事件流与写路径的回带可能各来一次）：不重复追加。
+    source.emit('message', {
+      type: 'message',
+      seq: 9,
+      message: message({ id: 'msg-live', seq: 9, body: 'Agent 实时回复' }),
+    });
+    await flush();
+    await flush();
+    expect(wrapper.findAll('#ttReplies .tt-reply-row').length).toBe(rowsBefore + 1);
+  });
+
+  test('未知 type 被忽略：不抛错、不追加消息', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    const source = taskStreams('tsk-aaa001')[0];
+    const rowsBefore = wrapper.findAll('#ttReplies .tt-reply-row').length;
+
+    expect(() => source.emit('some_future_type', { type: 'some_future_type', target_id: 'tgt-aaa' })).not.toThrow();
+    await flush();
+    expect(wrapper.findAll('#ttReplies .tt-reply-row').length).toBe(rowsBefore);
+  });
+
+  test('live 帧（`approval_required`）进审批镜像，不进线程消息', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    const source = taskStreams('tsk-aaa001')[0];
+    const rowsBefore = wrapper.findAll('#ttReplies .tt-reply-row').length;
+
+    source.emit('approval_required', {
+      type: 'approval_required',
+      reply_id: 'rpl-live-1',
+      member_id: 'mem-1',
+      tool_calls: [{ id: 'tc-1', name: 'write_file', input: { path: '/tmp/x' } }],
+      requested_at: new Date().toISOString(),
+    });
+    await flush();
+    await flush();
+
+    // live 帧不产生消息行。
+    expect(wrapper.findAll('#ttReplies .tt-reply-row').length).toBe(rowsBefore);
+    // 但它确实进了审批卡（线程的审批段）。
+    expect(wrapper.find('[data-od-id="thread-approvals"]').text()).toContain('write_file');
+  });
+
+  test('关掉线程之后到达的帧不再改界面（晚到帧按线程收口）', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    const source = taskStreams('tsk-aaa001')[0];
+    await wrapper.find('[data-od-id="btn-thread-close"]').trigger('click');
+    await flush();
+    expect(wrapper.find('[data-od-id="task-thread"]').exists()).toBe(false);
+
+    // 关掉之后旧 source 补发一帧：不抛错、不把线程重新铺出来。
+    source.emit('message', {
+      type: 'message',
+      seq: 11,
+      message: message({ id: 'msg-late', seq: 11, body: '晚到的帧' }),
+    });
+    await flush();
+    expect(wrapper.find('[data-od-id="task-thread"]').exists()).toBe(false);
+  });
+
+  test('换 target 也销毁任务流（`selectTarget` 的作废路径）', async () => {
+    const server = createServer();
+    const { wrapper } = await mountApp(server);
+    await openTask(wrapper, 'tsk-aaa001');
+    const source = taskStreams('tsk-aaa001')[0];
+
+    await wrapper.find('[data-od-id="channel-ch-2"]').trigger('click');
+    await flush();
+    await flush();
+
+    expect(source.closed).toBe(true);
+    const alive = FakeEventSource.instances.filter(
+      (item) => item.url.includes('/events') && item.url !== '/api/events' && !item.closed,
+    );
+    expect(alive).toHaveLength(0);
   });
 });

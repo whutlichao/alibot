@@ -19,6 +19,7 @@
    与看板拖拽、卡片「流转」菜单是同一条判据、同一个后端守卫。 */
 import { reactive } from 'vue';
 import { api, taskPath } from '../lib/api.js';
+import { createEventStream, isLiveEventType } from '../lib/event-stream.js';
 import { t } from '../i18n/index.js';
 import {
   taskStatusLabel,
@@ -35,6 +36,13 @@ import {
  *        任务行变化后的同步落点（`App.vue` 据此更新看板快照：页签计数与卡片状态立刻跟着变）
  * @param {(channelId: string) => Promise<any>} [options.refreshChannelMembers] 频道成员表的既有读路径
  * @param {(channelId: string) => Promise<any>} [options.loadChannelConfig] 频道配置的既有读路径
+ * @param {() => typeof EventSource} [options.sourceFactory] 任务线程事件流的构造器（测试替身入口；
+ *        缺省用浏览器原生 `EventSource`，与全局流同一条注入路径）
+ * @param {(payload: object, type: string) => void} [options.onLiveFrame] live-only 运行事件的落点
+ *        （`App.vue` 转给 `liveLog.record()` 与运行面板的 SOP 簿记；store 不自己写那份日志）
+ * @param {(payload: object, type: string) => void} [options.onTaskFrame] 其余可补拉帧的落点
+ *        （`typing` / `member_status` / `round_outcome`：语义与全局流那一侧同一套，由调用方处理）
+ * @param {(targetId: string) => void} [options.onStreamOpen] 任务流连上（重连成功后按快照兜底）
  */
 export function createTaskThreadStore(options) {
   const config = options || {};
@@ -43,6 +51,10 @@ export function createTaskThreadStore(options) {
   const onTaskChanged = config.onTaskChanged || (() => {});
   const refreshChannelMembers = config.refreshChannelMembers || (async () => null);
   const loadChannelConfig = config.loadChannelConfig || (async () => null);
+  const sourceFactory = config.sourceFactory || null;
+  const onLiveFrame = config.onLiveFrame || (() => {});
+  const onTaskFrame = config.onTaskFrame || (() => {});
+  const onStreamOpen = config.onStreamOpen || (() => {});
 
   const state = reactive({
     // 现在打开着哪条任务（`null` = 没有线程）。
@@ -60,7 +72,123 @@ export function createTaskThreadStore(options) {
   /** 每次打开 / 作废都推进：晚到的响应不能把已经换掉的线程铺回来（旧 `activeTaskId !== taskId` 早退）。 */
   let version = 0;
 
+  /* ─── 任务线程自己的事件流（旧 `connectTaskStream()`，`studio/app.js:2386-2421`） ───
+
+     为什么线程需要**第二条**流（票 #307 补做）：全局流管主线（频道 / 私信），它的帧按
+     `target_id` 分流；而任务线程的 `message` 帧后端**不带 `target_id`**（单 target 订阅，
+     `api.py` 的 `task_events` 只写 `type` / `seq` / `message`），全局流那条「缺 target_id 就丢弃」
+     的判据会把这些帧全扔掉。因此任务线程按旧页面同一条做：打开线程时建
+     `GET /api/tasks/{id}/events?after_seq=<当前最大 seq>`，关闭即销毁。
+
+     两条流**分工不同、不是二选一**：全局流常驻、管主线；任务流只在打开线程时存在，
+     关闭就 close + 清 timer（关掉后不许有在途流）。重连 / rotate 的语义与全局流同一套——
+     因此这里复用 `createEventStream()` 的状态机（`url` 每次重连都按当前游标求值，
+     `requireTargetId: false` 表示这是单 target 订阅）。 */
+
+  /** 现在这条任务流（`null` = 没有线程开着，或已销毁）。 */
+  let taskStream = null;
+
+  /** 线程流的端点：`after_seq` 取**当前**最大 seq，于是每次重连都是「从我看到的地方补」。 */
+  function streamUrl(taskId) {
+    return taskPath(taskId, '/events') + '?after_seq=' + String(maxSeq());
+  }
+
+  /**
+   * 一条任务帧的落点（旧 `handleTaskStreamEvent()` 的判据）。
+   *
+   * - `message`：按 seq 去重吸收进线程消息，并重读任务详情（未读 / 状态可能变了）；
+   * - live-only（`agent_event` / `team_assignment` / `plan_update` / `sop_event` / `approval_*` …）：
+   *   交给 `onLiveFrame`（`App.vue` 写 `liveLog` 与运行面板簿记），**不进消息流 / 未读 / 搜索**；
+   * - `typing` / `member_status` / `round_outcome`：交给 `onTaskFrame`（与全局流同一套语义）；
+   * - 未知 type：忽略，不报错、不推进任何游标。
+   *
+   * `target_id` 的取法与旧页面逐字一致：帧里的 → 当前任务的 → 任务 id。
+   */
+  function handleTaskFrame(payload, type) {
+    if (!payload) return;
+    const targetId = payload.target_id
+      || (state.task && state.task.target_id)
+      || state.taskId;
+    if (type === 'message') {
+      if (!payload.message) return;
+      // 帧可能属于**已经换掉**的线程（关掉/切走之后才到）：按 target 与 seq 双重收口。
+      if (!absorb(payload.message)) return;
+      refreshTaskDetails();
+      markRead(payload.message.seq);
+      return;
+    }
+    if (isLiveEventType(type)) {
+      onLiveFrame({ ...payload, target_id: targetId }, type);
+      return;
+    }
+    if (type === 'typing' || type === 'member_status' || type === 'round_outcome') {
+      onTaskFrame({ ...payload, target_id: targetId }, type);
+    }
+    // 未知 type：忽略。
+  }
+
+  /** 重读「任务行」（不是整条线程）：`message` 帧之后未读与状态可能变了，但消息已经就地吸收。 */
+  function refreshTaskDetails() {
+    const taskId = state.taskId;
+    if (!taskId) return;
+    const current = version;
+    api(taskPath(taskId))
+      .then((payload) => {
+        // 线程已经换掉 / 关掉 ⇒ 这份读数不属于任何人的界面。
+        if (current !== version || !isOpenFor(taskId) || !payload || !payload.task) return;
+        state.task = payload.task;
+        onTaskChanged(state.task, null);
+      })
+      .catch(() => {
+        // 读不到保留上一份：线程正文仍是对的，只是未读数略陈旧。
+      });
+  }
+
+  /** 建流（只在**打开**一条线程之后调）。已有的流先销毁——不许两条并存。 */
+  function connect(taskId) {
+    closeStream();
+    if (!taskId || !isOpenFor(taskId)) return;
+    const stream = createEventStream({
+      // 单 target 订阅：后端在这些帧上不带 `target_id`，因此不套全局流那条丢弃判据。
+      requireTargetId: false,
+      url: () => streamUrl(taskId),
+      // `sourceFactory` 本身就是一个「返回构造器」的函数（与全局流同一条注入约定）：
+      // 直接传，不要再包一层（包了会把 `new (箭头函数)` 变成「不是构造器」）。
+      sourceFactory: sourceFactory || undefined,
+      onFrame: (payload, type) => {
+        // 晚到的帧不属于现在这条线程：直接丢（切线程 / 关线程之后到达的那一批）。
+        if (!isOpenFor(taskId)) return;
+        handleTaskFrame(payload, type);
+      },
+      onOpen: (info) => {
+        if (!isOpenFor(taskId)) return;
+        // 任务 target 的 live 帧同样不补拉：重连后按运行面板快照兜底（旧 `source.onopen` 同一条）。
+        onStreamOpen(state.task ? state.task.target_id : taskId, info);
+      },
+    });
+    taskStream = { taskId, stream };
+    try {
+      stream.start();
+    } catch {
+      // 构造器不可用（极旧浏览器 / 替身缺失）：线程照常可读可写，只是没有实时追加。
+      // 这一条**不**回落到全局流——任务帧不带 `target_id`，全局流会按判据把它们丢掉。
+      taskStream = null;
+    }
+  }
+
+  /** 销毁这条流：`close()` + 清重连 timer。关掉之后不许有在途流（票面第 2 条）。 */
+  function closeStream() {
+    const entry = taskStream;
+    taskStream = null;
+    if (!entry) return;
+    // `stop()` 里同时清 timer 与 close source（`createEventStream()` 的既有收尾）。
+    entry.stream.stop();
+  }
+
   function clear() {
+    // 作废线程 = 同时销毁它的流（旧 `closeTaskStream()` 在 `closeTaskDock()` / `selectTarget()`
+    // 的每一条路径上都被调过）。放在这里，任何清空读数的路径都不会漏掉这一笔。
+    closeStream();
     state.taskId = null;
     state.task = null;
     state.messages = [];
@@ -156,6 +284,8 @@ export function createTaskThreadStore(options) {
         await Promise.all([refreshChannelMembers(task.channel_id), loadChannelConfig(task.channel_id)]);
       }
       await markRead(maxSeq());
+      // 读到快照之后才建流：`after_seq` 要的是**已经拿到**的最大 seq，早建会从头重放一遍。
+      connect(taskId);
       return state;
     } catch (err) {
       if (current !== version) return null;
@@ -279,6 +409,9 @@ export function createTaskThreadStore(options) {
     isOpenFor,
     maxSeq,
     absorb,
+    closeStream,
+    /** 现在有没有在途的任务流（用例断言「关掉后不许有在途流」读它）。 */
+    streamOpen: () => Boolean(taskStream),
     markRead,
     send,
     saveTitle,

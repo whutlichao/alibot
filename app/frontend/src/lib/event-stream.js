@@ -47,12 +47,20 @@ export function isMessageEventType(type) {
  * @param {(state: string) => void} [options.onState] 连接状态（`open` / `reconnecting`）
  * @param {number} [options.retryMs] 断线重试间隔
  * @param {() => typeof EventSource} [options.sourceFactory] 测试替身入口
+ * @param {() => string} [options.url] 端点**每次重连都重新求值**（任务线程要带最新游标；
+ *        缺省恒为全局端点 `GLOBAL_EVENT_PATH`，全局流的行为一个字不变）
+ * @param {boolean} [options.requireTargetId] 是否丢弃缺 `target_id` 的帧。全局流必须为 `true`
+ *        （它按 `target_id` 分流，缺归属就不猜）；任务线程的流是**单 target 订阅**，后端在
+ *        消息帧上不带 `target_id`，因此那一侧传 `false`
  */
 export function createEventStream(options) {
   const config = options || {};
   const retryMs = config.retryMs == null ? 1500 : config.retryMs;
   const rotateMs = config.rotateMs == null ? 250 : config.rotateMs;
   const factory = config.sourceFactory || (() => globalThis.EventSource);
+  // 端点：缺省是全局流那一条（每次重连都求值，于是任务线程能拿到最新游标）。
+  const resolveUrl = config.url || (() => GLOBAL_EVENT_PATH);
+  const requireTargetId = config.requireTargetId !== false;
   const entry = { source: null, timer: null, rotating: false, state: 'connecting', wasOffline: false };
 
   function notifyState() {
@@ -63,7 +71,8 @@ export function createEventStream(options) {
     const Source = factory();
     if (typeof Source !== 'function') return; // 测试替身 / 极旧浏览器：没有流也不抛
     // 全局流不带 target、不带游标：它不补拉（重连补齐由全量重取承担）。
-    const source = new Source(GLOBAL_EVENT_PATH);
+    // 任务线程的流把游标拼进 `resolveUrl()`：每次重连都取**当前**最大 seq。
+    const source = new Source(resolveUrl());
     entry.source = source;
     entry.rotating = false;
     source.addEventListener('rotate', () => {
@@ -102,7 +111,9 @@ export function createEventStream(options) {
           return; // 解不开的帧直接丢弃：它不可能是后端发出的
         }
         // 缺 `target_id` 的帧**丢弃**：不猜归属，也不写任何 target 的游标。
-        if (!payload || !payload.target_id) return;
+        // （单 target 订阅的流不受这条约束——见 `requireTargetId`。）
+        if (!payload) return;
+        if (requireTargetId && !payload.target_id) return;
         if (config.onFrame) config.onFrame(payload, type);
       });
     });

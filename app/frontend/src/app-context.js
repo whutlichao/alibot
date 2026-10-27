@@ -150,6 +150,19 @@ export function createAppContext(options) {
       }
       return;
     }
+    handleTargetFrame(payload, type);
+  }
+
+  /**
+   * 非消息类可补拉帧的落点（`member_status` / `typing` / `round_outcome`）。
+   *
+   * 抽出来的理由：任务线程有自己的事件流（票 #307 补做），它的这些帧与全局流**同一套语义**
+   * （旧页面 `handleTaskStreamEvent()` 就是各调一次同名处理）。因此落点只写一份，
+   * 两条流都调它——不在线程那一侧复制第二套。
+   */
+  function handleTargetFrame(payload, type) {
+    const targetId = payload && payload.target_id;
+    if (!targetId) return;
     const seq = Number(payload.seq) || 0;
     if (seq) store.seenSeqsFor(targetId).add(seq);
     if (type === 'member_status') {
@@ -283,6 +296,8 @@ export function createAppContext(options) {
     runPanel,
     reminders,
     approvals,
+    // 任务线程事件流复用同一个落点（票 #307 补做）：`typing` / `member_status` / `round_outcome`。
+    handleTargetFrame,
     t,
   };
 }
