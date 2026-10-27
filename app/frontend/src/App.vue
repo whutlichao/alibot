@@ -384,16 +384,30 @@ const agentDetail = createAgentDetailStore({
   },
 });
 
-/** 进详情前的落点（旧 `state.agentReturn`）：只在**第一次**进入时记录，切成员不覆盖它。 */
+/** 进详情前的落点（旧 `state.agentReturn`）：只在**第一次**进入时记录，切成员不覆盖它。
+ *
+ * 三位都得记：`mode` 决定关闭后回哪一档主线视图；`dockTarget` / `dockDrawerOpen` 决定 dock
+ * 能不能、以什么形态开回来。旧页面 `closeAgentDetail()` 恢复的是
+ * `setDockOpen(Boolean(back.dockOpen) && dockAvailable())`（`studio/app.js:5156`），而它的
+ * 「开合」背后总有一个可显示形态（`dockFallbackMode()` 给 `agent`）；v2 没有成员档，
+ * 只凭开合开回来会得到一张空面板——旧注释里正好警告过这个结果。因此这里记住**形态本身**。
+ */
 let agentReturn = null;
 
 /** 打开 Agent 详情（rail 的 Agent 行是唯一入口）。 */
 async function openAgentDetail(memberId) {
   if (!memberId) return;
-  if (mode.value !== 'agent') agentReturn = mode.value;
+  if (mode.value !== 'agent') {
+    agentReturn = {
+      mode: mode.value,
+      dockTarget: dockTarget.value,
+      dockOpen: dockDrawerOpen.value,
+    };
+  }
   // 运行面板若来自任务线程，第一次关闭会退回该线程；详情需要连线程一起收掉。
   closeDock();
   if (dockTarget.value) closeDock();
+  dockDrawerOpen.value = false;
   mode.value = 'agent';
   railOpen.value = false;
   const loaded = await agentDetail.open(memberId);
@@ -405,17 +419,30 @@ async function openAgentDetail(memberId) {
   }
 }
 
-/** 关闭详情：回到进入前的那一档（进入前是详情以外的一档，因此总是有落点）。 */
+/** 关闭详情：回到进入前的那一档，并把 dock 恢复成进入前的形态与开合。
+ *
+ * 与旧 `closeAgentDetail()` 同一条意图（strangler 迁移不缩水）：进入前 dock 开着、且那个形态
+ * 现在仍可显示，就把它与开合一起恢复；没有可显示形态（私信 / 没有 target / 形态已经作废）就
+ * 保持收起，不摆一张空面板。 */
 function closeAgentDetail() {
+  const back = agentReturn || { mode: 'channel', dockTarget: null, dockOpen: false };
   agentDetail.close();
-  mode.value = agentReturn && agentReturn !== 'agent' ? agentReturn : 'channel';
+  mode.value = back.mode && back.mode !== 'agent' ? back.mode : 'channel';
   agentReturn = null;
+  const restore = Boolean(back.dockOpen) && Boolean(back.dockTarget) && dockToggleAvailable.value;
+  dockTarget.value = restore ? back.dockTarget : null;
+  dockDrawerOpen.value = restore;
 }
+
+/** 详情头部的「发送消息」在途标记（旧 `agentDmInFlight`，`studio/app.js:5173`）。
+ * 它是**重入闸门**：连点只发一条 `POST /api/dms`，按钮同时禁用（见模板的 `:disabled`）。 */
+const agentDmInFlight = ref(false);
 
 /** 详情头部的「发送消息」：走幂等的 `POST /api/dms {agent_id}`（旧 `messageActiveAgent()`）。 */
 async function messageActiveAgent() {
   const memberId = agentDetail.state.memberId;
-  if (!memberId) return;
+  if (!memberId || agentDmInFlight.value) return;
+  agentDmInFlight.value = true;
   try {
     const payload = await store.openDm(memberId);
     // 离开详情再切 target：`selectTarget()` 自己会把 `mode` 收回消息流。
@@ -429,6 +456,8 @@ async function messageActiveAgent() {
     );
   } catch (err) {
     toasts.push(t('toast.dmOpenFailed', { reason: err.message }), 'err');
+  } finally {
+    agentDmInFlight.value = false;
   }
 }
 
@@ -926,6 +955,7 @@ function mobileShell() {
         :consents="state.consents"
         :data-faces="state.dataFaces"
         :acknowledge="acknowledgeRemote"
+        :sending-message="agentDmInFlight"
         :online="state.online"
         @send-message="messageActiveAgent"
       />

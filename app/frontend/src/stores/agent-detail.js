@@ -150,8 +150,10 @@ export function skillImportSelectable(candidate) {
 }
 
 /**
- * 一个成员的详情读数（**按成员**缓存：切换成员不串读数，切回来也不必重读）。
+ * 一个成员的详情读数（**按成员隔离**）。
  *
+ * 它不是缓存：`setMember()` 切成员时整体作废、重新读（旧页面每次 `openAgentDetail()` 也重读
+ * `refreshAgentDetail()` + `loadAgentCapabilities()`）。为了缓存而缓存会让草稿与读数跨成员串味。
  * 每一段都有自己的 `loading` / `error`：一段读不到只落在它自己的错误行，不拖垮整页
  * （旧 `loadAgentCapabilities()` 的 Promise.all 同一条）。
  */
@@ -246,17 +248,9 @@ export function createAgentDetailStore(options) {
     return Boolean(edit.draft && edit.base && !sameDraft(edit.draft, edit.base));
   });
 
-  /** 能力段表单里有没有未提交的输入（有就不整段重铺，否则会换掉持焦控件）。 */
-  const capabilityDraftDirty = computed(() => {
-    const current = view.value;
-    if (!current) return false;
-    if (current.mcpEditingId) return true;
-    if (current.mcpFileDraft !== current.mcpFileBase) return true;
-    const draft = current.mcpDraft;
-    return ['name', 'command', 'args', 'url', 'envNames'].some((key) =>
-      String(draft[key] || '').trim(),
-    );
-  });
+  // 旧页面的 `capabilityDraftDirty()` 守卫（`studio/app.js:5290-5295`）防的是**手工重铺 DOM**：草稿脏时
+  // 不重建整段节点，免得换掉持焦控件。Vue 靠响应式更新，状态变化不会重建持焦节点，因此那个守卫
+  // 在这里没有对应的问题，不搬（照搬即 Speculative Generality）。
 
   /** 三个候选组各自的标题键（顺序即呈现顺序：可选 → 已安装 → 不可导入）。 */
   const IMPORT_GROUP_KEYS = {
@@ -921,7 +915,6 @@ export function createAgentDetailStore(options) {
     mcp,
     selectedSkill,
     draftDirty,
-    capabilityDraftDirty,
     importGroups,
     setMember,
     close,

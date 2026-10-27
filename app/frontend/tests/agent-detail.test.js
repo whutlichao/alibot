@@ -266,6 +266,57 @@ describe('入口与页签骨架', () => {
     expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(true);
   });
 
+  test('进入前的 dock 形态与开合在 closeAgentDetail() 后恢复（旧 closeAgentDetail() 同一条）', async () => {
+    const { wrapper } = await mountApp({
+      '/api/agents/mem-1': (_url, request) =>
+        request.method === 'DELETE'
+          ? jsonResponse({ deleted: 'mem-1', agents: [], members: [OWNER] })
+          : jsonResponse({ agent: ada() }),
+    });
+    // 先进频道并打开运行面板（dock 的 run 档），此时 dock 是开着的。
+    await wrapper.find('[data-od-id="btn-run-panel"]').trigger('click');
+    await flush();
+    expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(true);
+
+    await openDetail(wrapper);
+    // 详情占主线：dock 让位。
+    expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(false);
+
+    // 删除当前成员是真正走 `closeAgentDetail()` 的那条路（旧 `deleteAgent()` 同一条）。
+    await wrapper.find('[data-od-id="agent-delete"]').trigger('click');
+    await wrapper.find('[data-od-id="agent-delete-confirm-action"]').trigger('click');
+    await flush();
+    await flush();
+    // 进入前开着 ⇒ 连形态一起开回来（不是一张空面板）。
+    expect(wrapper.find('[data-od-id="detail-dock"]').exists()).toBe(true);
+  });
+
+  test('详情头部「发送消息」在途时禁用，连点只发一条 POST /api/dms', async () => {
+    const gate = deferred();
+    const { wrapper, stub } = await mountApp({
+      '/api/dms': async () => {
+        await gate.promise;
+        return jsonResponse({
+          created: false,
+          dm: { id: 'dm-1', kind: 'dm', agent_id: 'mem-1', peer: ADA_ROW, last_seq: 0, last_read_seq: 0, unread_count: 0 },
+        });
+      },
+      '/api/dms/dm-1/messages': () =>
+        jsonResponse({ dm: { id: 'dm-1', kind: 'dm', peer: ADA_ROW, unread_count: 0 }, messages: [] }),
+    });
+    await openDetail(wrapper);
+
+    const send = wrapper.find('[data-od-id="btn-agent-send-message"]');
+    await send.trigger('click');
+    await send.trigger('click');
+    expect(wrapper.find('[data-od-id="btn-agent-send-message"]').attributes('disabled')).toBeDefined();
+    expect(stub.calls.filter((call) => call.url === '/api/dms' && call.method === 'POST')).toHaveLength(1);
+
+    gate.release();
+    await flush();
+    await flush();
+  });
+
   test('主读数读不到：说明原因，并用工作台镜像保住名称（旧页面同一条）', async () => {
     const { wrapper } = await mountApp({
       '/api/agents/mem-1': () => jsonResponse({ error: { message: '详情暂时不可用' } }, 500),
@@ -450,6 +501,28 @@ describe('基础信息和配置页签', () => {
     await wrapper.find('[data-od-id="agent-detail-save"]').trigger('click');
     await flush();
     expect(wrapper.find('[data-od-id="agent-mem-1"]').text()).toContain('Ada 新名');
+  });
+
+  test('在系统提示框打字时触发一次后台读数刷新（MCP 条目重读）：输入内容与焦点都不丢', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+
+    const prompt = wrapper.find('[data-agent-field="system_prompt"]');
+    await prompt.setValue('打到一半的提示');
+    prompt.element.focus();
+    expect(document.activeElement).toBe(prompt.element);
+
+    // 一次后台读数刷新（局部换掉只读的 MCP 条目视图，不动草稿与持焦节点）。
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+    await wrapper.find('[data-od-id="global-mcp-consent"]').exists();
+    await wrapper.find('[data-od-id="agent-detail-tab-base"]').trigger('click');
+    await flush();
+
+    // 草稿没被冲掉，且那个 textarea 还是同一个节点（Vue 不重建，焦点不丢）。
+    const after = wrapper.find('[data-agent-field="system_prompt"]');
+    expect(after.element.value).toBe('打到一半的提示');
+    expect(after.element).toBe(prompt.element);
   });
 
   test('切页签不丢草稿：保存条跨页签可见，切回来输入还在', async () => {

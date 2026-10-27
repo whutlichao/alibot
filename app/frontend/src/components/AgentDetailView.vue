@@ -41,6 +41,8 @@ const props = defineProps({
   consents: { type: Array, default: () => [] },
   dataFaces: { type: Array, default: () => [] },
   acknowledge: { type: Function, default: null },
+  // 头部「发送消息」的在途标记：请求期间按钮禁用（重入闸门在 `App.vue`，旧 `agentDmInFlight`）。
+  sendingMessage: { type: Boolean, default: false },
   online: { type: Boolean, default: true },
 });
 
@@ -343,7 +345,7 @@ watch(
           type="button"
           id="btnAgentSendMessage"
           data-od-id="btn-agent-send-message"
-          :disabled="!online"
+          :disabled="!online || sendingMessage"
           @click="emit('send-message')"
         >
           {{ t('agentDetail.sendMessage') }}
