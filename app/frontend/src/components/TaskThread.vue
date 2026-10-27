@@ -26,6 +26,7 @@ import ApprovalCard from './ApprovalCard.vue';
 import AttachmentChip from './AttachmentChip.vue';
 import MarkdownBody from './MarkdownBody.vue';
 import MemberAvatar from './MemberAvatar.vue';
+import TaskRefChip from './TaskRefChip.vue';
 import { t } from '../i18n/index.js';
 import { timeLabel } from '../lib/format.js';
 import { allowedTransitions, taskNumber } from '../lib/task-board.js';
@@ -44,9 +45,13 @@ const props = defineProps({
   online: { type: Boolean, default: true },
   // 审批记录镜像（`createApprovalStore()` 的返回值）：本段与页签圆点 / 卡片角标共读这一份。
   approvals: { type: Object, default: null },
+  // 任务快照查名（`stores/task-board.js` 的 `taskOf(taskId)`）：讨论行上的任务 chip 读它
+  // 取标题与未读数（票 #309；旧 `renderTaskThread()` 的讨论行调的就是同一个
+  // `appendTaskRefChip()`）。
+  taskOf: { type: Function, default: null },
 });
 
-const emit = defineEmits(['close', 'open-run-panel']);
+const emit = defineEmits(['close', 'open-run-panel', 'open-task']);
 
 const state = computed(() => props.thread.state);
 const task = computed(() => state.value.task);
@@ -354,6 +359,8 @@ function focusReply() {
                 <div v-if="item.attachments && item.attachments.length" class="msg-attachments">
                   <AttachmentChip v-for="file in item.attachments" :key="file.id" :attachment="file" />
                 </div>
+                <!-- 任务 chip：与频道消息流是**同一份判据**（一个组件），不在这里再判一次。 -->
+                <TaskRefChip :message="item" :task-of="taskOf" @open-task="emit('open-task', $event)" />
               </div>
             </div>
             <div v-if="!replies.length" class="tt-empty">{{ t('task.repliesEmpty') }}</div>

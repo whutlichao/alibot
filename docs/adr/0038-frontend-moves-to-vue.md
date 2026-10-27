@@ -142,8 +142,19 @@ v2 页面只承诺**已迁完的那条链路**可用：
   `task-approval-dot`、卡片 / 列表行的 `card-approval` 角标共读 `ctx.approvals` 这一份镜像**，
   `approval_*` live 帧只写它（不写游标、不进消息流）。**一处刻意差异**：不做 12s 周期刷新与 1s tick，
   替代是事件驱动（首载 / 打开线程 / live 帧 / 提交回执各读一次）——真实收口由后端在同一上界发
-  `approval_resolved` 帧）。
-- 未迁：Agent 详情、**任务引用 chip / 频道指针 chip**（归 T9）。
+  `approval_resolved` 帧；**频道级的审批板**（旧 `#approvalBoard`）不在本票，仍未迁）。
+  **任务引用 chip 与频道指针 chip**（票 #309，阶段 B 第三票：`TaskRefChip.vue` 是这两个 chip 的
+  **唯一判据**，`MessageItem` 的两个分支（`kind='system'` 与对话）与 `TaskThread` 的讨论行
+  **三处复用**——旧 `appendTaskRefChip()` 同样在这三处各调一次。类名与属性逐字沿用旧页面
+  （`.task-ref-chip` / `data-open-task` / `data-task-pointer`，`app.css` 零改动）；`task_ref` 与
+  `task_pointer` 是**两条语义两个数据列、视觉同一个 chip**（`CONTEXT.md` **指针消息**）：前者文案
+  `msg.taskRef`，后者按任务载荷的 `unread_count` 在 `msg.taskThreadEntry` 与
+  `…Unread` 之间切，任务不在快照里就用 id 当名字、未读按 0（不编读数）。文案是 `computed`，
+  于是标读后已渲染的 chip 自己跟着变——旧页面那条 `syncTaskPointerChips()` 的定点改写不需要了。
+  点击只抛 `open-task`，落点是 `App.vue` 的 `openTask()`（两个 chip 一条路径）。阶段一那条
+  「带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」的反向断言**已翻正**。
+  「待审批 N」角标读 T8 的那份审批镜像（同一份读数，不造第二份）。
+- 未迁：Agent 详情（归 T10，阶段 C）。
   频道配置弹窗里的**联网 provider 凭据段**（当前 provider / 来源 + 五家掩码 + 保存 key）也还没迁：
   票 #303 只把那一段的 `web_access` 档位作为可写字段提交，凭据段不渲染、不留假按钮。
   **频道级的审批板**（旧页面 `#approvalBoard`）同样未迁：票 #308 的审批卡只出现在任务线程里，

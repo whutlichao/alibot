@@ -168,7 +168,7 @@ v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` �
 
 | 处理 | 入口 | 理由 |
 | --- | --- | --- |
-| **不渲染** | Agent 详情（详情面归 T10，但 rail 的 Agent 行**不再是死行**：点它开与该 Agent 的私信）；「作为任务发送」（composer）；任务引用 chip 与频道指针 chip（消息）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现（任务页签随票 #306 迁完，已不在这一档） |
+| **不渲染** | Agent 详情（详情面归 T10，但 rail 的 Agent 行**不再是死行**：点它开与该 Agent 的私信）；「作为任务发送」（composer）；「看成员状态」（失败行） | 它们只是**把人带到另一处**，带不到就不该出现（任务页签随票 #306 迁完、任务引用 chip 与频道指针 chip 随票 #309 迁完，都已不在这一档） |
 | **可见但禁用** | **这一档现在空了**（票 #301 把新建频道 / 新建 Agent 翻正） | 兜底规则仍成立：将来再出现「面还没迁、但入口是空工作台唯一出路」的情况，按可见 + 禁用 + `title` 用词条 `app.notMigrated` 处理，而不是渲染一个按下去什么都不发生的按钮 |
 
 频道头的四个入口不归同一张票管，因此**开关分开了**：`channelToolsAvailable`（名册 / 配置 / 预算，
@@ -187,7 +187,7 @@ v2 页面**只承诺已迁完的链路**。以下面仍由旧页面 `/studio/` �
 | # | 问题 | 修法 | 判据 |
 | --- | --- | --- | --- |
 | 1 | 消息里的**附件不渲染**（旧页面有下载入口，v2 上文件凭空消失） | 新增 `AttachmentChip.vue`；`MessageItem` 在系统消息与对话消息两个分支都挂 `.msg-attachments` | 「已绑定 ⇒ `<a download>`；草稿 ⇒ `<span>`；无附件 ⇒ 整块不占版面」 |
-| 2 | 频道流的**指针 chip / 引用 chip 不渲染** | 随任务面整票不动；这两个 chip 属于任务面，现在**显式不渲染**并在文件头记明 | 「消息带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」 |
+| 2 | 频道流的**指针 chip / 引用 chip 不渲染** | ~~随任务面整票不动；这两个 chip 属于任务面，现在**显式不渲染**并在文件头记明~~ **票 #309 已还清**：两个 chip 恢复（`TaskRefChip.vue` 一份判据、`MessageItem` 两个分支 + `TaskThread` 讨论行三处复用），见下面「阶段 B · 票 #309」 | ~~「消息带 `task_ref` / `task_pointer` 时不产出 `.task-ref-chip`」~~ **已翻正**：「带 `task_ref` ⇒ 产出 `.task-ref-chip`；带 `task_pointer` ⇒ 产出 `.task-ref-chip` + `[data-task-pointer]`」 |
 | 3 | 4 个**假按钮**（composer 的附件 / 作为任务发送、消息里的 open-task、失败行的 inspect）**外加**自查才发现的 9 个（rail 的搜索 / 提醒 / 设置 / Agent 行，频道头的四个工具，任务页签） | 未迁面的**导航入口**整块不渲染；空工作台的出路（新建）改为**禁用 + `title` 说明** | 「默认不渲染」与「开关打开时照常出现」正反两条都断言 |
 | 4 | 切 target 时**没清折叠态**（`resetForTarget()` 定义了却没人调用） | `App.vue` 的 `selectTarget()` 在换 target **之前**清（顺序反了会清掉新 target 刚铺的状态） | 折叠态按 seq 认，跨 target 不通用——`ui-state.test.js` 四条 |
 | 5 | `firstSuccessfulLoad` 是**死返回值**（声明后从未置真） | store 拿到模块级 `workspaceLoaded`：整轮读数全部落地才置真；返回值区分「这一次尝试成功」与「第一次成功」 | 「首次为真、静默刷新为假、首载失败后重连成功仍为真」三条 |
@@ -1055,8 +1055,9 @@ node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
 
 - **审批段**（`thread-approvals`）归 T8：本票**不渲染假节点**，线程的 `.tt-scroll` 里只有讨论与
   变更记录两段。
-- **`task_ref` / `task_pointer` 两个 chip** 归 T9：线程里的消息即便带 `task_ref` 也不渲染 chip
-  （渲染一个点下去打不开的入口比不渲染更难解释）。
+- **`task_ref` / `task_pointer` 两个 chip** 归 T9：本票时线程里的消息即便带 `task_ref` 也不渲染 chip
+  （渲染一个点下去打不开的入口比不渲染更难解释）。**票 #309 已还清**：两个 chip 已恢复，
+  线程讨论行与频道消息流共用 `TaskRefChip.vue`。
 - **线程的 live 帧**（`/api/tasks/{id}/events`）没有单独接：v2 用全局流 `GET /api/events`，
   任务 target 的消息帧照常落进 `liveLog`，但线程面板**不订阅**自己的 target 流（旧页面
   `connectTaskStream()` 那条）。本票的写路径都会把回带的消息就地吸收，因此「自己发的消息」立刻可见；
@@ -1107,6 +1108,34 @@ v2 的替代是**事件驱动**：进入工作区（首载 `loadAll()`）/ 打�
 这些判据分散在 `App.vue` 的 `openTask()` / `channelApprovalTasks` 与 `app-context.js` 的 frame 分流里，
 直挂 `ApprovalCard.vue` 一条都测不到（`DockPanel` 漏传 `approvals` 就是这么被抓到的）。
 
+## 九、阶段 B · 票 #309：任务引用 chip / 频道指针 chip（翻转阶段一反向断言）
+
+阶段一自查第 2 条欠账（「频道流的指针 chip / 引用 chip 不渲染」）的还清票。两个 chip 恢复，
+**一份实现、三处复用**：`components/TaskRefChip.vue` 是唯一判据，`MessageItem` 的两个分支
+（system / 对话）与 `TaskThread` 的讨论行都挂它——旧 `appendTaskRefChip()` 也是在这三处各调一次。
+
+| 判据 | 落点 | 读数 / 说明 |
+| --- | --- | --- |
+| 引用 chip（`task_ref`） | `TaskRefChip.vue` | `<button type="button" class="task-ref-chip">`，文案 `msg.taskRef`（任务 · {title}）、aria `msg.taskRefAria`、`data-open-task="<taskId>"`；任务不在快照里 ⇒ **用 id 当标题**（不编名字） |
+| 频道指针 chip（`task_pointer`） | 同上（同一类名、**两条语义**，与旧页面同一事实） | 文案 `msg.taskThreadEntry` / 未读 >0 时 `msg.taskThreadEntryUnread`；aria `msg.taskThreadEntryAria` / `…AriaUnread`；`data-open-task` + **`data-task-pointer`**（后者只挂在指针 chip 上，是旧 `syncTaskPointerChips()` 的选择子） |
+| 未读读哪一位 | 任务载荷的 `unread_count`（`board.taskOf(taskId)`） | **不读 `message_count`**（#223）；任务不在快照里 ⇒ 按未读 0 处理，**不编造读数** |
+| 标读后已渲染的 chip 跟着变 | 文案是 `computed` | 旧页面要 `syncTaskPointerChips()` 定点改写；Vue 里任务载荷一变即重渲染。用例：`unread_count` 3 → 0，已挂载的 chip 文案与 aria 同时变 |
+| 点击 = 打开该任务线程 | 组件只抛 `open-task`，落点是 `App.vue` 的 `openTask()` | 两个 chip **一条路径**；用例从 `App.vue` 进（频道流指针 chip 与对话消息引用 chip 各一条），断言 dock 切 `task` 档且标题是该任务的 |
+| 线程讨论行也挂 | `TaskThread.vue` + `DockPanel`（`threadTaskOf`）| 与消息流同一份判据，不复制 |
+| 阶段一的反向断言**已翻转** | `tests/components.test.js` 的 `describe('未迁面的入口')` 第一条 | 改成「两个 chip 都渲染」：引用 chip 在前（无 `data-task-pointer`）、指针 chip 在后（有）；`grep -rn "都不渲染\|不产出" app/frontend/tests/` 已无命中 |
+| 词条零新增 | `studio/i18n.js` | `msg.taskRef` / `msg.taskRefAria` / `msg.taskThreadEntry*` 均已存在，`grep` 确认；**本票没改 i18n.js 一个字节** |
+
+**「消息 `···` 二级菜单的 open-task」的核对结论**：票面第四节写的那个菜单**不存在**——旧页面
+`app.js` / `index.html` 与 v2 的 `MessageItem.vue` 里都没有消息级动作栏，`data-open-task` 在旧页面
+只出现在 `appendTaskRefChip()` 的两枚 chip（写）与两处点击委派（`#messageList`、`#ttReplies`，读）上。
+阶段一自查记的「假按钮」是「消息里本该有 open-task 入口却没有」，落点就是这两个 chip。⇒ 本票
+**不新造**一个旧页面没有、票图也没定义的面；`grep -n "msg-more\|msg-menu\|message-actions\|msg-actions" app/alibot/studio/app.js app/alibot/studio/index.html app/frontend/src/components/MessageItem.vue` 零命中。
+
+**「待审批 N」角标仍未挂**（`data-od-id="message-approval-badge-<messageId>"`）：它的读数归 T8 的
+审批 store，而 v2 至今没有那份读数（`app/frontend/src/stores/` 里没有 approvals，`/api/approvals`
+无调用点）。按票面「不要自己造第二份」，`TaskRefChip.vue` 的文件头留了 TODO 说明挂点，
+T8（#308）落地后按同一个 `.card-approval` 节点挂在该 chip 后面。
+
 门禁读数：
 
 ```
@@ -1143,3 +1172,20 @@ tool_calls=[write_file{path,password}, run_shell{cmd}])`，只写临时 data-dir
   记录不伪造一条出来——它的读数由下一次 `loadFor()` / `loadAll()` 的快照给。
 - 频道 target 的审批板（旧 `#approvalBoard`）**不在本票范围**：v2 的审批卡只出现在任务线程里
   （票面「审批卡出现在任务线程内」）。频道级审批板归后续票。
+
+npx vitest run（app/frontend）     19 files / 347 passed（新增 tests/task-chips.test.js 9 条）
+node --test app/tests/*.test.cjs   389 passed（旧页面用例族未削弱）
+./scripts/check.sh --fast          exit 0 / 门禁全绿
+npm run build                      ✓ 59 modules transformed；产物 index-CMUet8HI.js
+```
+
+真浏览器实测（ego-browser，`--port 8813` + 独立 data-dir，**`PYTHONPATH` 指向本 worktree 的 `app`**）：
+
+| 判据 | 读数 |
+| --- | --- |
+| 频道指针 chip 可见 | 建频道 + `POST /api/channels/<id>/tasks` 后，频道流里 `#messageList .task-ref-chip` 一枚：`BUTTON`、文案 `进入任务线程`、`data-open-task` 与 `data-task-pointer` 同为 `task_0947e46af319`、aria `打开任务 整理发布清单的任务线程`（未读 0 ⇒ 不显示计数段） |
+| 点 chip ⇒ 开线程 | `#dock.dock.is-open` 出现、`.task-thread` 在、`thread-title-input` 的值是 `整理发布清单` |
+| 线程里的引用 chip | 讨论行（`#ttReplies .tt-reply-row`）里的消息带 `task_ref` ⇒ 一枚 `.task-ref-chip`：文案 `任务 · 整理发布清单`、aria `打开任务 整理发布清单`、**没有** `data-task-pointer`（引用 chip 与指针 chip 由此可区分） |
+
+截图（`.scratch/v2-p2b/`，已 gitignore）：`issue-309-01-pointer-chip.png`（频道流里的指针 chip）、
+`issue-309-02-thread-with-ref-chip.png`（点开后线程里的引用 chip）。

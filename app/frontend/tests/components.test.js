@@ -297,16 +297,31 @@ describe('附件', () => {
 /* ─── 未迁面：不留假入口（ADR-0038 §五）───────────────────────────────── */
 
 describe('未迁面的入口', () => {
-  test('任务的引用 chip 与指针 chip 都不渲染（任务面整体未迁）', () => {
+  // 票 #309 把这条断言**翻正**：任务面（看板 #306 / 线程 #307）已迁，两个 chip 因此不再是
+  // 「显式不渲染」的欠账——带 `task_ref` 产出引用 chip，带 `task_pointer` 产出指针 chip。
+  // 判据的完整用例族在 `tests/task-chips.test.js`（含点击后果与「一份实现、两处复用」）。
+  test('任务的引用 chip 与指针 chip 都渲染（任务面已迁，票 #309）', () => {
+    const tasks = [
+      { id: 't-1', title: '整理发布清单', unread_count: 0 },
+      { id: 't-2', title: '巡检部署', unread_count: 2 },
+    ];
     const wrapper = mount(MessageItem, {
       props: {
         message: message(6, { task_ref: 't-1', task_pointer: 't-2' }),
         member: OWNER,
+        taskOf: (taskId) => tasks.find((item) => item.id === taskId) || null,
       },
     });
-    expect(wrapper.find('.task-ref-chip').exists()).toBe(false);
-    expect(wrapper.find('[data-task-pointer]').exists()).toBe(false);
-    expect(wrapper.find('[data-open-task]').exists()).toBe(false);
+    const chips = wrapper.findAll('.task-ref-chip');
+    expect(chips.length).toBe(2);
+    expect(chips[0].text()).toBe('任务 · 整理发布清单');
+    expect(chips[0].attributes('data-open-task')).toBe('t-1');
+    expect(chips[0].attributes('data-task-pointer')).toBeUndefined();
+    expect(chips[1].text()).toBe('进入任务线程 · 2 条未读');
+    expect(chips[1].attributes('data-open-task')).toBe('t-2');
+    expect(chips[1].attributes('data-task-pointer')).toBe('t-2');
+    // 两个都是真按钮（点得动才有意义）。
+    chips.forEach((chip) => expect(chip.element.tagName).toBe('BUTTON'));
   });
 
   test('左栏：工作台搜索已迁（#304）⇒ 入口在 `.search-shell` 里，点它只发一个事件', async () => {
