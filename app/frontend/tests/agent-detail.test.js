@@ -266,7 +266,7 @@ describe('入口与页签骨架', () => {
     expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(true);
   });
 
-  test('主读数读不到：说明原因，不用空白名称与全 0 统计冒充事实', async () => {
+  test('主读数读不到：说明原因，并用工作台镜像保住名称（旧页面同一条）', async () => {
     const { wrapper } = await mountApp({
       '/api/agents/mem-1': () => jsonResponse({ error: { message: '详情暂时不可用' } }, 500),
     });
@@ -276,7 +276,8 @@ describe('入口与页签骨架', () => {
     await flush();
 
     expect(wrapper.find('[data-od-id="toast-wrap"]').text()).toContain('详情暂时不可用');
-    expect(wrapper.find('#adName').text()).toBe('');
+    // 主读数没有可展示的正本，但工作台快照里这一行仍能读懂「这是谁」。
+    expect(wrapper.find('#adName').text()).toBe('Ada');
   });
 
   test('任务线程的运行面板打开时进入详情，dock 与任务事件流都关闭', async () => {

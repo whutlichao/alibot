@@ -356,6 +356,8 @@ async function acknowledgeRemote(provider) {
 const agentDetail = createAgentDetailStore({
   online: () => state.online,
   toast: toasts.push,
+  // 主读数失败时退回工作台已有的这一行镜像（旧页面也从 `state.agents` 取这份显示）。
+  fallbackAgent: (memberId) => store.mutable.agents.find((item) => item.id === memberId) || null,
   onAgentUpdated: (payload) => {
     if (payload && Array.isArray(payload.agents)) store.mutable.agents = payload.agents;
     if (payload && Array.isArray(payload.members)) store.mutable.members = payload.members;

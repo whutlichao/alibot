@@ -198,6 +198,7 @@ function emptyView(memberId) {
 /**
  * @param {{ online?: () => boolean, toast?: (message: string, kind?: string) => void,
  *           onAgentUpdated?: (payload: object) => void,
+ *           fallbackAgent?: (memberId: string) => object | null,
  *           onAgentsChanged?: (payload: object, memberId: string, name: string) => void }} options
  *   `online` 给的是**当前**在线读数（详情里的写入口与其它面同一口径：不发得出去的写就不摆能按的入口）；
  *   `onAgentsChanged` 在成员被删除后把响应里的最新名单交回父组件（列表的正本在后端）。
@@ -207,6 +208,7 @@ export function createAgentDetailStore(options) {
   const online = config.online || (() => true);
   const toast = config.toast || (() => {});
   const onAgentUpdated = config.onAgentUpdated || (() => {});
+  const fallbackAgent = config.fallbackAgent || (() => null);
   const onAgentsChanged = config.onAgentsChanged || (() => {});
 
   const state = reactive({
@@ -349,6 +351,15 @@ export function createAgentDetailStore(options) {
     } catch (err) {
       if (state.memberId !== memberId) return null;
       current.agentError = err && err.message ? err.message : String(err);
+      // 主读数读不到：退回工作台已有的这一行镜像（旧页面也从 `state.agents` 取这份显示），
+      // 于是失败时仍能读懂「这是谁」，而不是一片空白与全 0；原因由调用方说明。
+      if (!current.agent) {
+        const cached = fallbackAgent(memberId);
+        if (cached && cached.id) {
+          current.agent = cached;
+          syncDraft(cached);
+        }
+      }
       return null;
     } finally {
       if (state.memberId === memberId) current.agentLoading = false;
