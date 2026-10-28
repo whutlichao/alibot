@@ -680,6 +680,24 @@ describe('skills 页签', () => {
     expect(menu.classes()).toContain('skill-import-menu');
   });
 
+  test('导入区与下方技能双栏之间留出 20px（作用域规则，全局 `.resource-add` 不动）', () => {
+    // 设计反馈：「跟下面的 skill 列表靠的太近了」。jsdom 不做布局，间距落成 CSS 文本契约：
+    // ① skills 页签的导入块有一条作用域规则，底部外边距 = 20px（`--sp-9`）；
+    // ② 全局 `.resource-add` 仍是原来的 margin —— 它还被 mcp 面板的表单复用，不许写穿。
+    const css = readStudio('app.css');
+
+    const scopedAt = css.indexOf('.agent-skill-section > .resource-add {');
+    expect(scopedAt, '缺少 skills 页签导入区的作用域规则').toBeGreaterThanOrEqual(0);
+    const scopedBlock = css.slice(scopedAt, css.indexOf('}', scopedAt));
+    expect(scopedBlock).toContain('margin-bottom: var(--sp-9)');
+
+    // 行首匹配：作用域选择器本身也以 `.resource-add {` 结尾，裸 `indexOf` 会先命中它。
+    const globalAt = css.indexOf('\n.resource-add {');
+    expect(globalAt, '全局 `.resource-add` 规则不见了').toBeGreaterThanOrEqual(0);
+    const globalBlock = css.slice(globalAt, css.indexOf('}', globalAt));
+    expect(globalBlock).toContain('margin: var(--sp-5) 0 0');
+  });
+
   test('下拉：三组候选、已安装与不可导入禁选、默认不预选、点一条立即导入（一次一个）', async () => {
     const { wrapper, stub } = await mountApp();
     await openDetail(wrapper);

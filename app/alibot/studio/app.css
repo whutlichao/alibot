@@ -581,6 +581,10 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 @media (max-width: 900px) {
   .agent-skill-columns { grid-template-columns: minmax(0, 1fr); }
 }
+/* 导入区与下方技能双栏之间的间距（设计反馈：「跟下面的 skill 列表靠的太近了」）：20px 取自
+   `--sp-9`。固定高度工作区里这 20px 由双栏高度让出，`min-height: 180px` 兜底不变。
+   必须用直接子选择器限定在 skills 页签：`.resource-add` 还被 mcp 面板的表单复用，不能改全局规则。 */
+.agent-skill-section > .resource-add { margin-bottom: var(--sp-9); }
 /* 导入区（自绘下拉 + 两个按钮 + 结果区）：全部规则带 `.skill-import-*` 前缀，只服务本页签，
    不动 `.d-sec` / `.resource-add` / `.btn` 这些全局共用语汇。
 
