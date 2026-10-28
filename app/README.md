@@ -702,8 +702,8 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `DELETE /api/agents/{id}` | **软删除**一个 Agent：写 `member.deleted_at` 并删掉它在 `target_member` 的全部行（移出全部频道与任务线程）。消息 / 任务 / DM target / `agent_config` / `round_outcome` 保留，不重写任务指派；不落消息、不唤醒、不消耗预算。只接受未删除的 `kind='agent'`；owner、未知 id、二次删除一律可读 404 `not_found`。响应 `{deleted, agents, members}` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
 | `GET /api/agents/{id}/global-mcp-servers` | 该成员家目录 `mcp.json` 的只读条目视图：条目 + 运行期读数。**该文件不参与运行时装配**（运行期只看 `mcp_server` Agent 级库行）；改原文走上表中的两条 `global-mcp-file` 端点，生效需要先 `migrate-mcp` 导入 |
-| `GET /api/agents/{id}/global-mcp-file` | 该成员家目录 `mcp.json` 的**原文** + 条目计数（`{member_id, exists, text, servers}`）。只读，不创建也不写入；文件不存在 ⇒ `exists=false` + 空串（不是「读到空文件」） |
-| `PUT /api/agents/{id}/global-mcp-file` | 把整份**原文**写盘 `{text}`：三道校验（JSON 可解析 → 顶层是对象且 `servers` 是数组 → 每条声明经既有归一化内核）**全过才写**，任一条不合法 ⇒ 400 + `fields` + **零写入**。原文**逐字**写（不重排 / 不格式化 / 不动末尾换行）；文件不存在但家目录在 ⇒ 新建，家目录不存在 ⇒ 400 且不建目录 |
+| `GET /api/agents/{id}/global-mcp-file` | 该成员家目录 `mcp.json` 的**原文** + 条目计数 + **真实路径**（`{member_id, exists, text, servers, path}`）。只读，不创建也不写入；文件不存在 ⇒ `exists=false` + 空串（不是「读到空文件」），`path` 仍给出该文件应在的位置；路径被全局层守卫拒 ⇒ `path=null` |
+| `PUT /api/agents/{id}/global-mcp-file` | 把整份**原文**写盘 `{text}`：三道校验（JSON 可解析 → 顶层是对象且 `servers` 是数组 → 每条声明经既有归一化内核）**全过才写**，任一条不合法 ⇒ 400 + `fields` + **零写入**。原文**逐字**写（不重排 / 不格式化 / 不动末尾换行）；文件不存在但家目录在 ⇒ 新建，家目录不存在 ⇒ 400 且不建目录。响应同读端点（含 `path`） |
 | `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 确认家目录 `mcp.json` 里的**一条远端声明**（写 `remote_consent_scope('mcp', 'global:<member>:<name>')`，幂等、只存时间）。**它不改变装配**：`mcp.json` 不参与运行时装配，要生效得先 `migrate-mcp` 导入成 `mcp_server` 库行，导入后再走 `POST /api/mcp-servers/{id}/consent` |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
