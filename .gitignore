@@ -26,8 +26,9 @@ __pycache__/
 
 # 前端（Vue 版工作台，ADR-0038）
 # `node_modules` 不入库；`package-lock.json` **必须**入库——构建可复现，且产物新鲜度指纹
-# （`app/frontend/build-info.js`）把它算进源码指纹里。
-node_modules/
+# （`app/frontend/build-info.js`）把它算进源码指纹里。**不带尾斜杠**：worktree 里
+# `node_modules` 常是指向主仓的符号链接，`node_modules/` 只匹配目录，链接会漏成未跟踪文件。
+node_modules
 
 # 构建产物**不再入库**（ADR-0039 推翻 ADR-0038 §一）：`app/alibot/studio/v2/` 由
 # `npm run build` 在构建时生成。`scripts/check.sh` 在跑门禁前建、CI 在 `npm ci` 后建、
