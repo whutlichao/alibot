@@ -542,7 +542,7 @@ lifespan 里的调用点（`api.py:878-879`，缩减形式见上面那段 diff�
 
 守卫的第二条用例（§7.6）用**正对照**钉住这件事：默认参数下 `calls == ["reaper", "sweep"]`。
 
-### 7.6 守卫（Change 第 5 条，已落地）
+### 7.6 守卫（票面「新增守卫测试」那一类的第二份；已落地）
 
 `app/tests/test_docker_startup_injection.py`，四条用例：
 
@@ -599,7 +599,7 @@ lifespan 那段是 `suppress(Exception)`，抛出来的异常会被吞掉，布�
 ### 7.7 本机验证的边界（必须写明）
 
 **本机（macOS）没有 docker daemon。** 全部 docker 用例在本地 `skip`（本机全量
-`1282 passed, 11 skipped`，11 条 skip 里包含**全部** docker 用例）。因此：
+`1282 passed, 11 skipped`，其中 docker 相关 9 条、见 §7.8 的逐条清单）。因此：
 
 - 本地能证：非 docker 用例全绿 + 全量门禁 exit 0 + 并行不引入新的不稳 + 守卫的两条方向。
 - 本地**不能**证：docker 侧的行为。**docker 相关修复的验证以 CI 为准**（§7.9）。
@@ -647,9 +647,13 @@ real 1m29.812s
 `ruff format --check` 与 `ruff check` 两条都绿——这正是收口前卡住 exit 1 的那一处（本文件 §7.5
 的 markdown 代码块少一个空行）。
 
-**这 11 条 skip 里包含全部 docker 用例**（本机无 daemon）：`test_docker_workspace.py` 9 条 +
-`test_mcp_assembly.py` 2 条 `@requires_docker`，一条都没被 skipped 掉以外的方式处理（没有 skip /
-xfail / 环境门被新增；它们本来就在无 daemon 时 skip）。**docker 侧的修复只能由 CI 证明。**
+**这 11 条 skip 里包含全部 docker 用例**（`-rs` 逐条核过，本机无 daemon）：docker 相关共 **9 条**
+——`test_docker_workspace.py` **8** 条（`:123` / `:183` / `:256` / `:313` / `:355` / `:370` / `:738` /
+`:754`）+ `test_mcp_assembly.py` **1** 条（`:486`），skip 理由都是
+`Docker daemon is not available`。另 **2 条与 docker 无关**：`test_agent_smoke.py:53`（真模型冒烟
+默认跳过，要 `ALIBOT_SMOKE_MODEL`）与 `test_reminder_schema_step.py:314`（本机没有
+`libfaketime`）。一条都没被 skipped 掉以外的方式处理（没有 skip / xfail / 环境门被新增；
+它们本来就在该条件下 skip）。**docker 侧的修复只能由 CI 证明。**
 
 顺带说明：上一轮（仅 SSE 提速，用例 1278）的 `-n 4` 是 120.13s；收口后这一轮 `-n 4` 是 120.11s
 **基本持平**——多跑的 4 条守卫里有 2 条真的会起一次 `TestClient` lifespan，代价落在秒级。
@@ -657,4 +661,44 @@ xfail / 环境门被新增；它们本来就在无 daemon 时 skip）。**docker
 
 ### 7.9 CI（续作）
 
-<!-- CI_RESULT -->
+**结论：绿。** run [40614097315](https://github.com/whutlichao/alibot/actions/runs/40614097315)
+（head `cf6ff6d`，`pull_request` 事件，job `check` 用时 **8m28s**，**conclusion = success**，
+`Gate（scripts/check.sh）` 步骤通过）。
+
+```text
+== pytest（全量） ==
+1291 passed, 2 skipped in 377.14s (0:06:17)
+
+== ruff check ==                     All checks passed!
+== ruff format --check ==            373 files already formatted
+== mypy（仓库根） ==                 Success: no issues found in 136 source files
+== pyright ==                        0 errors, 0 warnings, 0 informations
+== Vitest（Vue 版工作台） ==         Test Files 24 passed (24) / Tests 448 passed (448)
+门禁全绿
+```
+
+**这一次 CI 就是 docker 侧修复的正面证据**，两条读数对齐得严丝合缝：
+
+| | 本机（macOS，无 daemon） | CI（Linux，有 daemon） |
+| --- | --- | --- |
+| pytest 汇总 | `1282 passed, 11 skipped` | **`1291 passed, 2 skipped`** |
+| docker 用例 | 9 条全 skip | **9 条全跑过（并入 1291 passed）** |
+| 其余 skip | 2 条（真模型冒烟、`libfaketime`） | 同样这 2 条 |
+
+1291 − 1282 = **9**，正好是上表那 9 条 docker 用例；skipped 从 11 降到 2，差额也是这 9 条。
+即：**`test_docker_workspace.py` 的 8 条与 `test_mcp_assembly.py` 的 1 条在并行 CI 上真的跑完了并且通过**
+——包括首轮红掉的那两条（`test_release_closes_the_gateway_and_the_docker_client`、
+`test_docker_backend_materializes_mcp_through_the_workspace_gateway`）。修复前同一 job 是
+`1 failed, 1286 passed, 2 skipped` / `2 failed, 1285 passed, 2 skipped`（§7.1）。
+
+两处与本机读数的差异及原因：
+
+- `ruff format --check` 373（本机 372）、`Vitest` 24 files / 448 tests（本机 23 / 437）：CI 在
+  **merge commit**（分支 + `main@33e2142`，即 PR #327 已合并的前端改动）上跑，本机是分支自身。
+  pytest 的 collected 数不受影响（1293）。
+- `pytest（全量）` 377.14s 比本机 74.18s 慢：CI runner 4 核 + 有 daemon 的 9 条 docker 用例真跑。
+
+> 过程记录（如实）：本票收尾期间连着推了 5 个 docs 提交，`.github/workflows/check.yml` 的
+> `concurrency: {group: check-<ref>, cancel-in-progress: true}` 把前 4 次 CI 逐次取消
+> （`2fec905` / `b578072` / `ddb397d` / `0e60e65` 的 run 结论都是 `cancelled`，**不算通过证据**）。
+> 只有 `cf6ff6d` 这一次跑完并给出 `success`。上表读的全部来自这一次。

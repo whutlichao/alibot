@@ -884,7 +884,7 @@ Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要�
 1. `app/tests/test_sse_lifetime_config.py`——事件流寿命的**生产默认值**与「调用时读取」的时机。
 2. `app/tests/test_docker_startup_injection.py`——`create_app` 的启动清扫**接线**（测试装配零调用 /
    生产装配必调，顺序 `reaper→sweep`），以及「每个进 lifespan 的装配点都显式传替身」的 AST 扫描。
-   为什么非按模块级断言不可：本机没有 docker daemon，9 + 2 条 docker 用例全 skip，所以「测试装配
+   为什么非按模块级断言不可：本机没有 docker daemon，9 条 docker 用例（8 + 1）全 skip，所以「测试装配
    漏传替身」在本机**看不见**，只在有 daemon 的 CI 上表现成别的 worker 的容器被删（见
    `app/specs/issue-328-acceptance.md` §7.6）。
 

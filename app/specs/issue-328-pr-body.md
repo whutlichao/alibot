@@ -123,6 +123,21 @@
   上一轮「仅 SSE 提速」阶段是 1278 passed / 371 files / real 1m36s；收口后用例 +4、格式化文件
   数 +1（新增的守卫文件），耗时反而略短。
 
+- **CI（`check`，run 40614097315，head `cf6ff6d`，conclusion = success，job 8m28s）：**
+  ```text
+  pytest（全量）          1291 passed, 2 skipped in 377.14s
+  ruff check              All checks passed!
+  ruff format --check     373 files already formatted
+  mypy（仓库根）          Success: no issues found in 136 source files
+  pyright                 0 errors, 0 warnings, 0 informations
+  Vitest                   Test Files 24 passed (24) / Tests 448 passed (448)
+  门禁全绿
+  ```
+  **这是 docker 侧修复的正面证据**：CI 有 daemon，9 条 docker 用例真的跑了——
+  `1291 − 1282 = 9`、skip 从 11 降到 2，差额都是这 9 条。修复前同一 job 是
+  `1 failed, 1286 passed, 2 skipped` / `2 failed, 1285 passed, 2 skipped`。
+  （373 / 24 files 比本机多，是因为 CI 在 merge commit 上跑，含 `main@33e2142` 的前端改动。）
+
 - **生产默认未被改小：** `test_sse_lifetime_config.py` 7 passed；手工读数（不带环境变量）
   `no env -> 55.0`、`env=9 -> 9.0`、`env=bogus -> 55.0`。
 
@@ -164,8 +179,9 @@
 单进程**下是对的；冲突只发生在「多个独立进程同时进 lifespan」这个**测试环境**条件里。修 sweep 的
 多进程归属是跟进票 [#330](https://github.com/whutlichao/alibot/issues/330)，本票不碰它。
 
-**本机验证边界**：本机（macOS）没有 docker daemon，全部 docker 用例本地 `skip`（11 条 skip 含全部
-docker 用例）——docker 侧的修复只能由 CI 证明。
+**本机验证边界**：本机（macOS）没有 docker daemon，9 条 docker 用例本地全 `skip`（本机 11 条 skip
+里另 2 条与 docker 无关：真模型冒烟、`libfaketime`）——docker 侧的修复只能由 CI 证明；
+**CI 已绿**（见下）。
 
 **README 的测试分层例外清单已同步**：`app/README.md` 在「两处例外（词条表数据契约）」之后另起一段，
 补上**一类**不以 HTTP 面读数的守卫（断言装配层接线 / 配置默认值），列出
