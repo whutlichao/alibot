@@ -15,13 +15,14 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
-from alibot.agent_seam import AgentEventRecord
+from alibot.agent_seam import AgentEventRecord, RoundOutcome
 from alibot.events import (
     LIVE_EVENT_TYPES,
     QUEUE_LIMIT,
@@ -73,6 +74,36 @@ def _wait_for(events: list[dict], predicate, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.01)
     return False
+
+
+class _TeamMemberReplySeam(ScriptedAgentSeam):
+    """队长轮次里额外发一条成员 reply：复刻 team 成员经 `emit` 的发布路径（#333）。
+
+    为什么需要这个进程内替身：脚本化替身只跑**队长**那一侧，team 成员由真适配器的
+    ``TeamPipeline`` 运行；本用例要验的正是 ``_run_seam.emit`` 里「成员帧带 ``scope=member``」
+    那一支，因此在这里补发一条成员 ``REPLY_START`` / ``REPLY_END``——它走**同一个** ``emit``，
+    不另造发布路径（`docs/agents/review-rules.md` 第 2 条）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # 成员 id 要等 HTTP 建出 Agent 之后才知道（与 `seam.behaviors[...]` 的既有写法同一时序）。
+        self.member_id = ""
+
+    def run_round_stream(
+        self,
+        agent: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        target_id: str,
+        emit: Callable[[AgentEventRecord], None] | None = None,
+        **kwargs: Any,
+    ) -> RoundOutcome:
+        if emit is not None and self.member_id and str(agent["id"]) != self.member_id:
+            base = {"target_id": target_id, "member_id": self.member_id, "reply_id": "member-reply-1"}
+            emit(AgentEventRecord(type="REPLY_START", payload={"role": "assistant"}, **base))
+            emit(AgentEventRecord(type="REPLY_END", payload={"finished_reason": "completed"}, **base))
+        return super().run_round_stream(agent, messages, target_id=target_id, emit=emit, **kwargs)
 
 
 def test_event_stream_replays_messages_after_the_cursor(live: dict) -> None:
@@ -288,8 +319,79 @@ def test_typing_indicator_is_emitted_while_a_round_is_in_flight(live: dict) -> N
     statuses = [event["status"] for event in events if event["type"] == "member_status"]
     assert "working" in statuses, events
     assert statuses[-1] == "online", events
+    # #333：轮次级的起止帧带可判定的 `scope="round"`（前端据此决定「这帧能不能写 / 清 typing」）。
+    typing_frames = [event for event in events if event["type"] == "typing"]
+    assert [frame["active"] for frame in typing_frames] == [True, False], events
+    assert all(frame["scope"] == "round" for frame in typing_frames), typing_frames
     stop.set()
     reader_thread.join(timeout=5)
+
+
+def test_team_member_typing_frames_carry_member_scope(data_dir: Path) -> None:
+    """#333：typing 帧的层级是**可判定字段**——轮次帧 `round`、team 成员帧 `member`。
+
+    前端只让 `round` 帧写 / 清轮次槽位；`member` 帧不进那个槽位（成员的在飞由 `activeRounds`
+    表达），因此成员的 `active=false` 不会误清队长的轮次指示。层级**不**读 `reason` 的文案。
+
+    成员帧由替身在队长轮次里经同一个 `emit` 补发一条 ``REPLY_START`` / ``REPLY_END``：
+    真适配器的 ``TeamPipeline`` 就是这样发布的（见 ``orchestration._run_seam.emit``），
+    这里验的是那个真实发布点，不是另一份实现。
+    """
+    scheduler, seam = ManualScheduler(), _TeamMemberReplySeam()
+    with (
+        live_backend(data_dir, scheduler=scheduler, seam=seam) as base_url,
+        httpx.Client(base_url=base_url, timeout=httpx.Timeout(30.0, read=None), trust_env=False) as http,
+    ):
+        leader = http.post("/api/agents", json=AGENT_PAYLOAD).json()["agent"]
+        member = http.post("/api/agents", json=dict(AGENT_PAYLOAD, name="成员")).json()["agent"]
+        seam.member_id = member["id"]
+        channel = _channel_with(http, leader["id"])
+
+        frames: list[dict] = []
+        stop = threading.Event()
+
+        def reader() -> None:
+            with http.stream(
+                "GET", f"/api/channels/{channel['id']}/events", params={"after_seq": 0}
+            ) as response:
+                for line in response.iter_lines():
+                    if stop.is_set():
+                        return
+                    text = line.decode() if isinstance(line, bytes) else line
+                    if text.startswith("data: "):
+                        frames.append(json.loads(text[len("data: ") :]))
+
+        reader_thread = threading.Thread(target=reader)
+        reader_thread.start()
+        # 订阅建立的可观信号是 `round.active`：它在服务端 `events.subscribe()` **之内**发出，
+        # 而状态点快照在订阅之前就发完了（那里等不到「已经订阅」这件事）。
+        assert _wait_for(frames, lambda items: any(i["type"] == "round.active" for i in items)), frames
+
+        http.post(f"/api/channels/{channel['id']}/messages", json={"body": "开工"})
+        scheduler.drain()
+        # 等**两条**收口帧都到：成员帧在 `emit` 里发，队长的轮次帧在轮次收口时才发，先后有序，
+        # 只等其中一条会让另一条被 `stop` 提前截断。
+        closed = _wait_for(
+            frames,
+            lambda items: (
+                {(i["member_id"], i["active"]) for i in items if i["type"] == "typing"}
+                >= {(member["id"], True), (member["id"], False), (leader["id"], True), (leader["id"], False)}
+            ),
+        )
+        assert closed, frames
+        stop.set()
+        reader_thread.join(timeout=5)
+
+    typing_frames = [frame for frame in frames if frame["type"] == "typing"]
+    round_frames = [frame for frame in typing_frames if frame["member_id"] == leader["id"]]
+    member_frames = [frame for frame in typing_frames if frame["member_id"] == member["id"]]
+    # 轮次帧（队长自己的轮次开始 / 收口）：scope 是 round。
+    assert [frame["active"] for frame in round_frames] == [True, False], typing_frames
+    assert all(frame["scope"] == "round" for frame in round_frames), round_frames
+    # 成员帧（team-assignment）：scope 是 member，且 reason 仍带既有可读标识。
+    assert [frame["active"] for frame in member_frames] == [True, False], typing_frames
+    assert all(frame["scope"] == "member" for frame in member_frames), member_frames
+    assert all(frame["reason"] == "team-assignment" for frame in member_frames), member_frames
 
 
 def test_status_event_reports_error_after_a_failed_round(live: dict) -> None:
