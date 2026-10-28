@@ -577,9 +577,10 @@ lifespan 那段是 `suppress(Exception)`，抛出来的异常会被吞掉，布�
 **越层判断（`docs/agents/review-rules.md` 判断题 3 / `app/README.md` 的「pytest 只断言外部可观察
 行为」）**：前两条用例断言的是**模块级接线**，不是 HTTP 面能观察到的行为——但「测试装配不跑真实
 容器清扫」这件事**只有两种读法**：等 CI 上别的 worker 的容器被删（几十分钟、且不受控），或直接看
-调用序列（毫秒级、确定）。它和既有的 i18n 例外同源：**没有 HTTP 读数面**。因此它是**接缝级守卫**，
-与 `test_agent_seam_client_lifecycle.py` 同类，不是行为用例；`test_test_layering_guard.py` 的机械
-判据（不 import 私有名、不断言词表形状、不读 Studio 源码）全部通过。
+调用序列（毫秒级、确定）。它与 i18n 那两处例外的**共同点只是「没有 HTTP 读数面」**，理由本身
+**不同源**（那两处比的是词条数据契约，这里比的是装配接线）——所以 README 里它是**另起一段的一类**，
+不是「第三处」。因此它是**接缝级守卫**，与 `test_agent_seam_client_lifecycle.py` 同类，不是行为用例；
+`test_test_layering_guard.py` 的机械判据（不 import 私有名、不断言词表形状、不读 Studio 源码）全部通过。
 
 **落回 README（协调者裁定，本轮已补）**：`app/README.md` 在「两处例外，理由同源（词条表是数据
 契约）」那段**之后另起一段**，新增**一类**不以 HTTP 面读数的守卫——「断言装配层接线或配置默认值」，
