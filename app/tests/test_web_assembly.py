@@ -37,6 +37,8 @@ from alibot.events import EventBus
 from alibot.web import HttpRequest, HttpResponse
 from fastapi.testclient import TestClient
 
+from tests.scripted import inert_docker_startup
+
 AGENT_NAME = "联网成员"
 STUB_REPLY = "已处理。"
 FETCH_URL = "https://api.example.com/docs"
@@ -360,7 +362,9 @@ def test_the_consent_endpoint_unlocks_the_tools_for_the_same_scope(
     assert not ({"web_search", "fetch"} & _tool_names()), "未确认时不该挂任何联网工具"
     assert no_outbound_requests.requests == []
 
-    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+    with TestClient(
+        create_app(data_dir=Path(database.path).parent, docker_startup=inert_docker_startup)
+    ) as client:
         confirmed = client.post("/api/web-providers/brave/consent")
         assert confirmed.status_code == 200, confirmed.text
 
@@ -794,7 +798,9 @@ def test_patching_the_agent_web_access_off_stops_web_search_in_a_dm(library: Any
     _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
     assert "web_search" in _tool_names(), "未配置时 DM 默认挂 web_search"
 
-    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+    with TestClient(
+        create_app(data_dir=Path(database.path).parent, docker_startup=inert_docker_startup)
+    ) as client:
         patched = client.patch(f"/api/agents/{agent['id']}", json={"web_access": "off"})
         assert patched.status_code == 200, patched.text
 
@@ -817,14 +823,18 @@ def test_patching_the_agent_web_access_null_brings_web_search_back_in_a_dm(
     """
     database, agent, _channel = library
     dm, _created = database.create_dm(agent["id"])
-    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+    with TestClient(
+        create_app(data_dir=Path(database.path).parent, docker_startup=inert_docker_startup)
+    ) as client:
         patched = client.patch(f"/api/agents/{agent['id']}", json={"web_access": "off"})
         assert patched.status_code == 200, patched.text
 
     _run_dm_round(_seam(database, environ=_keyless_environ()), database, agent, dm)
     assert "web_search" not in _tool_names(), "显式 off 先关掉它"
 
-    with TestClient(create_app(data_dir=Path(database.path).parent)) as client:
+    with TestClient(
+        create_app(data_dir=Path(database.path).parent, docker_startup=inert_docker_startup)
+    ) as client:
         cleared = client.patch(f"/api/agents/{agent['id']}", json={"web_access": None})
         assert cleared.status_code == 200, cleared.text
         assert cleared.json()["agent"]["web_access"] is None

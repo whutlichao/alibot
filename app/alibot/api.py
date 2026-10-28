@@ -74,7 +74,7 @@ import io
 import os
 import queue
 import threading
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -721,6 +721,21 @@ class SOPResume(BaseModel):
     confirm_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
+# 「启动时的 Docker 工作区清理」这一步的接缝。默认实现（``None``）是
+# ``start_docker_reaper()`` + ``await sweep_stale_docker_workspaces()``——与这个注入点出现之前**逐字
+# 相同**。测试传一个**空的**异步函数进来，把这条动作整个**关掉**（不是「跑个空函数假装扫过」）。
+DockerStartupHook = Callable[[], Awaitable[None]]
+
+
+async def _default_docker_startup() -> None:
+    """生产默认：起空闲回收线程 + 清扫上一进程遗留的容器（#150）。
+
+    Docker 是可选后端，daemon 不在时两步都安静失败，不影响主服务启动。
+    """
+    start_docker_reaper()
+    await sweep_stale_docker_workspaces()
+
+
 def create_app(
     data_dir: Path | str | None = None,
     db: Database | None = None,
@@ -730,6 +745,7 @@ def create_app(
     reminder_delivery: ReminderDeliveryDriverFactory | None = None,
     approval_timeout_seconds: float | None = None,
     seam_factory: Callable[[Any], Any] | None = None,
+    docker_startup: DockerStartupHook | None = None,
 ) -> FastAPI:
     """组装后端。
 
@@ -744,6 +760,15 @@ def create_app(
 
     ``seam_factory`` 是审批测试的注入口：它接收本函数刚建好的 ``ApprovalBroker``，返回成员面实现；
     ``approval_timeout_seconds`` 只用于把默认 10 分钟的审批等待缩短到测试可观察的尺度。
+
+    ``docker_startup`` 是**进程边界**的注入口，理由不是测试洁癖：lifespan 启动时那条
+    ``sweep_stale_docker_workspaces()`` 的判据是「不在**本进程**的容器池里 ⇒ 没人用 ⇒ 强删」。
+    这条语义在**生产单进程**下成立，但测试用 xdist 并行时多个 pytest worker 是**独立进程**，
+    任何 worker 进 lifespan 都会把别的 worker 正在用的容器删掉（#328 的 CI 两次红：
+    ``<no gateway log available>`` 与 ``DockerError [404] No such exec instance``）。
+    传一个空的异步函数即**关掉**这条启动清扫。``None``（生产）时行为与之前逐字相同。
+    生产多进程下的归属问题不在本票修，见 #330
+    （https://github.com/whutlichao/alibot/issues/330）。
     """
     database = db if db is not None else open_database(data_dir)
 
@@ -757,6 +782,9 @@ def create_app(
         return str(task["title"]) if task else target_id
 
     events = EventBus()
+    # 启动时的 Docker 动作同样在这里解析成局部变量（与 ``make_driver`` 同一个形状）：默认值只
+    # 解析一次，lifespan 里读的是一个确定的 callable，不再带一条三目分支。
+    run_docker_startup = docker_startup if docker_startup is not None else _default_docker_startup
     # 审批（#149）：进程内 broker 是等待/唤醒的唯一落点；启动时把上个进程残留的 pending 标
     # expired（D19：跨重启恢复不在首版）。默认等待 10 分钟；测试可注入更短的上界。
     approvals = ApprovalBroker(
@@ -844,11 +872,11 @@ def create_app(
         database.prune_sop_runs()
         # Docker 工作区（#150）：启动清扫上一进程遗留的容器 + 空闲回收线程。Docker 是可选
         # 后端：daemon 不在时这些步骤安静失败，不影响主服务启动。
-        try:
-            start_docker_reaper()
-            await sweep_stale_docker_workspaces()
-        except Exception:
-            pass
+        #
+        # 走注入点：`None`（生产）= `_default_docker_startup()`，与这条注入点出现之前逐字相同；
+        # 测试传空的异步函数把这条动作**关掉**（#328 的 CI 红 / 跟进票 #330）。
+        with suppress(Exception):
+            await run_docker_startup()
         # 开窗前先扫一次（C8 判据 3）：一条启动前就已过点且在窗口内的提醒，在「第一次读到
         # ``GET /api/reminders``」时 `fired_at` 已非空，不需要等第一轮 30 秒轮询。
         start_driver = getattr(driver, "start", None)

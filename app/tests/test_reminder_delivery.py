@@ -43,7 +43,7 @@ from alibot.reminder_delivery import (
 from fastapi.testclient import TestClient
 
 from tests.conftest import build_app, channel_with_agent, create_agent, create_channel, messages, send
-from tests.scripted import ManualScheduler, ScriptedAgentSeam
+from tests.scripted import ManualScheduler, ScriptedAgentSeam, inert_docker_startup
 
 # 一个固定的本地到期时刻：本文件的所有读数都以它为锚点（用**本地时间**写，与库里 `time` 的形状一致）。
 DUE = "2026-10-18 09:00"
@@ -100,7 +100,14 @@ def reminder_backend(data_dir: Path, **kwargs) -> Iterator[dict]:
 def build_app_with_reminder_delivery(
     data_dir: Path, factory, *, scheduler: ManualScheduler, seam: ScriptedAgentSeam
 ):
-    return create_app(data_dir=data_dir, scheduler=scheduler, seam=seam, reminder_delivery=factory)
+    return create_app(
+        data_dir=data_dir,
+        scheduler=scheduler,
+        seam=seam,
+        reminder_delivery=factory,
+        # 与 `build_app` 同一条纪律：启动清扫在 xdist 多进程下会删掉别的 worker 的容器。
+        docker_startup=inert_docker_startup,
+    )
 
 
 @pytest.fixture
@@ -524,7 +531,13 @@ def test_a_failed_message_write_leaves_the_marker_null(tmp_path: Path) -> None:
             return state["driver"]
 
         with TestClient(
-            create_app(data_dir=tmp_path, scheduler=scheduler, seam=seam, reminder_delivery=factory)
+            create_app(
+                data_dir=tmp_path,
+                scheduler=scheduler,
+                seam=seam,
+                reminder_delivery=factory,
+                docker_startup=inert_docker_startup,
+            )
         ) as client:
             state["client"] = client
             state["fire"] = state["driver"].deliver
@@ -579,7 +592,9 @@ def test_the_startup_sweep_fires_without_waiting_for_the_first_poll(tmp_path: Pa
         assert first.get("/api/reminders").json()["reminders"][0]["fired_at"] is None
 
     # 新进程用**生产**装配（不注入驱动器 ⇒ 真实后台线程 + 启动先扫），进去就立即读。
-    with TestClient(create_app(data_dir=data_dir)) as second:
+    # 只关掉 Docker 启动清扫（`docker_startup=inert_docker_startup`）：本用例要证的是**提醒**的
+    # 启动先扫，容器清扫在这里既无关、又会在 xdist 并行时删掉别的 worker 的容器（#328 / #330）。
+    with TestClient(create_app(data_dir=data_dir, docker_startup=inert_docker_startup)) as second:
         item = next(r for r in second.get("/api/reminders").json()["reminders"] if r["text"] == "开机就该响")
         assert item["fired_at"] is not None
         assert item["state"] == "fired"
@@ -597,7 +612,9 @@ def test_repeated_start_and_stop_leaves_no_orphan_thread_and_no_closed_database_
 
     for _ in range(3):
         # 每一次都用**生产**装配（真实轮询线程），退出时走完整条 lifespan 关停顺序。
-        with TestClient(create_app(data_dir=data_dir)) as client:
+        # Docker 启动清扫仍注入惰性替身：本用例证的是「反复启停无孤儿线程 / 无已关库报错」，
+        # 与容器清扫无关，而后者在 xdist 并行下会跨进程误删（#328 / #330）。
+        with TestClient(create_app(data_dir=data_dir, docker_startup=inert_docker_startup)) as client:
             channel = create_channel(client, name="启停").json()["channel"]
             assert (
                 client.post(

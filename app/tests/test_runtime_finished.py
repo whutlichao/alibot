@@ -13,7 +13,7 @@ from alibot.db import Database
 from fastapi.testclient import TestClient
 
 from tests.conftest import create_agent, create_channel, outcomes, send
-from tests.scripted import ManualScheduler
+from tests.scripted import ManualScheduler, inert_docker_startup
 from tests.test_approval_seam import _ScriptedModel, _StubModelSeam
 from tests.test_schema_migration import _build_library, _migrate_argv, _run, _shape
 
@@ -58,7 +58,12 @@ def test_finished_reason_and_readable_diagnosis_survive_http(
     monkeypatch.setattr(Agent, "reply_stream", reply)
     model = _ScriptedModel([[ChatResponse(content=[TextBlock(text="未使用")], is_last=True)]])
     scheduler = ManualScheduler()
-    app = create_app(data_dir=tmp_path, seam=_StubModelSeam(model), scheduler=scheduler)
+    app = create_app(
+        data_dir=tmp_path,
+        seam=_StubModelSeam(model),
+        scheduler=scheduler,
+        docker_startup=inert_docker_startup,
+    )
     with TestClient(app) as client:
         agent = create_agent(client).json()["agent"]
         channel = create_channel(client, member_ids=[agent["id"]]).json()["channel"]

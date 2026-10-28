@@ -58,7 +58,7 @@ from alibot.db import BUDGET_LIMIT_TIERS, default_data_dir, utc_now
 from alibot.orchestration import ThreadScheduler
 from fastapi.testclient import TestClient
 
-from tests.scripted import ScriptedAgentSeam
+from tests.scripted import ScriptedAgentSeam, inert_docker_startup
 
 APP_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_PRICE_SNAPSHOT = APP_DIR / "specs" / "issue-55-model-prices-2026-10-18.json"
@@ -1204,7 +1204,13 @@ def run(config: RunConfig) -> dict[str, Any]:
         )
     credentials = _scripted_credentials(config.remote_model) if config.dry_run else nullcontext()
     with credentials:
-        app = create_app(data_dir=config.data_dir, scheduler=scheduler, seam=seam)
+        app = create_app(
+            data_dir=config.data_dir,
+            scheduler=scheduler,
+            seam=seam,
+            # 与测试装配同一条纪律：启动清扫按「本进程池」判孤儿，并行的多个测量进程会互相误删。
+            docker_startup=inert_docker_startup,
+        )
         with TestClient(app) as client:
             raw = run_epoch(client, config, seam=seam, guard=guard)
     mode = "scripted-double" if config.dry_run else "real-provider"

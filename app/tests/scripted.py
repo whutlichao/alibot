@@ -79,6 +79,34 @@ class ManualScheduler:
         return results
 
 
+async def inert_docker_startup() -> None:
+    """测试的 Docker 启动钩子：**什么都不做**——把启动清扫这条动作整个**关掉**。
+
+    为什么要关掉（#328 / 跟进票 #330）：``create_app`` 的 lifespan 启动时会调
+    ``sweep_stale_docker_workspaces()``，它的判据是「不在**本进程**的容器池里 ⇒ 没人用 ⇒
+    ``force=True`` 删掉」。生产是单进程，这条判据成立；测试用 ``-n auto`` 并行时每个 pytest
+    worker 都是**独立进程**——任何 worker 进一次 lifespan 就会把别的 worker 正在用的容器删掉，
+    表现为 ``<no gateway log available>`` 与 ``DockerError [404] No such exec instance``。
+    这是**测试环境**与**生产单进程**约定的冲突，不是 sweep 的实现 bug（多进程归属见 #330）。
+
+    它**同时**关掉了 ``start_docker_reaper()``：那条守护线程每 30 秒 ``asyncio.run`` 一次空闲回收，
+    只扫本进程池（跨进程安全），但 ``-n auto`` 下每个 worker 都会起一个——8 核就是 8 个线程轮询
+    docker daemon，既无必要也会加重 CI 争用。没有任何用例依赖「reaper 真的回收」：
+    ``test_docker_workspace.py`` 验空闲回收时是**直接**调 ``sweep_idle_docker_workspaces(now=...)``，
+    不经过这条线程。
+
+    它放在 ``tests/scripted.py``（本仓替身之家，非 pytest 的手工工具 ``measure_budget.py`` 也复用它）
+    而不是 ``conftest.py``：后者是 pytest 插件模块，顶部还有 ``sys.path`` 改写，让非 pytest 入口依赖
+    它是不必要的副作用。
+
+    诚实的边界：这是**关掉**这条动作，不是「扫过了但没发现」。所有进 lifespan 的测试装配点都
+    **显式**传它（``build_app`` / ``peer_backends`` / 4 个直调 ``create_app`` 的测试文件 /
+    ``measure_budget.py``；机械判据在 ``test_docker_startup_injection.py``）。没有「检测到 pytest
+    就自动关掉」的魔法：那会给生产路径加一条隐形分支，后来者也看不见。
+    """
+    return None
+
+
 class ScriptedAgentSeam:
     """按成员 id 给出固定行为，并记录被唤醒时的输入（用于断言唤醒信号与「不带正文」）。"""
 

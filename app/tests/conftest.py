@@ -26,9 +26,13 @@ APP_DIR = Path(__file__).resolve().parent.parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from alibot.api import create_app  # noqa: E402
+from alibot.api import DockerStartupHook, create_app  # noqa: E402
 
-from tests.scripted import ManualScheduler, ScriptedAgentSeam  # noqa: E402
+from tests.scripted import (  # noqa: E402
+    ManualScheduler,
+    ScriptedAgentSeam,
+    inert_docker_startup,
+)
 
 # 规格固定的唯一成员行 id（issue #2 正文写明的对外身份，不是实现内部结构）。
 SPEC_OWNER_ID = "owner"
@@ -135,9 +139,16 @@ def build_app(
     data_dir: Path,
     scheduler: ManualScheduler | None = None,
     seam: ScriptedAgentSeam | None = None,
+    *,
+    docker_startup: DockerStartupHook | None = inert_docker_startup,
     **kwargs: Any,
 ):
-    """默认注入脚本化替身 + 手动调度器；``seam_factory`` 存在时交给 factory 决定成员面。"""
+    """默认注入脚本化替身 + 手动调度器；``seam_factory`` 存在时交给 factory 决定成员面。
+
+    ``docker_startup`` 默认是惰性替身（见 ``tests.scripted.inert_docker_startup``）：xdist 多进程下
+    真实启动清扫会删掉别的 worker 正在用的容器（#328 / #330）。它是**具名参数**而不是从
+    ``**kwargs`` 里 ``pop``：显式传 ``None`` 等于打开生产路径，必须是一个看得见的决定。
+    """
     provided_seam = seam
     if provided_seam is None and kwargs.get("seam_factory") is None:
         provided_seam = ScriptedAgentSeam()
@@ -149,6 +160,7 @@ def build_app(
         # 不能因为「今天恰巧过了某条提醒的到期时刻」而多出系统事件消息。真实后台轮询由
         # ``test_reminder_delivery.py`` 自己在**单独的**用例里注入（那两条恰好要验证启动先扫与关停）。
         reminder_delivery=InertReminderDeliveryDriver,
+        docker_startup=docker_startup,
         **kwargs,
     )
 
@@ -193,7 +205,7 @@ def peer_backends(data_dir: Path, count: int) -> Iterator[list[TestClient]]:
     并发下「seq 唯一且无缺口」在 HTTP 面唯一可观察的窗口就在这里 —— 把并发交给真实
     写路径去产生，而不是由测试自己连数据库或注入数据。
     """
-    app = create_app(data_dir=data_dir)
+    app = create_app(data_dir=data_dir, docker_startup=inert_docker_startup)
     with ExitStack() as stack:
         yield [stack.enter_context(TestClient(app)) for _ in range(count)]
 
