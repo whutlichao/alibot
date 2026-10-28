@@ -38,6 +38,11 @@ const props = defineProps({
   // **关着（默认）⇒ 点 Agent 行打开与它的私信**；开着 ⇒ 打开详情。T10 只翻这个开关，不改本文件里
   // 那一段的点击语义（票 #301 与 #310 的仲裁规则）。
   agentDetailAvailable: { type: Boolean, default: false },
+  // 当前打开的 Agent 详情（`null` ⇒ 主线不在详情档）。它是 rail **当前行**的判据：
+  // 详情不是某个 target 的内容，因此它开着时频道 / 私信行一律不是当前行，详情对应的 Agent 行是。
+  // 由父组件按 `mode` 与详情 store 的 `memberId` 推导（见 `App.vue` 的 `activeAgentId`），
+  // 本文件不另存一份「谁被选中」——那必然出现两份状态各自漂移。
+  activeAgentId: { type: String, default: null },
 });
 
 const emit = defineEmits([
@@ -70,9 +75,15 @@ function statusOf(member) {
   return memberStatus(props.state, member);
 }
 
-/** 当前行：Agent 详情开着时整份 rail 没有当前行（详情是主线视图，不是某个 target）。 */
+/** 消息流档的当前行：详情开着时整份 rail 没有 target 是当前行
+    （详情是主线视图，不是某个 target 的内容；那一刻的当前行是下面那条 Agent 行）。 */
 function isCurrent(targetId) {
-  return targetId === props.state.activeTargetId;
+  return !props.activeAgentId && targetId === props.state.activeTargetId;
+}
+
+/** 详情档的当前行：详情打开的那个成员。与 `isCurrent()` 互斥，因此同一时刻只有一行亮。 */
+function isCurrentAgent(memberId) {
+  return Boolean(props.activeAgentId) && memberId === props.activeAgentId;
 }
 
 /** Agent 行的无障碍名随点击语义换：开详情说「查看详情」，开私信说「打开私信」。 */
@@ -284,9 +295,11 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
             :key="member.id"
             class="nav-row"
             type="button"
+            :class="{ 'is-active': isCurrentAgent(member.id) }"
             :data-member="member.id"
             :data-od-id="'agent-' + member.id"
             :aria-label="agentRowAria(member)"
+            :aria-current="isCurrentAgent(member.id) ? 'true' : 'false'"
             @click="openAgentRow(member)"
           >
             <MemberAvatar :name="member.display_name" :slot="member.avatar_slot" size="sm" />

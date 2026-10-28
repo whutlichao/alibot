@@ -1296,3 +1296,166 @@ describe('危险操作：删除确认弹窗', () => {
     expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(true);
   });
 });
+
+/* ─── 导航选中态（rail 的当前行只有一个来源：主线视图现在显示的是谁） ─────────
+
+   截图里的缺陷：打开 Agent 详情后，之前选中的私信 / 频道行仍是 `.is-active`，
+   而详情对应的 Agent 行没有任何当前态。根因是 rail 的 `isCurrent()` 只读
+   `state.activeTargetId`——进详情不换 target（详情不是某个 target 的内容），
+   于是那条读法在详情档里说了假话。
+
+   这一组从 `App.vue` 进：rail 的当前行由 App 的 `mode` + 详情 store 的 `memberId`
+   推导，直挂 `RailSidebar` 只能证明「给定 props 时行长得对」，证明不了接线。 */
+describe('导航选中态：rail 的当前行跟随主线视图', () => {
+  const BOB_ROW = { id: 'mem-2', kind: 'agent', display_name: 'Bob', avatar_slot: 2 };
+
+  function bob() {
+    return Object.assign({}, BOB_ROW, {
+      role: '后端工程师',
+      model_id: 'ollama:qwen2.5',
+      provider: 'ollama',
+      is_remote: false,
+      system_prompt: '',
+      enabled: true,
+      auto_claim: false,
+      web_access: null,
+      status: 'idle',
+      enabled_reason: '',
+      context_window_messages: 40,
+      context_trigger_ratio: 0.7,
+      react_max_iters: 30,
+      stats: { channel_count: 0, round_count: 0, completed_task_count: 0, success_rate: 0 },
+    });
+  }
+
+  /** 工作区里第二个 Agent：切换 Agent 时「当前行跟着换」需要两条 Agent 行。 */
+  function twoAgents() {
+    return {
+      '/api/workspace': () =>
+        jsonResponse({
+          member: OWNER,
+          members: [OWNER, ADA_ROW, BOB_ROW],
+          channels: [channel()],
+          dms: [],
+          agents: [ada(), bob()],
+          model_providers: ['ollama'],
+          local_providers: ['ollama'],
+          remote_consents: [],
+        }),
+      '/api/agents/mem-2': () => jsonResponse({ agent: bob() }),
+    };
+  }
+
+  /** 工作区里一条已有私信：DM 档的当前行要能被读到。 */
+  function dmRow() {
+    return {
+      id: 'dm-1',
+      kind: 'dm',
+      agent_id: 'mem-1',
+      peer: ADA_ROW,
+      last_seq: 0,
+      last_read_seq: 0,
+      unread_count: 0,
+    };
+  }
+
+  function withDm() {
+    const dm = dmRow();
+    return {
+      '/api/workspace': () =>
+        jsonResponse({
+          member: OWNER,
+          members: [OWNER, ADA_ROW],
+          channels: [channel()],
+          dms: [dm],
+          agents: [ada()],
+          model_providers: ['ollama'],
+          local_providers: ['ollama'],
+          remote_consents: [],
+        }),
+      '/api/dms/dm-1/messages': () => jsonResponse({ dm, messages: [] }),
+    };
+  }
+
+  /** 「这一行是不是当前行」：类名与无障碍读数一起判（两份呈现必须同源）。 */
+  function isCurrentRow(wrapper, selector) {
+    const row = wrapper.find(selector);
+    return row.exists() && row.classes().includes('is-active') && row.attributes('aria-current') === 'true';
+  }
+
+  test('打开详情：之前选中的频道不再是当前行，详情对应的 Agent 行成为当前行', async () => {
+    const { wrapper } = await mountApp();
+    // 进详情之前：消息流档的当前行是频道（既有语义，本票不改）。
+    expect(isCurrentRow(wrapper, '[data-od-id="channel-ch-1"]')).toBe(true);
+
+    await openDetail(wrapper);
+
+    expect(isCurrentRow(wrapper, '[data-od-id="channel-ch-1"]')).toBe(false);
+    expect(wrapper.find('[data-od-id="channel-ch-1"]').attributes('aria-current')).toBe('false');
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(true);
+  });
+
+  test('切换 Agent：当前行跟着详情换，同一时刻只有一行是当前行', async () => {
+    const { wrapper } = await mountApp(twoAgents());
+    await openDetail(wrapper);
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(true);
+
+    await wrapper.find('[data-od-id="agent-mem-2"]').trigger('click');
+    await flush();
+    await flush();
+    await flush();
+
+    // 详情真的换到了 Bob：当前行与页面说的是同一件事。
+    expect(wrapper.find('#adName').text()).toBe('Bob');
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-2"]')).toBe(true);
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(false);
+    expect(isCurrentRow(wrapper, '[data-od-id="channel-ch-1"]')).toBe(false);
+  });
+
+  test('返回频道：详情关闭后频道行恢复当前行，Agent 行不再高亮', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+
+    await wrapper.find('[data-od-id="channel-ch-1"]').trigger('click');
+    await flush();
+
+    expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(false);
+    expect(isCurrentRow(wrapper, '[data-od-id="channel-ch-1"]')).toBe(true);
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(false);
+  });
+
+  test('返回私信：详情关闭后私信行恢复当前行，Agent 行不再高亮', async () => {
+    const { wrapper } = await mountApp(withDm());
+    await wrapper.find('[data-od-id="dm-dm-1"]').trigger('click');
+    await flush();
+    await flush();
+    expect(isCurrentRow(wrapper, '[data-od-id="dm-dm-1"]')).toBe(true);
+
+    await openDetail(wrapper);
+    expect(isCurrentRow(wrapper, '[data-od-id="dm-dm-1"]')).toBe(false);
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(true);
+
+    await wrapper.find('[data-od-id="dm-dm-1"]').trigger('click');
+    await flush();
+    expect(isCurrentRow(wrapper, '[data-od-id="dm-dm-1"]')).toBe(true);
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(false);
+  });
+
+  test('详情内「发送消息」：落到与它的私信，选中态随之换成那一条私信', async () => {
+    const dm = dmRow();
+    const { wrapper } = await mountApp({
+      '/api/dms': () => jsonResponse({ created: true, dm }),
+      '/api/dms/dm-1/messages': () => jsonResponse({ dm, messages: [] }),
+    });
+    await openDetail(wrapper);
+
+    await wrapper.find('[data-od-id="btn-agent-send-message"]').trigger('click');
+    await flush();
+    await flush();
+    await flush();
+
+    expect(wrapper.find('[data-od-id="agent-detail"]').exists()).toBe(false);
+    expect(isCurrentRow(wrapper, '[data-od-id="dm-dm-1"]')).toBe(true);
+    expect(isCurrentRow(wrapper, '[data-od-id="agent-mem-1"]')).toBe(false);
+  });
+});
