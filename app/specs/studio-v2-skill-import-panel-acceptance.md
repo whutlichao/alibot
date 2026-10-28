@@ -3,7 +3,7 @@
 **票型**：实施票｜**门禁**：G-impl + G-merge｜**测试档**：窄（`scripts/check.sh --fast` + 受影响的两个 vitest 文件）
 **Ticket**：本票**没有** GitHub issue（用户反馈直派），交付件用描述性命名。
 **base**：`7b0443f`（= 派活时 `main`）｜**branch**：`studio-v2-skill-import-panel`
-**PR body**：`app/specs/studio-v2-skill-import-panel-pr-body.md`
+**PR**：[#331](https://github.com/whutlichao/alibot/pull/331)｜**PR body**：`app/specs/studio-v2-skill-import-panel-pr-body.md`
 **采集时间**：2026-10-28｜**环境**：macOS（aarch64）、Python 3.11.13（仓库根 `.venv`）、ego-browser 0.6.0.20
 
 ---
