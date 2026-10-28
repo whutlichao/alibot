@@ -37,6 +37,25 @@
  app/tests/conftest.py, test_event_stream.py, test_round_outcome_visibility.py
 +  读线程容忍 rotate 控制帧（``data: {}``）：裸取 event["type"] 的用例会 KeyError，
 +  跳过空载荷帧；断言一条未放宽（为什么只有这 3 处需要，见验收文档 §5.1 的判据表）
+
+ app/alibot/api.py (续作：并行暴露的容器清扫冲突)
++  DockerStartupHook = Callable[[], Awaitable[None]]
++  async def _default_docker_startup():          # 生产默认，与改动前逐字相同
++      start_docker_reaper(); await sweep_stale_docker_workspaces()
++  create_app(..., docker_startup: DockerStartupHook | None = None)   # None = 生产
++  # 装配期解析（与 make_driver 同形），lifespan 里读一个确定的 callable：
++  run_docker_startup = docker_startup if docker_startup is not None else _default_docker_startup
++    lifespan: with suppress(Exception):
++                  await run_docker_startup()     # 替身 = 关掉启动清扫
+
+ app/tests/conftest.py, test_reminder_delivery.py, test_runtime_interrupt.py,
+ test_runtime_finished.py, test_web_assembly.py, measure_budget.py
++  14 处进 lifespan 的装配点全部显式传 `inert_docker_startup`（关掉启动清扫）
+   （为什么是根因、为什么是这些点、为什么 sweep 本身不改：见验收文档 §7.3）
+
+ app/tests/test_docker_startup_injection.py (新增)
+  守卫（4 条）：测试装配不跑真实清扫（零调用）+ 生产装配必须跑（正对照，顺序 reaper→sweep）
+              + 2 条 AST 扫描（每个 create_app 调用都带 docker_startup= / 豁免名单必须窄）
 ```
 
 为什么两件事要一起做：产品的 55 秒是**对外承诺**（README 与反代配置按它排），测试却必须等它到期。
@@ -78,20 +97,31 @@
   -n auto --dist loadfile（本机 8 核）     75.17s   exit 0  （门禁内 78.98s）
   --dist load（对照，-n 4）               117.42s   exit 0
   ```
-  用例数一致：`1278 passed, 11 skipped`（串行基线 1271 passed / 11 skipped，多出的 7 条是本票
-  新增的守卫用例）。`loadfile` 与 `load` 在本机同速，选前者是因为**语义**：同文件落在同一 worker，
+  上面这组采于「仅 SSE 提速」阶段（用例 1278）。**收口后**（加上 §7 的 docker 守卫）重跑：
+
+  ```text
+  -n 4 --dist loadfile（CI 等价形态）     1282 passed, 11 skipped in 120.11s   exit 0
+  -n auto --dist loadfile（门禁内）       1282 passed, 11 skipped in  74.18s   exit 0
+  ```
+
+  用例数的来路：串行基线 1271 passed / 11 skipped → **+7**（`test_sse_lifetime_config.py`）→
+  **+4**（`test_docker_startup_injection.py`：2 条行为守卫 + 2 条 AST 扫描守卫）→
+  **1282 passed, 11 skipped**（`--collect-only` 求和 1293，含 11 条本机无 daemon 时 skip 的
+  docker 用例）。`loadfile` 与 `load` 在本机同速，选前者是因为**语义**：同文件落在同一 worker，
   本仓用例按文件共享装置与顺序假设。
 
-- **全量门禁（`./scripts/check.sh`，exit 0，整条）：**
+- **全量门禁（`./scripts/check.sh`，**exit 0**，整条）：**
   ```text
-  pytest（全量，-n auto --dist loadfile）  1278 passed, 11 skipped in 78.98s
+  pytest（全量，-n auto --dist loadfile）  1282 passed, 11 skipped in 74.18s
   ruff check                              All checks passed!
-  ruff format --check                     371 files already formatted
-  mypy（仓库根）                          Success: no issues found in 135 source files
+  ruff format --check                     372 files already formatted
+  mypy（仓库根）                          Success: no issues found in 136 source files
   pyright                                 0 errors, 0 warnings, 0 informations
-  Vitest（app/frontend）                  Test Files 23 passed (23) / Tests 437 passed (437)
-  门禁全绿                                 real 1m36.072s
+  Vitest（app/frontend）                  Test Files 23 passed (23) / Tests 437 passed (437) in 4.82s
+  门禁全绿                                 real 1m29.812s
   ```
+  上一轮「仅 SSE 提速」阶段是 1278 passed / 371 files / real 1m36s；收口后用例 +4、格式化文件
+  数 +1（新增的守卫文件），耗时反而略短。
 
 - **生产默认未被改小：** `test_sse_lifetime_config.py` 7 passed；手工读数（不带环境变量）
   `no env -> 55.0`、`env=9 -> 9.0`、`env=bogus -> 55.0`。
@@ -105,17 +135,38 @@
 
 **Door:** 双向
 
-代码本身可整体 revert（四段都是纯性能/装置改动，没有 schema、没有数据迁移、没有对外契约变化）。
+代码本身可整体 revert（纯性能 / 测试装置改动，没有 schema、没有数据迁移、没有对外 HTTP 契约变化）。
+**但**它现在多改了一条**产品启动路径**：`create_app` 的关键字参数多了一个（`docker_startup`），
+见下。
 
-**Blast Radius:** 全仓
+**Blast Radius:** 全仓 + 应用启动路径
 
-本票改的是**门禁入口**（`scripts/check.sh` 的全量分支）与**全局测试装置**（`app/tests/conftest.py`
-的 session 级 autouse fixture）——这两处一旦有偏差，后续**每一张票**的门禁读数都不可信。请重点看：
+本票改了三处会被全仓反复读到的东西——`scripts/check.sh` 的全量分支、`app/tests/conftest.py` 的
+全局测试装置、以及 `create_app` 的 lifespan 启动步骤。前两处一旦有偏差，后续**每一张票**的门禁
+读数都不可信。请重点看：
 
-1. **全量 pytest 并行**是否真的没有放宽任何判据（本票未删/未 skip/未 xfail 任何用例，未动
-   `filterwarnings = ["error"]`；1278 passed / 11 skipped 与串行基线的跳过数一致）。
-2. **第 6 条守卫**是否守住了那两条沉默回归路径（默认值被改小、读取退回导入期快照）——
+1. **`create_app(docker_startup=...)` 的默认值未改变生产行为**：`None` 时走的
+   `_default_docker_startup()` 就是原来的 `start_docker_reaper()` + `await
+   sweep_stale_docker_workspaces()`，顺序与异常面都没变（`try/except Exception: pass` 换成等价的
+   `contextlib.suppress(Exception)` 只为过 ruff `SIM105`）。守卫
+   `test_docker_startup_injection.py` 用正对照钉住这条：默认参数**必须**仍然调用两者。
+2. **全量 pytest 并行**是否真的没有放宽任何判据（本票未删 / 未 skip / 未 xfail 任何用例，未动
+   `filterwarnings = ["error"]`；跳过数与基线一致）。
+3. **第 6 条守卫**是否守住了那两条沉默回归路径（默认值被改小、读取退回导入期快照）——
    这正是本票最容易在以后被无意推翻的地方。
-3. `--fast <files>` 与 `--studio` 窄档**仍是串行**，历史窄档读数仍可比。
+4. **14 处测试装配点全部显式传了替身**（`conftest.py` 的 `build_app` / `peer_backends`，加
+   `test_reminder_delivery` / `test_runtime_interrupt` / `test_runtime_finished` / `test_web_assembly`
+   四文件的 12 处直调，加 `measure_budget.py`）。漏一处，那条路径在 CI（有 docker）上就还会跨进程
+   误删容器。机械判据是 `test_docker_startup_injection.py` 的 AST 扫描。
+5. `--fast <files>` 与 `--studio` 窄档**仍是串行**，历史窄档读数仍可比。
 
-不在本票范围：CI 拆 job、docs-only `paths-ignore`、删除 CI 里那次显式构建步。
+**为什么加注入点而不是修 sweep**：`sweep_stale_docker_workspaces()` 按「本进程池」判孤儿，在**生产
+单进程**下是对的；冲突只发生在「多个独立进程同时进 lifespan」这个**测试环境**条件里。修 sweep 的
+多进程归属是跟进票 [#330](https://github.com/whutlichao/alibot/issues/330)，本票不碰它。
+
+**本机验证边界**：本机（macOS）没有 docker daemon，全部 docker 用例本地 `skip`（11 条 skip 含全部
+docker 用例）——docker 侧的修复只能由 CI 证明。
+
+不在本票范围：CI 拆 job、docs-only `paths-ignore`、删除 CI 里那次显式构建步、#330。
+
+Closes #328
