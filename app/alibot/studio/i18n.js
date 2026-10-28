@@ -457,14 +457,14 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': '家目录 mcp.json',
-    // mcp 页签下块（#284 / D7，口径更新于 #275）：文本域直接接家目录文件的**原文**，两块各标注
-    // 数据来源。文件**不再是装配层**：它是导入源，运行期装配只看库行。
-    'agentDetail.mcpFileSource':
-      '来自这个 Agent 家目录的 mcp.json（文件原文）；它是导入源，**不参与运行时装配**——'
-      + '要让它生效，请把它导入库行（`python -m alibot migrate-mcp`）。',
+    // mcp 页签下块（#284 / D7，口径更新于 #275）：文本域直接接家目录文件的**原文**。
+    // 文件**不再是装配层**：它是导入源，运行期装配只看库行。来源说明按用户反馈撤除；
+    // 缺失提示写出后端给的真实路径，路径被全局层守卫拒时退到不带路径的那句。
     'agentDetail.mcpFileLoading': '正在读取家目录 mcp.json…',
     'agentDetail.mcpFileMissing':
-      '这个 Agent 的家目录里还没有 mcp.json（不是空文件）：保存一次会按你写的内容新建它。',
+      '这个 Agent 的家目录里还没有 mcp.json（{path}）：保存一次会按你写的内容新建它。',
+    'agentDetail.mcpFileMissingNoPath':
+      '这个 Agent 的家目录里还没有 mcp.json：保存一次会按你写的内容新建它。',
     'agentDetail.mcpFileServers': '文件里的条目数：{count}',
     'agentDetail.mcpFileSave': '保存 mcp.json',
     'agentDetail.mcpFileLoadFailed': '家目录 mcp.json 读取失败：{reason}',
@@ -489,8 +489,7 @@ const I18N_CATALOGS = {
     // 它是**一个读数**而不是空字段；有覆盖时显示档位。不在详情页里替人推断私聊的生效档。
     // 全局 MCP（#236 / ADR-0031 D8）：条目视图**只读**（它住在 mcp 页签的下块里，与旁边的
     // mcp.json 文本域是同一份数据的两种视图）。条目视图自身不渲染编辑 / 启停 / 删除——要改原文
-    // 走上方的文本域；它只对远端未确认条目给一个确认动作。
-    'agentDetail.globalMcpTitle': '全局 MCP（只读）',
+    // 走上方的文本域；它只对远端未确认条目给一个确认动作。小标题已按用户反馈撤除。
     'agentDetail.globalMcpEmpty': '“全局mcp.json”里没有声明MCP服务',
     'agentDetail.globalMcpRemote': '远端（数据会离开本机）',
     'agentDetail.globalMcpLocal': '本机',
@@ -520,10 +519,9 @@ const I18N_CATALOGS = {
        归口只有这一处：Agent 详情里的 MCP 声明与技能。作用域恒为该成员
        （`scope_kind=agent&scope_id=<member>`），没有 scope 选择器；频道级旧行保留在库里但
        不展示、不装配。控件只作用于当前成员（#281 撤掉了「复制到其他成员」这条跨成员通道）；
-       #280 把这两块拆进 skills / mcp 两个页签，跨两 kind 的总标题因此没有消费点、已随票删除。 */
+       #280 把这两块拆进 skills / mcp 两个页签；「MCP 声明」小标题随后按用户反馈撤除。 */
     'agentCapabilities.scopeNote':
       '这些能力只属于这个 Agent；技能字节在 ~/.alibot/agents/{member}/skills/（公共库 ~/.alibot/skills/ 只读）。',
-    'agentCapabilities.mcpTitle': 'MCP 声明',
 
     /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
        两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
@@ -720,8 +718,7 @@ const I18N_CATALOGS = {
     'workspaceMgmt.noteLocal': '本地后端：工具直接作用于本机项目根，路径必须落在根内。',
     'workspaceMgmt.noteDocker': 'Docker 后端：每个 Agent / 会话一个容器，只承诺容器与主机的隔离；远端镜像需要先确认数据面告知。',
     'workspaceMgmt.noteConfig': '项目根与后端在上方「项目根与默认后端」中修改；非法路径会被后端整体拒绝，保存处显示可读原因。',
-    'mcp.scopeNote': '只显示环境变量名；变量值由服务进程的环境提供，界面与后端响应都不保存值。',
-    'mcp.sourceDb': '来自库行 mcp_server（scope_kind=agent）：装配正本，改这里会改变装配结果。',
+    // 环境变量说明与库行来源说明已按用户反馈撤除（只留功能本身）；变量值仍不显示、不保存。
     'mcp.loading': '正在读取 MCP 声明…',
     'mcp.loadFailed': 'MCP 声明读取失败：{reason}',
     'mcp.empty': '这个 Agent 还没有 MCP 声明。',
@@ -1324,15 +1321,14 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': 'Home-directory mcp.json',
-    // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text, and each
-    // block labels its data source.
-    'agentDetail.mcpFileSource':
-      'From the mcp.json in this agent’s home directory (the file’s raw text); it is an import '
-      + 'source and is NOT assembled at runtime — import it into database rows to make it take '
-      + 'effect (`python -m alibot migrate-mcp`).',
+    // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text. The source
+    // note was removed per user feedback; the missing-file hint carries the real path the backend
+    // reports, and falls back to the path-less sentence when the global-layer guard refuses it.
     'agentDetail.mcpFileLoading': 'Reading the home-directory mcp.json…',
     'agentDetail.mcpFileMissing':
-      'This agent’s home directory has no mcp.json yet (that is not an empty file): saving once creates it from what you write.',
+      'This agent’s home directory has no mcp.json yet ({path}): saving once creates it from what you write.',
+    'agentDetail.mcpFileMissingNoPath':
+      'This agent’s home directory has no mcp.json yet: saving once creates it from what you write.',
     'agentDetail.mcpFileServers': 'Entries in the file: {count}',
     'agentDetail.mcpFileSave': 'Save mcp.json',
     'agentDetail.mcpFileLoadFailed': 'Could not read the home-directory mcp.json: {reason}',
@@ -1362,7 +1358,7 @@ const I18N_CATALOGS = {
     // the mcp tab, next to the mcp.json textarea -- two views of the same data). The entry view itself
     // renders no edit / enable / delete; changing the source text goes through the textarea above.
     // Only an unacknowledged remote entry gets an acknowledge action.
-    'agentDetail.globalMcpTitle': 'Global MCP (read-only)',
+    // The section title was removed per user feedback; the readings and acknowledge action stay.
     'agentDetail.globalMcpEmpty': 'No MCP servers are declared in the global mcp.json.',
     'agentDetail.globalMcpRemote': 'Remote (data leaves this machine)',
     'agentDetail.globalMcpLocal': 'Local',
@@ -1394,10 +1390,10 @@ const I18N_CATALOGS = {
        always this member (`scope_kind=agent&scope_id=<member>`) with no scope picker; legacy
        channel-level rows stay in the database but are neither shown nor assembled. Every control
        acts on this member only (#281 removed the cross-member "copy to other members" path); #280
-       split these two blocks into the skills / mcp tabs, so the shared title has no consumer. */
+       split these two blocks into the skills / mcp tabs; the "MCP declarations" title was later
+       removed per user feedback. */
     'agentCapabilities.scopeNote':
       'These capabilities belong to this agent only; skill bytes live in ~/.alibot/agents/{member}/skills/ (the shared library ~/.alibot/skills/ is read-only).',
-    'agentCapabilities.mcpTitle': 'MCP declarations',
 
     /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
        Both values state existence and persistence only: reminders live in the backend and
@@ -1611,12 +1607,8 @@ const I18N_CATALOGS = {
       'Docker backend: one container per Agent or session; it only isolates container from host, and a remote image needs the data-flow acknowledgement first.',
     'workspaceMgmt.noteConfig':
       'Edit the project root and backend in “Project root and default backend” above; an illegal path is rejected as a whole and the save line shows the readable reason.',
-    'mcp.scopeNote':
-      'Variable names only; values come from the server process environment, and neither the UI nor API responses store them.',
-    // Source label of the top block (#284 / D7): it is the assembly authority, a different dataset
-    // from the home-directory file in the bottom block.
-    'mcp.sourceDb':
-      'From the database rows in mcp_server (scope_kind=agent): the assembly authority; editing here changes what gets assembled.',
+    // The environment-variable note and the database-source label were removed per user feedback
+    // (only the functional surface stays); values are still neither shown nor stored.
     'mcp.loading': 'Reading MCP declarations…',
     'mcp.loadFailed': 'Could not read the MCP declarations: {reason}',
     'mcp.empty': 'This agent has no MCP declarations yet.',

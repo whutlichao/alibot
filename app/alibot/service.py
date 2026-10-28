@@ -1006,21 +1006,37 @@ class WorkspaceService:
 
         ``text`` 是文件原文（逐字，不做摘要、不重排）；不存在时为**空串**且 ``exists=false``——
         「没有这个文件」与「读到空文件」是两件事，前端据此给不同的说明。``servers`` 是文件里
-        ``servers`` 数组的条目计数（原文事实，不做合规过滤）。读经全局只读守卫
+        ``servers`` 数组的条目计数（原文事实，不做合规过滤）。``path`` 是这份文件的**真实路径**
+        （写守卫取同一个目标、不判存在性：文件缺席时界面也要能写出它该在哪；根外 symlink
+        祖先 / 根外目标 ⇒ ``None``）。读经全局只读守卫
         :func:`workspace.resolve_global_read_path`，**不创建、不写入**任何字节。
         """
         self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
-        path = resolve_global_read_path(
-            self._global_home(), AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
-        )
+        root = self._global_home()
+        parts = (AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME)
+        path = resolve_global_read_path(root, *parts)
+        # 路径读数与「文件在不在」解耦：读守卫缺席时返回 None，写守卫返回同一个 realpath。
+        target = resolve_global_write_path(root, *parts)
         if path is None:
             # 既包括「这一层没有这个文件」，也包括「路径被守卫拒（根外 symlink 祖先 / 目标）」。
-            # 两者对外都是「读不到原文」，但都不能退化成直读。
-            return {"member_id": member_id, "exists": False, "text": "", "servers": 0}
+            # 两者对外都是「读不到原文」，但都不能退化成直读；后者连路径也不给（target=None）。
+            return {
+                "member_id": member_id,
+                "exists": False,
+                "text": "",
+                "servers": 0,
+                "path": target,
+            }
         try:
             text = Path(path).read_text(encoding="utf-8")
         except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
-            return {"member_id": member_id, "exists": False, "text": "", "servers": 0}
+            return {
+                "member_id": member_id,
+                "exists": False,
+                "text": "",
+                "servers": 0,
+                "path": target,
+            }
         except (OSError, UnicodeDecodeError) as error:
             # 文件在但不可读 / 非 UTF-8：这不是「没有文件」，也不能静默当成空原文。
             message = render("error.global_mcp_read_failed", self._locale(), reason=str(error))
@@ -1030,6 +1046,7 @@ class WorkspaceService:
             "exists": True,
             "text": text,
             "servers": mcp_document_entry_count(text),
+            "path": path,
         }
 
     def save_global_mcp_document(self, member_id: str, text: str) -> dict[str, Any]:
@@ -1043,6 +1060,7 @@ class WorkspaceService:
         ``runtime.py`` 的状态落盘）；**原文逐字写**——不 ``json.dumps`` 重排、不重缩进、不动
         末尾换行。文件不存在但成员家目录存在 ⇒ 新建；**家目录本身不存在 ⇒ 400** 且不创建任何
         目录（应用不自动创建全局层，ADR-0031 §三）。文件存在 ⇒ 覆盖（人类显式动作）。
+        响应与读端点同形（含 ``path``：这份文件写到的**真实路径**）。
 
         守卫：写前用同一内核（:func:`workspace.resolve_global_write_path`，与只读守卫共用
         ``realpath`` 判定）取目标的真实路径，拒绝根外 symlink 祖先与根外目标。
@@ -1089,6 +1107,7 @@ class WorkspaceService:
             "exists": True,
             "text": text,
             "servers": mcp_document_entry_count(text),
+            "path": target,
         }
 
     def confirm_global_mcp_server(self, member_id: str, name: str) -> dict[str, Any]:

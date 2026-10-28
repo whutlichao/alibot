@@ -19,7 +19,9 @@
      同一行两个控件物理不重叠，也不互相嵌套）。右栏那格启停态是**读数**，不是第二个入口。
 
      mcp 页签的两块面是**两份数据**：上块库行 `mcp_server`（`scope_kind='agent'`，装配正本），
-     下块家目录 `mcp.json` 原文（导入源，不参与装配）。两块各标数据来源。 -->
+     下块家目录 `mcp.json` 原文（导入源，不参与装配）。按用户反馈，两块的数据来源标注与
+     「MCP 声明」/「全局 MCP（只读）」两个小标题已撤（说明性文字只留功能本身）；
+     「添加 MCP」是这块的主按钮（`btn-primary`）。 -->
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import ModalShell from './ModalShell.vue';
@@ -369,6 +371,14 @@ function onMcpField(field, event) {
 const mcpFileDraft = computed(() => (view.value ? view.value.mcpFileDraft : ''));
 const mcpFileExists = computed(() => (view.value ? view.value.mcpFileExists : false));
 const mcpFileServers = computed(() => (view.value ? view.value.mcpFileServers : 0));
+// 真实路径来自后端读数（`GET …/global-mcp-file` 的 `path`）：缺失提示要写它该在哪。
+// 路径被全局层守卫拒时后端给 `null`，此时退到不带路径的那句（不猜一个路径出来）。
+const mcpFilePath = computed(() => (view.value ? view.value.mcpFilePath : ''));
+const mcpFileMissingText = computed(() =>
+  (mcpFilePath.value
+    ? t('agentDetail.mcpFileMissing', { path: mcpFilePath.value })
+    : t('agentDetail.mcpFileMissingNoPath')),
+);
 
 // ─── 删除确认（危险区唯一动作：先开弹窗，确认才发 DELETE） ────────────────
 
@@ -959,11 +969,8 @@ watch(
           data-od-id="agent-detail-panel-mcp"
         >
           <section class="d-sec">
-            <div class="d-sec-title" data-od-id="agent-capabilities-mcp">
-              {{ t('agentCapabilities.mcpTitle') }}
-            </div>
-            <div class="resource-meta is-faint" data-od-id="mcp-source-db">{{ t('mcp.sourceDb') }}</div>
-            <div class="resource-meta is-faint" data-od-id="mcp-scope-note">{{ t('mcp.scopeNote') }}</div>
+            <!-- 说明性文字已按用户反馈撤除（标题 / 库行来源 / 环境变量说明）：
+                 这一块直接从读数与表单开始，功能不变。 -->
 
             <div
               v-if="view && view.mcpError"
@@ -1154,7 +1161,7 @@ watch(
 
               <div class="agent-actions">
                 <button
-                  class="btn btn-sm"
+                  class="btn btn-sm btn-primary"
                   type="button"
                   data-od-id="mcp-save"
                   :disabled="!online"
@@ -1180,9 +1187,7 @@ watch(
             <div class="d-sec-title" data-od-id="agent-detail-section-mcp-file">
               {{ t('agentDetail.mcpFileTitle') }}
             </div>
-            <div class="resource-meta is-faint" data-od-id="agent-detail-mcp-file-source">
-              {{ t('agentDetail.mcpFileSource') }}
-            </div>
+            <!-- 家目录文件的来源说明已按用户反馈撤除；路径信息只在文件缺失时随提示给出。 -->
 
             <div class="agent-mcp-file" data-od-id="agent-mcp-file">
               <div v-if="view && view.mcpFileLoading" class="resource-empty">
@@ -1201,7 +1206,7 @@ watch(
                 class="hint is-faint"
                 data-od-id="agent-mcp-file-missing"
               >
-                {{ t('agentDetail.mcpFileMissing') }}
+                {{ mcpFileMissingText }}
               </div>
 
               <textarea
@@ -1235,9 +1240,7 @@ watch(
             <!-- 同一份文件的**条目视图**（原「全局 MCP」小节，D1 并入下块）：只读读数，
                  要改原文走上方的文本域；这里只对远端未确认条目给一个确认动作。 -->
             <section class="d-sec" data-od-id="agent-detail-section-global-mcp">
-              <div class="d-sec-title" data-od-id="agent-detail-section-global-mcp-title">
-                {{ t('agentDetail.globalMcpTitle') }}
-              </div>
+              <!-- 「全局 MCP（只读）」小标题已按用户反馈撤除：条目读数与确认动作保留。 -->
               <div v-if="!globalMcpRows.length" class="hint">{{ t('agentDetail.globalMcpEmpty') }}</div>
               <div
                 v-for="server in globalMcpRows"

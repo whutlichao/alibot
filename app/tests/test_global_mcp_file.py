@@ -2,7 +2,7 @@
 
 两条端点落在既有全局 MCP 视图端点的**同族子资源**（设计正本 D7 / D10）：
 
-- ``GET /api/agents/{member_id}/global-mcp-file`` ⇒ ``{member_id, exists, text, servers}``；
+- ``GET /api/agents/{member_id}/global-mcp-file`` ⇒ ``{member_id, exists, text, servers, path}``；
 - ``PUT /api/agents/{member_id}/global-mcp-file`` 读 ``{"text": <整份原文>}``，三道校验全部通过
   才**逐字**写盘，任一条不合法 ⇒ ``400`` + 可读原因 + ``fields`` 指认那一条 / 那个字段，**零写入**。
 
@@ -102,6 +102,9 @@ def test_read_returns_the_verbatim_text_and_the_entry_count(data_dir: Path) -> N
     assert payload["exists"] is True
     assert payload["text"] == raw, "读到的是文件原文（逐字，不重排、不摘要）"
     assert payload["servers"] == 1, "servers = 文件里 servers 数组的条目计数"
+    assert payload["path"] == os.path.realpath(str(_document_path(member["id"]))), (
+        "path 是这份文件的真实路径（界面用它写缺失提示）"
+    )
 
 
 def test_read_of_a_missing_file_reports_absence_and_creates_nothing(data_dir: Path) -> None:
@@ -120,6 +123,8 @@ def test_read_of_a_missing_file_reports_absence_and_creates_nothing(data_dir: Pa
             "exists": False,
             "text": "",
             "servers": 0,
+            # 文件缺席时路径读数仍要给：缺失提示要写出它该在哪。
+            "path": os.path.realpath(str(_document_path(member["id"]))),
         }
         assert _tree(_home()) == before, "读端点不写盘、不建目录"
         assert not _document_path(member["id"]).exists(), "读端点不创建 mcp.json"
@@ -225,6 +230,7 @@ def test_a_valid_document_is_written_verbatim(data_dir: Path, text: str) -> None
         assert payload["exists"] is True, "家目录存在、文件不存在 ⇒ 保存建出该文件"
         assert payload["text"] == text
         assert payload["servers"] == 2
+        assert payload["path"] == os.path.realpath(str(path)), "写端点回同一个真实路径"
         assert path.read_bytes() == text.encode("utf-8"), "写盘字节与提交文本逐字相等（不重排、不格式化）"
 
         # 覆盖也是逐字：第二次提交的原文替换第一次的字节。
@@ -287,6 +293,7 @@ def test_a_document_symlinked_outside_the_global_root_is_refused(data_dir: Path,
         assert read.status_code == 200
         assert read.json()["text"] == "", "只读守卫同样不看根外内容"
         assert read.json()["exists"] is False
+        assert read.json()["path"] is None, "根外目标连路径也不给（界面退到不带路径的提示）"
 
 
 def test_a_member_home_symlinked_outside_the_global_root_is_refused(data_dir: Path, tmp_path: Path) -> None:
@@ -304,6 +311,7 @@ def test_a_member_home_symlinked_outside_the_global_root_is_refused(data_dir: Pa
         assert response.json()["error"]["message"].strip()
         assert list(outside_home.iterdir()) == [], "根外目录里没有新建任何文件"
         assert _read(client, member["id"]).json()["exists"] is False
+        assert _read(client, member["id"]).json()["path"] is None
 
 
 # ─── 8. 成员不存在 ⇒ 404（与既有全局 MCP 视图端点同一条校验） ───────────────

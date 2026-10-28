@@ -151,7 +151,13 @@ function routes(extra) {
       '/api/skills/skl-1/markdown': () =>
         jsonResponse({ skill: SKILL, markdown: SKILL_BODY, state: 'ok' }),
       '/api/agents/mem-1/global-mcp-file': () =>
-        jsonResponse({ member_id: 'mem-1', exists: true, text: MCP_FILE_TEXT, servers: 1 }),
+        jsonResponse({
+          member_id: 'mem-1',
+          exists: true,
+          text: MCP_FILE_TEXT,
+          servers: 1,
+          path: '/Users/someone/.alibot/agents/mem-1/mcp.json',
+        }),
       '/api/agents/mem-1/global-mcp-servers': () => jsonResponse({ member_id: 'mem-1', global_mcp_servers: [] }),
     },
     extra || {},
@@ -939,25 +945,67 @@ describe('skills 页签', () => {
 });
 
 describe('mcp 页签', () => {
-  test('两块面都在：上块库行（装配正本）+ 下块家目录 mcp.json，各标数据来源', async () => {
+  test('两块面都在：上块库行（装配正本）+ 下块家目录 mcp.json；说明性标注已撤', async () => {
     const { wrapper } = await mountApp();
     await openDetail(wrapper);
     await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
     await flush();
 
     const panel = wrapper.find('[data-adpanel="mcp"]');
-    // 上块：库行列表 + 表单，数据来源标注逐字取词条。
-    expect(panel.find('[data-od-id="mcp-source-db"]').text()).toBe(
-      i18n.t('mcp.sourceDb'),
-    );
+    // 用户反馈撤掉的五处说明性文字：标题、库行来源、环境变量说明、文件来源、全局 MCP 标题。
+    expect(panel.find('[data-od-id="agent-capabilities-mcp"]').exists()).toBe(false);
+    expect(panel.find('[data-od-id="mcp-source-db"]').exists()).toBe(false);
+    expect(panel.find('[data-od-id="mcp-scope-note"]').exists()).toBe(false);
+    expect(panel.find('[data-od-id="agent-detail-mcp-file-source"]').exists()).toBe(false);
+    expect(panel.find('[data-od-id="agent-detail-section-global-mcp-title"]').exists()).toBe(false);
+    // 功能面原样保留：库行列表 + 表单、原文文本域 + 条目视图。
     expect(panel.find('[data-od-id="capability-mcp-row"]').text()).toContain('filesystem');
     expect(panel.find('[data-od-id="mcp-form"]').exists()).toBe(true);
-    // 下块：家目录 mcp.json 的原文文本域 + 该文件的条目视图。
     expect(panel.find('[data-od-id="agent-mcp-file-text"]').element.value).toBe(MCP_FILE_TEXT);
     expect(panel.find('[data-od-id="agent-detail-section-global-mcp"]').exists()).toBe(true);
-    // 「同名时库行胜出」写在文件块的数据来源标注里（词条值本身就是那句话）。
-    expect(panel.find('[data-od-id="agent-detail-mcp-file-source"]').text()).toBe(
-      i18n.t('agentDetail.mcpFileSource'),
+  });
+
+  test('「添加 MCP」是这块的主按钮（btn-primary）', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+
+    const submit = wrapper.find('[data-od-id="mcp-save"]');
+    expect(submit.text()).toBe(i18n.t('mcp.add'));
+    expect(submit.classes()).toContain('btn-primary');
+  });
+
+  test('mcp.json 缺失 ⇒ 提示写后端给的真实路径', async () => {
+    const missingPath = '/Users/someone/.alibot/agents/mem-1/mcp.json';
+    const { wrapper } = await mountApp({
+      '/api/agents/mem-1/global-mcp-file': () => jsonResponse({
+        member_id: 'mem-1', exists: false, text: '', servers: 0, path: missingPath,
+      }),
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+
+    const hint = wrapper.find('[data-od-id="agent-mcp-file-missing"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toBe(i18n.t('agentDetail.mcpFileMissing', { path: missingPath }));
+    expect(hint.text()).toContain(missingPath);
+    expect(wrapper.find('[data-od-id="agent-mcp-file-text"]').element.value).toBe('');
+  });
+
+  test('路径被全局层守卫拒（后端 path=null）⇒ 退到不带路径的缺失提示', async () => {
+    const { wrapper } = await mountApp({
+      '/api/agents/mem-1/global-mcp-file': () => jsonResponse({
+        member_id: 'mem-1', exists: false, text: '', servers: 0, path: null,
+      }),
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+
+    expect(wrapper.find('[data-od-id="agent-mcp-file-missing"]').text()).toBe(
+      i18n.t('agentDetail.mcpFileMissingNoPath'),
     );
   });
 

@@ -186,6 +186,8 @@ function emptyView(memberId) {
     mcpFileSaving: false,
     mcpFileExists: false,
     mcpFileServers: 0,
+    // 这份文件的**真实路径**（后端读数）：缺失提示要写它该在哪；路径被守卫拒时是空串。
+    mcpFilePath: '',
     // 家目录 `mcp.json` 的**条目视图**（只读读数：transport / 是否远端 / 确认态 / 运行期读数）。
     // 它与下块的文本域是同一份文件的两种视图，因此和文本域同住 mcp 页签的下块。
     globalMcpServers: [],
@@ -403,6 +405,7 @@ export function createAgentDetailStore(options) {
       if (state.memberId !== memberId) return;
       current.mcpFileExists = Boolean(payload && payload.exists);
       current.mcpFileServers = Number((payload && payload.servers) || 0);
+      current.mcpFilePath = typeof (payload && payload.path) === 'string' ? payload.path : '';
       // 原文逐字铺进文本域：不做 JSON 格式化（那会静默重排人写的键序与缩进）。
       setMcpFileText(current, typeof (payload && payload.text) === 'string' ? payload.text : '');
     } catch (err) {
@@ -965,6 +968,7 @@ export function createAgentDetailStore(options) {
       if (state.memberId !== memberId) return;
       current.mcpFileExists = Boolean(payload && payload.exists);
       current.mcpFileServers = Number((payload && payload.servers) || 0);
+      current.mcpFilePath = typeof (payload && payload.path) === 'string' ? payload.path : '';
       if (typeof (payload && payload.text) === 'string') setMcpFileText(current, payload.text);
       await loadGlobalMcpServers(memberId);
     } catch (err) {
