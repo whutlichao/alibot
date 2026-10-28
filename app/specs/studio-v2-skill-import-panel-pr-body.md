@@ -103,6 +103,8 @@ scripts/check.sh --fast
 
 （`--fast` 按要求跳过全量 pytest：本票无 Python 改动；CI 仍跑全量。）
 
+**CI**：head `09a97a5` 的 `check` run [40629656072](https://github.com/whutlichao/alibot/actions/runs/40629656072) → **success**（含全量 pytest）。
+
 **双轴 code-review 的处置（`41401dd`）**
 
 Standards 轴报 3 处硬违规，全部采纳并已修：
