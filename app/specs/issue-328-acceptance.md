@@ -540,7 +540,7 @@ E       assert ['reaper', 'sweep'] == []
 E         Left contains 2 more items, first extra item: 'reaper'
 tests/test_docker_startup_injection.py:70: AssertionError
 FAILED tests/test_docker_startup_injection.py::test_test_assembly_never_runs_the_real_docker_startup
-1 failed, 3 passed in 0.63s
+1 failed, 3 passed in 0.91s
 ```
 
 恢复（`shasum` 前后同为 `52a3c95…`）后：`4 passed`。判据用「记录调用」而不是「让真实函数抛错」——
