@@ -10,7 +10,7 @@
    `attachTo: document.body`（`ModalShell` 的焦点进入 / 回收与 ESC 都需要真实 DOM 落点）。 */
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { mount } from '@vue/test-utils';
-import { loadStudioGlobals, createFetchStub, jsonResponse, flush } from './helpers/studio-globals.js';
+import { loadStudioGlobals, createFetchStub, jsonResponse, flush, readStudio } from './helpers/studio-globals.js';
 
 loadStudioGlobals();
 
@@ -617,30 +617,97 @@ describe('skills 页签', () => {
     expect(patch.body).toEqual({ enabled: false });
   });
 
-  test('「从本机导入」是下拉框：三组候选、已安装与不可导入禁用、默认不预选、一次只导一个', async () => {
+  test('被删的四个节点不存在：技能标题 / 「从本机导入」标题 / 命令块 / 命令提示（作用域那句留着）', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    for (const id of ['agent-capabilities-skill', 'skill-import-command', 'skill-import-command-hint']) {
+      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
+    }
+    // 「从本机导入」的标题节点与命令块都删了：导入区里不再有 `.d-sec-title` 与 `.resource-command`。
+    const add = wrapper.find('[data-od-id="skill-import"]');
+    expect(add.find('.d-sec-title').exists()).toBe(false);
+    expect(add.find('.resource-command').exists()).toBe(false);
+    expect(add.text()).not.toContain('npx skills add');
+    // 作用域那句（保留项）仍在。
+    expect(wrapper.find('[data-od-id="agent-capabilities-scope"]').exists()).toBe(true);
+  });
+
+  test('下拉的 label 是新文案（明说读取 ~/.agents/skills），词条两份语言表同键', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    const label = wrapper.find('label[for="skillImportPicker"]');
+    expect(label.text()).toBe('从本机导入（读取 ~/.agents/skills 路径下的 skills）');
+    expect(label.text()).toBe(i18n.t('skill.importPickLabel'));
+    expect(i18n.t('skill.importPickLabel')).toContain('~/.agents/skills');
+  });
+
+  test('下拉面板有固定高度上限 + 内部滚动（原生 `<select>` 管不了弹出层，改自绘）', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    // 触发控件是 `<button>`（默认收起），`aria-expanded` 翻转。
+    const picker = wrapper.find('[data-od-id="skill-import-picker"]');
+    expect(picker.element.tagName).toBe('BUTTON');
+    expect(picker.attributes('aria-haspopup')).toBe('listbox');
+    expect(picker.attributes('aria-expanded')).toBe('false');
+    expect(wrapper.find('[data-od-id="skill-import-menu"]').exists()).toBe(false);
+
+    // 规则本身写在 app.css 的本页签独占段里：有上限、超了内部滚、绝对定位不占布局高度。
+    const css = readStudio('app.css');
+    const rule = css.slice(css.indexOf('.skill-import-menu {'));
+    const block = rule.slice(0, rule.indexOf('}'));
+    expect(block).toContain('max-height: 260px');
+    expect(block).toContain('overflow-y: auto');
+    expect(block).toContain('position: absolute');
+    // 结果区同样有上限（一次导入几十条不许撑坏固定高度工作区）。
+    const statusRule = css.slice(css.indexOf('.skill-import-status {'));
+    expect(statusRule.slice(0, statusRule.indexOf('}'))).toContain('max-height: 160px');
+
+    await picker.trigger('click');
+    await flush();
+    expect(picker.attributes('aria-expanded')).toBe('true');
+    const menu = wrapper.find('[data-od-id="skill-import-menu"]');
+    expect(menu.exists()).toBe(true);
+    expect(menu.attributes('role')).toBe('listbox');
+    expect(menu.classes()).toContain('skill-import-menu');
+  });
+
+  test('下拉：三组候选、已安装与不可导入禁选、默认不预选、点一条立即导入（一次一个）', async () => {
     const { wrapper, stub } = await mountApp();
     await openDetail(wrapper);
     await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
     await flush();
 
     const picker = wrapper.find('[data-od-id="skill-import-picker"]');
-    expect(picker.element.tagName).toBe('SELECT');
-    expect(picker.element.value).toBe(''); // 默认不预选
-    // 候选只在打开详情时读一次：没有「手动重扫」按钮，也没有第二个入口。
-    expect(wrapper.find('[data-od-id="skill-import-scan"]').exists()).toBe(false);
-    expect(picker.findAll('optgroup')).toHaveLength(3);
-    expect(picker.find('optgroup[label="可选"]').exists()).toBe(true);
-    expect(picker.find('optgroup[label="已安装"]').exists()).toBe(true);
-    expect(picker.find('optgroup[label="不可导入"]').exists()).toBe(true);
-    // 已安装 / 不可导入的候选是禁用的，且不可导入的把原因写在选项文本里。
-    const options = picker.findAll('option');
-    const installed = options.find((node) => node.attributes('value') === 'pdf-tools');
-    const blocked = options.find((node) => node.attributes('value') === 'broken-one');
+    // 默认不预选：收起态只有占位文案。
+    expect(picker.text()).toContain('选择一个技能导入…');
+
+    await picker.trigger('click');
+    await flush();
+    const menu = wrapper.find('[data-od-id="skill-import-menu"]');
+    expect(menu.findAll('.skill-import-group').map((node) => node.text())).toEqual([
+      '可选',
+      '已安装',
+      '不可导入',
+    ]);
+    const options = menu.findAll('[role="option"]');
+    const installed = options.find((node) => node.attributes('data-candidate') === 'pdf-tools');
+    const blocked = options.find((node) => node.attributes('data-candidate') === 'broken-one');
     expect(installed.attributes('disabled')).toBeDefined();
     expect(blocked.attributes('disabled')).toBeDefined();
     expect(blocked.text()).toContain('缺少 SKILL.md');
 
-    await picker.setValue('chart-maker');
+    // 点一条可选项 = 选中并立即导入。
+    const ready = options.find((node) => node.attributes('data-candidate') === 'chart-maker');
+    await ready.trigger('click');
     await flush();
     await flush();
     const posts = stub.calls.filter((call) => call.url === '/api/skills' && call.method === 'POST');
@@ -650,6 +717,176 @@ describe('skills 页签', () => {
       scope_id: 'mem-1',
       source_path: '/Users/someone/.agents/skills/chart-maker',
     });
+    // 导入成功后回到未选状态：面板收起、占位文案还在。
+    expect(wrapper.find('[data-od-id="skill-import-menu"]').exists()).toBe(false);
+    expect(picker.text()).toContain('选择一个技能导入…');
+  });
+
+  test('Esc 收起面板并把焦点还给触发控件；点面板外也收起；卸载后不留监听', async () => {
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    const picker = wrapper.find('[data-od-id="skill-import-picker"]');
+    await picker.trigger('click');
+    await flush();
+    expect(wrapper.find('[data-od-id="skill-import-menu"]').exists()).toBe(true);
+
+    await picker.trigger('keydown', { key: 'Escape' });
+    await flush();
+    expect(wrapper.find('[data-od-id="skill-import-menu"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(picker.element);
+
+    // 再开一次，点面板外：收起，但焦点不被抢走（人正在点别处）。
+    await picker.trigger('click');
+    await flush();
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await flush();
+    expect(wrapper.find('[data-od-id="skill-import-menu"]').exists()).toBe(false);
+
+    // 面板开着时卸载组件：document 上那份监听被撤掉（再派事件也不会报错 / 不会复活面板）。
+    await picker.trigger('click');
+    await flush();
+    const spies = [];
+    const originalRemove = document.removeEventListener.bind(document);
+    document.removeEventListener = (type, listener, options) => {
+      if (type === 'pointerdown') spies.push(listener);
+      return originalRemove(type, listener, options);
+    };
+    wrapper.unmount();
+    document.removeEventListener = originalRemove;
+    expect(spies).toHaveLength(1);
+    // 卸载后 document 上不再有监听：再派一次 pointerdown 不抛错、也不复活面板。
+    expect(() => document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))).not.toThrow();
+    expect(document.getElementById('skillImportMenu')).toBe(null);
+  });
+
+  test('「刷新」按钮：发一次 GET /api/skills/candidates（不需要先展开下拉）', async () => {
+    const { wrapper, stub } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    const before = stub.calls.filter((call) => call.url.startsWith('/api/skills/candidates')).length;
+    const scan = wrapper.find('[data-od-id="skill-import-scan"]');
+    expect(scan.exists()).toBe(true);
+    expect(scan.text()).toBe('刷新');
+    await scan.trigger('click');
+    await flush();
+    await flush();
+
+    const after = stub.calls.filter((call) => call.url.startsWith('/api/skills/candidates')).length;
+    expect(after).toBe(before + 1);
+    expect(stub.calls.filter((call) => call.url.startsWith('/api/skills/candidates')).every(
+      (call) => call.method === 'GET',
+    )).toBe(true);
+  });
+
+  test('「全部导入」对每个可导入候选各发一次 POST；已安装 / 不可导入一次都不发；结果区带汇总', async () => {
+    const imported = new Set();
+    const candidates = [
+      { name: 'pdf-tools', path: '/Users/someone/.agents/skills/pdf-tools', importable: true, installed: true, reason: '' },
+      { name: 'chart-maker', path: '/Users/someone/.agents/skills/chart-maker', importable: true, installed: false, reason: '' },
+      { name: 'alpha', path: '/Users/someone/.agents/skills/alpha', importable: true, installed: false, reason: '' },
+      { name: 'broken-one', path: '/Users/someone/.agents/skills/broken-one', importable: false, installed: false, reason: '缺少 SKILL.md' },
+    ];
+    const { wrapper, stub } = await mountApp({
+      '/api/skills/candidates?scope_kind=agent&scope_id=mem-1': () =>
+        jsonResponse({
+          source: '/Users/someone/.agents/skills',
+          available: true,
+          candidates: candidates.map((candidate) => ({
+            ...candidate,
+            installed: candidate.installed || imported.has(candidate.name),
+          })),
+        }),
+      '/api/skills': (_url, request) => {
+        const body = JSON.parse(request.body);
+        const name = body.source_path.split('/').pop();
+        if (name === 'alpha') {
+          return { ok: false, status: 409, json: async () => ({ error: { message: '同名技能已存在' } }) };
+        }
+        imported.add(name);
+        return jsonResponse({ skill: { ...SKILL, id: 'skl-' + name, name } });
+      },
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    const all = wrapper.find('[data-od-id="skill-import-all"]');
+    expect(all.text()).toBe('全部导入');
+    await all.trigger('click');
+    await flush();
+    await flush();
+    await flush();
+
+    const posts = stub.calls.filter((call) => call.url === '/api/skills' && call.method === 'POST');
+    // 只有那两条可导入且未安装的各发一次；已安装的 pdf-tools 与不可导入的 broken-one 一次都不发。
+    expect(posts.map((call) => call.body.source_path)).toEqual([
+      '/Users/someone/.agents/skills/chart-maker',
+      '/Users/someone/.agents/skills/alpha',
+    ]);
+    expect(posts.every((call) => call.body.scope_kind === 'agent' && call.body.scope_id === 'mem-1')).toBe(true);
+
+    const status = wrapper.find('[data-od-id="skill-import-status"]');
+    expect(status.findAll('.import-result')).toHaveLength(2);
+    expect(status.attributes('data-od-id')).toBe('skill-import-status');
+    expect(status.find('[data-od-id="skill-import-summary"]').text()).toBe(
+      '全部导入完成：成功 1 条，跳过 1 条，失败 0 条。',
+    );
+    // 收尾与单条导入同一条：重读技能列表 + 重扫候选（导入过的那两条随后进「已安装」组）。
+    expect(stub.calls.filter((call) => call.method === 'GET' && call.url.startsWith('/api/skills?'))).toHaveLength(2);
+    expect(stub.calls.filter((call) => call.url.startsWith('/api/skills/candidates'))).toHaveLength(2);
+    await wrapper.find('[data-od-id="skill-import-picker"]').trigger('click');
+    await flush();
+    const installedGroup = wrapper
+      .findAll('[data-od-id="skill-import-menu"] .skill-import-group')
+      .map((node) => node.text());
+    expect(installedGroup).toContain('已安装');
+  });
+
+  test('导入中：两个按钮与触发控件都禁用（一次只飞一条写路径）', async () => {
+    const pending = deferred();
+    const { wrapper, stub } = await mountApp({
+      '/api/skills/candidates?scope_kind=agent&scope_id=mem-1': () =>
+        jsonResponse({
+          source: '/Users/someone/.agents/skills',
+          available: true,
+          candidates: [
+            { name: 'chart-maker', path: '/Users/someone/.agents/skills/chart-maker', importable: true, installed: false, reason: '' },
+            { name: 'alpha', path: '/Users/someone/.agents/skills/alpha', importable: true, installed: false, reason: '' },
+          ],
+        }),
+      '/api/skills': async () => {
+        await pending.promise;
+        return jsonResponse({ skill: SKILL });
+      },
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-skills"]').trigger('click');
+    await flush();
+
+    await wrapper.find('[data-od-id="skill-import-all"]').trigger('click');
+    await flush();
+
+    expect(wrapper.find('[data-od-id="skill-import-all"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-od-id="skill-import-scan"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-od-id="skill-import-picker"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[data-od-id="skill-import-busy"]').exists()).toBe(false); // 状态词只有既有那一条
+    expect(wrapper.find('[data-od-id="skill-import"]').text()).toContain('正在导入…');
+
+    // 连点不会让第二条写路径插进来。
+    await wrapper.find('[data-od-id="skill-import-all"]').trigger('click');
+    pending.release();
+    await flush();
+    await flush();
+    await flush();
+
+    const posts = stub.calls.filter((call) => call.url === '/api/skills' && call.method === 'POST');
+    expect(posts).toHaveLength(2); // 每条可导入候选各一次（不是说好的批量被重入成了四条）
+    expect(wrapper.find('[data-od-id="skill-import-all"]').attributes('disabled')).toBeUndefined();
   });
 
   test('手填绝对路径与上传 zip 两条安装入口不存在（后端分支仍在，只是没有界面入口）', async () => {

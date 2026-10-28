@@ -564,8 +564,10 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   不回填、不自动删除。安装接受三个来源：**本机目录**、**上传 zip**，以及从 `~/.agents/skills/` **导入**
   （ADR-0036：那是 codex / cline / pi 等工具共用的全局技能目录，也是外部 CLI 的落点；只读扫描出候选，
   选中后仍走同一条安装器复制进成员家目录）。三种来源都校验 `SKILL.md` front matter、路径与 hash，
-  **不做远程市场/下载**。应用**不执行 `npx`**、不起 subprocess、不下载第三方包：`npx skills add <owner/repo>
-  -g -a codex -y` 由人在终端运行，Studio 只展示这条可复制的命令。
+  **不做远程市场/下载**。应用**不执行 `npx`**、不起 subprocess、不下载第三方包；本机技能落进
+  `~/.agents/skills/` 这一步由人自己完成（在那之外用什么工具与本产品无关），Studio 的导入区只读那个
+  落点：一个下拉（点一条 = 立即导入一次一个）+「刷新」（重扫候选）+「全部导入」（对当前可导入且未安装的
+  候选逐个走同一条 `POST /api/skills`）。界面**不再展示命令**，也不再内建第二套安装器。
 - **联网档（#184 / #199 / #202 / #242 / ADR-0026 §二修订 / §十四 / §十五 / 2026-10-22 修订节）**：`channel.web_access` 是频道默认值、
   `agent_config.web_access` 是 Agent 级覆盖（`NULL` = 跟随频道），取值 `NULL` / `'off'` / `'search'` /
   `'search+fetch'`。读路径三态合并 `agent_config.web_access or channel.web_access or 'search'`：
