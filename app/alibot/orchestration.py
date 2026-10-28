@@ -84,6 +84,11 @@ WAKE_REASON_CONTINUE = "continue"
 # team 成员没有自己的唤醒轮次：它由队长的 TeamAssign 分派运行。typing 的 reason 只是可读标识
 # （规格 §4.5），不与预算/唤醒判定耦合。
 TYPING_REASON_TEAM_ASSIGNMENT = "team-assignment"
+# typing 帧的 ``scope``（#333）：这一帧在说**哪一层**。``round`` 是轮次级（``_run_round`` 的起止
+# 两帧：该 target 有一轮 in-flight）；``member`` 是 team 成员级（``_run_seam.emit`` 里那一支：
+# 该成员在飞）。层级是**可判定字段**，前端不读 ``reason`` 文案；缺 ``scope`` 的旧帧按 ``round``。
+TYPING_SCOPE_ROUND = "round"
+TYPING_SCOPE_MEMBER = "member"
 
 
 class Scheduler(Protocol):
@@ -935,7 +940,14 @@ class WakeOrchestrator:
             self._emit_status(target_id, member_id, base_seq)
             self._events.publish(
                 target_id,
-                {"type": "typing", "member_id": member_id, "seq": base_seq, "active": True, "reason": reason},
+                {
+                    "type": "typing",
+                    "member_id": member_id,
+                    "seq": base_seq,
+                    "active": True,
+                    "scope": TYPING_SCOPE_ROUND,
+                    "reason": reason,
+                },
             )
 
             availability = self.availability(agent)
@@ -1129,6 +1141,7 @@ class WakeOrchestrator:
                     "member_id": member_id,
                     "seq": base_seq,
                     "active": False,
+                    "scope": TYPING_SCOPE_ROUND,
                     "reason": reason,
                 },
             )
@@ -1429,7 +1442,8 @@ class WakeOrchestrator:
             # ``EventBus.publish`` 对满队列丢事件、不阻塞模型调用。
             self._events.publish(record.target_id, agent_event(record))
             # 成员的「正在回复」只按它的 REPLY_START / REPLY_END 发（规格 §4.5）：队长的 typing
-            # 仍由 ``_run_round`` 自己在轮次开始/结束发，成员帧不改变那条既有语义。
+            # 仍由 ``_run_round`` 自己在轮次开始/结束发，成员帧不改变那条既有语义。``scope="member"``
+            # 标出它是**成员级**事实（#333），前端不拿它写 / 清队长的轮次槽位。
             if record.type in ("REPLY_START", "REPLY_END") and record.member_id != leader_id:
                 self._events.publish(
                     record.target_id,
@@ -1437,6 +1451,7 @@ class WakeOrchestrator:
                         "type": "typing",
                         "member_id": record.member_id,
                         "active": record.type == "REPLY_START",
+                        "scope": TYPING_SCOPE_MEMBER,
                         "reason": TYPING_REASON_TEAM_ASSIGNMENT,
                     },
                 )

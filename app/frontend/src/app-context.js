@@ -107,17 +107,16 @@ export function createAppContext(options) {
       if (type === 'approval_required' || type === 'approval_resolved') approvals.applyFrame({ ...payload, type });
       if (type === 'sop_event') runPanel.noteSopFrame(payload);
       // 本票只记录 typing 与轮次起止；审批卡那一层随它自己的票迁过来。
+      // `REPLY_START` / `REPLY_END` 是 **reply 级**事实，只维护 `activeRounds`（停止按钮与多成员名字）：
+      // `typing` 是 **轮次级**事实，一轮在模型正文生成完之后还要写记忆、落消息（#333 实测 5.4 秒），
+      // 因此 reply 级事件不得写 / 清它——否则「正在回复」在回复消息出现前就消失。
       if (type === 'agent_event' && payload.reply_id) {
         const rounds = mutable.activeRounds[targetId] || (mutable.activeRounds[targetId] = {});
         if (payload.event_type === 'REPLY_START') {
           rounds[payload.reply_id] = payload.member_id;
-          mutable.typing[targetId] = payload.member_id;
         } else if (payload.event_type === 'REPLY_END') {
           delete rounds[payload.reply_id];
-          if (!Object.keys(rounds).length) {
-            delete mutable.activeRounds[targetId];
-            delete mutable.typing[targetId];
-          }
+          if (!Object.keys(rounds).length) delete mutable.activeRounds[targetId];
         }
       } else if (type === 'round.interrupted') {
         const rounds = mutable.activeRounds[targetId] || {};
@@ -130,10 +129,11 @@ export function createAppContext(options) {
           delete mutable.typing[targetId];
         }
       } else if (type === 'round.active') {
+        // 停止句柄快照：**reply 级**事实，只铺 `activeRounds`（多成员名字与停止按钮都读它）。
+        // 它不写也不清 `typing`：轮次槽位的**写入**只来自 `scope==="round"` 的 typing 帧，清理只走
+        // 清理矩阵那四条（下面的 typing 分支 / `round.interrupted` / `member_status` / 断线）。
+        // 空快照尤其不得清——正文已生成、记忆还在写的那 5.4 秒里 reply 句柄正好是空的。
         mutable.activeRounds[targetId] = payload.rounds || {};
-        const first = Object.values(mutable.activeRounds[targetId])[0];
-        if (first) mutable.typing[targetId] = first;
-        else delete mutable.typing[targetId];
       }
       return;
     }
@@ -174,6 +174,11 @@ export function createAppContext(options) {
         delete mutable.typing[targetId];
       }
     } else if (type === 'typing') {
+      // `typing` 只表达**轮次级**事实（该 target 有一轮 in-flight）。`scope==="member"` 的帧
+      // 表达 team 成员的在飞（那条由 `activeRounds` 表达），不进这个槽位——否则成员的 active=false
+      // 会误清队长这一轮的轮次指示（单槽位被成员帧覆写 / 删除）。层级由**字段**判，不读 `reason`
+      // 的文案；缺 `scope` 的旧帧按 `"round"` 处理（向后兼容）。
+      if ((payload.scope || 'round') !== 'round') return;
       if (payload.active) mutable.typing[targetId] = payload.member_id;
       else if (mutable.typing[targetId] === payload.member_id) delete mutable.typing[targetId];
     } else if (type === 'round_outcome') {

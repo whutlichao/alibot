@@ -623,7 +623,7 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
 | --- | --- | --- |
 | `message` | 新消息落库（载荷与 `GET /messages` 的元素同形） | 是（读库） |
 | `member_status` | 成员状态点变化（四态） | 否（连接时快照） |
-| `typing` | 「正在回复」指示（一轮 in-flight 时 `active=true`；team 模式下成员也带 `member_id`） | 否 |
+| `typing` | 「正在回复」指示（`scope` 标层级：`round` = 轮次级，一轮 in-flight 时 `active=true`；`member` = team 成员级，成员分派那一支；缺 `scope` 按 `round` 处理。此 `scope` 是**事件层级**，与配置作用域 `scope_kind` 无关） | 否 |
 | `round_outcome` | 轮次结果（team 模式下只记录**队长**的轮次；成员产出在 `team_assignment` / `agent_event`） | 是（读库） |
 | `agent_event` | `AgentEvent` 白名单透传（`event_type` / `member_id` / `reply_id` / `target_id` / `payload`；不含 secrets / base64） | 否 |
 | `team_assignment` | 一次分派的状态（`team_run_id` / `assignment_id` / `task_id` / `member_id` / `reply_id` / `state`；task target 上 `task_id` 非空） | 否（快照 `GET /team-runs`） |
