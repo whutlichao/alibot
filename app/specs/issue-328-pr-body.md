@@ -123,9 +123,10 @@
   上一轮「仅 SSE 提速」阶段是 1278 passed / 371 files / real 1m36s；收口后用例 +4、格式化文件
   数 +1（新增的守卫文件），耗时反而略短。
 
-- **CI（`check`，run 40614097315，head `cf6ff6d`，conclusion = success，job 8m28s）：**
+- **CI（`check` 全绿，job 8–9.5 分钟；run 40614097315 / 40616121247 / 40617056636 三次
+  `pytest（全量）` 都是 `1291 passed, 2 skipped`）：**
   ```text
-  pytest（全量）          1291 passed, 2 skipped in 377.14s
+  pytest（全量）          1291 passed, 2 skipped in 379.21s
   ruff check              All checks passed!
   ruff format --check     373 files already formatted
   mypy（仓库根）          Success: no issues found in 136 source files
