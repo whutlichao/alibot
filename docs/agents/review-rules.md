@@ -24,7 +24,7 @@
 | 测试不许把 `SCHEMA_VERSION` 钉成历史号 | `app/tests/test_schema_version_pins_guard.py` |
 | 迁移链连续、覆盖到 `SCHEMA_VERSION` | `app/tests/test_migration_chain_guard.py` |
 | 读路径不碰旧表名 | `app/tests/test_read_path_legacy_tables_guard.py` |
-| 两份词条表同键集、无裸中文 | 后端：`app/tests/test_backend_copy.py`；前端正本：`app/frontend/tests/i18n-catalog.test.js` |
+| 两份词条表同键集、无裸中文；源码里 `t()` / `hasKey()` 的字面量键都存在于正本 | 后端：`app/tests/test_backend_copy.py`；前端正本：`app/frontend/tests/i18n-catalog.test.js` |
 | AgentScope pin / import 白名单 / 1.x 符号 / 文档链接版本 / 快照完整性 | `app/tests/test_agentscope_usage_guard.py` |
 
 ## 判断题规则（reviewer 要逐条对照 diff）
@@ -45,6 +45,11 @@
 8. **AgentScope 用法先查规约，再查快照。** 与 `docs/agents/agentscope-2.md` 冲突的写法直接打回；
    规约没写、快照也没写的，先在验收文档里标「实测」并给出 `python -c` 读数，不许把推断写成
    官方承诺。刻意偏离必须能指到 `docs/agents/agentscope-2-deviations.md` 的条目。
+9. **改写测试块不许削弱既有断言。** diff 里被范围替换 / 重排的测试块要逐行对：既有断言有没有
+   被顺带删掉（尤其「唯一判据」型，如逐字写盘、幂等、越界拒绝）。测试仍绿只说明删掉的那条
+   不再被检查，不说明它不重要。
+10. **活跃 spec 被用户反馈覆盖时，同票修订契约。** 行为变了而 `app/specs/*-spec.md` 的判据 /
+   用户故事仍写着旧行为 ⇒ Spec 轴不通过；允许的处置是修订对应条目，或加一行「被 #PR 覆盖」注记。
 
 ## 三轴分工
 

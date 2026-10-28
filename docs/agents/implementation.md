@@ -137,7 +137,13 @@ scripts/red-evidence.sh <base-rev> app/tests/approval_badge_ui.test.cjs
 
 ## 交付
 
-- 每票落 `app/specs/issue-<n>-acceptance.md`：判据 → 落点 → 命令与读数。
+- 每票落 `app/specs/issue-<n>-acceptance.md`：判据 → 落点 → 命令与读数；结构照
+  `app/specs/_acceptance-template.md`，别每次去读一份历史验收记录来模仿。
+- **PR 号与 CI 读数一次写全**：PR 创建后**一笔**提交回填，不为单项读数追加提交；文档-only
+  提交不追 CI，最终 CI 由协调者验收。每次 push 都会重跑全量门禁（`check.yml` 的
+  `pull_request` 触发器），逐项回填就是把一次交付变成四五次全量跑。
+- 刚创建 PR 时 `gh pr checks --watch` 可能直接报 `no checks reported`（check 还没注册）；
+  用 `gh run list --branch <branch>` 取 run id，再 `gh run watch <id>`。
 - 一张集成 PR：先 `--draft`，全部完成后转 ready；正文按 `pr` 技能的 Summary / Evidence /
   Merge Danger 三段写，并用 `Closes #<n>` 逐票挂上。
 - 主工作副本不动：所有改动都在各自 worktree 的分支上，经集成分支与 PR 交付。

@@ -112,6 +112,82 @@ describe('词条表的数据契约（正本 studio/i18n.js）', () => {
   });
 });
 
+/** 工作台源码目录（词条消费点都在这里；`t()` 的调用形状由下面那条守卫扫描）。 */
+const SRC_DIR = path.resolve(HERE, '../src');
+
+/** 递归列出 `.js` / `.vue` 源文件。 */
+function sourceFiles(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return sourceFiles(full);
+    return /\.(?:js|vue)$/.test(entry.name) ? [full] : [];
+  });
+}
+
+/** 把注释替换成空白（保留换行）：注释里出现的 `t('…')` 示例不是消费点。 */
+function stripComments(source) {
+  let out = '';
+  let index = 0;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === '/' && source[index + 1] === '/') {
+      while (index < source.length && source[index] !== '\n') {
+        out += ' ';
+        index += 1;
+      }
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      const stop = end < 0 ? source.length : end + 2;
+      for (; index < stop; index += 1) out += source[index] === '\n' ? '\n' : ' ';
+      continue;
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      out += character;
+      index += 1;
+      while (index < source.length) {
+        const inner = source[index];
+        out += inner;
+        if (inner === '\\') {
+          index += 1;
+          if (index < source.length) out += source[index];
+          index += 1;
+          continue;
+        }
+        index += 1;
+        if (inner === character) break;
+      }
+      continue;
+    }
+    out += character;
+    index += 1;
+  }
+  return out;
+}
+
+/**
+ * 只认**纯字面量**键：`t('a.b')` / `t('a.b', {…})` / `hasKey('a.b')`。
+ * 拼接键（`t('prefix.' + value)`）与变量键（`t(someKey)`）由调用点自己的枚举保证，不在这里猜。
+ */
+const KEY_CALL = /\b(?:t|hasKey)\(\s*(['"])([^'"\n]+)\1\s*[,)]/g;
+
+describe('词条消费点（工作台源码）', () => {
+  test('源码里 t() / hasKey() 的字面量键都存在于词条正本', () => {
+    const missing = [];
+    for (const file of sourceFiles(SRC_DIR)) {
+      const source = stripComments(fs.readFileSync(file, 'utf8'));
+      for (const match of source.matchAll(KEY_CALL)) {
+        if (!Object.prototype.hasOwnProperty.call(catalogs['zh-CN'], match[2])) {
+          missing.push(`${path.relative(SRC_DIR, file)}: ${match[2]}`);
+        }
+      }
+    }
+
+    expect(missing).toEqual([]);
+  });
+});
+
 describe('样式层不藏语言文案（app.css 是没退役的正本）', () => {
   test('app.css 里没有中文文案（CSS 生成的标签改用 content: attr(...)）', () => {
     const literals = stringLiterals(readStudio('app.css')).filter((literal) => CJK.test(literal.value));
