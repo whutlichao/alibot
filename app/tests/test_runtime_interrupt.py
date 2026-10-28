@@ -17,7 +17,7 @@ from alibot.events import sse_frame
 from fastapi.testclient import TestClient
 
 from tests.conftest import create_agent, create_channel, live_backend, messages, outcomes, send, sse_frames
-from tests.scripted import ManualScheduler
+from tests.scripted import ManualScheduler, inert_docker_startup
 from tests.test_approval_seam import _ScriptedModel, _StubModelSeam, _tool_call
 
 
@@ -109,7 +109,10 @@ def test_interrupt_endpoint_only_stops_the_current_target_and_emits_an_sse_event
     model = BlockingModel()
     scheduler = ManualScheduler()
     app = create_app(
-        data_dir=tmp_path, seam=_StubModelSeam(model, runtime_root=tmp_path), scheduler=scheduler
+        data_dir=tmp_path,
+        seam=_StubModelSeam(model, runtime_root=tmp_path),
+        scheduler=scheduler,
+        docker_startup=inert_docker_startup,
     )
     with TestClient(app) as client:
         agent = create_agent(client).json()["agent"]
@@ -193,6 +196,7 @@ def test_interrupting_a_parked_round_closes_approval_without_executing_the_tool(
             runtime_root=tmp_path,
             workspace_of=lambda *_: {"root": str(root), "backend": "local", "permission_mode": "ask-writes"},
         ),
+        docker_startup=inert_docker_startup,
     )
     with TestClient(app) as client:
         agent = create_agent(client).json()["agent"]

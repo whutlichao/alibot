@@ -754,18 +754,21 @@ def test_in_flight_round_is_not_replayed_after_restart(launched: dict) -> None:
     """后端重启后进行中的轮次**不被自动重放**（只等下一次唤醒）。"""
     client = launched["client"]
     agent = create_agent(client, name="小明").json()["agent"]
-    launched["seam"].behaviors[agent["id"]] = DELAY
+    # 旧 seam 要在 `restart()` 之前抓住：重启会重建 `state["seam"]`，被阻塞线程持的却是旧实例的
+    # 闸门；结尾释放新实例只会让线程等 `_gate.wait(timeout=10)` 超时（票 #328）。
+    blocked_seam = launched["seam"]
+    blocked_seam.behaviors[agent["id"]] = DELAY
     channel = channel_with_agent(client, agent["id"])
 
     send(client, channel["id"], "第一轮开始")
-    launched["seam"].block()
+    blocked_seam.block()
     runner = threading.Thread(target=launched["scheduler"].drain)
     runner.start()
     for _ in range(200):
-        if launched["seam"].calls_for(agent["id"]):
+        if blocked_seam.calls_for(agent["id"]):
             break
         time.sleep(0.01)
-    assert launched["seam"].calls_for(agent["id"]), "第一轮没有进入 in-flight"
+    assert blocked_seam.calls_for(agent["id"]), "第一轮没有进入 in-flight"
 
     after = launched["restart"]()
 
@@ -775,7 +778,7 @@ def test_in_flight_round_is_not_replayed_after_restart(launched: dict) -> None:
     assert [message["kind"] for message in messages(after, channel["id"])] == ["human"]
     assert after.get(f"/api/agents/{agent['id']}/status").json()["status"] == "online"
 
-    launched["seam"].release()
+    blocked_seam.release()
     runner.join(timeout=10)
 
 

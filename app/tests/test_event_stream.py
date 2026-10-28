@@ -398,8 +398,13 @@ def test_stream_frames_use_seq_as_the_event_id(live: dict) -> None:
 def test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage(data_dir: Path, monkeypatch) -> None:
     """例行轮换必须先发 ``event: rotate``：前端据此区分「服务端请我重连」与「后端挂了」。
 
-    没有这一帧，555 秒后的主动收尾会被前端当成掉线，每分钟闪一次「后端不可达」——
+    没有这一帧，周期性的主动收尾会被前端当成掉线，每分钟闪一次「后端不可达」——
     那既影响可用性，也是前端不诚实（把服务端的正常行为说成故障）。
+
+    这里把寿命设成 **1 秒**（比 `conftest.py` 的统一 2 秒更短）：本用例的意图是「等一次**轮换**」，
+    不是「等超时」——它只读到 ``rotate`` 帧就断开，所以短寿命只是让等待变短，不改断言。
+    ``monkeypatch.setenv`` 自票 #328 起**真正生效**：寿命由 ``alibot.api.sse_stream_max_seconds()``
+    在建立流时读取，不再是导入期快照。
     """
     monkeypatch.setenv("ALIBOT_SSE_ROTATE_SECONDS", "1")
     scheduler, seam = ManualScheduler(), ScriptedAgentSeam()
@@ -496,6 +501,12 @@ def _start_reader(
 
     事件流是持续的，逐帧读取必须走真 socket（``httpx.Client.stream``）；主线程负责触发事件，
     读线程只做「把帧按到达顺序记下来」。``id`` 与 ``event`` 按 SSE 语义在 ``data`` 之前到达。
+
+    **轮换帧不算数据帧**：票 #328 之后测试内的连接寿命是秒级（`conftest.py` 的 session 装置），
+    读得久的用例可能在采集中途收到服务端的 ``event: rotate``——那是一帧 ``data: {}`` 的控制帧，
+    语义是「服务端请你重连」。把它记进 ``frames`` 会让「这里只该有一条 message」这类断言多出一个
+    ``None``（载荷没有 ``type``），红的原因与用例要证的语义无关。轮换之后服务端已收尾，
+    读线程随即结束，因此这与「读到流结束」是同一条路径，断言一字未放。
     """
     frames: list[dict] = []
     stop = threading.Event()
@@ -511,6 +522,8 @@ def _start_reader(
                     current["id"] = text[len("id: ") :]
                 elif text.startswith("event: "):
                     current["event"] = text[len("event: ") :]
+                    if current["event"] == "rotate":
+                        return  # 服务端已收尾：控制帧不入 frames（见 docstring）
                 elif text.startswith("data: "):
                     current["data"] = json.loads(text[len("data: ") :])
                     frames.append(current)
@@ -926,13 +939,12 @@ def test_global_event_stream_forwards_any_target_without_id_lines(live: dict) ->
 
 
 def test_global_event_stream_rotates_and_sends_no_replay_before_it(data_dir: Path) -> None:
-    """到 ``SSE_STREAM_MAX_SECONDS`` 发 ``event: rotate`` 后正常收尾，且轮换前没有任何补拉帧。
+    """到寿命点发 ``event: rotate`` 后正常收尾，且轮换前没有任何补拉帧。
 
-    这里**不**改 ``ALIBOT_SSE_ROTATE_SECONDS``：那个环境变量在 ``alibot.api`` **导入期**就被绑成
-    模块常量（``SSE_STREAM_MAX_SECONDS``），而本文件早已导入它，``monkeypatch.setenv`` 对已导入的
-    模块无效（既有 ``test_rotate_frame_lets_the_client_tell_a_rotation_from_an_outage`` 也有这层
-    局限）。要真正缩短只能改产品读 env 的时机——那是另一张票。本用例因此跑默认寿命（55 秒），
-    也顺便验证到期后**流会自己结束**：轮换帧之后迭代器应当收尾，不再有命名事件。
+    寿命由 `conftest.py` 的 session 级装置统一设成 **2 秒**（票 #328）：产品侧改成了
+    **运行时读取**（``alibot.api.sse_stream_max_seconds()``），所以测试装置真的能生效，本用例
+    不必再跑默认的 55 秒。它顺带验证到期后**流会自己结束**：轮换帧之后迭代器应当收尾，
+    不再有命名事件——这条断言与「等多久」无关，缩短寿命只是让它更快到达同一个边界。
     """
     scheduler, seam = ManualScheduler(), ScriptedAgentSeam()
     with (

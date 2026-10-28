@@ -36,6 +36,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  # 门禁并行化的依赖：全量 pytest 由 `scripts/check.sh` 用 xdist 分发（并行度与分发方式只写在那里）。
+  # 缺它时那条命令会直接报 `unrecognized arguments: -n`，不是悄悄退回串行。
+  "pytest-xdist>=3.5",
   "httpx2>=2.0",
   "ruff>=0.6",
   "mypy>=1.11",

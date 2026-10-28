@@ -26,9 +26,13 @@ APP_DIR = Path(__file__).resolve().parent.parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from alibot.api import create_app  # noqa: E402
+from alibot.api import DockerStartupHook, create_app  # noqa: E402
 
-from tests.scripted import ManualScheduler, ScriptedAgentSeam  # noqa: E402
+from tests.scripted import (  # noqa: E402
+    ManualScheduler,
+    ScriptedAgentSeam,
+    inert_docker_startup,
+)
 
 # 规格固定的唯一成员行 id（issue #2 正文写明的对外身份，不是实现内部结构）。
 SPEC_OWNER_ID = "owner"
@@ -97,13 +101,54 @@ def _isolate_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
                 os.environ[key] = value
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _shorten_sse_stream_lifetime() -> Iterator[None]:
+    """把事件流单连接寿命统一压到 **2 秒**：测试不该为「等到期」付 55 秒。
+
+    需要它的用例（5 条）读的是「流自己收尾」这条边界：``TestClient.stream(...)`` 那三条不实现
+    断开检测，``httpx`` + 真 uvicorn socket 那两条读到 EOF——两边的 ``stream()`` 循环都只能等
+    deadline 才结束。产品侧因此把寿命改成**运行时读取**
+    （``alibot.api.sse_stream_max_seconds()``），这个装置才真的能生效。
+
+    为什么是 2 而不是更小：连接寿命过短会让「等实时事件」的用例变脆（keep-alive 轮询间隔是
+    0.5 秒，2 秒留出 4 个轮询窗口）。生产默认寿命仍是 55 秒，由
+    ``test_sse_lifetime_config.py`` 守着。
+
+    **代价（写给后来者）**：这个装置对**全部** SSE 用例生效，所以任何把连接开得比 2 秒更久的
+    用例都可能中途收到 ``event: rotate``（一帧 ``data: {}`` 的控制帧）。余量是结构性的而不是
+    实测出来的：rotate 最早只可能在 **0.53 秒**到达（``SSE_POLL_SECONDS = 0.5`` 的轮询粒度），
+    而寿命 2 秒是它的 4 倍；读线程若裸取 ``event["type"]``，就必须容忍这个空载荷帧——
+    ``test_event_stream.py::_start_reader`` 收到 rotate 即收尾，本文件的 ``sse_frames`` /
+    ``sse_events`` 跳过空载荷帧，``test_round_outcome_visibility.py`` 同理。
+
+    与既有两个 session 级装置同形：保存原值、设置、yield、finally 恢复。
+    """
+    key = "ALIBOT_SSE_ROTATE_SECONDS"
+    saved = os.environ.get(key)
+    try:
+        os.environ[key] = "2"
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = saved
+
+
 def build_app(
     data_dir: Path,
     scheduler: ManualScheduler | None = None,
     seam: ScriptedAgentSeam | None = None,
+    *,
+    docker_startup: DockerStartupHook | None = inert_docker_startup,
     **kwargs: Any,
 ):
-    """默认注入脚本化替身 + 手动调度器；``seam_factory`` 存在时交给 factory 决定成员面。"""
+    """默认注入脚本化替身 + 手动调度器；``seam_factory`` 存在时交给 factory 决定成员面。
+
+    ``docker_startup`` 默认是惰性替身（见 ``tests.scripted.inert_docker_startup``）：xdist 多进程下
+    真实启动清扫会删掉别的 worker 正在用的容器（#328 / #330）。它是**具名参数**而不是从
+    ``**kwargs`` 里 ``pop``：显式传 ``None`` 等于打开生产路径，必须是一个看得见的决定。
+    """
     provided_seam = seam
     if provided_seam is None and kwargs.get("seam_factory") is None:
         provided_seam = ScriptedAgentSeam()
@@ -115,6 +160,7 @@ def build_app(
         # 不能因为「今天恰巧过了某条提醒的到期时刻」而多出系统事件消息。真实后台轮询由
         # ``test_reminder_delivery.py`` 自己在**单独的**用例里注入（那两条恰好要验证启动先扫与关停）。
         reminder_delivery=InertReminderDeliveryDriver,
+        docker_startup=docker_startup,
         **kwargs,
     )
 
@@ -159,7 +205,7 @@ def peer_backends(data_dir: Path, count: int) -> Iterator[list[TestClient]]:
     并发下「seq 唯一且无缺口」在 HTTP 面唯一可观察的窗口就在这里 —— 把并发交给真实
     写路径去产生，而不是由测试自己连数据库或注入数据。
     """
-    app = create_app(data_dir=data_dir)
+    app = create_app(data_dir=data_dir, docker_startup=inert_docker_startup)
     with ExitStack() as stack:
         yield [stack.enter_context(TestClient(app)) for _ in range(count)]
 
@@ -275,6 +321,10 @@ def sse_frames(
 
     读到 replay 之后的第一个 keep-alive（``:`` 开头的注释帧）就主动断开：那就是「历史发完了」的
     信号，之后是实时推送，不属于「补拉」的断言范围。
+
+    ``data: {}`` 的轮换帧被跳过：测试内的连接寿命是秒级（`conftest.py` 的 session 装置），
+    服务端的 ``event: rotate`` 控制帧没有 ``type``，混进返回值会让调用方的
+    ``event["type"]`` 直接 KeyError——那不是用例要证的语义。
     """
     import json
 
@@ -287,7 +337,10 @@ def sse_frames(
         for line in response.iter_lines():
             text = line.decode() if isinstance(line, bytes) else line
             if text.startswith("data: "):
-                events.append(json.loads(text[len("data: ") :]))
+                event = json.loads(text[len("data: ") :])
+                if not event:
+                    continue  # 轮换控制帧（见 docstring）
+                events.append(event)
                 if len(events) >= limit:
                     break
             elif text.startswith(":") and events:
@@ -404,7 +457,10 @@ def sse_events(client: TestClient, channel_id: str, after_seq: int = 0) -> list[
                 continue
             text = line.decode() if isinstance(line, bytes) else line
             if text.startswith("data: "):
-                events.append(json.loads(text[len("data: ") :]))
+                event = json.loads(text[len("data: ") :])
+                if not event:
+                    continue  # 轮换控制帧（见 sse_frames 的 docstring）
+                events.append(event)
                 # 补拉部分发完后会出现 keep-alive 注释；读到它就不再往下等。
             if len(events) >= 60:
                 break
