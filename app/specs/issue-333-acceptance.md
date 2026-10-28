@@ -5,7 +5,7 @@
 **Ticket**：[#333](https://github.com/whutlichao/alibot/issues/333)（只读引用；不 close、不改标签）
 **base**：`ba668c3`（= 派活时 `main` 的 tip，也是本分支的起点）｜**branch**：`issue-333-impl`
 **worktree**：`/Users/apple/orca/workspaces/alibot/typing-indicator-round-scope`
-**PR**：（见 `## Answer` 回填）｜**PR body**：`app/specs/issue-333-pr-body.md`
+**PR**：[#334](https://github.com/whutlichao/alibot/pull/334)｜**PR body**：`app/specs/issue-333-pr-body.md`
 **采集时间**：2026-10-28｜**环境**：macOS（aarch64）、Python 3.11.13（仓库根 `.venv` 以符号链接接上）、
 Node + Vitest 4.1.12（`cd app/frontend && env -u NODE_ENV npm ci`）
 
@@ -21,7 +21,7 @@ Node + Vitest 4.1.12（`cd app/frontend && env -u NODE_ENV npm ci`）
 | ④ 后端断言轮次帧 `scope=="round"`、team 成员帧 `scope=="member"`；既有 typing 用例仍绿 | `app/tests/test_event_stream.py` | 新增 `test_team_member_typing_frames_carry_member_scope` + 既有 typing 用例补断言；`30 passed`（§3） | ✅ |
 | ⑤ 门禁：窄档三条 + 后端 + 收尾 `scripts/check.sh --fast` | 见 §4 | 前端 `98 passed`、后端 `30 passed`、`--fast` 全绿（459 前端用例） | ✅ |
 | ⑥ 双轴 code-review（Standards + Spec）findings 与逐条处置写进 Answer | `## Answer` | 两轴报告 + 逐条处置 | ✅ |
-| ⑦ 交付：PR body（Summary / Evidence / Merge Danger / `Closes #333`），Door `two-way`，分支已推送 | `app/specs/issue-333-pr-body.md` | 见 `## Answer` 的 PR 号 | ✅ |
+| ⑦ 交付：PR body（Summary / Evidence / Merge Danger / `Closes #333`），Door `two-way`，分支已推送 | `app/specs/issue-333-pr-body.md` | PR [#334](https://github.com/whutlichao/alibot/pull/334)（body 见 `app/specs/issue-333-pr-body.md`） | ✅ |
 
 ---
 
@@ -114,7 +114,7 @@ AssertionError: expected undefined to be 'mem-1'          ← 矩阵：成员级
 **绿**（实现后，同命令）：
 
 ```text
- ✓ tests/app-context.test.js (12 tests) 63ms
+ ✓ tests/app-context.test.js (12 tests) 61ms
 
  Test Files  1 passed (1)
       Tests  12 passed (12)
@@ -185,8 +185,8 @@ cd app && ../.venv/bin/python -m pytest tests/test_event_stream.py
 ## 5. 双轴 code-review 与逐条处置
 
 按 `/Users/apple/.agents/skills/code-review/SKILL.md`：固定点 `ba668c3`，diff 命令 `git diff ba668c3...HEAD`，
-Standards / Spec 各跑一个并行子代理，结论分开报、不互相抵消。两轴都**复跑过本票命令**（Standards：
-`--fast` 范围、Spec：`app-context.test.js` 与后端 `-k typing`）。
+Standards / Spec 各跑一个并行子代理，结论分开报、不互相抵消。两轴都是只读审查；Spec 轴另**复跑过本票
+命令**（`app-context.test.js` 12 passed、后端 `-k typing` 2 passed）。
 
 ### 5.1 Standards 轴（2 条硬边界 + 6 条判断项）
 
@@ -222,7 +222,7 @@ reply 级在飞（名字与停止句柄）；`REPLY_START` / `REPLY_END` 不再�
 上文各节。交付物：分支 `issue-333-impl`、PR（号与链接见下）、`app/specs/issue-333-acceptance.md`、
 `app/specs/issue-333-pr-body.md`。
 
-- **PR**：（回填）
+- **PR**：[#334](https://github.com/whutlichao/alibot/pull/334)（base `main`，head `issue-333-impl`）
 - **PR body**：`app/specs/issue-333-pr-body.md`
 - **Door**：`two-way`（只新增可选 `scope` 字段；无 schema / 迁移 / 破坏性 API / 权限 / 计费 / 部署 /
   不可逆副作用；前端状态是进程内读数，revert 即回到旧行为）
