@@ -219,10 +219,6 @@ function candidateText(candidate) {
   return candidate.name + '（' + t('skill.importStatusBlocked', { reason: candidate.reason || '' }) + '）';
 }
 
-function candidateSelectable(candidate) {
-  return skillImportSelectable(candidate);
-}
-
 /** 导入结果的一行：`imported` / `skipped`（409 同名已存在）/ `failed`（其余可读原因）。 */
 function importResultText(result) {
   if (result.status === 'imported') return t('skill.importResultDone', { name: result.name });
@@ -259,7 +255,7 @@ const importLocked = computed(() => !props.online || importBusy.value || importS
 
 /** 「全部导入」只处理**可导入且未安装**的候选；一条都没有时按钮禁用。 */
 const importableCandidates = computed(() =>
-  (view.value ? view.value.skillImportCandidates : []).filter((candidate) => candidateSelectable(candidate)),
+  (view.value ? view.value.skillImportCandidates : []).filter((candidate) => skillImportSelectable(candidate)),
 );
 
 function openImportMenu() {
@@ -279,10 +275,14 @@ function toggleImportMenu() {
   else openImportMenu();
 }
 
-/** 点一条可选项 = 选中并立即导入（一次一个）；导入中面板不接点击。 */
+/** 点一条可选项 = 选中并立即导入（一次一个）；导入中面板不接点击。
+ *
+ * **不把焦点还给触发控件**：这一下点击会立刻让 `skillImportBusy` 变真，触发控件随之禁用；
+ * 把焦点放到一个马上被禁用的控件上，浏览器会把它丢回 `body`（与 `stores/agent-detail.js`
+ * 启停那条「禁用控件接不到焦点，键盘用户会丢焦点」同一条纪律）。焦点留给面板消失后的文档流。 */
 function chooseImportCandidate(candidate) {
-  if (!candidateSelectable(candidate) || importLocked.value) return;
-  closeImportMenu({ restoreFocus: true });
+  if (!skillImportSelectable(candidate) || importLocked.value) return;
+  closeImportMenu({ restoreFocus: false });
   props.detail.pickImportCandidate(candidate.name);
   props.detail.importPickedSkill();
 }
@@ -764,8 +764,8 @@ watch(
                         type="button"
                         role="option"
                         :aria-selected="false"
-                        :aria-disabled="candidateSelectable(candidate) ? undefined : 'true'"
-                        :disabled="!candidateSelectable(candidate)"
+                        :aria-disabled="skillImportSelectable(candidate) ? undefined : 'true'"
+                        :disabled="!skillImportSelectable(candidate)"
                         :data-candidate="candidate.name"
                         @click="chooseImportCandidate(candidate)"
                       >
@@ -779,13 +779,13 @@ watch(
               <!-- 两个按钮不打开下拉也点得到：重扫候选 / 一次导入当前全部可导入项。
                    它们在**扫描结果之外**渲染：目录空或扫描失败时，「刷新」正是人需要的那一个入口。
                    「刷新」直接调 store 的只读读路径（`loadImportCandidates` 已重新暴露）；
-                   扫描中 / 导入中它自己被 `:disabled` 挡住，因此没有重入面。 -->
+                   扫描中 / 导入中 / 离线三种情形都由 `importLocked` 一个判据挡住，没有重入面。 -->
               <div v-if="view" class="skill-import-actions">
                 <button
                   class="btn btn-sm"
                   type="button"
                   data-od-id="skill-import-scan"
-                  :disabled="importLocked || Boolean(view.skillImportLoading)"
+                  :disabled="importLocked"
                   @click="detail.loadImportCandidates(state.memberId)"
                 >
                   {{ t('skill.importScanButton') }}
@@ -794,7 +794,7 @@ watch(
                   class="btn btn-sm"
                   type="button"
                   data-od-id="skill-import-all"
-                  :disabled="importLocked || Boolean(view.skillImportLoading) || !importableCandidates.length"
+                  :disabled="importLocked || !importableCandidates.length"
                   @click="detail.importAllCandidates()"
                 >
                   {{ t('skill.importAllButton') }}

@@ -618,9 +618,11 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
   border: 0; border-radius: var(--r-sm); background: none;
   color: var(--fg); font: inherit; font-size: var(--fs-sm); cursor: pointer;
 }
-/* 悬停与键盘焦点同一个可见态（与 `.card-menu-item` 同一条：信号走底，文字色不变）。 */
+/* 悬停与键盘焦点同一个可见态：信号走**底**（`--selected-soft`），文字仍是 `--fg`——
+   与 `.card-menu-item:hover` 同一条。**不用** `--selected-deep` 压在这个底上：本仓实测它只有
+   3.44:1（见 `.filter-chip.is-on` 那段注释），比未选中时的 7.08:1 低一档。 */
 .skill-import-option:hover:not(:disabled),
-.skill-import-option:focus-visible { background: var(--selected-soft); color: var(--selected-deep); }
+.skill-import-option:focus-visible { background: var(--selected-soft); color: var(--fg); }
 /* 已安装 / 不可导入：`--faint` 只表达「不可点」，原因写在条目文本里。 */
 .skill-import-option:disabled { color: var(--faint); cursor: not-allowed; }
 .skill-import-actions { display: flex; gap: var(--sp-3); margin-top: var(--sp-3); }

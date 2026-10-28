@@ -686,8 +686,6 @@ export function createAgentDetailStore(options) {
     current.skillImportPick = String(name || '');
   }
 
-  /** 重扫候选（「刷新」按钮）就是 `loadImportCandidates` 本身：「刷新」直接调它（票面 6b）。 */
-
   /**
    * 导入**一条**候选（写路径**复用** `POST /api/skills`：`source_path` = 候选 path）。
    *
@@ -721,6 +719,36 @@ export function createAgentDetailStore(options) {
   }
 
   /**
+   * 一次导入（单条或批量）的完整流程：置忙 → 逐条走 `postSkillImport` → 收尾。
+   *
+   * 单条与批量的差别只有两处：候选从哪来、要不要汇总（`summary` 为 `null` 时不产汇总行）。
+   * 平铺成一份是因为两段逐行相同的收尾（清错误、置忙、清结果、归零、重读、重扫）会在
+   * 下一次改流程时各自漂移。
+   */
+  async function runSkillImports(current, memberId, candidates, summary) {
+    current.skillImportError = '';
+    current.skillImportBusy = true;
+    current.skillImportResults = [];
+    current.skillImportSummary = null;
+    try {
+      for (const candidate of candidates) {
+        if (state.memberId !== memberId) return;
+        const result = await postSkillImport(memberId, candidate);
+        if (!result) return;
+        current.skillImportResults.push(result);
+        if (summary) summary[result.status] += 1;
+      }
+    } finally {
+      if (state.memberId === memberId) current.skillImportBusy = false;
+    }
+    if (state.memberId !== memberId) return;
+    current.skillImportSummary = summary;
+    // 下拉框回到空选择（重扫会把刚导入的那条渲染成禁用的「已安装」）。
+    current.skillImportPick = '';
+    await settleSkillImport(memberId);
+  }
+
+  /**
    * 导入**一个**技能（下拉里点一条 = 选中并立即导入，一次一个）。
    *
    * 结果落在导入区自己的结果行（不拖垮右栏）；失败不写右栏错误行。
@@ -734,20 +762,7 @@ export function createAgentDetailStore(options) {
       (item) => item.name === current.skillImportPick && skillImportSelectable(item),
     );
     if (!candidate) return;
-    current.skillImportError = '';
-    current.skillImportBusy = true;
-    current.skillImportResults = [];
-    current.skillImportSummary = null;
-    try {
-      const result = await postSkillImport(memberId, candidate);
-      if (result) current.skillImportResults.push(result);
-    } finally {
-      if (state.memberId === memberId) current.skillImportBusy = false;
-    }
-    if (state.memberId !== memberId) return;
-    // 下拉框回到空选择（重扫会把刚导入的那条渲染成禁用的「已安装」）。
-    current.skillImportPick = '';
-    await settleSkillImport(memberId);
+    await runSkillImports(current, memberId, [candidate], null);
   }
 
   /**
@@ -763,26 +778,7 @@ export function createAgentDetailStore(options) {
     const memberId = state.memberId;
     const candidates = current.skillImportCandidates.filter((item) => skillImportSelectable(item));
     if (!candidates.length) return;
-    current.skillImportError = '';
-    current.skillImportBusy = true;
-    current.skillImportResults = [];
-    current.skillImportSummary = null;
-    const summary = { imported: 0, skipped: 0, failed: 0 };
-    try {
-      for (const candidate of candidates) {
-        if (state.memberId !== memberId) return;
-        const result = await postSkillImport(memberId, candidate);
-        if (!result) return;
-        current.skillImportResults.push(result);
-        summary[result.status] += 1;
-      }
-    } finally {
-      if (state.memberId === memberId) current.skillImportBusy = false;
-    }
-    if (state.memberId !== memberId) return;
-    current.skillImportSummary = summary;
-    current.skillImportPick = '';
-    await settleSkillImport(memberId);
+    await runSkillImports(current, memberId, candidates, { imported: 0, skipped: 0, failed: 0 });
   }
 
   // ── mcp：库行（增删改 / 启停 / 远端确认）+ 家目录 mcp.json 原文 ──
