@@ -398,6 +398,15 @@ const agentDetail = createAgentDetailStore({
   },
 });
 
+/** rail 的当前行判据：详情档是**详情打开的那个成员**，其余档没有 Agent 是当前行。
+ *
+ * 为什么不复用 `state.activeTargetId`：进详情**不换 target**（详情不是某个 target 的内容，
+ * 关掉要回到进入前的消息流），于是它记的仍是进入前那条频道 / 私信。让 rail 继续读它，
+ * 打开详情后那条旧 target 就会一直亮着、对应的 Agent 行反倒没有当前态（截图里的缺陷）。
+ * 这一份派生值与 `mode` / 详情 store 同源，因此切换 Agent、返回消息流、详情内发送消息
+ * 三条路都不需要各自维护一份「谁被选中」。 */
+const activeAgentId = computed(() => (mode.value === 'agent' ? agentDetail.state.memberId : null));
+
 /** 进详情前的落点（旧 `state.agentReturn`）：只在**第一次**进入时记录，切成员不覆盖它。
  *
  * 三位都得记：`mode` 决定关闭后回哪一档主线视图；`dockTarget` / `dockDrawerOpen` 决定 dock
@@ -895,6 +904,7 @@ function mobileShell() {
       :open="railOpen"
       :reminder-pending="reminderPending"
       :agent-detail-available="agentDetailAvailable"
+      :active-agent-id="activeAgentId"
       @select-target="selectTarget"
       @open-search="showSearchView"
       @open-reminders="remindersOpen = true"

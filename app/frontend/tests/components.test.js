@@ -650,6 +650,22 @@ describe('左栏', () => {
     expect(row.find('.badge').text()).toBe('2');
   });
 
+  test('当前行只有一个：详情打开时（`activeAgentId` 有值）频道 / 私信行都让位，对应 Agent 行是当前行', () => {
+    const wrapper = mount(RailSidebar, {
+      props: { state, agentDetailAvailable: true, activeAgentId: 'mem-1' },
+    });
+    for (const id of ['channel-ch-1', 'dm-dm-1']) {
+      const row = wrapper.find(`[data-od-id="${id}"]`);
+      expect(row.classes(), id).not.toContain('is-active');
+      expect(row.attributes('aria-current'), id).toBe('false');
+    }
+    const agent = wrapper.find('[data-od-id="agent-mem-1"]');
+    expect(agent.classes()).toContain('is-active');
+    expect(agent.attributes('aria-current')).toBe('true');
+    // 已归档私信行同样让位（它也是 target 行，不是详情的一部分）。
+    expect(wrapper.find('#dmArchiveList [data-dm="dm-2"]').classes()).not.toContain('is-active');
+  });
+
   test('已归档私信单独成段、默认折叠；未归档的私信里不出现它', () => {
     const wrapper = mount(RailSidebar, { props: { state } });
     const liveDmIds = wrapper.findAll('#dmList [data-dm]').map((node) => node.attributes('data-dm'));
