@@ -167,6 +167,12 @@
 **本机验证边界**：本机（macOS）没有 docker daemon，全部 docker 用例本地 `skip`（11 条 skip 含全部
 docker 用例）——docker 侧的修复只能由 CI 证明。
 
+**README 的测试分层例外清单已同步**：`app/README.md` 在「两处例外（词条表数据契约）」之后另起一段，
+补上**一类**不以 HTTP 面读数的守卫（断言装配层接线 / 配置默认值），列出
+`test_sse_lifetime_config.py`（上一轮就遗漏未登记）与 `test_docker_startup_injection.py`。
+`test_test_layering_guard.py` 的 docstring 不动——它的「两处」说的是**它自己那条机械判据**的适用
+范围，新守卫不违反那三条。
+
 不在本票范围：CI 拆 job、docs-only `paths-ignore`、删除 CI 里那次显式构建步、#330。
 
 Closes #328

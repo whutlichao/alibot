@@ -382,6 +382,22 @@ cd app && ../.venv/bin/python -m pytest -p no:cacheprovider \
 
 ---
 
+## 6. PR
+
+| 项 | 值 |
+| --- | --- |
+| PR | [#329](https://github.com/whutlichao/alibot/pull/329)（head `issue-328-impl` → base `main`） |
+| PR body | `app/specs/issue-328-pr-body.md`（用 `--body-file` 提交，正文以 `Closes #328` 结尾） |
+| commit | `ba479ab`（本票唯一代码提交） |
+| 推送 | `git push -u origin issue-328-impl`（SSH；分支已建立 upstream） |
+
+body 分三段（`## Summary` / `## Evidence` / `## Merge Danger`），Evidence 段贴的是 §1–§4 的实测
+读数（7 条慢用例前后并列、全量门禁读数、`-n 4` 与 `-n auto` 两档、守卫用例与手工读数）。
+Merge Danger 如实写明：本票改的是**门禁入口**与**全局测试装置**，属「门禁自身的改动」——一旦有偏差，
+后续每张票的门禁读数都不可信，并点名请人重点看第 2 条（未放宽判据）与第 6 条（守卫）。
+
+---
+
 ## 7. 并行暴露的容器清扫冲突（续作）
 
 ### 7.1 两次 CI 红
@@ -437,6 +453,18 @@ create_app 的 lifespan
 **替身放在哪**：`tests/scripted.py`（本仓替身之家，非 pytest 的手工工具 `measure_budget.py` 也复用
 它），不放 `conftest.py`——后者是 pytest 插件模块，顶部还有 `sys.path` 改写，让非 pytest 入口依赖
 它是不必要的副作用（Standards 轴 findings #2，已修）。
+
+**为什么改产品入口，而不是在 pytest 侧绕开**（Standards 轴判断题 2「不新开接缝」的那一问）：
+
+| 备选方案 | 为什么不选 |
+| --- | --- |
+| session 级 autouse 装置里 `monkeypatch.setattr(api_module, "sweep_stale_docker_workspaces", ...)` | 只能覆盖 pytest 进程：`measure_budget.py` 是**非 pytest** 手工入口，它同样会进 lifespan，却拿不到装置。要么再给它写一份重复的绕法，要么留着它继续误删。 |
+| 在 `create_app` 里检测 pytest（`if "pytest" in sys.modules: skip`） | 给**生产路径**加一条隐形分支：后来者读 lifespan 只会看到一条静默的 `if`，既不知道它的存在，也不会在改动时维护它。 |
+| 修 `sweep_stale_docker_workspaces()` 让它跨进程安全 | 是**产品语义**变更（生产多进程下的归属问题），属跟进票 [#330](https://github.com/whutlichao/alibot/issues/330)，不在本票。 |
+
+所以选「显式传参」：它把「这条动作在测试里被关掉」变成**调用点可见的事实**（每处都能 grep 到
+`docker_startup=`），并且对非 pytest 入口同样有效。代价是 `create_app` 多一个关键字参数——那是
+本票唯一碰到的产品签名，已在 PR 的 Merge Danger 里点名请人复核默认值未改行为。
 
 **授权范围（比票面 spec 更大，是 code-review 发现的范围不足，不是 scope 漂移）**：我最初按
 「`build_app` + `peer_backends` 两处」上报，协调者核对后要求**每一个进 lifespan 的测试装配点都
@@ -553,6 +581,18 @@ lifespan 那段是 `suppress(Exception)`，抛出来的异常会被吞掉，布�
 与 `test_agent_seam_client_lifecycle.py` 同类，不是行为用例；`test_test_layering_guard.py` 的机械
 判据（不 import 私有名、不断言词表形状、不读 Studio 源码）全部通过。
 
+**落回 README（协调者裁定，本轮已补）**：`app/README.md` 在「两处例外，理由同源（词条表是数据
+契约）」那段**之后另起一段**，新增**一类**不以 HTTP 面读数的守卫——「断言装配层接线或配置默认值」，
+理由是它与词条表那两处**不同源**，硬塞进同一段会让那段的结论句（「两处都只读数据契约」）变成假话。
+那一类里列**两处**，不是一处：
+
+1. `app/tests/test_sse_lifetime_config.py`（上一轮就在本分支，此前从未进过 README 的例外清单）；
+2. `app/tests/test_docker_startup_injection.py`（本轮）。
+
+`test_test_layering_guard.py` 的 docstring 里「只有两处 i18n 词条数据契约例外」**不动**：那是它自己
+那条机械判据（不读 Studio 源码 / 不断言词表形状 / 不 import 私有名）的适用范围说明，而新守卫**不违反**
+那三条（在含新守卫的工作区里该文件全绿）。两条纪律管的是不同的事。
+
 
 ### 7.7 本机验证的边界（必须写明）
 
@@ -616,19 +656,3 @@ xfail / 环境门被新增；它们本来就在无 daemon 时 skip）。**docker
 ### 7.9 CI（续作）
 
 <!-- CI_RESULT -->
-
----
-
-## 6. PR
-
-| 项 | 值 |
-| --- | --- |
-| PR | [#329](https://github.com/whutlichao/alibot/pull/329)（head `issue-328-impl` → base `main`） |
-| PR body | `app/specs/issue-328-pr-body.md`（用 `--body-file` 提交，正文以 `Closes #328` 结尾） |
-| commit | `ba479ab`（本票唯一代码提交） |
-| 推送 | `git push -u origin issue-328-impl`（SSH；分支已建立 upstream） |
-
-body 分三段（`## Summary` / `## Evidence` / `## Merge Danger`），Evidence 段贴的是 §1–§4 的实测
-读数（7 条慢用例前后并列、全量门禁读数、`-n 4` 与 `-n auto` 两档、守卫用例与手工读数）。
-Merge Danger 如实写明：本票改的是**门禁入口**与**全局测试装置**，属「门禁自身的改动」——一旦有偏差，
-后续每张票的门禁读数都不可信，并点名请人重点看第 2 条（未放宽判据）与第 6 条（守卫）。

@@ -877,6 +877,19 @@ Agent 详情面、旁白降档、频道设置弹窗、结构化沉默的摘要�
 两处都只读数据契约，**行为断言仍然全部走 HTTP 面**（含 `test_reminder_delivery.py` 里其余每一条用例：
 它们只经 `GET /api/reminders`、消息流、`budget`、`round-outcomes`、`search` 读数）。
 
+此外还有**一类**不以 HTTP 面读数的守卫：它们断言的是**装配层的接线**或**配置的默认值**——这类事实
+没有任何端点能观察到（要读它只能「真的等 55 秒」或「真的在另一个进程里删容器」）。目前是两处，
+均须在文件头写明「为什么非按模块级断言不可」：
+
+1. `app/tests/test_sse_lifetime_config.py`——事件流寿命的**生产默认值**与「调用时读取」的时机。
+2. `app/tests/test_docker_startup_injection.py`——`create_app` 的启动清扫**接线**（测试装配零调用 /
+   生产装配必调，顺序 `reaper→sweep`），以及「每个进 lifespan 的装配点都显式传替身」的 AST 扫描。
+   为什么非按模块级断言不可：本机没有 docker daemon，9 + 2 条 docker 用例全 skip，所以「测试装配
+   漏传替身」在本机**看不见**，只在有 daemon 的 CI 上表现成别的 worker 的容器被删（见
+   `app/specs/issue-328-acceptance.md` §7.6）。
+
+这两类的共同边界：断言的是**接线与默认值**，不是实现函数的行为；行为断言仍全部走 HTTP 面。
+
 五类 Agent 行为由 **脚本化替身**（`tests/scripted.py`）固定：回应 / 忽略 / 失败 / 延迟 / 声明沉默
 （`SILENT`：经结构化通道声明本轮不说话，与「忽略」不是同一件事）。
 测试**不联网、零成本**；「什么时候跑完一轮」由测试自己拨（手动调度器），所以 in-flight 与
