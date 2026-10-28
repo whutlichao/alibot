@@ -388,8 +388,9 @@ cd app && ../.venv/bin/python -m pytest -p no:cacheprovider \
 | --- | --- |
 | PR | [#329](https://github.com/whutlichao/alibot/pull/329)（head `issue-328-impl` → base `main`） |
 | PR body | `app/specs/issue-328-pr-body.md`（用 `--body-file` 提交，正文以 `Closes #328` 结尾） |
-| commit | `ba479ab`（本票唯一代码提交） |
-| 推送 | `git push -u origin issue-328-impl`（SSH；分支已建立 upstream） |
+| 前半段 commit | `ba479ab`（SSE 提速 + 并行化） |
+| 本轮 commit | `88302a5`（code：docker 注入点 + 4 条守卫）、`2fec905` / `b578072`（验收记录与本机读数）、`ddb397d`（README 例外清单）、`0e60e65`（理由不同源的澄清）；§7.9 的 CI 读数回填为最后一个 commit |
+| 推送 | `git push origin issue-328-impl`（SSH；分支已建立 upstream） |
 
 body 分三段（`## Summary` / `## Evidence` / `## Merge Danger`），Evidence 段贴的是 §1–§4 的实测
 读数（7 条慢用例前后并列、全量门禁读数、`-n 4` 与 `-n auto` 两档、守卫用例与手工读数）。
