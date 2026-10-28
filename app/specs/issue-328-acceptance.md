@@ -661,7 +661,8 @@ real 1m29.812s
 
 ### 7.9 CI（续作）
 
-**结论：绿。** 代码提交 `88302a5` 之后，本票每次推送在 CI 上都是 `success`——已逐一核对的三次为
+**结论：绿。** 代码提交 `88302a5` 之后，所有**跑完**（`conclusion ≠ cancelled`）的 CI 都是
+`success`；被 `concurrency` 取消的那几次不算通过证据（见下方过程记录）。已逐一核对的三次为
 （`cf6ff6d` → run [40614097315](https://github.com/whutlichao/alibot/actions/runs/40614097315)，8m28s；
 `fb182c7` → run [40616121247](https://github.com/whutlichao/alibot/actions/runs/40616121247)，8m08s；
 `56e2ccc` → run [40617056636](https://github.com/whutlichao/alibot/actions/runs/40617056636)，9m33s），
