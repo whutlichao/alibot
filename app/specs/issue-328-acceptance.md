@@ -661,13 +661,13 @@ real 1m29.812s
 
 ### 7.9 CI（续作）
 
-**结论：绿。** run [40614097315](https://github.com/whutlichao/alibot/actions/runs/40614097315)
-（head `cf6ff6d`，`pull_request` 事件，job `check` 用时 **8m28s**，**conclusion = success**，
-`Gate（scripts/check.sh）` 步骤通过）。
+**结论：绿。** 最后一次（`fb182c7`，即本文件回填后的状态）run
+[40616121247](https://github.com/whutlichao/alibot/actions/runs/40616121247)，`pull_request` 事件，
+job `check` 用时 **8m08s**，**conclusion = success**，`Gate（scripts/check.sh）` 通过：
 
 ```text
 == pytest（全量） ==
-1291 passed, 2 skipped in 377.14s (0:06:17)
+1291 passed, 2 skipped in 379.21s (0:06:19)
 
 == ruff check ==                     All checks passed!
 == ruff format --check ==            373 files already formatted
@@ -676,6 +676,10 @@ real 1m29.812s
 == Vitest（Vue 版工作台） ==         Test Files 24 passed (24) / Tests 448 passed (448)
 门禁全绿
 ```
+
+前一次（`cf6ff6d`，run [40614097315](https://github.com/whutlichao/alibot/actions/runs/40614097315)，
+8m28s）同样 **success**，`1291 passed, 2 skipped in 377.14s`——两次读数一致，说明不是偶然。
+下面这张表用的是 `cf6ff6d` 那次（代码与 `fb182c7` 只差 docs）。
 
 **这一次 CI 就是 docker 侧修复的正面证据**，两条读数对齐得严丝合缝：
 
@@ -696,9 +700,11 @@ real 1m29.812s
 - `ruff format --check` 373（本机 372）、`Vitest` 24 files / 448 tests（本机 23 / 437）：CI 在
   **merge commit**（分支 + `main@33e2142`，即 PR #327 已合并的前端改动）上跑，本机是分支自身。
   pytest 的 collected 数不受影响（1293）。
-- `pytest（全量）` 377.14s 比本机 74.18s 慢：CI runner 4 核 + 有 daemon 的 9 条 docker 用例真跑。
+- `pytest（全量）` 377.14s（`fb182c7` 那次 379.21s）比本机 74.18s 慢：CI runner 4 核 + 有 daemon 的
+  9 条 docker 用例真跑。
 
-> 过程记录（如实）：本票收尾期间连着推了 5 个 docs 提交，`.github/workflows/check.yml` 的
-> `concurrency: {group: check-<ref>, cancel-in-progress: true}` 把前 4 次 CI 逐次取消
+> 过程记录（如实）：本票收尾期间连着推了多个 docs 提交，`.github/workflows/check.yml` 的
+> `concurrency: {group: check-<ref>, cancel-in-progress: true}` 把先推的几次 CI 逐次取消
 > （`2fec905` / `b578072` / `ddb397d` / `0e60e65` 的 run 结论都是 `cancelled`，**不算通过证据**）。
-> 只有 `cf6ff6d` 这一次跑完并给出 `success`。上表读的全部来自这一次。
+> 跑完并给出 `success` 的是 `cf6ff6d`（40614097315）与 `fb182c7`（40616121247）这两次；
+> 上表读数来自前者，后者读数一致。
