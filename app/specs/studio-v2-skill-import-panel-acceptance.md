@@ -94,9 +94,12 @@ scripts/check.sh --fast
 
 - head `09a97a5`（含全部代码改动）的 `check` run
   [40629656072](https://github.com/whutlichao/alibot/actions/runs/40629656072) → **success**（含全量 pytest）。
-- head `7a700ed`（仅本文档与 PR body 的回填）的 `check` run
+- head `7a700ed`（仅本文档与 PR body 的回填）→ run
   [40630467848](https://github.com/whutlichao/alibot/actions/runs/40630467848) → **success**。
-- 本机 `--fast` 跳过的正是全量 pytest 那一段；它在上面两次 CI 里都跑了。
+- head `8cb7dbc`（仅本文档的回填）→ run
+  [40631400246](https://github.com/whutlichao/alibot/actions/runs/40631400246) → **success**。
+- 本机 `--fast` 跳过的正是全量 pytest 那一段；上面三次 CI 都跑了它。此后不再逐条登记纯文档回填
+  触发的 run（它们不改任何代码，工作流相同）。
 
 ---
 
