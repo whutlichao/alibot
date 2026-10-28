@@ -19,7 +19,7 @@ Node + Vitest 4.1.12（`cd app/frontend && env -u NODE_ENV npm ci`）
 | ② team 场景：#210 的多成员名字、单个 `REPLY_END` 只收敛自己、成员帧不碰队长轮次 | 同文件第二条用例 | 两成员名字 `['mem-leader','mem-member']`；成员收口后只剩 `['mem-leader']`；成员 `active:false` 后队长 `typing` 仍在。停止按钮：当前工作台没有它的渲染实现（见 `## Answer`），本票锁的是数据面——`activeRounds` 里每个在飞 reply 一个键（与 `round.active` 的 `rounds` 同形） | ✅ |
 | ③ 断线清理的既有用例仍绿 | 同文件「断线清掉「正在回复」」 | 该条在红、绿两次读数里都通过（§2） | ✅ |
 | ④ 后端断言轮次帧 `scope=="round"`、team 成员帧 `scope=="member"`；既有 typing 用例仍绿 | `app/tests/test_event_stream.py` | 新增 `test_team_member_typing_frames_carry_member_scope` + 既有 typing 用例补断言；`30 passed`（§3） | ✅ |
-| ⑤ 门禁：窄档三条 + 后端 + 收尾 `scripts/check.sh --fast` | 见 §4 | 前端 `98 passed`、后端 `30 passed`、`--fast` 全绿（459 前端用例） | ✅ |
+| ⑤ 门禁：窄档三条 + 后端 + 收尾 `scripts/check.sh --fast` + PR CI 全量 | 见 §4 | 前端 `98 passed`、后端 `30 passed`、`--fast` 全绿（459 前端用例）、PR CI run 40641012162 success | ✅ |
 | ⑥ 双轴 code-review（Standards + Spec）findings 与逐条处置写进 Answer | `## Answer` | 两轴报告 + 逐条处置 | ✅ |
 | ⑦ 交付：PR body（Summary / Evidence / Merge Danger / `Closes #333`），Door `two-way`，分支已推送 | `app/specs/issue-333-pr-body.md` | PR [#334](https://github.com/whutlichao/alibot/pull/334)（body 见 `app/specs/issue-333-pr-body.md`） | ✅ |
 
@@ -160,6 +160,7 @@ cd app && ../.venv/bin/python -m pytest tests/test_event_stream.py
 | 窄档前端 | `cd app/frontend && env -u NODE_ENV npx vitest run tests/app-context.test.js tests/components.test.js tests/task-thread.test.js` | `3 files / 98 tests passed` |
 | 窄档后端 | `cd app && ../.venv/bin/python -m pytest tests/test_event_stream.py` | `30 passed in 26.50s` |
 | 收尾快档 | `scripts/check.sh --fast` | ruff check / ruff format --check / mypy / pyright / vitest 全绿；`24 files / 459 tests passed`，末尾 `门禁全绿` |
+| PR CI（全量） | `gh pr checks 334` | run [40641012162](https://github.com/whutlichao/alibot/actions/runs/40641012162) **success**（6m55s，head `47213e4`）；该 head 的代码区与实现提交 `7ab2707` 同字节，此后只有 docs 提交（读数钉在代码树，不钉文档提交的 SHA） |
 
 `scripts/check.sh --fast` 的第一次运行在 **ruff format --check** 上红过：新用例里两处换行不符合格式化器的
 建议。按票面「不跑 `ruff format`」的纪律，手工按它给出的**局部**建议改那两处（不整文件重排），第二次全绿。
