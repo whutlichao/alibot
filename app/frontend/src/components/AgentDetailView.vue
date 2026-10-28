@@ -13,21 +13,21 @@
      - **上下文三项的界面入口已撤除**（规格 D2）：配置区没有那三格，草稿不产出、保存载荷不提交
        那三个键（`PATCH` 是部分更新，不提交 ⇒ 库里既有值保持）。
 
-     skills 页签的两个「唯一入口」：安装只有「从本机导入」下拉框（一次一个）；启停的唯一写入口是
+     skills 页签的安装入口只有导入区一处：一个自绘下拉（点一条 = 立即导入，一次一个）+ 「刷新」与
+     「全部导入」两个按钮（都不需要先展开下拉）。启停的唯一写入口是
      左栏行内的 `role=switch` 开关（行的文字区是原生 `<button>`、开关是它的**兄弟节点**——
      同一行两个控件物理不重叠，也不互相嵌套）。右栏那格启停态是**读数**，不是第二个入口。
 
      mcp 页签的两块面是**两份数据**：上块库行 `mcp_server`（`scope_kind='agent'`，装配正本），
      下块家目录 `mcp.json` 原文（导入源，不参与装配）。两块各标数据来源。 -->
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import ModalShell from './ModalShell.vue';
 import { hasKey, t } from '../i18n/index.js';
 import {
   AGENT_DETAIL_TABS,
   MCP_REMOTE_TRANSPORTS,
   MCP_TRANSPORTS,
-  SKILL_INSTALL_COMMAND,
   WEB_ACCESS_FOLLOW,
   skillImportSelectable,
 } from '../stores/agent-detail.js';
@@ -219,10 +219,6 @@ function candidateText(candidate) {
   return candidate.name + '（' + t('skill.importStatusBlocked', { reason: candidate.reason || '' }) + '）';
 }
 
-function candidateSelectable(candidate) {
-  return skillImportSelectable(candidate);
-}
-
 /** 导入结果的一行：`imported` / `skipped`（409 同名已存在）/ `failed`（其余可读原因）。 */
 function importResultText(result) {
   if (result.status === 'imported') return t('skill.importResultDone', { name: result.name });
@@ -230,12 +226,95 @@ function importResultText(result) {
   return t('skill.importResultFailed', { name: result.name, reason: result.reason || '' });
 }
 
-/** 下拉框的选择变化：只记**未提交**的单选（写路径在选中时立即发，一次一个）。 */
-function onPickCandidate(event) {
-  const name = String(event.target.value || '');
-  props.detail.pickImportCandidate(name);
-  if (name) props.detail.importPickedSkill();
+/** 「全部导入」的一行汇总（只在批量之后出现；单条导入不产汇总）。 */
+const importSummaryText = computed(() => {
+  const summary = view.value ? view.value.skillImportSummary : null;
+  if (!summary) return '';
+  return t('skill.importAllSummary', {
+    imported: summary.imported,
+    skipped: summary.skipped,
+    failed: summary.failed,
+  });
+});
+
+// ─── 从本机导入的自绘下拉（原生 `<select>` 的弹出层高度由浏览器画，CSS 管不到） ─────
+//
+// 触发控件保留 `id="skillImportPicker"` / `data-od-id="skill-import-picker"`（测试与探针按它定位），
+// 收起时 `aria-expanded="false"`；面板 `role="listbox"`、候选是 `role="option"` 的按钮，
+// 与 `MentionPicker.vue` 的既有形态同一种交互语汇。面板**绝对定位**、自带高度上限与内部滚动，
+// 因此不参与 `.agent-skill-section` 的高度链（#328 留下的固定高度工作区不会被撑坏）。
+
+const importMenuOpen = ref(false);
+const importPicker = ref(null);
+const importBox = ref(null);
+
+/** 导入中 / 扫描中：两个按钮与触发控件一起禁用（一次只飞一条写路径，扫描也不许重入）。 */
+const importBusy = computed(() => Boolean(view.value && view.value.skillImportBusy));
+const importScanning = computed(() => Boolean(view.value && view.value.skillImportLoading));
+const importLocked = computed(() => !props.online || importBusy.value || importScanning.value);
+
+/** 「全部导入」只处理**可导入且未安装**的候选；一条都没有时按钮禁用。 */
+const importableCandidates = computed(() =>
+  (view.value ? view.value.skillImportCandidates : []).filter((candidate) => skillImportSelectable(candidate)),
+);
+
+function openImportMenu() {
+  if (importLocked.value) return;
+  importMenuOpen.value = true;
 }
+
+function closeImportMenu(options) {
+  if (!importMenuOpen.value) return;
+  importMenuOpen.value = false;
+  // Esc 关闭把焦点还给触发控件；点面板外关闭不动焦点（人正在点别处）。
+  if (options && options.restoreFocus && importPicker.value) importPicker.value.focus();
+}
+
+function toggleImportMenu() {
+  if (importMenuOpen.value) closeImportMenu({ restoreFocus: false });
+  else openImportMenu();
+}
+
+/** 点一条可选项 = 选中并立即导入（一次一个）；导入中面板不接点击。
+ *
+ * **不把焦点还给触发控件**：这一下点击会立刻让 `skillImportBusy` 变真，触发控件随之禁用；
+ * 把焦点放到一个马上被禁用的控件上，浏览器会把它丢回 `body`（与 `stores/agent-detail.js`
+ * 启停那条「禁用控件接不到焦点，键盘用户会丢焦点」同一条纪律）。焦点留给面板消失后的文档流。 */
+function chooseImportCandidate(candidate) {
+  if (!skillImportSelectable(candidate) || importLocked.value) return;
+  closeImportMenu({ restoreFocus: false });
+  props.detail.pickImportCandidate(candidate.name);
+  props.detail.importPickedSkill();
+}
+
+/** 面板外的 pointerdown：收起面板（不抢焦点）。 */
+function onImportOutsidePointer(event) {
+  if (!importMenuOpen.value || !importBox.value) return;
+  if (importBox.value.contains(event.target)) return;
+  closeImportMenu({ restoreFocus: false });
+}
+
+/** Esc：面板开着时先收面板（ESC 的全局层序不动它——面板不是模态，也没有第二份监听）。 */
+function onImportKeydown(event) {
+  if (event.key !== 'Escape' || !importMenuOpen.value) return;
+  event.stopPropagation();
+  closeImportMenu({ restoreFocus: true });
+}
+
+watch(importMenuOpen, (open) => {
+  if (open) document.addEventListener('pointerdown', onImportOutsidePointer, true);
+  else document.removeEventListener('pointerdown', onImportOutsidePointer, true);
+});
+
+// 卸载（或切成员让面板消失）时不留监听：收起走同一条 close，watch 负责撤监听。
+watch(
+  () => state.memberId,
+  () => closeImportMenu({ restoreFocus: false }),
+);
+onBeforeUnmount(() => {
+  importMenuOpen.value = false;
+  document.removeEventListener('pointerdown', onImportOutsidePointer, true);
+});
 
 /** 右栏正文的四种状态各有各的说法（`missing` / `invalid` / `unreadable` 互不相同）。 */
 const skillBodyStateKey = computed(() => {
@@ -613,7 +692,7 @@ watch(
           </section>
         </div>
 
-        <!-- ─── skills：顶部「从本机导入」下拉框；往下双栏 ───────────────── -->
+        <!-- ─── skills：顶部自绘下拉导入区 + 两个按钮；往下双栏 ───────────────── -->
         <div
           v-show="state.tab === 'skills'"
           :id="panelId('skills')"
@@ -623,21 +702,11 @@ watch(
           data-od-id="agent-detail-panel-skills"
         >
           <section class="d-sec agent-skill-section">
-            <div class="d-sec-title" data-od-id="agent-capabilities-skill">
-              {{ t('agentCapabilities.skillTitle') }}
-            </div>
             <div class="resource-meta is-faint" data-od-id="agent-capabilities-scope">
               {{ t('agentCapabilities.scopeNote', { member: state.memberId || '' }) }}
             </div>
 
-            <div class="resource-add" data-od-id="skill-import">
-              <div class="d-sec-title">{{ t('skill.importTitle') }}</div>
-              <div class="resource-command">
-                <code data-od-id="skill-import-command">{{ SKILL_INSTALL_COMMAND }}</code>
-              </div>
-              <div class="resource-meta is-faint" data-od-id="skill-import-command-hint">
-                {{ t('skill.importCommandHint') }}
-              </div>
+            <div class="resource-add" data-od-id="skill-import" @keydown="onImportKeydown">
               <div v-if="view && view.skillImportLoading" class="resource-empty">
                 {{ t('skill.importLoading') }}
               </div>
@@ -658,34 +727,81 @@ watch(
               </div>
               <div v-else class="field">
                 <label for="skillImportPicker">{{ t('skill.importPickLabel') }}</label>
-                <select
-                  id="skillImportPicker"
-                  class="input"
-                  data-od-id="skill-import-picker"
-                  :disabled="!online || (view && view.skillImportBusy)"
-                  :value="view ? view.skillImportPick : ''"
-                  @change="onPickCandidate"
-                >
-                  <option value="">{{ t('skill.importPickPlaceholder') }}</option>
-                  <optgroup
-                    v-for="group in importGroups"
-                    v-show="group.candidates.length"
-                    :key="group.key"
-                    :label="t(group.labelKey)"
+                <!-- 触发控件是 `<button>`（原生 `<select>` 的弹出层高度由浏览器画，CSS 管不到）。
+                     收起态与展开态用同一套 `aria-*`：`aria-haspopup="listbox"` + `aria-expanded`。 -->
+                <div ref="importBox" class="skill-import-picker-box">
+                  <button
+                    id="skillImportPicker"
+                    ref="importPicker"
+                    class="input skill-import-trigger"
+                    type="button"
+                    data-od-id="skill-import-picker"
+                    aria-haspopup="listbox"
+                    :aria-expanded="importMenuOpen ? 'true' : 'false'"
+                    :aria-controls="importMenuOpen ? 'skillImportMenu' : undefined"
+                    :disabled="importLocked"
+                    @click="toggleImportMenu"
                   >
-                    <option
-                      v-for="candidate in group.candidates"
-                      :key="candidate.name"
-                      :value="candidate.name"
-                      :disabled="!candidateSelectable(candidate)"
-                    >
-                      {{ candidateText(candidate) }}
-                    </option>
-                  </optgroup>
-                </select>
+                    <span class="skill-import-trigger-text">{{ t('skill.importPickPlaceholder') }}</span>
+                    <span class="skill-import-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div
+                    v-if="importMenuOpen"
+                    id="skillImportMenu"
+                    class="skill-import-menu"
+                    role="listbox"
+                    :aria-label="t('skill.importPickLabel')"
+                    data-od-id="skill-import-menu"
+                  >
+                    <template v-for="group in importGroups" :key="group.key">
+                      <div v-if="group.candidates.length" class="skill-import-group" role="presentation">
+                        {{ t(group.labelKey) }}
+                      </div>
+                      <button
+                        v-for="candidate in group.candidates"
+                        :key="candidate.name"
+                        class="skill-import-option"
+                        type="button"
+                        role="option"
+                        :aria-selected="false"
+                        :aria-disabled="skillImportSelectable(candidate) ? undefined : 'true'"
+                        :disabled="!skillImportSelectable(candidate)"
+                        :data-candidate="candidate.name"
+                        @click="chooseImportCandidate(candidate)"
+                      >
+                        {{ candidateText(candidate) }}
+                      </button>
+                    </template>
+                  </div>
+                </div>
               </div>
 
-              <div v-if="view && view.skillImportResults.length" data-od-id="skill-import-status">
+              <!-- 两个按钮不打开下拉也点得到：重扫候选 / 一次导入当前全部可导入项。
+                   它们在**扫描结果之外**渲染：目录空或扫描失败时，「刷新」正是人需要的那一个入口。
+                   「刷新」直接调 store 的只读读路径（`loadImportCandidates` 已重新暴露）；
+                   扫描中 / 导入中 / 离线三种情形都由 `importLocked` 一个判据挡住，没有重入面。 -->
+              <div v-if="view" class="skill-import-actions">
+                <button
+                  class="btn btn-sm"
+                  type="button"
+                  data-od-id="skill-import-scan"
+                  :disabled="importLocked"
+                  @click="detail.loadImportCandidates(state.memberId)"
+                >
+                  {{ t('skill.importScanButton') }}
+                </button>
+                <button
+                  class="btn btn-sm"
+                  type="button"
+                  data-od-id="skill-import-all"
+                  :disabled="importLocked || !importableCandidates.length"
+                  @click="detail.importAllCandidates()"
+                >
+                  {{ t('skill.importAllButton') }}
+                </button>
+              </div>
+
+              <div v-if="view && view.skillImportResults.length" class="skill-import-status" data-od-id="skill-import-status">
                 <div
                   v-for="result in view.skillImportResults"
                   :key="result.name"
@@ -696,6 +812,9 @@ watch(
                   :data-od-id="result.status === 'failed' ? 'skill-import-error' : undefined"
                 >
                   {{ importResultText(result) }}
+                </div>
+                <div v-if="importSummaryText" class="resource-meta import-summary" data-od-id="skill-import-summary">
+                  {{ importSummaryText }}
                 </div>
               </div>
               <div v-if="view && view.skillImportBusy" class="resource-meta is-faint">

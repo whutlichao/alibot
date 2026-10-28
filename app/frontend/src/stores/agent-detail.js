@@ -1,7 +1,7 @@
 /* Agent 详情（主线视图 `mode === 'agent'`）：读数、草稿与写路径
 
    写路径包括：`saveAgent` / `toggleEnabled` / `confirmDelete`（配置与删除）、`toggleSkill` /
-   `deleteSkill` / `importPickedSkill`（技能）、`submitMcpDraft` / `toggleMcpServer` /
+   `deleteSkill` / `importPickedSkill` / `importAllCandidates`（技能）、`submitMcpDraft` / `toggleMcpServer` /
    `deleteMcpServer` / `consentMcpServer` / `consentGlobalMcp` / `saveMcpFile`（MCP）。
    不在这里写死总数——上次写「四条」与实际十一条不符，加一条还得回来改注释。
 
@@ -42,9 +42,6 @@ export const WEB_ACCESS_FOLLOW = 'follow';
 /** MCP 传输方式的取值（与后端 `MCP_TRANSPORTS` 同名同序）。 */
 export const MCP_TRANSPORTS = ['stdio', 'http', 'sse'];
 export const MCP_REMOTE_TRANSPORTS = ['http', 'sse'];
-
-/** 技能候选的「从本机导入」命令：ASCII 常量，不进词条值（旧 `SKILL_INSTALL_COMMAND` 同一条）。 */
-export const SKILL_INSTALL_COMMAND = 'npx skills add <owner/repo> -g -a codex -y';
 
 /** 后端可读原因的统一取值（`Error.message` 优先；非 Error 原样转字符串）。 */
 function reasonOf(err) {
@@ -204,6 +201,8 @@ function emptyView(memberId) {
     skillImportCandidates: [],
     skillImportPick: '',
     skillImportResults: [],
+    // 「全部导入」的汇总（`{ imported, skipped, failed }`）；单条导入不产汇总，因此是 `null`。
+    skillImportSummary: null,
     skillImportBusy: false,
   };
 }
@@ -688,10 +687,72 @@ export function createAgentDetailStore(options) {
   }
 
   /**
-   * 导入**一个**技能（写路径**复用** `POST /api/skills`：`source_path` = 候选 path）。
+   * 导入**一条**候选（写路径**复用** `POST /api/skills`：`source_path` = 候选 path）。
    *
-   * 结果按条归因：`409` 记「已安装，已跳过」（不覆盖），其余失败把后端那句可读原因落在导入区
-   * 自己的错误行（不拖垮右栏）。结束后重扫候选 + 重读技能列表，下拉框回到空选择。
+   * 单体与批量共用这一步：结果按条归因（`409` ⇒ `skipped`，其余 ⇒ `failed` + 后端那句可读原因），
+   * 永不抛出——一条失败不该中断批量的其余条目。切走成员时返回 `null`，调用方据此收手。
+   */
+  async function postSkillImport(memberId, candidate) {
+    try {
+      await api('/api/skills', {
+        method: 'POST',
+        body: { scope_kind: 'agent', scope_id: memberId, source_path: candidate.path },
+      });
+    } catch (err) {
+      if (state.memberId !== memberId) return null;
+      return {
+        name: candidate.name,
+        status: err && err.status === 409 ? 'skipped' : 'failed',
+        reason: reasonOf(err),
+      };
+    }
+    if (state.memberId !== memberId) return null;
+    return { name: candidate.name, status: 'imported', reason: '' };
+  }
+
+  /** 导入结束后的同一条收尾：重读技能列表 + 重扫候选（下拉回到未选状态）。 */
+  async function settleSkillImport(memberId) {
+    if (state.memberId !== memberId) return;
+    await loadSkills(memberId);
+    if (state.memberId !== memberId) return;
+    await loadImportCandidates(memberId);
+  }
+
+  /**
+   * 一次导入（单条或批量）的完整流程：置忙 → 逐条走 `postSkillImport` → 收尾。
+   *
+   * 单条与批量的差别只有两处：候选从哪来、要不要汇总（`summary` 为 `null` 时不产汇总行）。
+   * 平铺成一份是因为两段逐行相同的收尾（清错误、置忙、清结果、归零、重读、重扫）会在
+   * 下一次改流程时各自漂移。
+   */
+  async function runSkillImports(current, memberId, candidates, summary) {
+    current.skillImportError = '';
+    current.skillImportBusy = true;
+    current.skillImportResults = [];
+    current.skillImportSummary = null;
+    try {
+      for (const candidate of candidates) {
+        if (state.memberId !== memberId) return;
+        const result = await postSkillImport(memberId, candidate);
+        if (!result) return;
+        current.skillImportResults.push(result);
+        if (summary) summary[result.status] += 1;
+      }
+    } finally {
+      if (state.memberId === memberId) current.skillImportBusy = false;
+    }
+    if (state.memberId !== memberId) return;
+    current.skillImportSummary = summary;
+    // 下拉框回到空选择（重扫会把刚导入的那条渲染成禁用的「已安装」）。
+    current.skillImportPick = '';
+    await settleSkillImport(memberId);
+  }
+
+  /**
+   * 导入**一个**技能（下拉里点一条 = 选中并立即导入，一次一个）。
+   *
+   * 结果落在导入区自己的结果行（不拖垮右栏）；失败不写右栏错误行。
+   * 结束后重扫候选 + 重读技能列表，下拉框回到空选择。
    */
   async function importPickedSkill() {
     const current = writeTarget();
@@ -701,32 +762,23 @@ export function createAgentDetailStore(options) {
       (item) => item.name === current.skillImportPick && skillImportSelectable(item),
     );
     if (!candidate) return;
-    current.skillImportError = '';
-    current.skillImportBusy = true;
-    current.skillImportResults = [];
-    try {
-      await api('/api/skills', {
-        method: 'POST',
-        body: { scope_kind: 'agent', scope_id: memberId, source_path: candidate.path },
-      });
-      if (state.memberId !== memberId) return;
-      current.skillImportResults.push({ name: candidate.name, status: 'imported', reason: '' });
-    } catch (err) {
-      if (state.memberId !== memberId) return;
-      current.skillImportResults.push({
-        name: candidate.name,
-        status: err && err.status === 409 ? 'skipped' : 'failed',
-        reason: err && err.message ? err.message : String(err),
-      });
-    } finally {
-      if (state.memberId === memberId) current.skillImportBusy = false;
-    }
-    if (state.memberId !== memberId) return;
-    // 下拉框回到空选择（重扫会把刚导入的那条渲染成禁用的「已安装」）。
-    current.skillImportPick = '';
-    await loadSkills(memberId);
-    if (state.memberId !== memberId) return;
-    await loadImportCandidates(memberId);
+    await runSkillImports(current, memberId, [candidate], null);
+  }
+
+  /**
+   * 「全部导入」：对当前**可导入且未安装**的候选逐个走同一条 `POST /api/skills`。
+   *
+   * 串行、一次一个（后端按条校验与复制，并发没有收益，只多出一种交错失败面）；
+   * 已安装 / 不可导入的候选**一次都不发**。每条的 imported / skipped / failed 照旧进结果区，
+   * 另加一行汇总（三个数）。收尾与单条导入同一条：重读技能列表 + 重扫候选。
+   */
+  async function importAllCandidates() {
+    const current = writeTarget();
+    if (!current || current.skillImportBusy) return;
+    const memberId = state.memberId;
+    const candidates = current.skillImportCandidates.filter((item) => skillImportSelectable(item));
+    if (!candidates.length) return;
+    await runSkillImports(current, memberId, candidates, { imported: 0, skipped: 0, failed: 0 });
   }
 
   // ── mcp：库行（增删改 / 启停 / 远端确认）+ 家目录 mcp.json 原文 ──
@@ -954,7 +1006,10 @@ export function createAgentDetailStore(options) {
     deleteSkill,
     selectSkill,
     pickImportCandidate,
+    // 「刷新」按钮（票面 6b）：把只读的候选读路径按原位重新暴露，组件直接调用，不另造一份。
+    loadImportCandidates,
     importPickedSkill,
+    importAllCandidates,
     beginMcpEdit,
     cancelMcpEdit,
     updateMcpDraftField,

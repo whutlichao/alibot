@@ -581,6 +581,55 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 @media (max-width: 900px) {
   .agent-skill-columns { grid-template-columns: minmax(0, 1fr); }
 }
+/* 导入区（自绘下拉 + 两个按钮 + 结果区）：全部规则带 `.skill-import-*` 前缀，只服务本页签，
+   不动 `.d-sec` / `.resource-add` / `.btn` 这些全局共用语汇。
+
+   为什么自绘而不是原生 `<select>`：`<option>` 弹出层由浏览器画，`max-height` / `overflow`
+   都管不到它，候选多了就会把一屏铺满。这里用 `role=listbox` 的普通节点自绘（与
+   `MentionPicker.vue` 同一种交互语汇），高度上限与内部滚动才落得进 CSS。
+   面板**绝对定位**、不占布局高度：`.agent-skill-section` 是 #328 留下的固定高度工作区的
+   高度链顶端，插入一个占位的浮层容器会把它撑坏。 */
+.skill-import-picker-box { position: relative; }
+.skill-import-trigger {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); text-align: left; cursor: pointer;
+}
+.skill-import-trigger:disabled { opacity: .45; cursor: not-allowed; }
+.skill-import-trigger-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-import-caret { flex: 0 0 auto; color: var(--faint); }
+.skill-import-menu {
+  position: absolute; z-index: var(--z-overlay);
+  top: calc(100% + var(--sp-1)); left: 0; right: 0;
+  /* 固定上限 + 内部滚动：候选再多也不撑高面板或页面（票面 6a）。 */
+  max-height: 260px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: var(--sp-2);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface); box-shadow: var(--shadow-pop);
+}
+.skill-import-group {
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--mono); font-size: var(--fs-mono-micro);
+  letter-spacing: var(--ls-wider); text-transform: uppercase; color: var(--faint);
+}
+.skill-import-option {
+  display: block; width: 100%; text-align: left;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0; border-radius: var(--r-sm); background: none;
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); cursor: pointer;
+}
+/* 悬停与键盘焦点同一个可见态：信号走**底**（`--selected-soft`），文字仍是 `--fg`——
+   与 `.card-menu-item:hover` 同一条。**不用** `--selected-deep` 压在这个底上：本仓实测它只有
+   3.44:1（见 `.filter-chip.is-on` 那段注释），比未选中时的 7.08:1 低一档。 */
+.skill-import-option:hover:not(:disabled),
+.skill-import-option:focus-visible { background: var(--selected-soft); color: var(--fg); }
+/* 已安装 / 不可导入：`--faint` 只表达「不可点」，原因写在条目文本里。 */
+.skill-import-option:disabled { color: var(--faint); cursor: not-allowed; }
+.skill-import-actions { display: flex; gap: var(--sp-3); margin-top: var(--sp-3); }
+/* 结果区同样有上限 + 内部滚动：「全部导入」一次几十条时不许把固定高度工作区顶坏。 */
+.skill-import-status { max-height: 160px; overflow-y: auto; margin-top: var(--sp-3); }
+.skill-import-status .import-result { padding: 1px 0; }
+.skill-import-status .import-summary { margin-top: var(--sp-2); color: var(--fg); }
 /* skills 右栏的详情（#283 / D5）：元数据 → 动作 → 正文。左栏当前行的选中态与左栏导航行同一
    档位语义（`--selected` 族）：竖条 = graphic 档、字色 = deep 档，零新增色位。 */
 /* 一行 = 文字区（真 `<button>`）+ 启停开关（兄弟节点，物理不重叠，见
@@ -1404,19 +1453,6 @@ html[data-density='compact'] .day-sep { margin: var(--sp-4) 0 var(--sp-3); }
 .resource-form-row .agent-actions { flex: 0 0 auto; }
 .resource-form-row .agent-actions .btn { flex: 0 0 auto; }
 .resource-empty { padding: var(--sp-3) 0; font-size: var(--fs-sm); color: var(--faint); }
-/* 可复制的命令提示（#277 / ADR-0036）：等宽、可换行、不新造色位（底与边框都用既有 token）。 */
-.resource-command {
-  margin: var(--sp-3) 0;
-  padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  font-family: var(--mono);
-  font-size: var(--fs-mono-xs);
-  color: var(--fg);
-  overflow-wrap: anywhere;
-  user-select: all;
-}
 
 /* ─── 联网 provider 凭据（#199）：一行 = 名称 + 掩码状态 + password 输入 + 动作组 ───
    行形态沿用资源管理那一族（列表 + hairline）；焦点环来自全局 `:focus-visible`，

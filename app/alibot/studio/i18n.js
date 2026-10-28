@@ -524,7 +524,6 @@ const I18N_CATALOGS = {
     'agentCapabilities.scopeNote':
       '这些能力只属于这个 Agent；技能字节在 ~/.alibot/agents/{member}/skills/（公共库 ~/.alibot/skills/ 只读）。',
     'agentCapabilities.mcpTitle': 'MCP 声明',
-    'agentCapabilities.skillTitle': '技能',
 
     /* ─── 提醒（ADR-0012：库内对象；到点产物见 ADR-0017） ──────────────────
        两个取值只说**存在性与持久性**：提醒存在后端、跨刷新与重启仍在。到点口径是另一件事，
@@ -786,24 +785,27 @@ const I18N_CATALOGS = {
     'skill.toggleFailed': '启停失败：{reason}',
     'skill.deleted': '技能已删除。',
     'skill.deleteFailed': '删除失败：{reason}',
-    /* ─── 从本机导入（#277 / ADR-0036；#282 收成一个下拉框） ─────────────
-       命令本身是 ASCII 常量（`app.js` 的 `SKILL_INSTALL_COMMAND`），不进词条值；
-       这里只说它做什么。三组标题只用于下拉框的 `<optgroup>`，状态后缀用于选项文本。 */
-    'skill.importTitle': '从本机导入',
-    'skill.importCommandHint':
-      '先在本机终端运行上面的命令：-g 装到全局，-a codex 指向 ~/.agents/skills（codex / cline / pi 共用的全局技能目录）。应用只读这个目录，不代为执行；装好之后重新打开这个 Agent 的详情，再在下面的下拉框里选它。',
-    'skill.importPickLabel': '从本机导入',
+    /* ─── 从本机导入（#277 / ADR-0036；#282 收成一个下拉框；用户反馈直派：去掉命令块 + 加两个按钮） ─
+       命令块与它的两句说明已随票删除：应用不执行 npx（ADR-0036 §二），界面也不再教人敲命令，
+       只读 `~/.agents/skills` 这个落点。因此 `importUnavailable` / `importEmpty` 不能再指向
+       「上面的命令」，一律指向新的「刷新」按钮（重扫候选）。三组标题只用于下拉面板的分组标题，
+       状态后缀用于候选文本。 */
+    'skill.importPickLabel': '从本机导入（读取 ~/.agents/skills 路径下的 skills）',
     'skill.importPickPlaceholder': '选择一个技能导入…',
     'skill.importGroupReady': '可选',
     'skill.importGroupInstalled': '已安装',
     'skill.importGroupBlocked': '不可导入',
     'skill.importLoading': '正在扫描 ~/.agents/skills…',
     'skill.importScanFailed': '候选扫描失败：{reason}',
-    'skill.importUnavailable': '没有找到 {source}：先运行上面的命令装一个技能，然后重新打开这个 Agent 的详情，就能看到新装的技能。',
-    'skill.importEmpty': '这个目录里还没有技能：先运行上面的命令装一个，再重新打开这个 Agent 的详情，就能看到它。',
+    'skill.importUnavailable':
+      '没有找到 {source}：把技能放到这个目录之后，点「刷新」重新扫描，就能看到它。',
+    'skill.importEmpty': '这个目录里还没有技能：放一个进去之后点「刷新」重新扫描，就能看到它。',
     'skill.importStatusInstalled': '已安装',
     'skill.importStatusBlocked': '不可导入：{reason}',
     'skill.importBusy': '正在导入…',
+    'skill.importScanButton': '刷新',
+    'skill.importAllButton': '全部导入',
+    'skill.importAllSummary': '全部导入完成：成功 {imported} 条，跳过 {skipped} 条，失败 {failed} 条。',
     'skill.importResultDone': '{name}：已导入',
     'skill.importResultSkipped': '{name}：已安装，已跳过',
     'skill.importResultFailed': '{name}：导入失败：{reason}',
@@ -1396,7 +1398,6 @@ const I18N_CATALOGS = {
     'agentCapabilities.scopeNote':
       'These capabilities belong to this agent only; skill bytes live in ~/.alibot/agents/{member}/skills/ (the shared library ~/.alibot/skills/ is read-only).',
     'agentCapabilities.mcpTitle': 'MCP declarations',
-    'agentCapabilities.skillTitle': 'Skills',
 
     /* ─── Reminders (ADR-0012: backend objects; due-time output in ADR-0017) ───
        Both values state existence and persistence only: reminders live in the backend and
@@ -1681,10 +1682,7 @@ const I18N_CATALOGS = {
     'skill.toggleFailed': 'Could not toggle the skill: {reason}',
     'skill.deleted': 'Skill deleted.',
     'skill.deleteFailed': 'Not deleted: {reason}',
-    'skill.importTitle': 'Import from this machine',
-    'skill.importCommandHint':
-      'Run the command above in a local terminal first: -g installs globally, -a codex targets ~/.agents/skills (the global skill directory shared by codex / cline / pi). The app only reads that directory and never runs it for you; once it is installed, reopen this agent’s details and pick it in the dropdown below.',
-    'skill.importPickLabel': 'Import from this machine',
+    'skill.importPickLabel': 'Import from this machine (reads skills under ~/.agents/skills)',
     'skill.importPickPlaceholder': 'Pick one skill to import…',
     'skill.importGroupReady': 'Available',
     'skill.importGroupInstalled': 'Already installed',
@@ -1692,12 +1690,15 @@ const I18N_CATALOGS = {
     'skill.importLoading': 'Scanning ~/.agents/skills…',
     'skill.importScanFailed': 'Could not scan the candidates: {reason}',
     'skill.importUnavailable':
-      'No {source} found: run the command above to install a skill, then reopen this agent’s details to see it.',
+      'No {source} found: put a skill there, then choose Refresh to scan again and it will show up.',
     'skill.importEmpty':
-      'That directory holds no skills yet: run the command above, then reopen this agent’s details to see the new one.',
+      'That directory holds no skills yet: put one there, then choose Refresh to scan again and it will show up.',
     'skill.importStatusInstalled': 'Already installed',
     'skill.importStatusBlocked': 'Cannot import: {reason}',
     'skill.importBusy': 'Importing…',
+    'skill.importScanButton': 'Refresh',
+    'skill.importAllButton': 'Import all',
+    'skill.importAllSummary': 'Import all finished: {imported} imported, {skipped} skipped, {failed} failed.',
     'skill.importResultDone': '{name}: imported',
     'skill.importResultSkipped': '{name}: already installed, skipped',
     'skill.importResultFailed': '{name}: import failed: {reason}',
