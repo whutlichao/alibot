@@ -4,7 +4,8 @@
 **Ticket**：本票**没有** GitHub issue（用户反馈直派），交付件用描述性命名。
 **base**：`e68dcee`（= 派活时 `main`）｜**branch**：`mcp-feedback`
 **PR**：[#335](https://github.com/whutlichao/alibot/pull/335)｜**PR body**：`app/specs/mcp-tab-feedback-pr-body.md`
-**CI**：[run 40656503088](https://github.com/whutlichao/alibot/actions/runs/40656503088) `check` success（代码提交 `a344286`）
+**CI**：[run 40656503088](https://github.com/whutlichao/alibot/actions/runs/40656503088) success（`d99a5f9`，含代码提交 `a344286`）｜
+[run 40657858041](https://github.com/whutlichao/alibot/actions/runs/40657858041) success（`a112caf`）；文档-only 提交不逐条登记 run
 **采集时间**：2026-10-28｜**环境**：macOS（aarch64）、Python 3.11.13（仓库根 `.venv`）、ego-browser 0.6.0.20
 
 ---
