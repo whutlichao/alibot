@@ -103,6 +103,23 @@ scripts/check.sh --fast
 
 （`--fast` 按要求跳过全量 pytest：本票无 Python 改动；CI 仍跑全量。）
 
+**双轴 code-review 的处置（`41401dd`）**
+
+Standards 轴报 3 处硬违规，全部采纳并已修：
+
+1. 候选 hover/focus 用 `--selected-deep` 压 `--selected-soft` —— 本仓实测这一档只有 3.44:1（低于未选中的
+   7.08:1）。改成文字仍是 `--fg`（信号只走底），与 `.card-menu-item:hover` 真正对齐。
+2. 点一条候选后先把焦点还给触发控件、随即它被禁用 ⇒ 焦点掉回 `body`。改成点选导入不回焦
+   （Esc 关闭仍按票面回焦）。
+3. ADR-0036 §三 的 ADR-0009 条目还写着「命令是 ASCII 常量」——随本票删掉该句。
+
+另收三处判定项：抽 `runSkillImports()` 消除单条/批量重复的收尾段、删掉 `candidateSelectable` 这层
+Middle Man、三处禁用条件统一到一个 `importLocked`。**未采纳**的两条已在验收文档记明理由与代价
+（`↑↓` 键盘导航超出票面授权；`summary` 的字符串键就是结果区那三个取值）。
+
+Spec 轴子代理挂起无输出，改由主 agent 按票面逐条自检（表在验收文档 §4）。修复后复测：49 passed +
+455 passed；浏览器复核候选 hover/focus 后文字色与未选中同色、面板上限与定位不变、点一条恰 1 次 POST。
+
 ## Merge Danger
 
 **Door:** two-way（双向门）
