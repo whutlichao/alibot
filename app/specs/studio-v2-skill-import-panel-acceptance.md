@@ -90,9 +90,13 @@ scripts/check.sh --fast
 
 （`--fast` 按要求跳过全量 pytest：本票无 Python 改动；CI 仍跑全量。）
 
-**CI（全量复核）**：head `09a97a5` 的 `check` run
-[40629656072](https://github.com/whutlichao/alibot/actions/runs/40629656072) → **success**
-（含全量 pytest；本机 `--fast` 跳过的就是这一段）。
+**CI（全量复核）**：
+
+- head `09a97a5`（含全部代码改动）的 `check` run
+  [40629656072](https://github.com/whutlichao/alibot/actions/runs/40629656072) → **success**（含全量 pytest）。
+- head `7a700ed`（仅本文档与 PR body 的回填）的 `check` run
+  [40630467848](https://github.com/whutlichao/alibot/actions/runs/40630467848) → **success**。
+- 本机 `--fast` 跳过的正是全量 pytest 那一段；它在上面两次 CI 里都跑了。
 
 ---
 
