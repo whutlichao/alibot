@@ -3,7 +3,7 @@
 **票型**：实施票｜**门禁**：G-impl｜**测试档**：窄（相关前端用例 + 构建 + `scripts/check.sh`）
 **Ticket**：本票**没有** GitHub issue（用户反馈直派），交付件用描述性命名。
 **base**：`e68dcee`（= 派活时 `main`）｜**branch**：`mcp-feedback`
-**PR**：（创建后回填）｜**PR body**：`app/specs/mcp-tab-feedback-pr-body.md`
+**PR**：[#335](https://github.com/whutlichao/alibot/pull/335)｜**PR body**：`app/specs/mcp-tab-feedback-pr-body.md`
 **采集时间**：2026-10-28｜**环境**：macOS（aarch64）、Python 3.11.13（仓库根 `.venv`）、ego-browser 0.6.0.20
 
 ---
