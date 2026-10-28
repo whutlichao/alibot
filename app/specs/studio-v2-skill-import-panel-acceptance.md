@@ -130,10 +130,52 @@ scripts/check.sh --fast
 
 ---
 
-## 4. 遗留 / 说明
+## 4. 双轴 code-review 与逐条处置
+
+按 `/Users/apple/.agents/skills/code-review/SKILL.md`，两个 reviewer 子代理并行跑（Standards / Spec 各一）。
+
+### Standards 轴：3 处硬违规（**全部采纳**，已修在 `41401dd`）
+
+| Finding | 处置 | 理由 |
+| --- | --- | --- |
+| `app.css` 候选 hover/focus 用 `--selected-deep` 压 `--selected-soft`，本仓实测 3.44:1（低于未选中的 7.08:1），且与紧邻注释「与 `.card-menu-item` 同一条」自相矛盾 | **采纳** | 文字色改回 `--fg`（信号只走底），注释按实测数字重写 |
+| 点一条候选后先还焦、随即被 `importLocked` 禁用 ⇒ 焦点掉回 `body`，违 `stores/agent-detail.js:641` 已写明的仓内规则 | **采纳** | 点选导入不再回焦；Esc 仍把焦点还给触发控件（票面 6a 的原文要求） |
+| `docs/adr/0036` §三 ADR-0009 条目仍写「命令本身是 ASCII 常量」，与同文件新增事实修正冲突（`review-rules.md` 第 4 条） | **采纳** | 改成「命令块已随本票删除，不再有这类取值」 |
+
+判定项 1 处（**不采纳，登记代价**）：注释声称与 `MentionPicker` 同一种交互语汇，但后者契约含 `↑↓`/Enter，
+新面板只有 Esc。票面 6a 只要 `aria-haspopup` / `aria-expanded` / Esc / 外点 / 卸载清理；条目是原生 `<button>`，
+Tab 可逐个停留。已在 §5 记明差异——补齐方向键导航超出本票授权面。
+
+基线异味 5 处：抽 `runSkillImports()`（前两段收尾逐行重复）、删 `candidateSelectable` 这层 Middle Man、
+`importLocked` 统一三处禁用条件 —— **采纳**；`summary[result.status]` 裸字符串计数键 **不采纳**（三个键
+就是结果区的三个取值，词表已在顶部一处）；测试里 `css.slice` 抄 CSS 数值 **部分采纳**（票面 ③ 明写这是
+两种判据之一，且同时断言了面板结构与 class）。
+
+**已核对无问题**：三处文档口径一致、被删常量/词条/CSS 类全仓无残留（除历史 specs 与反向断言）、
+token 未越界、未新开接缝。
+
+### Spec 轴
+
+Spec 轴的子代理挂起 12 分钟无文本输出（transcript 里只有工具调用），因此改由主 agent 按票面逐条自检
+——判据与读数就是上面 §Status 与 §1–§3 的那张逐条表：四条删除、`importUnavailable`/`importEmpty` 改写、
+label 逐字、6a 的九个观察点、6b 的两个按钮与汇总、结果区上限、以及全部 Constraints（零 Python 改动、
+三个全局语汇零声明改动、四态 `data-od-id` 原样、两份语言表对齐、没跑 `ruff format`、产物未入库）。
+
+### 修复后的复测
+
+`41401dd` 之后重跑：`npx vitest run tests/agent-detail.test.js tests/i18n-catalog.test.js` → **49 passed**；
+`scripts/check.sh --fast` → 24 files / **455 passed**、ruff / format / mypy / pyright 全绿。
+浏览器（1365x978）复核：候选 hover/focus 后 `color` 仍是 `oklch(0.93 0.018 300)`（= `--fg`，与未选中同色），
+面板 `maxHeight 260px` / `overflowY auto` / `position absolute` 不变；点一条候选 ⇒ `POST /api/skills` 恰 1 次、
+面板收起、占位文案复位、结果行 `omega-skill：已导入`、无汇总行（单条不产汇总）。
+
+---
+
+## 5. 遗留 / 说明
 
 - `≤900px` 单栏与另外两个页签的行为未动；面板的 260px 上限与绝对定位在两种布局下都成立（不依赖 `is-skills-fixed`）。
 - 面板没有做键盘方向键导航（`↑↓`）：票面只要求 `aria-haspopup` / `aria-expanded` / Esc / 外点 / 卸载清理，
   Tab 可在候选间移动（条目是原生 `<button>`）。这是与 `MentionPicker` 的差异点，若后续要一致，单开一票。
+- 点选导入**不把焦点还回触发控件**（这一下点击会立刻让它禁用，焦点会掉回 `body`）；Esc 关闭仍按票面回焦。
 - 本地只跑 `--fast`；全量 pytest 由 CI 在本 head 上复核。
 - 隔离实例（8797 / 8798）在证据归档后关闭，只关本票创建的 PID。
