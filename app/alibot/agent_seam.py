@@ -2243,10 +2243,11 @@ class AgentScopeAgentSeam:
     ) -> RoundOutcome:
         """把最终 ``Msg`` 与结构化工具记录收口成一轮的结论（单 Agent / 队长共用）。
 
-        ``state_context`` 是**这一轮**那个 Agent 的 ``state.context``：落库正文的正本是其中与
-        ``reply.id`` 相同的那条累积 assistant 消息（:func:`_round_body`），不是 ``reply`` 自己的
-        最后一**次模型调用**。不传时退回只读 ``reply``：单段场景读到的仍是同一条消息，判定顺序、
-        状态词与 ``messages`` 条数一律不变；唯一差别是按判据 3 每段会先 ``strip()``。
+        ``state_context`` 是**这一轮**那个 Agent 的 ``state.context``：落库正文的正本是其中**全部**
+        与 ``reply.id`` 相同的 assistant 消息（一条回复可能被中途插入的消息拆成几条，
+        :func:`_round_assistant_messages`），不是 ``reply`` 自己的最后一**次模型调用**。不传时退回
+        只读 ``reply``：单段场景读到的仍是同一条消息，判定顺序、状态词与 ``messages`` 条数一律不变；
+        唯一差别是按判据 3 每段会先 ``strip()``。
         """
         reply_error = getattr(reply, "error", None)
         finished_reason = str(getattr(reply, "finished_reason", None) or "completed")
