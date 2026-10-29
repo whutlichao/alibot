@@ -53,6 +53,14 @@
 - 这条第二行是 review 收口时**删掉**的：初版给队长另加了一个 `leader_context` 拷贝，Standards 与 Spec
   两轴都判它零行为增益（`Spec` 轴实测「强制 `state_context=None` 后队长用例仍绿」），已删除。
 
+> **事实修正（2026-10-29，`task_a762f70e57c6`）**：上面「队长不传」的前提是「一条回复只有一条同
+> `reply.id` 的 assistant 消息」。生产读数推翻了它——长期记忆中间件在两次模型调用之间插入
+> `AssistantMsg(name="memory")` 时，`append_context` 会另起一条、沿用同一个 `reply.id`，于是
+> `_final_reply_message()` 的倒序扫描只拿到**最后一条**、开场白落在另一条里。队长轮次因此重新把队长
+> 的 `state.context` 显式交进 `_outcome_from_reply`；判据是新增用例
+> `test_the_leader_round_also_merges_segments_split_by_a_memory_hint`（基线红、修复后绿）。
+> `_round_body` 也因此改为合并**全部**同 id 消息（详见本票 Answer）。
+
 ---
 
 ## 2. 先红后绿

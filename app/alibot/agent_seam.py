@@ -673,8 +673,10 @@ class AgentScopeAgentSeam:
     model=…, toolkit=…)``、``agentscope.model`` + ``agentscope.credential``）。**不**使用
     1.x 的 ``ReActAgent(name, sys_prompt, …)`` 签名，**不**使用框架的 Agent Service。
 
-    一轮 ↔ 一条 ``Msg``：一次 ``reply`` 调用累积成恰好一条 ``Msg``；它的 ``finished_reason`` /
-    ``usage`` / ``error`` 只影响本轮的结论，不构成任何消息正本。
+    一轮 ↔ 一条 ``Msg``：一次 ``reply`` 调用累积成**这一轮**的块，落库时收成恰好一条消息；它的
+    ``finished_reason`` / ``usage`` / ``error`` 只影响本轮的结论，不构成任何消息正本。注意累积的
+    落点不保证是**同一个** ``Msg``：中间件往上下文插入消息时，同一 ``reply.id`` 的块会分成几条
+    （:func:`_round_assistant_messages`），因此落库正文取**全部**同 id 消息（:func:`_round_body`）。
     """
 
     def __init__(
@@ -1765,7 +1767,13 @@ class AgentScopeAgentSeam:
             notes = list(dict.fromkeys(assembly_notes))
             return "\n".join([reason, *notes]) if notes else reason
 
+        # 队长这一轮的 ``state.context``：与单 Agent 轮同一个理由（:func:`_round_body`）——一条回复
+        # 可能因中途插入的消息被拆成几条同 id 的 assistant 消息，正文只在**合并**全部之后才完整。
+        # 在 ``asyncio.run`` 的协程 ``finally`` 里赋值一次，收口时在同一个线程读（与单 Agent 轮同型）。
+        leader_context: list[Any] = []
+
         async def _round() -> Any:
+            nonlocal leader_context
             from agentscope.event import (
                 ConfirmResult,
                 RequireUserConfirmEvent,
@@ -2130,6 +2138,10 @@ class AgentScopeAgentSeam:
                 )
             finally:
                 self._release_control(control)
+                # 队长的上下文要在**保存之前**从活的 state 里取（``context`` 是同一个 list，不拷贝）。
+                leader = agents_by_id.get(member_id)
+                if leader is not None:
+                    leader_context = leader.state.context
                 for member_id_value, store in state_stores.items():
                     if member_id_value in agents_by_id:
                         store.save(agents_by_id[member_id_value].state)
@@ -2181,11 +2193,13 @@ class AgentScopeAgentSeam:
                 reason=_with_assembly_notes(render("seam.team_no_leader_reply", self._locale())),
             )
         self._record_usage(reply, agent, target_id)
-        # 队长轮次不用另传上下文：``_final_reply_message`` 返回的就是队长 ``state.context`` 里
-        # 那条**累积** assistant 消息本身（它不是最后一**次模型调用**的快照），``_round_body`` 退回读
-        # ``reply`` 时读到的就是这一轮的全部正文段。成员的消息只作为 ``ToolResult`` 回到队长、
-        # 不落 target 消息（D2），因此这里也不需要成员的上下文。
-        outcome = self._outcome_from_reply(reply, task_actions, silence_declarations)
+        # 队长轮次的正文同样走 :func:`_round_body`，但正本要显式交进去：``_final_reply_message``
+        # 只返回队长上下文里的**最后一条**，而一条回复可能被中途插入的消息拆成几条同 id 的
+        # assistant 消息（见 :func:`_round_assistant_messages`）。成员的消息只作为 ``ToolResult``
+        # 回到队长、不落 target 消息（D2），因此这里只交队长的上下文。
+        outcome = self._outcome_from_reply(
+            reply, task_actions, silence_declarations, state_context=leader_context
+        )
         outcome.reason = "\n".join([outcome.reason, *workspace_warnings, *dict.fromkeys(assembly_notes)])
         return outcome
 
@@ -2229,10 +2243,11 @@ class AgentScopeAgentSeam:
     ) -> RoundOutcome:
         """把最终 ``Msg`` 与结构化工具记录收口成一轮的结论（单 Agent / 队长共用）。
 
-        ``state_context`` 是**这一轮**那个 Agent 的 ``state.context``：落库正文的正本是其中与
-        ``reply.id`` 相同的那条累积 assistant 消息（:func:`_round_body`），不是 ``reply`` 自己的
-        最后一**次模型调用**。不传时退回只读 ``reply``：单段场景读到的仍是同一条消息，判定顺序、
-        状态词与 ``messages`` 条数一律不变；唯一差别是按判据 3 每段会先 ``strip()``。
+        ``state_context`` 是**这一轮**那个 Agent 的 ``state.context``：落库正文的正本是其中**全部**
+        与 ``reply.id`` 相同的 assistant 消息（一条回复可能被中途插入的消息拆成几条，
+        :func:`_round_assistant_messages`），不是 ``reply`` 自己的最后一**次模型调用**。不传时退回
+        只读 ``reply``：单段场景读到的仍是同一条消息，判定顺序、状态词与 ``messages`` 条数一律不变；
+        唯一差别是按判据 3 每段会先 ``strip()``。
         """
         reply_error = getattr(reply, "error", None)
         finished_reason = str(getattr(reply, "finished_reason", None) or "completed")
@@ -2869,35 +2884,54 @@ def _msg_text(message: Any) -> str:
     return "".join(_text_segments(message))
 
 
-def _round_assistant_message(state_context: Sequence[Any] | None, reply: Any) -> Any:
-    """本轮那条**累积** assistant 消息：按 ``reply.id`` 在上下文里找，找不到退回 ``reply`` 自己。
+def _round_assistant_messages(state_context: Sequence[Any] | None, reply: Any) -> list[Any]:
+    """本轮属于这条回复的**全部** assistant 消息（按上下文顺序），找不到时退回 ``reply`` 一条。
 
-    为什么不直接读 ``state.context[-1]``：位置不是契约。落库流程里没有别的写入者，但按 id 找既
-    不受位置假设影响，也能在「最终 ``Msg`` 就是上下文尾部」的单段场景退回同一条消息。
+    为什么不直接读 ``state.context[-1]``：位置不是契约。为什么不只取**第一条**同名消息：一条回复
+    不保证只落成一条消息。AgentScope 的 ``append_context`` 只在「上下文尾部就是本回复的那条消息」
+    时才把新块并进同一条；中间若有别人往尾部插一条消息，后续的块就会**另起一条、沿用同一个
+    ``reply.id``**。生产里插进来的正是长期记忆中间件的 ``AssistantMsg(name="memory")`` 提示
+    （pinned 2.0.10 的 ``ReMeMiddleware.on_reasoning`` 直接 ``context.append``），于是「开场白 +
+    工具调用」与「收尾正文」分居两条同 id 消息——只认第一条会把正文整段丢掉（dev2 频道 2026-10-28
+    那一轮因此被判 ``ignored``）。
+
+    所以判据是「带上本轮全部块」，不是「找到那一条消息」。``memory`` 等**别的作者**的提示消息
+    角色相同但名字不同、也没有 ``reply.id``，自然不在这个集合里（即便在，它们只有 ``hint`` 块，
+    :func:`_text_segments` 也不会把提示算成正文）。
     """
     reply_id = getattr(reply, "id", None)
-    if reply_id and state_context:
-        for message in state_context:
-            if getattr(message, "id", None) == reply_id and getattr(message, "role", "") == "assistant":
-                return message
-    return reply
+    if not reply_id or not state_context:
+        return [reply]
+    messages = [
+        message
+        for message in state_context
+        if getattr(message, "id", None) == reply_id and getattr(message, "role", "") == "assistant"
+    ]
+    return messages or [reply]
 
 
 def _round_body(state_context: Sequence[Any] | None, reply: Any) -> str:
-    """一轮落库的正文 = 本轮累积 assistant 消息里**全部**用户可见 ``text`` 块，按块序拼接。
+    """一轮落库的正文 = 本轮**全部**用户可见 ``text`` 块，按块序拼接。
 
     正本为什么不是 ``reply`` 参数本身：AgentScope 的 ReAct 循环里，一轮 = ``state.context`` 尾部
     那**一条**累积 assistant ``Msg``，每次模型调用的块都 append 进去（``AgentState.append_context``）。
     模型常常「正文 → 工具调用 → 正文」，而最终 ``Msg`` 只带**最后一次模型调用**的块；只读它会静默
     丢掉前面的正文（#219：任务线程的进展简报没落库，落库的只有「上面就是这轮的实质进展简报」）。
 
+    而「尾部那一条」也不保证是**一条**：中间有别人往上下文插消息时，同一 ``reply.id`` 的块会分成
+    几条消息（:func:`_round_assistant_messages` 的 docstring 记了生产现场的形态）。因此这里取这一轮
+    **所有**同 id 的 assistant 消息，按上下文顺序拼它们的 ``text`` 块。
+
     哪些块算正文由 :func:`_text_segments` 判定。段间用一个空行分隔，每段先 ``strip()``、空段跳过，
     因此不会产生连续空行或首尾空白（这条对单段同样生效）。没有任何正文时返回 ``""``——空正文 ⇒
     ``ignored`` 的既有路径不变。
 
     调用点是 :meth:`AgentScopeAgentSeam._outcome_from_reply` 的两条收口分支（正常完成与
-    ``exceed_max_iters``）：一轮仍只落**一条**消息，变的是这条消息的正文取哪几段。
+    ``exceed_max_iters``）：一轮仍只落**一条**消息，变的是这条消息的正文取哪些段。
     """
-    message = _round_assistant_message(state_context, reply)
-    stripped = (segment.strip() for segment in _text_segments(message))
+    stripped = (
+        segment.strip()
+        for message in _round_assistant_messages(state_context, reply)
+        for segment in _text_segments(message)
+    )
     return "\n\n".join(segment for segment in stripped if segment)
