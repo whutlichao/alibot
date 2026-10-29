@@ -139,9 +139,17 @@ scripts/red-evidence.sh <base-rev> app/tests/approval_badge_ui.test.cjs
 
 - 每票落 `app/specs/issue-<n>-acceptance.md`：判据 → 落点 → 命令与读数；结构照
   `app/specs/_acceptance-template.md`，别每次去读一份历史验收记录来模仿。
-- **PR 号与 CI 读数一次写全**：PR 创建后**一笔**提交回填，不为单项读数追加提交；文档-only
-  提交不追 CI，最终 CI 由协调者验收。每次 push 都会重跑全量门禁（`check.yml` 的
-  `pull_request` 触发器），逐项回填就是把一次交付变成四五次全量跑。
+- **验收记录在创建 PR 之前提交**：只写当时已得的读数（判据、落点、本地命令与输出原文）。
+  PR 号与 CI 状态在那一刻还不存在，不写、不占位，也不预留「待回填」字段。
+- **PR 链接与 CI 状态以 GitHub 为准**：读 PR 页面的 Checks（`gh pr checks` / `gh run list`）。
+  需要留存读数就写**仓库外**的运行报告（例如 `/tmp/<slug>/run-report.md`），不落仓库。
+- **不为回填追加提交**：PR 号、CI 读数进仓库不是交付的一部分。纯回填提交只推进 HEAD，
+  再触发一次全量门禁，于是又得回填新的 CI——那个循环没有终点。文档-only 提交不重跑本地
+  全量，读数的核验交给下一步。
+- **合并前核验最终 HEAD 的 CI**：协调者以**最终 PR HEAD**（不是某个中间提交）的
+  `gh pr checks` 全绿作为 G-merge 判据；这条不因为「验收记录里没有 CI 读数」而放松。
+  每次 push 都会重跑全量门禁（`check.yml` 的 `pull_request` 触发器），把一次交付拆成
+  「实现 + 逐项回填」就是四五次全量跑。
 - 刚创建 PR 时 `gh pr checks --watch` 可能直接报 `no checks reported`（check 还没注册）；
   用 `gh run list --branch <branch>` 取 run id，再 `gh run watch <id>`。
 - 一张集成 PR：先 `--draft`，全部完成后转 ready；正文按 `pr` 技能的 Summary / Evidence /
