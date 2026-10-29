@@ -311,8 +311,10 @@ pin 的版本是 **`agentscope==2.0.10`**（2026-10-18 核对：`docs.agentscope
   `ReActAgent(name, sys_prompt, …)` 签名，**不**引用 `/latest/`。
 - **不使用**框架的 Agent Service（它会把身份与持久化语义挪到本应用之外）。
 - 框架的 Memory 只服务单个 agent 的上下文，**不是**频道消息正本；消息正本始终是自己的表。
-- 一轮 ↔ 一条 `Msg`：一次 `reply` 调用累积成恰好一条 `Msg`；`AgentEvent` / `usage` / `error`
-  只影响该轮结论，不构成消息正本。
+- 一轮 ↔ 一条 `Msg`：一次 `reply` 调用累积成**这一轮**的块，落库时收成恰好一条消息；`AgentEvent` /
+  `usage` / `error` 只影响该轮结论，不构成消息正本。**累积的落点不保证是同一个 `Msg`**：中间件往
+  上下文插入消息（长期记忆的 `memory` 提示就是）时，同一 `reply.id` 的块会分成几条，落库正文因此取
+  **全部**同 id 的 assistant 消息（`agent_seam._round_body`）。
 - **不声称** AgentScope 提供本应用的 app 级身份、频道消息持久化或端到端加密。
 
 ## 唤醒、自判与轮次结果

@@ -15,6 +15,11 @@
 3. 只有工具块、没有任何正文的一轮仍然没有正文 ⇒ 既有的 ``ignored`` 不变；
 4. 结构化声明沉默仍零条待落库消息，工具之后写的那段正文也**不因拼接而复活**；
 5. ``exceed_max_iters`` 分支走同一个提取器：落库的是这一轮的真实正文，不是框架的合成占位句。
+
+第 9–10 节（三条用例）是另一件事的判据（#219 之后的生产回归）：一条回复**可能被拆成几条消息**——
+长期记忆中间件在两次模型调用之间把一条 ``AssistantMsg(name="memory")`` 直接 append 进上下文，
+AgentScope 的 ``append_context`` 于是另起一条同 ``reply.id`` 的 assistant 消息。旧实现只认**第一条**，
+正文全在后续那几条里 ⇒ 整轮被判 ``ignored``。dev2 频道 2026-10-28 23:00 那一轮就是这个形态。
 """
 
 from __future__ import annotations
@@ -26,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
 
 import pytest
+from agentscope.message import AssistantMsg, HintBlock, TextBlock
+from agentscope.middleware import MiddlewareBase
 from alibot.agent_seam import SILENCE_TOOL_NAME, AgentScopeAgentSeam
 
 # 两次模型调用的两段正文。用**可区分**的句子而不是同一个占位串：否则「把 B 拼了两遍」也会通过。
@@ -346,3 +353,206 @@ def test_a_thinking_block_never_becomes_body() -> None:
 
     assert outcome.status == "replied", outcome.reason
     assert outcome.messages[0].body == LAST_BODY, "thinking 块不是用户可见正文"
+
+
+# ─── 9. 记忆提示把一条 reply 拆成两条消息时，正文仍然取全（真实生产形态） ─────
+#
+# 生产现场（`~/.alibot` 里 dev2 频道 matt pocock 的会话状态）：一轮里 ReMe 长期记忆中间件在两次
+# 模型调用之间把一条 ``AssistantMsg(name="memory")`` **直接 append 进 context**，而 AgentScope 的
+# ``append_context`` 只在「context 尾部就是我的 reply_id」时才往同一条消息里追加块，于是这一轮的
+# 块被拆成**两条 id 相同**的 assistant 消息：``[hint, tool_call, tool_result]`` 与
+# ``[tool_call, …, text]``。旧实现按 id 取**第一条**命中，正文在第二条里 ⇒ 落库正文为空。
+#
+# 这两条用例就是那次生产读数的机器判据：第一段没有正文时整轮被判 ``ignored``（用户看到的
+# 「没有结果」）；第一段只有开场白时落库的也只有开场白（用户看到的「我先用 codegraph 查一下」）。
+
+MEMORY_HINT = "## Relevant memories from past conversations\n- 与 MCP 装配有关的旧记忆。"
+
+
+class _HintSplittingMemory(MiddlewareBase):
+    """替身记忆中间件：与生产 ``ReMeMiddleware`` 同一条写法——直接把 memory 消息 append 进 context。
+
+    生产实现（pinned 2.0.10 的 ``middleware/_longterm_memory/_reme/_middleware.py``）在
+    ``on_reasoning`` 里做 ``agent.state.context.append(self._build_memory_message(memories))``，
+    **不**走 ``append_context``、**不**改 reply_id。这里逐字复刻这一步，别的都留空。
+    """
+
+    class Parameters:
+        def __init__(self, **values: Any) -> None:
+            self.chat_model = values.get("chat_model")
+            self.mode = values.get("mode")
+            self.top_k = values.get("top_k")
+
+    def __init__(self, *, workspace_dir: str, parameters: Any) -> None:
+        self.workspace_dir = workspace_dir
+        self.parameters = parameters
+        self.injected = 0
+
+    async def _ensure_started(self) -> None:
+        return None
+
+    async def list_tools(self) -> list[Any]:
+        return []
+
+    async def close(self) -> None:
+        return None
+
+    async def on_reasoning(self, agent: Any, input_kwargs: dict, next_handler: Any) -> Any:
+        """第一次推理步之后注入**一条** memory 消息（与生产同一时机、同一写入方式，只注入一次）。"""
+        if self.injected == 0 and getattr(agent.state, "cur_iter", 0) >= 1:
+            self.injected += 1
+            agent.state.context.append(AssistantMsg(name="memory", content=[HintBlock(hint=MEMORY_HINT)]))
+        async for event in next_handler(**input_kwargs):
+            yield event
+
+
+@pytest.fixture
+def hint_splitting_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> str:
+    """把生产 ReMe 构造入口换成上面那个替身，并给出一个临时的全局根（记忆装配需要它）。
+
+    与 ``test_runtime_memory`` 的 ``global_root`` 同一条纪律：``HOME`` 也指到临时目录，
+    测试绝不读写真实的 ``~/.alibot``。
+    """
+    from alibot import memory as memory_module
+
+    monkeypatch.setattr(memory_module, "ReMeMiddleware", _HintSplittingMemory)
+    home = tmp_path / "home"
+    (home / ".alibot").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    return str(home / ".alibot")
+
+
+def _memory_seam(model: Any, global_home: str, tmp_path: Any) -> Any:
+    from tests.test_approval_seam import _StubModelSeam
+
+    return _StubModelSeam(
+        model,
+        timeout_seconds=10.0,
+        global_home=global_home,
+        runtime_root=tmp_path / "data",
+    )
+
+
+def test_a_memory_hint_mid_round_does_not_swallow_the_final_body(
+    hint_splitting_memory: str, tmp_path: Any
+) -> None:
+    """生产 23:00 那一轮：首段只有 tool_call/tool_result，正文全在记忆提示之后的那一段里。
+
+    旧实现取第一条同 id 的 assistant 消息 ⇒ 没有任何 text 块 ⇒ 整轮被判 ``ignored``，
+    用户看到「没有结果」。判据：这一轮的正文必须落库。
+    """
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    from tests.test_approval_seam import _ScriptedModel
+
+    model = _ScriptedModel(
+        [
+            [
+                ChatResponse(
+                    content=[
+                        ToolCallBlock(
+                            id="tc-status",
+                            name="set_task_status",
+                            input='{"status":"in_review"}',
+                        )
+                    ],
+                    is_last=True,
+                )
+            ],
+            [ChatResponse(content=[TextBlock(text=LAST_BODY)], is_last=True)],
+        ]
+    )
+    seam = _memory_seam(model, hint_splitting_memory, tmp_path)
+
+    outcome = seam.run_round(
+        _agent(), _messages(), mentioned=True, target_id="task_issue_219", task_context=_task_context()
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    assert outcome.messages, "记忆提示把这一段拆开后，正文不能整体消失"
+    assert outcome.messages[0].body == LAST_BODY
+
+
+def test_a_memory_hint_mid_round_keeps_the_preamble_and_the_final_body(
+    hint_splitting_memory: str, tmp_path: Any
+) -> None:
+    """生产 22:59 那一轮：首段有开场白 + tool_call，正文在第二段 ⇒ 两段都要落库、顺序不变。"""
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    from tests.test_approval_seam import _ScriptedModel
+
+    model = _ScriptedModel(
+        [
+            [
+                ChatResponse(
+                    content=[
+                        TextBlock(text=FIRST_BODY),
+                        ToolCallBlock(
+                            id="tc-status-2",
+                            name="set_task_status",
+                            input='{"status":"in_review"}',
+                        ),
+                    ],
+                    is_last=True,
+                )
+            ],
+            [ChatResponse(content=[TextBlock(text=LAST_BODY)], is_last=True)],
+        ]
+    )
+    seam = _memory_seam(model, hint_splitting_memory, tmp_path)
+
+    outcome = seam.run_round(
+        _agent(), _messages(), mentioned=True, target_id="task_issue_219", task_context=_task_context()
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    assert outcome.messages[0].body == f"{FIRST_BODY}\n\n{LAST_BODY}"
+
+
+# ─── 10. 队长轮次同样合并同 id 的多段消息（单 Agent 与队长共用一个收口出口） ─────
+def test_the_leader_round_also_merges_segments_split_by_a_memory_hint(
+    hint_splitting_memory: str, tmp_path: Any
+) -> None:
+    """队长轮次走 ``_outcome_from_reply`` 的同一出口：中途插入的记忆提示同样会拆消息。
+
+    单 Agent 轮把 ``state.context`` 显式交进收口；队长轮此前没有交，退回读「最后一条同 id 消息」
+    ⇒ 开场白在另一条消息里被丢掉。这条用例钉住「两条通道交出同一个正文」。
+    """
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+    from alibot.team import TeamRoundContext
+
+    from tests.test_approval_seam import _ScriptedModel
+
+    model = _ScriptedModel(
+        [
+            [
+                ChatResponse(
+                    content=[
+                        TextBlock(text=FIRST_BODY),
+                        ToolCallBlock(id="tc-team", name="set_task_status", input='{"status":"in_review"}'),
+                    ],
+                    is_last=True,
+                )
+            ],
+            [ChatResponse(content=[TextBlock(text=LAST_BODY)], is_last=True)],
+        ]
+    )
+    seam = _memory_seam(model, hint_splitting_memory, tmp_path)
+    agent = _agent()
+    team = TeamRoundContext(target_id="task_issue_219", leader_id=agent["id"], members=())
+
+    outcome = seam.run_round_stream(
+        agent,
+        _messages(),
+        mentioned=True,
+        target_id="task_issue_219",
+        task_context=_task_context(),
+        team=team,
+        emit=None,
+    )
+
+    assert outcome.status == "replied", outcome.reason
+    assert outcome.messages[0].body == f"{FIRST_BODY}\n\n{LAST_BODY}"
