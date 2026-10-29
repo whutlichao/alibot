@@ -3,8 +3,8 @@
 **票型**：实施票｜**门禁**：G-impl、G-merge｜**测试档**：宽（装配涉及运行时共享收口）
 **Ticket**：无 issue（用户反馈直派，`task_a762f70e57c6` / dispatch `ctx_5621d70aeedd`）
 **base**：`0472b6c`｜**branch**：`task-a762f70e-behavior-rule`
-**PR**：建 PR 后一笔回填｜**PR body**：`/tmp/mcp-channel-root-cause-evidence/PR_BODY.md`
-**CI**：建 PR 后一笔回填
+**PR**：[#338](https://github.com/whutlichao/alibot/pull/338)｜**PR body**：`/tmp/mcp-channel-root-cause-evidence/PR_BODY.md`
+**CI**：run 40793453619 success（`1cc3b59`）
 **采集时间**：2026-10-29｜**环境**：macOS（Darwin 27.0.0）/ Python 3.11 / AgentScope 2.0.10
 
 ---
