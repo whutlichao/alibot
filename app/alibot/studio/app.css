@@ -237,6 +237,22 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 }
 .msg.failed .msg-text { color: var(--error); text-decoration: line-through; }
 
+/* ─── owner 自己发的消息：右侧气泡 ────────────────────────────────────────
+   判据在 `MessageItem.vue`（`author.id === ownerId`；system 事件不算人说的话），这里只做呈现：
+   整行镜像让头像贴右，正文收成一枚气泡靠右。宽度沿用正文的 68ch 上限，再给头像让出 45px——
+   窄屏（≤900px 时流内边距收到 14px）同样成立，不另写断点。背景只取既有的 `--panel-2`
+   （嵌套井 / chip 档），不新造色位；气泡内文字仍左对齐，长段落不被居中打散。 */
+.msg.own { flex-direction: row-reverse; }
+.msg.own .msg-body {
+  flex: 0 1 auto; max-width: min(68ch, calc(100% - 45px));
+  display: flex; flex-direction: column; align-items: flex-end;
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--panel-2); border-radius: var(--r-lg);
+}
+.msg.own .msg-head { justify-content: flex-end; flex-wrap: wrap; }
+.msg.own .msg-text { max-width: 100%; text-align: left; }
+.msg.own .msg-attachments { justify-content: flex-end; }
+
 /* ─── 正文渲染（ADR-0037 / #290）───────────────────────────────────────────
    渲染器把正文的 Markdown 记号解释成结构，产物挂在 `.msg-text > .markdown-body` 下——
    与设计系统 kit 的选择器同形（`alibot-design-system/ui_kits/app/app.css:198`），

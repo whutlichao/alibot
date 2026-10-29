@@ -5,7 +5,9 @@
      - 系统事件消息（`kind='system'`）不渲染 Markdown：正文 100% 由后端模板生成；
      - human / agent 的对话正文渲染 Markdown（ADR-0037），提及按后端区间包标签；
      - 乐观发送项（还没 seq）与发送失败项各有自己的状态 capsule（字面量来自词条表，
-       写在 `data-state-label` 上，CSS 用 `content: attr()` 取——CSS 里不放语言文案）。
+       写在 `data-state-label` 上，CSS 用 `content: attr()` 取——CSS 里不放语言文案）；
+     - owner 自己发的对话消息挂 `own`，由 `app.css` 呈现为右侧气泡（判据见 `isOwn`）；
+       system 事件不是人说的话，即使作者是 owner 也留在左侧。
 
      **任务 chip 归 `TaskRefChip.vue`**（票 #309）：`task_ref` 的引用 chip 与 `task_pointer` 的频道
      指针 chip 是同一个类名、两条语义，判据只在那个组件里有一处——系统消息与对话两条分支都挂它
@@ -32,6 +34,9 @@ const props = defineProps({
   taskOf: { type: Function, default: null },
   // 待审批读数（`pendingCountFor(targetId)`）：指针 chip 后面的角标读它，不用本组件再算一遍。
   pendingCountFor: { type: Function, default: null },
+  // 本机人类成员的 id（`GET /api/workspace` 的 `member.id`）：作者与它相同的对话消息挂
+  // `own`。空串 = 身份数据还没接上——宁可全在左侧，也不凭显示名猜。
+  ownerId: { type: String, default: '' },
 });
 
 const emit = defineEmits(['retry', 'discard', 'open-task']);
@@ -74,11 +79,20 @@ const author = computed(
   () => props.message.author || props.member || { display_name: 'owner', kind: 'owner', avatar_slot: 4 },
 );
 const isAgent = computed(() => author.value.kind === 'agent');
+/** 是不是「我」发的对话消息：只认身份数据（作者 id），不认显示名；system 事件不算。
+    乐观 / 失败项自带 `author`（`stores/workspace.js` 的 pending 项），因此三种状态一起覆盖。 */
+const isOwn = computed(() => {
+  const authorId = props.message.author && props.message.author.id;
+  return Boolean(props.ownerId) && Boolean(authorId) && authorId === props.ownerId && !isSystem.value;
+});
 
 const rootClass = computed(() => {
   if (narration.value !== null) return 'msg narration';
   if (isSystem.value) return 'msg sys';
-  return 'msg' + (pending.value ? ' pending' : '') + (failed.value ? ' failed' : '');
+  return 'msg'
+    + (isOwn.value ? ' own' : '')
+    + (pending.value ? ' pending' : '')
+    + (failed.value ? ' failed' : '');
 });
 
 /** 两个 capsule 的字面量走 CSS 的 `content: attr(data-state-label)`（语言取值只在这一处）。 */
