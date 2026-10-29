@@ -945,7 +945,7 @@ describe('skills 页签', () => {
 });
 
 describe('mcp 页签', () => {
-  test('两块面都在：上块库行（装配正本）+ 下块家目录 mcp.json；说明性标注已撤', async () => {
+  test('两块面都在：上块条目视图 + 下块家目录 mcp.json（同一份文件）；说明性标注已撤', async () => {
     const { wrapper } = await mountApp();
     await openDetail(wrapper);
     await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
@@ -1099,6 +1099,56 @@ describe('mcp 页签', () => {
     expect(post.body.scope_kind).toBe('agent');
     expect(post.body.scope_id).toBe('mem-1');
     expect(post.body.name).toBe('github');
+  });
+
+  test('mcp.json 的文件级可读问题 ⇒ 原文块逐条展示（不静默跳过）', async () => {
+    const issues = [
+      '文件不是可解析的 JSON（Expecting value）：本轮不装配 MCP',
+      '文件里第 2 条不是合法声明，已跳过',
+    ];
+    const { wrapper } = await mountApp({
+      '/api/agents/mem-1/global-mcp-file': () => jsonResponse({
+        member_id: 'mem-1',
+        exists: true,
+        text: MCP_FILE_TEXT,
+        servers: 1,
+        path: '/Users/someone/.alibot/agents/mem-1/mcp.json',
+        issues,
+      }),
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+
+    const block = wrapper.find('[data-od-id="agent-mcp-file-issues"]');
+    expect(block.exists()).toBe(true);
+    expect(block.text()).toContain(issues[0]);
+    expect(block.text()).toContain(issues[1]);
+  });
+
+  test('结构化保存成功时，下块未提交的原文不被覆盖，只提示文件已变化', async () => {
+    const { wrapper } = await mountApp({
+      '/api/mcp-servers': (_url, request) =>
+        request.method === 'POST'
+          ? jsonResponse({ mcp_server: { id: 'global:mem-1:github', name: 'github' } }, 201)
+          : jsonResponse({ mcp_servers: [] }),
+    });
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+
+    const draft = '{ "servers": [ { "name": "hand-written" } ] }';
+    await wrapper.find('[data-od-id="agent-mcp-file-text"]').setValue(draft);
+    await wrapper.find('[data-od-id="mcp-name"]').setValue('github');
+    await wrapper.find('[data-od-id="mcp-command"]').setValue('npx');
+    await wrapper.find('[data-od-id="mcp-save"]').trigger('click');
+    await flush();
+    await flush();
+
+    expect(wrapper.find('[data-od-id="agent-mcp-file-text"]').element.value).toBe(draft);
+    expect(wrapper.find('[data-od-id="agent-mcp-file-error"]').text()).toBe(
+      i18n.t('mcp.fileChangedElsewhere'),
+    );
   });
 });
 

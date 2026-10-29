@@ -46,6 +46,11 @@
 备份沿用 :func:`_backup_data_dir`（带 ``label="skills"``，与 schema 迁移的 ``<from>-to-<to>`` 命名区分），
 清单落数据目录内的 ``skill-migration-<UTC>.json``。库行的 ``source_path`` 记录**来源**（旧项目层路径）。
 频道级分区只进报告、不复制；源字节不删除。
+
+**MCP 声明导出（ADR-0021 §三 / ADR-0031 修订）**：``export-mcp`` 把 ``mcp_server`` 的 Agent 级旧行
+导出到成员家目录 ``mcp.json``（现行唯一正本）。它同样默认 dry-run、``--apply --yes`` 才写：
+整目录备份 + 每份被改写文件的备份 + 清单 + 写后校验；同名不同形 / 文件不可用 / 家目录不存在都
+**整体拒绝**，不覆盖、无 ``--force``；频道级旧行只进报告，不导出。
 """
 
 from __future__ import annotations
@@ -79,10 +84,13 @@ from .db import (
     utc_now,
 )
 from .mcp import (
-    GLOBAL_MCP_FILENAME,
+    MEMBER_MCP_FILENAME,
     REMOTE_MCP_TRANSPORTS,
-    InvalidMCPDocument,
-    validate_mcp_document,
+    InvalidMCPDeclaration,
+    load_member_mcp_declarations,
+    member_mcp_server_id,
+    normalize_mcp_declaration,
+    write_mcp_document_atomic,
 )
 from .repair import CHANNEL_SCOPE_MOVES, channel_scope_gaps
 from .skills import SKILLS_DIR, SkillValidationError, read_skill_tree, skills_partition
@@ -93,7 +101,9 @@ from .workspace import (
     WorkspaceRootViolation,
     ensure_state_partition,
     global_home_root,
+    global_member_home,
     resolve_global_read_path,
+    resolve_global_write_path,
     resolve_in_root,
     safe_partition_id,
     validate_workspace_root,
@@ -2277,233 +2287,213 @@ def render_skill_migration_result(result: SkillApplyResult) -> str:
     return "\n".join(lines)
 
 
-# ─── MCP 声明导入（#275 / ADR-0031 §二） ────────────────────────────────────
-# 这是**显式**的一次性导入：成员家目录 ``<全局根>/agents/<member>/mcp.json`` 的条目
-# → ``mcp_server`` 的 Agent 级库行。它不在启动路径上、不是 HTTP 端点、不改 schema、不删源文件：
-# 只读文件、只写库行、只落备份与清单。
+# ─── MCP 声明导出（ADR-0021 §三 / ADR-0031 修订） ───────────────────────────
+# ``mcp_server`` 的 Agent 级旧行 → 成员家目录 ``<全局根>/agents/<member>/mcp.json``
+# （**现行唯一正本**）。这是**显式**的一次性导出：不在启动路径上、不是 HTTP 端点、不改 schema、
+# **不删库行**（旧行留作回滚与审计）。
 #
-# 三种处置（与 #274 的 ``create`` / ``skip`` / ``refuse`` 同一套安全口径）：
-# - ``create``：库里没有同名行 → 新建（``scope_kind='agent'`` / ``scope_id=<member>``）；
-# - ``skip``：库里已有同名**同形**行 → 不覆盖、不写 ``updated_at``；
-# - ``refuse``：库里已有同名行但**形状不同** → **拒绝整条命令**，要求人类先裁定。
-#   本命令不提供 ``--force``。
+# 三种处置（与 ``migrate-skills`` 的 create / skip / refuse 同一套安全口径）：
+# - ``create``：文件里没有同名条目 → 追加；
+# - ``skip``：文件里已有同名**同形**条目 → 不覆盖（重复 apply 零写入）；
+# - ``refuse``：文件里已有同名但形状不同 / 文件本身不可用 / 家目录不存在 → **拒绝整条命令**，
+#   要人裁定。本命令不提供 ``--force``，也不静默覆盖人写的内容。
 #
-# 另有一档与条目无关的拒绝（:class:`McpFileRefusal`）：**文件本身不可用**（非法 JSON / 顶层形状不对 /
-# 某条形状不合法 / 文件里重名）。它与 Studio 写路径同一口径——静默丢掉人写的一条才是坏结果，所以
-# 整份文件都不导入，而不是跳过坏的那一条。
-#
-# **远端条目的确认不代做**（票面要求）：``remote_consent_scope('mcp', …)`` 一行都不写，
-# 只在报告里点出导入后仍需 ``POST /api/mcp-servers/{id}/consent``。理由与 ADR-0031 §三 同源：
-# 数据面扩大必须由人类逐条确认，迁移工具不是那条确认通道。
-MCP_MIGRATION_MANIFEST_PREFIX = "mcp-migration-"
-MCP_ACTION_CREATE = "create"
-MCP_ACTION_SKIP = "skip"
-MCP_ACTION_REFUSE = "refuse"
-_MCP_ACTION_LABELS = {
-    MCP_ACTION_CREATE: "新建",
-    MCP_ACTION_SKIP: "跳过",
-    MCP_ACTION_REFUSE: "拒绝",
+# 保留与不代做的事：
+# - 文件里其它条目（包括人手工加的）原样保留：导出只追加 / 跳过，不重排、不删；
+# - 远端条目的既有确认从旧行 id **复制**到合成标识 ``global:<member>:<name>``（保留远端确认）；
+# - 频道级旧行**不导出**（ADR-0031 #270 修订已弃用），报告里逐条点名，不静默丢弃；
+# - 数据目录备份 + 每份被改写文件的备份 + 清单 + 写后校验。
+MCP_EXPORT_MANIFEST_PREFIX = "mcp-export-"
+MCP_EXPORT_ACTION_CREATE = "create"
+MCP_EXPORT_ACTION_SKIP = "skip"
+MCP_EXPORT_ACTION_REFUSE = "refuse"
+_MCP_EXPORT_ACTION_LABELS = {
+    MCP_EXPORT_ACTION_CREATE: "新建",
+    MCP_EXPORT_ACTION_SKIP: "跳过",
+    MCP_EXPORT_ACTION_REFUSE: "拒绝",
 }
-# 导入报告里指向远端条目确认入口的那句（逐条带真实库行 id）。
-MCP_MIGRATION_CONSENT_NOTICE = (
-    "远端条目的数据面确认**未代做**：导入后仍需由人逐条调用 "
-    "`POST /api/mcp-servers/{id}/consent`（或在 Studio 里点「确认使用」）。"
-)
-# 「形状」里**不算**东西的键：库行的身份（``id`` / ``scope_*``）与时间戳不是声明形状的一部分。
-# 其余键一律算形状，且**由归一化内核的输出派生**（不手抄）——加一列时形状比较自动跟上，
-# 不会因为漏抄而把「不同形」误判成「同形」。
-_MCP_NON_SHAPE_KEYS: frozenset[str] = frozenset(
-    {"id", "scope_kind", "scope_id", "created_at", "updated_at", "is_remote", "consent_required", "consented"}
-)
 
 
-class McpMigrationError(MigrationError):
-    """MCP 导入**没能开始或没能完成**：库形态不对 / 文件不可用 / 同名不同形 / 写库失败。"""
+class McpExportError(MigrationError):
+    """MCP 导出**没能开始或没能完成**：库形态不对 / 文件不可用 / 同名不同形 / 写盘失败。"""
 
 
 @dataclass(frozen=True)
-class McpMigrationEntry:
-    """一条逐条计划：一份 ``mcp.json`` 里的一条声明、它的动作、原因与（若有）既有行。"""
+class McpExportEntry:
+    """一条逐条计划：一条库行声明、它在文件里的动作、原因与确认状态。"""
 
-    source: Path
     member_id: str
+    name: str
+    transport: str
     declaration: dict[str, Any]
     action: str
     reason: str
-    row_id: str | None
-
-    @property
-    def name(self) -> str:
-        return str(self.declaration["name"])
-
-    @property
-    def is_remote(self) -> bool:
-        return str(self.declaration["transport"]) in REMOTE_MCP_TRANSPORTS
+    row_id: str
+    target: Path
+    remote: bool
+    consent_row: str | None
 
     @property
     def needs_write(self) -> bool:
-        """这一条是否需要动库行：本命令只「新建」，已同形的条目是 ``skip``（重复 apply 零写入）。
+        return self.action == MCP_EXPORT_ACTION_CREATE
 
-        没有「更新既存行」这一档是**刻意的**：同形 → 跳过；不同形 → 拒绝并要求人裁定。两者都不写。
-        """
-        return self.action == MCP_ACTION_CREATE
+    @property
+    def synthetic_id(self) -> str:
+        """装配层与确认行共用的合成标识（``global:<member>:<name>``）。"""
+        return member_mcp_server_id(self.member_id, self.name)
 
 
 @dataclass(frozen=True)
-class McpFileRefusal:
-    """一份 ``mcp.json`` **整体**不可用：一条都不导入，原因指名到条目 / 字段。
+class McpExportFile:
+    """一份将被（或可能被）改写的 ``mcp.json``：路径、是否已存在与解析后的原文。"""
 
-    它不是「一条声明的动作」，因为它没有可导入的声明可指；报告与拒绝理由都按「这份文件」讲。
-    """
+    member_id: str
+    target: Path
+    exists: bool
+    payload: dict[str, Any]
 
-    source: Path
+
+@dataclass(frozen=True)
+class McpExportSkip:
+    """没能导出的成员（库行指向不存在 / 已删除的 Agent）：点名原因，不静默丢弃。"""
+
     member_id: str
     reason: str
 
 
 @dataclass(frozen=True)
-class McpMigrationSkip:
-    """没能导入的成员分区（不是成员 / 家目录越界 / 不可读）与一句原因（不猜、不静默跳过）。"""
+class McpExportRefusal:
+    """需要人裁定的成员（家目录不存在 / 路径不安全 / 文件不可用 / 同名不同形）。"""
 
-    source: Path
+    member_id: str
+    target: Path | None
     reason: str
 
 
 @dataclass(frozen=True)
-class McpMigrationPlan:
-    """一次导入的**只读**计划：逐条动作、整体拒绝与跳过读数（dry-run 的全部产出）。"""
+class McpExportPlan:
+    """一次导出的**只读**计划：逐条动作、文件读数、跳过与拒绝（dry-run 的全部产出）。"""
 
     data_dir: Path
     global_root: str
-    entries: tuple[McpMigrationEntry, ...]
-    skipped: tuple[McpMigrationSkip, ...]
-    refusals: tuple[McpFileRefusal, ...] = ()
+    files: tuple[McpExportFile, ...]
+    entries: tuple[McpExportEntry, ...]
+    skipped: tuple[McpExportSkip, ...]
+    refusals: tuple[McpExportRefusal, ...]
+    channel_rows: tuple[tuple[str, str], ...] = ()
+    # 计划时库里**已有**的 ``remote_consent_scope('mcp', …)`` 作用域 id（旧行 id 与合成标识都在内）。
+    consented_ids: frozenset[str] = frozenset()
 
     @property
-    def refused(self) -> tuple[McpMigrationEntry, ...]:
-        return tuple(entry for entry in self.entries if entry.action == MCP_ACTION_REFUSE)
+    def refused(self) -> tuple[McpExportEntry, ...]:
+        """逐条拒绝（同名不同形 / 库行形状不合法）。"""
+        return tuple(entry for entry in self.entries if entry.action == MCP_EXPORT_ACTION_REFUSE)
 
     @property
     def has_refusals(self) -> bool:
-        """是否有任何一档拒绝（同名不同形 / 整份文件不可用）——有则 apply 零写入。"""
+        """有任何一档拒绝时 apply **零写入**（整条命令停下，由人裁定）。"""
         return bool(self.refused) or bool(self.refusals)
 
     @property
-    def pending(self) -> tuple[McpMigrationEntry, ...]:
-        """本次 apply 真的要写的条目（已就位 → 空）。"""
+    def pending(self) -> tuple[McpExportEntry, ...]:
+        """本次 apply 真的要追加的条目（已同形 → 空）。"""
         return tuple(entry for entry in self.entries if entry.needs_write)
 
     @property
-    def remote_imports(self) -> tuple[McpMigrationEntry, ...]:
-        return tuple(entry for entry in self.pending if entry.is_remote)
+    def consents_pending(self) -> tuple[McpExportEntry, ...]:
+        """需要把旧行上的确认复制到合成标识的条目。
+
+        覆盖两种动作：``create``（条目本次写进文件）与 ``skip``（文件里早有同名同形条目——
+        典型场景是先跑过旧 ``migrate-mcp`` 的安装）。后者不复制确认的话，升级后远端会被读成
+        未确认而不再建连：既有确认属于用户已给过的授权，随声明一起搬，不是代做新确认。
+        """
+        return tuple(
+            entry
+            for entry in self.entries
+            if entry.remote
+            and entry.consent_row is not None
+            and entry.action != MCP_EXPORT_ACTION_REFUSE
+            and entry.synthetic_id not in self.consented_ids
+        )
 
 
 @dataclass(frozen=True)
-class McpApplyEntry:
-    """一条 apply 的完成读数：条目与最终行 id（远端确认入口要用它）。"""
+class McpExportApplyResult:
+    """一次 apply 的完成读数：备份、清单、写入条目与复制过去的确认行。
 
-    entry: McpMigrationEntry
-    row_id: str
-
-
-@dataclass(frozen=True)
-class McpApplyResult:
-    """一次 apply 的完成读数（失败时也带着已完成的部分）。"""
+    能拿到这个结果就意味着写后校验已通过——校验失败时 ``apply_mcp_export`` 直接抛
+    ``McpExportError``，不会返回半成品读数。
+    """
 
     backup_path: Path | None
     manifest_path: Path | None
-    completed: tuple[McpApplyEntry, ...]
-
-    @property
-    def remote_rows(self) -> tuple[McpApplyEntry, ...]:
-        """已导入的**远端**行（报告据此逐条给出确认入口；本命令不代确认）。"""
-        return tuple(item for item in self.completed if item.entry.is_remote)
+    file_backups: tuple[Path, ...]
+    written: tuple[McpExportEntry, ...]
+    consents_copied: tuple[str, ...]
 
 
-def _mcp_declaration_shape(declaration: Mapping[str, Any]) -> dict[str, Any]:
-    """一条声明的**形状**（参与「同形 / 不同形」判定的一组值，不含身份与时间戳）。
+def _mcp_export_find(payload: Mapping[str, Any], name: str) -> Mapping[str, Any] | None:
+    """文件 ``servers`` 里名字匹配的**原始**条目（非对象条目跳过）。"""
+    for entry in payload.get("servers") or []:
+        if isinstance(entry, Mapping) and str(entry.get("name") or "") == name:
+            return entry
+    return None
 
-    键集从 :func:`mcp.normalize_mcp_declaration` 的输出派生（见 :data:`_MCP_NON_SHAPE_KEYS` 的
-    注释）：两侧（文件声明 / 库行）都含同一组形状键，因此比较键集仍是「归一化后的一致」。
+
+def _read_mcp_export_payload(target: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """读一份 ``mcp.json`` 的原始 JSON；缺席 ⇒ 空 ``servers``；不可用 ⇒ ``(None, 原因)``。
+
+    导出**不**用装配层的宽松读路径：它要保留文件原文里的全部条目（包括人写坏的），只追加新条目。
+    因此这里只判定「能否安全地读-改-写」，坏条目本身不拦——它会被原样写回。
     """
-    return {key: value for key, value in declaration.items() if key not in _MCP_NON_SHAPE_KEYS}
+    if not target.is_file():
+        return {"servers": []}, None
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return None, f"文件不可读（{error}），未导出"
+    try:
+        payload = json.loads(text)
+    except ValueError as error:
+        return None, f"文件不是可解析的 JSON（{error}），未导出"
+    if not isinstance(payload, dict) or not isinstance(payload.get("servers"), list):
+        return None, "文件的顶层必须是对象且 servers 必须是数组，未导出"
+    return payload, None
 
 
-def _plan_member_entries(
-    *,
-    member_id: str,
-    source: Path,
-    declarations: list[dict[str, Any]],
-    rows: Mapping[str, Mapping[str, Any]],
-) -> list[McpMigrationEntry]:
-    """一个成员分区的逐条动作：库里没有 → 新建；有且同形 → 跳过；有但不同形 → 拒绝。"""
-    entries: list[McpMigrationEntry] = []
-    for declaration in declarations:
-        name = str(declaration["name"])
-        row = rows.get(name)
-        if row is None:
-            entries.append(
-                McpMigrationEntry(
-                    source=source,
-                    member_id=member_id,
-                    declaration=declaration,
-                    action=MCP_ACTION_CREATE,
-                    reason="库里没有同名声明，将按成员作用域新建",
-                    row_id=None,
-                )
-            )
-            continue
-        if _mcp_declaration_shape(row) == _mcp_declaration_shape(declaration):
-            entries.append(
-                McpMigrationEntry(
-                    source=source,
-                    member_id=member_id,
-                    declaration=declaration,
-                    action=MCP_ACTION_SKIP,
-                    reason="库里已有同名同形声明，不覆盖",
-                    row_id=str(row["id"]),
-                )
-            )
-            continue
-        entries.append(
-            McpMigrationEntry(
-                source=source,
-                member_id=member_id,
-                declaration=declaration,
-                action=MCP_ACTION_REFUSE,
-                reason=("库里已有同名但形状不同的声明，需人工裁定后再导入（本命令不覆盖、不提供 --force）"),
-                row_id=str(row["id"]),
-            )
-        )
-    return entries
+def _mcp_export_shape(declaration: Mapping[str, Any]) -> dict[str, Any]:
+    """一条声明的形状（归一化内核的输出；不含库行身份与时间戳）。"""
+    return normalize_mcp_declaration(declaration)
 
 
-def _member_mcp_source(root: str, member_id: str) -> tuple[Path | None, str | None]:
-    """该成员 ``mcp.json`` 的路径与**不可读/越界**的原因（``None, None`` = 文件缺席）。
+def _mcp_row_payload(row: sqlite3.Row) -> dict[str, Any]:
+    """库行 → 声明形态（``args`` / ``env_names`` 从 JSON 数组解出）。"""
+    raw_args = json.loads(row["args"] or "[]")
+    raw_env_names = json.loads(row["env_names"] or "[]")
+    return {
+        "id": str(row["id"]),
+        "name": str(row["name"]),
+        "transport": str(row["transport"]),
+        "command": str(row["command"]),
+        "args": [str(item) for item in raw_args] if isinstance(raw_args, list) else [],
+        "url": str(row["url"]),
+        "env_names": [str(item) for item in raw_env_names] if isinstance(raw_env_names, list) else [],
+        "enabled": bool(row["enabled"]),
+        "scope_kind": str(row["scope_kind"]),
+        "scope_id": str(row["scope_id"]),
+    }
 
-    路径判定复用全局只读守卫：根外 symlink 祖先与根外目标一律拒绝——与装配层、Studio 读路径
-    **同一份**判据，不新写一套。
-    """
-    raw = Path(os.path.join(root, AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME))
-    resolved = resolve_global_read_path(root, AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME)
-    if resolved is None:
-        if os.path.lexists(raw):
-            return raw, "文件路径越出全局根（根外 symlink 祖先或根外目标），未导入"
-        return None, None
-    return Path(resolved), None
 
+def plan_mcp_export(data_dir: Path | str, global_root: str | None = None) -> McpExportPlan:
+    """读库里的 Agent 级旧行，产出**只读**的逐条导出计划（dry-run 的全部实现）。
 
-def plan_mcp_migration(data_dir: Path | str, global_root: str | None = None) -> McpMigrationPlan:
-    """扫描全局层各成员家目录的 ``mcp.json``，产出**只读**的逐条计划（dry-run 的全部实现）。
-
-    遍历 ``<全局根>/agents/<partition>/mcp.json``（不是遍历库里的成员）：这样「家目录里有一份文件、
-    库里却没有对应成员」的情况会进 ``skipped`` 并给原因，而不是被静默漏掉。库里的成员行只用于
-    判定分区归属与读取既有声明行。
+    遍历的是**库行**（不是家目录）：这样「库里有一条声明、文件里还没有」才会成为 ``create``。
+    家目录不存在 / 文件不可用 / 同名不同形都进 ``refusals``，apply 之前整体停下。
     """
     data_dir_path = Path(data_dir)
     db_path = data_dir_path / DATABASE_FILE_NAME
     if not db_path.is_file():
-        raise McpMigrationError(f"数据目录里没有 {DATABASE_FILE_NAME}：{data_dir_path}")
+        raise McpExportError(f"数据目录里没有 {DATABASE_FILE_NAME}：{data_dir_path}")
     root = os.path.realpath(global_root if global_root is not None else global_home_root())
 
     conn = connect(db_path)
@@ -2511,272 +2501,411 @@ def plan_mcp_migration(data_dir: Path | str, global_root: str | None = None) -> 
         tables = _table_names(conn)
         missing = {"member", "mcp_server"} - tables
         if missing:
-            raise McpMigrationError(
-                "库里缺少 MCP 导入需要的表："
+            raise McpExportError(
+                "库里缺少 MCP 导出需要的表："
                 + "、".join(sorted(missing))
                 + "；请先用 `python -m alibot --migrate` 把库推进到本代码的 schema 版本。"
             )
-        members = {
-            safe_partition_id(str(row["id"])): row
-            for row in conn.execute("SELECT id, kind, deleted_at FROM member")
+        members = {str(row["id"]): row for row in conn.execute("SELECT id, kind, deleted_at FROM member")}
+        rows_by_member: dict[str, list[dict[str, Any]]] = {}
+        channel_rows: list[tuple[str, str]] = []
+        for row in conn.execute("SELECT * FROM mcp_server ORDER BY scope_kind, scope_id, created_at, id"):
+            payload = _mcp_row_payload(row)
+            if payload["scope_kind"] == "agent":
+                rows_by_member.setdefault(payload["scope_id"], []).append(payload)
+            else:
+                channel_rows.append((payload["scope_id"], payload["name"]))
+        consents = {
+            str(row["scope_id"]): str(row["acknowledged_at"])
+            for row in conn.execute(
+                "SELECT scope_id, acknowledged_at FROM remote_consent_scope WHERE scope_kind = 'mcp'"
+            )
         }
-        rows_by_member: dict[str, dict[str, Mapping[str, Any]]] = {}
-        for row in conn.execute(
-            "SELECT * FROM mcp_server WHERE scope_kind = 'agent' ORDER BY created_at, id"
-        ):
-            payload = {
-                "id": str(row["id"]),
-                "name": str(row["name"]),
-                "transport": str(row["transport"]),
-                "command": str(row["command"]),
-                "args": json.loads(row["args"] or "[]"),
-                "url": str(row["url"]),
-                "env_names": json.loads(row["env_names"] or "[]"),
-                "enabled": bool(row["enabled"]),
-                "scope_kind": str(row["scope_kind"]),
-                "scope_id": str(row["scope_id"]),
-            }
-            rows_by_member.setdefault(str(row["scope_id"]), {})[str(row["name"])] = payload
     finally:
         conn.close()
 
-    entries: list[McpMigrationEntry] = []
-    skipped: list[McpMigrationSkip] = []
-    refusals: list[McpFileRefusal] = []
-    agents_dir = Path(root) / AGENTS_DIR
-    if not agents_dir.is_dir():
-        return McpMigrationPlan(data_dir=data_dir_path, global_root=root, entries=(), skipped=())
-
-    for partition in sorted(agents_dir.iterdir(), key=lambda item: item.name):
-        if partition.is_symlink() or not partition.is_dir():
+    files: list[McpExportFile] = []
+    entries: list[McpExportEntry] = []
+    skipped: list[McpExportSkip] = []
+    refusals: list[McpExportRefusal] = []
+    for member_id in sorted(rows_by_member):
+        rows = rows_by_member[member_id]
+        member = members.get(member_id)
+        if member is None or str(member["kind"]) != "agent" or member["deleted_at"] is not None:
+            # 库行仍留在库里（不删），只是没有可写入的家目录：点名，不静默丢弃。
+            skipped.append(McpExportSkip(member_id, "库行指向不存在或已删除的 Agent，未导出（库行保留）"))
             continue
-        source, guard_reason = _member_mcp_source(root, partition.name)
-        if guard_reason is not None:
-            skipped.append(McpMigrationSkip(source or partition, guard_reason))
-            continue
-        if source is None or not source.is_file():
-            continue  # 该成员没有 mcp.json：这一层缺席，不是跳过项
-        member = members.get(partition.name)
-        if member is None:
-            skipped.append(McpMigrationSkip(source, "分区不是库里的成员（或成员 id 被收敛过），未导入"))
-            continue
-        if str(member["kind"]) != "agent" or member["deleted_at"] is not None:
-            skipped.append(McpMigrationSkip(source, "分区对应的成员不是未删除的 Agent，未导入"))
-            continue
-        member_id = str(member["id"])
-        try:
-            text = source.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
-            skipped.append(McpMigrationSkip(source, f"文件不可读（{error}），未导入"))
-            continue
-        try:
-            declarations = validate_mcp_document(text)
-        except InvalidMCPDocument as error:
-            # 文件整体不可用 ⇒ 整体拒绝（与 Studio 写路径同一口径：静默丢掉人写的一条才是坏结果）。
+        home = global_member_home(member_id, root=root)
+        if not os.path.isdir(home):
             refusals.append(
-                McpFileRefusal(
-                    source=source,
-                    member_id=member_id,
-                    reason=f"文件不可用，未导入（{error.message}；位置 {error.location}）",
+                McpExportRefusal(
+                    member_id,
+                    None,
+                    f"成员家目录不存在（{home}）：请先建出这一层再导出（应用不自动创建全局层）",
                 )
             )
             continue
-        entries.extend(
-            _plan_member_entries(
+        target = resolve_global_write_path(
+            root, AGENTS_DIR, safe_partition_id(member_id), MEMBER_MCP_FILENAME
+        )
+        if target is None:
+            refusals.append(
+                McpExportRefusal(
+                    member_id,
+                    None,
+                    f"目标路径不安全（根外 symlink 祖先或根外目标）：{home}",
+                )
+            )
+            continue
+        target_path = Path(target)
+        file_payload, refusal = _read_mcp_export_payload(target_path)
+        if file_payload is None:
+            refusals.append(McpExportRefusal(member_id, target_path, refusal or "文件不可用"))
+            continue
+        files.append(
+            McpExportFile(
                 member_id=member_id,
-                source=source,
-                declarations=declarations,
-                rows=rows_by_member.get(member_id, {}),
+                target=target_path,
+                exists=target_path.is_file(),
+                payload=file_payload,
             )
         )
-    return McpMigrationPlan(
+        for row in rows:
+            name = str(row["name"])
+            try:
+                declaration = normalize_mcp_declaration(row)
+            except InvalidMCPDeclaration as error:
+                entries.append(
+                    McpExportEntry(
+                        member_id=member_id,
+                        name=name,
+                        transport=str(row.get("transport") or ""),
+                        declaration=dict(row),
+                        action=MCP_EXPORT_ACTION_REFUSE,
+                        reason=f"库行形状不合法（{error.field}），未导出",
+                        row_id=str(row["id"]),
+                        target=target_path,
+                        remote=str(row.get("transport") or "") in REMOTE_MCP_TRANSPORTS,
+                        consent_row=consents.get(str(row["id"])),
+                    )
+                )
+                continue
+            existing = _mcp_export_find(file_payload, name)
+            if existing is None:
+                action = MCP_EXPORT_ACTION_CREATE
+                reason = "文件里没有同名条目，将追加"
+            else:
+                try:
+                    same = _mcp_export_shape(existing) == declaration
+                except InvalidMCPDeclaration:
+                    same = False
+                if same:
+                    action = MCP_EXPORT_ACTION_SKIP
+                    reason = "文件里已有同名同形条目，不覆盖"
+                else:
+                    action = MCP_EXPORT_ACTION_REFUSE
+                    reason = (
+                        "文件里已有同名但形状不同的条目，需人工裁定后再导出（本命令不覆盖、不提供 --force）"
+                    )
+            entries.append(
+                McpExportEntry(
+                    member_id=member_id,
+                    name=name,
+                    transport=str(declaration["transport"]),
+                    declaration=declaration,
+                    action=action,
+                    reason=reason,
+                    row_id=str(row["id"]),
+                    target=target_path,
+                    remote=str(declaration["transport"]) in REMOTE_MCP_TRANSPORTS,
+                    consent_row=consents.get(str(row["id"])),
+                )
+            )
+    return McpExportPlan(
         data_dir=data_dir_path,
         global_root=root,
+        files=tuple(files),
         entries=tuple(entries),
         skipped=tuple(skipped),
         refusals=tuple(refusals),
+        channel_rows=tuple(channel_rows),
+        consented_ids=frozenset(consents),
     )
 
 
-def _write_mcp_manifest(plan: McpMigrationPlan) -> Path:
-    """先落清单再写库：清单是本次导入的审计正本（数据目录内，UTC 时间戳）。"""
+def _write_mcp_export_manifest(plan: McpExportPlan) -> Path:
+    """先落清单再写文件：清单是本次导出的审计正本（数据目录内，UTC 时间戳）。"""
     stamp = datetime.now(UTC).strftime(BACKUP_TIMESTAMP_FORMAT)
-    path = plan.data_dir / f"{MCP_MIGRATION_MANIFEST_PREFIX}{stamp}.json"
+    path = plan.data_dir / f"{MCP_EXPORT_MANIFEST_PREFIX}{stamp}.json"
     suffix = 1
     while path.exists():
         suffix += 1
-        path = plan.data_dir / f"{MCP_MIGRATION_MANIFEST_PREFIX}{stamp}-{suffix}.json"
+        path = plan.data_dir / f"{MCP_EXPORT_MANIFEST_PREFIX}{stamp}-{suffix}.json"
     payload = {
-        "kind": "mcp-migration",
+        "kind": "mcp-export",
         "created_at": utc_now(),
         "data_dir": str(plan.data_dir),
         "global_root": plan.global_root,
+        "files": [
+            {"member_id": item.member_id, "target": str(item.target), "exists": item.exists}
+            for item in plan.files
+        ],
         "entries": [
             {
-                "source": str(entry.source),
                 "member_id": entry.member_id,
                 "name": entry.name,
-                "transport": entry.declaration["transport"],
+                "transport": entry.transport,
                 "action": entry.action,
                 "reason": entry.reason,
                 "row_id": entry.row_id,
+                "target": str(entry.target),
+                "synthetic_id": entry.synthetic_id,
+                "consent_row": entry.consent_row,
             }
             for entry in plan.entries
         ],
-        "skipped": [{"source": str(item.source), "reason": item.reason} for item in plan.skipped],
+        "skipped": [{"member_id": item.member_id, "reason": item.reason} for item in plan.skipped],
         "refusals": [
             {
-                "source": str(item.source),
                 "member_id": item.member_id,
+                "target": str(item.target) if item.target is not None else None,
                 "reason": item.reason,
             }
             for item in plan.refusals
         ],
-        "consent_notice": MCP_MIGRATION_CONSENT_NOTICE,
+        "channel_rows": [{"scope_id": scope_id, "name": name} for scope_id, name in plan.channel_rows],
     }
     try:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except OSError as error:
-        raise McpMigrationError(f"导入清单写入失败，已停止（库行一条都没写）：{error}") from error
+        raise McpExportError(f"导出清单写入失败，已停止（未写入任何声明）：{error}") from error
     return path
 
 
-def _insert_mcp_row(conn: sqlite3.Connection, entry: McpMigrationEntry) -> str:
-    """按成员作用域新建一条声明行；返回新行 id。
+def _backup_mcp_file(target: Path) -> Path | None:
+    """改写前备份一份 ``mcp.json``（同目录、带 UTC 时间戳；缺席 ⇒ 不建备份）。"""
+    if not target.is_file():
+        return None
+    stamp = datetime.now(UTC).strftime(BACKUP_TIMESTAMP_FORMAT)
+    backup = target.with_name(f"{target.name}.bak-{stamp}")
+    suffix = 1
+    while backup.exists():
+        suffix += 1
+        backup = target.with_name(f"{target.name}.bak-{stamp}-{suffix}")
+    try:
+        shutil.copy2(target, backup)
+    except OSError as error:
+        raise McpExportError(f"备份 {target} 失败，已停止：{error}") from error
+    return backup
 
-    ``args`` / ``env_names`` 落成 JSON 数组（与库写路径同一存储形态）；``enabled`` 落 0/1。
-    ``env_names`` 只有变量**名**——文件里根本没有值的落点，因此导入不会带入任何密钥。
+
+def _write_mcp_export_file(target: Path, payload: Mapping[str, Any]) -> None:
+    """原子写一份导出结果（实现与 Studio 写路径共用 ``mcp.write_mcp_document_atomic``）。"""
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        write_mcp_document_atomic(target, text)
+    except OSError as error:
+        raise McpExportError(f"写入 {target} 失败：{error}") from error
+
+
+def _verify_mcp_export(
+    plan: McpExportPlan, written: tuple[McpExportEntry, ...], consents: tuple[str, ...]
+) -> None:
+    """写后校验：每个写入条目都能以**同形**读回，复制过去的确认行都在。
+
+    校验用的是**装配层的同一个读路径**（``load_member_mcp_declarations``）：如果它读不回来，
+    下一轮装配也读不回来——迁移的「可验证」就落在这里，而不是另写一套判据。文件里**既有**的
+    坏条目不算失败：导出按原文保留它们（那是人的内容），逐条校验只看本次写进去的条目是否
+    读得回、形状是否一致；文件整体坏掉时这些条目自然读不回来，仍会失败。
     """
-    declaration = entry.declaration
-    now = utc_now()
-    server_id = new_id("mcp")
-    conn.execute(
-        "INSERT INTO mcp_server(id, name, transport, command, args, url, env_names, enabled, "
-        "scope_kind, scope_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'agent', ?, ?, ?)",
-        (
-            server_id,
-            str(declaration["name"]),
-            str(declaration["transport"]),
-            str(declaration.get("command") or ""),
-            json.dumps(list(declaration.get("args") or []), ensure_ascii=False),
-            str(declaration.get("url") or ""),
-            json.dumps(list(declaration.get("env_names") or []), ensure_ascii=False),
-            1 if declaration.get("enabled", True) else 0,
-            entry.member_id,
-            now,
-            now,
-        ),
-    )
-    return server_id
+    by_member = {item.member_id: item for item in plan.files}
+    members = sorted({entry.member_id for entry in written})
+    for member_id in members:
+        document = load_member_mcp_declarations(plan.global_root, member_id)
+        target = by_member[member_id].target
+        present = {str(item["name"]): item for item in document.declarations}
+        for entry in written:
+            if entry.member_id != member_id:
+                continue
+            item = present.get(entry.name)
+            if item is None:
+                raise McpExportError(f"写后校验失败：{target} 里读不回「{entry.name}」")
+            if _mcp_export_shape(item) != _mcp_export_shape(entry.declaration):
+                raise McpExportError(f"写后校验失败：{target} 里「{entry.name}」的形状与导出意图不一致")
+    if not consents:
+        return
+    conn = connect(plan.data_dir / DATABASE_FILE_NAME)
+    try:
+        for scope_id in consents:
+            row = conn.execute(
+                "SELECT 1 FROM remote_consent_scope WHERE scope_kind = 'mcp' AND scope_id = ?",
+                (scope_id,),
+            ).fetchone()
+            if row is None:
+                raise McpExportError(f"写后校验失败：确认行没有复制到 {scope_id}")
+    finally:
+        conn.close()
 
 
-def apply_mcp_migration(plan: McpMigrationPlan) -> McpApplyResult:
-    """执行**已计划**的导入：备份 → 清单 → 逐条新建库行（单事务收口）。
+def apply_mcp_export(plan: McpExportPlan) -> McpExportApplyResult:
+    """执行**已计划**的导出：拒绝收口 → 整目录备份 → 清单 → 文件备份与原子写 → 复制确认 → 校验。
 
-    有拒绝条目时**在动手之前**整体停下（零写入，退出码由调用方给 6）。远端条目的确认**不代做**：
-    ``remote_consent_scope`` 一行都不写（票面约束「不代确认」），报告里逐条给出确认入口。
+    有拒绝时**在动手之前**整体停下（零写入，退出码由调用方给 6）。频道级旧行不导出，只进报告。
+    确认复制按 :attr:`McpExportPlan.consents_pending` 走：本次新建的与文件里早已同形的远端条目
+    都算——后者不复制的话，先跑过旧 ``migrate-mcp`` 的安装升级后远端会被读成未确认而不再建连。
     """
-    # 两档拒绝都在**写任何字节之前**收口：同名不同形（要人裁定）与整份文件不可用。
-    # 后者若不拦住，同一批里别的好文件会被部分导入，于是「一次 apply」变成一份混合结果。
     if plan.has_refusals:
-        parts: list[str] = [f"{entry.source} 的「{entry.name}」（{entry.reason}）" for entry in plan.refused]
-        parts.extend(f"{item.source}（{item.reason}）" for item in plan.refusals)
-        raise McpMigrationError("存在需人工裁定的条目，已拒绝执行（未写入任何库行）：" + "；".join(parts))
+        parts = [f"{entry.target} 的「{entry.name}」（{entry.reason}）" for entry in plan.refused]
+        parts.extend(f"成员 {item.member_id}（{item.reason}）" for item in plan.refusals)
+        raise McpExportError("存在需人工裁定的条目，已拒绝执行（未写入任何声明）：" + "；".join(parts))
 
     pending = plan.pending
-    if not pending:
-        return McpApplyResult(backup_path=None, manifest_path=None, completed=())
+    consents_pending = plan.consents_pending
+    if not pending and not consents_pending:
+        return McpExportApplyResult(
+            backup_path=None,
+            manifest_path=None,
+            file_backups=(),
+            written=(),
+            consents_copied=(),
+        )
 
     try:
-        backup_path = _backup_data_dir(plan.data_dir, SCHEMA_VERSION, SCHEMA_VERSION, label="mcp")
+        backup_path = _backup_data_dir(plan.data_dir, SCHEMA_VERSION, SCHEMA_VERSION, label="mcp-export")
     except BackupError as error:
-        raise McpMigrationError(f"MCP 导入前的整目录备份失败，已停止（未写入任何库行）：{error}") from error
+        raise McpExportError(f"MCP 导出前的整目录备份失败，已停止（未写入任何声明）：{error}") from error
     try:
-        manifest_path = _write_mcp_manifest(plan)
-    except McpMigrationError as error:
-        raise McpMigrationError(f"{error}（备份已建：{backup_path}）") from error
+        manifest_path = _write_mcp_export_manifest(plan)
+    except McpExportError as error:
+        raise McpExportError(f"{error}（备份已建：{backup_path}）") from error
 
-    completed: list[McpApplyEntry] = []
+    by_member = {item.member_id: item for item in plan.files}
+    pending_by_member: dict[str, list[McpExportEntry]] = {}
+    for entry in pending:
+        pending_by_member.setdefault(entry.member_id, []).append(entry)
+
+    file_backups: list[Path] = []
+    written: list[McpExportEntry] = []
+    for member_id in sorted(pending_by_member):
+        source = by_member[member_id]
+        backup = _backup_mcp_file(source.target)
+        if backup is not None:
+            file_backups.append(backup)
+        payload = json.loads(json.dumps(source.payload))  # 深拷贝：计划本身保持只读
+        for entry in pending_by_member[member_id]:
+            payload["servers"].append(entry.declaration)
+        _write_mcp_export_file(source.target, payload)
+        written.extend(pending_by_member[member_id])
+
+    copied: list[str] = []
     conn = connect(plan.data_dir / DATABASE_FILE_NAME)
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            for entry in pending:
-                completed.append(McpApplyEntry(entry=entry, row_id=_insert_mcp_row(conn, entry)))
+            for entry in consents_pending:
+                if entry.consent_row is None:  # ``consents_pending`` 已过滤；防御性再判一次
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO remote_consent_scope(scope_kind, scope_id, acknowledged_at) "
+                    "VALUES ('mcp', ?, ?)",
+                    (entry.synthetic_id, entry.consent_row),
+                )
+                copied.append(entry.synthetic_id)
             conn.execute("COMMIT")
         except Exception:
             with suppress(sqlite3.Error):
                 conn.execute("ROLLBACK")
             raise
     except Exception as error:
-        raise McpMigrationError(
-            f"MCP 导入失败并已回滚（库停在原状）：{error}；备份在 {backup_path}"
+        raise McpExportError(
+            f"MCP 导出写确认行失败（已写入的文件保留，确认行未复制）：{error}；备份在 {backup_path}"
         ) from error
     finally:
         conn.close()
-    return McpApplyResult(backup_path=backup_path, manifest_path=manifest_path, completed=tuple(completed))
+
+    _verify_mcp_export(plan, tuple(written), tuple(copied))
+    return McpExportApplyResult(
+        backup_path=backup_path,
+        manifest_path=manifest_path,
+        file_backups=tuple(file_backups),
+        written=tuple(written),
+        consents_copied=tuple(copied),
+    )
 
 
-def render_mcp_migration_plan(plan: McpMigrationPlan) -> str:
-    """逐条计划的可读报告：源文件 → 动作与原因、名字与传输；远端条目提前点明确认入口。"""
-    counts = dict.fromkeys(_MCP_ACTION_LABELS, 0)
+def render_mcp_export_plan(plan: McpExportPlan) -> str:
+    """逐条计划的可读报告：库行 → 目标文件与动作、名字与传输；拒绝与频道旧行都点名。"""
+    counts = dict.fromkeys(_MCP_EXPORT_ACTION_LABELS, 0)
     for entry in plan.entries:
         counts[entry.action] = counts.get(entry.action, 0) + 1
     lines = [
-        "MCP 导入计划（migrate-mcp，只读扫描）",
+        "MCP 导出计划（export-mcp，只读扫描）",
         f"数据目录： {plan.data_dir}",
         f"全局层根： {plan.global_root}",
     ]
     if plan.entries:
         lines.append(
-            f"家目录声明： {len(plan.entries)} 条"
-            f"（新建 {counts[MCP_ACTION_CREATE]} / 跳过 {counts[MCP_ACTION_SKIP]}"
-            f" / 拒绝 {counts[MCP_ACTION_REFUSE]}）"
+            f"库行声明： {len(plan.entries)} 条"
+            f"（新建 {counts[MCP_EXPORT_ACTION_CREATE]} / 跳过 {counts[MCP_EXPORT_ACTION_SKIP]}"
+            f" / 拒绝 {counts[MCP_EXPORT_ACTION_REFUSE]}）"
         )
         for entry in plan.entries:
-            label = _MCP_ACTION_LABELS.get(entry.action, entry.action)
-            kind = "远端" if entry.is_remote else "本机"
+            label = _MCP_EXPORT_ACTION_LABELS.get(entry.action, entry.action)
+            kind = "远端" if entry.remote else "本机"
             lines.append(
-                f"  {label} {entry.source} 的「{entry.name}」"
-                f"（{entry.declaration['transport']} / {kind}）→ 成员 {entry.member_id}"
+                f"  {label} {entry.target} 的「{entry.name}」"
+                f"（{entry.transport} / {kind}）→ 成员 {entry.member_id}"
             )
             lines.append(f"    原因：{entry.reason}")
     else:
-        lines.append("家目录声明： 0 条（家目录里没有可导入的 mcp.json 条目）")
+        lines.append("库行声明： 0 条（库里没有 Agent 级 MCP 旧行）")
+    if plan.consents_pending:
+        # 跳过（文件里已有同形条目）的远端也在这里：既有确认随声明一起搬到合成标识。
+        lines.append(f"将复制既有远端确认： {len(plan.consents_pending)} 条（旧行 id → 合成标识）")
+        for entry in plan.consents_pending:
+            lines.append(f"  {entry.synthetic_id}（旧库行 {entry.row_id}）")
     if plan.refusals:
-        # 整份文件不可用：它没有逐条声明可列，所以按「这份文件」讲，并指明出错位置。
-        lines.append(f"拒绝（文件不可用，整份都不导入）： {len(plan.refusals)} 份")
+        lines.append(f"拒绝（需人工裁定，整条命令零写入）： {len(plan.refusals)} 处")
         for item in plan.refusals:
-            lines.append(f"  {item.source}（成员 {item.member_id}）：{item.reason}")
+            target = item.target if item.target is not None else "（无目标文件）"
+            lines.append(f"  {target}（成员 {item.member_id}）：{item.reason}")
     if plan.skipped:
-        lines.append(f"未导入（无法判定或不可用）： {len(plan.skipped)} 处")
+        lines.append(f"未导出（库行保留）： {len(plan.skipped)} 处")
         for skip in plan.skipped:
-            lines.append(f"  {skip.source}：{skip.reason}")
-    if plan.remote_imports:
-        lines.append(f"远端条目 {len(plan.remote_imports)} 条：{MCP_MIGRATION_CONSENT_NOTICE}")
+            lines.append(f"  成员 {skip.member_id}：{skip.reason}")
+    if plan.channel_rows:
+        lines.append(
+            f"频道级旧行： {len(plan.channel_rows)} 条不导出（ADR-0031 #270 修订已弃用；行仍留在库里）"
+        )
+        for scope_id, name in plan.channel_rows:
+            lines.append(f"  频道 {scope_id} 的「{name}」")
     return "\n".join(lines)
 
 
-def render_mcp_migration_result(result: McpApplyResult) -> str:
-    """apply 的完成读数：备份 / 清单落点、逐条新建的库行，以及**未代做**的远端确认。"""
+def render_mcp_export_result(result: McpExportApplyResult) -> str:
+    """apply 的完成读数：备份 / 清单落点、逐条写入、复制的确认与校验结论。"""
     lines: list[str] = []
     if result.backup_path is None and result.manifest_path is None:
-        lines.append("MCP 导入：没有需要导入的条目（全部已同形在库里或没有家目录条目）；未写入任何文件。")
-    else:
-        lines.append("MCP 导入完成")
-        if result.backup_path is not None:
-            lines.append(f"  数据目录备份： {result.backup_path}")
-        if result.manifest_path is not None:
-            lines.append(f"  导入清单： {result.manifest_path}")
-    lines.append(f"处理条目： {len(result.completed)} 条（新建 {len(result.completed)} / 跳过 0）")
-    for item in result.completed:
-        entry = item.entry
-        kind = "远端" if entry.is_remote else "本机"
-        lines.append(f"  新建 {entry.source} 的「{entry.name}」（{entry.declaration['transport']} / {kind}）")
-        lines.append(f"    库行：新建 {item.row_id}（scope_kind=agent，scope_id={entry.member_id}）")
-    if result.remote_rows:
-        lines.append(MCP_MIGRATION_CONSENT_NOTICE)
-        for item in result.remote_rows:
-            lines.append(f"  POST /api/mcp-servers/{item.row_id}/consent  （成员 {item.entry.member_id}）")
+        lines.append(
+            "MCP 导出：没有需要导出的条目，也没有需要复制的远端确认（全部已同形在文件里或没有库行）；"
+            "未写入任何文件。"
+        )
+        return "\n".join(lines)
+    lines.append("MCP 导出完成")
+    if result.backup_path is not None:
+        lines.append(f"  数据目录备份： {result.backup_path}")
+    if result.manifest_path is not None:
+        lines.append(f"  导出清单： {result.manifest_path}")
+    for backup in result.file_backups:
+        lines.append(f"  文件备份： {backup}")
+    lines.append(f"写入条目： {len(result.written)} 条")
+    for entry in result.written:
+        kind = "远端" if entry.remote else "本机"
+        lines.append(f"  新建 {entry.target} 的「{entry.name}」（{entry.transport} / {kind}）")
+        lines.append(f"    合成标识：{entry.synthetic_id}（旧库行 {entry.row_id}）")
+    if result.consents_copied:
+        lines.append(f"复制远端确认： {len(result.consents_copied)} 条（旧行 id → 合成标识）")
+        for scope_id in result.consents_copied:
+            lines.append(f"  {scope_id}")
+    lines.append("写后校验： 通过（装配层读路径逐条读回同形条目）")
     return "\n".join(lines)

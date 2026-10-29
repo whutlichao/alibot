@@ -280,9 +280,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_http_url_invalid": "http 传输的 url 不能指向 /sse 或 /messages/（那是 sse 传输）",
         "error.mcp_args_invalid": "MCP args 必须是字符串列表",
         "error.mcp_env_names_invalid": "MCP env_names 只能包含合法的环境变量名（只存名字，不存值）",
-        "error.mcp_scope_invalid": "MCP 声明作用域只能是 channel 或 agent",
-        "error.mcp_scope_unknown": "MCP 声明作用域不存在：{scope_id}",
+        "error.mcp_scope_invalid": "MCP 声明作用域只能是 agent（频道级已弃用）",
         "error.mcp_server_not_found": "MCP 声明不存在：{server_id}",
+        "error.mcp_file_unusable": "该 Agent 的 mcp.json 当前不可用于结构化编辑（{reason}）：请先在原文编辑里修正它",
         "error.global_mcp_declaration_not_found": "该成员的全局 mcp.json 里没有这个声明：{name}",
         "error.mcp_server_conflict": "同一作用域内已存在同名 MCP 声明：{name}",
         "error.mcp_consent_local": "stdio MCP 在本机运行，不需要远端数据面确认",
@@ -320,11 +320,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.skill_conflict": "同一作用域内已存在同名 Skill：{name}",
         "mcp.runtime.consent_required": "远端 MCP 尚未确认数据面告知，未连接：{name}",
         "mcp.runtime.connect_failed": "MCP 连接失败：{name}",
-        # 单正本（#275）：``mcp.json`` 不再是装配层，只作导入源。文件里还有未导入的条目时
-        # 只发这一条提示（只进 ``RoundOutcome.reason``，**不进** system prompt）。
-        "mcp.assembly.not_imported": (
-            "{file} 里还有 {count} 条声明未导入库行，本轮未装配（运行 `python -m alibot migrate-mcp`）"
-        ),
+        # MCP 唯一正本是成员家目录 ``mcp.json``：读不出来时只发可读提示（只进
+        # ``RoundOutcome.reason``，**不进** system prompt），这一轮少一块工具、结论不变。
+        "mcp.assembly.path_invalid": "该 Agent 家目录 mcp.json 的路径不安全，本轮未装配 MCP：{file}",
+        "mcp.assembly.file_unreadable": "读取 {file} 失败，本轮未装配 MCP：{reason}",
+        "mcp.assembly.file_invalid_json": "{file} 不是可解析的 JSON，本轮未装配 MCP：{reason}",
+        "mcp.assembly.file_shape_invalid": ("{file} 的顶层必须是对象且 servers 必须是数组，本轮未装配 MCP"),
+        "mcp.assembly.entries_skipped": "{file} 里有 {count} 条 MCP 声明被跳过（形状不合法或重名）",
+        "mcp.assembly.host_unavailable": "无法为无项目根的轮次准备 MCP 运行宿主，本轮未装配 MCP：{reason}",
         "error.approval_not_found": "审批请求不存在：{reply_id}",
         "error.approval_state_conflict": "审批请求已是 {state}，不能再提交决策",
         "error.approval_tool_call_unknown": "未知的待审批工具调用：{tool_call_id}",
@@ -765,9 +768,14 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.mcp_env_names_invalid": (
             "MCP env_names may only contain valid environment variable names (names, never values)"
         ),
-        "error.mcp_scope_invalid": "An MCP declaration scope must be channel or agent",
-        "error.mcp_scope_unknown": "No such MCP declaration scope: {scope_id}",
+        "error.mcp_scope_invalid": (
+            "MCP declarations can only be scoped to an agent (channel scope is retired)"
+        ),
         "error.mcp_server_not_found": "No such MCP declaration: {server_id}",
+        "error.mcp_file_unusable": (
+            "This agent's mcp.json cannot be edited structurally right now ({reason}): fix it in the "
+            "raw editor first"
+        ),
         "error.global_mcp_declaration_not_found": (
             "No such declaration in this member's global mcp.json: {name}"
         ),
@@ -822,9 +830,23 @@ CATALOGS: dict[str, dict[str, str]] = {
             "The remote MCP has not been acknowledged for its data flow yet; not connected: {name}"
         ),
         "mcp.runtime.connect_failed": "MCP connection failed: {name}",
-        "mcp.assembly.not_imported": (
-            "{file} still declares {count} entries that are not imported as database rows; "
-            "not assembled this round (run `python -m alibot migrate-mcp`)"
+        "mcp.assembly.path_invalid": (
+            "The path of this agent's mcp.json is unsafe; MCP was not assembled this round: {file}"
+        ),
+        "mcp.assembly.file_unreadable": ("Could not read {file}; MCP was not assembled this round: {reason}"),
+        "mcp.assembly.file_invalid_json": (
+            "{file} is not parseable JSON; MCP was not assembled this round: {reason}"
+        ),
+        "mcp.assembly.file_shape_invalid": (
+            "The top level of {file} must be an object and `servers` must be an array; "
+            "MCP was not assembled this round"
+        ),
+        "mcp.assembly.entries_skipped": (
+            "{count} MCP declarations in {file} were skipped (invalid shape or duplicate name)"
+        ),
+        "mcp.assembly.host_unavailable": (
+            "Could not prepare an MCP runtime host for a round without a project root; "
+            "MCP was not assembled this round: {reason}"
         ),
         "error.approval_not_found": "No such approval request: {reply_id}",
         "error.approval_state_conflict": "The approval request is already {state}; no further decisions are accepted",

@@ -4,7 +4,7 @@
 
 - HTTP 人类面：只读列表 / 确认写入口 / 幂等 / 重启保持 / 三类错误不写行 / 文件删除后不报错；
 - 装配层：确认写入既有 ``remote_consent_scope('mcp', 'global:<member_id>:<name>')`` 后，
-  下一轮 ``load_global_mcp_declarations`` 读到 ``consented=True``，``assemble_mcp_tools``
+  下一轮 ``load_member_mcp_declarations`` 读到 ``consented=True``，``assemble_mcp_tools``
   不再走 ``consent_required`` 分支（远端传输用进程内替身计数，不联网）。
 
 全局根与 HOME 一律指向临时目录：绝不读写真实的 ``~/.alibot``。
@@ -191,7 +191,7 @@ def test_http_consent_unlocks_the_next_assembly(
 
     from agentscope.mcp import MCPClient
     from alibot.db import open_database
-    from alibot.mcp import assemble_mcp_tools, load_global_mcp_declarations, runtime_status
+    from alibot.mcp import assemble_mcp_tools, load_member_mcp_declarations, runtime_status
     from alibot.workspace import WorkspaceSettings, assemble_local_workspace
 
     attempts: list[str] = []
@@ -209,10 +209,12 @@ def test_http_consent_unlocks_the_next_assembly(
     def load() -> list[dict[str, Any]]:
         database = open_database(data_dir)
         try:
-            return load_global_mcp_declarations(
-                root,
-                agent["id"],
-                consent_of=lambda scope_id: database.has_remote_consent_scope("mcp", scope_id),
+            return list(
+                load_member_mcp_declarations(
+                    root,
+                    agent["id"],
+                    consent_of=lambda scope_id: database.has_remote_consent_scope("mcp", scope_id),
+                ).declarations
             )
         finally:
             database.close()

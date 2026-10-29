@@ -107,8 +107,6 @@ from .db import (
 )
 from .events import EventBus, is_replayable, sse_frame
 from .i18n import locale_of, render
-from .mcp import clear_runtime as clear_mcp_runtime
-from .mcp import runtime_status as mcp_runtime_status
 from .orchestration import ThreadScheduler, WakeOrchestrator
 from .reminder_delivery import (
     ReminderDeliverer,
@@ -815,10 +813,10 @@ def create_app(
             workspace_of=database.workspace_settings_for_target,
             # 权限档 + 规则（#149）；审批等待由同一个 broker 唤醒（SSE / HTTP 人类面在同一进程）。
             permission_of=database.permission_settings_for_target,
-            # MCP 声明（#151 / #233 / #271）：只读成员级库行（频道级旧行装配忽略），因此这里给
-            # **未合并**读路径（保留落选者与停用行以生成可读提示）；启用 + 已确认的远端声明由
-            # 装配层物化为 MCPClient；未配置时为空。
-            mcp_of=database.mcp_layers_for_target,
+            # MCP 声明（ADR-0021 §三 / ADR-0031 修订）：唯一正本是成员家目录 ``mcp.json``，
+            # 频道与 DM 读同一份文件；这里只注入远端条目的**确认状态**读路径（合成标识
+            # ``global:<member>:<name>``）。未确认的远端条目由装配层拦下，不建数据面连接。
+            mcp_consent_of=lambda scope_id: database.has_remote_consent_scope("mcp", scope_id),
             # Skill 元数据（#152 / #271）：启用 + 已安装的成员级技能行；字节由装配层从成员家目录
             # 读成 AgentScope Skill，并与人手工放置的全局层合并。
             skills_of=database.skills_for_target,
@@ -828,8 +826,6 @@ def create_app(
             # 全局层（#230 / ADR-0031 Seam A）：规则基座 / 项目补充的只读读路径。全局根固定为
             # ``~/.alibot``，只看 HOME，不随 ``--data-dir`` / ``ALIBOT_DATA_DIR`` 移动。
             global_home=global_home_root(),
-            # #275 起不再注入「全局远端 MCP 的确认状态」：家目录 ``mcp.json`` 不参与装配，
-            # 它的条目确认与否不影响任何一轮；要参与装配必须先 `migrate-mcp` 导入成库行。
             approvals=approvals,
         )
     orchestrator = WakeOrchestrator(
@@ -1150,50 +1146,31 @@ def create_app(
         scope_kind: str | None = Query(default=None),
         scope_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        """MCP 声明列表；只回 ``env_names``（变量名），**永不**回 env 值。
+        """该 Agent 家目录 ``mcp.json`` 的条目、可读问题与运行期读数。
 
-        ``runtime`` 是进程内的最近一次装配读数（``connected`` / ``tools`` / ``error``）；从未
-        装配过为 ``null``。它是观察面，不落库、不影响配置。
+        声明**唯一正本**是文件（ADR-0021 §三 / ADR-0031 修订）：这里读的是运行时装配的同一份
+        文件，所以「管理面看到的」与「下一轮装配的」不会分叉。只回 ``env_names``（变量名），
+        **永不**回 env 值。``runtime`` 是进程内的最近一次装配读数；从未装配过为 ``null``。
+        ``issues`` 是文件级可读问题（坏 JSON / 顶层形状 / 条目被跳过），与运行期提示同一份判定。
         """
-        if scope_kind is not None and scope_kind not in ("channel", "agent"):
+        if not scope_kind or not scope_id:
             raise DomainError("validation_failed", _render_copy("error.mcp_scope_invalid"))
-        servers = database.list_mcp_servers(scope_kind=scope_kind, scope_id=scope_id)
-        for server in servers:
-            server["runtime"] = mcp_runtime_status(server["id"])
-        return {"mcp_servers": servers}
+        return service.mcp_servers(scope_kind, scope_id)
 
     @app.post("/api/mcp-servers", status_code=201)
     def create_mcp_server(payload: MCPServerCreate) -> dict[str, Any]:
-        """写一条 MCP 声明；同名（同 scope）409，不静默覆盖。"""
-        server = database.create_mcp_server(
-            scope_kind=payload.scope_kind,
-            scope_id=payload.scope_id,
-            name=payload.name,
-            transport=payload.transport,
-            command=payload.command,
-            args=payload.args,
-            url=payload.url,
-            env_names=payload.env_names,
-            enabled=payload.enabled,
-        )
-        server["runtime"] = mcp_runtime_status(server["id"])
-        return {"mcp_server": server}
+        """往该 Agent 的 ``mcp.json`` 追加一条声明；文件不存在 ⇒ 新建；同名 409。"""
+        return service.create_mcp_server(payload.scope_kind, payload.scope_id, payload.model_dump())
 
     @app.patch("/api/mcp-servers/{server_id}")
     def update_mcp_server(server_id: str, payload: MCPServerUpdate) -> dict[str, Any]:
-        """部分更新声明；``scope_kind`` / ``scope_id`` 不可改。整条结果重新校验。"""
-        server = database.update_mcp_server(server_id, payload.model_dump(exclude_unset=True))
-        # 配置变了，上一轮的连接读数不再代表这条声明；下一轮装配会重新记录。
-        clear_mcp_runtime(server["id"])
-        server["runtime"] = None
-        return {"mcp_server": server}
+        """部分更新文件里的一条声明；``scope_kind`` / ``scope_id`` 不可改。整条重新校验。"""
+        return service.update_mcp_server(server_id, payload.model_dump(exclude_unset=True))
 
     @app.delete("/api/mcp-servers/{server_id}")
     def delete_mcp_server(server_id: str) -> dict[str, Any]:
-        server = database.delete_mcp_server(server_id)
-        clear_mcp_runtime(server_id)
-        server["runtime"] = None
-        return {"mcp_server": server}
+        """从该 Agent 的 ``mcp.json`` 删掉一条声明。"""
+        return service.delete_mcp_server(server_id)
 
     def _skill_error(exc: SkillValidationError) -> DomainError:
         """把安装器的词条异常翻成统一 HTTP 错误（正文按当前语言偏好渲染）。"""
@@ -1467,9 +1444,7 @@ def create_app(
         未确认的 HTTP / SSE 声明在装配层不会建连；这条确认是唯一开关。stdio 是**本机**进程，
         不需要也不接受这条确认（400），避免把「本机」误标成远端。
         """
-        server, consent = database.record_mcp_consent(server_id)
-        server["runtime"] = mcp_runtime_status(server["id"])
-        return {"mcp_server": server, "consent": consent}
+        return service.confirm_mcp_server(server_id)
 
     @app.post("/api/docker-images/consent")
     def consent_docker_image(payload: DockerConsent) -> dict[str, Any]:

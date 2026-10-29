@@ -24,9 +24,10 @@
      不落库、不写 URL、不记忆。切页签不丢草稿。
    - **skills 的启停唯一写入口在左栏行内**（`role=switch`），右栏只有一格启停态**读数**；
      右栏的删除作用于**当前选中**的技能。
-   - **mcp 的两块面是两份数据**：上块库行 `mcp_server`（`scope_kind='agent'`，装配正本），
-     下块家目录 `mcp.json` 原文（导入源，不参与装配）。下块保存前由**后端**校验（JSON 可解析 /
-     顶层形状 / 每条声明归一化），前端只把原文原样送上去——不做隐式格式化（规格 N3 第三格）。 */
+   - **mcp 的两块面是同一份数据**：家目录 `mcp.json` 是这份 Agent MCP 声明的唯一正本，
+     上块条目视图与下块原文文本域读写的都是它，运行期装配也只读它；库里的 `mcp_server` 行
+     只作迁移来源。下块保存前由**后端**校验（JSON 可解析 / 顶层形状 / 每条声明归一化），
+     前端只把原文原样送上去——不做隐式格式化（规格 N3 第三格）。 */
 import { computed, reactive, readonly } from 'vue';
 import { api } from '../lib/api.js';
 import { t } from '../i18n/index.js';
@@ -186,6 +187,8 @@ function emptyView(memberId) {
     mcpFileSaving: false,
     mcpFileExists: false,
     mcpFileServers: 0,
+    // 文件级可读问题（与运行期装配同一份判定）：原文编辑面据此说明「哪一条会被跳过 / 整份读不了」。
+    mcpFileIssues: [],
     // 这份文件的**真实路径**（后端读数）：缺失提示要写它该在哪；路径被守卫拒时是空串。
     mcpFilePath: '',
     // 家目录 `mcp.json` 的**条目视图**（只读读数：transport / 是否远端 / 确认态 / 运行期读数）。
@@ -406,6 +409,7 @@ export function createAgentDetailStore(options) {
       current.mcpFileExists = Boolean(payload && payload.exists);
       current.mcpFileServers = Number((payload && payload.servers) || 0);
       current.mcpFilePath = typeof (payload && payload.path) === 'string' ? payload.path : '';
+      current.mcpFileIssues = Array.isArray(payload && payload.issues) ? payload.issues : [];
       // 原文逐字铺进文本域：不做 JSON 格式化（那会静默重排人写的键序与缩进）。
       setMcpFileText(current, typeof (payload && payload.text) === 'string' ? payload.text : '');
     } catch (err) {
@@ -419,6 +423,27 @@ export function createAgentDetailStore(options) {
   function setMcpFileText(current, text) {
     current.mcpFileDraft = text;
     current.mcpFileBase = text;
+  }
+
+  /** 下块原文有没有未提交的改动（`mcpFileBase` 是后端读回来的那一份）。 */
+  function mcpFileDirty(current) {
+    return current.mcpFileDraft !== current.mcpFileBase;
+  }
+
+  /**
+   * 结构化编辑成功后的统一刷新：上块列表、下块条目视图与原文都读**同一份文件**。
+   *
+   * 原文有未提交改动时**不覆盖**人的输入，只给一句可读提示——否则一次上块保存会静默吞掉
+   * 下块刚写的内容。下块条目视图是只读读数，始终刷新。
+   */
+  async function refreshAfterMcpMutation(memberId, current) {
+    await loadMcp(memberId);
+    await loadGlobalMcpServers(memberId);
+    if (mcpFileDirty(current)) {
+      current.mcpFileError = t('mcp.fileChangedElsewhere');
+      return;
+    }
+    await loadMcpFile(memberId);
   }
 
   /** 读技能列表（只含元数据与 hash，不含字节），随后对齐选中态并按需读正文。 */
@@ -784,7 +809,7 @@ export function createAgentDetailStore(options) {
     await runSkillImports(current, memberId, candidates, { imported: 0, skipped: 0, failed: 0 });
   }
 
-  // ── mcp：库行（增删改 / 启停 / 远端确认）+ 家目录 mcp.json 原文 ──
+  // ── mcp：条目视图（增删改 / 启停 / 远端确认）+ 家目录 mcp.json 原文（同一份文件） ──
 
   function resetMcpDraft(current) {
     current.mcpDraft = emptyMcpDraft();
@@ -815,7 +840,7 @@ export function createAgentDetailStore(options) {
     current.mcpDraft[field] = value;
   }
 
-  /** 保存库行：编辑 ⇒ PATCH，新建 ⇒ POST（作用域恒为当前成员）。 */
+  /** 保存条目（写家目录 mcp.json）：编辑 ⇒ PATCH，新建 ⇒ POST（作用域恒为当前成员）。 */
   async function submitMcpDraft() {
     const current = writeTarget();
     if (!current) return;
@@ -837,7 +862,7 @@ export function createAgentDetailStore(options) {
       }
       if (state.memberId !== memberId) return;
       resetMcpDraft(current);
-      await loadMcp(memberId);
+      await refreshAfterMcpMutation(memberId, current);
     } catch (err) {
       if (state.memberId !== memberId) return;
       current.mcpError = err && err.message ? err.message : String(err);
@@ -857,7 +882,7 @@ export function createAgentDetailStore(options) {
         body: { enabled: !server.enabled },
       });
       if (state.memberId !== memberId) return;
-      await loadMcp(memberId);
+      await refreshAfterMcpMutation(memberId, current);
     } catch (err) {
       if (state.memberId !== memberId) return;
       current.mcpError = err && err.message ? err.message : String(err);
@@ -873,7 +898,7 @@ export function createAgentDetailStore(options) {
       await api('/api/mcp-servers/' + encodeURIComponent(serverId), { method: 'DELETE' });
       if (state.memberId !== memberId) return;
       if (current.mcpEditingId === serverId) resetMcpDraft(current);
-      await loadMcp(memberId);
+      await refreshAfterMcpMutation(memberId, current);
     } catch (err) {
       if (state.memberId !== memberId) return;
       current.mcpError = err && err.message ? err.message : String(err);
@@ -894,7 +919,7 @@ export function createAgentDetailStore(options) {
       if (state.memberId !== memberId) return;
       const acknowledged = (payload.consent || {}).acknowledged_at || '';
       if (acknowledged) current.mcpConsentTimes[serverId] = acknowledged;
-      await loadMcp(memberId);
+      await refreshAfterMcpMutation(memberId, current);
     } catch (err) {
       if (state.memberId !== memberId) return;
       current.mcpError = err && err.message ? err.message : String(err);
@@ -914,8 +939,9 @@ export function createAgentDetailStore(options) {
       );
       if (state.memberId !== memberId) return;
       if (current) current.mcpFileError = '';
-      // 条目视图的确认态来自 `global-mcp-servers` 的读数；重读那一份（文本域不动）。
+      // 条目视图的确认态来自 `global-mcp-servers` 的读数；上块读同一份声明，一起重读（文本域不动）。
       await loadGlobalMcpServers(memberId);
+      await loadMcp(memberId);
     } catch (err) {
       if (state.memberId !== memberId) return;
       if (current) current.mcpFileError = err && err.message ? err.message : String(err);
@@ -969,7 +995,10 @@ export function createAgentDetailStore(options) {
       current.mcpFileExists = Boolean(payload && payload.exists);
       current.mcpFileServers = Number((payload && payload.servers) || 0);
       current.mcpFilePath = typeof (payload && payload.path) === 'string' ? payload.path : '';
+      current.mcpFileIssues = Array.isArray(payload && payload.issues) ? payload.issues : [];
       if (typeof (payload && payload.text) === 'string') setMcpFileText(current, payload.text);
+      // 上块条目视图读同一份文件：原文保存成功后一起刷新，避免两块各说各话。
+      await loadMcp(memberId);
       await loadGlobalMcpServers(memberId);
     } catch (err) {
       if (state.memberId !== memberId) return;

@@ -125,6 +125,8 @@ def test_read_of_a_missing_file_reports_absence_and_creates_nothing(data_dir: Pa
             "servers": 0,
             # 文件缺席时路径读数仍要给：缺失提示要写出它该在哪。
             "path": os.path.realpath(str(_document_path(member["id"]))),
+            # 文件级可读问题与运行期装配共用同一份判定（缺席 ⇒ 没有问题）。
+            "issues": [],
         }
         assert _tree(_home()) == before, "读端点不写盘、不建目录"
         assert not _document_path(member["id"]).exists(), "读端点不创建 mcp.json"

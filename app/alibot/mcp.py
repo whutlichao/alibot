@@ -1,7 +1,8 @@
 """MCP 声明的装配层（#151 / 规格 §3.6 / ADR-0021 §三）。
 
-库里只存**声明**（transport / command / args / url / ``env_names``），本模块负责把它物化成
-AgentScope 的 :class:`agentscope.mcp.MCPClient`：
+声明以成员家目录 ``mcp.json`` 为**唯一正本**（transport / command / args / url / ``env_names``；
+ADR-0031 2026-10-29 修订），本模块负责读取它并物化成 AgentScope 的
+:class:`agentscope.mcp.MCPClient`：
 
 - **值只从进程环境读**：``env_names`` 里的变量名按名字取当前进程的值，值不落库、不进响应。
   stdio 传输只把这些**被声明的**变量交给子进程；MCP SDK 会再合并一份安全默认环境（PATH 等），
@@ -24,7 +25,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,8 +48,61 @@ MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # ``env_names`` 只存变量**名**：这个形状同时排除了 ``KEY=value`` 这类把值写进名字的输入。
 MCP_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
-#: 全局成员家目录里的文件型声明（ADR-0031 §一）。
-GLOBAL_MCP_FILENAME = "mcp.json"
+#: 成员家目录里的 MCP 声明文件（现行**唯一正本**；ADR-0021 §三 / ADR-0031 修订）。
+MEMBER_MCP_FILENAME = "mcp.json"
+
+#: 文件条目的合成标识前缀：``global:<member_id>:<name>``。装配层、确认行与管理面共用它。
+MEMBER_MCP_ID_PREFIX = "global:"
+
+
+def member_mcp_server_id(member_id: str, name: str) -> str:
+    """一条文件声明的合成标识：``global:<member_id>:<name>``。"""
+    return f"{MEMBER_MCP_ID_PREFIX}{member_id}:{name}"
+
+
+def split_member_mcp_server_id(server_id: str) -> tuple[str, str] | None:
+    """合成标识 → ``(member_id, name)``；不是这个形状时返回 ``None``。"""
+    raw = str(server_id or "")
+    if not raw.startswith(MEMBER_MCP_ID_PREFIX):
+        return None
+    member_id, separator, name = raw[len(MEMBER_MCP_ID_PREFIX) :].rpartition(":")
+    if not separator or not member_id or not name:
+        return None
+    return member_id, name
+
+
+def write_mcp_document_atomic(target: str | os.PathLike[str], text: str) -> None:
+    """把一份 ``mcp.json`` 原文原子写盘：同目录临时文件 + ``os.replace``（先例 ``runtime.py``）。
+
+    只管字节落盘，不建目录、不做形状校验；``OSError`` 原样抛给调用方翻译成本端点的可读错误。
+    """
+    path = Path(target)
+    temporary = path.with_name(f".{path.name}.{os.urandom(8).hex()}.tmp")
+    try:
+        with open(temporary, "xb") as stream:
+            stream.write(text.encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        with suppress(OSError):
+            temporary.unlink()
+        raise
+
+
+# 声明形状的字段标识 → (错误 ``fields`` 键, 本地化错误码)。HTTP 写路径与迁移工具共用这一份；
+# 读路径只跳过坏条目并记日志，不经过这里。
+MCP_DECLARATION_ERROR_KEYS: dict[str, tuple[str, str]] = {
+    "name": ("name", "error.mcp_name_invalid"),
+    "transport": ("transport", "error.mcp_transport_invalid"),
+    "args": ("args", "error.mcp_args_invalid"),
+    "env_names": ("env_names", "error.mcp_env_names_invalid"),
+    "command": ("command", "error.mcp_command_required"),
+    "url": ("url", "error.mcp_url_required"),
+    "url_invalid": ("url", "error.mcp_url_invalid"),
+    "url_sse": ("url", "error.mcp_sse_url_invalid"),
+    "url_http": ("url", "error.mcp_http_url_invalid"),
+}
 
 
 class InvalidMCPDeclaration(ValueError):
@@ -69,9 +123,9 @@ class InvalidMCPDocument(ValueError):
 
 
 def normalize_mcp_declaration(values: Mapping[str, Any]) -> dict[str, Any]:
-    """校验并收敛一条声明的**完整**形态（库写路径与全局文件读路径共用的唯一实现）。
+    """校验并收敛一条声明的**完整**形态（管理面写路径、原文写路径与文件读路径共用的唯一实现）。
 
-    语义与 ``mcp_server`` 表的既有约束逐字一致：名字 / transport / args / ``env_names`` /
+    语义与 ``mcp_server`` 表当年的约束逐字一致：名字 / transport / args / ``env_names`` /
     command 与 URL 的形状；``stdio`` 必须有 command，远端必须有 http(s) URL，且 ``sse`` 与
     ``http`` 的 URL path 不能互相冒充。非法时抛 :class:`InvalidMCPDeclaration`。
     """
@@ -158,7 +212,7 @@ def validate_mcp_document(text: str, locale: Locale | None = None) -> list[dict[
 
     三道校验必须全部通过，任何一条不成立都抛 :class:`InvalidMCPDocument`（它的 ``location`` 指出
     出错的条目 / 字段）：① 文本是可解析的 JSON；② 顶层是对象且 ``servers`` 是数组；
-    ③ 每条经 :func:`normalize_mcp_declaration`（与库写路径、全局文件读路径**同一份实现**）。
+    ③ 每条经 :func:`normalize_mcp_declaration`（与条目写路径、文件读路径**同一份实现**）。
     因此这里只做「形状是否可接受」的判定，一个字都不写。
 
     与读路径的差异只有一处，且是刻意的：读路径**跳过**坏条目继续装配，写路径**整体拒绝**——
@@ -206,75 +260,137 @@ def validate_mcp_document(text: str, locale: Locale | None = None) -> list[dict[
     return declarations
 
 
-def load_global_mcp_declarations(
+@dataclass(frozen=True)
+class MemberMCPDocument:
+    """一个成员家目录 ``mcp.json`` 的只读读数：归一化条目与**可读问题**。
+
+    ``issues`` 是给人看的句子（已按语言偏好渲染）：文件不可读 / 不是合法 JSON / 顶层形状不对 /
+    若干条目被跳过。它同时供运行期（只进 ``RoundOutcome.reason``）与管理面（``GET`` 的
+    ``issues`` 字段）使用——两处讲的是同一份判定。
+    """
+
+    member_id: str
+    path: str | None
+    exists: bool
+    declarations: tuple[dict[str, Any], ...]
+    issues: tuple[str, ...]
+
+
+def member_mcp_source(global_home: str | os.PathLike[str] | None, member_id: str) -> tuple[str | None, bool]:
+    """该成员 ``mcp.json`` 的**真实路径**与「路径是否被守卫拒绝」。
+
+    返回 ``(path, False)`` = 文件存在且路径安全；``(None, True)`` = 路径被全局只读守卫拒
+    （根外 symlink 祖先 / 根外目标）；``(None, False)`` = 文件缺席。守卫的根是**全局根**
+    （不是成员家目录）：成员家目录本身指向根外时也要拒绝。
+    """
+    if not global_home:
+        return None, False
+    from .workspace import AGENTS_DIR, resolve_global_read_path, safe_partition_id
+
+    parts = (AGENTS_DIR, safe_partition_id(member_id), MEMBER_MCP_FILENAME)
+    resolved = resolve_global_read_path(str(global_home), *parts)
+    if resolved is None:
+        raw = os.path.join(os.path.realpath(str(global_home)), *parts)
+        # 只读守卫对「缺席」与「越界」都返回 None：`lexists` 能把两者分开（断链也算路径问题）。
+        return None, os.path.lexists(raw)
+    return resolved, False
+
+
+def load_member_mcp_declarations(
     global_home: str | os.PathLike[str] | None,
     member_id: str,
     *,
     consent_of: Callable[[str], bool] | None = None,
-) -> list[dict[str, Any]]:
+    locale: Locale = SOURCE_LOCALE,
+) -> MemberMCPDocument:
     """读 ``<全局根>/agents/<member_id>/mcp.json``（纯文件，**只读、不创建**）。
 
     文件顶层形状固定为 ``{"servers": [ {name, transport, command, args, url, env_names,
-    enabled?}, ... ]}``；条目形状与库里项目声明完全同一套校验
-    （:func:`normalize_mcp_declaration`）。文件缺失 / 非法 JSON / 顶层形状不对 ⇒ 全局层零条
-    + 一条可读日志；单条目非法 ⇒ 跳过该条 + 日志。项目层不受影响。
+    enabled?}, ... ]}``；条目形状与写路径**同一套校验**
+    （:func:`normalize_mcp_declaration`）。文件缺失 / 非法 JSON / 顶层形状不对 ⇒ 零条 + 一条
+    可读问题；单条目非法或重名 ⇒ 跳过该条 + 一条聚合问题。**任何一档都不抛出**：这一轮只是
+    少一块工具，不改变轮次结论。
 
-    每条全局声明补齐合成标识 ``global:<member_id>:<name>``（``id`` 与 ``scope_id`` 同一值），
+    每条声明补齐合成标识 ``global:<member_id>:<name>``（``id`` 与 ``scope_id`` 同一值），
     并推导 ``is_remote`` / ``consent_required``；远端条目的 ``consented`` 由注入的
     ``consent_of(合成标识)`` 从既有确认行读取，未注入时按未确认处理。
     """
-    if not global_home:
-        return []
-    from .workspace import AGENTS_DIR, resolve_global_read_path, safe_partition_id
+    source, refused = member_mcp_source(global_home, member_id)
+    if refused:
+        return MemberMCPDocument(
+            member_id=member_id,
+            path=None,
+            exists=False,
+            declarations=(),
+            issues=(render("mcp.assembly.path_invalid", locale, file=MEMBER_MCP_FILENAME),),
+        )
+    if source is None:
+        _log.debug("member MCP declaration file is absent: %s", member_id)
+        return MemberMCPDocument(member_id, None, False, (), ())
 
-    # 守卫的根是**全局根**（不是成员家目录）：成员家目录本身是指向根外的 symlink 时也要拒绝。
-    path = resolve_global_read_path(
-        str(global_home), AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
-    )
-    if path is None:
-        _log.debug("global MCP declaration file is absent: %s", member_id)
-        return []
     try:
-        raw = Path(path).read_text(encoding="utf-8")
+        raw = Path(source).read_text(encoding="utf-8")
     except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
-        return []
+        return MemberMCPDocument(member_id, source, False, (), ())
     except (OSError, UnicodeDecodeError) as error:
-        _log.warning("global MCP declaration file is unreadable: %s (%s)", path, error)
-        return []
+        _log.warning("member MCP declaration file is unreadable: %s (%s)", source, error)
+        return MemberMCPDocument(
+            member_id,
+            source,
+            False,
+            (),
+            (render("mcp.assembly.file_unreadable", locale, file=source, reason=str(error)),),
+        )
     try:
         payload = json.loads(raw)
     except ValueError as error:
-        _log.warning("global MCP declaration file is not valid JSON: %s (%s)", path, error)
-        return []
+        _log.warning("member MCP declaration file is not valid JSON: %s (%s)", source, error)
+        return MemberMCPDocument(
+            member_id,
+            source,
+            True,
+            (),
+            (render("mcp.assembly.file_invalid_json", locale, file=source, reason=str(error)),),
+        )
     if not isinstance(payload, Mapping) or not isinstance(payload.get("servers"), list):
-        _log.warning("global MCP declaration file has no `servers` array: %s", path)
-        return []
+        _log.warning("member MCP declaration file has no `servers` array: %s", source)
+        return MemberMCPDocument(
+            member_id,
+            source,
+            True,
+            (),
+            (render("mcp.assembly.file_shape_invalid", locale, file=source),),
+        )
 
     declarations: list[dict[str, Any]] = []
     seen: set[str] = set()
+    skipped = 0
     for index, entry in enumerate(payload["servers"]):
         if not isinstance(entry, Mapping):
-            _log.warning("global MCP declaration #%d is not an object: %s", index, path)
+            _log.warning("member MCP declaration #%d is not an object: %s", index, source)
+            skipped += 1
             continue
         try:
             normalized = normalize_mcp_declaration(entry)
         except InvalidMCPDeclaration as error:
-            _log.warning("global MCP declaration #%d is invalid (%s): %s", index, error.field, path)
+            _log.warning("member MCP declaration #%d is invalid (%s): %s", index, error.field, source)
+            skipped += 1
             continue
         name = str(normalized["name"])
         if name in seen:
-            # 同一层内重名没有既有优先级可依：首条生效，其余跳过并留日志。
-            _log.warning("duplicate global MCP declaration is ignored: %s (%s)", name, path)
+            # 同一份文件内重名没有优先级可依：首条生效，其余跳过并计入问题。
+            _log.warning("duplicate member MCP declaration is ignored: %s (%s)", name, source)
+            skipped += 1
             continue
         seen.add(name)
         is_remote = normalized["transport"] in REMOTE_MCP_TRANSPORTS
-        scope_id = f"global:{member_id}:{name}"
+        scope_id = member_mcp_server_id(member_id, name)
         consented = False
         if is_remote and consent_of is not None:
             try:
                 consented = bool(consent_of(scope_id))
             except Exception:  # 确认行读不出来按未确认处理，不拖垮整轮
-                _log.debug("global MCP consent lookup failed", exc_info=True)
+                _log.debug("member MCP consent lookup failed", exc_info=True)
                 consented = False
         declarations.append(
             {
@@ -286,76 +402,16 @@ def load_global_mcp_declarations(
                 "consented": consented if is_remote else False,
             }
         )
-    return declarations
-
-
-def read_global_mcp_source(global_home: str | os.PathLike[str] | None, member_id: str) -> Path | None:
-    """该成员 ``mcp.json`` 的**真实路径**（全局只读守卫放行后的）；缺席 / 越界时 ``None``。
-
-    守卫的根是**全局根**（不是成员家目录）：成员家目录本身是指向根外的 symlink 时也拒绝。
-    它**只读**：不创建、不写入任何字节。
-    """
-    if not global_home:
-        return None
-    from .workspace import AGENTS_DIR, resolve_global_read_path, safe_partition_id
-
-    resolved = resolve_global_read_path(
-        str(global_home), AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
+    issues: tuple[str, ...] = ()
+    if skipped:
+        issues = (render("mcp.assembly.entries_skipped", locale, file=source, count=skipped),)
+    return MemberMCPDocument(
+        member_id=member_id,
+        path=source,
+        exists=True,
+        declarations=tuple(declarations),
+        issues=issues,
     )
-    return None if resolved is None else Path(resolved)
-
-
-def global_mcp_unimported_count(
-    global_home: str | os.PathLike[str] | None,
-    member_id: str,
-    *,
-    imported_names: Collection[str] = (),
-) -> int:
-    """成员家目录 ``mcp.json`` 里**尚未导入成库行**的条目数（#275 的提示面）。
-
-    #275 起这份文件**不再进入运行时装配**：它是导入源（``migrate-mcp``）与 Studio 的写面。
-    装配层因此只需要知道「文件里还有多少东西没进库」—— 有就发一条只进 ``RoundOutcome.reason``
-    的可读提示，让人去跑导入；没有就什么都不说。
-
-    ``imported_names`` 是该成员**库里已有的声明名**（装配层自己的读路径给）：只有名字不在这个
-    集合里的条目才算「未导入」。这条参数是必需的——少了它，按 README 推荐的「先导入、再删文件」
-    走完的人会每轮都看到「还有 N 条未导入」的**假提示**（那些条目恰恰已装配）。
-
-    口径刻意宽容：文件缺失 / 非法 JSON / 顶层形状不对 / 条目形状不合法 ⇒ **0**（那一格没有
-    可提示的东西）。它是**提示的触发条件**，不是导入判定——导入自己用
-    :func:`validate_mcp_document` 做整体拒绝。
-    """
-    path = read_global_mcp_source(global_home, member_id)
-    if path is None:
-        return 0
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:  # realpath 与读取之间的删除：等价于缺席
-        return 0
-    except (OSError, UnicodeDecodeError):
-        return 0
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return 0
-    if not isinstance(payload, Mapping):
-        return 0
-    servers = payload.get("servers")
-    if not isinstance(servers, list):
-        return 0
-    already = set(imported_names)
-    count = 0
-    for entry in servers:
-        if not isinstance(entry, Mapping):
-            continue
-        try:
-            normalized = normalize_mcp_declaration(entry)
-        except InvalidMCPDeclaration:
-            continue
-        if str(normalized["name"]) in already:
-            continue
-        count += 1
-    return count
 
 
 #: 进程内的装配结果（按 server id）。它**不是**持久事实：重启即清空，库里没有对应列。
@@ -407,18 +463,39 @@ def clear_runtime(server_id: str | None = None) -> None:
             _runtime.pop(server_id, None)
 
 
+def clear_runtime_for_member(member_id: str) -> None:
+    """清掉该成员**全部**合成标识（``global:<member>:*``）的运行时状态。
+
+    管理面改 / 删一条声明后调用：同一份文件可能被多个会话读到，逐个 id 清容易漏；按前缀清是
+    与合成标识形状绑定的唯一判据。
+    """
+    prefix = f"global:{member_id}:"
+    with _runtime_lock:
+        for server_id in [key for key in _runtime if key.startswith(prefix)]:
+            _runtime.pop(server_id, None)
+
+
 @dataclass
 class MCPAssembly:
-    """一轮装配的产物：可挂进 toolkit 的工具 + 结束后关闭客户端的能力。"""
+    """一轮装配的产物：可挂进 toolkit 的工具 + 结束后关闭客户端的能力。
+
+    ``host_workspace`` 是**无项目根的轮次**（DM）为托管 MCP 临时开出的运行宿主；``workspace``
+    仍是承载客户端的那个工作区（宿主模式下两者相同）。``close`` 先关客户端再关宿主，顺序不能
+    反过来——客户端的 transport 挂在宿主的 loop 上。
+    """
 
     workspace: Any
     member_id: str
     session_id: str
     tools: list[Any] = field(default_factory=list)
+    host_workspace: Any | None = None
 
     async def close(self) -> None:
-        """关闭本 agent/session 的客户端并从工作区缓存里丢弃（同一 loop 内调用）。"""
+        """关闭本 agent/session 的客户端与（若有）运行宿主；同一 loop 内调用。"""
         await _drop_live_clients(self.workspace, self.member_id, self.session_id)
+        if self.host_workspace is not None:
+            with suppress(Exception):
+                await self.host_workspace.close()
 
 
 class _FailureCapture(logging.Handler):
