@@ -88,9 +88,9 @@ OLLAMA_HOST=http://localhost:11434 .venv/bin/python -m alibot
 新默认、输出说明旧位置被忽略。应用**绝不删除、搬移、合并**用户数据，启动时**绝不自动迁移**；
 全局公共库 `~/.alibot/skills/` 仍由人维护，应用不创建。创建 Agent 时应用建出 `agents/<member_id>/`
 与 `reme/` 工作区；不在启动时创建 `AGENTS.md`、成员 `skills/` 或 `mcp.json`。应用安装技能时写成员
-`skills/`；成员家目录 `mcp.json` 是**导入源 + Studio 的写面**（人类面直接编辑原文，保存前校验），
-**不参与运行时装配**——运行期只看 `mcp_server` 的 Agent 级库行；要让它生效先导入（`migrate-mcp`），
-未导入的条目仅得到一条可读提示（ADR-0031 §二 / #275）。
+`skills/`；成员家目录 `mcp.json` 是这份 Agent MCP 声明的**唯一正本**（Studio 的条目视图与原文文本域
+读写同一份文件，保存前校验），运行期装配也只读它；库内 `mcp_server` 行只作历史与迁移来源
+（ADR-0031 §二，2026-10-29 修订）。
 旧前缀 `WORKSPLICE_*` 与更早的数据目录 `~/Worksplice` 仍**不被识别**（那是另一个项目的目录）；
 本节的兼容读取只针对 `~/Alibot`。
 
@@ -105,8 +105,8 @@ cp -R ~/.alibot-backups/data-YYYY-MM-DD ~/.alibot/data
 # 若仍在使用旧位置做兼容读取，把上面的 ~/.alibot/data 换成 ~/Alibot。
 
 # 全局层：不在数据目录备份内，必须单独备份
-# agents/ 里有人工维护的 AGENTS.md、应用写入的 skills/ 与 ReMe 工作区；mcp.json 是人工维护的导入源，
-# 并可在 Studio 的 mcp 页签里直接改原文（写入发生在宿主进程）。
+# agents/ 里有人工维护的 AGENTS.md、应用写入的 skills/ 与 ReMe 工作区；mcp.json 是这份 Agent
+# MCP 声明的唯一正本（可在 Studio 的 mcp 页签里直接改原文，写入发生在宿主进程）。
 # 整目录复制可覆盖这些素材；公共技能库 ~/.alibot/skills/ 另行备份。
 cp -R ~/.alibot/agents ~/.alibot-backups/agents-$(date +%F)
 cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
@@ -121,33 +121,39 @@ cp -R ~/.alibot/skills ~/.alibot-backups/skills-$(date +%F)
 `python -m alibot migrate-skills` 使用**同一整目录备份机制**，但备份名带 `skills` 标签
 （`<数据目录>-backup-skills-<UTC 时间戳>`）以与 schema 迁移区分，并在数据目录内落
 `skill-migration-<UTC>.json` 清单（逐条来源 / 目标 / 动作，审计正本）。
-`python -m alibot migrate-mcp` 同理，备份名带 `mcp` 标签、清单名 `mcp-migration-<UTC>.json`。
+`python -m alibot export-mcp` 同理，备份名带 `mcp-export` 标签、清单名 `mcp-export-<UTC>.json`，
+每个被改写的 `mcp.json` 旁留一份 `mcp.json.bak-<UTC 时间戳>`。
 
-### MCP 声明迁移：先导入、再升级 / 删文件
+### MCP 声明迁移：先把旧库行导出成家目录 mcp.json
 
-`mcp_server` 的 Agent 级库行是**唯一装配来源**；家目录 `mcp.json` 只是**导入源 + Studio 的写面**，
-**不参与运行时装配**。因此存量文件条目必须**先导入**才会生效，顺序不能颠倒：
+每个 Agent 家目录的 `mcp.json` 是这份 Agent MCP 声明的**唯一正本**；管理面与运行期装配读写同一份
+文件。旧版本把声明存在库内 `mcp_server` 表（`scope_kind='agent'`），这些行**不再参与装配**，只作
+历史与迁移来源。迁移是**显式**的，顺序不能颠倒：
 
 ```sh
 # 1) 停应用（运行中的进程可能正在装配）
 # 2) 先预演（默认行为，零写入、零备份）
-python -m alibot migrate-mcp --data-dir ~/.alibot/data
-# 3) 逐条读「新建 / 跳过 / 拒绝」。有「拒绝」＝库里已有同名但形状不同，先人工裁定
-#    （命令不覆盖、没有 --force），处理完再看一遍预演，直到没有「拒绝」。
-# 4) 执行（破坏性动作必须两个开关）：先整目录备份 + 落导入清单，再单事务写库行
-python -m alibot migrate-mcp --apply --yes --data-dir ~/.alibot/data
-# 5) 远端条目（http / sse）的确认**没有被代做**：按报告里逐条的 id 调
+python -m alibot export-mcp --data-dir ~/.alibot/data
+# 3) 逐条读「新建 / 跳过 / 拒绝」。有「拒绝」＝目标文件里已有同名但形状不同，
+#    或该成员家目录 / 文件不可用；命令不覆盖、没有 --force，先人工裁定再看一遍预演。
+# 4) 执行（破坏性动作必须两个开关）：先整目录备份 + 落导出清单 + 逐文件备份，
+#    再把条目并入成员 mcp.json（保留文件里已有的额外条目），最后用同一份加载器回读核对
+python -m alibot export-mcp --apply --yes --data-dir ~/.alibot/data
+# 5) 远端条目（http / sse）的确认：旧行 id 上**已有**的确认会复制到合成标识（报告里的
+#    「复制远端确认」行）；**没确认过的不代做**——按报告逐条的 id 调
 #    POST /api/mcp-servers/{id}/consent（或在 Studio 的 mcp 页签点「确认使用」）
 # 6) 重启应用，再校验工具面（运行期读数 + 工具清单）
 ```
 
-顺序的三个要点：
+顺序的要点：
 
-- **先导入、再删文件**：删了 `mcp.json` 不会丢失已导入的库行（正本在库里），但删得早且导入失败就真的丢了源。
-  本命令**从不删除源文件**，文件要不要留由人决定。
-- **不要指望重启/升级自动搬**：导入是显式动作，启动路径上绝不自动迁移（与 `migrate-skills` 同一口径）。
-- **未导入的条目不会静默生效**也不会静默消失：运行期只给一条只进 `RoundOutcome.reason` 的可读提示，
-  点名「文件里还有 N 条未导入」并给出这条命令。
+- **先导出、再决定删不删旧库行**：本命令**从不删除库行**，也从不删除文件；旧行留在库里只作历史。
+  删不删旧行由人决定，删了也不影响运行期（运行期只看文件）。
+- **不要指望重启/升级自动搬**：导出是显式动作，启动路径上绝不自动迁移（与 `migrate-skills` 同一口径）。
+- **旧库行不会静默生效**也不会静默消失：运行期只读文件，文件里没有的声明不会连接；导出前它们仍在
+  库里、可随时导出。
+- **频道级旧行**（`scope_kind='channel'`）只报告、不导出、不装配、不回填。
+- 旧命令 `migrate-mcp` 已退役：执行它只打印指向 `export-mcp` 的提示并以退出码 6 结束。
 
 从旧默认位置搬到新默认位置是**显式动作**（启动绝不自动搬移）：
 **停应用 → 整目录复制 → 校验 → 指向新位置**，复制前先做整目录备份。
@@ -214,9 +220,10 @@ ls ~/.alibot/agents/*/AGENTS.md 2>/dev/null
 sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**弃用别名**，仍可处置"版本号已是 4、
 但 channel 型作用域数据还没搬"的半改名库（列表页正常但点进频道全 404）。
 
-**MCP 声明**的迁移是另一条命令、另一个阶段：`python -m alibot migrate-mcp`（不推进 schema 版本，
-默认预演，`--apply --yes` 才写；先备份 + 落清单；同名不同形整体拒绝；不删源文件；不代做远端确认）。
-顺序是**先导入、再升级/删文件**，详见上面的「MCP 声明迁移」一节。
+**MCP 声明**的迁移是另一条命令、另一个阶段：`python -m alibot export-mcp`（不推进 schema 版本，
+默认预演，`--apply --yes` 才写；先整目录备份 + 落清单 + 逐文件备份；同名不同形整体拒绝；保留文件里
+已有的额外条目；不删库行；只复制旧行上已有的远端确认、不代做新确认）。旧命令 `migrate-mcp` 已退役（打印指向 `export-mcp` 的
+提示，退出码 6）。详见上面的「MCP 声明迁移」一节。
 
 ### Schema 版本与迁移（15 → 25）
 
@@ -273,7 +280,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `task` | id, target_id, channel_id, 标题, 状态, **`assignee_member_id`**(可空), **`claimed_at`** | 任务当前态在行上；`assignee_member_id` = 受派者；`claimed_at` 非空 = 这张任务**已被认领过**（「每张任务至多一次」的落点）。读路径载荷另派发 **`allowed_transitions`**（当前态的合法迁移目标，顺序固定五态、终态 `[]`；由迁移表派生，呈现面只读它，#191） |
 | `permission_rule` | id, scope_kind(`channel`/`agent`), scope_id, tool_name, pattern, behavior(`allow`/`deny`/`ask`), created_at | 权限规则是**配置**：三档行为，不暴露 BYPASS / DONT_ASK（ADR-0021 §四） |
 | `approval_request` | reply_id, target_id, member_id, team_run_id(可空), tool_calls(JSON), state(`pending`/`approved`/`denied`/`expired`), decisions(JSON), requested_at, resolved_at | HITL 审批记录；只存工具调用与决策，**不存凭证**（ADR-0021 §四）。主键 `reply_id` 是**回复级**标识（#215）：一条回复里的第 N 次 ASK 复用同一行，`tool_calls` / `decisions` 只追加；重开时 `state` 回 `pending`、`resolved_at` 置 NULL、`requested_at` 刷新到这一批的起点、旧 `decisions` 保留 |
-| `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | MCP 声明正本，也是**唯一**装配来源；现行声明使用 `scope_kind='agent'`；旧 `channel` 行保留、弃用且装配忽略；成员家目录 `mcp.json` 是导入源 + Studio 写面（人类面直接编辑原文），**不参与装配**，导入走显式 `migrate-mcp`（ADR-0021 §三修订 / ADR-0031 §二） |
+| `mcp_server` | id, name, transport(`stdio`/`http`/`sse`), command/args/url, env_names, enabled, scope_kind/scope_id | **历史与迁移来源**，不再参与装配；MCP 声明的唯一正本是成员家目录 `mcp.json`。旧 Agent 级行经显式 `export-mcp` 导出到文件（不删库行）；旧 `channel` 行保留、弃用、不导出且装配忽略（ADR-0021 §三修订 / ADR-0031 §二，2026-10-29 修订） |
 | `skill` | id, name, description, source_path, content_hash, enabled, scope_kind/scope_id | Skill 元数据；Agent 级字节由应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`，不依赖 workspace；技能只按成员家目录 > 全局公共库装配。旧 `channel` 行与项目层字节保留、装配忽略（ADR-0021 §三修订 / ADR-0031 §二） |
 | `remote_consent` | provider, acknowledged_at | 远端数据流告知的一次性确认；**不存任何凭证**（兼容面，迁移后读路径优先读 `remote_consent_scope`） |
 | `remote_consent_scope` | scope_kind(`model`/`mcp`/`docker`/`web`), scope_id, acknowledged_at | 远端数据面的统一一次性确认；旧 `remote_consent` 行复制成 `('model', provider, …)`。**不存凭据** |
@@ -550,15 +557,19 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   `expired` 也不因迟到登记复活。两处取舍要记住：重开时刷新 `requested_at` ⇒ **第一批的真实等待时长
   不再可读**（为了让倒计时与新一批同口径）；收口判据是**全部历史决策** ⇒ 第一批被拒绝时，第二批即使
   全批准，记录仍是 `denied`。
-- **MCP 声明**：`mcp_server` 是声明正本，也是**唯一装配来源**，现行声明使用 `scope_kind='agent'`；
-  `scope_kind='channel'` 的旧行保留但弃用、装配忽略且不回填。`mcp.json` 是导入源 + **Studio 写面**
-  （人类面直接编辑原文）——它**不参与运行时装配**：文件里未导入的条目不会被连接，本轮只给一条只进
-  `RoundOutcome.reason` 的可读提示（叫人去跑 `python -m alibot migrate-mcp`）。导入是**显式**动作，
-  默认 dry-run、`--apply --yes` 双开关、先整目录备份（备份名带 `mcp` 标签）并落导入清单；同名不同形
-  **整体拒绝**（无 `--force`），**不删源文件**。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps`
-  需要 workspace）；没有 workspace 时不装配 MCP。
-  远端 MCP（`http` / `sse`）未做数据面确认时不连接；stdio 不需要确认。**导入不代确认**：远端声明
-  导入后仍需人逐条 `POST /api/mcp-servers/{id}/consent`（或在 Studio 里点「确认使用」）。
+- **MCP 声明**：成员家目录 `mcp.json` 是**唯一正本**，管理面（条目视图与原文文本域）与运行期装配
+  读写同一份文件；DM 与频道共用它，DM 不因此获得项目文件权限。库内 `mcp_server` 行只作历史与迁移
+  来源，`scope_kind='channel'` 的旧行保留但弃用、不导出、不回填、绝不静默启用。旧 Agent 级行经
+  **显式** `python -m alibot export-mcp` 导出（默认 dry-run、`--apply --yes` 双开关、先整目录备份
+  （备份名带 `mcp-export` 标签）+ 逐文件备份并落清单；同名不同形**整体拒绝**（无 `--force`）；
+  保留文件里已有的额外条目；**不删库行**）。旧命令 `migrate-mcp` 已退役（提示 + 退出码 6）。
+  文件缺失或非法时本轮不装配 MCP，只给一条只进 `RoundOutcome.reason` 的可读提示。MCP 仍以
+  workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）：有项目根时用项目 workspace，无项目根
+  （DM / 未配置项目根的频道）时用 `<数据目录>/mcp-hosts/<session_id>` 这个**不带项目文件工具**的
+  运行期宿主；轮次结束（含失败）关闭 MCP 客户端与宿主。
+  远端 MCP（`http` / `sse`）未做数据面确认时不连接；stdio 不需要确认。`export-mcp` 只把旧行 id
+  上**已有**的确认复制到合成标识，**不代做新确认**：导出后仍未被确认过的远端声明，需人逐条
+  `POST /api/mcp-servers/{id}/consent`（或在 Studio 里点「确认使用」）。
 - **Skill**：`skill` 表存 Agent 级技能元数据与内容 hash；字节由宿主应用写入
   `~/.alibot/agents/<member_id>/skills/<name>/`，不再依赖 workspace。技能装配只按「成员家目录 > 全局公共库」，
   DM 与未配置项目根的频道同样生效；不再有项目 Agent 级或项目频道级技能层。
@@ -606,13 +617,15 @@ autonomous**。`team` 是**显式 opt-in**，并由 owner 指定一个 Agent 成
   任何 HTTP 响应、日志与事件载荷只出现 `mask_credential()` 的掩码形态，错误文案只提 provider 与
   「未配置凭据」，绝不回吐取值。
 
-### Skill / MCP 归属修订与迁移策略（#270 / #274 / #275）
+### Skill / MCP 归属修订与迁移策略（#270 / #274 / #275 / 2026-10-29）
 
 - 新 Skill 字节写入 `~/.alibot/agents/<member_id>/skills/<name>/`，装配只看成员家目录与全局公共库。
 - 既有 `scope_kind='channel'` 的 `skill` / `mcp_server` 行以及项目层旧 Skill 字节保留；装配忽略，不自动
   回填或删除。显式迁移由独立 `migrate-skills` 命令执行；本轮不执行、无 schema bump。
-- MCP 同理：`mcp.json` 的存量条目由 `migrate-mcp` 一次性导入成库行（默认 dry-run，`--apply --yes` 才写，
-  先备份 + 落清单，同名不同形整体拒绝，不删源文件，**不代做远端确认**）。导入后装配只读库行。
+- MCP：成员家目录 `mcp.json` 是**唯一正本**，管理面与运行期装配读写同一份文件。存量 Agent 级库行由
+  `export-mcp` 一次性导出到成员文件（默认 dry-run，`--apply --yes` 才写，先整目录备份 + 逐文件备份 +
+  落清单，同名不同形整体拒绝，保留文件里的额外条目，不删库行，**只复制旧行上已有的远端确认、
+  不代做新确认**）。导出后装配只读文件；频道级旧行只报告、不导出、不装配。
 
 ## 实时呈现（SSE 与断线补拉）
 
@@ -703,10 +716,10 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `PATCH /api/agents/{id}` | 编辑 Agent 配置 `{display_name?, role?, model_id?, system_prompt?, enabled?, auto_claim?, workspace_backend?, permission_mode?, allow_local_shell?, docker_image?, web_access?}`；任一字段不合法则**整体不写**。「暂停」就是 `enabled: false`，「自动认领任务」就是 `auto_claim`；`docker_image: ""` 是**显式清空**（回到内置镜像）；`web_access: null` 是**清除 Agent 级覆盖**（回到跟随频道，写库 `NULL`；缺省该字段 = 保持原值，其它字段的显式 `null` 仍 400）。响应同形 `agent` + `agents` + `members` |
 | `DELETE /api/agents/{id}` | **软删除**一个 Agent：写 `member.deleted_at` 并删掉它在 `target_member` 的全部行（移出全部频道与任务线程）。消息 / 任务 / DM target / `agent_config` / `round_outcome` 保留，不重写任务指派；不落消息、不唤醒、不消耗预算。只接受未删除的 `kind='agent'`；owner、未知 id、二次删除一律可读 404 `not_found`。响应 `{deleted, agents, members}` |
 | `GET /api/agents/{id}/status` | 单个成员的状态点 |
-| `GET /api/agents/{id}/global-mcp-servers` | 该成员家目录 `mcp.json` 的只读条目视图：条目 + 运行期读数。**该文件不参与运行时装配**（运行期只看 `mcp_server` Agent 级库行）；改原文走上表中的两条 `global-mcp-file` 端点，生效需要先 `migrate-mcp` 导入 |
-| `GET /api/agents/{id}/global-mcp-file` | 该成员家目录 `mcp.json` 的**原文** + 条目计数 + **真实路径**（`{member_id, exists, text, servers, path}`）。只读，不创建也不写入；文件不存在 ⇒ `exists=false` + 空串（不是「读到空文件」），`path` 仍给出该文件应在的位置；路径被全局层守卫拒 ⇒ `path=null` |
-| `PUT /api/agents/{id}/global-mcp-file` | 把整份**原文**写盘 `{text}`：三道校验（JSON 可解析 → 顶层是对象且 `servers` 是数组 → 每条声明经既有归一化内核）**全过才写**，任一条不合法 ⇒ 400 + `fields` + **零写入**。原文**逐字**写（不重排 / 不格式化 / 不动末尾换行）；文件不存在但家目录在 ⇒ 新建，家目录不存在 ⇒ 400 且不建目录。响应同读端点（含 `path`） |
-| `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 确认家目录 `mcp.json` 里的**一条远端声明**（写 `remote_consent_scope('mcp', 'global:<member>:<name>')`，幂等、只存时间）。**它不改变装配**：`mcp.json` 不参与运行时装配，要生效得先 `migrate-mcp` 导入成 `mcp_server` 库行，导入后再走 `POST /api/mcp-servers/{id}/consent` |
+| `GET /api/agents/{id}/global-mcp-servers` | 该成员家目录 `mcp.json` 的只读条目视图（`{member_id, global_mcp_servers, path, exists}`）：条目 + 运行期读数。可读问题只在原文编辑面（`global-mcp-file` 的 `issues`）给一份，不在这里重复。**该文件就是唯一正本**，运行期装配也读它；改原文走上表中的两条 `global-mcp-file` 端点 |
+| `GET /api/agents/{id}/global-mcp-file` | 该成员家目录 `mcp.json` 的**原文** + 条目计数 + **真实路径** + 文件级可读问题（`{member_id, exists, text, servers, path, issues}`）。只读，不创建也不写入；文件不存在 ⇒ `exists=false` + 空串（不是「读到空文件」），`path` 仍给出该文件应在的位置；路径被全局层守卫拒 ⇒ `path=null` |
+| `PUT /api/agents/{id}/global-mcp-file` | 把整份**原文**写盘 `{text}`：三道校验（JSON 可解析 → 顶层是对象且 `servers` 是数组 → 每条声明经既有归一化内核）**全过才写**，任一条不合法 ⇒ 400 + `fields` + **零写入**。原文**逐字**写（不重排 / 不格式化 / 不动末尾换行）；文件不存在但家目录在 ⇒ 新建，家目录不存在 ⇒ 400 且不建目录。响应同读端点（含 `path`、`issues`） |
+| `POST /api/agents/{id}/global-mcp-servers/{name}/consent` | 确认家目录 `mcp.json` 里的**一条远端声明**（写 `remote_consent_scope('mcp', 'global:<member>:<name>')`，幂等、只存时间）。文件是唯一正本，确认后下一轮即按文件装配 |
 | `GET /api/member-statuses` | 全部成员的状态点 |
 | `GET /api/remote-data-flow` | 远端数据流告知文案与已确认记录（含 `consents` 与联网 provider 的 `web_consents`） |
 | `POST /api/remote-data-flow/ack` | 确认一次告知 `{provider}`（幂等） |
@@ -715,11 +728,11 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `GET /api/permission-rules?scope_kind=&scope_id=` | 权限规则列表（`allow` / `deny` / `ask`；不暴露 `BYPASS` / `DONT_ASK`） |
 | `POST /api/permission-rules` | 写一条规则 `{scope_kind, scope_id, tool_name, pattern, behavior}`；同 `(scope, tool, pattern)` 覆盖；配置动作不落消息、不唤醒 |
 | `DELETE /api/permission-rules/{id}` | 删除一条规则（配置动作；不删除消息与审批历史） |
-| `GET /api/mcp-servers?scope_kind=&scope_id=` | MCP 声明库行列表；只回 `env_names`（**变量名**，永不回值）+ 进程内 `runtime` 读数。现行装配来源为 Agent 级库行 |
-| `POST /api/mcp-servers` | 新建声明 `{scope_kind, scope_id, name, transport, command?, args?, url?, env_names?, enabled?}`；新声明使用 `scope_kind='agent'`；正文出现 `env` 之类键整体拒绝（400）；同名同 scope 409 |
-| `PATCH /api/mcp-servers/{id}` | 部分更新同名字段；`scope_kind` / `scope_id` 不可改；整条结果重新校验 |
-| `DELETE /api/mcp-servers/{id}` | 删除声明（配置动作；不删消息、不唤醒） |
-| `POST /api/mcp-servers/{id}/consent` | Agent 级库内远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认时装配层**不连接** |
+| `GET /api/mcp-servers?scope_kind=&scope_id=` | 该 Agent 家目录 `mcp.json` 的条目视图（`{mcp_servers, path, exists}`）；只回 `env_names`（**变量名**，永不回值）+ 进程内 `runtime` 读数；可读问题只在原文编辑面（`global-mcp-file` 的 `issues`）。作用域只接受 `scope_kind='agent'`（频道级已弃用，400）；文件是唯一正本，运行期装配也读它 |
+| `POST /api/mcp-servers` | 往文件追加声明 `{scope_kind, scope_id, name, transport, command?, args?, url?, env_names?, enabled?}`；只接受 `scope_kind='agent'`；正文出现 `env` 之类键整体拒绝（400）；文件当前不可用（坏 JSON / 形状不对）⇒ 400，绝不覆盖原文；同名 409 |
+| `PATCH /api/mcp-servers/{id}` | 部分更新同名字段（`id` 是合成标识 `global:<member>:<name>`）；`scope_kind` / `scope_id` 不可改；整条结果重新校验，重名 409 |
+| `DELETE /api/mcp-servers/{id}` | 从文件删除声明（配置动作；不删消息、不唤醒） |
+| `POST /api/mcp-servers/{id}/consent` | 文件内远端 MCP（`http` / `sse`）的数据面确认（幂等；stdio 不接受）。未确认时装配层**不连接** |
 | `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
 | `POST /api/docker-images/consent` | 远端 Docker 镜像的数据面确认 `{image}`（幂等；写 `remote_consent_scope('docker', image)`，只存确认时间）。未确认的镜像在装配层**不拉取**、不启动容器 |
 | `POST /api/web-providers/{provider}/consent` | 联网 provider 的数据面确认（幂等；写 `remote_consent_scope('web', provider)`，只存确认时间）。接受五家带凭据 provider；未确认时装配层**不挂**该 provider 的工具且**零请求**；`exa-mcp` 免确认 |
@@ -769,8 +782,8 @@ Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Age
 详情视图一起让位，因此它们不是详情里的出口；dock 的进入前开合只在删除成功的
 `closeAgentDetail()` 路径恢复。
 正文是**三个页签**，顺序固定：**基础信息和配置**（统计 → 系统提示 → 配置 → 危险操作）→
-**skills**（左栏技能列表 / 右栏选中技能详情）→ **mcp**（上块库行表单 / 下块家目录 `mcp.json` 的
-文本域与条目视图）。打开详情与切换成员都回到默认页签（基础信息和配置）——新成员不继承上一个成员的
+**skills**（左栏技能列表 / 右栏选中技能详情）→ **mcp**（上块条目表单 / 下块家目录 `mcp.json` 的
+文本域与只读条目视图；两块读写**同一份文件**，它也是运行期装配的唯一正本）。打开详情与切换成员都回到默认页签（基础信息和配置）——新成员不继承上一个成员的
 页签位置；三个页签用 `data-adtab="base|skills|mcp"` 定位，`state.tab` 是纯呈现状态，
 **不落库、不写 URL**。页签只切呈现、不丢草稿（保存条是全页级、跨页签可见）；日志页签仍不做
 （用户人定 D24，入口另立 backlog 票 #72）。系统提示紧贴统计之下（用户 2026-10-24 反馈：它是这页上
@@ -809,6 +822,7 @@ Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Age
   上一条与危险说明说明一次，不重复占一行。
 - **「全局 MCP」条目视图**（只读，mcp 页签的**下块**）：它与下块的 `mcp.json` 文本域是**同一份
   数据的两种视图**（文本域改原文、条目视图看条目与运行期读数），因此并进下块、不再单独成段；
+  上块的结构化表单读写的是**同一个文件**——家目录 `mcp.json` 是唯一正本，运行期装配也读它；
   标题下直接列真实条目，不再有一行「来自该成员家目录的 mcp.json…」的重复说明；空态逐字为
   `“全局mcp.json”里没有声明MCP服务`（英文 `No MCP servers are declared in the global mcp.json.`）。
 - **「危险操作」区块**（用户 2026-10-24 反馈：暂停与删除是危险动作，不该和常规配置混在一起）：

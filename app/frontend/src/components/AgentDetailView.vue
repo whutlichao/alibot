@@ -18,8 +18,9 @@
      左栏行内的 `role=switch` 开关（行的文字区是原生 `<button>`、开关是它的**兄弟节点**——
      同一行两个控件物理不重叠，也不互相嵌套）。右栏那格启停态是**读数**，不是第二个入口。
 
-     mcp 页签的两块面是**两份数据**：上块库行 `mcp_server`（`scope_kind='agent'`，装配正本），
-     下块家目录 `mcp.json` 原文（导入源，不参与装配）。按用户反馈，两块的数据来源标注与
+     mcp 页签的两块面是**同一份数据**：家目录 `mcp.json` 是这份 Agent MCP 声明的唯一正本，
+     上块条目视图（`/api/mcp-servers`）与下块原文文本域读写的都是它，运行期装配也只读它；
+     库里的 `mcp_server` 行只作迁移来源（ADR-0031 修订）。按用户反馈，两块的数据来源标注与
      「MCP 声明」/「全局 MCP（只读）」两个小标题已撤（说明性文字只留功能本身）；
      「添加 MCP」是这块的主按钮（`btn-primary`）。 -->
 <script setup>
@@ -959,7 +960,7 @@ watch(
           </section>
         </div>
 
-        <!-- ─── mcp：上块库行（装配正本）+ 下块家目录 mcp.json（导入源） ──── -->
+        <!-- ─── mcp：上块条目视图 + 下块家目录 mcp.json 原文（同一份正本的两种视图） ──── -->
         <div
           v-show="state.tab === 'mcp'"
           :id="panelId('mcp')"
@@ -1222,6 +1223,15 @@ watch(
 
               <div class="resource-meta is-faint" data-mcp-file-count="1" data-od-id="agent-mcp-file-count">
                 {{ t('agentDetail.mcpFileServers', { count: String(mcpFileServers) }) }}
+              </div>
+
+              <!-- 文件级可读问题（与运行期装配同一份判定）：逐条给原因，不静默跳过。 -->
+              <div
+                v-if="view && view.mcpFileIssues.length"
+                class="hint is-faint"
+                data-od-id="agent-mcp-file-issues"
+              >
+                <div v-for="(issue, index) in view.mcpFileIssues" :key="index">{{ issue }}</div>
               </div>
 
               <div class="agent-actions">

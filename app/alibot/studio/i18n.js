@@ -457,8 +457,9 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': '家目录 mcp.json',
-    // mcp 页签下块（#284 / D7，口径更新于 #275）：文本域直接接家目录文件的**原文**。
-    // 文件**不再是装配层**：它是导入源，运行期装配只看库行。来源说明按用户反馈撤除；
+    // mcp 页签下块（#284 / D7）：文本域直接接家目录文件的**原文**。
+    // 家目录 mcp.json 是这份 Agent MCP 声明的**唯一正本**：上块的条目视图与这里读写的都是它，
+    // 运行期装配也只读它（库里的 `mcp_server` 行只作为迁移来源）。来源说明按用户反馈撤除；
     // 缺失提示写出后端给的真实路径，路径被全局层守卫拒时退到不带路径的那句。
     'agentDetail.mcpFileLoading': '正在读取家目录 mcp.json…',
     'agentDetail.mcpFileMissing':
@@ -490,6 +491,8 @@ const I18N_CATALOGS = {
     // 全局 MCP（#236 / ADR-0031 D8）：条目视图**只读**（它住在 mcp 页签的下块里，与旁边的
     // mcp.json 文本域是同一份数据的两种视图）。条目视图自身不渲染编辑 / 启停 / 删除——要改原文
     // 走上方的文本域；它只对远端未确认条目给一个确认动作。小标题已按用户反馈撤除。
+    // 同一份数据也是**唯一正本**：上块的条目视图（`/api/mcp-servers`）与运行期装配都读这个文件，
+    // 库行只作迁移来源（ADR-0031 修订）。
     'agentDetail.globalMcpEmpty': '“全局mcp.json”里没有声明MCP服务',
     'agentDetail.globalMcpRemote': '远端（数据会离开本机）',
     'agentDetail.globalMcpLocal': '本机',
@@ -739,6 +742,9 @@ const I18N_CATALOGS = {
     'mcp.envNone': '没有环境变量',
     'mcp.envLabel': '环境变量名：{names}',
     'mcp.envValuesOmitted': '这里只收变量名；变量值不显示、不保存。',
+    // 两块面是同一份文件：上块保存后若下块原文有未提交改动，不静默覆盖人的输入。
+    'mcp.fileChangedElsewhere':
+      '上块已更新 mcp.json；下块原文有未保存的改动，未自动覆盖。请先保存或放弃下块改动。',
     'mcp.enabledLabel': '启用',
     'mcp.enabled': '已启用',
     'mcp.disabled': '已停用',
@@ -1321,8 +1327,11 @@ const I18N_CATALOGS = {
     'agentDetail.tabSkills': 'skills',
     'agentDetail.tabMcp': 'mcp',
     'agentDetail.mcpFileTitle': 'Home-directory mcp.json',
-    // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text. The source
-    // note was removed per user feedback; the missing-file hint carries the real path the backend
+    // Bottom block of the mcp tab (#284 / D7): the textarea edits the file's raw text.
+    // The home-directory mcp.json is the single source of this agent's MCP declarations: the entry
+    // view above and this textarea read and write the same file, and runtime assembly reads only
+    // that file (database `mcp_server` rows survive solely as a migration source). The source note
+    // was removed per user feedback; the missing-file hint carries the real path the backend
     // reports, and falls back to the path-less sentence when the global-layer guard refuses it.
     'agentDetail.mcpFileLoading': 'Reading the home-directory mcp.json…',
     'agentDetail.mcpFileMissing':
@@ -1630,6 +1639,9 @@ const I18N_CATALOGS = {
     'mcp.envNone': 'No environment variables',
     'mcp.envLabel': 'Environment variable names: {names}',
     'mcp.envValuesOmitted': 'Names only; values are neither shown nor stored.',
+    // Both blocks edit the same file: a structured save must not silently overwrite raw edits.
+    'mcp.fileChangedElsewhere':
+      'The list above updated mcp.json; the raw text below has unsaved changes and was not overwritten. Save or discard the raw edits first.',
     'mcp.enabledLabel': 'Enabled',
     'mcp.enabled': 'Enabled',
     'mcp.disabled': 'Disabled',

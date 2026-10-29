@@ -1,9 +1,11 @@
-"""#151 MCP 声明的 HTTP 契约：CRUD、env 不泄露、远端确认、零副作用。
+"""MCP 声明的 HTTP 契约：CRUD、env 不泄露、远端确认、零副作用。
 
-只经人类面取证：
+正本是**每个 Agent 家目录的 ``mcp.json``**（ADR-0021 §三 / ADR-0031 修订）：结构化编辑面与
+原文编辑面读写同一份文件，运行时装配也读它。因此本文件同时取证「管理面 → 文件」与
+「响应形状保持兼容」：
 
-1. 声明可增删改查，scope 过滤生效；
-2. ``env_names`` 只存**变量名**：响应与库文件里都不出现值；正文带 ``env`` 直接拒绝；
+1. 声明可增删改查；作用域只接受 agent（频道级旧作用域 400）；
+2. ``env_names`` 只存**变量名**：响应、库文件与 ``mcp.json`` 里都不出现值；正文带 ``env`` 直接拒绝；
 3. 远端（http/sse）声明未确认时 ``consented=false``，确认幂等、stdio 不接受确认；
 4. 配置动作不落消息、不产生轮次结果、不改变预算读数。
 """
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from alibot.workspace import global_home_root
 from fastapi.testclient import TestClient
 
 from tests.conftest import budget, create_agent, create_channel, messages, outcomes
@@ -20,9 +23,10 @@ SECRET_NAME = "ALIBOT_MCP_TEST_TOKEN"
 SECRET_VALUE = "sk-mcp-super-secret-value-151"
 
 
-def _stdio_payload(**overrides):
+def _stdio_payload(scope_id: str, **overrides):
     payload = {
-        "scope_kind": "channel",
+        "scope_kind": "agent",
+        "scope_id": scope_id,
         "name": "local-tools",
         "transport": "stdio",
         "command": "python3",
@@ -33,39 +37,42 @@ def _stdio_payload(**overrides):
     return payload
 
 
-def test_declarations_round_trip_and_scope_filtering(client: TestClient) -> None:
-    channel = create_channel(client).json()["channel"]
-    agent = create_agent(client).json()["agent"]
+def _member_file(agent_id: str) -> Path:
+    return Path(global_home_root()) / "agents" / agent_id / "mcp.json"
 
-    channel_server = client.post(
-        "/api/mcp-servers", json=_stdio_payload(scope_kind="channel", scope_id=channel["id"])
-    )
-    assert channel_server.status_code == 201
-    created = channel_server.json()["mcp_server"]
+
+def test_declarations_round_trip_through_the_agent_home_file(client: TestClient) -> None:
+    agent = create_agent(client).json()["agent"]
+    other = create_agent(client).json()["agent"]
+
+    created_response = client.post("/api/mcp-servers", json=_stdio_payload(agent["id"]))
+    assert created_response.status_code == 201
+    created = created_response.json()["mcp_server"]
     assert created["name"] == "local-tools"
     assert created["args"] == ["-m", "example_mcp"]
     assert created["env_names"] == [SECRET_NAME]
-    assert created["scope_kind"] == "channel"
-    assert created["scope_id"] == channel["id"]
+    assert created["scope_kind"] == "agent"
+    assert created["scope_id"] == agent["id"]
+    # 合成标识与运行时确认行、装配层用的是同一个：``global:<member>:<name>``。
+    assert created["id"] == f"global:{agent['id']}:local-tools"
     assert created["enabled"] is True
     assert created["is_remote"] is False
     assert created["consent_required"] is False
     # 从未装配过：运行时读数为 null，而不是伪造一个 connected。
     assert created["runtime"] is None
 
-    agent_server = client.post(
-        "/api/mcp-servers",
-        json=_stdio_payload(scope_kind="agent", scope_id=agent["id"], name="agent-tools"),
-    )
-    assert agent_server.status_code == 201
+    # 管理面写的就是运行时读的那份文件（同一份正本）。
+    assert _member_file(agent["id"]).is_file()
+    assert "local-tools" in _member_file(agent["id"]).read_text(encoding="utf-8")
+    assert not _member_file(other["id"]).exists()
 
-    scoped = client.get(
-        "/api/mcp-servers", params={"scope_kind": "channel", "scope_id": channel["id"]}
-    ).json()["mcp_servers"]
-    assert [server["name"] for server in scoped] == ["local-tools"]
+    second = client.post("/api/mcp-servers", json=_stdio_payload(agent["id"], name="agent-tools"))
+    assert second.status_code == 201
 
-    everything = client.get("/api/mcp-servers").json()["mcp_servers"]
-    assert {server["name"] for server in everything} == {"local-tools", "agent-tools"}
+    scoped = client.get("/api/mcp-servers", params={"scope_kind": "agent", "scope_id": agent["id"]}).json()
+    assert [server["name"] for server in scoped["mcp_servers"]] == ["local-tools", "agent-tools"]
+    assert scoped["exists"] is True
+    assert scoped["path"] == str(_member_file(agent["id"]))
 
     patched = client.patch(
         f"/api/mcp-servers/{created['id']}",
@@ -76,31 +83,49 @@ def test_declarations_round_trip_and_scope_filtering(client: TestClient) -> None
     assert updated["command"] == "python3.11"
     assert updated["enabled"] is False
     assert updated["env_names"] == []
-    assert updated["updated_at"] >= updated["created_at"]
+    assert updated["id"] == created["id"]
 
     deleted = client.delete(f"/api/mcp-servers/{created['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["mcp_server"]["id"] == created["id"]
     after_delete = client.get(
-        "/api/mcp-servers", params={"scope_kind": "channel", "scope_id": channel["id"]}
+        "/api/mcp-servers", params={"scope_kind": "agent", "scope_id": agent["id"]}
     ).json()["mcp_servers"]
-    assert after_delete == []
+    assert [server["name"] for server in after_delete] == ["agent-tools"]
     assert client.delete(f"/api/mcp-servers/{created['id']}").status_code == 404
 
 
-def test_env_values_never_appear_in_responses_or_the_database(
+def test_channel_scope_and_legacy_ids_are_refused(client: TestClient) -> None:
+    channel = create_channel(client).json()["channel"]
+    refused = client.post(
+        "/api/mcp-servers",
+        json={
+            "scope_kind": "channel",
+            "scope_id": channel["id"],
+            "name": "legacy",
+            "transport": "stdio",
+            "command": "python3",
+        },
+    )
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "validation_failed"
+
+    # 缺作用域 / 旧库行 id 都不再指向任何声明。
+    assert client.get("/api/mcp-servers").status_code == 400
+    assert client.delete("/api/mcp-servers/mcp_legacyrow").status_code == 404
+
+
+def test_env_values_never_appear_in_responses_or_on_disk(
     client: TestClient, data_dir: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv(SECRET_NAME, SECRET_VALUE)
-    channel = create_channel(client).json()["channel"]
+    agent = create_agent(client).json()["agent"]
 
-    response = client.post(
-        "/api/mcp-servers", json=_stdio_payload(scope_kind="channel", scope_id=channel["id"])
-    )
+    response = client.post("/api/mcp-servers", json=_stdio_payload(agent["id"]))
     assert response.status_code == 201
     assert SECRET_VALUE not in response.text
 
-    listed = client.get("/api/mcp-servers", params={"scope_kind": "channel", "scope_id": channel["id"]})
+    listed = client.get("/api/mcp-servers", params={"scope_kind": "agent", "scope_id": agent["id"]})
     assert listed.status_code == 200
     assert SECRET_VALUE not in listed.text
     assert listed.json()["mcp_servers"][0]["env_names"] == [SECRET_NAME]
@@ -108,26 +133,27 @@ def test_env_values_never_appear_in_responses_or_the_database(
     # 正文里带值（而不是变量名）整体拒绝：没有 `env` 这条写路径。
     refused = client.post(
         "/api/mcp-servers",
-        json=_stdio_payload(
-            scope_kind="channel",
-            scope_id=channel["id"],
-            name="leaky",
-            env={SECRET_NAME: SECRET_VALUE},
-        ),
+        json=_stdio_payload(agent["id"], name="leaky", env={SECRET_NAME: SECRET_VALUE}),
     )
     assert refused.status_code == 400
     assert SECRET_VALUE not in refused.text
-    assert all(server["name"] != "leaky" for server in client.get("/api/mcp-servers").json()["mcp_servers"])
+    assert all(
+        server["name"] != "leaky"
+        for server in client.get(
+            "/api/mcp-servers", params={"scope_kind": "agent", "scope_id": agent["id"]}
+        ).json()["mcp_servers"]
+    )
 
-    # 库文件（含 WAL / SHM）里没有值；只有变量名。
+    # 库文件（含 WAL / SHM）与 mcp.json 里都没有值；只有变量名。
     haystack = b"".join(path.read_bytes() for path in data_dir.rglob("*") if path.is_file())
+    haystack += _member_file(agent["id"]).read_bytes()
     assert SECRET_VALUE.encode() not in haystack
     assert SECRET_NAME.encode() in haystack
 
 
 def test_validation_rejects_incomplete_or_ambiguous_declarations(client: TestClient) -> None:
-    channel = create_channel(client).json()["channel"]
-    scope = {"scope_kind": "channel", "scope_id": channel["id"]}
+    agent = create_agent(client).json()["agent"]
+    scope = {"scope_kind": "agent", "scope_id": agent["id"]}
 
     missing_command = client.post(
         "/api/mcp-servers", json={**scope, "name": "no-command", "transport": "stdio"}
@@ -175,9 +201,9 @@ def test_validation_rejects_incomplete_or_ambiguous_declarations(client: TestCli
 
     unknown_scope = client.post(
         "/api/mcp-servers",
-        json={**_stdio_payload(name="ghost"), "scope_id": "missing-scope"},
+        json={**_stdio_payload("missing-scope"), "name": "ghost"},
     )
-    assert unknown_scope.status_code == 400
+    assert unknown_scope.status_code == 404
 
     first = client.post(
         "/api/mcp-servers", json={**scope, "name": "dup", "transport": "stdio", "command": "python3"}
@@ -189,14 +215,23 @@ def test_validation_rejects_incomplete_or_ambiguous_declarations(client: TestCli
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "mcp_server_conflict"
 
+    # 结构化编辑不覆盖坏文件：原文编辑是人的修复面。
+    _member_file(agent["id"]).write_text("{not json", encoding="utf-8")
+    blocked = client.post(
+        "/api/mcp-servers",
+        json={**scope, "name": "after-broken", "transport": "stdio", "command": "python3"},
+    )
+    assert blocked.status_code == 400
+    assert _member_file(agent["id"]).read_text(encoding="utf-8") == "{not json"
+
 
 def test_remote_consent_is_required_and_idempotent(client: TestClient) -> None:
-    channel = create_channel(client).json()["channel"]
+    agent = create_agent(client).json()["agent"]
     remote = client.post(
         "/api/mcp-servers",
         json={
-            "scope_kind": "channel",
-            "scope_id": channel["id"],
+            "scope_kind": "agent",
+            "scope_id": agent["id"],
             "name": "remote-tools",
             "transport": "sse",
             "url": "http://127.0.0.1:9000/sse",
@@ -211,7 +246,7 @@ def test_remote_consent_is_required_and_idempotent(client: TestClient) -> None:
     first_payload = first.json()
     assert first_payload["mcp_server"]["consented"] is True
     assert first_payload["consent"]["scope_kind"] == "mcp"
-    assert first_payload["consent"]["scope_id"] == remote["id"]
+    assert first_payload["consent"]["scope_id"] == f"global:{agent['id']}:remote-tools"
     assert first_payload["consent"]["acknowledged_at"].endswith("Z")
 
     second = client.post(f"/api/mcp-servers/{remote['id']}/consent")
@@ -222,8 +257,8 @@ def test_remote_consent_is_required_and_idempotent(client: TestClient) -> None:
     local = client.post(
         "/api/mcp-servers",
         json={
-            "scope_kind": "channel",
-            "scope_id": channel["id"],
+            "scope_kind": "agent",
+            "scope_id": agent["id"],
             "name": "local-only",
             "transport": "stdio",
             "command": "python3",

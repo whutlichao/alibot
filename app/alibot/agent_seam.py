@@ -687,7 +687,7 @@ class AgentScopeAgentSeam:
         locale_of: Callable[[], Locale] | None = None,
         workspace_of: Callable[[str, str], Any] | None = None,
         permission_of: Callable[[str, str], Any] | None = None,
-        mcp_of: Callable[[str, str], Any] | None = None,
+        mcp_consent_of: Callable[[str], bool] | None = None,
         skills_of: Callable[[str, str], Any] | None = None,
         web_of: Callable[[str, str], Any] | None = None,
         global_home: str | os.PathLike[str] | None = None,
@@ -710,9 +710,10 @@ class AgentScopeAgentSeam:
         # 权限读路径（#149）：档位 + 频道/Agent 规则 + 项目根；不注入时沿用 workspace 配置里的
         # 权限档、没有用户规则（未配置 workspace 的频道没有可授权的工具，行为不变）。
         self._permission_of = permission_of
-        # MCP 声明读路径（#151）：生产是 ``Database.mcp_servers_for_target``。不注入时这一轮
-        # 不挂 MCP——未配置声明的工作区行为逐字不变。
-        self._mcp_of = mcp_of
+        # MCP 声明**唯一正本**是成员家目录 ``mcp.json``（ADR-0021 §三 / ADR-0031 修订）；
+        # 这里只需要注入远端条目的**确认状态**读路径（生产是 ``Database.has_remote_consent_scope``
+        # 的 ``("mcp", 合成标识)``）。不注入时远端条目按未确认处理：数据面不建连。
+        self._mcp_consent_of = mcp_consent_of
         # Skill 读路径（#152 / #271）：生产是 ``Database.skills_for_target``。返回该成员的
         # 成员级技能行（含停用行，供装配层占位）；字节在成员家目录 ``agents/<member>/skills/``
         # 下，装配层再核一次 hash、只装配启用的行。不注入时这一轮没有库行技能（人手工放置的
@@ -723,10 +724,6 @@ class AgentScopeAgentSeam:
         # ``agent_config.system_prompt``，行为与 #230 之前逐字相同。全局层只读、不建目录、
         # 不进入文件工具根。
         self._global_home = str(global_home) if global_home is not None else None
-        # 成员家目录 ``mcp.json`` 的**远端确认状态**读路径已在 #275 随装配层一起移除：文件条目根本
-        # 不参与装配，所以「它是否被确认」不再影响任何一轮。确认状态仍由 Studio 的
-        # ``POST /api/agents/{id}/global-mcp-servers/{name}/consent`` 写进既有确认行（那是它自己的
-        # 人类面动作），要参与装配必须先 ``migrate-mcp`` 导入成 ``mcp_server`` 库行。
         # 联网配置读路径（#186）：生产是 ``Database.web_settings_for_target``（``web_access`` /
         # 权限档 / 已确认的 web provider）。**不挂在 workspace 上面**——``web_access`` 是独立配
         # 置位，频道没配项目根时它也生效（ADR-0026 §二）。不注入时这一轮不挂联网工具。
@@ -904,82 +901,87 @@ class AgentScopeAgentSeam:
             "agent_rules": [],
         }
 
-    def _mcp_declarations(self, target_id: str, member_id: str, notes: list[str]) -> list[dict[str, Any]]:
-        """本轮装配的 MCP 声明：**只有**成员级库行（``scope_kind='agent'``）。
+    def _mcp_declarations(self, member_id: str, notes: list[str]) -> list[dict[str, Any]]:
+        """本轮装配的 MCP 声明：**唯一正本**是成员家目录 ``mcp.json``。
 
-        未注入读路径 / 读路径失败时为零条，不拖垮一轮。频道级旧行**不进入装配**
-        （ADR-0031 #270 修订；行仍留在库里）。
+        频道与 DM 读的是**同一份文件**（ADR-0021 §三 / ADR-0031 修订）；库里旧行不参与装配，
+        它们只能经 ``export-mcp`` 迁进文件（迁移不删行、冲突拒绝覆盖）。
 
-        #275 起这里**不再合并成员家目录的 ``mcp.json``**：那份文件是**导入源**（`migrate-mcp`）
-        与 Studio 的写面，不是装配层。因此不再有「同名落选条目」——库里同名声明由
-        ``mcp_server`` 的 ``UNIQUE(scope_kind, scope_id, name)`` 直接挡住，跨层合并这件事已经不存在。
-        文件里还有未导入的条目时，运行期只发一条只进 ``RoundOutcome.reason`` 的可读提示
-        （「文件里有条目尚未导入」），不进 provider system prompt。
-        """
-        database_rows: list[dict[str, Any]] = []
-        if self._mcp_of is not None:
-            try:
-                database_rows = [dict(item) for item in (self._mcp_of(target_id, member_id) or [])]
-            except Exception:  # 配置读不出来等价于没有 MCP；不阻塞其他工具
-                _log.debug("mcp declaration lookup failed", exc_info=True)
-        agent_rows = [row for row in database_rows if str(row.get("scope_kind") or "agent") == "agent"]
-        # 「未导入」判据必须知道**库里已有的名字**：少了它，按 README 推荐的「先导入、再删文件」
-        # 走完的人会每轮都看到「还有 N 条未导入」的假提示（那些条目恰恰已装配）。
-        pending = self._unimported_global_mcp_count(
-            member_id, imported_names={str(row.get("name") or "") for row in database_rows}
-        )
-        if pending:
-            from .mcp import GLOBAL_MCP_FILENAME
-
-            notes.append(
-                render(
-                    "mcp.assembly.not_imported",
-                    self._locale(),
-                    count=pending,
-                    file=GLOBAL_MCP_FILENAME,
-                )
-            )
-        # 启用过滤在合并之后（与项目层既有语义一致）；本层已无跨层合并，这里只滤 enabled。
-        return [dict(row) for row in agent_rows if row.get("enabled", True)]
-
-    def _unimported_global_mcp_count(self, member_id: str, *, imported_names: set[str]) -> int:
-        """成员家目录 ``mcp.json`` 里**尚未导入**成库行的条目数（未接线 / 读不到时为零）。
-
-        装配层**不看这份文件的内容**（它不再是装配来源），只回答「有没有人写下了尚未进库的东西」——
-        这决定了本轮要不要给一条可读提示。``imported_names`` 是库里已有的声明名（含停用行）：
-        停用行也算「已导入」（人看得见它、知道它被停用，不该再收到「未导入」提示）。
-
-        文件缺失 / 非法 JSON / 顶层形状不对 ⇒ 零条（那一格没有可提示的东西）。
+        文件缺失 ⇒ 零条；不可读 / 非法 JSON / 顶层形状不对 / 有条目被跳过 ⇒ 零条或更少，并把
+        渲染好的问题追加进 ``notes``（只进 ``RoundOutcome.reason``，不进 provider system
+        prompt）。全局根未接线时零条（不读盘、不建目录）。
         """
         if self._global_home is None:
-            return 0
-        from .mcp import global_mcp_unimported_count
+            return []
+        from .mcp import load_member_mcp_declarations
 
         try:
-            return global_mcp_unimported_count(self._global_home, member_id, imported_names=imported_names)
-        except Exception:  # 读文件失败不该拖垮一轮，也不该把「读不到」说成「有未导入条目」
-            _log.debug("global MCP pending-import probe failed", exc_info=True)
-            return 0
+            document = load_member_mcp_declarations(
+                self._global_home,
+                member_id,
+                consent_of=self._mcp_consent_of,
+                locale=self._locale(),
+            )
+        except Exception:  # 读路径自身的意外等价于没有 MCP；不阻塞其他工具
+            _log.debug("mcp declaration lookup failed", exc_info=True)
+            return []
+        notes.extend(document.issues)
+        return [dict(item) for item in document.declarations if item.get("enabled", True)]
+
+    async def _open_mcp_host(self, session_id: str, notes: list[str]) -> Any | None:
+        """无项目根的轮次：在数据目录内开一个只托管 MCP 的运行宿主。
+
+        没有数据目录（未接线 ``runtime_root``）或宿主开不出来时，只追加一条可读提示并返回
+        ``None``——这一轮少一块 MCP 工具，其余工具与轮次结论都不变。
+        """
+        from .workspace import open_runtime_mcp_host
+
+        if self._runtime_root is None:
+            notes.append(render("mcp.assembly.host_unavailable", self._locale(), reason="no data directory"))
+            return None
+        try:
+            return await open_runtime_mcp_host(str(self._runtime_root), session_id)
+        except Exception as error:
+            _log.warning("mcp runtime host is unavailable", exc_info=True)
+            notes.append(render("mcp.assembly.host_unavailable", self._locale(), reason=str(error)))
+            return None
 
     async def _assemble_mcp(
         self,
-        target_id: str,
         member_id: str,
         mount: Any,
         session_id: str,
         notes: list[str],
-    ) -> Any:
-        """把声明挂到这一轮的工作区；任何失败都只影响 MCP 工具，不改变轮次结论。"""
+    ) -> Any | None:
+        """把文件里的声明挂到这一轮的工作区；任何失败都只影响 MCP 工具，不改变轮次结论。
+
+        有项目根：客户端挂在项目工作区上（Local 建本地客户端，Docker 走容器内网关）。
+        无项目根（DM / 未配项目根的频道）：**另开一个只托管 MCP 的运行宿主**，它不暴露任何
+        项目文件工具。没有声明时连宿主都不开。
+        """
         from .mcp import MCPAssembly, assemble_mcp_tools
 
-        # Local 后端的 stdio MCP 以该成员的 ``.alibot/agents/<id>`` 为 cwd（声明与状态按成员
-        # 分区）；Docker 的 stdio 在容器内由网关启动，cwd 用工作区根（``/workspace``）。
-        settings = getattr(mount, "settings", None)
-        cwd = str(mount.agent_dir) if settings is not None and settings.is_local else None
+        declarations = self._mcp_declarations(member_id, notes)
+        if not declarations:
+            return None
+
+        host: Any | None = None
+        if mount is not None:
+            workspace = mount.workspace
+            # Local 后端的 stdio MCP 以该成员的 ``.alibot/agents/<id>`` 为 cwd（声明与状态按
+            # 成员分区）；Docker 的 stdio 在容器内由网关启动，cwd 用工作区根（``/workspace``）。
+            settings = getattr(mount, "settings", None)
+            cwd = str(mount.agent_dir) if settings is not None and settings.is_local else None
+        else:
+            host = await self._open_mcp_host(session_id, notes)
+            if host is None:
+                return None
+            workspace = host
+            cwd = None
         try:
-            return await assemble_mcp_tools(
-                mount.workspace,
-                self._mcp_declarations(target_id, member_id, notes),
+            assembly = await assemble_mcp_tools(
+                workspace,
+                declarations,
                 member_id=member_id,
                 session_id=session_id,
                 environ=self._environ,
@@ -988,11 +990,17 @@ class AgentScopeAgentSeam:
             )
         except Exception:  # 装配层自身的意外：没有 MCP 工具，但工作区工具照常
             _log.warning("mcp assembly failed", exc_info=True)
+            if host is not None:
+                with suppress(Exception):
+                    await host.close()
+                return None
             return MCPAssembly(
-                workspace=mount.workspace,
+                workspace=workspace,
                 member_id=member_id,
                 session_id=session_id,
             )
+        assembly.host_workspace = host
+        return assembly
 
     def _skills_for(
         self,
@@ -1441,20 +1449,18 @@ class AgentScopeAgentSeam:
                     ),
                     root=str(root) if root else None,
                 )
+                session_id = session_partition_id(member_id, target_id)
                 if settings is not None:
-                    session_id = session_partition_id(member_id, target_id)
                     mount = await self._runtime_mount(
                         settings,
                         member_id,
                         target_id,
                         workspace_warnings,
                     )
-                    # MCP 声明挂在同一个工作区上：Local 建本地客户端，Docker 走容器内网关；
-                    # 单个 server 失败只影响自己的工具（状态可读），不改变本轮结论。
-                    if mount is not None:
-                        mcp_assembly = await self._assemble_mcp(
-                            target_id, member_id, mount, session_id, assembly_notes
-                        )
+                # MCP 声明与频道无关：有项目根就挂在项目工作区上，没有就开一个只托管 MCP 的
+                # 运行宿主（DM 也能用该 Agent 的 MCP，但拿不到项目文件工具）；单个 server
+                # 失败只影响自己的工具（状态可读），不改变本轮结论。
+                mcp_assembly = await self._assemble_mcp(member_id, mount, session_id, assembly_notes)
 
                 (
                     runtime_options,
@@ -1853,13 +1859,15 @@ class AgentScopeAgentSeam:
                 if mount is not None:
                     mounts.append(mount)
                     tools.extend(mount.tools)
-                    assembly = await self._assemble_mcp(
-                        target_id,
-                        member_id_value,
-                        mount,
-                        session_partition_id(member_id_value, target_id),
-                        assembly_notes,
-                    )
+                # MCP 与频道无关：没有项目根的成员同样读自己家目录的 mcp.json，只是客户端挂在
+                # 一个不暴露项目文件的运行宿主上。
+                assembly = await self._assemble_mcp(
+                    member_id_value,
+                    mount,
+                    session_partition_id(member_id_value, target_id),
+                    assembly_notes,
+                )
+                if assembly is not None:
                     mcp_assemblies.append(assembly)
                     tools.extend(assembly.tools)
                 context, root, mode = _permission_for(member_id_value)

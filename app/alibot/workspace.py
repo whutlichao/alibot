@@ -714,6 +714,25 @@ async def assemble_local_workspace(
     )
 
 
+#: 无项目根轮次的 MCP 运行宿主目录名：``<数据目录>/mcp-hosts/<session_id>``。
+MCP_HOST_DIR = "mcp-hosts"
+
+
+async def open_runtime_mcp_host(data_root: str, session_id: str) -> WorkspaceBase:
+    """为**无项目根**的轮次开一个只托管 MCP 的运行宿主（DM 也要能用该 Agent 的 MCP）。
+
+    宿主目录落在**数据目录**内、按 session 隔离，**刻意不返回任何文件工具**：DM 因此不获得
+    项目文件权限，stdio MCP 也只是拿到一个可写的 cwd（不少 server 需要它）。生命周期由
+    :class:`alibot.mcp.MCPAssembly` 负责——轮末先关客户端再关宿主，两者都在同一 loop 内。
+    """
+    root = os.path.realpath(str(data_root))
+    host_dir = os.path.join(root, MCP_HOST_DIR, safe_partition_id(session_id))
+    ensure_state_partition(root, host_dir)
+    workspace = ProjectLocalWorkspace(workdir=host_dir)
+    await workspace.initialize()
+    return workspace
+
+
 # ─── Docker 后端（#150） ────────────────────────────────────────────────────
 
 

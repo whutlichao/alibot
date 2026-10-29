@@ -12,10 +12,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from collections.abc import Sequence
-from contextlib import suppress
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,12 +43,21 @@ from .db import (
 from .events import EventBus
 from .i18n import Locale, join_list, locale_of, render
 from .mcp import (
-    GLOBAL_MCP_FILENAME,
+    MCP_DECLARATION_ERROR_KEYS,
+    MEMBER_MCP_FILENAME,
+    REMOTE_MCP_TRANSPORTS,
+    InvalidMCPDeclaration,
     InvalidMCPDocument,
-    load_global_mcp_declarations,
+    MemberMCPDocument,
+    clear_runtime_for_member,
+    load_member_mcp_declarations,
     mcp_document_entry_count,
+    member_mcp_server_id,
+    normalize_mcp_declaration,
     runtime_status,
+    split_member_mcp_server_id,
     validate_mcp_document,
+    write_mcp_document_atomic,
 )
 from .memory import memory_workspace_dir
 from .mentions import parse_mentions
@@ -969,24 +978,279 @@ class WorkspaceService:
             "agents": self.agents(),
         }
 
-    # ─── 全局 MCP 声明（#236 / ADR-0031 D8：人类面按「成员 + 名字」定位） ───
-    def global_mcp_servers(self, member_id: str) -> dict[str, Any]:
-        """该成员全局 ``mcp.json`` 的**只读**条目与运行期读数。
+    # ─── MCP 声明（ADR-0021 §三 / ADR-0031 修订：家目录 mcp.json 是唯一正本） ───
+    #
+    # 结构化编辑面与原文编辑面读写**同一份文件**；库里 ``mcp_server`` 旧行不再参与装配，
+    # 只能经 ``export-mcp`` 迁进文件（迁移不删行、冲突拒绝覆盖）。
+    def mcp_servers(self, scope_kind: str, scope_id: str) -> dict[str, Any]:
+        """该 Agent 家目录 ``mcp.json`` 的条目与运行期读数（结构化编辑的读面）。
 
-        全局声明是纯文件层：这里只读、不创建、不写回；列表只含文件里真实存在的条目
-        （坏条目由加载层跳过并留日志）。条目字段只有名字 / transport / 是否远端 / 是否已确认 /
-        进程内 ``runtime``——编辑、启停、删除都不在本仓的人类面里。
+        作用域**只接受** ``agent``：频道级声明已随 ADR-0031 修订弃用，旧行留在库里但不进入
+        装配、也不在这里出现。文件缺失 ⇒ 空列表 + ``exists=false``（前端据此给出创建入口）。
+        可读问题只在原文编辑面（``global_mcp_document`` 的 ``issues``）给一份：文件不可用时
+        结构化写路径本就以 400 + 可读原因拒绝，不在读面重复第二份判定。
         """
-        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
-        return {"member_id": member_id, "global_mcp_servers": self._global_mcp_views(member_id)}
+        self._assert_mcp_agent_scope(scope_kind, scope_id)
+        document = self._member_mcp_document(scope_id)
+        return {
+            "mcp_servers": [self._mcp_server_view(item, scope_id) for item in document.declarations],
+            "path": document.path,
+            "exists": document.exists,
+        }
 
-    def _global_mcp_views(self, member_id: str) -> list[dict[str, Any]]:
-        """全局声明的展示形态；确认态读既有 ``remote_consent_scope('mcp', 合成标识)``。"""
-        declarations = load_global_mcp_declarations(
+    def create_mcp_server(self, scope_kind: str, scope_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
+        """往该 Agent 家目录 ``mcp.json`` 追加一条声明（文件不存在 ⇒ 新建）。
+
+        同名条目视为冲突（409），**不静默覆盖**；文件当前不可用（坏 JSON / 顶层形状不对）⇒
+        400 并让人先走原文编辑，绝不把人的原文覆盖成结构化结果。
+        """
+        self._assert_mcp_agent_scope(scope_kind, scope_id)
+        declaration = self._normalize_mcp_values(values)
+        payload, target = self._mcp_payload_for_write(scope_id)
+        name = str(declaration["name"])
+        if self._mcp_entry_index(payload, name) is not None:
+            message = render("error.mcp_server_conflict", self._locale(), name=name)
+            raise DomainError("mcp_server_conflict", message, status=409, fields={"name": message})
+        payload["servers"].append(declaration)
+        self._write_mcp_payload(target, payload, scope_id)
+        return {"mcp_server": self._reload_mcp_server(scope_id, name)}
+
+    def update_mcp_server(self, server_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """部分更新文件里的一条声明；整条结果重新校验，重名拒绝。"""
+        allowed = {"name", "transport", "command", "args", "url", "env_names", "enabled"}
+        unknown = set(changes) - allowed
+        if unknown:
+            message = render("error.field_choices", self._locale(), values=", ".join(sorted(allowed)))
+            raise DomainError(
+                "validation_failed",
+                message,
+                fields=dict.fromkeys(unknown, message),
+            )
+        member_id, name = self._split_mcp_server_id(server_id)
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        payload, target = self._mcp_payload_for_write(member_id)
+        index = self._mcp_entry_index(payload, name)
+        if index is None:
+            raise NotFound(render("error.mcp_server_not_found", self._locale(), server_id=server_id))
+        merged = {**dict(payload["servers"][index]), **dict(changes)}
+        declaration = self._normalize_mcp_values(merged)
+        renamed = str(declaration["name"])
+        if renamed != name and self._mcp_entry_index(payload, renamed, exclude=index) is not None:
+            message = render("error.mcp_server_conflict", self._locale(), name=renamed)
+            raise DomainError("mcp_server_conflict", message, status=409, fields={"name": message})
+        payload["servers"][index] = declaration
+        self._write_mcp_payload(target, payload, member_id)
+        return {"mcp_server": self._reload_mcp_server(member_id, renamed)}
+
+    def delete_mcp_server(self, server_id: str) -> dict[str, Any]:
+        """删掉文件里的一条声明（返回被删条目的最后读数）。"""
+        member_id, name = self._split_mcp_server_id(server_id)
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        payload, target = self._mcp_payload_for_write(member_id)
+        index = self._mcp_entry_index(payload, name)
+        if index is None:
+            raise NotFound(render("error.mcp_server_not_found", self._locale(), server_id=server_id))
+        removed = payload["servers"].pop(index)
+        self._write_mcp_payload(target, payload, member_id)
+        if isinstance(removed, Mapping):
+            normalized = self._normalize_mcp_values(removed)
+            remote = normalized["transport"] in REMOTE_MCP_TRANSPORTS
+            return {
+                "mcp_server": self._mcp_server_view(
+                    {
+                        **normalized,
+                        "id": member_mcp_server_id(member_id, name),
+                        "is_remote": remote,
+                        "consent_required": remote,
+                        "consented": False,
+                    },
+                    member_id,
+                )
+            }
+        # 非对象条目只可能是人手工写坏的一条：删掉它就是修复，读数按空声明给出。
+        return {
+            "mcp_server": {
+                "id": server_id,
+                "name": name,
+                "scope_kind": "agent",
+                "scope_id": member_id,
+                "runtime": None,
+            }
+        }
+
+    def confirm_mcp_server(self, server_id: str) -> dict[str, Any]:
+        """确认文件里一条远端声明的数据面告知（幂等；stdio 拒绝）。"""
+        member_id, name = self._split_mcp_server_id(server_id)
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        document = self._member_mcp_document(member_id)
+        declaration = next((item for item in document.declarations if item["name"] == name), None)
+        if declaration is None:
+            raise NotFound(render("error.mcp_server_not_found", self._locale(), server_id=server_id))
+        if not declaration["is_remote"]:
+            message = render("error.mcp_consent_local", self._locale())
+            raise DomainError("validation_failed", message, fields={"transport": message})
+        consent = self._db.record_remote_consent_scope("mcp", str(declaration["id"]))
+        refreshed = self._member_mcp_document(member_id)
+        item = next((row for row in refreshed.declarations if row["name"] == name), declaration)
+        return {"mcp_server": self._mcp_server_view(item, member_id), "consent": consent}
+
+    def _assert_mcp_agent_scope(self, scope_kind: str, scope_id: str) -> None:
+        """MCP 声明只挂在 Agent 作用域；频道级旧行已弃用（不静默启用）。"""
+        if scope_kind != "agent":
+            message = render("error.mcp_scope_invalid", self._locale())
+            raise DomainError("validation_failed", message, fields={"scope_kind": message})
+        self._db.get_agent(scope_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+
+    def _member_mcp_document(self, member_id: str) -> MemberMCPDocument:
+        """读该成员家目录 ``mcp.json``（只读；确认态读既有 ``remote_consent_scope('mcp', …)``）。"""
+        return load_member_mcp_declarations(
             self._global_home(),
             member_id,
             consent_of=lambda scope_id: self._db.has_remote_consent_scope("mcp", scope_id),
+            locale=self._locale(),
         )
+
+    def _mcp_server_view(self, declaration: Mapping[str, Any], member_id: str) -> dict[str, Any]:
+        """文件条目的结构化视图；字段与旧库行响应兼容（前端表单据此回填）。"""
+        return {
+            "id": str(declaration["id"]),
+            "name": str(declaration["name"]),
+            "transport": str(declaration["transport"]),
+            "command": str(declaration.get("command") or ""),
+            "args": [str(item) for item in declaration.get("args") or []],
+            "url": str(declaration.get("url") or ""),
+            "env_names": [str(item) for item in declaration.get("env_names") or []],
+            "enabled": bool(declaration.get("enabled", True)),
+            "scope_kind": "agent",
+            "scope_id": member_id,
+            "is_remote": bool(declaration.get("is_remote")),
+            "consent_required": bool(declaration.get("consent_required")),
+            "consented": bool(declaration.get("consented")),
+            "runtime": runtime_status(str(declaration["id"])),
+        }
+
+    def _normalize_mcp_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """形状校验的唯一实现在 ``mcp.normalize_mcp_declaration``；这里只翻译成既有错误码。"""
+        try:
+            return normalize_mcp_declaration(values)
+        except InvalidMCPDeclaration as error:
+            field, key = MCP_DECLARATION_ERROR_KEYS.get(
+                error.field, ("transport", "error.mcp_transport_invalid")
+            )
+            message = render(key, self._locale())
+            raise DomainError("validation_failed", message, fields={field: message}) from None
+
+    def _split_mcp_server_id(self, server_id: str) -> tuple[str, str]:
+        """合成标识 ``global:<member>:<name>`` → ``(member, name)``。
+
+        库行时代的旧 id（``mcp_…``）不再指向任何声明：结构化编辑面只认文件条目的合成标识。
+        """
+        parsed = split_member_mcp_server_id(server_id)
+        if parsed is None:
+            raise NotFound(render("error.mcp_server_not_found", self._locale(), server_id=server_id))
+        return parsed
+
+    @staticmethod
+    def _mcp_entry_index(payload: Mapping[str, Any], name: str, *, exclude: int | None = None) -> int | None:
+        """文件 ``servers`` 里名字匹配的条目下标（跳过非对象条目与 ``exclude``）。"""
+        for index, entry in enumerate(payload.get("servers") or []):
+            if index == exclude or not isinstance(entry, Mapping):
+                continue
+            if str(entry.get("name") or "") == name:
+                return index
+        return None
+
+    def _mcp_payload_for_write(self, member_id: str) -> tuple[dict[str, Any], str]:
+        """结构化编辑的读-改-写入口：家目录必须存在、路径必须安全、文件必须可用。
+
+        文件缺失 ⇒ 以空 ``servers`` 开始（「文件不存在」也有可用的创建路径）；文件存在但不是
+        合法 JSON / 顶层形状不对 ⇒ 400，**绝不覆盖**——原文编辑是人的修复面。
+        """
+        locale = self._locale()
+        root = self._global_home()
+        home = global_member_home(member_id, root=root)
+        if not os.path.isdir(home):
+            message = render("error.global_mcp_home_missing", locale, path=home)
+            raise DomainError("validation_failed", message, fields={"name": message})
+        target = resolve_global_write_path(
+            root, AGENTS_DIR, safe_partition_id(member_id), MEMBER_MCP_FILENAME
+        )
+        if target is None:
+            message = render(
+                "error.global_mcp_path_invalid",
+                locale,
+                path=os.path.join(home, MEMBER_MCP_FILENAME),
+            )
+            raise DomainError("validation_failed", message, fields={"name": message})
+        try:
+            text = Path(target).read_text(encoding="utf-8")
+        except FileNotFoundError:  # 文件不存在：新建从空 servers 开始
+            return {"servers": []}, target
+        except (OSError, UnicodeDecodeError) as error:
+            message = render("error.mcp_file_unusable", locale, reason=str(error))
+            raise DomainError("validation_failed", message, fields={"name": message}) from None
+        try:
+            payload = json.loads(text)
+        except ValueError as error:
+            message = render("error.mcp_file_unusable", locale, reason=str(error))
+            raise DomainError("validation_failed", message, fields={"name": message}) from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("servers"), list):
+            message = render(
+                "error.mcp_file_unusable",
+                locale,
+                reason=render("error.global_mcp_servers_missing", locale),
+            )
+            raise DomainError("validation_failed", message, fields={"name": message})
+        return payload, target
+
+    def _write_mcp_payload(self, target: str, payload: Mapping[str, Any], member_id: str) -> None:
+        """结构化结果写盘（缩进 2 的稳定 JSON），并清掉该成员的进程内运行时读数。"""
+        text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        self._write_global_mcp_text(target, text)
+        clear_runtime_for_member(member_id)
+
+    def _write_global_mcp_text(self, target: str, text: str) -> None:
+        """原子写一份 ``mcp.json`` 原文（实现对 ``mcp.write_mcp_document_atomic``）。"""
+        try:
+            write_mcp_document_atomic(target, text)
+        except OSError as error:
+            message = render("error.global_mcp_write_failed", self._locale(), reason=str(error))
+            raise DomainError("validation_failed", message, fields={"text": message}) from None
+
+    def _reload_mcp_server(self, member_id: str, name: str) -> dict[str, Any]:
+        """写完再读：返回的是**文件事实**（含确认态与运行期读数），不是内存里的意图。"""
+        document = self._member_mcp_document(member_id)
+        item = next((row for row in document.declarations if row["name"] == name), None)
+        if item is None:  # 刚写下的条目又读不到：把问题说清楚，而不是返回空
+            raise NotFound(
+                render(
+                    "error.mcp_server_not_found",
+                    self._locale(),
+                    server_id=f"global:{member_id}:{name}",
+                )
+            )
+        return self._mcp_server_view(item, member_id)
+
+    def global_mcp_servers(self, member_id: str) -> dict[str, Any]:
+        """该成员家目录 ``mcp.json`` 的**只读**条目与运行期读数（#236 的旧读面）。
+
+        可读问题不在这里重复：原文编辑面（``global_mcp_file``）的 ``issues`` 是同一份判定，
+        修文件的人看那一份。
+        """
+        self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
+        document = self._member_mcp_document(member_id)
+        return {
+            "member_id": member_id,
+            "global_mcp_servers": self._global_mcp_views(member_id, document=document),
+            "path": document.path,
+            "exists": document.exists,
+        }
+
+    def _global_mcp_views(
+        self, member_id: str, *, document: MemberMCPDocument | None = None
+    ) -> list[dict[str, Any]]:
+        """全局声明的展示形态；确认态读既有 ``remote_consent_scope('mcp', 合成标识)``。"""
+        source = document if document is not None else self._member_mcp_document(member_id)
         return [
             {
                 "name": declaration["name"],
@@ -995,7 +1259,7 @@ class WorkspaceService:
                 "consented": declaration["consented"],
                 "runtime": runtime_status(str(declaration["id"])),
             }
-            for declaration in declarations
+            for declaration in source.declarations
         ]
 
     def _global_home(self) -> str:
@@ -1013,10 +1277,12 @@ class WorkspaceService:
         """
         self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
         root = self._global_home()
-        parts = (AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME)
+        parts = (AGENTS_DIR, safe_partition_id(member_id), MEMBER_MCP_FILENAME)
         path = resolve_global_read_path(root, *parts)
         # 路径读数与「文件在不在」解耦：读守卫缺席时返回 None，写守卫返回同一个 realpath。
         target = resolve_global_write_path(root, *parts)
+        # 可读问题与运行期装配共用同一份判定（读路径的 issues）：原文编辑面也看得见同一句话。
+        issues = list(self._member_mcp_document(member_id).issues)
         if path is None:
             # 既包括「这一层没有这个文件」，也包括「路径被守卫拒（根外 symlink 祖先 / 目标）」。
             # 两者对外都是「读不到原文」，但都不能退化成直读；后者连路径也不给（target=None）。
@@ -1026,6 +1292,7 @@ class WorkspaceService:
                 "text": "",
                 "servers": 0,
                 "path": target,
+                "issues": issues,
             }
         try:
             text = Path(path).read_text(encoding="utf-8")
@@ -1036,6 +1303,7 @@ class WorkspaceService:
                 "text": "",
                 "servers": 0,
                 "path": target,
+                "issues": issues,
             }
         except (OSError, UnicodeDecodeError) as error:
             # 文件在但不可读 / 非 UTF-8：这不是「没有文件」，也不能静默当成空原文。
@@ -1047,6 +1315,7 @@ class WorkspaceService:
             "text": text,
             "servers": mcp_document_entry_count(text),
             "path": path,
+            "issues": issues,
         }
 
     def save_global_mcp_document(self, member_id: str, text: str) -> dict[str, Any]:
@@ -1060,7 +1329,8 @@ class WorkspaceService:
         ``runtime.py`` 的状态落盘）；**原文逐字写**——不 ``json.dumps`` 重排、不重缩进、不动
         末尾换行。文件不存在但成员家目录存在 ⇒ 新建；**家目录本身不存在 ⇒ 400** 且不创建任何
         目录（应用不自动创建全局层，ADR-0031 §三）。文件存在 ⇒ 覆盖（人类显式动作）。
-        响应与读端点同形（含 ``path``：这份文件写到的**真实路径**）。
+        响应与读端点同形（含 ``path``：这份文件写到的**真实路径**；``issues`` 是写后经装配层
+        同一读路径的回读判定）。
 
         守卫：写前用同一内核（:func:`workspace.resolve_global_write_path`，与只读守卫共用
         ``realpath`` 判定）取目标的真实路径，拒绝根外 symlink 祖先与根外目标。
@@ -1080,34 +1350,26 @@ class WorkspaceService:
             message = render("error.global_mcp_home_missing", locale, path=home)
             raise DomainError("validation_failed", message, fields={"text": message})
         target = resolve_global_write_path(
-            root, AGENTS_DIR, safe_partition_id(member_id), GLOBAL_MCP_FILENAME
+            root, AGENTS_DIR, safe_partition_id(member_id), MEMBER_MCP_FILENAME
         )
         if target is None:
             message = render(
                 "error.global_mcp_path_invalid",
                 locale,
-                path=os.path.join(home, GLOBAL_MCP_FILENAME),
+                path=os.path.join(home, MEMBER_MCP_FILENAME),
             )
             raise DomainError("validation_failed", message, fields={"text": message})
 
-        temporary = os.path.join(os.path.dirname(target), f".{GLOBAL_MCP_FILENAME}.{os.urandom(8).hex()}.tmp")
-        try:
-            with open(temporary, "xb") as stream:
-                stream.write(text.encode("utf-8"))
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
-        except OSError as error:
-            with suppress(OSError):
-                os.unlink(temporary)
-            message = render("error.global_mcp_write_failed", locale, reason=str(error))
-            raise DomainError("validation_failed", message, fields={"text": message}) from None
+        self._write_global_mcp_text(target, text)
+        # 原文换了内容，进程内的旧读数就不再代表文件事实；下一次装配会重建。
+        clear_runtime_for_member(member_id)
         return {
             "member_id": member_id,
             "exists": True,
             "text": text,
             "servers": mcp_document_entry_count(text),
             "path": target,
+            "issues": list(self._member_mcp_document(member_id).issues),
         }
 
     def confirm_global_mcp_server(self, member_id: str, name: str) -> dict[str, Any]:
@@ -1121,8 +1383,8 @@ class WorkspaceService:
         self._db.get_agent(member_id)  # 成员存在性；不存在 ⇒ NotFound（404）
         locale = self._locale()
         clean = (name or "").strip()
-        declarations = load_global_mcp_declarations(self._global_home(), member_id)
-        declaration = next((item for item in declarations if item["name"] == clean), None)
+        document = self._member_mcp_document(member_id)
+        declaration = next((item for item in document.declarations if item["name"] == clean), None)
         if declaration is None:
             message = render("error.global_mcp_declaration_not_found", locale, name=clean)
             raise DomainError("validation_failed", message, fields={"name": message})

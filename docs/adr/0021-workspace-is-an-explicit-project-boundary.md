@@ -38,9 +38,9 @@ AgentScope 的 `LocalBackend` 用主机进程执行 Bash；`cwd=workdir` **不�
 
 ## 三、MCP / Skill 是配置，不是消息或任务
 
-**修订（#270，2026-10-25）**：本节原有的项目根 Skill 字节路径与频道级 MCP / Skill 装配口径已修订。以下为现行决策：
+**修订（#270，2026-10-25；MCP 正本部分按 2026-10-29 用户决定再次修订）**：本节原有的项目根 Skill 字节路径与频道级 MCP / Skill 装配口径已修订。以下为现行决策：
 
-- `mcp_server` 是 MCP 声明的数据库正本，也是**唯一装配来源**；现行声明使用 `scope_kind='agent'`；`scope_kind='channel'` 的旧行保留但弃用，装配忽略、不回填。Agent 家目录 `mcp.json` 是**导入源**，并由 Studio 经人类面提供写面（直接编辑原文）；它**不参与运行时装配**——文件里未导入的条目不会被连接，只给一条只进 `RoundOutcome.reason` 的可读提示。导入是**显式**动作（`python -m alibot migrate-mcp`，默认 dry-run、`--apply --yes` 才写、先备份、同名不同形整体拒绝、不删源、**不代做远端确认**，#275）。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）；没有 workspace 时不装配 MCP。
+- **Agent 家目录 `mcp.json` 是这份 Agent MCP 声明的唯一正本**，管理面（Studio 条目视图与原文文本域）与运行期装配读写同一份文件；DM 与频道共用它，DM 不因此获得项目文件权限。库内 `mcp_server` 表不再是装配来源，只保留为历史数据与迁移来源；`scope_kind='channel'` 的旧行同样保留但弃用，装配忽略、不回填、绝不静默启用。旧 Agent 级行经**显式** `python -m alibot export-mcp` 导出到成员文件（默认 dry-run、`--apply --yes` 才写、先备份并落清单、同名不同形整体拒绝、保留文件里的额外条目、不删库行、**只复制旧行上已有的远端确认、不代做新确认**）。旧命令 `migrate-mcp` 已退役（打印指向 `export-mcp` 的提示，退出码 6）。MCP 仍以 workspace 为宿主（AgentScope 的 `list_mcps` 需要 workspace）：有项目根时用项目 workspace，无项目根（DM / 未配置项目根的频道）时在 `<data_dir>/mcp-hosts/<session_id>` 建**不带项目文件工具**的运行期宿主；文件缺失或非法时本轮不装配 MCP，并给一条只进 `RoundOutcome.reason` 的可读提示。
 - `skill` 仍存元数据与 hash；字节由宿主应用写入 `~/.alibot/agents/<member_id>/skills/<name>/`，不再依赖 workspace。安装只接受本机目录或上传 zip，校验 `SKILL.md` front matter 与 hash；不做远程市场、自动下载或自动更新。
 - `scope_kind='channel'` 的旧 Skill 行与项目层字节 `<workspace_root>/.alibot/skills/<member_id>/` 保留但弃用、装配忽略；不回填、不自动删除。迁移由独立 `migrate-skills` 命令显式执行（#274；默认 dry-run，`--apply --yes` 才动手，退出码 6 = 拒绝/中途失败），启动时绝不自动迁移。
 - MCP / Skill 的增删是**配置动作**：不落消息、不唤醒、不消耗预算、不开世代（与 ADR-0011 同族）。
