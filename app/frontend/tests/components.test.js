@@ -209,6 +209,80 @@ describe('消息行', () => {
     expect(wrapper.find('.msg-head').attributes('data-state-label')).toBe('待确认');
   });
 
+  test('owner 自己的消息挂 own 类：按作者 id 判，不认显示名', () => {
+    // 改名不改变身份：作者 id 与工作台快照的 `member.id` 相同就是「我」发的。
+    const own = mount(MessageItem, {
+      props: {
+        message: message(8, { author: { ...OWNER, display_name: '老板' } }),
+        member: OWNER,
+        ownerId: 'owner',
+      },
+    });
+    expect(own.classes()).toContain('own');
+    // 显示名恰好也叫 owner 的 Agent 不是「我」：判据只读 id，不读名字。
+    const other = mount(MessageItem, {
+      props: {
+        message: message(9, { kind: 'agent', author: { ...ADA, display_name: 'owner' } }),
+        member: OWNER,
+        ownerId: 'owner',
+      },
+    });
+    expect(other.classes()).not.toContain('own');
+  });
+
+  test('没有 owner 身份数据时不把任何消息判成 own（不猜）', () => {
+    // 工作台快照还没接上时 `ownerId` 是空串：宁可全在左侧，也不误把别人的消息搬到右边。
+    const wrapper = mount(MessageItem, { props: { message: message(10), member: OWNER } });
+    expect(wrapper.classes()).not.toContain('own');
+  });
+
+  test('系统事件消息即使作者是 owner 也不右对齐（事件不是人说的话）', () => {
+    const wrapper = mount(MessageItem, {
+      props: { message: message(11, { kind: 'system', body: '任务已创建' }), member: OWNER, ownerId: 'owner' },
+    });
+    expect(wrapper.classes()).toContain('sys');
+    expect(wrapper.classes()).not.toContain('own');
+  });
+
+  test('乐观发送与失败项同样进 owner 气泡（author 随 pending 一起走）', () => {
+    const base = {
+      clientId: 'p-3',
+      body: '还没确认',
+      created_at: '2026-10-26T10:00:00Z',
+      author: OWNER,
+    };
+    const pending = mount(MessageItem, {
+      props: { message: { ...base, status: 'pending' }, member: OWNER, ownerId: 'owner' },
+    });
+    expect(pending.classes()).toEqual(expect.arrayContaining(['own', 'pending']));
+
+    const failed = mount(MessageItem, {
+      props: {
+        message: { ...base, clientId: 'p-4', status: 'failed', reason: '后端拒绝' },
+        member: OWNER,
+        ownerId: 'owner',
+      },
+    });
+    expect(failed.classes()).toEqual(expect.arrayContaining(['own', 'failed']));
+    // own 只改呈现：失败原因与两个动作仍可用（浏览器取证里同样是这两枚按钮）。
+    expect(failed.text()).toContain('后端拒绝');
+    expect(failed.findAll('.msg-retry button').length).toBe(2);
+  });
+
+  test('own 气泡的呈现规则在唯一正本 app.css 里（右对齐 + 既有色位）', () => {
+    // jsdom 不做布局：右对齐与装饰落成 CSS 文本契约，实际像素由浏览器验证（验收证据）。
+    const css = readStudio('app.css');
+    const rowAt = css.indexOf('.msg.own {');
+    expect(rowAt, '缺少 `.msg.own` 行规则').toBeGreaterThanOrEqual(0);
+    expect(css.slice(rowAt, css.indexOf('}', rowAt))).toContain('flex-direction: row-reverse');
+
+    const bodyAt = css.indexOf('.msg.own .msg-body {');
+    expect(bodyAt, '缺少 `.msg.own .msg-body` 气泡规则').toBeGreaterThanOrEqual(0);
+    const bodyBlock = css.slice(bodyAt, css.indexOf('}', bodyAt));
+    expect(bodyBlock).toContain('max-width:');
+    expect(bodyBlock).toContain('background: var(--panel-2)');
+  });
+
   test('失败项：展示原因 + 重试 / 移除两个动作，且不再标成「待确认」', async () => {
     const wrapper = mount(MessageItem, {
       props: {
@@ -283,6 +357,14 @@ describe('附件', () => {
 
     const without = mount(MessageItem, { props: { message: message(4), member: OWNER } });
     expect(without.find('.msg-attachments').exists()).toBe(false);
+  });
+
+  test('owner 气泡里的附件照常渲染（own 只改呈现，不改消息内容）', () => {
+    const wrapper = mount(MessageItem, {
+      props: { message: message(8, { attachments: [bound] }), member: OWNER, ownerId: 'owner' },
+    });
+    expect(wrapper.classes()).toContain('own');
+    expect(wrapper.find('.msg-attachments .attach').exists()).toBe(true);
   });
 
   test('系统事件消息也能带附件（同一块形状，不另写一套）', () => {
@@ -476,6 +558,19 @@ describe('消息流', () => {
     const seqs = wrapper.findAll('[data-seq]').map((node) => node.attributes('data-seq'));
     expect(seqs).toEqual(['1', '2', '3']);
     expect(wrapper.findAll('.day-sep').length).toBe(1);
+  });
+
+  test('owner 消息在流里标记为 own，其他作者（含 system 事件）保持普通行', () => {
+    const wrapper = mount(MessageStream, {
+      props: {
+        state: emptyState(),
+        messages: [message(1), message(2, { kind: 'agent', author: ADA }), message(3, { kind: 'system' })],
+        typingNames: [],
+      },
+    });
+    const own = wrapper.findAll('.msg.own');
+    expect(own.length).toBe(1);
+    expect(own[0].attributes('data-seq')).toBe('1');
   });
 
   test('没有当前 target 时给「还没有频道」空态；有 target 但没有消息时给另一条空态', () => {

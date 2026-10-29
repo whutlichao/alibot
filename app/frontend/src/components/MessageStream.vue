@@ -78,6 +78,9 @@ function outcomesFor(seq) {
 
 const hasTarget = computed(() => Boolean(props.state.activeTargetId));
 
+/** 本机人类成员的 id（`state.member` 是 `/api/workspace` 的 owner 行）：own 气泡的身份判据。 */
+const ownerId = computed(() => (props.state.member && props.state.member.id) || '');
+
 /** 本 target 的审批记录（pending 在前；终态是历史，仍如实铺出来，只是没有动作）。
     读数只从 store 来——排序、呈现态、倒计时都在那一层与 `ApprovalCard.vue` 里，本层不重算。 */
 const approvalRecords = computed(() => {
@@ -168,6 +171,7 @@ defineExpose({ scrollToBottom });
               :member="state.member"
               :task-of="taskOf"
               :pending-count-for="pendingCountFor"
+              :owner-id="ownerId"
               @retry="emit('retry', $event)"
               @discard="emit('discard', $event)"
               @open-task="emit('open-task', $event)"
