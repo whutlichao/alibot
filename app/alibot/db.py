@@ -3145,18 +3145,12 @@ class Database:
         clean_id = str(channel_id).strip()
         with self._lock:
             channel = self.get_channel(clean_id)
-            now = utc_now()
-            self._begin()
-            try:
-                self._conn.execute(
-                    "UPDATE channel SET deleted_at = ?, archived_at = NULL "
-                    "WHERE id = ? AND deleted_at IS NULL",
-                    (now, clean_id),
-                )
-                self._commit()
-            except Exception:
-                self._rollback()
-                raise
+            # 单条 UPDATE，与 ``archive_channel`` / ``unarchive_channel`` 同一形状：读与写都在同一把
+            # 锁里，因此不需要显式事务（``delete_agent`` 要事务是因为它写两张表）。
+            self._conn.execute(
+                "UPDATE channel SET deleted_at = ?, archived_at = NULL WHERE id = ? AND deleted_at IS NULL",
+                (utc_now(), clean_id),
+            )
         return str(channel["id"])
 
     def workspace_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
