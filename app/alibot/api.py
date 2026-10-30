@@ -25,6 +25,9 @@
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``GET  /api/events``                        全局事件流（SSE，纯 live、不补拉、不发 ``id`` 行）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
+- ``POST /api/channels/{id}/archive``         归档频道（幂等；频道面只读，历史仍可读）
+- ``POST /api/channels/{id}/unarchive``       取消归档（幂等；写入口恢复）
+- ``DELETE /api/channels/{id}``               软删除频道（终态、不幂等；二次 ⇒ 404）
 - ``GET  /api/tasks``                         全工作区任务看板（可按频道筛选）
 - ``POST /api/channels/{id}/tasks``           在频道下新建任务与独立线程
 - ``GET/POST /api/tasks/{id}/messages``       读取 / 追加任务线程消息
