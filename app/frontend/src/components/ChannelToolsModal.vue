@@ -75,6 +75,7 @@ async function archiveChannel() {
 <template>
   <ModalShell
     id="channelToolsOverlay"
+    class="channel-tools-overlay"
     :open="open"
     wide
     :title="title"
