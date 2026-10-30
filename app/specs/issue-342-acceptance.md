@@ -18,9 +18,9 @@ Node v25.0.0、Vitest 4.1.12、ego-browser 0.6.0.20（Chromium 154）
 
 | # | 判据（票面 Observable acceptance） | 落点 | 读数 | 结论 |
 | --- | --- | --- | --- | --- |
-| 1 | 红证据 → 绿：新用例在 base `6f02a51` 的隔离副本上红、新代码上绿 | `app/tests/test_channel_archive.py` / `app/frontend/tests/channel-archive.test.js` | 后端 base `11 failed, 2 passed` → 新代码 `13 passed`；前端 base `14 failed \| 1 passed (15)` → 新代码 `15 passed (15)`（§1） | ✅ |
-| 2 | 后端行为：归档读数 / 幂等 / 五写入口 400 且零写入 / 任务面不受影响 / 取消归档 / 删除与二次 404 / 总未读 / 搜索 / 迁移 25→26 | `app/tests/test_channel_archive.py`（HTTP 黑盒，不读库表） | `13 passed in 2.42s`（§2） | ✅ |
-| 3 | 前端行为：折叠段与 `aria-expanded` / composer 禁用与占位 / 工具行只剩取消归档 / 删除需确认 / 删除当前频道后主线落点 / store 用响应覆盖 | `app/frontend/tests/channel-archive.test.js`（从 `App.vue` 进） | `15 passed (15)`（§3） | ✅ |
+| 1 | 红证据 → 绿：新用例在 base `6f02a51` 的隔离副本上红、新代码上绿 | `app/tests/test_channel_archive.py` / `app/frontend/tests/channel-archive.test.js` | 后端 base `11 failed, 2 passed` → 新代码 `15 passed`（另两条任务面用例只在新增后跑过）；前端 base `14 failed \| 1 passed (15)` → 新代码 `17 passed (17)`（§1） | ✅ |
+| 2 | 后端行为：归档读数 / 幂等 / 五写入口 400 且零写入 / 任务面不受影响 / 取消归档 / 删除与二次 404 / 总未读 / 搜索 / 迁移 25→26 | `app/tests/test_channel_archive.py`（HTTP 黑盒，不读库表；迁移那一节例外） | `15 passed`（§2） | ✅ |
+| 3 | 前端行为：折叠段与 `aria-expanded` / composer 禁用与占位 / 工具行只剩取消归档 / 删除需确认 / 删除当前频道后主线落点 / store 用响应覆盖 | `app/frontend/tests/channel-archive.test.js`（从 `App.vue` 进） | `17 passed (17)`（§3） | ✅ |
 | 4 | AI/UI 证据：隔离数据目录上真实浏览器走查（新建 → 归档 → 观察 → 取消归档 → 删除） | `http://127.0.0.1:8799/studio/v2/`，数据目录 `/tmp/alibot-archive-ui` | 7 张截图 + 逐动作 DOM 读数（§4） | ✅ |
 | 5 | 静态检查：`scripts/check.sh` 全量 EXIT 0，六项读数 | — | pytest `1310 passed, 11 skipped`；ruff `All checks passed!`；`ruff format --check` `388 files already formatted`；mypy `Success: no issues found in 138 source files`；pyright `0 errors, 0 warnings, 0 informations`；Vitest `25 files / 495 tests passed`；`门禁全绿`（§5） | ✅ |
 | 6 | 双轴 code-review（Standards + Spec）findings 与逐条处置 | `## Review` | 两轴报告与逐条处置见 §6 | ✅ |
@@ -104,7 +104,7 @@ cd /tmp/alibot-red-base/app/frontend && env -u NODE_ENV npx vitest run tests/cha
 
 ```sh
 cd app && ../.venv/bin/python -m pytest tests/test_channel_archive.py   # 15 passed
-cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js   # Tests 15 passed (15)
+cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js   # Tests 17 passed (17)
 ```
 
 ---
