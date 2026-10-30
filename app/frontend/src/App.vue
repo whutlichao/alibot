@@ -32,7 +32,7 @@ import { t } from './i18n/index.js';
 import { hasOpenModal } from './lib/modal-stack.js';
 import { MAX_ATTACHMENT_BYTES, partitionBySize } from './lib/attachments.js';
 import { formatBytes } from './lib/format.js';
-import { composerPlaceholder, isArchivedDm, messageTabCount } from './lib/target-view.js';
+import { composerPlaceholder, messageTabCount } from './lib/target-view.js';
 import { agentMembers } from './lib/member-view.js';
 import { createAgentDetailStore } from './stores/agent-detail.js';
 import { createSearchStore } from './stores/search.js';
@@ -115,7 +115,8 @@ const ui = useUiState();
 
 const target = computed(() => store.activeTarget.value);
 const isDm = computed(() => store.isDm.value);
-const archived = computed(() => store.isArchivedDm.value);
+// 只读归档：私信（Agent 已删除）与频道（人自己归档）共用这一档（#342 / ADR-0040）。
+const archived = computed(() => store.isArchivedTarget.value);
 const placeholder = computed(() => composerPlaceholder(target.value));
 const messages = computed(() => store.renderedMessages());
 
@@ -631,6 +632,55 @@ function closeChannelTool() {
   toolChannel.value = null;
 }
 
+/**
+ * 频道归档 / 取消归档（#342 / ADR-0040）：频道头的两枚工具按钮。
+ *
+ * 读数落地全在 store 的 `archiveChannel` / `unarchiveChannel`（用响应里的 `channels` 整份覆盖，
+ * 与 `markRead` 同一条纪律）；这里只补两句**人类面**的告知，并且**不在本地改任何读数**——
+ * 归档后频道仍留在 `state.channels` 里（带 `archived_at`），左栏因此自动把它挪进「已归档」段。
+ */
+async function archiveChannel() {
+  const channel = target.value;
+  if (!channel || isDm.value || channel.archived_at) return;
+  try {
+    await store.archiveChannel(channel.id);
+    toasts.push(t('toast.channelArchived', { name: channel.name }));
+  } catch (err) {
+    toasts.push(t('toast.channelArchiveFailed', { reason: err.message }), 'err');
+  }
+}
+
+async function unarchiveChannel() {
+  const channel = target.value;
+  if (!channel || isDm.value || !channel.archived_at) return;
+  try {
+    await store.unarchiveChannel(channel.id);
+    toasts.push(t('toast.channelUnarchived', { name: channel.name }));
+  } catch (err) {
+    toasts.push(t('toast.channelUnarchiveFailed', { reason: err.message }), 'err');
+  }
+}
+
+/**
+ * 删除频道（频道设置弹窗危险区的确认条）：抛错交给弹窗内呈现，成功才收尾。
+ *
+ * 删掉的是**当前 target** 时，主线必须落到一个可用的地方（票面判据：不残留上一个频道的消息）：
+ * 这里按左栏活跃段的顺序取第一个可用频道，没有就用空态——**与 `loadWorkspace()` 的空态处理
+ * 走同一条路径**（`selectTarget(null)` + `refreshMessages()` 在空 target 上把 `messages` 清空），
+ * 不新造第二套。
+ */
+async function deleteChannel(channelId) {
+  const channel = state.channels.find((item) => item.id === channelId) || toolChannel.value;
+  const wasActive = state.activeTargetId === channelId;
+  await store.deleteChannel(channelId);
+  toasts.push(t('toast.channelDeleted', { name: channel ? channel.name : channelId }));
+  closeChannelTool();
+  if (!wasActive) return;
+  // 活跃段的第一个可用频道（`state.channels` 已由被删响应整份覆盖，这一条因此已经是真事实）。
+  const next = state.channels.find((item) => !item.archived_at) || state.channels[0] || null;
+  await selectTarget(next ? next.id : null);
+}
+
 /** 频道头的运行面板入口：打开 dock 的第三种形态（读完快照前先铺加载态）。 */
 async function openRunPanel() {
   dockTarget.value = { kind: 'run' };
@@ -962,6 +1012,8 @@ function mobileShell() {
         @open-config="openChannelTool('config')"
         @open-budget="openChannelTool('budget')"
         @open-run-panel="openRunPanel"
+        @archive="archiveChannel"
+        @unarchive="unarchiveChannel"
       />
 
       <MessageStream
@@ -1108,6 +1160,7 @@ function mobileShell() {
       :open="openTool === 'config'"
       :channel="toolChannel"
       :store="store"
+      :remove="deleteChannel"
       @close="closeChannelTool"
     />
     <ChannelBudgetModal

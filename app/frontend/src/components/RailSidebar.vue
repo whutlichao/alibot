@@ -26,6 +26,7 @@ import MemberAvatar from './MemberAvatar.vue';
 import PresenceDot from './PresenceDot.vue';
 import { t } from '../i18n/index.js';
 import { agentMembers, memberStatus } from '../lib/member-view.js';
+import { isArchivedChannel } from '../lib/target-view.js';
 
 const props = defineProps({
   state: { type: Object, required: true },
@@ -56,8 +57,10 @@ const emit = defineEmits([
   'open-dm',
 ]);
 
-/** 「已归档」段的展开态：会话内的呈现状态（不是业务正本，不写任何浏览器存储）。 */
+/** 「已归档」段的展开态：会话内的呈现状态（不是业务正本，不写任何浏览器存储）。
+    频道段与私信段各用一枚：两段是两种 target，一个开关同时管两段会让「我只想展开频道」变得不可能。 */
 const archiveOpen = ref(false);
+const channelArchiveOpen = ref(false);
 
 /** 已归档私信：判据只有后端事实 `peer.deleted_at`（Agent 软删除后 DM 与历史保留、只读）。 */
 function isArchived(dm) {
@@ -66,6 +69,13 @@ function isArchived(dm) {
 
 const archivedDms = computed(() => props.state.dms.filter(isArchived));
 const liveDms = computed(() => props.state.dms.filter((dm) => !isArchived(dm)));
+
+/** 频道的两段（#342 / ADR-0040）：判据是 `channel.archived_at`，与 store 的 `archivedChannels`
+    共用**同一个函数**（`lib/target-view.js` 的 `isArchivedChannel`），于是「谁算已归档」不会在
+    本仓出现第二份。本组件是**叶子呈现**：它按 `state.channels` 里的字段分段，不另存一份
+    「谁被归档了」。 */
+const archivedChannels = computed(() => props.state.channels.filter(isArchivedChannel));
+const liveChannels = computed(() => props.state.channels.filter((channel) => !isArchivedChannel(channel)));
 
 /** 本机 Agent（全工作区名单，不按频道过滤——那是「频道成员」的事）。判据与名册共用一处
     （`lib/member-view.js`）：两份 `kind === 'agent'` 的过滤迟早会漂。 */
@@ -204,7 +214,7 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
         <div class="group-label">{{ t('rail.groupChannels') }}</div>
         <div id="channelList">
           <button
-            v-for="channel in state.channels"
+            v-for="channel in liveChannels"
             :key="channel.id"
             class="nav-row"
             :class="{ 'is-active': isCurrent(channel.id) }"
@@ -222,7 +232,48 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
             >{{ channel.unread_count }}</span>
           </button>
         </div>
+        <!-- 空态判据是「一条频道都没有」，不是「活跃段为空」：全部归档时该出现的是下面那一段，
+             而不是一句「还没有频道」——那会把「有、但都归档了」说成「没有」。 -->
         <div v-if="!state.channels.length" class="rail-empty">{{ t('rail.emptyChannels') }}</div>
+      </div>
+
+      <!-- 已归档频道（#342 / ADR-0040）：归档只收走写入面，历史仍可读、仍可被搜索，人类面因此
+           单独成段（形态与下面的 `dm-archive-section` 一致：原生按钮标题、默认折叠）。 -->
+      <div v-if="archivedChannels.length" class="group" data-od-id="channel-archive-section">
+        <button
+          class="group-label is-toggle"
+          type="button"
+          data-od-id="btn-channel-archive-toggle"
+          :aria-expanded="channelArchiveOpen ? 'true' : 'false'"
+          aria-controls="channelArchiveList"
+          @click="channelArchiveOpen = !channelArchiveOpen"
+        >
+          <span>{{ t('rail.groupArchivedChannels') }}</span>
+          <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+        <div v-show="channelArchiveOpen" id="channelArchiveList">
+          <button
+            v-for="channel in archivedChannels"
+            :key="channel.id"
+            class="nav-row"
+            type="button"
+            :class="{ 'is-active': isCurrent(channel.id) }"
+            :data-channel="channel.id"
+            :data-od-id="'channel-' + channel.id"
+            :aria-current="isCurrent(channel.id) ? 'true' : 'false'"
+            @click="emit('select-target', channel.id)"
+          >
+            <span class="hash">#</span>
+            <span class="grow">{{ channel.name }}</span>
+            <span
+              v-if="channel.unread_count > 0"
+              class="badge"
+              :data-od-id="'unread-' + channel.id"
+            >{{ channel.unread_count }}</span>
+          </button>
+        </div>
       </div>
 
       <div class="group" data-od-id="dm-section">

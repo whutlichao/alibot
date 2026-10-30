@@ -1082,6 +1082,21 @@ def _step_24_to_25(conn: sqlite3.Connection) -> int:
     return disabled
 
 
+def _step_25_to_26(conn: sqlite3.Connection) -> int:
+    """频道归档与删除的两档软删除（#342 / ADR-0040）：给 ``channel`` 补两列可空时间戳。
+
+    ``archived_at`` / ``deleted_at`` 都可空、都没有列级 CHECK、都没有默认值，因此
+    ``ADD COLUMN`` 足够——**不重建表**（重建会牵动 ``channel`` 的三条触发器与全部引用它的外键，
+    而这两列不需要任何表级约束）。旧行两列因此都是 ``NULL`` = 活跃且未删除，读路径据此原样解释，
+    **不回填任何业务数据**。
+
+    返回 0：本步不改变既有行的取值（``ADD COLUMN`` 只扩大形状）。
+    """
+    _create_missing_tables(conn, ("channel",))
+    _add_missing_columns(conn, "channel")
+    return 0
+
+
 STEPS: tuple[MigrationStep, ...] = (
     MigrationStep(3, 4, "channel 型作用域数据搬迁（影子行 / 成员 / 已读 / 预算）", _step_3_to_4),
     MigrationStep(4, 5, "任务表与任务线程（task + message.task_ref + 触发器）", _step_4_to_5),
@@ -1154,6 +1169,12 @@ STEPS: tuple[MigrationStep, ...] = (
         25,
         "long-term memory is always on (drop agent_config.memory_mode)",
         _step_24_to_25,
+    ),
+    MigrationStep(
+        25,
+        26,
+        "channel archive and delete tiers (channel.archived_at / channel.deleted_at)",
+        _step_25_to_26,
     ),
 )
 
