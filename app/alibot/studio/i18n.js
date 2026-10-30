@@ -557,9 +557,21 @@ const I18N_CATALOGS = {
     'reminder.deleteFailed': '删除提醒失败：{reason}',
     'reminder.loadFailed': '读取提醒失败：{reason}',
 
+    /* ─── 频道工具（#344：一枚入口 + 宽弹窗内的三枚页签） ──────────────────
+       频道头只留一枚 `btn-channel-tools`；页签短词（成员 / 设置 / 预算），不复用旧入口的
+       「频道」前缀标题。归档入口在「设置」页签的危险区里（ADR-0040 的语义不变）。 */
+    'channelTools.entryTitle': '频道工具',
+    'channelTools.title': '频道工具',
+    'channelTools.sub': '#{name} · 成员、设置与回应预算',
+    'channelTools.tabMembers': '成员',
+    'channelTools.tabSettings': '设置',
+    'channelTools.tabBudget': '预算',
+    'channelTools.closeAria': '关闭频道工具',
+    'channelTools.tabsLabel': '频道工具页签',
+
     /* ─── 成员名册（频道成员的**只读**全名单，`CONTEXT.md` **成员名册**） ────
-       入口在频道头部；弹窗只回答「这个频道里有谁」，**唯一动作是关闭**——
-       加入 / 未加入的管理动作是 **成员面板** 的面，不在这里出现。 */
+       入口是频道工具弹窗的「成员」页签（#344）；弹窗只回答「这个频道里有谁」——
+       加入 / 未加入的管理动作是 **成员面板** 的面，不在名册这一段里重复。 */
     'roster.entryTitle': '频道成员',
     'roster.title': '#{name} 成员',
     'roster.sub': '{count} 位成员',
@@ -575,7 +587,8 @@ const I18N_CATALOGS = {
     'roster.closeAria': '关闭成员名册',
 
     /* ─── 频道设置：回应预算（#54 / ADR-0007 / 规格 #31 §2） ──────────────────
-       入口在频道头；弹窗把**当前人类世代的有效上界**与**下一世代待生效值**分开说清楚，
+       入口是频道工具弹窗的「预算」页签（#344）；弹窗把**当前人类世代的有效上界**与
+       **下一世代待生效值**分开说清楚，
        并只提供固定档位 3 / 5 / 10。术语沿用 `CONTEXT.md` 的 `## Language` 词条：
        人类世代 / 回应预算 / 跳 / 预算耗尽 / 预算表——不复述成别的说法。 */
     'budget.entryTitle': '回应预算',
@@ -1465,6 +1478,19 @@ const I18N_CATALOGS = {
     'reminder.deleteFailed': 'Could not delete the reminder: {reason}',
     'reminder.loadFailed': 'Could not read reminders: {reason}',
 
+    /* ─── Channel tools (#344: one entry + three tabs in a wide modal) ────────
+       The header keeps a single `btn-channel-tools`; tab labels are the short words
+       (Members / Settings / Budget), not the old "Channel …" entry titles. The archive
+       action lives in the Settings tab's danger zone (ADR-0040 semantics unchanged). */
+    'channelTools.entryTitle': 'Channel tools',
+    'channelTools.title': 'Channel tools',
+    'channelTools.sub': '#{name} · Members, settings and response budget',
+    'channelTools.tabMembers': 'Members',
+    'channelTools.tabSettings': 'Settings',
+    'channelTools.tabBudget': 'Budget',
+    'channelTools.closeAria': 'Close channel tools',
+    'channelTools.tabsLabel': 'Channel tools tabs',
+
     /* ─── Member roster (the read-only full list of a channel's members) ─── */
     'roster.entryTitle': 'Channel members',
     'roster.title': '#{name} members',
@@ -1483,8 +1509,9 @@ const I18N_CATALOGS = {
     'roster.closeAria': 'Close the member roster',
 
     /* ─── Channel settings: response budget (#54 / ADR-0007 / spec #31 §2) ────
-       The entry lives in the channel header. The popup keeps the **effective bound of the
-       current human epoch** and the **next-epoch pending value** apart, and offers only the
+       The entry is the "Budget" tab of the channel-tools modal (#344). The popup keeps the
+       **effective bound of the current human epoch** and the **next-epoch pending value** apart,
+       and offers only the
        fixed tiers 3 / 5 / 10. Vocabulary follows the `CONTEXT.md` `## Language` entries:
        human epoch / response budget / jump / budget-exhausted / budget table. */
     'budget.entryTitle': 'Response budget',

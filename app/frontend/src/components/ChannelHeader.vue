@@ -5,18 +5,21 @@
      （原型那句「懒创建会话」与 `CONTEXT.md` 的 `_Avoid_` 冲突）。
 
      工具行的可见性是「这个 target 有没有这条面」的呈现，不是权限：
-     成员名册 / 频道设置 / 回应预算 / 运行面板都只属于**频道**，私信下整组隐藏——
-     不留一个按下去什么都不发生的按钮。
+     频道工具 / 运行面板都只属于**频道**，私信下整组隐藏——不留一个按下去什么都不发生的按钮。
 
-     **第二层可见性**：四个入口背后的面不是同一批票，因此开关分成两个：
-     - `channelToolsAvailable`：名册 / 配置 / 预算（票 #303 已迁 ⇒ 默认**开**）；
+     **入口合并**（#344）：成员名册 / 频道设置 / 回应预算三张面收进**同一枚**
+     `btn-channel-tools` 入口（宽弹窗 + 顶部页签）；归档入口从工具行移进该弹窗的「设置」
+     页签危险区（ADR-0040 的语义不变：当场执行、可恢复）。频道头因此只剩两枚图标入口。
+
+     **第二层可见性**：两枚入口背后的面不是同一批票，因此开关仍分成两个：
+     - `channelToolsAvailable`：频道工具（三张面已迁 ⇒ 默认**开**）；
      - `runPanelAvailable`：运行面板（**已迁**，默认**开**；关掉它只为了用例能断言反面）。
      渲染一个点下去什么都不发生的入口，比不渲染更难解释；各自的票迁完那个面时把开关打开即可。
 
      **第三层可见性：归档态**（#342 / ADR-0040）。频道归档后，工具行只留「取消归档」一枚——
-     名册 / 配置 / 预算 / 运行面板**整组不渲染**：那四个面背后的写路径已被后端整体拒绝（400），
-     留下来只会是「点进去发现什么都做不了」的入口。归档按钮本身在活跃态可见，归档态让位给
-     「取消归档」（同一枚按钮的两个语义，`data-od-id` 因此分成两个）。 -->
+     频道工具 / 运行面板**整组不渲染**：那些面背后的写路径已被后端整体拒绝（400），
+     留下来只会是「点进去发现什么都做不了」的入口。归档入口在活跃态由频道工具弹窗承载；
+     归档态让位给「取消归档」（同一枚按钮的两个语义，`data-od-id` 因此分成两个）。 -->
 <script setup>
 import { computed } from 'vue';
 import { t } from '../i18n/index.js';
@@ -46,11 +49,8 @@ const props = defineProps({
 
 const emit = defineEmits([
   'select-tab',
-  'open-roster',
-  'open-config',
-  'open-budget',
+  'open-tools',
   'open-run-panel',
-  'archive',
   'unarchive',
 ]);
 
@@ -90,56 +90,19 @@ const archivedChannel = computed(() => !props.isDm && isArchivedChannel(props.ta
           </svg>
         </button>
         <template v-else-if="!isDm && channelToolsAvailable">
+          <!-- 频道工具（#344）：成员 / 设置 / 预算三张面共用这一枚入口，弹窗内按页签分组；
+               归档入口也随设置页签进了弹窗（ADR-0040 的语义不变）。 -->
           <button
             class="icon-btn"
             type="button"
-            data-od-id="btn-channel-members"
-            :title="t('roster.entryTitle')"
-            :aria-label="t('roster.entryTitle')"
-            @click="emit('open-roster')"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><path d="M16 3.128a4 4 0 0 1 0 7.744" />
-              <path d="M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" />
-            </svg>
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            data-od-id="btn-channel-settings"
-            :title="t('channelConfig.entryTitle')"
-            :aria-label="t('channelConfig.entryTitle')"
-            @click="emit('open-config')"
+            data-od-id="btn-channel-tools"
+            :title="t('channelTools.entryTitle')"
+            :aria-label="t('channelTools.entryTitle')"
+            @click="emit('open-tools')"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
               <path d="M10 5H3" /><path d="M12 19H3" /><path d="M14 3v4" /><path d="M16 17v4" />
               <path d="M21 12h-9" /><path d="M21 19h-5" /><path d="M21 5h-7" /><path d="M8 10v4" /><path d="M8 12H3" />
-            </svg>
-          </button>
-          <button
-            class="icon-btn"
-            type="button"
-            data-od-id="btn-channel-budget"
-            :title="t('budget.entryTitle')"
-            :aria-label="t('budget.entryTitle')"
-            @click="emit('open-budget')"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" />
-            </svg>
-          </button>
-          <!-- 归档入口（#342 / ADR-0040）：当场执行，不弹二次确认——它是可恢复的，
-               与「删除」不同（那个在设置弹窗的危险区里、并且要行内确认）。 -->
-          <button
-            class="icon-btn"
-            type="button"
-            data-od-id="btn-channel-archive"
-            :title="t('header.archiveChannel')"
-            :aria-label="t('header.archiveChannel')"
-            @click="emit('archive')"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" /><path d="M10 12h4" />
             </svg>
           </button>
         </template>

@@ -634,7 +634,7 @@ describe('频道头', () => {
     expect(asDm.find('.hash').exists()).toBe(false);
   });
 
-  test('私信下没有任务页签，也没有只属于频道的四个工具按钮', () => {
+  test('私信下没有任务页签，也没有只属于频道的频道工具 / 运行面板入口', () => {
     const wrapper = mount(ChannelHeader, {
       props: {
         target: { id: 'dm-1', kind: 'dm', peer: { id: 'mem-1', display_name: 'Ada', avatar_slot: 1 } },
@@ -646,41 +646,43 @@ describe('频道头', () => {
       },
     });
     expect(wrapper.find('#tabTasks').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-channel-members"]').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-channel-settings"]').exists()).toBe(false);
-    expect(wrapper.find('[data-od-id="btn-channel-budget"]').exists()).toBe(false);
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(false);
     expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
   });
 
-  test('四个工具入口默认都**渲染**（四条面都已迁），任务页签默认仍不渲染（#303 之后）', () => {
+  test('频道下只渲染一枚频道工具入口（旧三入口与归档入口不在频道头），任务页签默认仍不渲染', () => {
     const wrapper = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0 },
     });
-    // 名册 / 配置 / 预算随 T3（#303）迁完 ⇒ `channelToolsAvailable` 默认开；
-    // 运行面板第一阶段就迁了。四个入口的开关仍各自独立（回退时只翻那一个）。
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget', 'btn-run-panel']) {
-      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(true);
+    // 成员 / 设置 / 预算三张面收进一枚入口；归档入口移入「设置」页签的危险区（#344）。
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
+    for (const id of [
+      'btn-channel-members',
+      'btn-channel-settings',
+      'btn-channel-budget',
+      'btn-channel-archive',
+    ]) {
+      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
     }
     expect(wrapper.find('#tabTasks').exists()).toBe(false);
   });
 
-  test('两个开关都能单独关掉自己那组入口（回退时只翻一个，不用改组件）', () => {
+  test('两个开关各管自己那一枚入口（回退时只翻一个，不用改组件）', () => {
     const channelToolsOff = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0, channelToolsAvailable: false },
     });
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
-      expect(channelToolsOff.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
-    }
+    expect(channelToolsOff.find('[data-od-id="btn-channel-tools"]').exists()).toBe(false);
     expect(channelToolsOff.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
 
     const runPanelOff = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0, runPanelAvailable: false },
     });
     expect(runPanelOff.find('[data-od-id="btn-run-panel"]').exists()).toBe(false);
-    expect(runPanelOff.find('[data-od-id="btn-channel-members"]').exists()).toBe(true);
+    expect(runPanelOff.find('[data-od-id="btn-channel-tools"]').exists()).toBe(true);
   });
 
-  test('开关打开时四个工具入口与任务页签照常出现（迁完那个面只需翻开关）', () => {
+  test('开关打开时频道工具 / 运行面板与任务页签照常出现（迁完那个面只需翻开关）', () => {
     const wrapper = mount(ChannelHeader, {
       props: {
         target: channel(),
@@ -692,9 +694,8 @@ describe('频道头', () => {
         tasksAvailable: true,
       },
     });
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget', 'btn-run-panel']) {
-      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(true);
-    }
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
     expect(wrapper.find('#tabTasks').exists()).toBe(true);
   });
 

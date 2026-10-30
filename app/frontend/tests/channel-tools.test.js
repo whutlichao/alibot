@@ -1,4 +1,4 @@
-/* 频道头三工具（成员名册 / 频道配置 / 回应预算）的 DOM 契约
+/* 频道工具（成员名册 / 频道配置 / 回应预算三张面共用一个宽弹窗 + 页签）的 DOM 契约
 
    为什么**从 `App.vue` 进**（不是直挂三个弹窗）：
    1. `channelToolsAvailable` 的翻正在 `App.vue` 与 `ChannelHeader.vue` 两处，只挂叶子组件测不到
@@ -157,10 +157,21 @@ function countCalls(stub, fragment) {
   return stub.to(fragment).length;
 }
 
+/** 打开频道工具弹窗（每次打开默认落在「成员」页签）。 */
+async function openTools(wrapper) {
+  await wrapper.find('[data-od-id="btn-channel-tools"]').trigger('click');
+  await flush();
+  await flush();
+}
+
+/** 切到频道工具弹窗的某个页签（`members` / `settings` / `budget`）。 */
+async function selectToolsTab(wrapper, tab) {
+  await wrapper.find(`[data-od-id="channel-tools-tab-${tab}"]`).trigger('click');
+  await flush();
+}
+
 async function openRoster(wrapper) {
-  await wrapper.find('[data-od-id="btn-channel-members"]').trigger('click');
-  await flush();
-  await flush();
+  await openTools(wrapper);
 }
 
 beforeEach(() => {
@@ -174,34 +185,64 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-/* ─── 一、开关翻正：频道下三个入口出现，私信下三个都不存在 ──────────────── */
+/* ─── 一、开关翻正：频道下只有一枚「频道工具」入口，私信下不存在 ────────── */
 
-describe('频道头的三个工具入口', () => {
-  test('频道下名册 / 配置 / 预算三个入口都出现（与运行面板并列）', async () => {
+describe('频道头的频道工具入口', () => {
+  test('活跃频道只渲染一枚频道工具入口（与运行面板并列），旧三入口与归档入口不再在频道头', async () => {
     const { wrapper } = await mountApp();
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget', 'btn-run-panel']) {
-      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(true);
+    const entry = wrapper.find('[data-od-id="btn-channel-tools"]');
+    expect(entry.exists()).toBe(true);
+    // 入口自己的无障碍名与新词条同源（标题栏上只有一个图标，名字必须说清它是什么）。
+    expect(entry.attributes('title')).toBe(i18n.t('channelTools.entryTitle'));
+    expect(entry.attributes('aria-label')).toBe(i18n.t('channelTools.entryTitle'));
+    expect(wrapper.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
+    // 成员 / 设置 / 预算三张面已收进弹窗；归档入口移进「设置」页签的危险区（ADR-0040 的语义不变）。
+    for (const id of [
+      'btn-channel-members',
+      'btn-channel-settings',
+      'btn-channel-budget',
+      'btn-channel-archive',
+    ]) {
+      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
     }
   });
 
-  test('私信下三个入口一个都不存在（`!isDm` 判据不变）', async () => {
+  test('私信下频道工具入口不存在（`!isDm` 判据不变）', async () => {
     const { wrapper } = await mountApp();
     await wrapper.find('[data-od-id="dm-dm-1"]').trigger('click');
     await flush();
     await flush();
     expect(wrapper.find('#chanTitle').text()).toBe('@Ada');
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
+    for (const id of [
+      'btn-channel-tools',
+      'btn-channel-members',
+      'btn-channel-settings',
+      'btn-channel-budget',
+      'btn-channel-archive',
+      'btn-run-panel',
+    ]) {
       expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(false);
     }
   });
 
-  test('叶子组件：`channelToolsAvailable` 默认是开（迁完那个面只翻开关，组件不用改）', () => {
+  test('叶子组件：`channelToolsAvailable` 默认是开，关掉只隐藏这一枚入口', () => {
     const wrapper = mount(ChannelHeader, {
       props: { target: channel(), isDm: false, messageCount: 0, taskCount: 0 },
     });
-    for (const id of ['btn-channel-members', 'btn-channel-settings', 'btn-channel-budget']) {
-      expect(wrapper.find(`[data-od-id="${id}"]`).exists(), id).toBe(true);
-    }
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="btn-channel-archive"]').exists()).toBe(false);
+
+    const off = mount(ChannelHeader, {
+      props: {
+        target: channel(),
+        isDm: false,
+        messageCount: 0,
+        taskCount: 0,
+        channelToolsAvailable: false,
+      },
+    });
+    expect(off.find('[data-od-id="btn-channel-tools"]').exists()).toBe(false);
+    expect(off.find('[data-od-id="btn-run-panel"]').exists()).toBe(true);
   });
 });
 
@@ -263,8 +304,8 @@ describe('成员名册（弹窗）', () => {
     await flush();
     await flush();
 
-    // 关掉名册（页脚那个唯一按钮），回到 composer。
-    await wrapper.find('[data-od-id="roster-done"]').trigger('click');
+    // 关掉频道工具弹窗（页脚那个唯一按钮），回到 composer。
+    await wrapper.find('[data-od-id="channel-tools-done"]').trigger('click');
     await flush();
     expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(false);
 
@@ -288,13 +329,100 @@ describe('成员名册（弹窗）', () => {
   });
 });
 
+/* ─── 二′、频道工具弹窗：一个外壳 + 三个页签 ────────────────────────────── */
+
+describe('频道工具弹窗：一个外壳 + 三个页签', () => {
+  test('打开默认选中「成员」页签；三个面板一次性挂载并各自读取后端读数', async () => {
+    const { wrapper, stub } = await mountApp();
+    expect(wrapper.find('#channelToolsOverlay').attributes('hidden')).toBeDefined();
+
+    await openTools(wrapper);
+
+    expect(wrapper.find('#channelToolsOverlay').attributes('hidden')).toBeUndefined();
+    // 标题与副标题同样来自新词条；副标题带当前频道名。
+    expect(wrapper.find('#channelToolsOverlay h2').text()).toBe(i18n.t('channelTools.title'));
+    expect(wrapper.find('#channelToolsOverlay .sub').text()).toContain('#design');
+    const tabs = wrapper.findAll('[data-od-id^="channel-tools-tab-"]');
+    expect(tabs.map((tab) => tab.attributes('data-od-id'))).toEqual([
+      'channel-tools-tab-members',
+      'channel-tools-tab-settings',
+      'channel-tools-tab-budget',
+    ]);
+    expect(wrapper.find('[data-od-id="channel-tools-tab-members"]').attributes('aria-selected')).toBe('true');
+    expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-od-id="channel-config-body"]').isVisible()).toBe(false);
+    expect(wrapper.find('[data-od-id="budget-body"]').isVisible()).toBe(false);
+
+    // 三张面都在打开那一刻读了一次后端（页签切换不该再读）。
+    expect(countCalls(stub, '/api/channels/ch-1/members')).toBeGreaterThan(0);
+    expect(countCalls(stub, '/api/channels/ch-1/config')).toBeGreaterThan(0);
+    expect(countCalls(stub, '/api/channels/ch-1/budget')).toBeGreaterThan(0);
+  });
+
+  test('页签切换只换正文：设置铺配置、预算铺预算，其余两页隐藏', async () => {
+    const { wrapper } = await mountApp();
+    await openTools(wrapper);
+
+    await selectToolsTab(wrapper, 'settings');
+    expect(wrapper.find('[data-od-id="channel-config-body"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(false);
+    expect(wrapper.find('[data-od-id="budget-body"]').isVisible()).toBe(false);
+    expect(wrapper.find('[data-od-id="channel-tools-tab-settings"]').attributes('aria-selected')).toBe('true');
+
+    await selectToolsTab(wrapper, 'budget');
+    expect(wrapper.find('[data-od-id="budget-body"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-od-id="channel-config-body"]').isVisible()).toBe(false);
+    expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(false);
+    expect(wrapper.find('[data-od-id="channel-tools-tab-budget"]').attributes('aria-selected')).toBe('true');
+  });
+
+  test('切换页签不重新读取后端，设置的未保存草稿与预算的档位选择都还在', async () => {
+    const { wrapper, stub } = await mountApp();
+    await openTools(wrapper);
+    await selectToolsTab(wrapper, 'settings');
+    await wrapper.find('[data-od-id="channel-config-workspace-root"]').setValue('/tmp/draft');
+
+    const reads = () => ({
+      members: countCalls(stub, '/api/channels/ch-1/members'),
+      config: countCalls(stub, '/api/channels/ch-1/config'),
+      budget: countCalls(stub, '/api/channels/ch-1/budget'),
+    });
+    const before = reads();
+
+    await selectToolsTab(wrapper, 'budget');
+    await wrapper.find('[data-budget-tier="10"]').trigger('click');
+    await selectToolsTab(wrapper, 'members');
+    await selectToolsTab(wrapper, 'settings');
+
+    expect(wrapper.find('[data-od-id="channel-config-workspace-root"]').element.value).toBe('/tmp/draft');
+    await selectToolsTab(wrapper, 'budget');
+    expect(wrapper.find('[data-budget-tier="10"]').attributes('aria-pressed')).toBe('true');
+    expect(reads()).toEqual(before);
+  });
+
+  test('关掉再打开：默认回到成员页签，三份读数重新读取', async () => {
+    const { wrapper, stub } = await mountApp();
+    await openTools(wrapper);
+    await selectToolsTab(wrapper, 'budget');
+    const budgetReads = countCalls(stub, '/api/channels/ch-1/budget');
+
+    await wrapper.find('[data-od-id="channel-tools-done"]').trigger('click');
+    await flush();
+    expect(wrapper.find('#channelToolsOverlay').attributes('hidden')).toBeDefined();
+
+    await openTools(wrapper);
+    expect(wrapper.find('[data-od-id="channel-tools-tab-members"]').attributes('aria-selected')).toBe('true');
+    expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(true);
+    expect(countCalls(stub, '/api/channels/ch-1/budget')).toBeGreaterThan(budgetReads);
+  });
+});
+
 /* ─── 三、频道配置 ──────────────────────────────────────────────────────── */
 
 describe('频道设置（弹窗）', () => {
   async function openConfig(wrapper) {
-    await wrapper.find('[data-od-id="btn-channel-settings"]').trigger('click');
-    await flush();
-    await flush();
+    await openTools(wrapper);
+    await selectToolsTab(wrapper, 'settings');
   }
 
   test('打开即铺后端读数：mode / team_scope / 队长可用性 / 项目根 / 后端 / 权限档', async () => {
@@ -426,9 +554,8 @@ describe('频道设置（弹窗）', () => {
 
 describe('回应预算（弹窗）', () => {
   async function openBudget(wrapper) {
-    await wrapper.find('[data-od-id="btn-channel-budget"]').trigger('click');
-    await flush();
-    await flush();
+    await openTools(wrapper);
+    await selectToolsTab(wrapper, 'budget');
   }
 
   test('四项读数分开呈现，全部来自后端载荷（已用 / 剩余 / 有效上界 / 来源）', async () => {

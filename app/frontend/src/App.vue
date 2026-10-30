@@ -12,17 +12,15 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import AgentDetailView from './components/AgentDetailView.vue';
 import AgentFormModal from './components/AgentFormModal.vue';
-import ChannelBudgetModal from './components/ChannelBudgetModal.vue';
-import ChannelConfigModal from './components/ChannelConfigModal.vue';
 import ChannelFormModal from './components/ChannelFormModal.vue';
 import ChannelHeader from './components/ChannelHeader.vue';
+import ChannelToolsModal from './components/ChannelToolsModal.vue';
 import CommandPalette from './components/CommandPalette.vue';
 import ComposerBox from './components/ComposerBox.vue';
 import DockPanel from './components/DockPanel.vue';
 import MessageStream from './components/MessageStream.vue';
 import RailSidebar from './components/RailSidebar.vue';
 import RemindersModal from './components/RemindersModal.vue';
-import RosterModal from './components/RosterModal.vue';
 import SearchView from './components/SearchView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import TaskBoard from './components/TaskBoard.vue';
@@ -95,10 +93,10 @@ const dockTarget = ref(null);
 const mode = ref('channel');
 // ⌘K 命令面板的显隐（`overlay` 不是 `modal`：关闭语义与 z-index 都不同，见 `CommandPalette.vue`）。
 const cmdOpen = ref(false);
-// 频道头的三张弹窗（名册 / 配置 / 预算）：同一时刻只开一张，`toolChannel` 是**打开那一刻的频道**
+// 频道工具弹窗（#344：成员 / 设置 / 预算三张面共用一枚入口）：`toolChannel` 是**打开那一刻的频道**
 // （旧页面 `state.rosterChannelId` / `state.channelConfig.channelId` 同一条：打开期间锁定频道，
-// 人在弹窗里把别处切走也不影响它列的那份名单）。
-const openTool = ref(null);
+// 人在弹窗里把别处切走也不影响它列的那份名单）。页签选择在 `ChannelToolsModal` 内部，不在这里。
+const channelToolsOpen = ref(false);
 const toolChannel = ref(null);
 // rail 头两个弹窗的显隐（内容仍挂载、只用 `hidden` 隐去，见 `ModalShell.vue` 文件头）。
 const remindersOpen = ref(false);
@@ -619,34 +617,39 @@ function unsupportedMention(name) {
   toasts.push(t('mention.quoteUnsupported', { name }), 'err');
 }
 
-/** 频道头三个工具入口的**唯一**落点：锁定当前频道，再决定开哪一张弹窗。
-    私信下三个入口都不渲染（`!isDm`），因此这里不必再判 target 类型。 */
-function openChannelTool(kind) {
+/** 频道工具入口的**唯一**落点：锁定当前频道，再打开那张宽弹窗（页签由弹窗自己管）。
+    私信下入口不渲染（`!isDm`），因此这里不必再判 target 类型。 */
+function openChannelTools() {
   if (!target.value || isDm.value) return;
   toolChannel.value = target.value;
-  openTool.value = kind;
+  channelToolsOpen.value = true;
 }
 
-function closeChannelTool() {
-  openTool.value = null;
+function closeChannelTools() {
+  channelToolsOpen.value = false;
   toolChannel.value = null;
 }
 
 /**
- * 频道归档 / 取消归档（#342 / ADR-0040）：频道头的两枚工具按钮。
+ * 频道归档 / 取消归档（#342 / ADR-0040）：归档入口在频道工具 → 设置页签的危险区。
  *
  * 读数落地全在 store 的 `archiveChannel` / `unarchiveChannel`（用响应里的 `channels` 整份覆盖，
  * 与 `markRead` 同一条纪律）；这里只补两句**人类面**的告知，并且**不在本地改任何读数**——
  * 归档后频道仍留在 `state.channels` 里（带 `archived_at`），左栏因此自动把它挪进「已归档」段。
+ *
+ * 返回 `true` / `false` 是给 `ChannelToolsModal` 的关闭判据：成功才关弹窗（失败时人还要看着
+ * 弹窗里的那一页与 toast 上的失败原因）。归档锁定的频道是 `toolChannel`（打开那一刻的那一个）。
  */
 async function archiveChannel() {
-  const channel = target.value;
-  if (!channel || isDm.value || channel.archived_at) return;
+  const channel = toolChannel.value || target.value;
+  if (!channel || isDm.value || channel.archived_at) return false;
   try {
     await store.archiveChannel(channel.id);
     toasts.push(t('toast.channelArchived', { name: channel.name }));
+    return true;
   } catch (err) {
     toasts.push(t('toast.channelArchiveFailed', { reason: err.message }), 'err');
+    return false;
   }
 }
 
@@ -662,7 +665,7 @@ async function unarchiveChannel() {
 }
 
 /**
- * 删除频道（频道设置弹窗危险区的确认条）：抛错交给弹窗内呈现，成功才收尾。
+ * 删除频道（频道工具 → 设置页签危险区的确认条）：抛错交给面板内呈现，成功才收尾。
  *
  * 删掉的是**当前 target** 时，主线必须落到一个可用的地方（票面判据：不残留上一个频道的消息）：
  * 这里按左栏活跃段的顺序取第一个可用频道，没有就用空态——**与 `loadWorkspace()` 的空态处理
@@ -674,7 +677,7 @@ async function deleteChannel(channelId) {
   const wasActive = state.activeTargetId === channelId;
   await store.deleteChannel(channelId);
   toasts.push(t('toast.channelDeleted', { name: channel ? channel.name : channelId }));
-  closeChannelTool();
+  closeChannelTools();
   if (!wasActive) return;
   // 活跃段的第一个可用频道（`state.channels` 已由被删响应整份覆盖，这一条因此已经是真事实）。
   const next = state.channels.find((item) => !item.archived_at) || state.channels[0] || null;
@@ -1008,11 +1011,8 @@ function mobileShell() {
         :channel-tools-available="true"
         :tasks-available="tasksAvailable"
         @select-tab="selectTab"
-        @open-roster="openChannelTool('roster')"
-        @open-config="openChannelTool('config')"
-        @open-budget="openChannelTool('budget')"
+        @open-tools="openChannelTools"
         @open-run-panel="openRunPanel"
-        @archive="archiveChannel"
         @unarchive="unarchiveChannel"
       />
 
@@ -1147,28 +1147,16 @@ function mobileShell() {
       </div>
     </div>
 
-    <!-- 名册是**弹窗形态**（旧 `openRosterModal()` 就是弹窗）：dock 的 `members` 档是另一张票的面，
-         两者不互换。 -->
-    <RosterModal
-      :open="openTool === 'roster'"
+    <!-- 频道工具（#344）：一个宽弹窗 + 顶部页签，承载成员 / 设置 / 预算三张面；归档在设置页签的
+         危险区里当场执行。dock 的 `members` 档是另一张票的面，与这个弹窗不互换。 -->
+    <ChannelToolsModal
+      :open="channelToolsOpen"
       :channel="toolChannel"
       :store="store"
       :toast="toasts.push"
-      @close="closeChannelTool"
-    />
-    <ChannelConfigModal
-      :open="openTool === 'config'"
-      :channel="toolChannel"
-      :store="store"
       :remove="deleteChannel"
-      @close="closeChannelTool"
-    />
-    <ChannelBudgetModal
-      :open="openTool === 'budget'"
-      :channel="toolChannel"
-      :store="store"
-      :toast="toasts.push"
-      @close="closeChannelTool"
+      :archive="archiveChannel"
+      @close="closeChannelTools"
     />
   </div>
 </template>
