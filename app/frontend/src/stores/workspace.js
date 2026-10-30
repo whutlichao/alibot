@@ -607,26 +607,27 @@ export function createWorkspaceStore(options) {
    *
    * 三个动作都**只管后端镜像**；删掉的是当前 target 之后「主线该落到哪里」是呈现层的决定，
    * 落在 `App.vue` 的 `deleteChannel()` 里（那里的空态处理与 `loadWorkspace` 共用一条路径）。
+   *
+   * 三个动作的**请求形状各不相同**（两个 POST 一个 DELETE），但落地同一份读数，因此共用一处
+   * `applyChannelMutation`：改「响应如何落镜像」只需要改一行。
    */
-  async function archiveChannel(channelId) {
-    const payload = await api(channelPath(channelId, '/archive'), { method: 'POST' });
+  async function applyChannelMutation(path, method) {
+    const payload = await api(path, { method });
     if (Array.isArray(payload.channels)) state.channels = payload.channels;
     state.online = true;
     return payload;
   }
 
-  async function unarchiveChannel(channelId) {
-    const payload = await api(channelPath(channelId, '/unarchive'), { method: 'POST' });
-    if (Array.isArray(payload.channels)) state.channels = payload.channels;
-    state.online = true;
-    return payload;
+  function archiveChannel(channelId) {
+    return applyChannelMutation(channelPath(channelId, '/archive'), 'POST');
   }
 
-  async function deleteChannel(channelId) {
-    const payload = await api(channelPath(channelId), { method: 'DELETE' });
-    if (Array.isArray(payload.channels)) state.channels = payload.channels;
-    state.online = true;
-    return payload;
+  function unarchiveChannel(channelId) {
+    return applyChannelMutation(channelPath(channelId, '/unarchive'), 'POST');
+  }
+
+  function deleteChannel(channelId) {
+    return applyChannelMutation(channelPath(channelId), 'DELETE');
   }
 
   /**
