@@ -22,13 +22,14 @@ Node v25.0.0、Vitest 4.1.12、ego-browser 0.6.0.20（Chromium 154）
 | 2 | 后端行为：归档读数 / 幂等 / 五写入口 400 且零写入 / 任务面不受影响 / 取消归档 / 删除与二次 404 / 总未读 / 搜索 / 迁移 25→26 | `app/tests/test_channel_archive.py`（HTTP 黑盒，不读库表） | `13 passed in 2.42s`（§2） | ✅ |
 | 3 | 前端行为：折叠段与 `aria-expanded` / composer 禁用与占位 / 工具行只剩取消归档 / 删除需确认 / 删除当前频道后主线落点 / store 用响应覆盖 | `app/frontend/tests/channel-archive.test.js`（从 `App.vue` 进） | `15 passed (15)`（§3） | ✅ |
 | 4 | AI/UI 证据：隔离数据目录上真实浏览器走查（新建 → 归档 → 观察 → 取消归档 → 删除） | `http://127.0.0.1:8799/studio/v2/`，数据目录 `/tmp/alibot-archive-ui` | 7 张截图 + 逐动作 DOM 读数（§4） | ✅ |
-| 5 | 静态检查：`scripts/check.sh` 全量 EXIT 0，六项读数 | — | pytest `1308 passed, 11 skipped`；ruff `All checks passed!`；`ruff format --check` `386 files already formatted`；mypy `Success: no issues found in 138 source files`；pyright `0 errors, 0 warnings, 0 informations`；Vitest `25 files / 493 tests passed`；`门禁全绿`（§5） | ✅ |
+| 5 | 静态检查：`scripts/check.sh` 全量 EXIT 0，六项读数 | — | pytest `1310 passed, 11 skipped`；ruff `All checks passed!`；`ruff format --check` `388 files already formatted`；mypy `Success: no issues found in 138 source files`；pyright `0 errors, 0 warnings, 0 informations`；Vitest `25 files / 495 tests passed`；`门禁全绿`（§5） | ✅ |
 | 6 | 双轴 code-review（Standards + Spec）findings 与逐条处置 | `## Review` | 两轴报告与逐条处置见 §6 | ✅ |
 | 7 | 交付物：worktree 干净、提交存在、分支已推送、OPEN PR 的 head == 最终提交、正文含 Summary / Evidence / `Door` / `Blast Radius` / `Closes #342` | `app/specs/issue-342-pr-body.md` | 见 §7；**`Door: one-way`、`Blast Radius: medium`**（触及 schema 迁移） | ✅ |
 
 ---
 
-## 1. 红证据（隔离基线 `6f02a51`）
+## 1. 红证据（隔离基线 `6f02a51`；后续新增的两条任务面用例只在新代码上有读数——
+它们在基线上同样会红，因为 `archived_at` / `deleted_at` 两列与三个端点在基线上都不存在）
 
 隔离副本用 `git archive 6f02a51` 导出到 `/tmp/alibot-red-base`，只覆盖**新增的两个用例文件**（产品代码保持基线字节）。
 
@@ -102,7 +103,7 @@ cd /tmp/alibot-red-base/app/frontend && env -u NODE_ENV npx vitest run tests/cha
 ### 1.3 新代码上同一批用例
 
 ```sh
-cd app && ../.venv/bin/python -m pytest tests/test_channel_archive.py   # 13 passed in 2.42s
+cd app && ../.venv/bin/python -m pytest tests/test_channel_archive.py   # 15 passed
 cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js   # Tests 15 passed (15)
 ```
 
@@ -121,6 +122,8 @@ cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js 
 | 先归档后删除：终态清掉 `archived_at`，读面全 404 | 同上 | `test_delete_after_archive_clears_the_archive_tier` ✅ |
 | 归档频道未读**不计入** `unread_total`；取消归档后**重新计入**；频道自己的 `unread_count` 不变 | `UNREAD_TOTAL_SQL` 的外层 `LEFT JOIN` + `WHERE` | `test_archived_channel_unread_stops_counting_towards_the_sidebar_total` ✅（构造前提 `unread_count >= 1`） |
 | 已删除频道的消息不再出现在 `GET /api/search`；归档频道的**仍然出现**；**定向搜索**（带 `target_id`）同一条判定 | `SEARCH_ALL_HITS_SQL` / `SEARCH_TARGET_HITS_SQL` 的 `(t.kind <> 'channel' OR c.deleted_at IS NULL)` | `test_deleted_channel_messages_leave_search_while_archived_ones_stay` ✅（含 `target_id=已删除频道` ⇒ `[]`、`target_id=归档频道` ⇒ 命中） |
+| 已删除频道的**任务**退出看板与任务搜索；按 id 直接读该任务与它的线程仍 200 | `list_tasks` 的 `JOIN channel … c.deleted_at IS NULL` / `SEARCH_TASK_HITS_SQL` | `test_deleted_channel_tasks_leave_the_board_and_the_task_search` ✅ |
+| 归档频道的任务**仍在**看板与任务搜索里（归档 ≠ 任务面冻结） | 同上（不过滤 `archived_at`） | `test_archived_channel_tasks_stay_on_the_board` ✅ |
 | 迁移 25 → 26：既有列逐字保留、两列全 `NULL`、终态版本 == `SCHEMA_VERSION` | `migrate._step_25_to_26` | `test_migrating_a_v25_library_adds_the_two_null_columns_and_keeps_every_row` ✅ |
 | 迁移后的库由本代码打开时三个新端点可用 | 同上 | `test_migrated_library_serves_the_new_endpoints` ✅ |
 | 三个动作是配置类写路径：消息 seq、预算读数、轮次结果逐字不变，`drain` 为空 | `db.archive_channel` / `db.delete_channel` 只写单列 | `test_archive_and_delete_do_not_touch_the_message_stream_or_the_budget` ✅ |
@@ -155,6 +158,7 @@ cd app && ../.venv/bin/python -m pytest tests/test_schema_migration.py tests/tes
 | 删除当前频道 ⇒ 主线落到下一个**可用**（非归档）频道，旧频道消息不残留 | `App.vue` 的 `deleteChannel()` | 标题 `下一个`；文本不含「上一个频道的消息」 | ✅ |
 | `unarchiveChannel` 用响应里的 `channels` 整份覆盖镜像 | `stores/workspace.js` | `channels` 顺序与名称来自响应，非本地拼行 | ✅ |
 | 优先级：归档频道 > 归档私信 > 私信 > 频道 | `lib/target-view.js` | 四条断言各自命中对应词条 | ✅ |
+| 折叠段默认收起（归档行在 DOM 里但不可见）；**把当前频道归档后这一段自动展开**；人手收起后保持收起 | `RailSidebar.vue` 的 `channelArchiveToggle`（三态：`null` 跟随当前行） | 三条用例 | ✅ |
 
 ---
 
@@ -209,12 +213,12 @@ scripts/check.sh        # 全量（先 npm run build，再 pytest + ruff + ruff 
 ```
 
 ```text
-1308 passed, 11 skipped in 77.39s (0:01:17)        # pytest
+1310 passed, 11 skipped in 77.99s (0:01:17)        # pytest
 All checks passed!                                  # ruff check
-386 files already formatted                         # ruff format --check（未跑 ruff format）
+388 files already formatted                         # ruff format --check（未跑 ruff format）
 Success: no issues found in 138 source files        # mypy（仓库根）
 0 errors, 0 warnings, 0 informations                # pyright
-Test Files  25 passed (25) / Tests  493 passed (493) # Vitest
+Test Files  25 passed (25) / Tests  495 passed (495) # Vitest
 门禁全绿
 ```
 

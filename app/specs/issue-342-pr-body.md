@@ -39,6 +39,10 @@ send_message / update_channel_config / set_channel_budget_limit / add_channel_me
   reminder_delivery                                  # 后端系统事实，不是人类面写入
 ```
 
+已删除的频道连它的**任务入口**一起收走（ADR-0040 §一 第 5 条）：`GET /api/tasks` 与两类搜索的
+任务命中都按 `channel.deleted_at` 过滤（那一行带着「#频道名」，而频道已经 404）；按 id 直接读
+一张任务与它的线程仍然可用——**行不删、只是频道层面的入口不在了**，与消息同一条口径。
+
 前端：
 
 ```diff
@@ -69,16 +73,16 @@ KeyError: 'archived_at'      … 11 failed, 2 passed in 2.52s
 **After**：
 
 ```text
-cd app && ../.venv/bin/python -m pytest tests/test_channel_archive.py      # 13 passed in 2.42s
-cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js   # 15 passed (15)
+cd app && ../.venv/bin/python -m pytest tests/test_channel_archive.py      # 15 passed
+cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js   # 17 passed (17)
 
 scripts/check.sh（全量）
-  1308 passed, 11 skipped in 77.39s        # pytest（含 range(3, SCHEMA_VERSION) 逐版迁移）
+  1310 passed, 11 skipped in 77.99s        # pytest（含 range(3, SCHEMA_VERSION) 逐版迁移）
   All checks passed!                        # ruff check
-  386 files already formatted               # ruff format --check（未跑 ruff format）
+  388 files already formatted               # ruff format --check（未跑 ruff format）
   Success: no issues found in 138 source files   # mypy
   0 errors, 0 warnings, 0 informations      # pyright
-  Test Files 25 passed (25) / Tests 493 passed (493)   # Vitest
+  Test Files 25 passed (25) / Tests 495 passed (495)   # Vitest
   门禁全绿
 ```
 
