@@ -1,6 +1,6 @@
 /* 成员名单的呈现派生（纯函数，读后端镜像，不做判定）
 
-   两件事在阶段 A 的 diff 里各被写了不止一遍（`RailSidebar.vue` 与 `ChannelMembersPanel.vue` 的
+   两件事在阶段 A 的 diff 里各被写了不止一遍（`RailSidebar.vue` 与 `ChannelRosterPanel.vue` 的
    `statusOf()` 同形；`kind === 'agent'` 的过滤在 rail / 名册 / 新建频道 / 新建 Agent 四处出现）。
    重复的形状在改动时一定会漂，因此收成一处：**只在这里判「这个成员是不是 Agent」与
    「它的状态点该显示什么」**，两个调用方都调它。

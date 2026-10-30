@@ -36,7 +36,7 @@ const props = defineProps({
   messageCount: { type: Number, default: 0 },
   taskCount: { type: Number, default: 0 },
   activeTab: { type: String, default: 'messages' },
-  // 名册 / 配置 / 预算三个入口背后的面是否已迁到本版（**已迁** ⇒ 默认开）。
+  // 频道工具（成员 / 设置 / 预算三张面共用一枚入口）是否已迁到本版（**已迁** ⇒ 默认开）。
   channelToolsAvailable: { type: Boolean, default: true },
   // 运行面板是否已迁到本版（**已迁** ⇒ 默认开）。
   runPanelAvailable: { type: Boolean, default: true },
@@ -73,7 +73,7 @@ const archivedChannel = computed(() => !props.isDm && isArchivedChannel(props.ta
         <span id="chanTitle">{{ (isDm ? '@' : '') + name }}</span>
       </h1>
       <div class="chan-tools">
-        <!-- 归档态（#342 / ADR-0040）：整组工具让位给唯一一枚「取消归档」——名册 / 配置 / 预算 /
+        <!-- 归档态（#342 / ADR-0040）：整组工具让位给唯一一枚「取消归档」——频道工具 /
              运行面板在归档频道的写路径上已被后端整体拒绝（400），留下来只会是「点进去什么都做不了」
              的入口（ADR-0038 §五）。 -->
         <button
@@ -106,7 +106,7 @@ const archivedChannel = computed(() => !props.isDm && isArchivedChannel(props.ta
             </svg>
           </button>
         </template>
-        <!-- 运行面板是**已迁面**：它有自己的开关（默认开），不跟上面三个同涨同落。
+        <!-- 运行面板是**已迁面**：它有自己的开关（默认开），不跟频道工具同涨同落。
              私信下它仍然不存在：私信没有 team 运行，留一个点开只会看到空态。
              归档频道下它同样不渲染：频道已只读，运行面板的入口在那条路径上没有意义。 -->
         <button

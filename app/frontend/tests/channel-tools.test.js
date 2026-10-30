@@ -170,10 +170,6 @@ async function selectToolsTab(wrapper, tab) {
   await flush();
 }
 
-async function openRoster(wrapper) {
-  await openTools(wrapper);
-}
-
 beforeEach(() => {
   i18n.setLocale('zh-CN');
   FakeEventSource.instances = [];
@@ -253,7 +249,7 @@ describe('成员名册（弹窗）', () => {
     const { wrapper, stub } = await mountApp();
     expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(false);
 
-    await openRoster(wrapper);
+    await openTools(wrapper);
 
     expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(true);
     // 打开时重新读一次该频道的成员表（正本是后端，不用可能过期的缓存当结论）。
@@ -276,7 +272,7 @@ describe('成员名册（弹窗）', () => {
 
   test('点「加入」：成员挪到已加入段，且没有整页刷新（只多一次 POST）', async () => {
     const { wrapper, stub } = await mountApp();
-    await openRoster(wrapper);
+    await openTools(wrapper);
     const workspaceCalls = countCalls(stub, '/api/workspace');
     const messageCalls = countCalls(stub, '/api/channels/ch-1/messages');
 
@@ -299,7 +295,7 @@ describe('成员名册（弹窗）', () => {
 
   test('加入成功后 `@` 补全立刻能选到它（响应里的成员表覆盖了缓存）', async () => {
     const { wrapper } = await mountApp();
-    await openRoster(wrapper);
+    await openTools(wrapper);
     await wrapper.find('[data-od-id="roster-join-mem-2"]').trigger('click');
     await flush();
     await flush();
@@ -321,7 +317,7 @@ describe('成员名册（弹窗）', () => {
     const { wrapper } = await mountApp({
       '/api/channels/ch-1/members': () => jsonResponse({ error: { code: 'boom', message: '后端读取失败' } }, 500),
     });
-    await openRoster(wrapper);
+    await openTools(wrapper);
 
     expect(wrapper.find('[data-od-id="roster-joined"]').text()).toContain('暂时读不到该频道的成员表');
     expect(wrapper.find('[data-od-id="roster-not-joined"]').text()).toContain('成员表读不到时暂不列「未加入」');

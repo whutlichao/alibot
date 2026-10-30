@@ -641,7 +641,8 @@ function closeChannelTools() {
  * 弹窗里的那一页与 toast 上的失败原因）。归档锁定的频道是 `toolChannel`（打开那一刻的那一个）。
  */
 async function archiveChannel() {
-  const channel = toolChannel.value || target.value;
+  // 唯一调用方是 `ChannelToolsModal`：打开时已把当前频道锁进 `toolChannel`。
+  const channel = toolChannel.value;
   if (!channel || isDm.value || channel.archived_at) return false;
   try {
     await store.archiveChannel(channel.id);

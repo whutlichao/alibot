@@ -8,7 +8,7 @@
 
      两档已接到真内容上：`run` ⇒ `RunPanel.vue`（票 #300 + 阶段一），`task` ⇒ `TaskThread.vue`
      （票 #307）。`members` 档仍是具名插槽——成员面在 v2 走的是频道工具弹窗的「成员」页签
-     （`ChannelMembersPanel.vue`），这一档至今没有调用点，保留插槽只是为了让形态判据完整。
+     （`ChannelRosterPanel.vue`），这一档至今没有调用点，保留插槽只是为了让形态判据完整。
 
      线程的读数与写路径都在 `stores/task-thread.js`：外壳只把 props 往下递、把两个动作往上抛
      （关面板 / 开任务运行面板），不自己判「能不能推进」「能不能指派」。

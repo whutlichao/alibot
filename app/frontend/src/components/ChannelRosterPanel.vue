@@ -44,7 +44,7 @@ const joining = ref([]);
 const channelId = computed(() => (props.channel ? props.channel.id : null));
 const channelName = computed(() => (props.channel ? props.channel.name : ''));
 
-/** 「读到了」= 拿到过一份成员表且没有失败标记。判据同时决定副标题写不写数字。 */
+/** 「读到了」= 拿到过一份成员表且没有失败标记。判据同时决定「未加入」段列不列候选。 */
 const loaded = computed(() => Boolean(members.value) && !membersFailed.value);
 
 /** 已加入段：成员表原样（含 owner，与既有名册口径一致）。 */

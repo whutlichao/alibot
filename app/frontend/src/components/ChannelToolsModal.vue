@@ -3,7 +3,7 @@
      频道头右上角原先并排五个图标（成员名册 / 频道设置 / 回应预算 / 归档 / 运行面板），
      入口过多且彼此没有分组。本组件把前三张面收进**一个**宽弹窗，用顶部页签承载：
 
-     - 成员：`ChannelMembersPanel`（原 `RosterModal`）
+     - 成员：`ChannelRosterPanel`（原 `RosterModal`；按 `CONTEXT.md` 的**成员名册**命名）
      - 设置：`ChannelSettingsPanel`（原 `ChannelConfigModal`；归档 / 删除都在它的危险区）
      - 预算：`ChannelBudgetPanel`（原 `ChannelBudgetModal`）
 
@@ -24,7 +24,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
 import ChannelBudgetPanel from './ChannelBudgetPanel.vue';
-import ChannelMembersPanel from './ChannelMembersPanel.vue';
+import ChannelRosterPanel from './ChannelRosterPanel.vue';
 import ChannelSettingsPanel from './ChannelSettingsPanel.vue';
 import ModalShell from './ModalShell.vue';
 import { t } from '../i18n/index.js';
@@ -45,9 +45,6 @@ const props = defineProps({
 
 const emit = defineEmits(['close']);
 
-/** 页签顺序就是呈现顺序（短词：成员 / 设置 / 预算）。 */
-const TABS = ['members', 'settings', 'budget'];
-
 const activeTab = ref('members');
 
 watch(
@@ -64,7 +61,7 @@ const title = computed(() => t('channelTools.title'));
 const sub = computed(() => t('channelTools.sub', { name: channelName.value }));
 
 function selectTab(tab) {
-  if (TABS.includes(tab)) activeTab.value = tab;
+  activeTab.value = tab;
 }
 
 /** 归档：调父组件的动作；成功才关掉这一层（失败时弹窗不关，toast 说原因）。 */
@@ -124,7 +121,7 @@ async function archiveChannel() {
 
     <!-- 三张面一次挂载：`v-show` 只切显示，切页签不重读后端、不丢未保存草稿。 -->
     <div v-show="activeTab === 'members'">
-      <ChannelMembersPanel :open="open" :channel="channel" :store="store" :toast="toast" />
+      <ChannelRosterPanel :open="open" :channel="channel" :store="store" :toast="toast" />
     </div>
     <div v-show="activeTab === 'settings'">
       <ChannelSettingsPanel
@@ -142,7 +139,7 @@ async function archiveChannel() {
     <template #foot>
       <span class="sep"></span>
       <button class="btn btn-primary" type="button" data-od-id="channel-tools-done" @click="emit('close')">
-        {{ t('common.close') }}
+        {{ t('channelTools.done') }}
       </button>
     </template>
   </ModalShell>

@@ -202,8 +202,9 @@ async function load() {
     if (channelId.value !== id) return;
     config.value = next;
     draftFrom(next);
-    // 队长候选来自该频道的成员表（与名册 / `@` 补全同一份缓存）。
-    await props.store.refreshChannelMembers(id);
+    // 队长候选读 `state.channelMembers`（与名册 / `@` 补全同一份缓存）。成员表由同一弹窗里的
+    // 「成员」页签读取——三个面板在打开时都已挂载，这里**不再重复发一次** GET；响应到达后
+    // 缓存是响应式的，候选会自己铺上。
   } catch (err) {
     if (channelId.value !== id) return;
     config.value = null;

@@ -568,13 +568,11 @@ const I18N_CATALOGS = {
     'channelTools.tabBudget': '预算',
     'channelTools.closeAria': '关闭频道工具',
     'channelTools.tabsLabel': '频道工具页签',
+    'channelTools.done': '完成',
 
     /* ─── 成员名册（频道成员的**只读**全名单，`CONTEXT.md` **成员名册**） ────
        入口是频道工具弹窗的「成员」页签（#344）；弹窗只回答「这个频道里有谁」——
        加入 / 未加入的管理动作是 **成员面板** 的面，不在名册这一段里重复。 */
-    'roster.entryTitle': '频道成员',
-    'roster.title': '#{name} 成员',
-    'roster.sub': '{count} 位成员',
     'roster.loading': '正在读取该频道的成员表…',
     'roster.unavailable': '暂时读不到该频道的成员表（后端请求失败）：恢复后重新打开名册即可。',
     'roster.empty': '这个频道还没有成员。',
@@ -584,17 +582,12 @@ const I18N_CATALOGS = {
     'roster.capabilities': 'MCP {mcp} / 技能 {skills}',
     'roster.capabilitiesLoading': 'MCP … / 技能 …',
     'roster.capabilitiesUnavailable': '能力摘要暂不可用',
-    'roster.closeAria': '关闭成员名册',
 
     /* ─── 频道设置：回应预算（#54 / ADR-0007 / 规格 #31 §2） ──────────────────
        入口是频道工具弹窗的「预算」页签（#344）；弹窗把**当前人类世代的有效上界**与
        **下一世代待生效值**分开说清楚，
        并只提供固定档位 3 / 5 / 10。术语沿用 `CONTEXT.md` 的 `## Language` 词条：
        人类世代 / 回应预算 / 跳 / 预算耗尽 / 预算表——不复述成别的说法。 */
-    'budget.entryTitle': '回应预算',
-    'budget.title': '回应预算',
-    'budget.sub': '#{name} · 上界由你设置；已用跳数由后端维护',
-    'budget.closeAria': '关闭回应预算设置',
     'budget.loading': '正在读取该频道的预算读数…',
     'budget.loadFailed': '暂时读不到该频道的预算读数（后端请求失败）：{reason}',
     'budget.sectionCurrent': '当前世代',
@@ -623,10 +616,6 @@ const I18N_CATALOGS = {
        规格 §4.6 的第 1 张面。术语沿用 `CONTEXT.md` 与 ADR-0018 / ADR-0021：
        自主 / 队长制 / 队长 / 项目根 / 后端 / 权限档。`team_scope` 是**后端的只读事实**，
        文案只解释它的含义，不在前端拼取值。 */
-    'channelConfig.entryTitle': '频道设置',
-    'channelConfig.title': '频道设置',
-    'channelConfig.sub': '#{name} · 协作模式、队长与工作区默认值',
-    'channelConfig.closeAria': '关闭频道设置',
     'channelConfig.loading': '正在读取该频道的配置…',
     'channelConfig.loadFailed': '暂时读不到该频道的配置（后端请求失败）：{reason}',
     'channelConfig.sectionMode': '协作模式',
@@ -1490,11 +1479,9 @@ const I18N_CATALOGS = {
     'channelTools.tabBudget': 'Budget',
     'channelTools.closeAria': 'Close channel tools',
     'channelTools.tabsLabel': 'Channel tools tabs',
+    'channelTools.done': 'Done',
 
     /* ─── Member roster (the read-only full list of a channel's members) ─── */
-    'roster.entryTitle': 'Channel members',
-    'roster.title': '#{name} members',
-    'roster.sub': '{count} members',
     'roster.loading': 'Reading the channel member list…',
     'roster.unavailable':
       'The channel member list is not readable right now (the backend request failed): reopen the roster once it recovers.',
@@ -1506,7 +1493,6 @@ const I18N_CATALOGS = {
     'roster.capabilities': 'MCP {mcp} / Skills {skills}',
     'roster.capabilitiesLoading': 'MCP … / Skills …',
     'roster.capabilitiesUnavailable': 'Capability summary unavailable',
-    'roster.closeAria': 'Close the member roster',
 
     /* ─── Channel settings: response budget (#54 / ADR-0007 / spec #31 §2) ────
        The entry is the "Budget" tab of the channel-tools modal (#344). The popup keeps the
@@ -1514,10 +1500,6 @@ const I18N_CATALOGS = {
        and offers only the
        fixed tiers 3 / 5 / 10. Vocabulary follows the `CONTEXT.md` `## Language` entries:
        human epoch / response budget / jump / budget-exhausted / budget table. */
-    'budget.entryTitle': 'Response budget',
-    'budget.title': 'Response budget',
-    'budget.sub': '#{name} · You set the upper bound; used jumps stay backend-owned',
-    'budget.closeAria': 'Close the response-budget settings',
     'budget.loading': 'Reading this channel’s budget…',
     'budget.loadFailed':
       'This channel’s budget is not readable right now (the backend request failed): {reason}',
@@ -1550,10 +1532,6 @@ const I18N_CATALOGS = {
        The first surface in spec §4.6. Vocabulary follows `CONTEXT.md` and ADR-0018 /
        ADR-0021: autonomous / team / leader / project root / backend / permission mode.
        `team_scope` is a **read-only backend fact**; the copy only explains it. */
-    'channelConfig.entryTitle': 'Channel settings',
-    'channelConfig.title': 'Channel settings',
-    'channelConfig.sub': '#{name} · Collaboration mode, leader, and workspace defaults',
-    'channelConfig.closeAria': 'Close channel settings',
     'channelConfig.loading': 'Reading this channel’s configuration…',
     'channelConfig.loadFailed':
       'This channel’s configuration is not readable right now (the backend request failed): {reason}',
