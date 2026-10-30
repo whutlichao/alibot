@@ -253,7 +253,7 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
             <path d="M9 6l6 6-6 6" />
           </svg>
         </button>
-        <div v-show="channelArchiveOpen" id="channelArchiveList">
+        <div v-show="channelArchiveOpen" id="channelArchiveList" data-od-id="channelArchiveList">
           <button
             v-for="channel in archivedChannels"
             :key="channel.id"
