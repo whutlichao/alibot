@@ -60,7 +60,19 @@ const emit = defineEmits([
 /** 「已归档」段的展开态：会话内的呈现状态（不是业务正本，不写任何浏览器存储）。
     频道段与私信段各用一枚：两段是两种 target，一个开关同时管两段会让「我只想展开频道」变得不可能。 */
 const archiveOpen = ref(false);
-const channelArchiveOpen = ref(false);
+// 频道的展开态是**三态**：`null` = 跟随「当前行在不在这段里」（人的手点会把它钉成 true / false）。
+// 自动那一档是必需的（#342 review 抓到）：人在 #甲 里点「归档」，#甲 立刻进这一段；若段仍是折叠的，
+// 当前打开着的频道会从左栏「消失」——界面上看不出自己归档的是哪一条。
+// 私信段没有这个问题：DM 的归档由删 Agent 引发，人不可能「在私信里把当前这条归档」。
+const channelArchiveToggle = ref(null);
+const channelArchiveVisible = computed(() => {
+  if (channelArchiveToggle.value !== null) return channelArchiveToggle.value;
+  return archivedChannels.value.some((channel) => isCurrent(channel.id));
+});
+
+function toggleChannelArchive() {
+  channelArchiveToggle.value = !channelArchiveVisible.value;
+}
 
 /** 已归档私信：判据只有后端事实 `peer.deleted_at`（Agent 软删除后 DM 与历史保留、只读）。 */
 function isArchived(dm) {
@@ -244,16 +256,16 @@ const me = computed(() => props.state.member || { display_name: 'owner', avatar_
           class="group-label is-toggle"
           type="button"
           data-od-id="btn-channel-archive-toggle"
-          :aria-expanded="channelArchiveOpen ? 'true' : 'false'"
+          :aria-expanded="channelArchiveVisible ? 'true' : 'false'"
           aria-controls="channelArchiveList"
-          @click="channelArchiveOpen = !channelArchiveOpen"
+          @click="toggleChannelArchive"
         >
           <span>{{ t('rail.groupArchivedChannels') }}</span>
           <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 6l6 6-6 6" />
           </svg>
         </button>
-        <div v-show="channelArchiveOpen" id="channelArchiveList" data-od-id="channelArchiveList">
+        <div v-show="channelArchiveVisible" id="channelArchiveList" data-od-id="channelArchiveList">
           <button
             v-for="channel in archivedChannels"
             :key="channel.id"

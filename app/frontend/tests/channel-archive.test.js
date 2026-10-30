@@ -157,6 +157,12 @@ describe('左栏：活跃段与「已归档」折叠段', () => {
     expect(section.find('[data-od-id="channel-ch-1"]').exists()).toBe(false);
   });
 
+  test('折叠段默认收起：归档行在 DOM 里但不可见（当前打开的是活跃频道）', async () => {
+    const { wrapper } = await mountApp();
+    const section = wrapper.find('[data-od-id="channel-archive-section"]');
+    expect(section.find('[data-od-id="channel-ch-2"]').isVisible()).toBe(false);
+  });
+
   test('折叠按钮的 `aria-expanded` 默认 false，点一下翻成 true 且列表可见', async () => {
     const { wrapper } = await mountApp();
     const toggle = wrapper.find('[data-od-id="btn-channel-archive-toggle"]');
@@ -243,14 +249,35 @@ describe('归档频道：只读的呈现面', () => {
     const calls = stub.to('/api/channels/ch-1/archive');
     expect(calls.length).toBe(1);
     expect(calls[0].method).toBe('POST');
-    // 左栏：活跃段里已经没有它，折叠段里有。
+    // 左栏：活跃段里已经没有它，折叠段里有，而且**这一段自动展开**（否则刚归档的当前频道会
+    // 从左栏消失——人看不出自己归档的是哪一条）。
     expect(wrapper.find('#channelList [data-od-id="channel-ch-1"]').exists()).toBe(false);
+    const movedRow = wrapper.find('[data-od-id="channel-archive-section"] [data-od-id="channel-ch-1"]');
+    expect(movedRow.exists()).toBe(true);
+    expect(movedRow.isVisible()).toBe(true);
     expect(
-      wrapper.find('[data-od-id="channel-archive-section"] [data-od-id="channel-ch-1"]').exists(),
-    ).toBe(true);
+      wrapper.find('[data-od-id="btn-channel-archive-toggle"]').attributes('aria-expanded'),
+    ).toBe('true');
     // 频道头换成了「取消归档」，composer 变只读。
     expect(wrapper.find('[data-od-id="btn-channel-unarchive"]').exists()).toBe(true);
     expect(wrapper.find('#composer textarea').attributes('disabled')).toBeDefined();
+  });
+
+  test('人手把归档段收起后，它保持收起（手点把跟随态钉住）', async () => {
+    const archivedRow = channel({ ...LIVE, archived_at: '2026-10-27T08:00:00.000Z' });
+    const { wrapper } = await mountApp({
+      '/api/channels/ch-1/archive': () =>
+        jsonResponse({ channel: archivedRow, channels: [archivedRow, ARCHIVED] }),
+    });
+    await wrapper.find('[data-od-id="btn-channel-archive"]').trigger('click');
+    await flush();
+    await flush();
+    expect(wrapper.find('#channelArchiveList').isVisible()).toBe(true);
+
+    await wrapper.find('[data-od-id="btn-channel-archive-toggle"]').trigger('click');
+
+    expect(wrapper.find('[data-od-id="btn-channel-archive-toggle"]').attributes('aria-expanded')).toBe('false');
+    expect(wrapper.find('#channelArchiveList').isVisible()).toBe(false);
   });
 
   test('点取消归档 ⇒ POST .../unarchive，频道回到活跃段', async () => {

@@ -1007,9 +1007,13 @@ UNREAD_TOTAL_SQL = (
     # 归档与删除的频道**不计入总未读**（#342 / ADR-0040）：这两档都把频道移出「左栏活跃段」，
     # 于是那个汇总徽标不该再催人点进去。它**只加外层过滤**——`UNREAD_WHERE_SQL`（未读的唯一形状，
     # ADR-0004 决策 7）一个字都不改；`LEFT JOIN` 保证 dm / task 型（channel 表里没有行）照旧计入。
+    # ``c.id IS NULL`` 那一档是为「channel 型 target 没有同名 channel 行」的历史不一致数据留的：
+    # 没有它时 ``c.archived_at`` 是 NULL，整个 AND 求值成 NULL，那条 target 的未读会**静默消失**
+    # （而它既没归档也没删除，只是数据不齐——那正是要照旧计入的情形）。
     "  LEFT JOIN channel c ON c.id = t.id\n"
     " WHERE t.kind IN (" + _UNREAD_TOTAL_KIND_LIST + ")\n"
-    "   AND (t.kind <> 'channel' OR (c.archived_at IS NULL AND c.deleted_at IS NULL))\n"
+    "   AND (t.kind <> 'channel' OR c.id IS NULL\n"
+    "        OR (c.archived_at IS NULL AND c.deleted_at IS NULL))\n"
 )
 
 # 单个 target 的未读条数：**同样的 WHERE 形状**（别名同为 m），区别只在于作用域键直接由参数给出。
