@@ -56,6 +56,12 @@ def delete(client: TestClient, channel_id: str):
     return client.delete(f"/api/channels/{channel_id}")
 
 
+def task_of(client: TestClient, channel_id: str, title: str) -> dict:
+    response = client.post(f"/api/channels/{channel_id}/tasks", json={"title": title})
+    assert response.status_code == 201, response.text
+    return response.json()["task"]
+
+
 def listed(client: TestClient) -> dict[str, dict]:
     payload = client.get("/api/channels").json()
     return {channel["id"]: channel for channel in payload["channels"]}
@@ -288,6 +294,42 @@ def test_deleted_channel_messages_leave_search_while_archived_ones_stay(client: 
     assert [hit["target"]["id"] for hit in search_hits(client, "neon", target_id=archived["id"])] == [
         archived["id"]
     ]
+
+
+def test_deleted_channel_tasks_leave_the_board_and_the_task_search(client: TestClient) -> None:
+    """已删除频道的任务**不再出现在看板与任务搜索里**（「频道不存在」这条判定要贯彻到它的任务面）。
+
+    刻意保留的边界：按 id 直接读一张任务仍然可用（历史保留），只是看板与搜索这两个**入口**不再
+    替人列出它——那一页带着「#频道名」，而频道已经 404，自相矛盾。归档频道的任务照旧在。
+    """
+    doomed = one_channel(client, name="要删的频道")
+    kept = one_channel(client, name="留下的频道")
+    doomed_task = task_of(client, doomed["id"], "zebra 任务的标题")
+    kept_task = task_of(client, kept["id"], "zebra 留下的任务")
+
+    delete(client, doomed["id"])
+
+    board_ids = {task["id"] for task in client.get("/api/tasks").json()["tasks"]}
+    assert board_ids == {kept_task["id"]}, "已删除频道的任务不进看板"
+
+    hits = search_hits(client, "zebra")
+    task_hits = {hit["task"]["id"] for hit in hits if hit["kind"] == "task"}
+    assert task_hits == {kept_task["id"]}, "已删除频道的任务不进任务搜索"
+
+    # 历史仍保留：按 id 直接读那一张任务与它的线程仍然可用。
+    assert client.get(f"/api/tasks/{doomed_task['id']}").status_code == 200
+    assert client.get(f"/api/tasks/{doomed_task['id']}/messages").status_code == 200
+
+
+def test_archived_channel_tasks_stay_on_the_board(client: TestClient) -> None:
+    """归档**不**影响任务面（ADR-0040 §二）：看板与任务搜索里仍有它。"""
+    channel = one_channel(client, name="归档但仍有任务的频道")
+    task = task_of(client, channel["id"], "quokka 的任务")
+
+    archive(client, channel["id"])
+
+    assert task["id"] in {item["id"] for item in client.get("/api/tasks").json()["tasks"]}
+    assert task["id"] in {hit["task"]["id"] for hit in search_hits(client, "quokka") if hit["kind"] == "task"}
 
 
 # ─── 七、迁移 25 → 26：纯增量、不回填、行逐字保留 ────────────────────────────

@@ -1110,6 +1110,9 @@ SEARCH_TASK_HITS_SQL = """
       FROM task t
       JOIN channel c ON c.id = t.channel_id
      WHERE CASEFOLD(t.title) LIKE :pattern ESCAPE '\\'
+       -- 同一条「已删除频道不存在」的判定（#342 / ADR-0040 §一）：任务看板过滤了，搜索也得过滤，
+       -- 否则一条已经不可见的任务还能被标题搜出来。
+       AND c.deleted_at IS NULL
      ORDER BY t.created_at, t.id
      LIMIT :limit
 """
@@ -2693,12 +2696,22 @@ class Database:
         return task
 
     def list_tasks(self, channel_id: str | None = None, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
+        """任务看板的行；已删除频道的任务**不进这一份**（#342 / ADR-0040 §一）。
+
+        删除是「频道对整个人类面不存在」：它的任务若仍出现在看板上，那张卡片可点、点进去还带着
+        「#频道名」，而频道本身已经 404——自相矛盾。因此这条列表按 ``channel.deleted_at`` 过滤
+        （``channel_id`` 给了的话，``get_channel`` 早已 404，不需要再过滤一次）。
+
+        **刻意保留**的边界：按 id 直接读一张任务（``GET /api/tasks/{id}`` 与它的线程）仍然可用——
+        那是「历史保留、不可见」里「保留」的一面，与消息一致（消息也不删，只是频道层面的读入口没了）。
+        """
         if channel_id is not None:
             self.get_channel(channel_id)  # 非法筛选频道明确 404，不能伪装成空结果
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id FROM task WHERE (:channel_id IS NULL OR channel_id = :channel_id) "
-                "ORDER BY created_at, id",
+                "SELECT t.id FROM task t JOIN channel c ON c.id = t.channel_id "
+                " WHERE c.deleted_at IS NULL AND (:channel_id IS NULL OR t.channel_id = :channel_id) "
+                " ORDER BY t.created_at, t.id",
                 {"channel_id": channel_id},
             ).fetchall()
         return [self.get_task(row["id"], member_id) for row in rows]
