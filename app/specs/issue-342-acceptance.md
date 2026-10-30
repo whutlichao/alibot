@@ -226,7 +226,37 @@ Test Files  25 passed (25) / Tests  495 passed (495) # Vitest
 
 ## 6. 双轴 code-review（Standards + Spec）
 
-见下一节的逐条处置（review 报告与处理结果在 §6 之后就地记录）。
+两轴各用一个独立子代理（平铺、不共享上下文），报告与逐条处置：
+
+### Standards 轴（处置提交 d44e386 / c6c4807 / c971009 / 4cf08f1 / a4e0d53）
+
+| # | 发现 | 类型 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `service.archive_channel` docstring 说「返回最新读数与整份频道名单」，实际只返回这一行 | 成文标准（docstring 讲假事实） | 改 docstring |
+| 2 | `_step_25_to_26` 说「牵动三条触发器」，实际两条 | 同上 | 改数字 |
+| 3 | 「ADR-0040 决策 1 / 决策 2」指向不存在的编号 | 成文标准（引用可指认） | 改成 §一 / §二 |
+| 4 | README 数据模型表的 `channel` 行没补两列 | 成文标准（新增列要同步 README） | 补上 |
+| 5 | 测试 docstring 说「不读库表」，迁移那一节实际读 PRAGMA | 成文标准（讲假事实） | 补例外说明 |
+| 6 | 弹窗内错误行用了 `toast.*` 前缀 | 成文标准（键前缀标识呈现面） | 新增 `channelConfig.deleteFailed` |
+| 7 | 字段级词条 `error.channel_archived_read_only_field` 另起后缀 | 成文标准（既有体例是 `error.field.<name>`） | 改名 |
+| 8 | store 与 `RailSidebar` 各算一遍频道分段 | 判断题（Duplicated Code / Speculative Generality） | 判据收敛到 `lib/target-view.js`；store 的派生值保留（它们是对外读数，用例直接断言） |
+| 9 | 三个动作复制粘贴 | 判断题（Duplicated Code） | `applyChannelMutation(path, method)` |
+| 10 | `SEARCH_TARGET_HITS_SQL` 没有 `deleted_at` 过滤 | 判断题（Repeated shape 漂移） | 补上并加断言（2839eb0） |
+| 11 | `dangerDeleteTitle` 与 `delete` 同值、`deleteCancel` 与 `common.cancel` 同值 | 判断题（重复文案键） | 删掉两个键，复用既有 |
+| 12 | 危险区用无控件的 `<label>` | 判断题（呈现误导） | 改用 `.danger-zone` / `.danger-hint`，与 Agent 详情同形 |
+| 13 | `ChannelHeader` 的 `isArchivedDm` prop 模板里未读取 | 判断题（死 prop） | **不改**：它是基线上既有的 prop（`App.vue` 一直传），本票只把注释说清 |
+| 14 | `delete_channel` 显式事务多余 | 判断题 | 单条 UPDATE + autocommit 足够（c6c4807） |
+
+### Spec 轴（处置提交 2f3c5f2 / 12f03f1）
+
+| # | 发现 | 处置 |
+| --- | --- | --- |
+| 1 | 「删除是终态、不再出现在任何列表」被违反：已删除频道的任务仍在 `GET /api/tasks` 与任务搜索里 | **补实现**：两处都按 `channel.deleted_at` 过滤；按 id 直接读仍 200（历史保留，与消息同口径）；ADR-0040 §一 增第 5 条，README 同步 |
+| 2 | `UNREAD_TOTAL_SQL` 的 NULL 传播（`channel` 行缺失时未读静默消失） | **补实现**：加 `c.id IS NULL` 一档 |
+| 3 | 归档当前频道后折叠段默认收起，当前行从左栏「消失」 | **补实现**：展开态改三态（`null` 跟随当前行），并补两条用例 |
+| 4 | `delete_channel` 顺手清 `archived_at` 与「两列独立」的措辞 | **保留**：票面人定决策表与 `app/README.md` 端点表都明写「同时清 `archived_at`」；清空不改变两档的独立性（读路径本来就按 `deleted_at` 过滤） |
+| 5 | 票面未逐字要求的附加项（`_create_missing_tables` 兜底、api 模块头三行、README 数据模型表、两份 specs） | **保留**：契约缓存与本仓既有实施体例；`_create_missing_tables` 对齐其它步骤的「缺表兜底」形状 |
+| 6 | 未要求的方向（物理删除、状态枚举等） | 无：ADR-0040 §四 记录的是**被否**的方案，不是实现 |
 
 ---
 
