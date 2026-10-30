@@ -3,8 +3,9 @@
    端点早已存在（`GET/PUT/DELETE /api/web-providers/{provider}/credential`、
    `POST /api/web-providers/{provider}/consent`），本票只补 v2 的界面入口。
 
-   为什么**从 `App.vue` 进**（不是直挂 `ChannelConfigModal`）：凭据段的读数要经过
-   「HTTP 载荷 → workspace store → 弹窗 prop → 段落」这条链，打开动作也由频道头的设置按钮触发；
+   为什么**从 `App.vue` 进**（不是直挂 `ChannelSettingsPanel`）：凭据段的读数要经过
+   「HTTP 载荷 → workspace store → 弹窗 prop → 段落」这条链，打开动作也由频道头 → 频道工具
+   → 「设置」页签这条真实导航触发；
    叶子组件上各有各的 prop 会各自都过，只有从真实父组件进才看得见「读数没有接上」这类断链。
 
    判据来源：
@@ -143,9 +144,12 @@ async function mountApp(routeOverrides) {
   return { wrapper, stub };
 }
 
+/** 频道工具弹窗 → 「设置」页签（凭据段在配置正文里）。 */
 async function openConfig(wrapper) {
-  await wrapper.find('[data-od-id="btn-channel-settings"]').trigger('click');
+  await wrapper.find('[data-od-id="btn-channel-tools"]').trigger('click');
   await flush();
+  await flush();
+  await wrapper.find('[data-od-id="channel-tools-tab-settings"]').trigger('click');
   await flush();
 }
 

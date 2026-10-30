@@ -219,6 +219,7 @@ describe('归档频道：只读的呈现面', () => {
 
     expect(wrapper.find('[data-od-id="btn-channel-unarchive"]').exists()).toBe(true);
     for (const id of [
+      'btn-channel-tools',
       'btn-channel-members',
       'btn-channel-settings',
       'btn-channel-budget',
@@ -229,10 +230,17 @@ describe('归档频道：只读的呈现面', () => {
     }
   });
 
-  test('活跃频道下是归档按钮，不是取消归档', async () => {
+  test('活跃频道头没有归档按钮：归档入口在频道工具 → 设置页签的危险区里', async () => {
     const { wrapper } = await mountApp();
-    expect(wrapper.find('[data-od-id="btn-channel-archive"]').exists()).toBe(true);
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(true);
     expect(wrapper.find('[data-od-id="btn-channel-unarchive"]').exists()).toBe(false);
+    expect(wrapper.find('[data-od-id="btn-channel-archive"]').exists()).toBe(false);
+
+    await openConfig(wrapper);
+
+    const danger = wrapper.find('[data-od-id="channel-config-section-danger"]');
+    expect(danger.find('[data-od-id="btn-channel-archive"]').exists()).toBe(true);
+    expect(danger.find('[data-od-id="btn-channel-delete"]').exists()).toBe(true);
   });
 
   test('点归档 ⇒ POST .../archive，并用响应覆盖左栏（频道挪进折叠段）', async () => {
@@ -242,7 +250,9 @@ describe('归档频道：只读的呈现面', () => {
         jsonResponse({ channel: archivedRow, channels: [archivedRow, ARCHIVED] }),
     });
 
+    await openConfig(wrapper);
     await wrapper.find('[data-od-id="btn-channel-archive"]').trigger('click');
+    await flush();
     await flush();
     await flush();
 
@@ -258,9 +268,28 @@ describe('归档频道：只读的呈现面', () => {
     expect(
       wrapper.find('[data-od-id="btn-channel-archive-toggle"]').attributes('aria-expanded'),
     ).toBe('true');
-    // 频道头换成了「取消归档」，composer 变只读。
+    // 归档成功：频道工具弹窗关闭，频道头只剩「取消归档」（频道工具入口整组让位）。
+    expect(wrapper.find('#channelToolsOverlay').attributes('hidden')).toBeDefined();
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(false);
     expect(wrapper.find('[data-od-id="btn-channel-unarchive"]').exists()).toBe(true);
     expect(wrapper.find('#composer textarea').attributes('disabled')).toBeDefined();
+  });
+
+  test('归档失败：工具弹窗不关，toast 给后端可读原因', async () => {
+    const { wrapper } = await mountApp({
+      '/api/channels/ch-1/archive': () =>
+        jsonResponse({ error: { code: 'boom', message: '后端拒绝归档' } }, 500),
+    });
+    await openConfig(wrapper);
+    await wrapper.find('[data-od-id="btn-channel-archive"]').trigger('click');
+    await flush();
+    await flush();
+
+    // 失败只呈现既有 toast 文案；弹窗与人所在的那一页都还在。
+    expect(wrapper.find('#channelToolsOverlay').attributes('hidden')).toBeUndefined();
+    expect(wrapper.find('[data-od-id="channel-config-body"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-od-id="toast-wrap"]').text()).toContain('归档频道失败');
+    expect(wrapper.find('[data-od-id="btn-channel-unarchive"]').exists()).toBe(false);
   });
 
   test('人手把归档段收起后，它保持收起（手点把跟随态钉住）', async () => {
@@ -269,6 +298,7 @@ describe('归档频道：只读的呈现面', () => {
       '/api/channels/ch-1/archive': () =>
         jsonResponse({ channel: archivedRow, channels: [archivedRow, ARCHIVED] }),
     });
+    await openConfig(wrapper);
     await wrapper.find('[data-od-id="btn-channel-archive"]').trigger('click');
     await flush();
     await flush();
@@ -300,16 +330,20 @@ describe('归档频道：只读的呈现面', () => {
 
     expect(stub.to('/api/channels/ch-2/unarchive').length).toBe(1);
     expect(wrapper.find('#channelList [data-od-id="channel-ch-2"]').exists()).toBe(true);
-    expect(wrapper.find('[data-od-id="btn-channel-archive"]').exists()).toBe(true);
+    // 回到活跃态：频道工具入口重新出现（归档入口随「设置」页签一起回来）。
+    expect(wrapper.find('[data-od-id="btn-channel-tools"]').exists()).toBe(true);
     expect(wrapper.find('#composer textarea').attributes('disabled')).toBeUndefined();
   });
 });
 
 /* ─── 三、危险区：删除要先确认 ─────────────────────────────────────────────── */
 
+/** 打开频道工具弹窗 → 切到「设置」页签（归档与删除都在它的危险区里）。 */
 async function openConfig(wrapper) {
-  await wrapper.find('[data-od-id="btn-channel-settings"]').trigger('click');
+  await wrapper.find('[data-od-id="btn-channel-tools"]').trigger('click');
   await flush();
+  await flush();
+  await wrapper.find('[data-od-id="channel-tools-tab-settings"]').trigger('click');
   await flush();
 }
 

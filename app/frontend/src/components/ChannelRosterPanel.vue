@@ -1,7 +1,8 @@
 <!-- 成员名册（频道成员的**两段**名单：已加入 / 未加入）
 
-     入口是频道头的成员按钮（`btn-channel-members`）。旧落点是 `studio/app.js` 的
-     `openRosterModal()` / `renderRoster()`（只读全名单），本票按 #303 票面把它扩成两段：
+     入口是**频道工具弹窗**的「成员」页签（#344；频道头只剩一枚 `btn-channel-tools`）。
+     旧落点是频道头的成员按钮（已随本票移除）与更早的 `studio/app.js` 的
+     `openRosterModal()` / `renderRoster()`（只读全名单），#303 按票面把它扩成两段：
      **已加入** = 该频道的成员表（正本 `GET /api/channels/{id}/members`，含 owner），
      **未加入** = 本工作区里还没进来的 Agent，行上直接带「加入」控件（`POST .../members`）。
 
@@ -18,12 +19,12 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue';
 import MemberAvatar from './MemberAvatar.vue';
-import ModalShell from './ModalShell.vue';
 import PresenceDot from './PresenceDot.vue';
 import { t } from '../i18n/index.js';
 import { agentMembers, memberStatus } from '../lib/member-view.js';
 
 const props = defineProps({
+  // 由 `ChannelToolsModal` 的显隐驱动：打开时读一次，关闭时复位（外壳与关闭动作只有那一个）。
   open: { type: Boolean, default: false },
   // 弹窗锁定在打开那一刻的频道（`null` = 还没打开过）。
   channel: { type: Object, default: null },
@@ -32,8 +33,6 @@ const props = defineProps({
   // toast 落点由 `App.vue` 传（加入成功 / 失败各一条，与旧页面的 `joinChannelMember()` 同口径）。
   toast: { type: Function, default: null },
 });
-
-const emit = defineEmits(['close']);
 
 const members = ref(null);
 const membersFailed = ref(false);
@@ -45,10 +44,7 @@ const joining = ref([]);
 const channelId = computed(() => (props.channel ? props.channel.id : null));
 const channelName = computed(() => (props.channel ? props.channel.name : ''));
 
-const title = computed(() => t('roster.title', { name: channelName.value }));
-const sub = computed(() => (loaded.value ? t('roster.sub', { count: members.value.length }) : ''));
-
-/** 「读到了」= 拿到过一份成员表且没有失败标记。判据同时决定副标题写不写数字。 */
+/** 「读到了」= 拿到过一份成员表且没有失败标记。判据同时决定「未加入」段列不列候选。 */
 const loaded = computed(() => Boolean(members.value) && !membersFailed.value);
 
 /** 已加入段：成员表原样（含 owner，与既有名册口径一致）。 */
@@ -160,94 +156,76 @@ async function join(member) {
 </script>
 
 <template>
-  <ModalShell
-    id="rosterOverlay"
-    :open="open"
-    wide
-    :title="title"
-    :sub="sub"
-    :close-label="t('roster.closeAria')"
-    close-id="rosterClose"
-    close-od-id="roster-close"
-    @close="emit('close')"
-  >
-    <div id="rosterBody" class="roster-body" data-od-id="roster-body">
-      <section class="dock-group" data-od-id="roster-joined">
-        <div class="dock-group-label">{{ t('dock.joined', { count: joined.length }) }}</div>
-        <div v-if="membersFailed" class="rail-empty">{{ t('dock.membersUnavailable') }}</div>
-        <div v-else-if="loading && !members" class="rail-empty">{{ t('roster.loading') }}</div>
-        <div v-else-if="!joined.length" class="rail-empty">{{ t('roster.empty') }}</div>
-        <!-- owner 那行右侧是「我」：`GET /api/member-statuses` 只覆盖 Agent，
-             给 owner 造一个状态点等于伪造后端没有的事实。 -->
-        <div
-          v-for="member in joined"
-          :key="member.id"
-          class="roster-row"
-          :data-member="member.id"
-          :data-kind="member.kind"
-          :data-od-id="'roster-member-' + member.id"
-        >
-          <div class="roster-who">
-            <MemberAvatar :name="member.display_name" :slot="member.avatar_slot" size="sm" />
-            <div class="roster-who-text">
-              <b class="roster-name">{{ member.display_name }}</b>
-              <span class="roster-role">{{ roleOf(member) }}</span>
-            </div>
+  <div id="rosterBody" class="roster-body" data-od-id="roster-body">
+    <section class="dock-group" data-od-id="roster-joined">
+      <div class="dock-group-label">{{ t('dock.joined', { count: joined.length }) }}</div>
+      <div v-if="membersFailed" class="rail-empty">{{ t('dock.membersUnavailable') }}</div>
+      <div v-else-if="loading && !members" class="rail-empty">{{ t('roster.loading') }}</div>
+      <div v-else-if="!joined.length" class="rail-empty">{{ t('roster.empty') }}</div>
+      <!-- owner 那行右侧是「我」：`GET /api/member-statuses` 只覆盖 Agent，
+           给 owner 造一个状态点等于伪造后端没有的事实。 -->
+      <div
+        v-for="member in joined"
+        :key="member.id"
+        class="roster-row"
+        :data-member="member.id"
+        :data-kind="member.kind"
+        :data-od-id="'roster-member-' + member.id"
+      >
+        <div class="roster-who">
+          <MemberAvatar :name="member.display_name" :slot="member.avatar_slot" size="sm" />
+          <div class="roster-who-text">
+            <b class="roster-name">{{ member.display_name }}</b>
+            <span class="roster-role">{{ roleOf(member) }}</span>
           </div>
-          <template v-if="member.kind === 'owner'">
-            <span class="roster-me">{{ t('identity.me') }}</span>
-          </template>
-          <template v-else>
-            <span
-              class="roster-capabilities"
-              :data-od-id="'roster-capabilities-' + member.id"
-            >{{ capabilitiesText(member.id) }}</span>
-            <PresenceDot :status="statusOf(member)" />
-          </template>
         </div>
-      </section>
+        <template v-if="member.kind === 'owner'">
+          <span class="roster-me">{{ t('identity.me') }}</span>
+        </template>
+        <template v-else>
+          <span
+            class="roster-capabilities"
+            :data-od-id="'roster-capabilities-' + member.id"
+          >{{ capabilitiesText(member.id) }}</span>
+          <PresenceDot :status="statusOf(member)" />
+        </template>
+      </div>
+    </section>
 
-      <section class="dock-group is-pool" data-od-id="roster-not-joined">
-        <div class="dock-group-label">{{ t('dock.notJoined', { count: outsiders.length }) }}</div>
-        <div v-if="membersFailed" class="rail-empty">{{ t('dock.notJoinedUnavailable') }}</div>
-        <div v-else-if="loading && !members" class="rail-empty">{{ t('roster.loading') }}</div>
-        <div v-else-if="!outsiders.length" class="rail-empty">
-          {{ agentMembers(store.state.members).length ? t('dock.allJoined') : t('dock.noAgents') }}
+    <section class="dock-group is-pool" data-od-id="roster-not-joined">
+      <div class="dock-group-label">{{ t('dock.notJoined', { count: outsiders.length }) }}</div>
+      <div v-if="membersFailed" class="rail-empty">{{ t('dock.notJoinedUnavailable') }}</div>
+      <div v-else-if="loading && !members" class="rail-empty">{{ t('roster.loading') }}</div>
+      <div v-else-if="!outsiders.length" class="rail-empty">
+        {{ agentMembers(store.state.members).length ? t('dock.allJoined') : t('dock.noAgents') }}
+      </div>
+      <div
+        v-for="member in outsiders"
+        v-else
+        :key="member.id"
+        class="dock-member is-candidate"
+        :data-member="member.id"
+        :data-od-id="'roster-candidate-' + member.id"
+      >
+        <div class="dock-member-head">
+          <MemberAvatar :name="member.display_name" :slot="member.avatar_slot" size="sm" />
+          <span class="roster-name">{{ member.display_name }}</span>
+          <span v-if="roleOf(member) !== t('roster.roleFallback')" class="msg-tag">{{ roleOf(member) }}</span>
+          <PresenceDot :status="statusOf(member)" />
         </div>
-        <div
-          v-for="member in outsiders"
-          v-else
-          :key="member.id"
-          class="dock-member is-candidate"
-          :data-member="member.id"
-          :data-od-id="'roster-candidate-' + member.id"
-        >
-          <div class="dock-member-head">
-            <MemberAvatar :name="member.display_name" :slot="member.avatar_slot" size="sm" />
-            <span class="roster-name">{{ member.display_name }}</span>
-            <span v-if="roleOf(member) !== t('roster.roleFallback')" class="msg-tag">{{ roleOf(member) }}</span>
-            <PresenceDot :status="statusOf(member)" />
-          </div>
-          <div class="dock-member-foot">
-            <button
-              class="btn btn-sm"
-              type="button"
-              :data-od-id="'roster-join-' + member.id"
-              :aria-label="t('dock.joinAria', { name: member.display_name })"
-              :disabled="joining.includes(member.id)"
-              @click="join(member)"
-            >
-              {{ joining.includes(member.id) ? t('dock.joining') : t('dock.join') }}
-            </button>
-          </div>
+        <div class="dock-member-foot">
+          <button
+            class="btn btn-sm"
+            type="button"
+            :data-od-id="'roster-join-' + member.id"
+            :aria-label="t('dock.joinAria', { name: member.display_name })"
+            :disabled="joining.includes(member.id)"
+            @click="join(member)"
+          >
+            {{ joining.includes(member.id) ? t('dock.joining') : t('dock.join') }}
+          </button>
         </div>
-      </section>
-    </div>
-    <template #foot>
-      <span class="sep"></span>
-      <button class="btn btn-primary" type="button" data-od-id="roster-done" @click="emit('close')">
-        {{ t('common.close') }}
-      </button>
-    </template>
-  </ModalShell>
+      </div>
+    </section>
+  </div>
 </template>
