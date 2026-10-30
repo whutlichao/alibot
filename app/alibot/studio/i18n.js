@@ -59,6 +59,9 @@ const I18N_CATALOGS = {
     'rail.groupChannels': '频道',
     'rail.groupDms': '私信',
     'rail.groupArchivedDms': '已归档',
+    // 频道的归档段（#342 / ADR-0040）：与 DM 的「已归档」段并列但**分开**——两者是两种 target，
+    // 混成一段会让人以为删掉一个 Agent 就顺带归档了频道。
+    'rail.groupArchivedChannels': '已归档频道',
     'rail.groupAgents': '本机 Agent',
     'rail.emptyChannels': '还没有频道。新建一个频道就能开始记录。',
     'rail.emptyDms': '还没有私信。在 Agent 详情里点「发送消息」后会在这里显示。',
@@ -197,6 +200,11 @@ const I18N_CATALOGS = {
     'header.dmArchivedDesc': '该 Agent 已删除，这段私信保留为只读归档。',
     'header.dmArchivedPlaceholder': '该 Agent 已删除，这段私信只读归档',
     'header.channelPlaceholder': '发消息到 #{name} —— 输入 @ 提及 Agent',
+    // 频道归档态（#342 / ADR-0040）：归档只收走写入面，历史仍可读，所以两句都说「只读归档」。
+    'header.channelArchivedDesc': '该频道已归档，保留为只读归档。',
+    'header.channelArchivedPlaceholder': '该频道已归档，只读归档',
+    'header.archiveChannel': '归档本频道',
+    'header.unarchiveChannel': '取消归档',
     'typing.working': '{name} 正在回复…',
     'typing.nameSeparator': '、',
     'typing.stopNamedShort': '停止 {name}',
@@ -648,6 +656,19 @@ const I18N_CATALOGS = {
     'channelConfig.save': '保存配置',
     'channelConfig.saved': '频道配置已保存。',
     'channelConfig.saveFailed': '配置未保存：{reason}',
+    /* ─── 危险区（#342 / ADR-0040）：归档与删除的唯一入口 ────────────────── */
+    'channelConfig.sectionDanger': '危险区',
+    'channelConfig.dangerArchiveTitle': '归档本频道',
+    'channelConfig.dangerArchiveNote':
+      '归档后频道移出左栏活跃段，频道面变成只读：历史消息仍可读、仍可被搜索，但不能再发消息、改配置、改预算、加成员或新建任务。任务面不受影响，随时可以取消归档。',
+    'channelConfig.dangerDeleteNote':
+      '删除是终态、不可恢复：频道从此不再出现在任何列表里，也不能再被打开。历史记录（消息、任务、成员关系）全部保留但不对人类面可见。',
+    'channelConfig.delete': '删除本频道',
+    'channelConfig.deleteConfirmTitle': '确认删除 #{name}？',
+    'channelConfig.deleteConfirmHint': '这个动作不可撤销，也没有「回收站」。',
+    'channelConfig.deleteConfirmAction': '确认删除',
+    // 弹窗内的失败行（`channelConfig.*` 前缀标识呈现面：Inline 错误住在哪个面就带哪个面的前缀）。
+    'channelConfig.deleteFailed': '删除频道失败：{reason}',
 
     /* ─── 联网（#199）：档位三选 + provider 凭据（只回掩码） ───────────────── */
     'channelConfig.sectionWeb': '联网',
@@ -873,6 +894,12 @@ const I18N_CATALOGS = {
     'toast.alreadyMember': '{name} 本来就在 #{channel} 里。',
     'toast.joinFailed': '加入失败：{reason}',
     'toast.channelCreated': '已创建频道 #{name}，可以直接发送第一条消息。',
+    /* 归档 / 取消归档 / 删除（#342 / ADR-0040）：三个动作各有成功与失败两说。 */
+    'toast.channelArchived': '已归档频道 #{name}：它现在只读，历史仍可读。',
+    'toast.channelArchiveFailed': '归档频道失败：{reason}',
+    'toast.channelUnarchived': '已取消归档 #{name}：频道恢复可写。',
+    'toast.channelUnarchiveFailed': '取消归档失败：{reason}',
+    'toast.channelDeleted': '已删除频道 #{name}。',
     'toast.dmCreated': '已创建与 {name} 的私信。',
     'toast.dmOpened': '已打开与 {name} 的现有私信。',
     'toast.dmOpenFailed': '打开私信失败：{reason}',
@@ -908,6 +935,9 @@ const I18N_CATALOGS = {
     'rail.groupChannels': 'Channels',
     'rail.groupDms': 'Direct messages',
     'rail.groupArchivedDms': 'Archived',
+    // Channel archive section (#342 / ADR-0040): parallel to the DM one but separate —
+    // they are different target kinds; one group would imply deleting an agent archives channels.
+    'rail.groupArchivedChannels': 'Archived channels',
     'rail.groupAgents': 'Local agents',
     'rail.emptyChannels': 'No channels yet. Create one to start recording.',
     'rail.emptyDms': 'No direct messages yet. Press “Send message” on an agent detail page to start one.',
@@ -1052,6 +1082,11 @@ const I18N_CATALOGS = {
     'header.dmArchivedDesc': 'This agent was deleted; this direct message is kept as a read-only archive.',
     'header.dmArchivedPlaceholder': 'This agent was deleted; this direct message is archive-only',
     'header.channelPlaceholder': 'Message #{name} — type @ to mention an agent',
+    // Archived channel (#342 / ADR-0040): archiving only closes the write face; history stays readable.
+    'header.channelArchivedDesc': 'This channel is archived and kept as a read-only archive.',
+    'header.channelArchivedPlaceholder': 'This channel is archived; read-only archive',
+    'header.archiveChannel': 'Archive this channel',
+    'header.unarchiveChannel': 'Unarchive',
     'typing.working': '{name} is replying…',
     'typing.nameSeparator': ', ',
     'typing.stopNamedShort': 'Stop {name}',
@@ -1538,6 +1573,24 @@ const I18N_CATALOGS = {
     'channelConfig.save': 'Save configuration',
     'channelConfig.saved': 'Channel configuration saved.',
     'channelConfig.saveFailed': 'Configuration not saved: {reason}',
+    /* ─── Danger zone (#342 / ADR-0040): the only entry for archive and delete ── */
+    'channelConfig.sectionDanger': 'Danger zone',
+    'channelConfig.dangerArchiveTitle': 'Archive this channel',
+    'channelConfig.dangerArchiveNote':
+      'An archived channel leaves the active rail section and its channel face becomes read-only: '
+      + 'history stays readable and searchable, but you can no longer send messages, edit config, '
+      + 'change the budget, add members or create tasks. The task plane is unaffected and you can '
+      + 'unarchive at any time.',
+    'channelConfig.dangerDeleteNote':
+      'Deleting is final and cannot be undone: the channel disappears from every list and can no '
+      + 'longer be opened. History (messages, tasks, membership) is kept but is no longer visible to '
+      + 'the human face.',
+    'channelConfig.delete': 'Delete this channel',
+    'channelConfig.deleteConfirmTitle': 'Delete #{name}?',
+    'channelConfig.deleteConfirmHint': 'This cannot be undone — there is no recycle bin.',
+    'channelConfig.deleteConfirmAction': 'Delete',
+    // Inline failure row of the dialog (the `channelConfig.*` prefix marks the surface).
+    'channelConfig.deleteFailed': 'Could not delete the channel: {reason}',
 
     /* ─── Web access (#199): three levels + provider credentials (masked reads only) ── */
     'channelConfig.sectionWeb': 'Web access',
@@ -1772,6 +1825,12 @@ const I18N_CATALOGS = {
     'toast.alreadyMember': '{name} is already in #{channel}.',
     'toast.joinFailed': 'Could not join: {reason}',
     'toast.channelCreated': 'Created channel #{name}; you can send the first message right away.',
+    /* Archive / unarchive / delete (#342 / ADR-0040): success and failure for each. */
+    'toast.channelArchived': 'Archived channel #{name}: it is read-only now, history stays readable.',
+    'toast.channelArchiveFailed': 'Could not archive the channel: {reason}',
+    'toast.channelUnarchived': 'Unarchived #{name}: the channel is writable again.',
+    'toast.channelUnarchiveFailed': 'Could not unarchive the channel: {reason}',
+    'toast.channelDeleted': 'Deleted channel #{name}.',
     'toast.dmCreated': 'Created a direct message with {name}.',
     'toast.dmOpened': 'Opened the existing direct message with {name}.',
     'toast.dmOpenFailed': 'Could not open the direct message: {reason}',

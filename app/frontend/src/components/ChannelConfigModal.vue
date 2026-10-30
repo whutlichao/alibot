@@ -28,7 +28,11 @@
 
      「清空」的二次确认走**行内的确认条**（`.danger-confirm-text` + `.btn-danger`，与 Agent 删除确认
      同一套词与样式），不叠第二层 `ModalShell`：`.overlay` 带了 `backdrop-filter`，它会成为
-     `position: fixed` 后代的包含块，嵌一层遮罩的位置就跟视口脱钩了。 -->
+     `position: fixed` 后代的包含块，嵌一层遮罩的位置就跟视口脱钩了。
+
+     **底部危险区**（#342 / ADR-0040）也守同一条：归档的说明 + 删除的入口，删除的二次确认同样走
+     行内确认条，不叠第二层遮罩。这个弹窗只**发意图**（调父组件给的 `remove`）——读数落地与
+     「当前 target 被删之后主线去哪」都是 `App.vue` 那一层的事（它持有 store 与主线视图状态）。 -->
 <script setup>
 import { computed, reactive, ref, watch } from 'vue';
 import ModalShell from './ModalShell.vue';
@@ -41,6 +45,9 @@ const props = defineProps({
   // 弹窗锁定在打开那一刻的频道（`null` = 还没打开过）。
   channel: { type: Object, default: null },
   store: { type: Object, required: true },
+  // 删除动作由父组件给（与 `ChannelFormModal` 的 `submit` 同一条：组件只发意图，父组件持有
+  // store 与「删完之后主线去哪」的接线）。抛错 ⇒ 错误留在弹窗内、确认条不收起。
+  remove: { type: Function, default: null },
 });
 
 const emit = defineEmits(['close']);
@@ -70,6 +77,41 @@ const draft = reactive({
 const webProviders = createWebProviderStore({ online: () => props.store.state.online });
 const providerRows = computed(() => webProviders.state.providers);
 const providerConsentsKnown = computed(() => webProviders.state.consentsKnown);
+
+/* ─── 危险区（#342 / ADR-0040）：归档的说明 + 删除的行内二次确认 ──────────────
+   删除的第一次点击**不发任何请求**，只把确认条铺出来；点「确认删除」才走 `props.remove`。
+   请求在飞时（`deleting`）两枚按钮都禁用——连点两次不该发出两次 DELETE（后端不幂等，
+   第二次拿到的是 404，那正是要避免的噪声）。
+   归档不在这里做：它在频道头工具行上当场执行（可恢复 ⇒ 不需要二次确认）。这里只说明它做了什么，
+   因为「删掉之后就再也点不进这个弹窗」这条事实值得在同一个区块里说清。 */
+const deleteConfirm = ref(false);
+const deleting = ref(false);
+
+function requestDelete() {
+  if (deleting.value) return;
+  deleteConfirm.value = true;
+}
+
+function cancelDelete() {
+  if (deleting.value) return;
+  deleteConfirm.value = false;
+}
+
+async function confirmDelete() {
+  const id = channelId.value;
+  if (!id || deleting.value || !props.remove) return;
+  deleting.value = true;
+  formError.value = '';
+  try {
+    await props.remove(id);
+    deleteConfirm.value = false;
+  } catch (err) {
+    // 失败：错误留在弹窗内（人能看到原因），确认条不收起（可以就地重试或取消）。
+    formError.value = t('channelConfig.deleteFailed', { reason: err.message });
+  } finally {
+    deleting.value = false;
+  }
+}
 
 /** provider 的显示名：**字面键**逐家写（动态取值不拼词条键，词条守卫才看得见全部键）。 */
 function webProviderLabel(provider) {
@@ -172,6 +214,9 @@ watch(
       error.value = '';
       formError.value = '';
       saving.value = false;
+      // 危险区的确认条只活在一次打开会话里：关掉再打开应当是干净的一帧。
+      deleteConfirm.value = false;
+      deleting.value = false;
       // 凭据段的草稿（含明文）与错误只活在一次打开会话里：关掉就丢。
       webProviders.reset();
       return;
@@ -601,6 +646,64 @@ async function save() {
             {{ t('channelConfig.save') }}
           </button>
         </div>
+
+        <!-- ⑧ 危险区（#342 / ADR-0040）：归档的说明 + 删除（行内二次确认，不叠第二层遮罩）。
+             位置固定在最后：它是这个弹窗里唯一不可撤销的动作。
+             区块与说明复用 Agent 详情「危险操作」那一套（`.danger-zone` / `.danger-hint` /
+             `.danger-actions`），措辞也照它：标题走 `.d-sec-title`，说明是 `.danger-hint`
+             （不是 `<label>`——这里没有任何控件可关联，`<label>` 会读成「少了一个输入框」）。 -->
+        <section class="d-sec danger-zone" data-od-id="channel-config-section-danger">
+          <div class="d-sec-title" data-od-id="channel-config-danger-title">
+            {{ t('channelConfig.sectionDanger') }}
+          </div>
+          <div class="field">
+            <b>{{ t('channelConfig.dangerArchiveTitle') }}</b>
+            <div class="danger-hint" data-od-id="channel-config-danger-archive-note">
+              {{ t('channelConfig.dangerArchiveNote') }}
+            </div>
+          </div>
+          <div class="field">
+            <b>{{ t('channelConfig.delete') }}</b>
+            <div class="danger-hint" data-od-id="channel-config-danger-delete-note">
+              {{ t('channelConfig.dangerDeleteNote') }}
+            </div>
+          </div>
+          <div class="agent-actions danger-actions">
+            <button
+              class="btn btn-sm btn-danger"
+              type="button"
+              data-od-id="btn-channel-delete"
+              :disabled="!store.state.online || deleting"
+              @click="requestDelete"
+            >
+              {{ t('channelConfig.delete') }}
+            </button>
+          </div>
+
+          <!-- 删除的第二步：行内确认条（复用 Agent 删除确认的 `.danger-confirm-text` / `.btn-danger`）。 -->
+          <div v-if="deleteConfirm" data-od-id="channel-delete-confirm">
+            <p class="danger-confirm-text">
+              {{ t('channelConfig.deleteConfirmTitle', { name: channelName }) }}
+            </p>
+            <div class="danger-hint">{{ t('channelConfig.deleteConfirmHint') }}</div>
+            <div class="agent-actions danger-actions">
+              <button
+                class="btn"
+                type="button"
+                data-od-id="channel-delete-cancel"
+                :disabled="deleting"
+                @click="cancelDelete"
+              >{{ t('common.cancel') }}</button>
+              <button
+                class="btn btn-danger"
+                type="button"
+                data-od-id="channel-delete-confirm-action"
+                :disabled="deleting"
+                @click="confirmDelete"
+              >{{ t('channelConfig.deleteConfirmAction') }}</button>
+            </div>
+          </div>
+        </section>
       </template>
     </div>
     <!-- 错误行与正文字段分开呈现：它是**保存失败的原因**，不是一份读数。

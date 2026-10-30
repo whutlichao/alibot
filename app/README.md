@@ -225,13 +225,13 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 已有的额外条目；不删库行；只复制旧行上已有的远端确认、不代做新确认）。旧命令 `migrate-mcp` 已退役（打印指向 `export-mcp` 的
 提示，退出码 6）。详见上面的「MCP 声明迁移」一节。
 
-### Schema 版本与迁移（15 → 25）
+### Schema 版本与迁移（15 → 26）
 
-本代码的 `SCHEMA_VERSION = 25`（`app/alibot/db.py`），依赖 pin `agentscope[memory-reme]==2.0.10`
+本代码的 `SCHEMA_VERSION = 26`（`app/alibot/db.py`），依赖 pin `agentscope[memory-reme]==2.0.10`
 （2.0.10 的 extra 名就是 `memory-reme`；该 extra 只声明 `reme-ai>=0.4.0.6`，因此 ReMe 另显式 pin
 `reme-ai==0.4.1.10`——0.4.1.13 与 2.0.10 的最小 ReMe 配置不兼容，嵌入应用启动即报
 `Unregistered backend 'dream_topics_step'`；升级 reme-ai 要单独开票并重跑真实冒烟）。本轮把库形态从 15
-推进到 25，由**十个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
+推进到 26，由**十一个严格 +1** 的步骤组成（规格 §4.1；ADR-0015 的链连续性纪律不变）：
 
 | 步骤 | 名称 | 加什么 |
 | --- | --- | --- |
@@ -245,6 +245,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `22 → 23` | `agent runtime context and memory` | `round_outcome.finished_reason`（可空，旧行保持 NULL）；`agent_config.context_window_messages` / `context_trigger_ratio` / `react_max_iters` / `memory_mode`（列默认 `40` / `0.7` / `30` / `'off'`；显式 NULL 跟随运行时默认） |
 | `23 → 24` | `long-term memory to ReMe (superseded)` | 历史步骤（ADR-0034 的 ReMe 换档）。v25 起 `memory_mode` 由 `24 → 25` 删除，本版代码里这一步不重建、不改写取值，只保留链连续性；存量旧档 `agentic` 的语义随列删除一起退场 |
 | `24 → 25` | `long-term memory is always on` | 重建 `agent_config`：删掉 `memory_mode` 列（当前 DDL 已不声明它，逐列复制即删列）；存量 `off` / `NULL` 行因此变为「始终开启」（ADR-0035），其它列逐字保留 |
+| `25 → 26` | `channel archive and delete tiers` | `channel.archived_at` / `channel.deleted_at`（两列都可空、都无默认值与列级 CHECK ⇒ `ADD COLUMN` 足够，不重建表）；旧行两列保持 `NULL` = 活跃且未删除，**不回填**（#342 / ADR-0040） |
 
 - **只加不删（唯二例外：`20 → 21` 的一次性回填与 `24 → 25` 的删列）；除这两处外不回填业务数据**：
   新列可空或带列默认值，旧行按默认值解释——
@@ -289,7 +290,7 @@ sha256 前后一致的读数）。`--repair-targets` 已降为 `--migrate` 的**
 | `sop_definition` / `sop_run` | definition: id, name, description, steps(JSON: executor/verifier member id、subject、description、max_attempts), enabled；run: id, sop_definition_id, target_id, leader_member_id, state(`SOPRunState` JSON), phase(`pending`/`running`/`awaiting`/`completed`/`failed`), started_at, finished_at | **SOP** 是 owner 显式启动的多步运行（ADR-0023），**不是任务五态**：不改任务行、不写消息、不进看板/未读/搜索/唤醒/预算，不新增 target。运行保留最近 50 个或 90 天；完成/失败不自动删除定义。步骤事件走 `sop_event`，快照是 `GET /api/sop-runs/{id}` |
 | `workspace_settings` | id(=1), locale, message_density, theme, updated_at | **工作区设置**：单行表，列就是明确列出的档位（语言偏好 / 消息密度 / 主题三档）。人类面可写配置类取值，**不得**写用量类事实 |
 | `reminder` | id, text, time(`YYYY-MM-DD HH:MM`，**一次性**), channel_id(可空 = 不归属), created_at, **`fired_at`**(可空) | **提醒**（ADR-0012 / ADR-0017）：库内对象，后端是唯一正本（不放 localStorage）。它与频道的关系是**归属**，不是 target 作用域——**不**新增 target、不计未读、不参与唤醒；增删**不落消息、不唤醒、不消耗预算**。`time` 是**一次性**到期时刻（按本机本地时间解释，**无重复字段**）；`fired_at` 非空 = 已投递（UTC），`NULL` = 还没到点 |
-| `channel` | id, 名称, 描述, **`mode`**(`autonomous`/`team`), **`team_leader_member_id`**(team 必填), **`workspace_root`**(可空 = 未配置), **workspace 后端 / 权限档默认值**, **联网档 `web_access`**（`NULL` = 未配置 → 默认 `search`；`off` = 显式关闭）, **容器出网开关 `docker_egress`**（缺省 `0` = `--network none`） | `mode` / 队长是**频道级协作拓扑**（ADR-0018）；team 覆盖该频道的 channel 型 target 与**全部 task target**。`workspace_root` 是**频道级项目边界**（ADR-0021 §一）；后端缺省 `local`、权限档缺省 `ask-writes` |
+| `channel` | id, 名称, 描述, **`mode`**(`autonomous`/`team`), **`team_leader_member_id`**(team 必填), **`workspace_root`**(可空 = 未配置), **workspace 后端 / 权限档默认值**, **联网档 `web_access`**（`NULL` = 未配置 → 默认 `search`；`off` = 显式关闭）, **容器出网开关 `docker_egress`**（缺省 `0` = `--network none`）, **`archived_at` / `deleted_at`**（两档软删除，均可空；`NULL` = 活跃且未删除） | `mode` / 队长是**频道级协作拓扑**（ADR-0018）；team 覆盖该频道的 channel 型 target 与**全部 task target**。`workspace_root` 是**频道级项目边界**（ADR-0021 §一）；后端缺省 `local`、权限档缺省 `ask-writes`。`archived_at` = 归档（移出活跃段、频道面只读、可恢复），`deleted_at` = 终态软删除（读路径当作不存在），两列是**独立档位**而非状态机（ADR-0040 §一） |
 | `target_budget` | target_id, epoch_seq, used, applied_limit | **回应预算的用量正本**（每 target 一行）：`epoch_seq` = 人类世代，`used` = 该世代已投递的跳数，`applied_limit` = 该世代生效上界的快照（`NULL` = 内置默认 3） |
 | `channel_budget_limit` | channel_id, budget_limit(`3`/`5`/`10`), updated_at | 回应预算上界的**配置**落点；**没有行 = 回落到内置默认值**。保存只影响**下一个人类世代**，不回溯改写当前世代 |
 | `team_run` / `team_assignment` | run: id, target_id, leader_member_id, base_seq, status(`running`/`completed`/`failed`/`interrupted`/`invalid-leader`), started_at, finished_at；assignment: team_run_id, target_id, task_id(可空), leader/member_id, tool_call_id, prompt, state(`started`/`succeeded`/`failed`/`interrupted`/`budget-exhausted`), jump_consumed, reply_excerpt, error | **team 模式的运行记录**（ADR-0018/0019/0022）：`target_id` 可以是 channel 型或该频道下的 task 型；task target 上 `task_id` 非空。它们**不是消息**：不占未读、不进搜索、不写频道消息；`jump_consumed` 只记「这次分派扣了一次跳」 |
@@ -707,6 +708,9 @@ origin 的 HTTP/1.1 并发连接只有 6 条，按 target 各开一条常驻 `Ev
 | `GET /api/channels/{id}/round-outcomes` | 轮次结果（只读；首版**没有**可观测页面） |
 | `GET /api/channels/{id}/budget` | 有界响应预算（后端持久事实）：`{epoch_seq, limit, used, remaining, source, pending_limit}`。`limit` = 当前人类世代的**有效上界**（`remaining` 按它算），`source` = `channel-override` / `built-in-default`，`pending_limit` = 已保存、**从下一个人类世代起生效**的上界（无待生效差异时 `null`）。频道覆盖存 `channel_budget_limit`，本世代生效值存 `target_budget.applied_limit` 快照 |
 | `PATCH /api/channels/{id}/budget` | 保存回应预算**上界** `{budget_limit}`，只接受固定档位 `3` / `5` / `10`（默认 3）；其它取值**整体拒绝**、不留半成品。**用量不可写**：请求体带 `used`（或 `remaining` / `epoch_seq` / `applied_limit`）一律整体拒绝。成功返回刷新后的读数（与 `GET` 同形）；当前世代不被回溯改写，新值从**下一个人类世代**生效 |
+| `POST /api/channels/{id}/archive` | 归档频道（**幂等**：已归档再调 ⇒ 200，`archived_at` 不刷新）。响应 `{channel, channels}`；**不落消息、不唤醒、不消耗预算、不开世代**。归档 = 频道面只读、不计入 `unread_total`、历史仍可读仍可搜；已删除的频道 ⇒ 404 |
+| `POST /api/channels/{id}/unarchive` | 取消归档（**幂等**：未归档再调 ⇒ 200 且零写入）。响应同形；取消后写入口恢复、未读重新计入总未读。已删除的频道 ⇒ 404（删除是终态，没有恢复这条路） |
+| `DELETE /api/channels/{id}` | 软删除频道（**终态、不幂等**：二次 ⇒ 404，与 `DELETE /api/agents/{id}` 同口径）。只写 `channel.deleted_at`（并清 `archived_at`），消息 / 任务 / 成员关系一行不删、读路径过滤。响应 `{deleted, channels}` |
 | `GET /api/channels/{id}/events` | 事件流（SSE，`?after_seq=n` 补拉） |
 | `GET /api/events` | 全局事件流（SSE，纯 live：不补拉、不发 `id:` 行；Studio 整页只用这一条） |
 | `POST /api/channels/{id}/read` | 标读 `{seq}`（同频道内取 max，裁剪到当前最大 seq） |
@@ -837,12 +841,44 @@ Agent 详情是**主线视图**（`state.mode === 'agent'`，入口：左栏 Age
   `taskMemberName()` 以 `workspaceLoaded`（工作台**成功**载入过一轮）为判据：已成功载入且查不到 ⇒
   「已删除的成员」，尚未成功载入 ⇒ 中性「成员」；两种情况都不把裸 `mem_...` id 露给用户。
 
+### 频道的归档与删除：两个软删除档位（#342 / ADR-0040）
+
+`channel` 表有两个**独立**的可空时间戳列，它们不是一条状态机：
+
+| 列 | 含义 | 可恢复 | 读路径 |
+| --- | --- | --- | --- |
+| `archived_at` | 移出左栏活跃段，频道面只读 | 是（`/unarchive`） | **照常返回**（载荷带 `archived_at`），列表 / 消息 / 配置 / 预算 / 事件流都可读；**搜索仍命中** |
+| `deleted_at` | 终态软删除，频道对人类面「不存在」 | 否 | `get_channel` 404（列表、消息、配置、预算、事件流一并 404）；**全局与定向搜索都过滤**（消息与任务，见下）；任务看板也不列它的任务 |
+
+同一条频道可以**先归档后删除**（删除时顺手清掉 `archived_at`：终态不再需要那个档位）。schema `25 → 26`
+是纯增量 `ADD COLUMN`，不重建表、不回填——旧频道两列都是 `NULL` = 活跃且未删除。
+
+- **归档 = 频道面只读**：五个既有写入口整体拒绝（400 `validation_failed`）——频道消息、频道配置
+  `PATCH`、预算 `PATCH`、加入成员、新建任务。判定只有一处（`service._require_writable_channel`）。
+  `GET` 系列、`mark_read` 与 SSE 不受影响。
+- **刻意边界**（写进 ADR，不是缺陷）：①**任务面不受影响**——归档频道的既有任务仍可读、可改状态、
+  可在任务线程发言，任务的生命周期由任务自己的五态表达；②**在飞轮次不打断**——归档不取消已开始的
+  Agent 轮次，它自然结束，此后的新唤醒已被写入口拒掉；③**提醒到点不拦**——落 `system` 消息是后端
+  系统事实，不是人类面写入。
+- **不计入总未读**：`unread_total` 用一个外层 `LEFT JOIN channel` 排除归档与已删除的频道；
+  `UNREAD_WHERE_SQL`（未读的唯一形状）一个字都没改，频道自己的 `unread_count` 读数也不变。
+- **已删除的频道连它的任务入口一起收走**（ADR-0040 §一）：任务看板（`GET /api/tasks`）与两类搜索命中
+  （`SEARCH_TASK_HITS_SQL`）都按 `channel.deleted_at` 过滤——那一页带着「#频道名」，而频道已经 404，
+  自相矛盾。**按 id 直接读一张任务与它的线程仍然可用**（历史保留），与消息同一条口径：
+  行不删、只是频道层面的入口不在了。
+- 三个动作都是**配置类写路径**：不落消息、不唤醒、不消耗预算、不开世代（与 `DELETE /api/agents/{id}`
+  同一纪律）。**消息 append-only（ADR-0001）不受影响**：本仓没有任何修改或删除消息的路径。
+- 前端：左栏频道段拆「活跃 + 已归档（折叠）」，归档频道在频道头只剩「取消归档」一枚工具（名册 /
+  配置 / 预算 / 运行面板整组不渲染），composer 复用既有 `archived` 档（禁用 + 「只读归档」占位）；
+  删除入口在频道设置弹窗底部的**危险区**，二次确认走行内确认条。
+
 ### 未读口径
 
 未读 = 已读位置之后、`kind ∈ {human, agent}`、**且作者不是本人**的顶层消息条数；`system` 事件
 消息不计入。**作者排除本人**是实施票 ③ 按 #4 票面字面改判的（改前 #2 把 owner 自己的消息也
 计入自己的未读）。`unread_count`（频道列表 / 单条）与 `unread_total`（workspace 快照）由
-`db.py` 里**同一条 SQL** 得出，因此只有一个口径落点。
+`db.py` 里**同一条 SQL** 得出，因此只有一个口径落点。汇总口径另有一层 kind 过滤
+（`channel` + `dm`，task 型不进），**且排除已归档与已删除的频道**（#342 / ADR-0040）。
 
 ## 测试与检查
 

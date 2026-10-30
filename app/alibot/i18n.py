@@ -391,6 +391,12 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.field.channel_name_too_long": "频道名称最多 {limit} 个字符",
         "error.field.channel_description_too_long": "频道描述最多 {limit} 个字符",
         "error.channel_invalid": "频道校验未通过，未创建任何数据",
+        # 归档只读（#342 / ADR-0040）：五个频道面写入口共用同一句拒绝文案，判定只有一处
+        # （``WorkspaceService._require_writable_channel``）。
+        "error.channel_archived_read_only": (
+            "频道「{name}」已归档，只读：取消归档后才能继续在频道里写入（消息、配置、预算、成员、新任务）"
+        ),
+        "error.field.channel_archived_read_only": "该频道已归档，频道面只读",
         # ─── 频道配置（team / workspace；#142 / ADR-0018 / ADR-0021） ─────
         "error.channel_config_invalid": "频道配置校验未通过，未改动任何字段",
         "error.field.channel_config_field_null": "该配置字段不能为 null（要保留原值请省略该字段）",
@@ -918,6 +924,11 @@ CATALOGS: dict[str, dict[str, str]] = {
             "The channel description is limited to {limit} characters"
         ),
         "error.channel_invalid": "Channel validation failed; nothing was created",
+        "error.channel_archived_read_only": (
+            "Channel “{name}” is archived and read-only: unarchive it before writing to the channel "
+            "(messages, config, budget, members, new tasks)"
+        ),
+        "error.field.channel_archived_read_only": "This channel is archived and read-only",
         # Channel config (team / workspace; #142 / ADR-0018 / ADR-0021).
         "error.channel_config_invalid": ("Channel configuration validation failed; no field was changed"),
         "error.field.channel_config_field_null": (

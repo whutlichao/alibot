@@ -11,15 +11,23 @@
      **第二层可见性**：四个入口背后的面不是同一批票，因此开关分成两个：
      - `channelToolsAvailable`：名册 / 配置 / 预算（票 #303 已迁 ⇒ 默认**开**）；
      - `runPanelAvailable`：运行面板（**已迁**，默认**开**；关掉它只为了用例能断言反面）。
-     渲染一个点下去什么都不发生的入口，比不渲染更难解释；各自的票迁完那个面时把开关打开即可。 -->
+     渲染一个点下去什么都不发生的入口，比不渲染更难解释；各自的票迁完那个面时把开关打开即可。
+
+     **第三层可见性：归档态**（#342 / ADR-0040）。频道归档后，工具行只留「取消归档」一枚——
+     名册 / 配置 / 预算 / 运行面板**整组不渲染**：那四个面背后的写路径已被后端整体拒绝（400），
+     留下来只会是「点进去发现什么都做不了」的入口。归档按钮本身在活跃态可见，归档态让位给
+     「取消归档」（同一枚按钮的两个语义，`data-od-id` 因此分成两个）。 -->
 <script setup>
 import { computed } from 'vue';
 import { t } from '../i18n/index.js';
-import { targetDescription } from '../lib/target-view.js';
+import { isArchivedChannel, targetDescription } from '../lib/target-view.js';
 
 const props = defineProps({
   target: { type: Object, default: null },
   isDm: { type: Boolean, default: false },
+  // 「当前 target 是只读归档」（私信 peer 已删除 / 频道已归档）。本组件只把它透给页签与工具行的
+  // 语义判断；**频道头自己的归档判据不读它**——它从 `target.archived_at` 推导（`isArchivedChannel`），
+  // 与 composer 的 `archived` 是同一份后端事实的两处呈现。
   isArchivedDm: { type: Boolean, default: false },
   // 页签计数：「消息」页签读**未读**（后端未读口径），不是流里条数。
   messageCount: { type: Number, default: 0 },
@@ -36,7 +44,15 @@ const props = defineProps({
   taskApprovalCount: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(['select-tab', 'open-roster', 'open-config', 'open-budget', 'open-run-panel']);
+const emit = defineEmits([
+  'select-tab',
+  'open-roster',
+  'open-config',
+  'open-budget',
+  'open-run-panel',
+  'archive',
+  'unarchive',
+]);
 
 const name = computed(() => {
   if (!props.target) return '';
@@ -44,6 +60,9 @@ const name = computed(() => {
 });
 
 const description = computed(() => targetDescription(props.target));
+
+/** 当前频道是否已归档（#342 / ADR-0040）：判据只消费后端事实，与 `lib/target-view.js` 同源。 */
+const archivedChannel = computed(() => !props.isDm && isArchivedChannel(props.target));
 </script>
 
 <template>
@@ -54,7 +73,23 @@ const description = computed(() => targetDescription(props.target));
         <span id="chanTitle">{{ (isDm ? '@' : '') + name }}</span>
       </h1>
       <div class="chan-tools">
-        <template v-if="!isDm && channelToolsAvailable">
+        <!-- 归档态（#342 / ADR-0040）：整组工具让位给唯一一枚「取消归档」——名册 / 配置 / 预算 /
+             运行面板在归档频道的写路径上已被后端整体拒绝（400），留下来只会是「点进去什么都做不了」
+             的入口（ADR-0038 §五）。 -->
+        <button
+          v-if="!isDm && archivedChannel"
+          class="icon-btn"
+          type="button"
+          data-od-id="btn-channel-unarchive"
+          :title="t('header.unarchiveChannel')"
+          :aria-label="t('header.unarchiveChannel')"
+          @click="emit('unarchive')"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" />
+          </svg>
+        </button>
+        <template v-else-if="!isDm && channelToolsAvailable">
           <button
             class="icon-btn"
             type="button"
@@ -93,11 +128,26 @@ const description = computed(() => targetDescription(props.target));
               <path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" />
             </svg>
           </button>
+          <!-- 归档入口（#342 / ADR-0040）：当场执行，不弹二次确认——它是可恢复的，
+               与「删除」不同（那个在设置弹窗的危险区里、并且要行内确认）。 -->
+          <button
+            class="icon-btn"
+            type="button"
+            data-od-id="btn-channel-archive"
+            :title="t('header.archiveChannel')"
+            :aria-label="t('header.archiveChannel')"
+            @click="emit('archive')"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" /><path d="M10 12h4" />
+            </svg>
+          </button>
         </template>
         <!-- 运行面板是**已迁面**：它有自己的开关（默认开），不跟上面三个同涨同落。
-             私信下它仍然不存在：私信没有 team 运行，留一个点开只会看到空态。 -->
+             私信下它仍然不存在：私信没有 team 运行，留一个点开只会看到空态。
+             归档频道下它同样不渲染：频道已只读，运行面板的入口在那条路径上没有意义。 -->
         <button
-          v-if="!isDm && runPanelAvailable"
+          v-if="!isDm && !archivedChannel && runPanelAvailable"
           class="icon-btn"
           type="button"
           data-od-id="btn-run-panel"

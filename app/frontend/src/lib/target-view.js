@@ -13,24 +13,38 @@ export function isArchivedDm(target) {
   return Boolean(target && target.kind === 'dm' && target.peer && target.peer.deleted_at);
 }
 
+/** 当前 target 是不是已归档频道（判据只有后端事实 `channel.archived_at`，ADR-0040）。
+    与 `isArchivedDm` 并列：两者都是「只读归档」，只是其一是 DM、其一是频道。 */
+export function isArchivedChannel(target) {
+  return Boolean(target && target.archived_at);
+}
+
+/** 当前 target 是不是「只读归档」（两种 target 共用同一条只读纪律；文案各有一份，
+    因为 DM 的归档原因是「Agent 已删除」、频道的归档原因是人自己的整理动作，说成一句会失真）。 */
+export function isArchivedTarget(target) {
+  return isArchivedDm(target) || isArchivedChannel(target);
+}
+
 export function targetName(target) {
   if (!target) return '';
   return target.kind === 'dm' ? target.peer.display_name : target.name;
 }
 
-/** composer 的占位文案：归档 > 私信 > 频道。 */
+/** composer 的占位文案：归档 > 私信 > 频道（ADR-0040 把频道归档拉进同一条优先级）。 */
 export function composerPlaceholder(target) {
   if (!target) return t('composer.placeholder');
   const name = targetName(target);
+  if (isArchivedChannel(target)) return t('header.channelArchivedPlaceholder');
   if (isArchivedDm(target)) return t('header.dmArchivedPlaceholder');
   if (target.kind === 'dm') return t('header.dmPlaceholder', { name });
   return t('header.channelPlaceholder', { name });
 }
 
-/** 频道头那句描述：归档私信说「只读归档」，私信说「与谁的两方私信」，频道用后端给的描述。
+/** 频道头那句描述：只读归档说「只读归档」，私信说「与谁的两方私信」，频道用后端给的描述。
     `ChannelHeader.vue` 曾经在这里手写了一份同判据的第二份实现（review 抓到），现在两边都调它。 */
 export function targetDescription(target) {
   if (!target) return '';
+  if (isArchivedChannel(target)) return t('header.channelArchivedDesc');
   if (isArchivedDm(target)) return t('header.dmArchivedDesc');
   if (target.kind === 'dm') return t('header.dmDesc', { name: targetName(target) });
   return target.description || '';

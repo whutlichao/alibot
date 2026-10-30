@@ -110,7 +110,11 @@ AVATAR_SLOT_COUNT = 5
 # 25 = 长期记忆始终开启（ADR-0035）：删掉 ``agent_config.memory_mode``——没有开关，每一轮装配
 # ReMe。删列只能重建表，``24 → 25`` 一步（`migrate._step_24_to_25`）；``off`` / ``NULL``
 # 的存量行因此自动变成「始终开启」，不回填业务数据。
-SCHEMA_VERSION = 25
+# 26 = **本票 #342**（频道归档与删除的两档软删除，ADR-0040）：``channel`` 表加可空的
+# ``archived_at`` / ``deleted_at`` 两列。两列都可空、都无列级 CHECK，``ADD COLUMN`` 足够，
+# 因此 ``25 → 26`` 一步只补列（`migrate._step_25_to_26`），不重建表、不回填——旧频道两列全
+# ``NULL``，读路径据此把它解释为「活跃且未删除」。
+SCHEMA_VERSION = 26
 
 # 本版设计支持的**源版本**下界（规格 D4）：从 3 连续支持到 `SCHEMA_VERSION`。
 # 3 是改名 worksplice → alibot 落地时的号，也是**唯一**同时存在于新旧数据目录的号；v1 / v2 的库只
@@ -389,7 +393,14 @@ CREATE TABLE IF NOT EXISTS channel (
   -- allow 规则的 host（白名单来源见 ``web.egress_hosts``）。它是**频道级**配置，与
   -- ``workspace_backend`` / ``web_access`` 同级但不同开关：那两个决定「挂什么工具」，
   -- 这个决定「容器能不能出网」。
-  docker_egress INTEGER NOT NULL DEFAULT 0 CHECK (docker_egress IN (0, 1))
+  docker_egress INTEGER NOT NULL DEFAULT 0 CHECK (docker_egress IN (0, 1)),
+  -- 软删除的两档（#342 / ADR-0040）：两列是**两个独立档位**，不是一条状态机。
+  -- ``archived_at`` 非空 = 移出左栏活跃段、频道面只读（历史仍可读、仍可被搜索），可恢复；
+  -- ``deleted_at`` 非空 = **终态**（不可恢复），读路径把它当作「频道不存在」。
+  -- 同一条频道可以先归档后删除；两列都可空、都无默认值，因此 ``25 → 26`` 只是
+  -- ``ADD COLUMN``，不重建表、不回填旧行（旧行两列都是 ``NULL`` = 活跃且未删除）。
+  archived_at TEXT,
+  deleted_at TEXT
 );
 
 CREATE TRIGGER IF NOT EXISTS channel_team_requires_leader_insert
@@ -410,7 +421,9 @@ END;
 -- 全部挂 ``target_id``，``UNIQUE(target_id, seq)`` 因此说的是「target 内单调」。
 -- **channel 型是一张影子行**：``id`` 与 ``channel.id`` 同值（复用，同一个字符串既是频道主键也是
 -- target 主键），本表只承载 ``kind``；频道自己的 ``name`` / ``description`` 仍留在 ``channel`` 表，
--- 因此**没有**映射表。影子行的生命周期由频道决定：本仓没有删除频道的入口，也就没有删除它的路径。
+-- 因此**没有**映射表。影子行的生命周期由频道决定：频道走的是**软删除**（#342 / ADR-0040，
+-- ``channel.deleted_at``），影子行与它承载的消息、成员、已读、预算**一行都不删**——`deleted_at`
+-- 非空的频道在读路径上就是「不存在」（``get_channel`` 404、列表与搜索过滤），历史因此完整保留。
 -- 列的 CHECK 是 ``kind`` 受约束的正本（三种取值）；dm / task 型由各自的业务路径创建。
 CREATE TABLE IF NOT EXISTS target (
   id                 TEXT PRIMARY KEY,
@@ -973,6 +986,10 @@ CHANNEL_SELECT_SQL = (
       FROM channel c
       LEFT JOIN target_read r ON r.target_id = c.id AND r.member_id = :member_id
      WHERE (:channel_id IS NULL OR c.id = :channel_id)
+       -- 软删除的终态（#342 / ADR-0040）：已删除的频道对**所有**读路径都不存在——列表不返回它，
+       -- ``get_channel`` 于是自然 404，既有调用点全部继承这条语义。归档频道**仍返回**（带
+       -- ``archived_at``），由前端分段。
+       AND c.deleted_at IS NULL
      ORDER BY c.created_at, c.id
 """
 )
@@ -987,7 +1004,16 @@ UNREAD_TOTAL_SQL = (
     "SELECT COALESCE(SUM((SELECT COUNT(*) FROM message m\n"
     "                      WHERE m.target_id = t.id\n" + UNREAD_WHERE_SQL + "                    )), 0)\n"
     "  FROM target t\n"
+    # 归档与删除的频道**不计入总未读**（#342 / ADR-0040）：这两档都把频道移出「左栏活跃段」，
+    # 于是那个汇总徽标不该再催人点进去。它**只加外层过滤**——`UNREAD_WHERE_SQL`（未读的唯一形状，
+    # ADR-0004 决策 7）一个字都不改；`LEFT JOIN` 保证 dm / task 型（channel 表里没有行）照旧计入。
+    # ``c.id IS NULL`` 那一档是为「channel 型 target 没有同名 channel 行」的历史不一致数据留的：
+    # 没有它时 ``c.archived_at`` 是 NULL，整个 AND 求值成 NULL，那条 target 的未读会**静默消失**
+    # （而它既没归档也没删除，只是数据不齐——那正是要照旧计入的情形）。
+    "  LEFT JOIN channel c ON c.id = t.id\n"
     " WHERE t.kind IN (" + _UNREAD_TOTAL_KIND_LIST + ")\n"
+    "   AND (t.kind <> 'channel' OR c.id IS NULL\n"
+    "        OR (c.archived_at IS NULL AND c.deleted_at IS NULL))\n"
 )
 
 # 单个 target 的未读条数：**同样的 WHERE 形状**（别名同为 m），区别只在于作用域键直接由参数给出。
@@ -1055,6 +1081,9 @@ SEARCH_ALL_HITS_SQL = (
     + """
      WHERE m.target_id = t.id
        AND m.kind != 'system'
+       -- 已删除频道的消息不再出现在全局搜索里（#342 / ADR-0040）；**归档频道仍可搜**——
+       -- 归档只收走写入面，历史仍可读，所以它仍该被搜到。
+       AND (t.kind <> 'channel' OR c.deleted_at IS NULL)
        AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
      LIMIT :limit
 """
@@ -1066,6 +1095,9 @@ SEARCH_TARGET_HITS_SQL = (
      WHERE m.target_id = :target_id
        AND m.target_id = t.id
        AND m.kind != 'system'
+       -- 同一条「已删除频道不存在」的判定（#342 / ADR-0040 §一）：定向搜索与全局搜索共用它，
+       -- 否则已删除的频道还能被它的 id 搜出历史消息。
+       AND (t.kind <> 'channel' OR c.deleted_at IS NULL)
        AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
      LIMIT :limit
 """
@@ -1078,6 +1110,9 @@ SEARCH_TASK_HITS_SQL = """
       FROM task t
       JOIN channel c ON c.id = t.channel_id
      WHERE CASEFOLD(t.title) LIKE :pattern ESCAPE '\\'
+       -- 同一条「已删除频道不存在」的判定（#342 / ADR-0040 §一）：任务看板过滤了，搜索也得过滤，
+       -- 否则一条已经不可见的任务还能被标题搜出来。
+       AND c.deleted_at IS NULL
      ORDER BY t.created_at, t.id
      LIMIT :limit
 """
@@ -2661,12 +2696,22 @@ class Database:
         return task
 
     def list_tasks(self, channel_id: str | None = None, member_id: str = OWNER_ID) -> list[dict[str, Any]]:
+        """任务看板的行；已删除频道的任务**不进这一份**（#342 / ADR-0040 §一）。
+
+        删除是「频道对整个人类面不存在」：它的任务若仍出现在看板上，那张卡片可点、点进去还带着
+        「#频道名」，而频道本身已经 404——自相矛盾。因此这条列表按 ``channel.deleted_at`` 过滤
+        （``channel_id`` 给了的话，``get_channel`` 早已 404，不需要再过滤一次）。
+
+        **刻意保留**的边界：按 id 直接读一张任务（``GET /api/tasks/{id}`` 与它的线程）仍然可用——
+        那是「历史保留、不可见」里「保留」的一面，与消息一致（消息也不删，只是频道层面的读入口没了）。
+        """
         if channel_id is not None:
             self.get_channel(channel_id)  # 非法筛选频道明确 404，不能伪装成空结果
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id FROM task WHERE (:channel_id IS NULL OR channel_id = :channel_id) "
-                "ORDER BY created_at, id",
+                "SELECT t.id FROM task t JOIN channel c ON c.id = t.channel_id "
+                " WHERE c.deleted_at IS NULL AND (:channel_id IS NULL OR t.channel_id = :channel_id) "
+                " ORDER BY t.created_at, t.id",
                 {"channel_id": channel_id},
             ).fetchall()
         return [self.get_task(row["id"], member_id) for row in rows]
@@ -3059,6 +3104,12 @@ class Database:
         return [self._channel_payload(row) for row in rows]
 
     def get_channel(self, channel_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
+        """取一个频道；已删除（``deleted_at`` 非空）与不存在同口径：可读 404。
+
+        归档的频道**照常返回**（带 ``archived_at``）：归档只收走写入面，历史仍可读。
+        「已删除 ⇒ 404」落在 ``CHANNEL_SELECT_SQL`` 的 ``WHERE`` 上，因此所有既有调用点
+        （配置 / 预算 / 消息 / 事件流 …）自动继承同一条语义，不需要各自再判一次。
+        """
         with self._lock:
             row = self._conn.execute(
                 CHANNEL_SELECT_SQL, {"member_id": member_id, "channel_id": channel_id}
@@ -3066,6 +3117,61 @@ class Database:
         if row is None:
             raise NotFound(self._render_copy("error.channel_not_found", channel_id=channel_id))
         return self._channel_payload(row)
+
+    def archive_channel(self, channel_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
+        """把频道移出左栏活跃段（**幂等**）：已归档再调 ⇒ 返回当前读数、**零写入**。
+
+        只写 ``channel.archived_at``：它是**配置类**写路径（与 ``delete_agent`` 同一纪律），
+        不落消息、不唤醒、不消耗预算、不开世代。时间戳因此只记「第一次归档」的那一刻，
+        重复调用不刷新它。
+
+        已删除的频道 ⇒ 404（``get_channel`` 早退）；调用与读写同一个锁，因此不可能读到
+        「刚刚被别人删掉」的那一行之后再往里写。
+        """
+        with self._lock:
+            channel = self.get_channel(channel_id, member_id)
+            if channel["archived_at"] is None:
+                self._conn.execute(
+                    "UPDATE channel SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
+                    (utc_now(), channel_id),
+                )
+                channel = self.get_channel(channel_id, member_id)
+        return channel
+
+    def unarchive_channel(self, channel_id: str, member_id: str = OWNER_ID) -> dict[str, Any]:
+        """把频道放回活跃段（**幂等**）：未归档再调 ⇒ 返回当前读数、**零写入**。
+
+        只清 ``channel.archived_at``；同一纪律：不落消息、不唤醒、不消耗预算、不开世代。
+        已删除的频道 ⇒ 404——删除是终态，没有「恢复」这条路。
+        """
+        with self._lock:
+            channel = self.get_channel(channel_id, member_id)
+            if channel["archived_at"] is not None:
+                self._conn.execute("UPDATE channel SET archived_at = NULL WHERE id = ?", (channel_id,))
+                channel = self.get_channel(channel_id, member_id)
+        return channel
+
+    def delete_channel(self, channel_id: str) -> str:
+        """软删除一个频道（终态），返回被删掉的频道 id。**不幂等**：二次调用 ⇒ 404。
+
+        只写 ``channel.deleted_at``（并顺手清掉 ``archived_at``：终态不再需要那个档位）。
+        ``channel`` / ``target`` / 消息 / ``target_member`` / 任务 / 预算 / 轮次结果**一行都不删**，
+        读路径（``CHANNEL_SELECT_SQL`` / ``UNREAD_TOTAL_SQL`` / 全局搜索）按 ``deleted_at`` 过滤，
+        于是历史完整保留、对人类面不可见（ADR-0040）。
+
+        与 ``DELETE /api/agents/{id}`` 同口径：只接受**未删除**的频道，其余（未知 id / 已删除）
+        都是可读 404——第二次删除给出的是「已不存在」，不是静默幂等。
+        """
+        clean_id = str(channel_id).strip()
+        with self._lock:
+            channel = self.get_channel(clean_id)
+            # 单条 UPDATE，与 ``archive_channel`` / ``unarchive_channel`` 同一形状：读与写都在同一把
+            # 锁里，因此不需要显式事务（``delete_agent`` 要事务是因为它写两张表）。
+            self._conn.execute(
+                "UPDATE channel SET deleted_at = ?, archived_at = NULL WHERE id = ? AND deleted_at IS NULL",
+                (utc_now(), clean_id),
+            )
+        return str(channel["id"])
 
     def workspace_settings_for_target(self, target_id: str, member_id: str) -> dict[str, Any] | None:
         """把 target 解析到频道的 workspace 配置，并叠加 Agent 级覆盖（#148 的装配读路径）。
@@ -3842,6 +3948,11 @@ class Database:
             "name": row["name"],
             "description": row["description"],
             "created_at": row["created_at"],
+            # 两个软删除档位（#342 / ADR-0040）：它们**总是**出现，于是前端只有一套形状判断。
+            # 列表里 ``deleted_at`` 恒为 ``null``（已删除的频道根本不被 ``CHANNEL_SELECT_SQL`` 选中），
+            # 保留这个字段是为了让「活跃 / 归档 / 已删除」三档在同一条载荷里说完。
+            "archived_at": row["archived_at"],
+            "deleted_at": row["deleted_at"],
             "last_seq": row["last_seq"],
             "last_read_seq": row["last_read_seq"],
             "unread_count": row["unread_count"],

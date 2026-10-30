@@ -14,6 +14,7 @@
 import { computed, reactive, readonly } from 'vue';
 import { api, channelPath, dmPath, targetPath } from '../lib/api.js';
 import { agentMembers } from '../lib/member-view.js';
+import { isArchivedChannel as isArchivedChannelTarget } from '../lib/target-view.js';
 import { uploadAttachment } from '../lib/attachments.js';
 
 const OWNER_FALLBACK = { id: 'owner', kind: 'owner', display_name: 'owner', avatar_slot: 4 };
@@ -93,6 +94,13 @@ export function createWorkspaceStore(options) {
   const isArchivedDm = computed(
     () => Boolean(activeDm.value && activeDm.value.peer && activeDm.value.peer.deleted_at),
   );
+  /** 当前频道是否已归档（判据只有后端事实 `channel.archived_at`，ADR-0040）。 */
+  const isArchivedChannel = computed(() => isArchivedChannelTarget(activeChannel.value));
+  /** 只读归档：私信（Agent 已删除）与频道（人自己归档）共用同一条只读纪律与同一档渲染。 */
+  const isArchivedTarget = computed(() => isArchivedDm.value || isArchivedChannel.value);
+  /** 左栏的频道两段：活跃段与「已归档」折叠段，判据与 `isArchivedChannel` 是同一个函数。 */
+  const liveChannels = computed(() => state.channels.filter((channel) => !isArchivedChannelTarget(channel)));
+  const archivedChannels = computed(() => state.channels.filter(isArchivedChannelTarget));
 
   /** 已见 seq 的游标（不进响应式：它只在标读时读，变了也不该触发任何重渲染）。 */
   const seenSeqs = new Map();
@@ -539,7 +547,8 @@ export function createWorkspaceStore(options) {
     const target = activeTarget.value;
     const text = String(body == null ? '' : body).trim();
     if (!text || !target) return { ok: false };
-    if (isArchivedDm.value) return { ok: false, archived: true };
+    // 只读归档（私信：Agent 已删除；频道：已归档，#342 / ADR-0040）：两条判据共用同一个派生值。
+    if (isArchivedTarget.value) return { ok: false, archived: true };
     if (!state.online) return { ok: false, offline: true };
 
     // 附件随这条 pending 一起走：
@@ -587,6 +596,38 @@ export function createWorkspaceStore(options) {
     if (Array.isArray(payload.channels)) state.channels = payload.channels;
     state.online = true;
     return payload;
+  }
+
+  /**
+   * 归档 / 取消归档 / 删除频道：三个动作共用同一套纪律（#342 / ADR-0040）。
+   *
+   * **用响应里的 `channels` 整份覆盖镜像**（与 `markRead` 同一条）：不在本地拼一条「看起来成功了」
+   * 的行——`archived_at` 是后端的时钟读数，前端拼不出来，也不该猜。语义由后端保证：归档与
+   * 取消归档幂等（重复调用不刷新时间戳），删除不幂等（二次 ⇒ 404）。
+   *
+   * 三个动作都**只管后端镜像**；删掉的是当前 target 之后「主线该落到哪里」是呈现层的决定，
+   * 落在 `App.vue` 的 `deleteChannel()` 里（那里的空态处理与 `loadWorkspace` 共用一条路径）。
+   *
+   * 三个动作的**请求形状各不相同**（两个 POST 一个 DELETE），但落地同一份读数，因此共用一处
+   * `applyChannelMutation`：改「响应如何落镜像」只需要改一行。
+   */
+  async function applyChannelMutation(path, method) {
+    const payload = await api(path, { method });
+    if (Array.isArray(payload.channels)) state.channels = payload.channels;
+    state.online = true;
+    return payload;
+  }
+
+  function archiveChannel(channelId) {
+    return applyChannelMutation(channelPath(channelId, '/archive'), 'POST');
+  }
+
+  function unarchiveChannel(channelId) {
+    return applyChannelMutation(channelPath(channelId, '/unarchive'), 'POST');
+  }
+
+  function deleteChannel(channelId) {
+    return applyChannelMutation(channelPath(channelId), 'DELETE');
   }
 
   /**
@@ -710,6 +751,10 @@ export function createWorkspaceStore(options) {
     activeTarget,
     isDm,
     isArchivedDm,
+    isArchivedChannel,
+    isArchivedTarget,
+    liveChannels,
+    archivedChannels,
     renderedMessages,
     seenSeqsFor,
     lastSeqOf,
@@ -739,6 +784,9 @@ export function createWorkspaceStore(options) {
     markRead,
     sendMessage,
     createChannel,
+    archiveChannel,
+    unarchiveChannel,
+    deleteChannel,
     createAgent,
     createTask,
     openDm,

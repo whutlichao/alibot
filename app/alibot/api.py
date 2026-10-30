@@ -25,6 +25,9 @@
 - ``GET  /api/channels/{id}/events``          事件流（SSE，``after_seq`` 补拉）
 - ``GET  /api/events``                        全局事件流（SSE，纯 live、不补拉、不发 ``id`` 行）
 - ``POST /api/channels/{id}/read``            标读（同一频道内按 seq 单调取 max）
+- ``POST /api/channels/{id}/archive``         归档频道（幂等；频道面只读，历史仍可读）
+- ``POST /api/channels/{id}/unarchive``       取消归档（幂等；写入口恢复）
+- ``DELETE /api/channels/{id}``               软删除频道（终态、不幂等；二次 ⇒ 404）
 - ``GET  /api/tasks``                         全工作区任务看板（可按频道筛选）
 - ``POST /api/channels/{id}/tasks``           在频道下新建任务与独立线程
 - ``GET/POST /api/tasks/{id}/messages``       读取 / 追加任务线程消息
@@ -1797,6 +1800,44 @@ def create_app(
         / ``remaining`` 一字不变）、新值以 ``pending_limit`` 报出、从**下一个人类世代**起生效。
         """
         return {"budget": service.set_channel_budget_limit(channel_id, payload.budget_limit)}
+
+    # ─── 频道归档与删除（#342 / ADR-0040：两档软删除） ────────────────────
+    @app.post("/api/channels/{channel_id}/archive")
+    def archive_channel(channel_id: str) -> dict[str, Any]:
+        """把频道移出左栏活跃段（**幂等**）：已归档再调 ⇒ 200，``archived_at`` 不刷新。
+
+        这是**配置类**写路径，与 ``DELETE /api/agents/{id}`` 同一纪律：不落消息、不唤醒、
+        不消耗预算、不开世代。归档 = 频道面只读（五个既有写入口整体拒绝），历史仍可读、
+        仍可被搜索、仍计入频道自己的未读数——只是**不**计入左栏总未读。
+
+        响应是 ``{channel, channels}``（同 ``POST /api/channels`` 的纪律：一次调用就能刷新左栏）。
+        已删除的频道 ⇒ 404（它已「不存在」）。
+        """
+        channel = service.archive_channel(channel_id)
+        return {"channel": channel, "channels": service.list_channels()}
+
+    @app.post("/api/channels/{channel_id}/unarchive")
+    def unarchive_channel(channel_id: str) -> dict[str, Any]:
+        """把频道放回活跃段（**幂等**）：未归档再调 ⇒ 200，零写入。
+
+        已删除的频道 ⇒ 404：删除是终态，没有恢复这条路（那正是它与归档的差别）。
+        """
+        channel = service.unarchive_channel(channel_id)
+        return {"channel": channel, "channels": service.list_channels()}
+
+    @app.delete("/api/channels/{channel_id}")
+    def delete_channel(channel_id: str) -> dict[str, Any]:
+        """软删除一个频道（终态）：写 ``deleted_at``，**不幂等**——二次删除 ⇒ 404。
+
+        与 ``DELETE /api/agents/{id}`` 同口径：只接受未删除的频道，其余都是「已不存在」的
+        可读 404，而不是静默幂等的 204。
+
+        频道行、影子行、消息、成员关系、任务与预算**一行都不删**（消息 append-only，ADR-0001
+        不受影响）：读路径按 ``deleted_at`` 过滤，于是它不再出现在频道列表、不再能被 ``GET``/
+        写入，且它的消息不再出现在全局搜索里。响应是 ``{deleted, channels}``：一次调用就能刷新左栏。
+        """
+        deleted = service.delete_channel(channel_id)
+        return {"deleted": deleted, "channels": service.list_channels()}
 
     # ─── Agent（人类面的创建入口；Agent 本身不经 HTTP） ───────────────────
     @app.get("/api/agents")

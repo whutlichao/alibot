@@ -173,6 +173,48 @@ class WorkspaceService:
     def list_channels(self) -> list[dict[str, Any]]:
         return self._db.list_channels(self._member_id)
 
+    # ─── 频道归档与删除（#342 / ADR-0040：两档软删除） ─────────────────────
+    def archive_channel(self, channel_id: str) -> dict[str, Any]:
+        """把频道移出左栏活跃段，返回该频道**这一行**的最新读数。
+
+        **两个档位之一**：归档可恢复、只读、仍可读历史、仍可被搜索；删除（:meth:`delete_channel`）
+        是终态。两者都是**配置类**写路径，与 ``DELETE /api/agents/{id}`` 同一纪律：不落消息、
+        不唤醒、不消耗预算、不开世代。**幂等**：已归档再调 ⇒ 200 且时间戳不刷新。
+        """
+        return self._db.archive_channel(channel_id, self._member_id)
+
+    def unarchive_channel(self, channel_id: str) -> dict[str, Any]:
+        """把频道放回活跃段（幂等）。已删除的频道 ⇒ 404——删除是终态，没有恢复这条路。"""
+        return self._db.unarchive_channel(channel_id, self._member_id)
+
+    def delete_channel(self, channel_id: str) -> str:
+        """软删除一个频道（终态），返回被删掉的 id。**不幂等**：二次调用 ⇒ 404。
+
+        只写 ``channel.deleted_at``：频道行、影子行、消息、成员关系、任务与预算**全部保留**，
+        读路径按这一列过滤（ADR-0040 §一）。因此本票不新增任何修改或删除消息的路径——
+        消息 append-only（ADR-0001）不受影响。
+        """
+        return self._db.delete_channel(channel_id)
+
+    def _require_writable_channel(self, channel_id: str) -> dict[str, Any]:
+        """**「已归档 ⇒ 频道面只读」的单一判定落点**（#342 / ADR-0040 §二）。
+
+        读一次频道（顺带继承「已删除 ⇒ 404」），归档了就抛 ``validation_failed``。五个既有
+        人类面写入口都调它：频道消息 / 频道配置 / 回应预算上界 / 加入成员 / 新建任务。
+
+        **刻意不在它上面的路径**（写进 ADR §二，不是缺陷）：任务面（``send_task_message`` /
+        ``update_task*``）、标读、``GET`` 系列、SSE、提醒到点落 ``system`` 消息——那些要么属于
+        任务自己的生命周期，要么是只读，要么是后端系统事实，都不是「频道这个对话面的人类写入」。
+        """
+        channel = self._db.get_channel(channel_id, self._member_id)
+        if channel.get("archived_at"):
+            raise DomainError(
+                "validation_failed",
+                self._locale_copy("error.channel_archived_read_only", name=channel["name"]),
+                fields={"channel_id": self._locale_copy("error.field.channel_archived_read_only")},
+            )
+        return channel
+
     def list_dms(self) -> list[dict[str, Any]]:
         """工作台左栏私信；对方状态点沿用本机 Agent 的状态事实。"""
         agents = {agent["id"]: agent for agent in self.agents()}
@@ -293,8 +335,11 @@ class WorkspaceService:
         它是配置写路径，与 ``PATCH /api/agents/{id}`` 同一纪律：**不落消息、不唤醒、不消耗预算、
         不开世代**。``mode=team`` 只在读路径生效（覆盖该频道 target 与全部 task target），
         不复制到 task 行；``auto_claim`` 不在本方法里被改写（D16 是读路径规则）。
+
+        已归档的频道 ⇒ 400：归档 = 频道面只读（#342 / ADR-0040），判定只有一处
+        （:meth:`_require_writable_channel`）。
         """
-        self._db.get_channel(channel_id)  # 频道面入口：只认 channel 型 target
+        self._require_writable_channel(channel_id)
         allowed = {
             "mode",
             "team_leader_member_id",
@@ -362,7 +407,12 @@ class WorkspaceService:
         - **autonomous / DM**：逐字维持既有认领规则（ADR-0010 / ADR-0016）。
 
         没人认领（开关关着 / 没有可用 Agent / 这张任务已被认领过）时读回的 `task` 与不认领逐字相同。
+
+        已归档的频道 ⇒ 400（#342 / ADR-0040：归档 = 频道面只读，**新建任务也算频道面的写入**）。
+        **既有任务的**改状态 / 线程发言不受影响——任务的生命周期由任务自己的五态表达，那句边界
+        落在 :meth:`_require_writable_channel` 的说明里。
         """
+        self._require_writable_channel(channel_id)
         task = self._db.create_task(channel_id=channel_id, title=title)
         # 频道流里的入口（#198 / ADR-0028）：指针消息与任务行同事务落库，这里把它作为**频道 target**
         # 的既有 ``message`` 事件推给订阅者。系统事件不唤醒、不计未读，因此这里**不**对频道调
@@ -549,7 +599,8 @@ class WorkspaceService:
 
         - **幂等**：已在频道里再调不报错、不产生重复行；``joined`` 区分「新增」与「本来就在」
           （它直接取自 ``add_channel_member`` 的返回值——幂等的事实来源是既有写点，不是这里再算一遍）。
-        - 频道不存在 → 404（``get_channel`` 早退）。
+        - 频道不存在 → 404（``get_channel`` 早退）；已删除同理（同一道读路径过滤）。
+        - **已归档 ⇒ 400**：归档 = 频道面只读（#342 / ADR-0040），加成员也是频道面的写入。
         - 成员不存在或已删除 / 不是 Agent → ``validation_failed``，**整体不落库**（校验先于写入）。
           错误文案与 ``create_channel`` 的初始成员校验同口径：owner 由建频道自动加入，不经此端点。
         - 只写 ``target_member`` + 补 ``target_read``：两者都由 ``db.add_target_member`` 完成，
@@ -557,7 +608,7 @@ class WorkspaceService:
         - **不写 system 事件消息**：显式加入是人的显式动作，与「穿透加入需要在流里留下一条
           agent 自己不会解释的变化」动机不同（裁定 1）。
         """
-        self._db.get_channel(channel_id)  # 404 早退
+        self._require_writable_channel(channel_id)  # 404 / 已归档 400 都在这一个判定里
         locale = self._locale()
         fields: dict[str, str] = {}
         if not (member_id or "").strip():
@@ -614,7 +665,11 @@ class WorkspaceService:
         它不落消息、不唤醒、不消耗预算、不开世代：写的是**配置**，不是对话事实（与
         ``PATCH /api/settings`` / ``PATCH /api/agents/{id}`` 同一纪律）。返回的载荷与
         ``GET /api/channels/{id}/budget`` 同形，于是前端一次调用就能刷新「当前世代读数 + 待生效值」。
+
+        已归档的频道 ⇒ 400（#342 / ADR-0040）：预算上界写的是频道配置，归档收走的就是写入面；
+        ``GET`` 读入口不受影响。
         """
+        self._require_writable_channel(channel_id)
         return self._db.set_channel_budget_limit(channel_id, budget_limit)
 
     # ─── 成员面：Agent 创建与配置 ─────────────────────────────────────────
@@ -1412,8 +1467,10 @@ class WorkspaceService:
 
         ``attachment_ids`` 是**先上传拿标识、随消息提交时绑定**的那一步（ADR-0014）；
         绑定与消息落库在 ``db`` 层的**同一事务**里完成。
+
+        已归档的频道 ⇒ 400（#342 / ADR-0040）：归档 = 频道面只读，这是那五个写入口里的第一个。
         """
-        self._db.get_channel(channel_id)  # 频道面入口只认 channel 型 target
+        self._require_writable_channel(channel_id)
         return self._send_target_message(channel_id, body, task_ref, attachment_ids)
 
     def send_task_message(
