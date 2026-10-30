@@ -11,7 +11,7 @@
    （`studio/index.html` / `app.js` 的落点），文案来自词条表。 */
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { mount } from '@vue/test-utils';
-import { loadStudioGlobals, createFetchStub, jsonResponse, flush } from './helpers/studio-globals.js';
+import { loadStudioGlobals, createFetchStub, jsonResponse, flush, readStudio } from './helpers/studio-globals.js';
 
 loadStudioGlobals();
 
@@ -410,6 +410,25 @@ describe('频道工具弹窗：一个外壳 + 三个页签', () => {
     expect(wrapper.find('[data-od-id="channel-tools-tab-members"]').attributes('aria-selected')).toBe('true');
     expect(wrapper.find('[data-od-id="roster-body"]').isVisible()).toBe(true);
     expect(countCalls(stub, '/api/channels/ch-1/budget')).toBeGreaterThan(budgetReads);
+  });
+});
+
+/* 静态样式契约：jsdom 不做布局，像素级读数由真实浏览器验收提供（验收记录里是三页签的 `.modal`
+   x 与 overlay `clientWidth`）；这里守的是产生那份读数的正本规则——与 `components.test.js` 的
+   own 气泡 CSS 契约同一做法。 */
+describe('频道工具弹窗的静态样式契约', () => {
+  test('根遮罩带修饰类，正本按它预留滚动条槽位：设置页签的滚动条不推动居中弹窗（#346）', async () => {
+    // 修饰类经 Vue 单根属性透传合并到 `.overlay` 根节点上（`ModalShell` 的共享样式不动）。
+    const { wrapper } = await mountApp();
+    await openTools(wrapper);
+    const overlay = wrapper.find('#channelToolsOverlay');
+    expect(overlay.classes()).toEqual(expect.arrayContaining(['overlay', 'channel-tools-overlay']));
+
+    const css = readStudio('app.css');
+    const ruleAt = css.indexOf('.overlay.channel-tools-overlay {');
+    expect(ruleAt, '缺少 `.overlay.channel-tools-overlay` 规则').toBeGreaterThanOrEqual(0);
+    const rule = css.slice(ruleAt, css.indexOf('}', ruleAt));
+    expect(rule).toContain('scrollbar-gutter: stable both-edges');
   });
 });
 

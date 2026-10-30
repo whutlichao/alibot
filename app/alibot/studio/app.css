@@ -542,6 +542,12 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
      在矮视口下既看不到也点不到。表单长的弹窗（如 Agent 编辑）本来就贴着这条边。 */
   overflow: auto;
 }
+/* #346：频道工具弹窗（#344）的「设置」页签内容长，会把遮罩撑出垂直滚动条；滚动条占宽让 grid 的
+   内容盒变窄，`place-items` 的水平居中随之左移 7.5px（成员 / 预算页签没有滚动条，切过去又跳回）。
+   用修饰类只给这张遮罩常驻预留遮罩两侧的槽位——**不改共享 `.overlay`**：共享规则常驻双侧 gutter
+   会让窄视口下的所有弹窗统一变窄 30px（review-rules 判断题 1「共享行为不为单票需求而变」）。
+   `ChannelToolsModal.vue` 把 `channel-tools-overlay` 透传到根 `.overlay` 上；本文件不写 ID 选择器。 */
+.overlay.channel-tools-overlay { scrollbar-gutter: stable both-edges; }
 .modal {
   width: 100%; max-width: var(--modal-max); background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--r-xl); box-shadow: var(--shadow-pop); overflow: hidden;
