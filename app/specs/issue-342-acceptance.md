@@ -120,7 +120,7 @@ cd app/frontend && env -u NODE_ENV npx vitest run tests/channel-archive.test.js 
 | 删除 ⇒ 列表不再出现、`GET .../messages` 404、二次 `DELETE` 404、`archive` / `unarchive` 也 404 | `db.delete_channel` + `CHANNEL_SELECT_SQL` 的 `deleted_at IS NULL` | `test_delete_removes_the_channel_from_every_read_face_and_is_not_idempotent` ✅ |
 | 先归档后删除：终态清掉 `archived_at`，读面全 404 | 同上 | `test_delete_after_archive_clears_the_archive_tier` ✅ |
 | 归档频道未读**不计入** `unread_total`；取消归档后**重新计入**；频道自己的 `unread_count` 不变 | `UNREAD_TOTAL_SQL` 的外层 `LEFT JOIN` + `WHERE` | `test_archived_channel_unread_stops_counting_towards_the_sidebar_total` ✅（构造前提 `unread_count >= 1`） |
-| 已删除频道的消息不再出现在 `GET /api/search`；归档频道的**仍然出现** | `SEARCH_ALL_HITS_SQL` 的 `(t.kind <> 'channel' OR c.deleted_at IS NULL)` | `test_deleted_channel_messages_leave_search_while_archived_ones_stay` ✅ |
+| 已删除频道的消息不再出现在 `GET /api/search`；归档频道的**仍然出现**；**定向搜索**（带 `target_id`）同一条判定 | `SEARCH_ALL_HITS_SQL` / `SEARCH_TARGET_HITS_SQL` 的 `(t.kind <> 'channel' OR c.deleted_at IS NULL)` | `test_deleted_channel_messages_leave_search_while_archived_ones_stay` ✅（含 `target_id=已删除频道` ⇒ `[]`、`target_id=归档频道` ⇒ 命中） |
 | 迁移 25 → 26：既有列逐字保留、两列全 `NULL`、终态版本 == `SCHEMA_VERSION` | `migrate._step_25_to_26` | `test_migrating_a_v25_library_adds_the_two_null_columns_and_keeps_every_row` ✅ |
 | 迁移后的库由本代码打开时三个新端点可用 | 同上 | `test_migrated_library_serves_the_new_endpoints` ✅ |
 | 三个动作是配置类写路径：消息 seq、预算读数、轮次结果逐字不变，`drain` 为空 | `db.archive_channel` / `db.delete_channel` 只写单列 | `test_archive_and_delete_do_not_touch_the_message_stream_or_the_budget` ✅ |
@@ -184,6 +184,21 @@ env -u http_proxy -u https_proxy -u all_proxy -u no_proxy -u NO_PROXY PYTHONPATH
 | 打开频道设置 | 危险区存在，归档说明与删除说明全文可见，删除按钮 `删除本频道`，确认条**未出现** | `05-danger.png` |
 | 点「删除本频道」 | 确认条出现：`确认删除 #验收频道？`；频道仍在左栏（**没有发请求**） | `06-confirm.png` |
 | 点「确认删除」 | 标题变成 `第二个频道`；活跃段只剩 `channel-ch_d850877951b7`；toast `已删除频道 #验收频道。`；服务端 `GET /api/channels` 只剩 `ch_d850877951b7`，`GET /api/channels/ch_d1603c195e41/messages` ⇒ **404**；设置弹窗已关闭（`#channelConfigOverlay` 有 `hidden`、`display:none`） | `07-deleted.png` |
+
+### 4.1 最终代码上的第二次走查（review 收口之后）
+
+同一套动作在新的一次性数据目录 `/tmp/alibot-archive-ui2`（`--port 8801`）上重跑一遍，确认 review
+的改动（危险区样式收敛到 `.danger-zone` / `.danger-hint`、`common.cancel` 复用、`channelArchiveList`
+的 `data-od-id`）没有改变行为：
+
+| 步骤 | 读数 | 截图 |
+| --- | --- | --- |
+| 归档 #验收频道 | 活跃段 `['channel-ch_761899df9fb2']`；归档段存在、`aria-expanded="false"`、段内 `['channel-ch_ba66658f7377']`；描述 `该频道已归档，保留为只读归档。`；composer `disabled=true`、占位 `该频道已归档，只读归档`；工具行 `['btn-channel-unarchive']` | `01-archived.png` |
+| 展开归档段 | `aria-expanded="true"`，`channelArchiveList` 有可见尺寸；归档行可点开读历史 | `02-expanded.png` |
+| 取消归档 | 活跃段恢复两个、归档段消失、工具行恢复五枚、composer 恢复可写、toast `已取消归档 #验收频道：频道恢复可写。` | — |
+| 打开频道设置 | 危险区 `className = "d-sec danger-zone"`，归档说明可见，删除按钮 `删除本频道` 可用，确认条**未出现** | `03-danger.png` |
+| 点「删除本频道」 | 确认条 `确认删除 #验收频道？`，按钮 `取消` / `确认删除`，**零请求** | `04-confirm.png` |
+| 点「确认删除」 | 标题 `第二个频道`；`GET /api/channels` 只剩 `ch_761899df9fb2`；`GET /api/channels/ch_ba66658f7377/messages` ⇒ **404**；弹窗 `hidden`；toast `已删除频道 #验收频道。` | `05-deleted.png` |
 
 ---
 
