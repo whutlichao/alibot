@@ -65,8 +65,11 @@ def unread_total(client: TestClient) -> int:
     return client.get("/api/workspace").json()["unread_total"]
 
 
-def search_hits(client: TestClient, query: str) -> list[dict]:
-    response = client.get("/api/search", params={"q": query})
+def search_hits(client: TestClient, query: str, target_id: str | None = None) -> list[dict]:
+    params: dict[str, str] = {"q": query}
+    if target_id is not None:
+        params["target_id"] = target_id
+    response = client.get("/api/search", params=params)
     assert response.status_code == 200, response.text
     return response.json()["hits"]
 
@@ -280,6 +283,11 @@ def test_deleted_channel_messages_leave_search_while_archived_ones_stay(client: 
     assert {hit["target"]["id"] for hit in hits} == {archived["id"]}, (
         "归档频道的历史仍可搜（只收走写入面），已删除频道的消息必须消失"
     )
+    # 定向搜索（`target_id`）与全局搜索共用同一条「已删除 ⇒ 不存在」判定：拿它的 id 也搜不出来。
+    assert search_hits(client, "neon", target_id=deleted["id"]) == []
+    assert [hit["target"]["id"] for hit in search_hits(client, "neon", target_id=archived["id"])] == [
+        archived["id"]
+    ]
 
 
 # ─── 七、迁移 25 → 26：纯增量、不回填、行逐字保留 ────────────────────────────
