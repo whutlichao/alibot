@@ -175,7 +175,7 @@ class WorkspaceService:
 
     # ─── 频道归档与删除（#342 / ADR-0040：两档软删除） ─────────────────────
     def archive_channel(self, channel_id: str) -> dict[str, Any]:
-        """把频道移出左栏活跃段，返回该频道的最新读数与整份频道名单。
+        """把频道移出左栏活跃段，返回该频道**这一行**的最新读数。
 
         **两个档位之一**：归档可恢复、只读、仍可读历史、仍可被搜索；删除（:meth:`delete_channel`）
         是终态。两者都是**配置类**写路径，与 ``DELETE /api/agents/{id}`` 同一纪律：不落消息、
@@ -191,18 +191,18 @@ class WorkspaceService:
         """软删除一个频道（终态），返回被删掉的 id。**不幂等**：二次调用 ⇒ 404。
 
         只写 ``channel.deleted_at``：频道行、影子行、消息、成员关系、任务与预算**全部保留**，
-        读路径按这一列过滤（ADR-0040 决策 1）。因此本票不新增任何修改或删除消息的路径——
+        读路径按这一列过滤（ADR-0040 §一）。因此本票不新增任何修改或删除消息的路径——
         消息 append-only（ADR-0001）不受影响。
         """
         return self._db.delete_channel(channel_id)
 
     def _require_writable_channel(self, channel_id: str) -> dict[str, Any]:
-        """**「已归档 ⇒ 频道面只读」的单一判定落点**（#342 / ADR-0040 决策 2）。
+        """**「已归档 ⇒ 频道面只读」的单一判定落点**（#342 / ADR-0040 §二）。
 
         读一次频道（顺带继承「已删除 ⇒ 404」），归档了就抛 ``validation_failed``。五个既有
         人类面写入口都调它：频道消息 / 频道配置 / 回应预算上界 / 加入成员 / 新建任务。
 
-        **刻意不在它上面的路径**（写进 ADR，不是缺陷）：任务面（``send_task_message`` /
+        **刻意不在它上面的路径**（写进 ADR §二，不是缺陷）：任务面（``send_task_message`` /
         ``update_task*``）、标读、``GET`` 系列、SSE、提醒到点落 ``system`` 消息——那些要么属于
         任务自己的生命周期，要么是只读，要么是后端系统事实，都不是「频道这个对话面的人类写入」。
         """
@@ -211,7 +211,7 @@ class WorkspaceService:
             raise DomainError(
                 "validation_failed",
                 self._locale_copy("error.channel_archived_read_only", name=channel["name"]),
-                fields={"channel_id": self._locale_copy("error.channel_archived_read_only_field")},
+                fields={"channel_id": self._locale_copy("error.field.channel_archived_read_only")},
             )
         return channel
 

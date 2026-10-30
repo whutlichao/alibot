@@ -107,7 +107,7 @@ async function confirmDelete() {
     deleteConfirm.value = false;
   } catch (err) {
     // 失败：错误留在弹窗内（人能看到原因），确认条不收起（可以就地重试或取消）。
-    formError.value = t('toast.channelDeleteFailed', { reason: err.message });
+    formError.value = t('channelConfig.deleteFailed', { reason: err.message });
   } finally {
     deleting.value = false;
   }
@@ -648,26 +648,29 @@ async function save() {
         </div>
 
         <!-- ⑧ 危险区（#342 / ADR-0040）：归档的说明 + 删除（行内二次确认，不叠第二层遮罩）。
-             位置固定在最后：它是这个弹窗里唯一不可撤销的动作。 -->
-        <section class="d-sec" data-od-id="channel-config-section-danger">
+             位置固定在最后：它是这个弹窗里唯一不可撤销的动作。
+             区块与说明复用 Agent 详情「危险操作」那一套（`.danger-zone` / `.danger-hint` /
+             `.danger-actions`），措辞也照它：标题走 `.d-sec-title`，说明是 `.danger-hint`
+             （不是 `<label>`——这里没有任何控件可关联，`<label>` 会读成「少了一个输入框」）。 -->
+        <section class="d-sec danger-zone" data-od-id="channel-config-section-danger">
           <div class="d-sec-title" data-od-id="channel-config-danger-title">
             {{ t('channelConfig.sectionDanger') }}
           </div>
           <div class="field">
-            <label>{{ t('channelConfig.dangerArchiveTitle') }}</label>
-            <div class="hint" data-od-id="channel-config-danger-archive-note">
+            <b>{{ t('channelConfig.dangerArchiveTitle') }}</b>
+            <div class="danger-hint" data-od-id="channel-config-danger-archive-note">
               {{ t('channelConfig.dangerArchiveNote') }}
             </div>
           </div>
           <div class="field">
-            <label>{{ t('channelConfig.dangerDeleteTitle') }}</label>
-            <div class="hint" data-od-id="channel-config-danger-delete-note">
+            <b>{{ t('channelConfig.delete') }}</b>
+            <div class="danger-hint" data-od-id="channel-config-danger-delete-note">
               {{ t('channelConfig.dangerDeleteNote') }}
             </div>
           </div>
-          <div class="agent-actions">
+          <div class="agent-actions danger-actions">
             <button
-              class="btn btn-danger"
+              class="btn btn-sm btn-danger"
               type="button"
               data-od-id="btn-channel-delete"
               :disabled="!store.state.online || deleting"
@@ -682,17 +685,15 @@ async function save() {
             <p class="danger-confirm-text">
               {{ t('channelConfig.deleteConfirmTitle', { name: channelName }) }}
             </p>
-            <div class="field">
-              <div class="hint">{{ t('channelConfig.deleteConfirmHint') }}</div>
-            </div>
-            <div class="agent-actions">
+            <div class="danger-hint">{{ t('channelConfig.deleteConfirmHint') }}</div>
+            <div class="agent-actions danger-actions">
               <button
                 class="btn"
                 type="button"
                 data-od-id="channel-delete-cancel"
                 :disabled="deleting"
                 @click="cancelDelete"
-              >{{ t('channelConfig.deleteCancel') }}</button>
+              >{{ t('common.cancel') }}</button>
               <button
                 class="btn btn-danger"
                 type="button"

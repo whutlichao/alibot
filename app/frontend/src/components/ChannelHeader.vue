@@ -25,9 +25,10 @@ import { isArchivedChannel, targetDescription } from '../lib/target-view.js';
 const props = defineProps({
   target: { type: Object, default: null },
   isDm: { type: Boolean, default: false },
+  // 「当前 target 是只读归档」（私信 peer 已删除 / 频道已归档）。本组件只把它透给页签与工具行的
+  // 语义判断；**频道头自己的归档判据不读它**——它从 `target.archived_at` 推导（`isArchivedChannel`），
+  // 与 composer 的 `archived` 是同一份后端事实的两处呈现。
   isArchivedDm: { type: Boolean, default: false },
-  // 归档判据不新开 prop：它从 `target.archived_at` 推导（`isArchivedChannel`），与 composer 的
-  // `archived` 是同一份后端事实的两处呈现。
   // 页签计数：「消息」页签读**未读**（后端未读口径），不是流里条数。
   messageCount: { type: Number, default: 0 },
   taskCount: { type: Number, default: 0 },

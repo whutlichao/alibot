@@ -396,7 +396,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "error.channel_archived_read_only": (
             "频道「{name}」已归档，只读：取消归档后才能继续在频道里写入（消息、配置、预算、成员、新任务）"
         ),
-        "error.channel_archived_read_only_field": "该频道已归档，频道面只读",
+        "error.field.channel_archived_read_only": "该频道已归档，频道面只读",
         # ─── 频道配置（team / workspace；#142 / ADR-0018 / ADR-0021） ─────
         "error.channel_config_invalid": "频道配置校验未通过，未改动任何字段",
         "error.field.channel_config_field_null": "该配置字段不能为 null（要保留原值请省略该字段）",
@@ -928,7 +928,7 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Channel “{name}” is archived and read-only: unarchive it before writing to the channel "
             "(messages, config, budget, members, new tasks)"
         ),
-        "error.channel_archived_read_only_field": "This channel is archived and read-only",
+        "error.field.channel_archived_read_only": "This channel is archived and read-only",
         # Channel config (team / workspace; #142 / ADR-0018 / ADR-0021).
         "error.channel_config_invalid": ("Channel configuration validation failed; no field was changed"),
         "error.field.channel_config_field_null": (

@@ -661,14 +661,14 @@ const I18N_CATALOGS = {
     'channelConfig.dangerArchiveTitle': '归档本频道',
     'channelConfig.dangerArchiveNote':
       '归档后频道移出左栏活跃段，频道面变成只读：历史消息仍可读、仍可被搜索，但不能再发消息、改配置、改预算、加成员或新建任务。任务面不受影响，随时可以取消归档。',
-    'channelConfig.dangerDeleteTitle': '删除本频道',
     'channelConfig.dangerDeleteNote':
       '删除是终态、不可恢复：频道从此不再出现在任何列表里，也不能再被打开。历史记录（消息、任务、成员关系）全部保留但不对人类面可见。',
     'channelConfig.delete': '删除本频道',
     'channelConfig.deleteConfirmTitle': '确认删除 #{name}？',
     'channelConfig.deleteConfirmHint': '这个动作不可撤销，也没有「回收站」。',
-    'channelConfig.deleteCancel': '取消',
     'channelConfig.deleteConfirmAction': '确认删除',
+    // 弹窗内的失败行（`channelConfig.*` 前缀标识呈现面：Inline 错误住在哪个面就带哪个面的前缀）。
+    'channelConfig.deleteFailed': '删除频道失败：{reason}',
 
     /* ─── 联网（#199）：档位三选 + provider 凭据（只回掩码） ───────────────── */
     'channelConfig.sectionWeb': '联网',
@@ -900,7 +900,6 @@ const I18N_CATALOGS = {
     'toast.channelUnarchived': '已取消归档 #{name}：频道恢复可写。',
     'toast.channelUnarchiveFailed': '取消归档失败：{reason}',
     'toast.channelDeleted': '已删除频道 #{name}。',
-    'toast.channelDeleteFailed': '删除频道失败：{reason}',
     'toast.dmCreated': '已创建与 {name} 的私信。',
     'toast.dmOpened': '已打开与 {name} 的现有私信。',
     'toast.dmOpenFailed': '打开私信失败：{reason}',
@@ -1582,7 +1581,6 @@ const I18N_CATALOGS = {
       + 'history stays readable and searchable, but you can no longer send messages, edit config, '
       + 'change the budget, add members or create tasks. The task plane is unaffected and you can '
       + 'unarchive at any time.',
-    'channelConfig.dangerDeleteTitle': 'Delete this channel',
     'channelConfig.dangerDeleteNote':
       'Deleting is final and cannot be undone: the channel disappears from every list and can no '
       + 'longer be opened. History (messages, tasks, membership) is kept but is no longer visible to '
@@ -1590,8 +1588,9 @@ const I18N_CATALOGS = {
     'channelConfig.delete': 'Delete this channel',
     'channelConfig.deleteConfirmTitle': 'Delete #{name}?',
     'channelConfig.deleteConfirmHint': 'This cannot be undone — there is no recycle bin.',
-    'channelConfig.deleteCancel': 'Cancel',
     'channelConfig.deleteConfirmAction': 'Delete',
+    // Inline failure row of the dialog (the `channelConfig.*` prefix marks the surface).
+    'channelConfig.deleteFailed': 'Could not delete the channel: {reason}',
 
     /* ─── Web access (#199): three levels + provider credentials (masked reads only) ── */
     'channelConfig.sectionWeb': 'Web access',
@@ -1832,7 +1831,6 @@ const I18N_CATALOGS = {
     'toast.channelUnarchived': 'Unarchived #{name}: the channel is writable again.',
     'toast.channelUnarchiveFailed': 'Could not unarchive the channel: {reason}',
     'toast.channelDeleted': 'Deleted channel #{name}.',
-    'toast.channelDeleteFailed': 'Could not delete the channel: {reason}',
     'toast.dmCreated': 'Created a direct message with {name}.',
     'toast.dmOpened': 'Opened the existing direct message with {name}.',
     'toast.dmOpenFailed': 'Could not open the direct message: {reason}',

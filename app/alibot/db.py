@@ -1091,6 +1091,9 @@ SEARCH_TARGET_HITS_SQL = (
      WHERE m.target_id = :target_id
        AND m.target_id = t.id
        AND m.kind != 'system'
+       -- 同一条「已删除频道不存在」的判定（#342 / ADR-0040 §一）：定向搜索与全局搜索共用它，
+       -- 否则已删除的频道还能被它的 id 搜出历史消息。
+       AND (t.kind <> 'channel' OR c.deleted_at IS NULL)
        AND CASEFOLD(m.body) LIKE :pattern ESCAPE '\\'
      LIMIT :limit
 """

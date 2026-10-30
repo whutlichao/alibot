@@ -1,7 +1,9 @@
 """频道归档与删除（#342 / ADR-0040）：两个软删除档位的 HTTP 黑盒契约。
 
 判据（票面 Observable acceptance 2）全部经**人类面**取证——HTTP 端点、``GET /api/workspace``
-的汇总读数、``GET /api/search`` 的命中。测试不读库表、不断言私有函数、不新增接缝：
+的汇总读数、``GET /api/search`` 的命中。除迁移那一节（沿用 ``test_schema_migration.py`` 的既有
+做法：对磁盘上的库读 PRAGMA 与行，那是 ``--migrate`` CLI 唯一可观察的终态）之外，测试不读库表、
+不断言私有函数、不新增接缝：
 
 - **归档**：``POST .../archive`` ⇒ 200，``GET /api/channels`` 里该频道带非空 ``archived_at``；
   再调一次幂等（``archived_at`` 逐字不变）。
@@ -161,7 +163,7 @@ def test_every_channel_face_write_is_rejected_while_archived_and_writes_nothing(
 
 
 def test_task_plane_of_an_archived_channel_still_works(client: TestClient) -> None:
-    """**刻意边界**（ADR-0040 决策 2）：归档的是「频道这个对话面」，任务自己的五态不受影响。
+    """**刻意边界**（ADR-0040 §二）：归档的是「频道这个对话面」，任务自己的五态不受影响。
 
     正面断言两件事：既有任务仍能改状态、仍能在**任务线程**发言（后者的写入落在 task target，
     不是频道 target）。
