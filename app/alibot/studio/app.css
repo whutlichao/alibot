@@ -758,6 +758,14 @@ h1, h2 { margin: 0; font-weight: var(--fw-heavy); letter-spacing: var(--ls-tight
 .kv .v { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
 /* 全局 MCP 只读行（#236）：正文是一句读数 + 远端条目的确认按钮；不出现编辑 / 启停 / 删除。 */
 .global-mcp-row .v { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+/* 家目录 `mcp.json` 文本域（#348 设计反馈）：全局 `.textarea` 的 `min-height: 70px` 只够约 3 行，
+   常见规模的文件打开后只能看到几行。这里只给该文本域一条作用域规则，把默认高度提到 240px
+   （约 10 行）；`resize: vertical` 沿用全局规则不变，仍可手动拖大。全局 `.textarea` 不动，
+   表单里的其它文本域不受影响。
+   选择器带上 `.textarea`：全局 `.textarea` 规则定义在本文件靠后的表单段，单类选择器同特异性
+   且更早，会被它按顺序覆盖；复合选择器按特异性取胜，与 `.agent-skill-section > .resource-add`
+   覆盖全局 `.resource-add` 是同一做法。 */
+.textarea.agent-mcp-file-text { min-height: 240px; }
 /* 四个数字（订阅频道数 / 消息处理数 / 完成任务数 / 成功率）：数字等宽、标签小字。 */
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
 .stat { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4) var(--sp-5); background: var(--panel); }

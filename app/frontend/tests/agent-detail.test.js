@@ -1150,6 +1150,36 @@ describe('mcp 页签', () => {
       i18n.t('mcp.fileChangedElsewhere'),
     );
   });
+
+  test('家目录 mcp.json 文本域默认高度 240px（作用域规则，全局 `.textarea` 不动）', async () => {
+    // 设计反馈（#348）：默认高度只继承全局 `.textarea` 的 70px（约 3 行），常见规模的 mcp.json
+    // 只能看到几行。jsdom 不做布局，高度落成 CSS 文本契约：该文本域仍带 `.textarea` 与作用域类，
+    // 正本里 `.textarea.agent-mcp-file-text` 规则块给出 `min-height: 240px`，全局规则保持 70px。
+    const { wrapper } = await mountApp();
+    await openDetail(wrapper);
+    await wrapper.find('[data-od-id="agent-detail-tab-mcp"]').trigger('click');
+    await flush();
+
+    const textarea = wrapper.find('[data-od-id="agent-mcp-file-text"]');
+    expect(textarea.element.tagName).toBe('TEXTAREA');
+    expect(textarea.classes()).toContain('textarea');
+    expect(textarea.classes()).toContain('agent-mcp-file-text');
+
+    const css = readStudio('app.css');
+    // 选择器必须带 `.textarea`：全局 `.textarea` 规则在文件更靠后的表单段，单类同特异性会被它
+    // 按顺序覆盖（退回 70px）。断言完整选择器，防止有人改回单类而用例仍绿。
+    const ruleAt = css.indexOf('.textarea.agent-mcp-file-text {');
+    expect(ruleAt, '缺少 mcp.json 文本域的作用域规则').toBeGreaterThanOrEqual(0);
+    const block = css.slice(ruleAt, css.indexOf('}', ruleAt));
+    expect(block).toContain('min-height: 240px');
+
+    // 全局 `.textarea` 不动（与 `.resource-add` 用例同形：反向断言共享规则原值）。
+    const globalAt = css.indexOf('\n.textarea {');
+    expect(globalAt, '全局 `.textarea` 规则不见了').toBeGreaterThanOrEqual(0);
+    const globalBlock = css.slice(globalAt, css.indexOf('}', globalAt));
+    expect(globalBlock).toContain('resize: vertical');
+    expect(globalBlock).toContain('min-height: 70px');
+  });
 });
 
 describe('评审回归（双轴 findings）', () => {
