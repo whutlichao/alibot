@@ -9,8 +9,8 @@ Vitest 4.1.12（jsdom）/ ego-browser 0.6.0.20（Chromium 154.0.8037.44）
 
 > 本文件在**创建 PR 之前**提交，只记当时已得的读数。PR 号与 CI 状态以 GitHub 为准，不写进本文件、
 > 也不为回填它们追加提交（判据见 `docs/agents/implementation.md` §交付）。
-> 浏览器读数、截图与命令输出留存在仓库外 `/tmp/alibot-348/`（`red-test-final.txt` /
-> `green-test-final2.txt` / `gate-fast-final2.txt` / `server.log` / `shots/`）。
+> 浏览器读数、截图与命令输出留存在仓库外 `/tmp/alibot-348/`（`red-test-final2.txt` /
+> `green-test-final3.txt` / `gate-fast-final3.txt` / `server.log` / `shots/`）。
 
 ---
 
@@ -38,7 +38,7 @@ env -u NODE_ENV <worktree>/app/frontend/node_modules/.bin/vitest run tests/agent
 
  RUN  v4.1.12 /private/tmp/alibot-348/red-baseline/app/frontend
 
- ❯ tests/agent-detail.test.js (56 tests | 1 failed) 1968ms
+ ❯ tests/agent-detail.test.js (56 tests | 1 failed) 1997ms
      × 家目录 mcp.json 文本域默认高度 240px（作用域规则，全局 `.textarea` 不动） 37ms
 
 ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
